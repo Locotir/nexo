@@ -442,8 +442,6 @@ mod tests {
             ("edit(src/**)", "edit", ToolKind::Write, json!({"path": "src/a/b.rs"}), true),
             ("edit(src/**)", "edit", ToolKind::Write, json!({"path": "/work/proj/src/x.rs"}), true),
             ("edit(src/**)", "edit", ToolKind::Write, json!({"path": "tests/x.rs"}), false),
-            ("read(/etc/*)", "read", ToolKind::Read, json!({"path": "/etc/hosts"}), true),
-            ("read(/etc/*)", "read", ToolKind::Read, json!({"path": "../../etc/hosts"}), true),
             ("mcp__srv__*", "mcp__srv__list", ToolKind::Other, json!({}), true),
             ("mcp__srv__*", "mcp__other__list", ToolKind::Other, json!({}), false),
             ("write", "write", ToolKind::Write, json!({"path": "x"}), true),
@@ -472,6 +470,12 @@ mod tests {
         ];
         for (rule, tool, kind, args, want) in table {
             assert_eq!(rule_matches(rule, tool, kind, &args, &c), want, "{rule} on {tool} {args}");
+        }
+        // an absolute rule outside the project: `/etc` is a Unix path (on Windows it has no drive)
+        #[cfg(unix)]
+        for path in ["/etc/hosts", "../../etc/hosts"] {
+            let args = json!({ "path": path });
+            assert!(rule_matches("read(/etc/*)", "read", ToolKind::Read, &args, &c), "read(/etc/*) on {path}");
         }
     }
 

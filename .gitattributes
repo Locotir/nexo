@@ -1,0 +1,2 @@
+# keep LF everywhere: the interface tests compare text captures byte for byte, on Windows too
+* text=auto eol=lf
