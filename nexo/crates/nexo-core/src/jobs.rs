@@ -1,0 +1,478 @@
+//! Work that goes on while the agent does something else: a shell command
+//! started with `bash` and `background: true`, or a sub-agent sent off with
+//! `task` and `background: true`. Each is a job of the session, with a number,
+//! its output (bounded) and how it ended. The model reads it with the `jobs`
+//! tool; when one ends, the agent tells the model at its next call, or wakes
+//! it when it was waiting for the person. Dropping the last handle of the
+//! registry (the session ends) stops every job still running.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, Notify};
+use tokio_util::sync::CancellationToken;
+
+/// Characters of output a job keeps; older lines go first.
+pub const KEEP_CHARS: usize = 200_000;
+/// Characters of new output one read gives (head and tail).
+pub const READ_CHARS: usize = 30_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    Shell,
+    Agent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum JobStatus {
+    Running,
+    /// It ended by itself: `ok`, and how (`exit 0`, `exit 2`, `report`).
+    Done {
+        ok: bool,
+        how: String,
+    },
+    /// Stopped by the model, the person, or the end of the session.
+    Killed,
+}
+
+impl JobStatus {
+    pub fn running(&self) -> bool {
+        matches!(self, JobStatus::Running)
+    }
+
+    pub fn word(&self) -> String {
+        match self {
+            JobStatus::Running => "running".into(),
+            JobStatus::Done { how, .. } => format!("done ({how})"),
+            JobStatus::Killed => "killed".into(),
+        }
+    }
+}
+
+/// What the model, the agent and the interface see of a job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobInfo {
+    pub id: u32,
+    pub kind: JobKind,
+    /// The command, or the sub-agent's description.
+    pub label: String,
+    pub status: JobStatus,
+    pub elapsed_ms: u64,
+    /// Lines of output so far (including those no longer kept).
+    pub lines: usize,
+}
+
+/// A job began or ended.
+#[derive(Debug, Clone)]
+pub struct JobChange(pub JobInfo);
+
+struct Out {
+    lines: VecDeque<String>,
+    chars: usize,
+    /// Lines dropped from the front to keep within `KEEP_CHARS`.
+    dropped: usize,
+    /// The absolute line the model has read up to.
+    read: usize,
+}
+
+struct Entry {
+    id: u32,
+    kind: JobKind,
+    label: String,
+    started: Instant,
+    ended: Mutex<Option<Instant>>,
+    out: Mutex<Out>,
+    status: Mutex<JobStatus>,
+    /// The model was told it ended.
+    told: Mutex<bool>,
+    cancel: CancellationToken,
+    done: Notify,
+}
+
+impl Entry {
+    fn info(&self) -> JobInfo {
+        let end = self.ended.lock().unwrap().unwrap_or_else(Instant::now);
+        let out = self.out.lock().unwrap();
+        JobInfo {
+            id: self.id,
+            kind: self.kind,
+            label: self.label.clone(),
+            status: self.status.lock().unwrap().clone(),
+            elapsed_ms: end.duration_since(self.started).as_millis() as u64,
+            lines: out.dropped + out.lines.len(),
+        }
+    }
+}
+
+struct Inner {
+    next: AtomicU32,
+    jobs: Mutex<BTreeMap<u32, Arc<Entry>>>,
+    root: CancellationToken,
+    changes: broadcast::Sender<JobChange>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.root.cancel();
+    }
+}
+
+/// The jobs of a session. Cloning shares them.
+#[derive(Clone)]
+pub struct Jobs(Arc<Inner>);
+
+impl Default for Jobs {
+    fn default() -> Jobs {
+        Jobs::new()
+    }
+}
+
+impl std::fmt::Debug for Jobs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.list()).finish()
+    }
+}
+
+/// The side a job's runner writes to.
+pub struct JobHandle {
+    entry: Arc<Entry>,
+    changes: broadcast::Sender<JobChange>,
+}
+
+impl JobHandle {
+    pub fn id(&self) -> u32 {
+        self.entry.id
+    }
+
+    /// Cancelled when the job is killed or the session ends.
+    pub fn cancel(&self) -> CancellationToken {
+        self.entry.cancel.clone()
+    }
+
+    pub fn line(&self, line: &str) {
+        let mut o = self.entry.out.lock().unwrap();
+        o.chars += line.chars().count() + 1;
+        o.lines.push_back(line.to_string());
+        while o.chars > KEEP_CHARS && o.lines.len() > 1 {
+            let l = o.lines.pop_front().unwrap();
+            o.chars -= l.chars().count() + 1;
+            o.dropped += 1;
+        }
+    }
+
+    /// Several lines at once (a report).
+    pub fn text(&self, text: &str) {
+        for l in text.lines() {
+            self.line(l);
+        }
+    }
+
+    /// The job ended by itself. A killed job stays killed.
+    pub fn finish(self, ok: bool, how: impl Into<String>) {
+        let killed = { *self.entry.status.lock().unwrap() == JobStatus::Killed };
+        if !killed {
+            *self.entry.status.lock().unwrap() = JobStatus::Done { ok, how: how.into() };
+        }
+        self.end();
+    }
+
+    fn end(&self) {
+        let mut e = self.entry.ended.lock().unwrap();
+        if e.is_none() {
+            *e = Some(Instant::now());
+            drop(e);
+            self.entry.done.notify_waiters();
+            let _ = self.changes.send(JobChange(self.entry.info()));
+        }
+    }
+}
+
+impl Drop for JobHandle {
+    /// A runner that stops without saying how (a panic, a dropped task) ends the job as killed.
+    fn drop(&mut self) {
+        if self.entry.status.lock().unwrap().running() {
+            *self.entry.status.lock().unwrap() = JobStatus::Killed;
+        }
+        self.end();
+    }
+}
+
+/// What a read of a job gives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobRead {
+    pub info: JobInfo,
+    /// The output not read before (head and tail when long).
+    pub new: String,
+}
+
+impl Jobs {
+    pub fn new() -> Jobs {
+        let (changes, _) = broadcast::channel(64);
+        Jobs(Arc::new(Inner {
+            next: AtomicU32::new(1),
+            jobs: Mutex::new(BTreeMap::new()),
+            root: CancellationToken::new(),
+            changes,
+        }))
+    }
+
+    /// A new job; the caller runs it (in a spawned task) and writes to the handle.
+    pub fn start(&self, kind: JobKind, label: impl Into<String>) -> JobHandle {
+        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+        let entry = Arc::new(Entry {
+            id,
+            kind,
+            label: label.into(),
+            started: Instant::now(),
+            ended: Mutex::new(None),
+            out: Mutex::new(Out { lines: VecDeque::new(), chars: 0, dropped: 0, read: 0 }),
+            status: Mutex::new(JobStatus::Running),
+            told: Mutex::new(false),
+            cancel: self.0.root.child_token(),
+            done: Notify::new(),
+        });
+        self.0.jobs.lock().unwrap().insert(id, entry.clone());
+        let _ = self.0.changes.send(JobChange(entry.info()));
+        JobHandle { entry, changes: self.0.changes.clone() }
+    }
+
+    pub fn list(&self) -> Vec<JobInfo> {
+        self.0.jobs.lock().unwrap().values().map(|e| e.info()).collect()
+    }
+
+    pub fn get(&self, id: u32) -> Option<JobInfo> {
+        self.entry(id).map(|e| e.info())
+    }
+
+    pub fn running(&self) -> usize {
+        self.list().iter().filter(|j| j.status.running()).count()
+    }
+
+    fn entry(&self, id: u32) -> Option<Arc<Entry>> {
+        self.0.jobs.lock().unwrap().get(&id).cloned()
+    }
+
+    /// The output of job `id` the model has not read yet, after waiting up to
+    /// `wait` for it to end (returns at once when it already has, or when
+    /// `cancel` fires). Reading it marks it read; an ended job read whole is
+    /// one the model needs no notice of.
+    pub async fn read(&self, id: u32, wait: Duration, cancel: &CancellationToken) -> Option<JobRead> {
+        let e = self.entry(id)?;
+        if !wait.is_zero() {
+            let done = e.done.notified();
+            tokio::pin!(done);
+            done.as_mut().enable();
+            if e.ended.lock().unwrap().is_none() {
+                tokio::select! {
+                    _ = done => {}
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = cancel.cancelled() => {}
+                }
+            }
+        }
+        let info = e.info();
+        let new = {
+            let mut o = e.out.lock().unwrap();
+            let from = o.read.max(o.dropped);
+            let skipped = from - o.read;
+            let lines: Vec<&String> = o.lines.iter().skip(from - o.dropped).collect();
+            let mut text = String::new();
+            if skipped > 0 {
+                text.push_str(&format!("[{skipped} earlier lines no longer kept]\n"));
+            }
+            for l in lines {
+                text.push_str(l);
+                text.push('\n');
+            }
+            o.read = o.dropped + o.lines.len();
+            cap(&text, READ_CHARS)
+        };
+        if !info.status.running() {
+            *e.told.lock().unwrap() = true;
+        }
+        Some(JobRead { info, new })
+    }
+
+    /// Stops job `id`. False when there is no such job or it had ended.
+    pub fn kill(&self, id: u32) -> bool {
+        let Some(e) = self.entry(id) else { return false };
+        let mut s = e.status.lock().unwrap();
+        if !s.running() {
+            return false;
+        }
+        *s = JobStatus::Killed;
+        drop(s);
+        // the model asked for it: no notice
+        *e.told.lock().unwrap() = true;
+        e.cancel.cancel();
+        true
+    }
+
+    /// Stops every job still running.
+    pub fn kill_all(&self) -> usize {
+        let ids: Vec<u32> = self.list().iter().filter(|j| j.status.running()).map(|j| j.id).collect();
+        ids.into_iter().filter(|id| self.kill(*id)).count()
+    }
+
+    /// Jobs that ended and the model has not been told of (they stay untold).
+    pub fn untold(&self) -> Vec<JobInfo> {
+        let jobs = self.0.jobs.lock().unwrap();
+        jobs.values()
+            .filter(|e| e.ended.lock().unwrap().is_some() && !*e.told.lock().unwrap())
+            .map(|e| e.info())
+            .collect()
+    }
+
+    /// Jobs that ended since the model was last told, now marked told.
+    pub fn take_ended(&self) -> Vec<JobInfo> {
+        let jobs = self.0.jobs.lock().unwrap();
+        jobs.values()
+            .filter(|e| e.ended.lock().unwrap().is_some())
+            .filter(|e| !std::mem::replace(&mut *e.told.lock().unwrap(), true))
+            .map(|e| e.info())
+            .collect()
+    }
+
+    /// Every start and end, as they happen.
+    pub fn changes(&self) -> broadcast::Receiver<JobChange> {
+        self.0.changes.subscribe()
+    }
+}
+
+/// `text` within `max` characters: the head and the tail, the middle said to be cut.
+fn cap(text: &str, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text.to_string();
+    }
+    let half = max / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(n - half).collect();
+    format!("{head}\n… [{} characters omitted] …\n{tail}", n - 2 * half)
+}
+
+/// The note the model gets when jobs have ended.
+pub fn ended_note(jobs: &[JobInfo]) -> String {
+    let lines: Vec<String> = jobs
+        .iter()
+        .map(|j| {
+            let what = match j.kind {
+                JobKind::Shell => format!("`{}`", one_line(&j.label)),
+                JobKind::Agent => format!("sub-agent \"{}\"", one_line(&j.label)),
+            };
+            format!(
+                "- job {} {what} {} after {}, {} lines of output",
+                j.id,
+                j.status.word(),
+                duration(j.elapsed_ms),
+                j.lines
+            )
+        })
+        .collect();
+    format!(
+        "[background jobs ended]\n{}\nRead the output with the `jobs` tool (action \"output\", the job's id).",
+        lines.join("\n")
+    )
+}
+
+fn one_line(s: &str) -> String {
+    let first = s.lines().next().unwrap_or("");
+    let short: String = first.chars().take(80).collect();
+    if short.len() < s.len() {
+        format!("{short}…")
+    } else {
+        short
+    }
+}
+
+/// `850 ms`, `12 s`, `3 min 5 s`.
+pub fn duration(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{ms} ms"),
+        1000..=59_999 => format!("{} s", ms / 1000),
+        _ => format!("{} min {} s", ms / 60_000, ms % 60_000 / 1000),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_job_is_read_once_waited_for_and_told_once() {
+        let jobs = Jobs::new();
+        let mut changes = jobs.changes();
+        let h = jobs.start(JobKind::Shell, "make");
+        assert_eq!(changes.recv().await.unwrap().0.status, JobStatus::Running);
+        h.line("one");
+        h.line("two");
+        let c = CancellationToken::new();
+        let r = jobs.read(1, Duration::ZERO, &c).await.unwrap();
+        assert_eq!(r.new, "one\ntwo\n");
+        assert!(r.info.status.running());
+        assert_eq!(jobs.read(1, Duration::ZERO, &c).await.unwrap().new, "", "read once");
+        assert!(jobs.take_ended().is_empty());
+        let t = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            h.line("three");
+            h.finish(true, "exit 0");
+        });
+        let t0 = Instant::now();
+        let r = jobs.read(1, Duration::from_secs(10), &c).await.unwrap();
+        assert!(t0.elapsed() < Duration::from_secs(5), "returns when the job ends");
+        assert_eq!(r.new, "three\n");
+        assert_eq!(r.info.status, JobStatus::Done { ok: true, how: "exit 0".into() });
+        t.await.unwrap();
+        assert!(jobs.take_ended().is_empty(), "the read told the model");
+        let h2 = jobs.start(JobKind::Agent, "find the parser");
+        h2.finish(false, "error");
+        let ended = jobs.take_ended();
+        assert_eq!(ended.len(), 1);
+        assert!(ended_note(&ended).contains("job 2 sub-agent \"find the parser\" done (error)"));
+        assert!(jobs.take_ended().is_empty(), "told once");
+        assert!(jobs.read(9, Duration::ZERO, &c).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn killing_cancels_and_the_end_of_the_session_stops_everything() {
+        let jobs = Jobs::new();
+        let h = jobs.start(JobKind::Shell, "sleep");
+        let cancel = h.cancel();
+        assert!(jobs.kill(1));
+        assert!(cancel.is_cancelled());
+        h.finish(true, "exit 0");
+        assert_eq!(jobs.get(1).unwrap().status, JobStatus::Killed, "a killed job stays killed");
+        assert!(!jobs.kill(1));
+        assert!(jobs.take_ended().is_empty(), "the model killed it: no notice");
+
+        let h = jobs.start(JobKind::Shell, "server");
+        let cancel = h.cancel();
+        drop(jobs);
+        assert!(cancel.is_cancelled(), "the session ended");
+        drop(h);
+    }
+
+    #[test]
+    fn long_output_keeps_the_end() {
+        let jobs = Jobs::new();
+        let h = jobs.start(JobKind::Shell, "yes");
+        for i in 0..50_000 {
+            h.line(&format!("line {i}"));
+        }
+        let info = jobs.get(1).unwrap();
+        assert_eq!(info.lines, 50_000);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let r = rt.block_on(jobs.read(1, Duration::ZERO, &CancellationToken::new())).unwrap();
+        assert!(r.new.starts_with('['), "{}", &r.new[..60]);
+        assert!(r.new.trim_end().ends_with("line 49999"));
+        assert!(r.new.chars().count() < READ_CHARS + 200);
+        drop(h);
+        assert_eq!(jobs.get(1).unwrap().status, JobStatus::Killed, "a dropped runner ends the job");
+        assert_eq!(duration(65_000), "1 min 5 s");
+    }
+}

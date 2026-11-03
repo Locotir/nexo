@@ -1,0 +1,12 @@
+╭─────────────────────────────────────╮
+│ nexo 0.1.0                          │
+│ deepseek/deepseek-chat · ask        │
+│ /tmp/project                        │
+│                                     │
+│ /model sets up a model · /resume p… │
+╰─────────────────────────────────────╯
+
+
+────────────────────────────────────────
+›   ask anything
+ nexo │ deepseek-chat │ ask  Σ 0 billed

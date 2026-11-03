@@ -1,0 +1,94 @@
+{
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "env": ["OPENAI_API_KEY"],
+    "models": {
+      "gpt-5": {
+        "id": "gpt-5",
+        "name": "GPT-5",
+        "reasoning": true,
+        "tool_call": true,
+        "cost": { "input": 1.25, "output": 10, "cache_read": 0.125 },
+        "limit": { "context": 400000, "output": 128000 }
+      },
+      "gpt-5-mini": {
+        "id": "gpt-5-mini",
+        "name": "GPT-5 mini",
+        "cost": { "input": 0.25, "output": 2, "cache_read": 0.025 },
+        "limit": { "context": 400000, "output": 128000 }
+      }
+    }
+  },
+  "anthropic": {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "models": {
+      "claude-sonnet-4-5": {
+        "id": "claude-sonnet-4-5",
+        "name": "Claude Sonnet 4.5",
+        "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 },
+        "limit": { "context": 200000, "output": 64000 }
+      }
+    }
+  },
+  "deepseek": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "models": {
+      "deepseek-chat": {
+        "id": "deepseek-chat",
+        "name": "DeepSeek V3",
+        "cost": { "input": 0.28, "output": 0.42, "cache_read": 0.028, "cache_write": 0 },
+        "limit": { "context": 128000, "output": 8192 }
+      },
+      "deepseek-reasoner": {
+        "id": "deepseek-reasoner",
+        "name": "DeepSeek R1",
+        "cost": { "input": 0.28, "output": 0.42, "cache_read": 0.028 },
+        "limit": { "context": 128000, "output": 65536 }
+      }
+    }
+  },
+  "google": {
+    "id": "google",
+    "name": "Google",
+    "models": {
+      "gemini-2.5-pro": {
+        "id": "gemini-2.5-pro",
+        "name": "Gemini 2.5 Pro",
+        "cost": { "input": 1.25, "output": 10, "cache_read": 0.31 },
+        "limit": { "context": 1048576, "output": 65536 }
+      }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "models": {
+      "deepseek/deepseek-chat": {
+        "id": "deepseek/deepseek-chat",
+        "name": "DeepSeek V3",
+        "cost": { "input": 0.3, "output": 0.5 },
+        "limit": { "context": 128000, "output": 8192 }
+      },
+      "free/model": {
+        "id": "free/model",
+        "name": "A free model",
+        "cost": { "input": 0, "output": 0 },
+        "limit": { "context": 32768 }
+      }
+    }
+  },
+  "ollama": {
+    "id": "ollama",
+    "name": "Ollama",
+    "models": {
+      "qwen3:8b": {
+        "id": "qwen3:8b",
+        "name": "Qwen3 8B",
+        "limit": { "context": 40960 }
+      }
+    }
+  }
+}

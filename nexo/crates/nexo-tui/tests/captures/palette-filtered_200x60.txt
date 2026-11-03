@@ -1,0 +1,60 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ●─╮ ╭─●   nexo 0.1.0                                                     │
+│   ╰●╯     deepseek/deepseek-chat · ask                                   │
+│ ●─╯ ╰─●   /tmp/project                                                   │
+│                                                                          │
+│ /model sets up a model · /resume picks a session · ? help                │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+ ▌ fix the failing test in the parser
+
+   ▸ thinking · 1 line · 0ms
+
+ ◆ I will read the test first.
+
+   • the input is 3 1 2
+   • the output must be 1 2 3
+
+   ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── rust
+   ▎ fn main() {}
+
+   ✓ read tests/a.rs · 2 lines  12ms ▸
+   ✓ edit src/lib.rs · +1 −1  3ms
+   │ @@ -1,1 +1,1 @@
+   │ 1 - let x = 1;
+   └ 1 + let x = 2;
+
+ ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=… out=… cache=…) · from config
+
+ ◇ compacted 2 messages
+
+      0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ /model                [name]                   switch model, or set one up step by step (checked …
+ /mouse                                         mouse capture on or off (off: the terminal's own s…
+ /permissions  (mode)  [ask|accept-edits|plan…  set the permission mode
+ /shared-memory        [id|off] [focus]         bring what another session knows into this one, wi…
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+› /mo
+ ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                 20261102-100000-ef56
+ nexo │ deepseek/deepseek-chat │ /tmp/project │ ask │ ━━━━━━━━ 69% 6.2k/9.0k │  81% cached · 1 call                                                                             Σ 6.5k billed · $0.0031

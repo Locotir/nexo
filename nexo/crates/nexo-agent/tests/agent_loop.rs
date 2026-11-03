@@ -1,0 +1,2117 @@
+//! The loop against a scripted model and fake tools.
+
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures::StreamExt;
+use nexo_agent::{AgentSetup, ModelClient};
+use nexo_core::agent::{channels, AgentCommand, AgentEvent, AgentHandle, Level, TurnEnd};
+use nexo_core::config::{Config, ProviderConfig};
+use nexo_core::error::{ErrorKind, ProviderError};
+use nexo_core::message::{Message, Part, Role};
+use nexo_core::permission::{PermissionDecision, PermissionMode};
+use nexo_core::pricing::Pricing;
+use nexo_core::provider::{EventStream, ModelRequest, ToolSpec};
+use nexo_core::stream::{FinishReason, StreamEvent, Usage};
+use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
+use serde_json::{json, Value};
+
+enum Reply {
+    Events(Vec<StreamEvent>),
+    Err(ProviderError),
+    /// Yields the events, then never ends (until dropped).
+    Hang(Vec<StreamEvent>),
+}
+
+struct Scripted {
+    replies: Mutex<VecDeque<Reply>>,
+    requests: Mutex<Vec<ModelRequest>>,
+}
+
+impl Scripted {
+    fn new(replies: Vec<Reply>) -> Arc<Scripted> {
+        Arc::new(Scripted { replies: Mutex::new(replies.into()), requests: Mutex::new(Vec::new()) })
+    }
+
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ModelClient for Scripted {
+    async fn stream(
+        &self,
+        _cfg: &ProviderConfig,
+        req: &ModelRequest,
+        _retries: u32,
+    ) -> Result<EventStream, ProviderError> {
+        self.requests.lock().unwrap().push(req.clone());
+        let reply = self.replies.lock().unwrap().pop_front().unwrap_or(Reply::Events(text("(no script)")));
+        match reply {
+            Reply::Events(evs) => Ok(Box::pin(futures::stream::iter(evs))),
+            Reply::Err(e) => Err(e),
+            Reply::Hang(evs) => Ok(Box::pin(futures::stream::iter(evs).chain(futures::stream::pending()))),
+        }
+    }
+}
+
+fn text(s: &str) -> Vec<StreamEvent> {
+    let (a, b) = s.split_at(s.len() / 2);
+    vec![
+        StreamEvent::Start { response_id: None, model: None },
+        StreamEvent::TextDelta(a.into()),
+        StreamEvent::TextDelta(b.into()),
+        StreamEvent::Usage(Usage { input: 1000, output: 100, cache_read: 2000, ..Default::default() }),
+        StreamEvent::Finish(FinishReason::Stop),
+        StreamEvent::Done,
+    ]
+}
+
+fn call(id: &str, name: &str, args: Value) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::ToolCallStart { id: id.into(), name: name.into() },
+        StreamEvent::ToolCallEnd { id: id.into(), name: name.into(), args },
+        StreamEvent::Usage(Usage { input: 10, output: 5, ..Default::default() }),
+        StreamEvent::Finish(FinishReason::ToolUse),
+        StreamEvent::Done,
+    ]
+}
+
+struct Fake {
+    name: &'static str,
+    kind: ToolKind,
+    slow: bool,
+}
+
+#[async_trait]
+impl Tool for Fake {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: self.name.into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+    }
+    fn kind(&self) -> ToolKind {
+        self.kind
+    }
+    fn summary(&self, args: &Value) -> String {
+        format!("{} {}", self.name, args.get("path").or(args.get("command")).and_then(Value::as_str).unwrap_or(""))
+    }
+    async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        if self.slow {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                _ = ctx.cancel.cancelled() => return ToolOutput::error("cancelled"),
+            }
+        }
+        ctx.report("progress line");
+        ToolOutput::ok(format!(
+            "{}:{}",
+            self.name,
+            args.get("path").or(args.get("command")).and_then(Value::as_str).unwrap_or("")
+        ))
+    }
+}
+
+fn tools() -> ToolSet {
+    ToolSet::new()
+        .with(Arc::new(Fake { name: "read", kind: ToolKind::Read, slow: false }))
+        .with(Arc::new(Fake { name: "grep", kind: ToolKind::Search, slow: false }))
+        .with(Arc::new(Fake { name: "write", kind: ToolKind::Write, slow: false }))
+        .with(Arc::new(Fake { name: "bash", kind: ToolKind::Exec, slow: true }))
+}
+
+fn data_dir() -> PathBuf {
+    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let d = DIR.get_or_init(|| tempfile::tempdir().unwrap());
+    std::env::set_var("NEXO_DATA_DIR", d.path());
+    std::env::set_var("NEXO_CONFIG_DIR", d.path());
+    std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
+    d.path().to_path_buf()
+}
+
+/// Tests that write the user's configuration file take turns.
+fn config_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn user_config() -> Config {
+    Config::parse(&std::fs::read_to_string(data_dir().join("config.toml")).unwrap_or_default()).unwrap()
+}
+
+fn config(mode: PermissionMode) -> Config {
+    let mut cfg = Config::default();
+    let mut p = ProviderConfig::new("mock", "http://mock", None);
+    p.models = vec!["m1".into(), "m2".into()];
+    p.pricing.insert("m1".into(), Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0 });
+    cfg.providers.insert("mock".into(), p);
+    cfg.permissions.mode = mode;
+    // these tests script every call: no curator between them
+    cfg.context.policy = "plain".into();
+    cfg
+}
+
+struct Running {
+    handle: AgentHandle,
+    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+async fn start(client: Arc<Scripted>, cfg: Config, resume: Option<String>, cwd: &std::path::Path) -> Running {
+    start_with(client, cfg, resume, cwd, tools()).await
+}
+
+async fn start_with(
+    client: Arc<Scripted>,
+    cfg: Config,
+    resume: Option<String>,
+    cwd: &std::path::Path,
+    tools: ToolSet,
+) -> Running {
+    data_dir();
+    let (handle, ends) = channels();
+    let setup = AgentSetup {
+        config: cfg,
+        cwd: cwd.to_path_buf(),
+        provider: "mock".into(),
+        model: "m1".into(),
+        tools,
+        client,
+        resume,
+        gate: None,
+    };
+    let task = tokio::spawn(nexo_agent::run(ends, setup));
+    Running { handle, task }
+}
+
+impl Running {
+    fn send(&self, c: AgentCommand) {
+        self.handle.commands.send(c).unwrap();
+    }
+
+    /// The next event, passing over `Idle` (the tests that want it use `raw`).
+    async fn next(&mut self) -> AgentEvent {
+        loop {
+            match self.raw().await {
+                AgentEvent::Idle { .. } => continue,
+                ev => return ev,
+            }
+        }
+    }
+
+    async fn raw(&mut self) -> AgentEvent {
+        tokio::time::timeout(Duration::from_secs(10), self.handle.events.recv())
+            .await
+            .expect("an event in time")
+            .expect("the agent is alive")
+    }
+
+    /// Events up to and including the next `TurnEnd`.
+    async fn turn(&mut self) -> Vec<AgentEvent> {
+        let mut out = Vec::new();
+        loop {
+            let ev = self.next().await;
+            let end = matches!(ev, AgentEvent::TurnEnd { .. });
+            out.push(ev);
+            if end {
+                return out;
+            }
+        }
+    }
+
+    async fn until(&mut self, f: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEvent> {
+        let mut out = Vec::new();
+        loop {
+            let ev = self.next().await;
+            let hit = f(&ev);
+            out.push(ev);
+            if hit {
+                return out;
+            }
+        }
+    }
+
+    async fn stop(mut self) {
+        self.send(AgentCommand::Shutdown);
+        self.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+        self.task.await.unwrap().unwrap();
+    }
+}
+
+fn text_of(evs: &[AgentEvent]) -> String {
+    evs.iter().filter_map(|e| if let AgentEvent::TextDelta { text } = e { Some(text.as_str()) } else { None }).collect()
+}
+
+fn end_of(evs: &[AgentEvent]) -> TurnEnd {
+    evs.iter().rev().find_map(|e| if let AgentEvent::TurnEnd { reason } = e { Some(*reason) } else { None }).unwrap()
+}
+
+#[tokio::test]
+async fn a_text_reply_is_streamed_recorded_and_priced() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("hello there"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let ready = r.next().await;
+    assert!(matches!(ready, AgentEvent::Ready { ref provider, ref model, .. } if provider == "mock" && model == "m1"));
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let evs: Vec<AgentEvent> = evs
+        .into_iter()
+        .filter(|e| {
+            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+        })
+        .collect();
+    assert!(matches!(evs[0], AgentEvent::History { index: 0, .. }));
+    assert!(matches!(evs[1], AgentEvent::TurnStart { turn: 1 }));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Context { policy, messages_in_view: 1, .. } if policy == "plain")));
+    assert_eq!(text_of(&evs), "hello there");
+    let usage = evs
+        .iter()
+        .find_map(
+            |e| if let AgentEvent::Usage { session, cost_usd, .. } = e { Some((*session, *cost_usd)) } else { None },
+        )
+        .unwrap();
+    assert_eq!(usage.0.total_input(), 3000);
+    assert!((usage.1 - (1000.0 * 1.0 + 100.0 * 2.0 + 2000.0 * 0.1) / 1e6).abs() < 1e-12);
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::AssistantDone { message } if message.text() == "hello there")));
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let req = &client.requests()[0];
+    assert!(req.system.starts_with("You are nexo"));
+    // the four tools given, the read-only sub-agent built from them and the question; the plan's
+    // approval only in plan mode
+    assert_eq!(req.tools.len(), 6);
+    assert!(req.tools.iter().any(|t| t.name == "task"));
+    assert!(req.tools.iter().any(|t| t.name == "ask_user"));
+    assert!(!req.tools.iter().any(|t| t.name == "exit_plan"));
+    assert_eq!(req.messages.len(), 1);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_tool_round_runs_the_tool_and_feeds_the_result_back() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(call("c1", "read", json!({"path": "a.rs"}))), Reply::Events(text("done"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read a".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolCall { id, name, summary, .. } if id == "c1" && name == "read" && summary == "read a.rs")));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolStart { id } if id == "c1")));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolProgress { id, line } if id == "c1" && line == "progress line")));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "c1" && output.content == "read:a.rs" && !output.is_error)));
+    assert_eq!(text_of(&evs), "done");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let last = reqs[1].messages.last().unwrap();
+    assert!(last.is_tool_results());
+    match &last.content[0] {
+        Part::ToolResult { call_id, content, is_error, .. } => {
+            assert_eq!(call_id, "c1");
+            assert_eq!(nexo_core::message::result_text(content), "read:a.rs");
+            assert!(!is_error);
+        }
+        _ => panic!(),
+    }
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn read_only_calls_run_in_parallel_and_others_in_order() {
+    let d = tempfile::tempdir().unwrap();
+    let two = vec![
+        StreamEvent::ToolCallStart { id: "r1".into(), name: "read".into() },
+        StreamEvent::ToolCallEnd { id: "r1".into(), name: "read".into(), args: json!({"path": "a"}) },
+        StreamEvent::ToolCallStart { id: "r2".into(), name: "grep".into() },
+        StreamEvent::ToolCallEnd { id: "r2".into(), name: "grep".into(), args: json!({"path": "b"}) },
+        StreamEvent::Finish(FinishReason::ToolUse),
+        StreamEvent::Done,
+    ];
+    let client = Scripted::new(vec![Reply::Events(two), Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let done: Vec<&str> = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::ToolDone { id, .. } = e { Some(id.as_str()) } else { None })
+        .collect();
+    assert_eq!(done.len(), 2);
+    let reqs = client.requests();
+    let results = &reqs[1].messages.last().unwrap().content;
+    assert_eq!(results.len(), 2);
+    assert!(
+        matches!(&results[0], Part::ToolResult { call_id, .. } if call_id == "r1"),
+        "results keep the calls' order"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_write_asks_and_a_denial_reaches_the_model() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("w1", "write", json!({"path": "x.txt", "content": "new"}))),
+        Reply::Events(text("understood")),
+        Reply::Events(call("w2", "write", json!({"path": "x.txt", "content": "new"}))),
+        Reply::Events(text("written")),
+        Reply::Events(call("w3", "write", json!({"path": "y.txt", "content": "new"}))),
+        Reply::Events(text("again")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "write".into(), attachments: vec![] });
+    let evs = r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    let req = match evs.last().unwrap() {
+        AgentEvent::PermissionAsk { request } => request.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(req.id, "w1");
+    assert_eq!(req.kind, ToolKind::Write);
+    assert!(req.suggested_rules.contains(&"write(x.txt)".to_string()), "{:?}", req.suggested_rules);
+    assert!(matches!(req.detail, nexo_core::tool::ToolDisplay::Diff { ref new, .. } if new == "new"));
+    r.send(AgentCommand::Permission {
+        id: "w1".into(),
+        decision: PermissionDecision::Deny { reason: Some("not now".into()) },
+    });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::PermissionResolved { id, .. } if id == "w1")));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "w1" && output.is_error && output.content.contains("not now"))));
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ToolStart { .. })), "a denied tool never starts");
+    assert_eq!(text_of(&evs), "understood");
+    let reqs = client.requests();
+    match &reqs[1].messages.last().unwrap().content[0] {
+        Part::ToolResult { is_error, content, .. } => {
+            assert!(is_error);
+            assert!(nexo_core::message::result_text(content).contains("Permission denied"));
+        }
+        _ => panic!(),
+    }
+    // allow always: no ask next time
+    r.send(AgentCommand::Submit { text: "write again".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    r.send(AgentCommand::Permission {
+        id: "w2".into(),
+        decision: PermissionDecision::AllowAlways { rule: "write".into(), persist: false },
+    });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "w2" && !output.is_error)));
+    r.send(AgentCommand::Submit { text: "and again".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })), "the rule holds");
+    assert_eq!(text_of(&evs), "again");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn an_interrupt_keeps_the_partial_reply_and_runs_the_queue() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Hang(vec![StreamEvent::TextDelta("part".into())]), Reply::Events(text("second"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    r.send(AgentCommand::Interrupt);
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Interrupted);
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::AssistantDone { message } if message.text() == "part")));
+    let evs = r.turn().await;
+    assert!(matches!(evs[0], AgentEvent::Queued { pending: 0 }));
+    assert!(matches!(evs[2], AgentEvent::History { index: 2, .. }));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::TurnStart { turn: 2 })));
+    assert_eq!(text_of(&evs), "second");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests()[1].messages.len(), 3, "the partial reply stays in the history");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn an_interrupt_cancels_a_running_tool() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 30"}))),
+        Reply::Events(text("after")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::ToolStart { .. })).await;
+    r.send(AgentCommand::Interrupt);
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Interrupted);
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "b1" && output.is_error)));
+    r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "after");
+    let msgs = &client.requests()[1].messages;
+    assert!(msgs[2].is_tool_results(), "the cancelled call still has its result");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_context_length_error_compacts_once_and_retries() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("first answer")),
+        Reply::Events(text("second answer")),
+        Reply::Err(ProviderError::new(ErrorKind::ContextLength, "too long")),
+        Reply::Events(text("SUMMARY OF ALL")),
+        Reply::Events(text("third answer")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    for t in ["one", "two"] {
+        r.send(AgentCommand::Submit { text: t.into(), attachments: vec![] });
+        r.turn().await;
+    }
+    r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(
+        evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("history compacted"))),
+        "{evs:?}"
+    );
+    assert_eq!(text_of(&evs), "third answer");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5);
+    assert!(reqs[3].messages[0].text().contains("Transcript of the session"), "the summary call");
+    assert_eq!(reqs[4].messages.len(), 1, "summary merged into the request in progress");
+    let t = reqs[4].messages[0].text();
+    assert!(t.starts_with("[summary]") && t.contains("SUMMARY OF ALL") && t.ends_with("three"), "{t}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn compact_summarises_past_its_threshold_every_time_and_keeps_the_task_and_files() {
+    let d = tempfile::tempdir().unwrap();
+    let big = |id: &str, name: &str, path: &str| {
+        let mut evs = call(id, name, json!({"path": path}));
+        evs[2] = StreamEvent::Usage(Usage { input: 5000, output: 5, ..Default::default() });
+        evs
+    };
+    let client = Scripted::new(vec![
+        Reply::Events({
+            // a long explanation with the first call: it is summarised away by the second compaction
+            let mut evs = big("c1", "write", "b.rs");
+            evs.insert(0, StreamEvent::TextDelta("x".repeat(20_000)));
+            evs
+        }),
+        Reply::Events(text("SUMMARY ONE")),
+        Reply::Events(big("c2", "read", "a.rs")),
+        Reply::Events(text("SUMMARY TWO")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.context.policy = "compact".into();
+    cfg.context.compact_at = 3000;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "fix the bug in a.rs".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let shown = text_of(&evs);
+    assert!(shown.ends_with("xdone") && !shown.contains("SUMMARY"), "summaries are not shown as replies");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "two summaries inside one turn");
+    let summary = |i: usize| reqs[i].system == nexo_agent::compact::SUMMARY_SYSTEM && reqs[i].tools.is_empty();
+    assert!(!summary(0) && summary(1) && !summary(2) && summary(3) && !summary(4));
+    // after each summary: the summary, then the last call with its result, nothing orphaned
+    for i in [2, 4] {
+        let m = &reqs[i].messages;
+        assert_eq!(m.len(), 3, "{m:?}");
+        let head = m[0].text();
+        assert!(head.contains("[request] fix the bug in a.rs"), "{head}");
+        let id = if i == 2 { "c1" } else { "c2" };
+        assert!(m[1].content.iter().any(|p| matches!(p, Part::ToolCall { id: c, .. } if c == id)), "{m:?}");
+        assert!(m[2].content.iter().any(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id == id)));
+    }
+    let head = reqs[4].messages[0].text();
+    assert!(head.contains("SUMMARY TWO") && head.contains("[files]") && head.contains("b.rs"), "{head}");
+    let size = |i: usize| serde_json::to_string(&reqs[i].messages).unwrap().len();
+    assert!(size(2) > 20_000 && size(4) < 2_000, "{} then {}", size(2), size(4));
+    // the summaries are billed like any request: 2 calls, 2 summaries, 1 answer
+    let session = evs
+        .iter()
+        .rev()
+        .find_map(|e| if let AgentEvent::Usage { session, .. } = e { Some(*session) } else { None })
+        .unwrap();
+    assert_eq!(session.total_input(), 2 * 5000 + 3 * 3000);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_session_is_resumed_with_its_history_and_tool_outputs() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(call("c1", "read", json!({"path": "f"}))), Reply::Events(text("read it"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "please read f".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let metas = nexo_agent::session::list();
+    let meta = metas.iter().find(|m| m.id == id).unwrap();
+    assert_eq!(meta.title, "please read f");
+    assert_eq!(meta.messages, 4);
+    let client = Scripted::new(vec![Reply::Events(text("again"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), Some(id.clone()), d.path()).await;
+    assert!(matches!(r.next().await, AgentEvent::Ready { session_id, .. } if session_id == id));
+    let evs = r.until(|e| matches!(e, AgentEvent::Context { .. })).await;
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, AgentEvent::Context { messages_total: 4, history_tokens, .. } if *history_tokens > 0)),
+        "a resumed session shows its context before the first call"
+    );
+    let hist: Vec<usize> = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::History { index, .. } = e { Some(*index) } else { None })
+        .collect();
+    assert_eq!(hist, vec![0, 1, 2, 3]);
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::ToolDone { id, output, elapsed_ms: 0 } if id == "c1" && output.content == "read:f")
+    ));
+    r.send(AgentCommand::Submit { text: "more".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let evs: Vec<AgentEvent> = evs
+        .into_iter()
+        .filter(|e| {
+            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+        })
+        .collect();
+    assert!(matches!(evs[0], AgentEvent::History { index: 4, .. }));
+    assert_eq!(client.requests()[0].messages.len(), 5);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn max_turns_stops_a_loop_of_calls() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new((0..5).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a"})))).collect());
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_turns = 2;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "loop".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::MaxTurns);
+    assert_eq!(client.requests().len(), 2);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn loop_guard_stops_rounds_that_bring_nothing_new() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a"), "x").unwrap();
+    let client =
+        Scripted::new((0..8).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a"})))).collect());
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_turns = 8;
+    cfg.agent.guard_answer = false;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "loop".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::MaxTurns);
+    assert!(client.requests().len() < 8, "stopped before max_turns: {}", client.requests().len());
+    assert!(
+        evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("agent.loop_guard"))),
+        "the person is told why"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn stale_guard_stops_rounds_that_bring_no_line_not_seen_before() {
+    // the loop guard off: only the rounds that bring nothing new stop the request
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new((0..8).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a"})))).collect());
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_turns = 8;
+    cfg.agent.loop_guard = 0;
+    cfg.agent.stale_guard = 3;
+    cfg.agent.guard_answer = false;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::MaxTurns);
+    assert_eq!(client.requests().len(), 4, "one round with news, three without");
+    assert!(
+        evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("agent.stale_guard"))),
+        "the person is told why"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_guard_stop_asks_for_the_answer_without_tools() {
+    let d = tempfile::tempdir().unwrap();
+    let mut replies: Vec<Reply> =
+        (0..4).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a"})))).collect();
+    replies.push(Reply::Events(text("a is x")));
+    let client = Scripted::new(replies);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_turns = 8;
+    cfg.agent.loop_guard = 0;
+    cfg.agent.stale_guard = 3;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "what is in a".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done, "the request ends on an answer");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "one round with news, three without, then the answer");
+    assert!(reqs[..4].iter().all(|q| !q.no_tool_call));
+    assert!(
+        !reqs[4].no_tool_call && reqs[4].tools == reqs[3].tools,
+        "the answer is asked in words: the tools and the tool choice stay as they were, or the prompt cache misses"
+    );
+    let told =
+        |q: &ModelRequest| serde_json::to_string(q.messages.last().unwrap()).unwrap().contains("Tool calls are off");
+    assert!(told(&reqs[4]) && !reqs[..4].iter().any(told), "the model is told, next to the last outputs, to answer");
+    let last = serde_json::to_string(reqs[4].messages.last().unwrap()).unwrap();
+    assert!(
+        last.contains("this request") && !last.contains("from here on"),
+        "the stop holds for this request only, or the model keeps off the tools for the rest of the session"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_call_after_a_guard_stop_does_not_run() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new((0..8).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a"})))).collect());
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_turns = 8;
+    cfg.agent.loop_guard = 0;
+    cfg.agent.stale_guard = 3;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "loop".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::MaxTurns);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 6, "four rounds, the call asked in words to answer, the call the protocol forbids tools");
+    assert!(!reqs[4].no_tool_call && reqs[5].no_tool_call);
+    let ran = |q: &ModelRequest| serde_json::to_string(q.messages.last().unwrap()).unwrap().contains("did not run");
+    assert!(ran(&reqs[5]), "the call made after the stop did not run");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_call_after_a_guard_stop_gets_one_more_call_that_may_only_answer() {
+    let d = tempfile::tempdir().unwrap();
+    let mut replies: Vec<Reply> =
+        (0..5).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a"})))).collect();
+    replies.push(Reply::Events(text("a is x")));
+    let client = Scripted::new(replies);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_turns = 8;
+    cfg.agent.loop_guard = 0;
+    cfg.agent.stale_guard = 3;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "what is in a".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done, "the request still ends on an answer");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 6);
+    assert!(reqs[..5].iter().all(|q| !q.no_tool_call) && reqs[5].no_tool_call);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn attachments_shell_model_and_clear() {
+    if nexo_core::shell::shell().kind == "powershell" {
+        eprintln!("the test writes POSIX shell; this system runs PowerShell: skipped");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("note.md"), "remember this").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit {
+        text: "see".into(),
+        attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("note.md") }],
+    });
+    let evs = r.turn().await;
+    let evs: Vec<AgentEvent> = evs
+        .into_iter()
+        .filter(|e| {
+            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+        })
+        .collect();
+    match &evs[0] {
+        AgentEvent::History { message, .. } => {
+            let t = message.text();
+            assert!(
+                t.starts_with("see\n\n@note.md (attached in full, as it is now):\n```md\nremember this\n```"),
+                "{t}"
+            );
+        }
+        _ => panic!(),
+    }
+    r.send(AgentCommand::Shell { command: "echo hi; echo err >&2; exit 3".into() });
+    let evs = r.until(|e| matches!(e, AgentEvent::ShellOutput { .. })).await;
+    assert!(
+        matches!(evs.last().unwrap(), AgentEvent::ShellOutput { output, exit_code: Some(3), .. } if output == "hi\nerr\n")
+    );
+    r.send(AgentCommand::SetModel { provider: None, model: "m2".into() });
+    assert!(matches!(r.next().await, AgentEvent::ModelChanged { model, .. } if model == "m2"));
+    assert!(matches!(r.next().await, AgentEvent::ModelLimits { model, .. } if model == "m2"));
+    assert!(matches!(r.next().await, AgentEvent::Effort { model, current: None, .. } if model == "m2"));
+    r.send(AgentCommand::SetModel { provider: Some("nope".into()), model: "m2".into() });
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text.contains("unknown provider")));
+    r.send(AgentCommand::SetPermissionMode(PermissionMode::Auto));
+    assert!(matches!(r.next().await, AgentEvent::PermissionModeChanged { mode: PermissionMode::Auto }));
+    r.send(AgentCommand::Clear);
+    let ev = r.next().await;
+    assert!(matches!(&ev, AgentEvent::Ready { model, .. } if model == "m2"), "{ev:?}");
+    assert!(matches!(r.next().await, AgentEvent::HistoryCleared));
+    assert!(matches!(r.next().await, AgentEvent::SessionChanged { .. }));
+    r.send(AgentCommand::Submit { text: "fresh".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let evs: Vec<AgentEvent> = evs
+        .into_iter()
+        .filter(|e| {
+            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+        })
+        .collect();
+    assert!(matches!(evs[0], AgentEvent::History { index: 0, .. }), "a cleared history starts over");
+    r.stop().await;
+}
+
+fn history_indexes(evs: &[AgentEvent]) -> Vec<usize> {
+    evs.iter().filter_map(|e| if let AgentEvent::History { index, .. } = e { Some(*index) } else { None }).collect()
+}
+
+#[tokio::test]
+async fn resume_in_place_replaces_the_conversation_and_its_file() {
+    let d = tempfile::tempdir().unwrap();
+    // session A: one request with a call
+    let client =
+        Scripted::new(vec![Reply::Events(call("c1", "read", json!({"path": "f"}))), Reply::Events(text("read it"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    let a = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "please read f".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    // session B, fresh, then resume A in place
+    let client = Scripted::new(vec![Reply::Events(text("b")), Reply::Events(text("c"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let b = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    assert_ne!(a, b);
+    r.send(AgentCommand::Submit { text: "in b".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Resume { id: "nope".into() });
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text.contains("cannot resume session nope")));
+    r.send(AgentCommand::Resume { id: a.clone() });
+    let evs = r.until(|e| matches!(e, AgentEvent::Context { .. })).await;
+    assert!(matches!(evs.last(), Some(AgentEvent::Context { messages_total: 4, policy, .. }) if policy == "plain"));
+    assert!(matches!(evs[0], AgentEvent::HistoryCleared));
+    assert!(
+        matches!(&evs[1], AgentEvent::SessionChanged { session_id, title } if *session_id == a && title == "please read f")
+    );
+    assert_eq!(history_indexes(&evs), vec![0, 1, 2, 3]);
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "c1" && output.content == "read:f")));
+    // the next request goes to A: index 4, and the model sees the five messages
+    r.send(AgentCommand::Submit { text: "more".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let evs: Vec<AgentEvent> = evs
+        .into_iter()
+        .filter(|e| {
+            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+        })
+        .collect();
+    assert!(matches!(evs[0], AgentEvent::History { index: 4, .. }));
+    assert_eq!(client.requests()[1].messages.len(), 5);
+    r.stop().await;
+    let metas = nexo_agent::session::list();
+    assert_eq!(metas.iter().find(|m| m.id == a).unwrap().messages, 6);
+    assert_eq!(metas.iter().find(|m| m.id == b).unwrap().messages, 2, "B kept what it had");
+}
+
+#[tokio::test]
+async fn resume_and_rewind_wait_for_the_turn() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Hang(vec![StreamEvent::TextDelta("half".into())])]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Resume { id });
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text.contains("before resuming")));
+    r.send(AgentCommand::Rewind { index: 0 });
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text.contains("before rewinding")));
+    r.send(AgentCommand::Interrupt);
+    r.turn().await;
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn rewind_cuts_before_the_calls_and_rewrites_the_file() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "read", json!({"path": "f"}))),
+        Reply::Events(text("read it")),
+        Reply::Events(text("after")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "please read f".into(), attachments: vec![] });
+    r.turn().await; // history: user, assistant+call, results, assistant text
+                    // index 2 lands between the call and its result: the cut moves before the call
+    r.send(AgentCommand::Rewind { index: 2 });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(matches!(evs[0], AgentEvent::HistoryCleared));
+    assert!(matches!(&evs[1], AgentEvent::SessionChanged { session_id, .. } if *session_id == id));
+    assert_eq!(history_indexes(&evs), vec![0]);
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { .. })));
+    assert!(
+        matches!(evs.last().unwrap(), AgentEvent::Notice { text, .. } if text.contains("3 messages dropped, 1 kept"))
+    );
+    let on_disk = nexo_agent::Session::open(&id).unwrap();
+    assert_eq!(on_disk.messages().len(), 1);
+    assert!(on_disk.outputs().is_empty());
+    assert_eq!(on_disk.meta().title, "please read f");
+    assert!(on_disk.usage().input > 0, "spent tokens stay");
+    // a second handle on the file would stop the next rewrite on Windows
+    drop(on_disk);
+    // the next request continues from the kept message
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let evs: Vec<AgentEvent> = evs
+        .into_iter()
+        .filter(|e| {
+            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+        })
+        .collect();
+    assert!(matches!(evs[0], AgentEvent::History { index: 1, .. }));
+    assert_eq!(client.requests()[2].messages.len(), 2);
+    // an index past the end keeps everything; 0 drops everything
+    r.send(AgentCommand::Rewind { index: 100 });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert_eq!(history_indexes(&evs), vec![0, 1, 2]);
+    r.send(AgentCommand::Rewind { index: 0 });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(history_indexes(&evs).is_empty());
+    assert_eq!(nexo_agent::Session::open(&id).unwrap().messages().len(), 0);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn export_writes_the_conversation_as_markdown() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(call("c1", "read", json!({"path": "f"}))), Reply::Events(text("read it"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "please read f".into(), attachments: vec![] });
+    r.turn().await;
+    let out = d.path().join("out").join("conv.md");
+    r.send(AgentCommand::Export { path: Some(out.clone()) });
+    let shown = out.display().to_string();
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text == format!("exported to {shown}")));
+    let md = std::fs::read_to_string(&out).unwrap();
+    assert!(md.starts_with("# please read f\n"));
+    assert!(md.contains("## You\n\nplease read f"));
+    assert!(md.contains("**read** read f\n\n```\nread:f\n```"));
+    assert!(md.contains("## nexo\n\nread it"));
+    assert!(md.contains("cost: $"));
+    // no path: next to the session file; a relative path: in the working directory
+    r.send(AgentCommand::Export { path: None });
+    let default = data_dir().join("sessions").join(format!("{id}.md"));
+    assert!(
+        matches!(r.next().await, AgentEvent::Notice { text, .. } if text.ends_with(&default.display().to_string()))
+    );
+    assert!(default.is_file());
+    r.send(AgentCommand::Export { path: Some(PathBuf::from("rel.md")) });
+    r.next().await;
+    assert!(d.path().join("rel.md").is_file());
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn queued_requests_are_counted_as_events() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Hang(vec![StreamEvent::TextDelta("one".into())]),
+        Reply::Events(text("two")),
+        Reply::Events(text("three")),
+    ]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "1".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Submit { text: "2".into(), attachments: vec![] });
+    assert!(matches!(r.next().await, AgentEvent::Queued { pending: 1 }));
+    r.send(AgentCommand::Submit { text: "3".into(), attachments: vec![] });
+    assert!(matches!(r.next().await, AgentEvent::Queued { pending: 2 }));
+    r.send(AgentCommand::Interrupt);
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Interrupted);
+    // the first queued request starts: one left waiting
+    let evs = r.turn().await;
+    assert!(matches!(evs[0], AgentEvent::Queued { pending: 1 }));
+    assert!(matches!(&evs[1], AgentEvent::Notice { text, .. } if text.contains("queued request")));
+    assert_eq!(text_of(&evs), "two");
+    let evs = r.turn().await;
+    assert!(matches!(evs[0], AgentEvent::Queued { pending: 0 }));
+    assert_eq!(text_of(&evs), "three");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn clear_tells_the_interface_to_start_over() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    let first = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Clear);
+    let second = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    assert_ne!(first, second);
+    assert!(matches!(r.next().await, AgentEvent::HistoryCleared));
+    assert!(
+        matches!(r.next().await, AgentEvent::SessionChanged { session_id, title } if session_id == second && title.is_empty())
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn limits_are_reported_and_prices_can_be_set() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("hi"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    let evs = r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    match evs.last().unwrap() {
+        AgentEvent::ModelLimits { pricing, source, context_window, .. } => {
+            assert_eq!(pricing.unwrap().input, 1.0);
+            assert_eq!(source, "config");
+            assert_eq!(*context_window, None);
+        }
+        _ => unreachable!(),
+    }
+    let p = Pricing { input: 5.0, output: 10.0, cache_read: 0.5, cache_write: 0.0 };
+    r.send(AgentCommand::SetPricing { pricing: p });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::ModelLimits { source, pricing: Some(p), .. } if source == "config" && p.input == 5.0)
+    ));
+    assert_eq!(user_config().providers["mock"].pricing_for("m1").unwrap().output, 10.0);
+    r.send(AgentCommand::Submit { text: "x".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let cost = evs
+        .iter()
+        .find_map(|e| if let AgentEvent::Usage { cost_usd, .. } = e { Some(*cost_usd) } else { None })
+        .unwrap();
+    // 1000 in × 5 + 100 out × 10 + 2000 cached × 0.5, per million
+    assert!((cost - 0.007).abs() < 1e-9, "{cost}");
+    r.send(AgentCommand::ShowModel);
+    let evs = r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    assert!(matches!(evs.last(), Some(AgentEvent::ModelLimits { pricing: Some(p), .. }) if p.output == 10.0));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_max_output_error_caps_the_reply_and_retries_once() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Err(ProviderError::new(
+            ErrorKind::BadRequest,
+            "max_tokens: 65536 > 8192, which is the maximum allowed number of output tokens for m1",
+        )),
+        Reply::Events(text("fits now")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "fits now");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ModelLimits { max_output: Some(8192), source, .. } if source == "error")));
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!((reqs[0].max_tokens, reqs[1].max_tokens), (16_384, 8_192));
+    assert_eq!(user_config().providers["mock"].max_output["m1"], 8_192);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_context_error_with_a_number_records_the_window() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("first")),
+        Reply::Err(ProviderError::new(
+            ErrorKind::ContextLength,
+            "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens.",
+        )),
+        Reply::Events(text("SUMMARY")),
+        Reply::Events(text("after")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "after");
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::ModelLimits { context_window: Some(131_072), source, .. } if source == "error")
+    ));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("context window of m1"))));
+    assert_eq!(user_config().providers["mock"].context_window["m1"], 131_072);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn an_unknown_model_is_reported_with_the_closest_names() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Err(
+        ProviderError::new(ErrorKind::BadRequest, "The model `m3` does not exist or you do not have access to it.")
+            .with_status(404),
+    )]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::SetModel { provider: None, model: "m3".into() });
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    assert!(
+        evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("does not know the model `m3`") && text.contains("m1"))),
+        "{evs:?}"
+    );
+    assert_eq!(client.requests().len(), 1, "no retry");
+    r.stop().await;
+}
+
+// ------------------------------------------------------------ goals and todo
+
+fn goal_of(evs: &[AgentEvent]) -> Option<(Option<String>, u32, u32)> {
+    evs.iter().rev().find_map(|e| match e {
+        AgentEvent::Goal { text, round, max } => Some((text.clone(), *round, *max)),
+        _ => None,
+    })
+}
+
+fn user_texts(evs: &[AgentEvent]) -> Vec<String> {
+    evs.iter()
+        .filter_map(|e| match e {
+            AgentEvent::History { message, .. } if message.role == nexo_core::message::Role::User => {
+                Some(message.text())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+const CONTINUE: &str = "The goal is not marked done yet. Keep working on it. When it is fully met, end your reply \
+                        with the single line GOAL DONE; if nothing is left to do, say so and end with that line.";
+
+#[tokio::test]
+async fn a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("working on it")),
+        // the first continuation does real work: a call, then its reply
+        Reply::Events(call("c1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(text("more work")),
+        Reply::Events(call("c2", "read", json!({"path": "b.rs"}))),
+        Reply::Events(text("all set\nGOAL DONE. Thanks!")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("  make the tests pass ".into()) });
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&evs), Some((Some("make the tests pass".into()), 0, 5)));
+    // /goal starts the work by itself: the goal is the first request
+    let t1 = r.turn().await;
+    assert_eq!(user_texts(&t1), vec!["Goal: make the tests pass"]);
+    assert_eq!(text_of(&t1), "working on it");
+    // the agent continues by itself, twice, then the model declares the goal met (with a closing sentence)
+    let t2 = r.turn().await;
+    assert!(user_texts(&t2).contains(&CONTINUE.to_string()), "{:?}", user_texts(&t2));
+    assert_eq!(goal_of(&t2).map(|g| g.1), Some(1));
+    let t3 = r.turn().await;
+    assert_eq!(goal_of(&t3).map(|g| g.1), Some(2));
+    assert!(text_of(&t3).contains("GOAL DONE"));
+    let after = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&after), Some((Some("make the tests pass".into()), 0, 5)));
+    assert!(after.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("goal met"))));
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5);
+    assert!(reqs.iter().all(|q| q.system.contains("Goal: make the tests pass\n")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_goal_set_while_a_turn_runs_only_pins_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("first")), Reply::Events(text("GOAL DONE"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.send(AgentCommand::SetGoal { text: Some("finish it".into()) });
+    let t1 = r.turn().await;
+    assert_eq!(user_texts(&t1), vec!["go"], "no second request while the turn runs");
+    assert!(t1
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("goal applies from now"))));
+    // the goal is checked when that turn ends: the first continuation runs
+    let t2 = r.turn().await;
+    assert!(user_texts(&t2).contains(&CONTINUE.to_string()));
+    assert_eq!(client.requests().len(), 2);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_continuation_without_tool_calls_ends_the_goal_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("working")), Reply::Events(text("nothing more to do"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()) });
+    r.turn().await;
+    // the first continuation always runs; it made no call, so the loop stops there
+    let t2 = r.turn().await;
+    assert_eq!(goal_of(&t2).map(|g| g.1), Some(1));
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&evs), Some((Some("tidy up".into()), 0, 5)), "rounds reset");
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("goal: the model reports nothing more"))
+    ));
+    r.send(AgentCommand::Shutdown);
+    let rest = r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    assert!(!rest.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })));
+    assert_eq!(client.requests().len(), 2);
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn the_goal_stops_after_its_rounds_and_when_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    // every round calls a tool, so the loop only stops at the cap
+    let mut replies = vec![Reply::Events(text("still at it"))];
+    for i in 0..5 {
+        replies.push(Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a.rs"}))));
+        replies.push(Reply::Events(text("still at it")));
+    }
+    replies.push(Reply::Events(text("again")));
+    let client = Scripted::new(replies);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("never done".into()) });
+    r.turn().await;
+    for round in 1..=5u32 {
+        let t = r.turn().await;
+        assert_eq!(goal_of(&t).map(|g| g.1), Some(round), "round {round}");
+    }
+    let warned = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("still open"))).await;
+    assert!(!warned.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })));
+    let reset = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&reset).map(|g| g.1), Some(0), "rounds reset after the cap");
+    assert_eq!(client.requests().len(), 11, "the first turn and five continuations of two requests each");
+    // clearing the goal: a turn ends and nothing follows
+    r.send(AgentCommand::SetGoal { text: None });
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&evs), Some((None, 0, 5)));
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Shutdown);
+    let rest = r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    assert!(!rest.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. } | AgentEvent::Goal { .. })));
+    assert_eq!(client.requests().len(), 12);
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_resumed_session_brings_its_goal_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("GOAL DONE"))]);
+    let mut r = start(client, config(PermissionMode::Auto), None, dir.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    r.send(AgentCommand::SetGoal { text: Some("keep it green".into()) });
+    r.turn().await;
+    r.stop().await;
+
+    let client = Scripted::new(vec![]);
+    let mut r = start(client, config(PermissionMode::Auto), Some(id), dir.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&evs), Some((Some("keep it green".into()), 0, 5)));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_todo_call_shows_the_list_and_the_replay_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let items = json!({"items": [{"text": "read", "status": "done"}, {"text": "fix", "status": "in_progress"}, {"text": "test"}]});
+    let client = Scripted::new(vec![Reply::Events(call("c1", "todo", items)), Reply::Events(text("on it"))]);
+    let todo_tools = tools().with(Arc::new(nexo_tools::todo::Todo::with_dir(dir.path().to_path_buf())));
+    // the todo tool never asks, even in ask mode
+    let mut r = start_with(client, config(PermissionMode::Ask), None, dir.path(), todo_tools).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    r.send(AgentCommand::Submit { text: "plan".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })));
+    let done = evs.iter().find_map(|e| match e {
+        AgentEvent::ToolDone { output, .. } => Some(output.clone()),
+        _ => None,
+    });
+    let out = done.expect("the todo call ran");
+    assert_eq!(out.content, "[x] read\n[>] fix\n[ ] test\n1/3 done");
+    assert!(matches!(&out.display, nexo_core::ToolDisplay::Todo { items } if items.len() == 3));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolCall { summary, .. } if summary == "todo: 1/3 done")));
+    r.stop().await;
+
+    let client = Scripted::new(vec![]);
+    let mut r = start(client, config(PermissionMode::Ask), Some(id), dir.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { output, .. } if matches!(output.display, nexo_core::ToolDisplay::Todo { .. }))));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn the_model_setup_checks_saves_switches_and_sets_the_effort() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        // the first try asks for a reasoning level; this server does not take one
+        Reply::Err(ProviderError::new(ErrorKind::BadRequest, "Unsupported parameter: 'reasoning_effort'")),
+        Reply::Events(call("c1", "ping", json!({}))),
+        Reply::Events(text("on the new model")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    let probe = nexo_core::ServerProbe {
+        kind: "openai-compatible".into(),
+        protocol: "openai-chat".into(),
+        base_url: "https://gw.example/v1".into(),
+        models: vec![nexo_core::ModelInfo {
+            id: "think-1".into(),
+            context_window: Some(64_000),
+            reasoning: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let cfg = ProviderConfig::new("openai-chat", "https://gw.example/v1", Some("GW_KEY"));
+    r.send(AgentCommand::CheckModel { name: "gw".into(), probe, cfg: cfg.clone(), model: "think-1".into(), key: None });
+    let evs = r.until(|e| matches!(e, AgentEvent::ModelChecked { .. })).await;
+    let AgentEvent::ModelChecked { check, .. } = evs.last().unwrap() else { unreachable!() };
+    assert!(check.error.is_none(), "{check:?}");
+    assert!(check.called_tool, "the model called the test tool");
+    assert!(check.info.efforts.is_empty(), "the refused level leaves no levels: {check:?}");
+    assert!(check.sources.iter().any(|s| s.contains("refused the reasoning level")), "{:?}", check.sources);
+    let reqs = client.requests();
+    assert!(reqs[0].reasoning.is_some() && reqs[1].reasoning.is_none());
+    assert_eq!(reqs[1].tools[0].name, "ping");
+
+    // save it with what the setup found, plus levels to choose from
+    let mut save = cfg;
+    save.context_window.insert("think-1".into(), 64_000);
+    save.efforts.insert("think-1".into(), vec!["low".into(), "high".into()]);
+    r.send(AgentCommand::SaveModel { name: "gw".into(), cfg: save, model: "think-1".into(), key: None });
+    let evs = r.until(|e| matches!(e, AgentEvent::Effort { .. })).await;
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ModelChanged { provider, model } if provider == "gw" && model == "think-1")));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ModelLimits { context_window: Some(64_000), .. })));
+    let saved = user_config();
+    assert_eq!(saved.provider.as_deref(), Some("gw"));
+    assert_eq!(saved.providers["gw"].api_key_env.as_deref(), Some("GW_KEY"));
+
+    r.send(AgentCommand::SetEffort { effort: Some("medium".into()) });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("low, high"))));
+    r.send(AgentCommand::SetEffort { effort: Some("high".into()) });
+    let evs = r.until(|e| matches!(e, AgentEvent::Effort { .. })).await;
+    assert!(matches!(evs.last(), Some(AgentEvent::Effort { current: Some(c), .. }) if c == "high"));
+    assert_eq!(user_config().providers["gw"].effort["think-1"], "high");
+    r.send(AgentCommand::Submit { text: "x".into(), attachments: vec![] });
+    r.turn().await;
+    let last = client.requests().pop().unwrap();
+    assert_eq!(last.model, "think-1");
+    assert!(matches!(last.reasoning, Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::High))));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_rewind_puts_back_the_files_the_agent_wrote() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.txt"), "old").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "write", json!({"path": "a.txt"}))),
+        Reply::Events(call("c2", "write", json!({"path": "new.txt"}))),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.permissions.allow.push("write".into());
+    let mut r = start(client, cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "change them".into(), attachments: vec![] });
+    r.turn().await;
+    // what the (fake) tools would have done
+    std::fs::write(d.path().join("a.txt"), "changed").unwrap();
+    std::fs::write(d.path().join("new.txt"), "created").unwrap();
+    r.send(AgentCommand::Rewind { index: 0 });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("rewound"))).await;
+    let AgentEvent::Notice { text, .. } = evs.last().unwrap() else { unreachable!() };
+    assert!(text.contains("2 files put back"), "{text}");
+    assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "old");
+    assert!(!d.path().join("new.txt").exists(), "a file the agent created is removed");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn an_attached_image_goes_as_an_image_part() {
+    let d = tempfile::tempdir().unwrap();
+    // the eight bytes every PNG starts with are enough for the attachment
+    std::fs::write(d.path().join("shot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("a red square"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit {
+        text: "what is in @shot.png".into(),
+        attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("shot.png") }],
+    });
+    r.turn().await;
+    let req = client.requests().pop().unwrap();
+    let user = req.messages.iter().find(|m| m.role == nexo_core::message::Role::User).unwrap();
+    assert!(user.text().contains("@shot.png: attached as an image"));
+    assert!(user.content.iter().any(|p| matches!(
+        p,
+        Part::Image { source: nexo_core::message::ImageSource::Base64 { media_type, data } }
+            if media_type == "image/png" && data == "iVBORw0KGgo="
+    )));
+    r.stop().await;
+}
+
+#[cfg(unix)]
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pre_tool_hook_blocks_a_call_and_the_model_reads_why() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(call("c1", "write", json!({"path": "x"}))), Reply::Events(text("ok"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.hooks.push(nexo_core::config::HookConfig {
+        event: "pre_tool".into(),
+        matcher: Some("write|edit".into()),
+        command: "echo 'writes are frozen today' >&2; exit 2".into(),
+    });
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "write it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { output, .. } if output.is_error && output.content.contains("writes are frozen today"))));
+    let second = &client.requests()[1];
+    let result = second.messages.iter().flat_map(|m| m.content.iter()).find_map(|p| match p {
+        Part::ToolResult { content, .. } => content.first().cloned(),
+        _ => None,
+    });
+    assert!(matches!(result, Some(Part::Text { text }) if text.contains("Blocked by a hook: writes are frozen today")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_task_runs_a_read_only_sub_agent_whose_report_is_the_result() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        // the main model hands a question over
+        Reply::Events(call(
+            "t1",
+            "task",
+            json!({"description": "find the parser", "prompt": "where is parsing done?"}),
+        )),
+        // the sub-agent reads one file, tries to leave the project and to write, then reports
+        Reply::Events(vec![
+            StreamEvent::ToolCallStart { id: "s1".into(), name: "read".into() },
+            StreamEvent::ToolCallEnd { id: "s1".into(), name: "read".into(), args: json!({"path": "src/parse.rs"}) },
+            StreamEvent::ToolCallStart { id: "s2".into(), name: "read".into() },
+            StreamEvent::ToolCallEnd {
+                id: "s2".into(),
+                name: "read".into(),
+                args: json!({"path": "../../etc/passwd"}),
+            },
+            StreamEvent::ToolCallStart { id: "s3".into(), name: "write".into() },
+            StreamEvent::ToolCallEnd { id: "s3".into(), name: "write".into(), args: json!({"path": "x"}) },
+            StreamEvent::Finish(FinishReason::ToolUse),
+            StreamEvent::Done,
+        ]),
+        Reply::Events(text("parsing is in src/parse.rs:12")),
+        Reply::Events(text("it is in src/parse.rs")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "where do we parse?".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let done = evs.iter().find_map(|e| match e {
+        AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.clone()),
+        _ => None,
+    });
+    assert_eq!(done.map(|o| o.content).as_deref(), Some("parsing is in src/parse.rs:12"));
+    let reqs = client.requests();
+    // the sub-agent's own call has only the read-only tools and its own system prompt
+    assert!(reqs[1].system.starts_with("You are a sub-agent"));
+    let names: Vec<&str> = reqs[1].tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        names.contains(&"read") && names.contains(&"grep") && !names.contains(&"write") && !names.contains(&"task"),
+        "{names:?}"
+    );
+    let back = reqs[2].messages.last().unwrap();
+    let said: Vec<String> = back
+        .content
+        .iter()
+        .filter_map(|p| match p {
+            Part::ToolResult { content, .. } => {
+                content.first().map(|c| if let Part::Text { text } = c { text.clone() } else { String::new() })
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(said[1].contains("outside the project") && said[2].contains("only read"), "{said:?}");
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolProgress { line, .. } if line.contains("read"))));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_sub_agent_starts_with_a_briefing_of_what_the_session_read() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("src")).unwrap();
+    let body: String = (1..=40)
+        .map(|i| {
+            if i == 21 {
+                "fn parse_line(s: &str) -> Token { todo!() }\n".to_string()
+            } else {
+                format!("// filler {i}\n")
+            }
+        })
+        .collect();
+    std::fs::write(d.path().join("src/parser.rs"), body).unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("r1", "read", json!({"path": "src/parser.rs"}))),
+        Reply::Events(call(
+            "t1",
+            "task",
+            json!({"description": "fix the parser", "prompt": "make parse_line in src/parser.rs return a Token"}),
+        )),
+        Reply::Events(text("parse_line is at src/parser.rs:21")),
+        Reply::Events(text("done")),
+    ]);
+    let cfg = config(PermissionMode::Ask);
+    let set = tools().with(Arc::new(nexo_tools::read::Read));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look at the parser".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let reqs = client.requests();
+    // the sub-agent's first request: the briefing, then the task
+    let first = &reqs[2].messages[0].content;
+    let texts: Vec<&str> =
+        first.iter().filter_map(|p| if let Part::Text { text } = p { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(texts[0].starts_with("<briefing") && texts[0].contains("fn parse_line"), "{}", texts[0]);
+    assert!(texts[0].contains("src/parser.rs") && !texts[0].contains("filler 1\n"), "{}", texts[0]);
+    assert!(texts[1].contains("make parse_line"));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolProgress { line, .. } if line.starts_with("briefed:"))));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn the_spend_limit_stops_before_the_call_that_would_pass_it() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("first")), Reply::Events(text("third"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    // one reply of the script costs $0.0014 at m1's prices
+    cfg.agent.max_cost = Some(0.001);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Budget { session_limit: Some(l), session_cost, .. } if *l == 0.001 && *session_cost > 0.001)));
+    r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("spend limit reached") && text.contains("this session"))));
+    assert_eq!(client.requests().len(), 1, "the second request never reached the model");
+    // a higher limit lets the work go on
+    r.send(AgentCommand::SetBudget { limit: Some(1.0) });
+    r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests().len(), 2);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_message_sent_during_a_turn_joins_it_before_the_next_call() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(call("w1", "write", json!({"path": "x.txt"}))), Reply::Events(text("done"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "write it".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    r.send(AgentCommand::Submit { text: "and say hi".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    r.send(AgentCommand::Permission { id: "w1".into(), decision: PermissionDecision::Allow });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Queued { pending: 0 })));
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Notice { level: Level::Info, .. })), "no notice of it");
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { message, .. } if message.text() == "and say hi")));
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2, "no turn of its own");
+    let last = reqs[1].messages.last().unwrap();
+    assert_eq!(last.text(), "and say hi");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn reading_an_unchanged_file_again_sends_a_note() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.txt"), "one\n").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("r1", "read", json!({"path": "a.txt"}))),
+        Reply::Events(call("r2", "read", json!({"path": "a.txt"}))),
+        Reply::Events(text("ok")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let results: Vec<String> = client.requests()[2]
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|p| match p {
+            Part::ToolResult { content, .. } => Some(nexo_core::message::result_text(content)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results[0], "read:a.txt");
+    assert!(results[1].contains("not repeated"), "{results:?}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_general_sub_agent_asks_for_its_writes_and_its_spending_is_counted() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "write x.txt"}))),
+        Reply::Events(call("s1", "write", json!({"path": "x.txt"}))),
+        Reply::Events(text("wrote x.txt")),
+        Reply::Events(text("all done")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
+    let evs = r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    let req = match evs.last().unwrap() {
+        AgentEvent::PermissionAsk { request } => request.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!((req.id.as_str(), req.tool.as_str()), ("t1.s1", "write"));
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "t1" && output.content == "wrote x.txt")
+    ));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolProgress { id, line } if id == "t1" && line == "→ write x.txt")));
+    assert_eq!(text_of(&evs), "all done");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 4);
+    assert!(reqs[1].system.contains("sub-agent") && reqs[1].tools.iter().any(|t| t.name == "write"));
+    assert!(!reqs[1].tools.iter().any(|t| t.name == "task"), "a sub-agent does not start its own");
+    // both of the sub-agent's calls are on the bill: 10+1000 of theirs, 10+1000 of the main agent's
+    let session =
+        evs.iter().rev().find_map(|e| if let AgentEvent::Usage { session, .. } = e { Some(*session) } else { None });
+    assert_eq!(session.unwrap().input, 10 + 1000 + 10 + 1000);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_background_command_lets_the_turn_end_and_its_end_reaches_the_model() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "echo hi", "background": true}))),
+        Reply::Events(text("started")),
+        Reply::Events(text("saw it")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run it in the background".into(), attachments: vec![] });
+    let mut evs = Vec::new();
+    loop {
+        let ev = r.raw().await;
+        let idle = matches!(ev, AgentEvent::Idle { running_jobs: 0 });
+        evs.push(ev);
+        if idle {
+            break;
+        }
+    }
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "b1" && output.content.starts_with("Started background job 1"))));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Jobs { jobs } if jobs.iter().any(|j| j.id == 1 && !j.status.running()))));
+    // the model hears that it ended: with the tool results, or in a turn of its own
+    let reqs = client.requests();
+    let told = reqs.iter().skip(1).any(|q| {
+        q.messages
+            .iter()
+            .any(|m| m.role == nexo_core::message::Role::User && m.text().contains("[background jobs ended]"))
+    });
+    assert!(told, "the ended job is reported to the model");
+    assert!(text_of(&evs).ends_with("saw it") || reqs.len() == 2);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn plan_mode_refuses_writes_until_the_plan_is_approved() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("w0", "write", json!({"path": "x.txt", "content": "new"}))),
+        Reply::Events(call("q1", "ask_user", json!({"question": "Which file?", "options": ["x.txt", "y.txt"]}))),
+        Reply::Events(call("p1", "exit_plan", json!({"plan": "1. write x.txt"}))),
+        Reply::Events(call("w1", "write", json!({"path": "x.txt", "content": "new"}))),
+        Reply::Events(text("done")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::SetPermissionMode(PermissionMode::Plan));
+    r.until(|e| matches!(e, AgentEvent::PermissionModeChanged { mode: PermissionMode::Plan })).await;
+    r.send(AgentCommand::Submit { text: "plan it".into(), attachments: vec![] });
+    // the question: the answer reaches the model
+    let evs = r.until(|e| matches!(e, AgentEvent::Question { .. })).await;
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "w0" && output.content.contains("plan mode"))
+    ));
+    let Some(AgentEvent::Question { question }) = evs.last() else { unreachable!() };
+    assert_eq!((question.id.as_str(), question.options.len(), question.plan.is_none()), ("q1", 2, true));
+    r.send(AgentCommand::Answer { id: "q1".into(), answer: Some("x.txt".into()) });
+    // the plan: approved, edits go through
+    let evs = r.until(|e| matches!(e, AgentEvent::Question { .. })).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::QuestionResolved { id, .. } if id == "q1")));
+    let Some(AgentEvent::Question { question }) = evs.last() else { unreachable!() };
+    assert_eq!(question.plan.as_deref(), Some("1. write x.txt"));
+    r.send(AgentCommand::Answer { id: "p1".into(), answer: Some(nexo_agent::ask::APPROVE_AUTO.into()) });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::PermissionModeChanged { mode: PermissionMode::AcceptEdits })));
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })), "accept-edits: no ask");
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "w1" && !output.is_error)));
+    let reqs = client.requests();
+    assert!(reqs[0].system.contains("Plan mode is on"));
+    assert!(reqs[0].tools.iter().any(|t| t.name == "exit_plan"));
+    let answered = |i: usize| match &reqs[i].messages.last().unwrap().content[0] {
+        Part::ToolResult { content, .. } => nexo_core::message::result_text(content),
+        _ => panic!(),
+    };
+    assert_eq!(answered(2), "The person answered: x.txt");
+    assert!(answered(3).contains("approved"));
+    assert!(!reqs[3].system.contains("Plan mode is on"), "the plan's directive goes with plan mode");
+    assert!(!reqs[3].tools.iter().any(|t| t.name == "exit_plan"));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn an_interrupt_drops_the_question() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(call(
+        "q1",
+        "ask_user",
+        json!({"question": "Which?", "options": ["a", "b"]}),
+    ))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Question { .. })).await;
+    r.send(AgentCommand::Interrupt);
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::QuestionResolved { id, answer: None } if id == "q1")));
+    assert_eq!(end_of(&evs), TurnEnd::Interrupted);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn another_sessions_memory_goes_with_the_next_request_and_sessions_go_to_the_trash() {
+    let d = tempfile::tempdir().unwrap();
+    // session A: what it found
+    let client = Scripted::new(vec![Reply::Events(text(
+        "Finding: the tokenizer drops tab characters before the parser sees them.\nPlan: keep tabs in tokenize_line.",
+    ))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    let a = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "why does the tokenizer lose tabs?".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    // session B takes what A knows
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let b = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::ShareMemory { id: Some(b.clone()), focus: None });
+    let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(matches!(ev.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("this session")), "{ev:?}");
+    r.send(AgentCommand::ShareMemory { id: Some(a.clone()), focus: Some("tokenizer tabs".into()) });
+    let ev = r.until(|e| matches!(e, AgentEvent::MemoryShared { .. })).await;
+    assert!(matches!(ev.last(), Some(AgentEvent::MemoryShared { pending }) if pending.len() == 1 && pending[0].0 == a));
+    r.send(AgentCommand::Submit { text: "fix it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::MemoryShared { pending } if pending.is_empty())));
+    let sent = client.requests()[0].messages.last().unwrap().text();
+    assert!(sent.starts_with(&format!("<memory from=\"{a}\"")), "{sent}");
+    assert!(sent.contains("Finding: the tokenizer drops tab characters"), "{sent}");
+    assert!(sent.ends_with("fix it"), "{sent}");
+    // the one in use stays; another goes to the trash and comes back
+    r.send(AgentCommand::DeleteSession { id: b.clone() });
+    let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(matches!(ev.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("in use")), "{ev:?}");
+    r.send(AgentCommand::DeleteSession { id: a.clone() });
+    let ev = r.until(|e| matches!(e, AgentEvent::SessionDeleted { .. })).await;
+    assert!(matches!(ev.last(), Some(AgentEvent::SessionDeleted { id, .. }) if *id == a));
+    assert!(!nexo_agent::session::list().iter().any(|m| m.id == a));
+    r.send(AgentCommand::RestoreSession { id: a.clone() });
+    let ev = r.until(|e| matches!(e, AgentEvent::SessionRestored { .. })).await;
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::SessionRestored { id, title }) if *id == a && title.contains("tokenizer"))
+    );
+    assert!(nexo_agent::session::list().iter().any(|m| m.id == a));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_call_written_as_text_runs_as_a_call() {
+    let d = tempfile::tempdir().unwrap();
+    let written = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"read\">\n<｜｜DSML｜｜ parameter name=\"path\" string=\"true\">a</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
+    let client = Scripted::new(vec![Reply::Events(text(written)), Reply::Events(text("a is x"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "what is in a".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done, "the markup is not the answer");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2, "the call ran and the model was asked again");
+    let sent = serde_json::to_string(&reqs[1].messages).unwrap();
+    assert!(sent.contains("read:a") && !sent.contains("DSML"), "the call and its output go back, not the markup");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn recall_brings_back_a_message_exactly_and_only_the_curator_offers_it() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(call("c2", "recall", json!({"message": "m00003"}))),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.context.policy = "curator".into();
+    // the tool goes with the directives (an instruction the model gets only with the curator)
+    cfg.context.curator_spec = "directives=1".into();
+    let set = tools().with(Arc::new(nexo_tools::recall::Recall));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read a".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert!(reqs[0].tools.iter().any(|t| t.name == "recall"), "the curator with directives offers recall");
+    let last = reqs[2].messages.last().unwrap();
+    match &last.content[0] {
+        Part::ToolResult { call_id, content, is_error, .. } => {
+            assert_eq!(call_id, "c2");
+            let got = nexo_core::message::result_text(content);
+            assert_eq!(got, "m00003 (the output of read), as it was:\nread:a.rs", "{got}");
+            assert!(!is_error);
+        }
+        _ => panic!(),
+    }
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_sub_agent_out_of_rounds_still_reports_what_it_found() {
+    let d = tempfile::tempdir().unwrap();
+    let mut replies =
+        vec![Reply::Events(call("t1", "task", json!({"description": "map it", "prompt": "where is x kept?"})))];
+    // the explore kind has 16 rounds and spends every one on reading
+    for i in 0..16 {
+        let id = format!("s{i}");
+        replies.push(Reply::Events(vec![
+            StreamEvent::ToolCallStart { id: id.clone(), name: "read".into() },
+            StreamEvent::ToolCallEnd { id, name: "read".into(), args: json!({"path": "a.rs"}) },
+            StreamEvent::Finish(FinishReason::ToolUse),
+            StreamEvent::Done,
+        ]));
+    }
+    replies.push(Reply::Events(text("x is kept in a.rs:3; b.rs not checked")));
+    replies.push(Reply::Events(text("done")));
+    let client = Scripted::new(replies);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "where is x?".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let done = evs.iter().find_map(|e| match e {
+        AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.clone()),
+        _ => None,
+    });
+    let done = done.unwrap();
+    assert!(!done.is_error && done.content == "x is kept in a.rs:3; b.rs not checked", "{done:?}");
+    let reqs = client.requests();
+    assert!(reqs[1].system.contains("You have 16 rounds"), "it knows its budget");
+    let told = reqs[17]
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .any(|p| matches!(p, Part::Text { text } if text.contains("No rounds left")));
+    assert!(told, "the last request tells it to report");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn the_curator_without_directives_offers_the_same_tools_as_the_other_policies() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.context.policy = "curator".into();
+    // `directives=0` is the default: a pure view, so the model gets no tool it would not get without the curator
+    let set = tools().with(Arc::new(nexo_tools::recall::Recall));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert!(!reqs[0].tools.iter().any(|t| t.name == "recall"), "no recall without the directives");
+    r.stop().await;
+}
+
+fn notices(evs: &[AgentEvent]) -> Vec<String> {
+    evs.iter().filter_map(|e| if let AgentEvent::Notice { text, .. } = e { Some(text.clone()) } else { None }).collect()
+}
+
+/// A reply that stops at max_tokens: `events` with the finish said as Length.
+fn cut(mut events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+    for e in &mut events {
+        if let StreamEvent::Finish(f) = e {
+            *f = FinishReason::Length;
+        }
+    }
+    events
+}
+
+#[tokio::test]
+async fn a_call_cut_by_max_tokens_does_not_run() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("f"), "x").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(cut(call("c1", "read", json!({"path": "f"})))),
+        Reply::Events(call("c2", "read", json!({"path": "f"}))),
+        Reply::Events(text("read it")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read f".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    // the cut call never ran; the whole one did
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, .. } if id == "c1")));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, .. } if id == "c2")));
+    assert!(
+        notices(&evs).iter().any(|n| n.contains("cut at max_tokens while writing its calls")),
+        "{:?}",
+        notices(&evs)
+    );
+    // the model was told, as the result of its call
+    let reqs = client.requests();
+    let told = reqs[1].messages.last().unwrap();
+    assert!(matches!(&told.content[0], Part::ToolResult { call_id, is_error: true, content, .. }
+        if call_id == "c1" && nexo_core::message::result_text(content).contains("cut at max_tokens")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn two_replies_cut_in_a_row_stop_the_request() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(cut(call("c1", "read", json!({"path": "f"})))),
+        Reply::Events(cut(call("c2", "read", json!({"path": "f"})))),
+        Reply::Events(text("never")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read f".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    assert!(notices(&evs).iter().any(|n| n.contains("two replies in a row")), "{:?}", notices(&evs));
+    assert_eq!(client.requests().len(), 2);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_text_cut_by_max_tokens_is_said() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(cut(text("half an ans")))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "explain".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(notices(&evs).iter().any(|n| n.contains("cut at max_tokens")), "{:?}", notices(&evs));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_session_that_ended_between_a_call_and_its_result_goes_on() {
+    let d = tempfile::tempdir().unwrap();
+    data_dir();
+    // the session was saved with the call and closed before the tool ran
+    let mut s = nexo_agent::session::Session::create(d.path(), "mock", "m1").unwrap();
+    s.append(&Message::user("read f")).unwrap();
+    s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", json!({"path": "f"}))])).unwrap();
+    let id = s.id().to_string();
+    drop(s);
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), Some(id.clone()), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    let sent = &reqs[0].messages;
+    assert!(nexo_core::message::is_well_formed(sent), "{sent:?}");
+    assert!(matches!(&sent[2].content[0], Part::ToolResult { call_id, is_error: true, content, .. }
+        if call_id == "c1" && nexo_core::message::result_text(content).contains("the session ended before the tools ran")));
+    r.stop().await;
+    // the answer was saved: the session reads well formed from now on
+    let s = nexo_agent::session::Session::open(&id).unwrap();
+    assert!(nexo_core::message::is_well_formed(s.messages()));
+}
+
+/// The main agent's deny rules hold in the read-only sub-agent too, and it gets no `diagnostics`
+/// (a language server may run the project's build scripts).
+#[tokio::test]
+async fn explore_respects_deny() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"description": "find the key", "prompt": "what is in .env?"}))),
+        Reply::Events(vec![
+            StreamEvent::ToolCallStart { id: "s1".into(), name: "read".into() },
+            StreamEvent::ToolCallEnd { id: "s1".into(), name: "read".into(), args: json!({"path": ".env"}) },
+            StreamEvent::ToolCallStart { id: "s2".into(), name: "read".into() },
+            StreamEvent::ToolCallEnd { id: "s2".into(), name: "read".into(), args: json!({"path": "src/a.rs"}) },
+            StreamEvent::Finish(FinishReason::ToolUse),
+            StreamEvent::Done,
+        ]),
+        Reply::Events(text("cannot read it")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.permissions.deny = vec!["read(.env*)".into()];
+    cfg.notices = vec!["a notice from loading".into()];
+    let set = tools().with(Arc::new(nexo_tools::lsp::Diagnostics));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    let mut first = Vec::new();
+    loop {
+        let e = r.next().await;
+        let ready = matches!(e, AgentEvent::ModelLimits { .. });
+        first.push(e);
+        if ready || first.len() > 8 {
+            break;
+        }
+    }
+    assert!(
+        first.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text == "a notice from loading")),
+        "{first:?}"
+    );
+    r.send(AgentCommand::Submit { text: "look".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let names: Vec<&str> = reqs[1].tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"read") && !names.contains(&"diagnostics"), "{names:?}");
+    let said: Vec<String> = reqs[2]
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .filter_map(|p| match p {
+            Part::ToolResult { content, .. } => {
+                content.first().map(|c| if let Part::Text { text } = c { text.clone() } else { String::new() })
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(said[0].contains("Permission denied") && said[0].contains("read(.env*)"), "{said:?}");
+    assert!(!said[1].contains("Permission denied"), "{said:?}");
+    r.stop().await;
+}

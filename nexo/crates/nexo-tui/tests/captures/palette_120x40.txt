@@ -1,0 +1,40 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ●─╮ ╭─●   nexo 0.1.0                                                     │
+│   ╰●╯     deepseek/deepseek-chat · ask                                   │
+│ ●─╯ ╰─●   /tmp/project                                                   │
+│                                                                          │
+│ /model sets up a model · /resume picks a session · ? help                │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+ ▌ fix the failing test in the parser
+
+   ▸ thinking · 1 line · 0ms
+
+ ◆ I will read the test first.
+
+   • the input is 3 1 2
+   • the output must be 1 2 3
+
+   ────────────────────────────────────────────────────────────────────────────────────────────────────────────── rust
+   ▎ fn main() {}
+
+   ✓ read tests/a.rs · 2 lines  12ms ▸
+   ✓ edit src/lib.rs · +1 −1  3ms
+   │ @@ -1,1 +1,1 @@
+   │ 1 - let x = 1;
+   └ 1 + let x = 2;
+
+ session ────────────────────────────────────────────────────────────────────────────────────────── m config
+ /clear                                   start a new session here
+ /resume         [session]                pick a session to resume; with an id or a title: that one
+ /fork                                    continue in a new session copied from an earlier point o…
+ /tree                                    the sessions as a tree of forks; jump to one
+ /rewind                                  go back to before an earlier message, files included (al…
+ /undo                                    undo the last request: its messages and the files it wro…
+ /undelete       [id]                     bring back a deleted session (the last one by default)
+ /rename         <name>                   give this session a name
+                                           1/36                                           28 more ↓
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+› /
+ ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69% 6.2k/9.0k │  81% cached · 1 call            Σ 6.5k billed · $0.0031

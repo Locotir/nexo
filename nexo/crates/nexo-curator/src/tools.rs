@@ -1,0 +1,372 @@
+//! Harness-agnostic classification of tool calls, and the files a shell command writes.
+
+use std::sync::LazyLock;
+
+use serde_json::Value;
+
+use crate::py::{Caps, Re, I, M, S};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Read,
+    Write,
+    Exec,
+    Search,
+    Other,
+}
+
+const PATH_KEYS: [&str; 7] = ["file_path", "path", "filepath", "filename", "target_file", "file", "notebook_path"];
+const CMD_KEYS: [&str; 3] = ["command", "cmd", "script"];
+
+static KIND_PATTERNS: LazyLock<Vec<(Kind, Re)>> = LazyLock::new(|| {
+    vec![
+        (Kind::Write, Re::new(r"(edit|write|create|patch|replace|insert|apply|multiedit|str_replace)", I)),
+        (Kind::Read, Re::new(r"(read|view|open|cat|get_file|fetch_file|recall)", I)),
+        (Kind::Search, Re::new(r"(grep|glob|search|find|list|ls)", I)),
+        (Kind::Exec, Re::new(r"(bash|shell|exec|run|terminal|command)", I)),
+    ]
+});
+
+/// (kind, path, command) of a tool call.
+pub fn classify(name: &str, args: Option<&Value>) -> (Kind, Option<String>, Option<String>) {
+    let args = args.and_then(Value::as_object);
+    let kind = KIND_PATTERNS.iter().find(|(_, p)| p.is_match(name)).map_or(Kind::Other, |(k, _)| *k);
+    let get = |keys: &[&str]| -> Option<String> {
+        let a = args?;
+        keys.iter().find_map(|k| a.get(*k).and_then(Value::as_str).map(str::to_string))
+    };
+    let path = get(&PATH_KEYS);
+    let command = get(&CMD_KEYS);
+    let kind = if kind == Kind::Other && command.as_deref().is_some_and(|c| !c.is_empty()) { Kind::Exec } else { kind };
+    (kind, path, command)
+}
+
+/// Arguments that ask a read tool for a part of a file (a line range or a window), whatever the tool
+/// calls them.
+const RANGE_KEYS: [&str; 10] =
+    ["offset", "limit", "start_line", "end_line", "line_start", "line_end", "start", "end", "range", "view_range"];
+
+/// Whether a call reads a part of a file: a read tool asked for a range. The step after it is likely the
+/// next part of the same file.
+pub fn partial_read(name: &str, args: Option<&Value>) -> bool {
+    if classify(name, args).0 != Kind::Read {
+        return false;
+    }
+    args.and_then(Value::as_object).is_some_and(|a| RANGE_KEYS.iter().any(|k| a.get(*k).is_some_and(|v| !v.is_null())))
+}
+
+/// Programs that print a file, a part of it, the lines of it that match or the names of files, as they are on
+/// disk.
+const PRINTERS: [&str; 15] =
+    ["cat", "head", "tail", "sed", "nl", "tac", "less", "more", "grep", "egrep", "fgrep", "rg", "ls", "find", "tree"];
+/// Programs that, fed by a pipe, keep some of the lines they get.
+const FILTERS: [&str; 10] = ["cat", "head", "tail", "sed", "nl", "cut", "grep", "egrep", "fgrep", "rg"];
+/// Commands that print nothing of a file: moving around, and separators between the files printed.
+const QUIET: [&str; 4] = ["cd", "echo", "printf", "pwd"];
+
+/// The simple commands of a shell line (split at `;`, `&&`, `||`, `|` and new lines outside quotes), each
+/// with whether a pipe feeds it.
+fn simple_commands(command: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let (mut cur, mut piped, mut quote) = (String::new(), false, None);
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), _) if c == q => {
+                quote = None;
+                cur.push(c);
+            }
+            (Some('\''), _) => cur.push(c),
+            (_, '\\') => {
+                cur.push(c);
+                cur.extend(chars.next());
+            }
+            (Some(_), _) => cur.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            (None, ';' | '\n') => out.push((std::mem::take(&mut cur), std::mem::replace(&mut piped, false))),
+            (None, '&') if chars.peek() == Some(&'&') => {
+                chars.next();
+                out.push((std::mem::take(&mut cur), std::mem::replace(&mut piped, false)));
+            }
+            (None, '|') => {
+                let pipe = chars.next_if_eq(&'|').is_none();
+                out.push((std::mem::take(&mut cur), std::mem::replace(&mut piped, pipe)));
+            }
+            _ => cur.push(c),
+        }
+    }
+    out.push((cur, piped));
+    out
+}
+
+/// Whether a shell command only prints files, parts of them, the lines of them that match or their names (`cat`,
+/// `sed -n`, `head`, `grep`, `ls`, … with `cd` and `echo` between): what comes back is the material itself,
+/// as a read or a search tool would return it, and not the output of a process.
+pub fn prints_files(command: &str) -> bool {
+    let mut prints = false;
+    for (cmd, piped) in simple_commands(command) {
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        let Some(&first) = words.first() else { continue };
+        // an edit in place, or an action on each file found, is not a print
+        if (first == "sed" && words.iter().any(|w| w.starts_with("-i") || *w == "--in-place"))
+            || (first == "find"
+                && words.iter().any(|w| w.starts_with("-exec") || w.starts_with("-ok") || *w == "-delete"))
+        {
+            return false;
+        }
+        if (piped && FILTERS.contains(&first)) || (!piped && QUIET.contains(&first)) {
+            continue;
+        }
+        if piped || !PRINTERS.contains(&first) {
+            return false;
+        }
+        prints = true;
+    }
+    prints
+}
+
+/// Arguments that hold the whole new text of a file.
+const CONTENT_KEYS: [&str; 5] = ["content", "file_text", "contents", "new_content", "text"];
+/// Write tools that change a part of a file (unless asked to create it).
+static PARTIAL: LazyLock<Re> = LazyLock::new(|| Re::new(r"(edit|patch|replace|insert|apply)", I));
+
+/// The whole text a write call puts in its file (`write`, `write_file`, `Write`, `create`, an editor's
+/// `create` command); `None` for an edit of a part of it.
+pub fn full_write<'a>(name: &str, args: Option<&'a Value>) -> Option<&'a str> {
+    let a = args?.as_object()?;
+    if PARTIAL.is_match(name) && a.get("command").and_then(Value::as_str) != Some("create") {
+        return None;
+    }
+    CONTENT_KEYS.iter().find_map(|k| a.get(*k).and_then(Value::as_str))
+}
+
+/// Characters of the text arguments of an edit (what it removes and what it puts), its path left out.
+pub fn edit_size(args: Option<&Value>) -> usize {
+    let Some(a) = args.and_then(Value::as_object) else { return 0 };
+    let mut n = 0;
+    for (k, v) in a {
+        if PATH_KEYS.contains(&k.as_str()) {
+            continue;
+        }
+        n += match v {
+            Value::String(s) => s.chars().count(),
+            other => other.to_string().chars().count(),
+        };
+    }
+    n
+}
+
+const FILE: &str = r"([\w.][\w./-]*\.\w+)";
+static SHELL_WRITES: LazyLock<Vec<Re>> = LazyLock::new(|| {
+    vec![
+        Re::new(&format!(r#"(?<![<>&\d])>>?\s*['"]?{FILE}"#), 0),
+        Re::new(&format!(r#"\btee\s+(?:-a\s+)?['"]?{FILE}"#), 0),
+        Re::new(&format!(r#"\bsed\s+-i\S*\s+(?:-e\s+)?(?:'[^']*'|"[^"]*"|\S+)\s+['"]?{FILE}"#), 0),
+    ]
+});
+static HEREDOC: LazyLock<Re> =
+    LazyLock::new(|| Re::new(r#"(?P<head><<-?\s*(?P<q>['"]?)(?P<tag>\w+)(?P=q)[^\n]*\n).*?^\s*(?P=tag)\s*$"#, S | M));
+const PATH: &str = r#"(?:(?:pathlib\.)?Path|open)\(\s*['"](?P<bound>[\w.][\w./-]*\.\w+)['"]"#;
+static SCRIPT: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(
+        &[
+            format!(
+                r#"(?P<bind>\b(?P<name>\w+)\s*=\s*(?:{PATH}\s*\)|['"](?P<literal>[\w./][\w./-]*\.\w+)['"](?!\s*[.\[(])))"#
+            ),
+            r#"|(?P<direct>(?:pathlib\.)?Path\(\s*['"](?P<written>[\w.][\w./-]*\.\w+)['"]\s*\)\.(?:write_text|write_bytes|open\(\s*['"][wa]))"#.to_string(),
+            r#"|(?P<opened>\bopen\(\s*['"](?P<target>[\w.][\w./-]*\.\w+)['"]\s*,\s*['"][wax])"#.to_string(),
+            r#"|(?P<via>\b(?P<user>\w+)\.(?:write_text|write_bytes|open\(\s*['"][wa])|\bopen\(\s*(?P<arg>\w+)\s*,\s*['"][wax])"#.to_string(),
+        ]
+        .concat(),
+        0,
+    )
+});
+static HELPER: LazyLock<Re> = LazyLock::new(|| Re::new(r"^def (?P<fn>\w+)\((?P<body>.*?)(?=^\S|\Z)", S | M));
+static WRITES: LazyLock<Re> =
+    LazyLock::new(|| Re::new(r#"\.write_(?:text|bytes)\(|\bopen\([^)\n]*['"][wax]|\.open\(\s*['"][wa]"#, 0));
+
+fn group<'t>(text: &'t str, c: &Caps, g: usize) -> Option<&'t str> {
+    c.get(g).copied().flatten().map(|(a, b)| &text[a..b])
+}
+
+fn helper_writes(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let (gf, gb) = (HELPER.group("fn"), HELPER.group("body"));
+    for m in HELPER.captures_all(command) {
+        let (Some(f), Some(body)) = (group(command, &m, gf), group(command, &m, gb)) else { continue };
+        if WRITES.is_match(body) {
+            let pat = format!(r#"(?<![\w.]){f}\(\s*['"]([\w./][\w./-]*\.\w+)['"]"#);
+            if let Ok(r) = Re::try_new(&pat, 0) {
+                out.extend(r.findall(command).into_iter().map(str::to_string));
+            }
+        }
+    }
+    out
+}
+
+// A here-document fed to `cat` or `tee`, with the rest of its command line: `cat > f <<'EOF'`, `cat <<EOF >f`,
+// `tee f <<EOF`, up to the line that closes it.
+static HEREDOC_WRITE: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(
+        r#"^(?P<before>[^\n]*?)<<(?P<dash>-?)\s*(?P<q>['"]?)(?P<tag>\w+)(?P=q)(?P<after>[^\n]*)\n(?P<body>.*?)^[ \t]*(?P=tag)[ \t]*$"#,
+        S | M,
+    )
+});
+// Where the command line of a here-document sends it whole (`>>` appends and `tee -a` too: not a whole write).
+static HEREDOC_TARGET: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(
+        r#"(?:^|[;&|(]|\s)(?:cat(?:\s+-)?\s*(?:[^>\n]*?(?<![>&\d])>(?!>)|>(?!>))|tee(?!\s+-a)(?:\s+--?\w+)*)\s*['"]?(?P<path>[^\s'";|&<>()]+)"#,
+        0,
+    )
+});
+
+/// The files a shell command writes whole through a here-document (`cat > f <<'EOF' … EOF`), with the text
+/// written. Device paths are left out.
+pub fn heredoc_writes(command: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let r = &*HEREDOC_WRITE;
+    let (before, dash, after, body) = (r.group("before"), r.group("dash"), r.group("after"), r.group("body"));
+    for m in r.captures_all(command) {
+        let line = format!("{} {}", group(command, &m, before).unwrap_or(""), group(command, &m, after).unwrap_or(""));
+        let Some(t) = HEREDOC_TARGET.search(&line) else { continue };
+        let Some(path) = group(&line, &t, HEREDOC_TARGET.group("path")) else { continue };
+        if path.starts_with("/dev/") || path.starts_with('$') {
+            continue;
+        }
+        let mut text = group(command, &m, body).unwrap_or("").to_string();
+        if group(command, &m, dash).is_some_and(|d| d == "-") {
+            text = text.split('\n').map(|l| l.trim_start_matches('\t')).collect::<Vec<_>>().join("\n");
+        }
+        let path = path.strip_prefix("./").unwrap_or(path).to_string();
+        match out.iter_mut().find(|(p, _)| *p == path) {
+            Some(e) => e.1 = text,
+            None => out.push((path, text)),
+        }
+    }
+    out
+}
+
+/// The files a shell command writes, as far as its text says (temporary and device paths left out).
+pub fn shell_writes(command: &str) -> Vec<String> {
+    if command.is_empty() {
+        return Vec::new();
+    }
+    let shell = HEREDOC.sub(command, r"\g<head>");
+    let mut found: Vec<String> = Vec::new();
+    for pat in SHELL_WRITES.iter() {
+        found.extend(pat.findall(&shell).into_iter().map(str::to_string));
+    }
+    let mut names: Vec<(String, String)> = Vec::new();
+    let s = &*SCRIPT;
+    let g = |n: &str| s.group(n);
+    let (bind, name, bound, literal) = (g("bind"), g("name"), g("bound"), g("literal"));
+    let (direct, written, opened, target, user, arg) =
+        (g("direct"), g("written"), g("opened"), g("target"), g("user"), g("arg"));
+    for m in s.captures_all(command) {
+        let get = |i| group(command, &m, i);
+        if get(bind).is_some() {
+            let v = get(bound).or(get(literal)).unwrap_or("");
+            let k = get(name).unwrap_or("");
+            match names.iter_mut().find(|(n, _)| n == k) {
+                Some(e) => e.1 = v.to_string(),
+                None => names.push((k.to_string(), v.to_string())),
+            }
+        } else if get(direct).is_some() {
+            found.push(get(written).unwrap_or("").to_string());
+        } else if get(opened).is_some() {
+            found.push(get(target).unwrap_or("").to_string());
+        } else if let Some(who) = get(user).filter(|u| !u.is_empty()).or(get(arg)) {
+            if let Some((_, v)) = names.iter().find(|(n, _)| n == who) {
+                found.push(v.clone());
+            }
+        }
+    }
+    found.extend(helper_writes(command));
+    let mut out: Vec<String> = Vec::new();
+    for p in found {
+        let p = p.strip_prefix("./").unwrap_or(&p).to_string();
+        if !out.contains(&p) && !p.starts_with("/tmp/") && !p.starts_with("/dev/") && !p.starts_with("tmp/") {
+            out.push(p);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_here_document_sent_to_a_file_is_a_whole_write() {
+        let cmd = "cd /w && cat > src/a.rs <<'EOF'\nfn a() -> i32 {\n    7\n}\nEOF\ncargo build";
+        assert_eq!(heredoc_writes(cmd), vec![("src/a.rs".to_string(), "fn a() -> i32 {\n    7\n}\n".to_string())]);
+        let cmd = "cat <<EOF > notes.txt\nluck 5 -> 112\nEOF";
+        assert_eq!(heredoc_writes(cmd), vec![("notes.txt".to_string(), "luck 5 -> 112\n".to_string())]);
+        assert_eq!(heredoc_writes("tee ./b.sh <<-X\n\techo hi\n\tX")[0], ("b.sh".to_string(), "echo hi\n".to_string()));
+        // an append, a program reading its input and a heredoc to a device are not whole writes of a file
+        assert!(heredoc_writes("cat >> log.txt <<EOF\nmore\nEOF").is_empty());
+        assert!(heredoc_writes("tee -a log.txt <<EOF\nmore\nEOF").is_empty());
+        assert!(heredoc_writes("node - <<'EOF' > out.txt\nconsole.log(1)\nEOF").is_empty());
+        assert!(heredoc_writes("cat > /dev/null <<EOF\nx\nEOF").is_empty());
+        // the last of two writes of one file is what it holds
+        let two = "cat > a.txt <<EOF\none\nEOF\ncat > a.txt <<EOF\ntwo\nEOF";
+        assert_eq!(heredoc_writes(two), vec![("a.txt".to_string(), "two\n".to_string())]);
+    }
+
+    #[test]
+    fn kinds() {
+        assert_eq!(classify("Read", Some(&json!({"file_path": "a.rs"}))).0, Kind::Read);
+        assert_eq!(classify("mystery", Some(&json!({"command": "ls"}))).0, Kind::Exec);
+    }
+
+    #[test]
+    fn a_command_that_only_prints_files_is_told_from_a_process() {
+        for read in [
+            "cat src/app.css",
+            "cd material; sed -n 1,60p assembly-B.txt; echo ====; sed -n 1,60p assembly-C.txt",
+            "cd data && head -100 rows.csv | cut -d, -f1-3",
+            r#"sed -n 60,200p a.txt | grep -n "var_80\|var_C0""#,
+            "grep -n 'a|b; c' notes.md",
+            "nl -ba main.go | tail -40",
+            "ls src; cat src/main.rs",
+            "find . -name '*.csv' | head",
+        ] {
+            assert!(prints_files(read), "{read}");
+        }
+        for process in [
+            "cargo test 2>&1 | tail -50",
+            "./run.sh | head",
+            "sed -i 's/a/b/' a.txt",
+            "cd material; echo ====",
+            "cat a.txt | sort | uniq -c",
+            "find . -name '*.o' -delete",
+            "ls -la; make",
+            "cat a.txt || make",
+        ] {
+            assert!(!prints_files(process), "{process}");
+        }
+    }
+
+    #[test]
+    fn whole_writes_and_edits() {
+        let w = json!({"path": "a.rs", "content": "fn a() {}"});
+        assert_eq!(full_write("write", Some(&w)), Some("fn a() {}"));
+        assert_eq!(full_write("write_file", Some(&json!({"file_path": "a.rs", "content": "x"}))), Some("x"));
+        let e = json!({"path": "a.rs", "old_string": "a", "new_string": "bc"});
+        assert_eq!(full_write("edit", Some(&e)), None);
+        assert_eq!(edit_size(Some(&e)), 3);
+        let create = json!({"command": "create", "path": "a.rs", "file_text": "y"});
+        assert_eq!(full_write("str_replace_based_edit_tool", Some(&create)), Some("y"));
+    }
+
+    #[test]
+    fn writes() {
+        assert_eq!(shell_writes("echo hi > out.txt && tee -a log.md"), vec!["out.txt", "log.md"]);
+        let script = "python3 - <<'EOF'\np = Path('a/b.txt')\np.write_text('x')\nEOF";
+        assert_eq!(shell_writes(script), vec!["a/b.txt"]);
+    }
+}

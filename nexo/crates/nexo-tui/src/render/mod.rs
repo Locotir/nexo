@@ -1,0 +1,10 @@
+//! Turning blocks, markdown, code and diffs into pre-wrapped styled lines.
+
+pub mod blocks;
+pub mod code;
+pub mod diff;
+pub mod gauge;
+pub mod markdown;
+pub mod phase;
+pub mod summary;
+pub mod wrap;

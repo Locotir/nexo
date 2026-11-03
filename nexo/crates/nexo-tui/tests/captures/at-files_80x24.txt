@@ -1,0 +1,24 @@
+                                                                               │
+   • the input is 3 1 2                                                        │
+   • the output must be 1 2 3                                                  │
+                                                                               │
+   ────────────────────────────────────────────────────────────────────── rust │
+   ▎ fn main() {}                                                              │
+                                                                               │
+   ✓ read tests/a.rs · 2 lines  12ms ▸                                         │
+   ✓ edit src/lib.rs · +1 −1  3ms                                              ┃
+   │ @@ -1,1 +1,1 @@                                                           ┃
+   │ 1 - let x = 1;                                                            ┃
+   └ 1 + let x = 2;                                                            ┃
+                                                                               ┃
+ ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing     ┃
+   in=… out=… cache=…) · from config                                           ┃
+ crates/nexo-bench/src/tasks/inventory.rs
+ crates/nexo-bench/src/tasks/mod.rs
+ crates/nexo-bench/src/tasks/realm.rs
+ crates/nexo-bench/src/tasks/realm_game.rs
+ crates/nexo-bench/src/tasks/small.rs
+────────────────────────────────────────────────────────────────────────────────
+› @ta
+ ↑↓ choose · Tab or Enter insert · PgUp/PgDn page · Esc close
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

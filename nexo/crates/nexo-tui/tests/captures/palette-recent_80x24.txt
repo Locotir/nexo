@@ -1,0 +1,24 @@
+                                                                               │
+   • the input is 3 1 2                                                        │
+   • the output must be 1 2 3                                                  │
+                                                                               │
+   ────────────────────────────────────────────────────────────────────── rust │
+   ▎ fn main() {}                                                              │
+                                                                               │
+   ✓ read tests/a.rs · 2 lines  12ms ▸                                         │
+   ✓ edit src/lib.rs · +1 −1  3ms                                              ┃
+   │ @@ -1,1 +1,1 @@                                                           ┃
+ recent ───────────────────────────────────────────────────────────────────────
+ /fork                               continue in a new session copied from an …
+ /tree                               the sessions as a tree of forks; jump to …
+ /resume         [session]           pick a session to resume; with an id or a…
+ session ──────────────────────────────────────────────────────────────────────
+ /clear                              start a new session here
+ /rewind                             go back to before an earlier message, fil…
+ /undo                               undo the last request: its messages and t…
+ /undelete       [id]                bring back a deleted session (the last on…
+                                 1/36                                 29 more ↓
+────────────────────────────────────────────────────────────────────────────────
+› /
+ ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

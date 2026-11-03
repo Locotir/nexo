@@ -1,0 +1,102 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexo-core",
+    "crates/nexo-providers",
+    "crates/nexo-tools",
+    "crates/nexo-curator",
+    "crates/nexo-agent",
+    "crates/nexo-tui",
+    "crates/nexo-cli",
+    "crates/nexo-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/Locotir/nexo"
+
+# One version of everything, declared once. A crate takes what it needs with
+# `name = { workspace = true }` and never pins a version of its own.
+[workspace.dependencies]
+nexo-core = { path = "crates/nexo-core" }
+nexo-providers = { path = "crates/nexo-providers" }
+nexo-tools = { path = "crates/nexo-tools" }
+nexo-curator = { path = "crates/nexo-curator" }
+nexo-agent = { path = "crates/nexo-agent" }
+nexo-tui = { path = "crates/nexo-tui" }
+nexo-bench = { path = "crates/nexo-bench" }
+
+# runtime
+tokio = { version = "1.54", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# data
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "1.1"
+toml_edit = "0.25"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros", "local-offset"] }
+base64 = "0.23"
+bytes = "1"
+
+# errors and logs
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# http
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "http2", "gzip"] }
+eventsource-stream = "0.2"
+htmd = "0.5"
+
+# files and search
+dirs = "7"
+globset = "0.4"
+ignore = "0.4"
+regex = "1"
+fancy-regex = "0.16"
+rustc-hash = "2"
+indexmap = "2"
+similar = { version = "3", features = ["text", "inline", "unicode"] }
+libc = "0.2"
+tempfile = "3"
+
+# terminal
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["use-dev-tty"] }
+tui-textarea = "0.7"
+ansi-to-tui = "7"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+nucleo-matcher = "0.3"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+textwrap = "0.16"
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# cli
+clap = { version = "4", features = ["derive", "env"] }
+
+# tests
+httpmock = "0.9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# the curator replays whole conversations in its tests: optimised, they run in a fraction of the time
+[profile.dev.package.nexo-curator]
+opt-level = 2
+[profile.dev.package."*"]
+opt-level = 2

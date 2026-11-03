@@ -1,0 +1,40 @@
+ Diff   6 files  +8 -3  |  staged 1 | unstaged 3 | untracked 2
+  M src/main.rs         +3 -2 │ src/main.rs                                                                    hunk 1/2
+ M  README.md           +1 -0 │▸ @@ -1,7 +1,8 @@ fn main  (9 lines)
+  R new.txt             +1 -1 │▸ @@ -30,3 +31,3 @@ fn helper  (4 lines)
+  M logo.png            +0 -0 │
+ ?? notes/todo.txt      +3 -0 │
+ ?? data/huge.csv       +0 -0 │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+                              │
+ ↑↓ file  Tab pane  n/p hunk  z fold  f all  s split  y copy  PgUp/PgDn scroll  Esc close

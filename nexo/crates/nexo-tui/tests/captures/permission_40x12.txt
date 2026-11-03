@@ -1,0 +1,12 @@
+ ◈ model deepseek/deepseek-chat · 9.0k │
+  ╭ permission · bash ───────────────╮ │
+  │ bash  cargo test                 │ │
+  │ $ cargo test                     │ │
+  │   1  bash(cargo *)               │ │
+  │ [y] allow [a] always [n] deny    │ │
+  ╰──────────────────────────────────╯ ┃
+                                       ┃
+────────────────────────────────────────
+›   ask anything
+ y allow · a always · n deny · 1-9 rule
+ nexo │ deepseek-chat │ ask     $0.0031

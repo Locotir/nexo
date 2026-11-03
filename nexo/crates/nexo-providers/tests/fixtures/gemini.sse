@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "**Reading the file**\n\nThe user wants the file.","thought": true}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 1200,"totalTokenCount": 1212,"thoughtsTokenCount": 12},"modelVersion": "gemini-2.5-pro","responseId": "abc123"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "I'll read "}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 1200,"candidatesTokenCount": 3,"totalTokenCount": 1215,"thoughtsTokenCount": 12},"modelVersion": "gemini-2.5-pro","responseId": "abc123"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "it."},{"functionCall": {"name": "read","args": {"path": "src/main.rs"}},"thoughtSignature": "CiQBVKhc7..."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 1200,"candidatesTokenCount": 19,"totalTokenCount": 1231,"cachedContentTokenCount": 1024,"thoughtsTokenCount": 12},"modelVersion": "gemini-2.5-pro","responseId": "abc123"}
+

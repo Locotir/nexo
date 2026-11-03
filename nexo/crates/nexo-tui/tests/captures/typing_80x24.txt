@@ -1,0 +1,24 @@
+   • the input is 3 1 2                                                        │
+   • the output must be 1 2 3                                                  │
+                                                                               │
+   ────────────────────────────────────────────────────────────────────── rust │
+   ▎ fn main() {}                                                              │
+                                                                               │
+   ✓ read tests/a.rs · 2 lines  12ms ▸                                         │
+   ✓ edit src/lib.rs · +1 −1  3ms                                              │
+   │ @@ -1,1 +1,1 @@                                                           ┃
+   │ 1 - let x = 1;                                                            ┃
+   └ 1 + let x = 2;                                                            ┃
+                                                                               ┃
+ ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing     ┃
+   in=… out=… cache=…) · from config                                           ┃
+                                                                               ┃
+ ◇ compacted 2 messages                                                        ┃
+                                                                               ┃
+      0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit           ┃
+                                                                               ┃
+────────────────────────────────────────────────────────── 2 lines · 126 chars ─
+› a question that goes on and on and on, longer than the narrow screen is wide,
+  to see how the editor wraps it
+  and a second line
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

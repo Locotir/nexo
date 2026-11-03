@@ -1,0 +1,24 @@
+                                                                               │
+   • the input is 3 1 2                                                        │
+   • the output must be 1 2 3                                                  │
+                                                                               │
+   ────────────────────────────────────────────────────────────────────── rust │
+   ▎ fn main() {}                                                              │
+                                                                               │
+   ✓ read tests/a.rs · 2 lines  12ms ▸                                         │
+   ✓ edit src/lib.rs · +1 −1  3ms                                              ┃
+   │ @@ -1,1 +1,1 @@                                                           ┃
+   │ 1 - let x = 1;                                                            ┃
+   └ 1 + let x = 2;                                                            ┃
+                                                                               ┃
+ ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing     ┃
+   in=… out=… cache=…) · from config                                           ┃
+                                                                               ┃
+ /model                [name]              switch model, or set one up step by…
+ /mouse                                    mouse capture on or off (off: the t…
+ /permissions  (mode)  [ask|accept-edits…  set the permission mode
+ /shared-memory        [id|off] [focus]    bring what another session knows in…
+────────────────────────────────────────────────────────────────────────────────
+› /mo
+ ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

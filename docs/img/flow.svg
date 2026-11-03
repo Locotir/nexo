@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="250" viewBox="0 0 760 250" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#898781"/></marker></defs>
+<rect width="760" height="250" fill="#fcfcfb"/>
+<text x="16" y="22" fill="#0b0b0b" font-size="14" font-weight="600">Where the curator sits: between the conversation on disk and every request to the model</text>
+<!-- conversation -->
+<rect x="16" y="52" width="150" height="130" rx="6" fill="#fff" stroke="#c9c7bf"/>
+<text x="91" y="74" fill="#0b0b0b" text-anchor="middle" font-weight="600">conversation</text>
+<text x="91" y="90" fill="#52514e" text-anchor="middle">whole history, on disk</text>
+<rect x="30" y="102" width="122" height="10" rx="2" fill="#e1e0d9"/>
+<rect x="30" y="118" width="122" height="10" rx="2" fill="#e1e0d9"/>
+<rect x="30" y="134" width="122" height="10" rx="2" fill="#e1e0d9"/>
+<rect x="30" y="150" width="122" height="10" rx="2" fill="#e1e0d9"/>
+<text x="91" y="174" fill="#898781" text-anchor="middle">grows every step, nothing is lost</text>
+<!-- arrow -->
+<line x1="166" y1="117" x2="206" y2="117" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
+<!-- curator -->
+<rect x="208" y="40" width="300" height="190" rx="6" fill="#eaf2fc" stroke="#2a78d6"/>
+<text x="358" y="62" fill="#0b0b0b" text-anchor="middle" font-weight="600">context-curator</text>
+<text x="358" y="78" fill="#52514e" text-anchor="middle">decides what the model sees, every request</text>
+<rect x="222" y="90" width="132" height="60" rx="4" fill="#fff" stroke="#8fb9ea"/>
+<text x="288" y="108" fill="#0b0b0b" text-anchor="middle" font-weight="600">squeeze at birth</text>
+<text x="288" y="124" fill="#52514e" text-anchor="middle">tool output trimmed</text>
+<text x="288" y="138" fill="#52514e" text-anchor="middle">before it is stored</text>
+<rect x="362" y="90" width="132" height="60" rx="4" fill="#fff" stroke="#8fb9ea"/>
+<text x="428" y="108" fill="#0b0b0b" text-anchor="middle" font-weight="600">cut in batches</text>
+<text x="428" y="124" fill="#52514e" text-anchor="middle">old chunks leave when</text>
+<text x="428" y="138" fill="#52514e" text-anchor="middle">a rewrite pays (EOQ)</text>
+<rect x="222" y="160" width="272" height="56" rx="4" fill="#fff" stroke="#8fb9ea"/>
+<text x="358" y="178" fill="#0b0b0b" text-anchor="middle" font-weight="600">anchor: what never drops</text>
+<text x="358" y="194" fill="#52514e" text-anchor="middle">user rules · notes · pins · ledger of what left · map</text>
+<!-- arrow -->
+<line x1="508" y1="117" x2="548" y2="117" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
+<!-- model -->
+<rect x="550" y="52" width="194" height="130" rx="6" fill="#fff" stroke="#c9c7bf"/>
+<text x="647" y="74" fill="#0b0b0b" text-anchor="middle" font-weight="600">model</text>
+<text x="647" y="90" fill="#52514e" text-anchor="middle">gets the curated view</text>
+<rect x="564" y="102" width="166" height="10" rx="2" fill="#2a78d6"/>
+<rect x="564" y="118" width="100" height="10" rx="2" fill="#8fb9ea"/>
+<rect x="564" y="134" width="60" height="10" rx="2" fill="#e1e0d9"/>
+<text x="647" y="160" fill="#0b0b0b" text-anchor="middle" font-weight="600">about half the tokens</text>
+<text x="647" y="174" fill="#898781" text-anchor="middle">same calls, same answers</text>
+<text x="16" y="244" fill="#898781">Nothing is lost: the ledger says what left, and a passage that matters again is brought back on its own.</text>
+</svg>

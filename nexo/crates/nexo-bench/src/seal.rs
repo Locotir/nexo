@@ -1,0 +1,161 @@
+//! Sealed commands: on Linux with unprivileged user namespaces, a command runs with no network,
+//! the system read-only and every home and temporary folder replaced by an empty one, except the
+//! task's working directory and the Rust toolchain. The agent cannot read the benchmark's own
+//! source (where the answers are) nor reach anything over the network.
+
+use std::path::{Path, PathBuf};
+
+/// Runs as `sh -c SCRIPT seal WD KEEP MASK CMD HIDE...`: binds the system read-only, hides the homes,
+/// temporary folders and HIDE under empty filesystems, then puts back WD (writable) and each
+/// colon-separated KEEP folder (read-only) at their own paths. Each colon-separated program name in
+/// MASK is shadowed by a stub that says the program is not found, so the box lacks it.
+pub const SCRIPT: &str = r#"set -e
+wd="$1"; keep="$2"; mask="$3"; cmd="$4"; shift 4
+for d in /usr /etc /bin /sbin /lib /lib32 /lib64 /boot /var /nix; do
+  case "$wd/" in "$d"/*) continue;; esac
+  if [ -d "$d" ] && [ ! -L "$d" ]; then mount --rbind "$d" "$d"; mount -o remount,bind,ro "$d"; fi
+done
+mount -t tmpfs none /mnt
+mkdir /mnt/wd
+mount --bind "$wd" /mnt/wd
+i=0; IFS=:
+for k in $keep; do
+  if [ -d "$k" ]; then mkdir "/mnt/k$i"; mount --bind "$k" "/mnt/k$i"; mount -o remount,bind,ro "/mnt/k$i"; fi
+  i=$((i+1))
+done
+unset IFS
+for d in /tmp /root /home /var/tmp /opt /srv /media "$@"; do
+  if [ -d "$d" ]; then mount -t tmpfs none "$d"; fi
+done
+mkdir -p "$wd"
+mount --bind /mnt/wd "$wd"
+i=0; IFS=:
+for k in $keep; do
+  if [ -d "/mnt/k$i" ]; then mkdir -p "$k"; mount --bind "/mnt/k$i" "$k"; mount -o remount,bind,ro "$k"; fi
+  i=$((i+1))
+done
+unset IFS
+if [ -n "$mask" ]; then
+  mkdir -p /tmp/.mask; IFS=:
+  for m in $mask; do
+    printf '#!/bin/sh\necho "sh: 1: %s: not found" >&2\nexit 127\n' "$m" > "/tmp/.mask/$m"; chmod +x "/tmp/.mask/$m"
+  done
+  unset IFS; export PATH="/tmp/.mask:$PATH"
+fi
+cd "$wd"
+exec sh -c "$cmd"
+"#;
+
+/// The namespaces a sealed command gets: its own user (mapped to root inside), mounts, network
+/// and process ids.
+const UNSHARE: [&str; 7] = ["-r", "-m", "-n", "-p", "--mount-proc", "--fork", "--kill-child"];
+
+/// How commands are sealed for one task.
+#[derive(Debug, Clone)]
+pub struct Seal {
+    /// The working directory, the only writable folder.
+    pub wd: PathBuf,
+    /// Folders hidden on top of the usual ones (the bench's output, the project it runs from).
+    pub hide: Vec<PathBuf>,
+    /// The Rust toolchain, kept visible read-only so `cargo` and `rustc` work inside.
+    pub sysroot: Option<PathBuf>,
+    /// Programs the box lacks: each name answers "not found" however the system has it.
+    pub mask: Vec<String>,
+}
+
+impl Seal {
+    /// The seal for `wd`, or why commands cannot be sealed on this machine.
+    pub fn new(wd: &Path, hide: Vec<PathBuf>, mask: Vec<String>) -> Result<Seal, String> {
+        available()?;
+        Ok(Seal { wd: wd.to_path_buf(), hide, sysroot: sysroot(), mask })
+    }
+
+    /// `cmd` as a shell command line that runs it sealed.
+    pub fn wrap(&self, cmd: &str) -> String {
+        let mut parts = vec!["env".to_string()];
+        if let Some(s) = &self.sysroot {
+            parts.push(format!("PATH={}:\"$PATH\"", quote(&s.join("bin").to_string_lossy())));
+        }
+        parts.push("CARGO_HOME=/tmp/.cargo-home".into());
+        parts.push("unshare".into());
+        parts.extend(UNSHARE.iter().map(|s| s.to_string()));
+        parts.extend(["sh".into(), "-c".into(), quote(SCRIPT), "seal".into()]);
+        parts.push(quote(&self.wd.to_string_lossy()));
+        parts.push(quote(&self.sysroot.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()));
+        parts.push(quote(&self.mask.join(":")));
+        parts.push(quote(cmd));
+        parts.extend(self.hide.iter().map(|h| quote(&h.to_string_lossy())));
+        parts.join(" ")
+    }
+}
+
+/// `s` as one single-quoted shell word.
+pub fn quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The Rust toolchain's root (`rustc --print sysroot`).
+pub fn sysroot() -> Option<PathBuf> {
+    let out = std::process::Command::new("rustc").args(["--print", "sysroot"]).output().ok()?;
+    let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    (out.status.success() && p.is_dir()).then_some(p)
+}
+
+/// Ok when commands can be sealed here, else why not. Probed once.
+#[cfg(target_os = "linux")]
+pub fn available() -> Result<(), String> {
+    static PROBE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            let ok = std::process::Command::new("unshare")
+                .args(["-r", "-m", "-n", "-p", "--mount-proc", "--fork", "true"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if ok {
+                Ok(())
+            } else {
+                Err("sealing needs unshare (util-linux) and unprivileged user namespaces".into())
+            }
+        })
+        .clone()
+}
+
+/// Ok when commands can be sealed here, else why not.
+#[cfg(not(target_os = "linux"))]
+pub fn available() -> Result<(), String> {
+    Err("sealing needs Linux (unshare and user namespaces)".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoting_survives_single_quotes() {
+        assert_eq!(quote("it's"), r"'it'\''s'");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sealed_command_sees_its_folder_but_not_the_hidden_one_nor_a_masked_program() {
+        if available().is_err() {
+            eprintln!("skipped: {}", available().unwrap_err());
+            return;
+        }
+        let wd = tempfile::tempdir().unwrap();
+        let secret = tempfile::tempdir().unwrap();
+        std::fs::write(wd.path().join("mine.txt"), "visible").unwrap();
+        std::fs::write(secret.path().join("answer.txt"), "42").unwrap();
+        let seal = Seal::new(wd.path(), vec![secret.path().to_path_buf()], vec!["awk".into()]).unwrap();
+        let cmd = format!(
+            "cat mine.txt; cat {}/answer.txt || echo hidden; awk 2>/dev/null; echo \"awk $?\"",
+            secret.path().display()
+        );
+        let out = std::process::Command::new("sh").arg("-c").arg(seal.wrap(&cmd)).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("visible") && text.contains("hidden") && !text.contains("42"), "{text}");
+        assert!(text.contains("awk 127"), "{text}");
+    }
+}

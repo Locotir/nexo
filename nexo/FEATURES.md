@@ -1,0 +1,126 @@
+# What nexo does, and what checks it
+
+Every feature a terminal coding agent is expected to have (the ones the widely used terminal
+agents have in common), whether nexo has it, and the test that proves it. `cargo test`
+runs all of them; the last column names the test function.
+
+## Talking to the agent
+
+| Feature | Status | Checked by |
+|---|---|---|
+| Streaming replies with markdown, code highlighting, tables | ✅ | `headings_lists_and_paragraphs`, `tables_align_columns`, `highlights_known_languages_and_leaves_others_plain`, `an_unclosed_fence_while_streaming_still_renders` |
+| Syntax colour for every language `bat` knows, by name, alias, extension or first line | ✅ | `knows_the_languages_people_write_by_any_of_their_names`, `highlights_known_languages_and_leaves_others_plain` |
+| Interpreted view (`Ctrl+P`): markdown, JSON, CSV/TSV rendered instead of source | ✅ | `interprets_markdown_json_and_tables_and_nothing_else` |
+| Reasoning shown, folded, hidden (`Ctrl+T`) | ✅ | `reasoning_hides_when_asked_and_folds_to_one_line` |
+| Multi-line editor, `Ctrl+J` / `Alt+Enter` | ✅ | `enter_submits_and_ctrl_j_adds_a_line` |
+| Prompt history `↑`/`↓`, kept between runs, searched with `Ctrl+R` | ✅ | `history_browses_up_and_down_and_keeps_the_draft`, `ctrl_r_finds_an_earlier_request_and_the_history_outlives_the_run` |
+| Write the draft in `$EDITOR` (`Ctrl+G`) | ✅ | `undo_init_status_tools_and_the_editor_key` |
+| Vim keys (`/vim`, `[ui] vim`) | ✅ | `the_vim_keys_move_edit_and_switch_modes` |
+| `@file` attachments with a fuzzy picker | ✅ | `attachments_shell_model_and_clear`, `knows_what_the_draft_wants`, `walks_a_project` |
+| Images attached for models that see | ✅ | `an_attached_image_goes_as_an_image_part` |
+| Paste a screenshot with `Ctrl+V` | ✅ | `a_pasted_image_is_kept_and_goes_with_the_request`, and from a real X clipboard: `ctrl_v_reads_an_image_from_a_real_x_clipboard` |
+| A long paste is folded to `[Pasted text #1 +40 lines]` in the draft and sent whole; its line breaks never send the message, also on Windows where a paste arrives as keys | ✅ | `a_long_paste_is_folded_in_the_draft_and_sent_whole`, `a_paste_that_comes_as_keys_is_one_draft_and_a_long_one_is_sent_whole` |
+| `!command` without a model call | ✅ | `attachments_shell_model_and_clear` |
+| Queue a message while a turn runs; Enter again runs it now | ✅ | `queued_requests_are_counted_as_events`, `enter_on_an_empty_draft_with_a_queue_interrupts_the_turn` |
+| Interrupt (`Esc`), keeping the partial reply | ✅ | `an_interrupt_keeps_the_partial_reply_and_runs_the_queue`, `an_interrupt_cancels_a_running_tool` |
+| Commands of one's own (`.nexo/commands/*.md`) | ✅ | `commands_load_expand_and_the_project_wins`, `a_command_of_ones_own_is_offered_and_sends_its_text` |
+
+## Tools and safety
+
+| Feature | Status | Checked by |
+|---|---|---|
+| read, write, edit, bash, glob, grep, ls | ✅ | `the_builtin_set_has_its_tools_with_schemas` and each tool's own tests |
+| Web search (5 backends) and web fetch | ✅ | `auto_takes_the_keyed_backend_and_falls_back_to_duckduckgo`, `fetch_reads_html_text_and_pages` |
+| Todo list | ✅ | `a_todo_call_shows_the_list_and_the_replay_keeps_it` |
+| `note` tool: `Finding:`/`Plan:`/`Rule:` lines the context policy keeps (always allowed, changes nothing) | ✅ | `note_lines_are_recognised_with_list_markers_and_bold`, `a_note_is_counted_and_a_bare_text_is_refused`, `a_note_tool_call_counts_as_a_note_and_is_kept_once_its_message_leaves` |
+| Sub-agents (`task`, kind `explore`: read-only, inside the project) | ✅ | `a_task_runs_a_read_only_sub_agent_whose_report_is_the_result` |
+| Sub-agent kind `general` (writes and runs commands, asks the same permission as the main agent, its spending counted) | ✅ | `a_general_sub_agent_asks_for_its_writes_and_its_spending_is_counted` |
+| Sub-agent briefing: the parent's facts (request, rules, files with `current`, failing commands, plan) and the excerpts that bear on the task, picked by the curator's selection, run inside nexo, or by a plainer lexical selection, within `[agent] subagent_brief` tokens; the report comes back without the copied lines and capped; `briefed: … · engine` shown; `nexo brief` | ✅ | `a_sub_agent_starts_with_a_briefing_of_what_the_session_read`, `lexical_picks_the_passages_of_the_task_within_its_budget`, `lexical_leaves_out_reads_a_later_write_made_stale`, `the_ledger_holds_files_failures_constraints_and_the_plan`, `a_lexical_brief_keeps_its_budget`, `a_brief_comes_from_the_curator_by_default`, `the_selection_matches_the_reference` (same spans as the earlier reference implementation on the recorded fixtures), `the_report_drops_what_the_briefing_holds_and_is_capped`, `words_split_identifiers_and_keep_names`; replayed on a recorded session of 26 sub-agents |
+| Custom sub-agents from `~/.nexo/agents/*.md` and `.nexo/agents/*.md` (front matter: tools, model, rounds) | ✅ | `a_custom_agent_reads_its_front_matter`, `custom_agents_load_from_the_project_and_replace_by_name` |
+| Background work: `bash` with `background: true` and `task` with `background: true` run as jobs while the turn goes on | ✅ | `a_background_command_runs_on_and_is_read_and_killed`, `a_background_command_lets_the_turn_end_and_its_end_reaches_the_model` |
+| `jobs` tool (list, output with wait, kill), the end of a job told to the model once, `/jobs` and `/jobs kill [id]` | ✅ | `a_job_is_read_once_waited_for_and_told_once`, `killing_cancels_and_the_end_of_the_session_stops_everything`, `long_output_keeps_the_end`, `parses_names_aliases_and_arguments` |
+| Language servers: `diagnostics` after an edit (rust-analyzer, pyright, pylsp, typescript-language-server, gopls, clangd) | ✅ | `servers_by_extension_and_the_report`, and against the real servers: `pyright_finds_the_errors_and_sees_the_fix`, `rust_analyzer_finds_a_type_error` |
+| MCP servers (stdio) | ✅ | `connects_lists_and_calls` |
+| Plan mode: reads only, the plan shown as markdown, approved with a choice of mode or sent back with feedback; `Shift+Tab`, `/plan`, `--permission-mode plan` | ✅ | `plan_mode_refuses_writes_until_the_plan_is_approved`, `exit_plan_switches_mode_or_brings_back_the_feedback`, `plan_mode_remembers_the_mode_to_go_back_to`, `a_plan_shows_as_markdown_above_its_options`, `shift_tab_walks_the_modes_through_plan_and_slash_plan_sends_the_text` |
+| Selection prompt (`ask_user`): arrows, digits, several ticked, an answer of one's own, Esc | ✅ | `the_answer_comes_back_and_the_question_is_closed`, `options_are_text_or_label_and_description`, `a_question_is_answered_with_the_arrows_a_digit_or_words_of_ones_own`, `several_options_are_ticked_and_sent_together`, `questions_wait_behind_an_open_modal_and_go_when_resolved_elsewhere`, `an_interrupt_drops_the_question` |
+| Permission modes and rules, remembered | ✅ | `deny_beats_allow_beats_mode`, `rules_match_commands_paths_and_names`, `persists_a_rule_keeping_the_file` |
+| Diffs before a write, in the dialog and the card | ✅ | `diff_cards_show_counts_and_user_lines_carry_the_bar`, `marks_added_and_removed_lines` |
+| Read-only calls in parallel, the rest in order | ✅ | `read_only_calls_run_in_parallel_and_others_in_order` |
+| Hooks (`pre_tool` can block, `post_tool`, `turn_end`) | ✅ | `a_pre_tool_hook_blocks_with_its_reason_and_others_report_failures`, `a_pre_tool_hook_blocks_a_call_and_the_model_reads_why` |
+| Undo / rewind put back the files the agent wrote | ✅ | `a_rewind_puts_back_the_files_the_agent_wrote`, `undo_init_status_tools_and_the_editor_key` |
+
+## Sessions and context
+
+| Feature | Status | Checked by |
+|---|---|---|
+| Sessions saved as they go; resume (`--continue`, `/resume`) | ✅ | `a_session_is_resumed_with_its_history_and_tool_outputs`, `resume_in_place_replaces_the_conversation_and_its_file` |
+| Rewind to an earlier message | ✅ | `rewind_cuts_before_the_calls_and_rewrites_the_file` |
+| Rename, export to markdown | ✅ | `export_writes_the_conversation_as_markdown`, `sessions_resume_and_export_and_diff_reach_the_agent` |
+| Compaction, by hand and when the window is full | ✅ | `a_context_length_error_compacts_once_and_retries` |
+| Context policies: auto (the curator), plain, compact, curator; `/context-live` map | ✅ | `config_picks_the_policy`, `the_curator_cuts_a_long_session`, `auto_runs_the_built_in_curator_anywhere`, `old_curator_keys_are_ignored` |
+| The user's standing instructions (English and Spanish cues, and the agent's `Rule:` lines) stay in the view for the whole session, in order, through every rewrite and compaction; they are never dropped for size, the ledger and notes shrink instead | ✅ | `a_rule_given_early_is_in_the_view_hundreds_of_turns_later`, `a_big_set_of_rules_shrinks_the_ledger_instead_of_leaving`, `the_agents_rule_lines_land_in_the_rules_block`, `a_compacted_history_keeps_the_rules` |
+| The curator nudges a silent agent for its notes (`nudge=8`, at the end of the last tool result, never in the cached prefix, only the latest request in view and gone once a note answers it, a `note` call or lines of the reply as the host's tools allow, not between two parts of one file until `2·nudge`) and keeps the files the agent wrote in view, newest first, marked when edited later | ✅ | `a_silent_agent_is_nudged_after_n_steps_and_not_before`, `a_note_line_resets_the_count`, `only_the_latest_nudge_stays_in_view`, `nudge_zero_never_nudges`, `a_note_withdraws_the_request`, `a_read_in_parts_is_not_interrupted_until_twice_the_count`, `without_a_note_tool_the_request_asks_for_lines_in_the_reply`, `repeats_fold_in_a_command_output_and_stay_in_a_file`, `a_written_file_stays_in_view_hundreds_of_steps_later`, `a_later_edit_marks_the_written_file`, `a_large_edit_drops_the_written_file`, `a_later_write_replaces_the_written_file`, `the_written_files_keep_the_pin_budget_newest_first`, `a_long_written_file_keeps_its_head_and_tail` |
+| The curator is built in (Rust), replays its golden fixtures (`NEXO_UPDATE_GOLDEN=1` records them again), and a call costs milliseconds | ✅ | `golden_fixtures`, `the_long_session_ends_with_the_reference_stats`, `examples/bench.rs` |
+| The status bar says what the policy does (`curator −62%`, `curator idle`, `curator off`, `plain`); `/context` and `/status` say why; every fallback is a warning | ✅ | `the_label_says_what_the_policy_does`, `a_curator_that_cannot_run_says_so_in_its_label`, `auto_tells_once_why_it_is_plain`, `the_layout_at_100_by_30` |
+| `AGENTS.md` / `NEXO.md` read; `/init` writes one | ✅ | `carries_directory_instructions_and_extra`, `undo_init_status_tools_and_the_editor_key` |
+| Goals kept across turns (`/goal`) | ✅ | `a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done` |
+| Headless runs (`nexo -p`, `--json`) | ✅ | `a_headless_request_prints_the_reply_and_saves_the_session`, `json_mode_streams_one_event_a_line` (the binary itself) |
+| `nexo bench` measures the context policies on the real agent loop: tasks × arms (`[NAME@]POLICY[:k=v;...]`) × repeats, each task sealed in its own workdir, capped by `--max-steps` (default 100) and `--budget`; writes `results.jsonl`, one transcript per run and `summary.md` (score, steps, requests, tokens by kind, estimated cost, tool errors, repeated identical calls, wall time), e.g. `nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat --key "$DEEPSEEK_API_KEY" --tasks realm --arms curator --repeats 1 --max-steps 100 --budget 5 --out ../bench-out` | ✅ | `a_two_session_task_runs_through_the_agent_and_resumes_its_history`, `a_run_stops_at_its_step_limit`, `every_checker_accepts_its_solution_and_rejects_the_start`, `each_arm_gets_its_table_and_a_total_row`, `a_structured_call_passes_and_a_written_one_does_not` |
+
+## Models
+
+| Feature | Status | Checked by |
+|---|---|---|
+| Four wire protocols, 19 presets | ✅ | `openai_chat_fixture`, `openai_responses_fixture`, `anthropic_fixture`, `gemini_fixture`, `presets_are_complete_and_distinct` |
+| Guided `/model` setup, checked against the server | ✅ | `ollama_is_found_with_its_models_and_its_window`, `the_whole_setup_of_a_keyed_provider`, `the_model_setup_checks_saves_switches_and_sets_the_effort` |
+| Reasoning level per model (`/effort`) | ✅ | `levels_follow_the_protocol_and_the_vendor`, `the_model_setup_checks_saves_switches_and_sets_the_effort` |
+| Prices, context window, cost per turn and session | ✅ | `limits_are_reported_and_prices_can_be_set`, `prices_the_four_counts` |
+| Spend limits per session and per day, `/budget` | ✅ | `under_near_and_at_the_limits`, `the_days_spending_adds_up_in_its_file`, `the_spend_limit_stops_before_the_call_that_would_pass_it`, `budget_commands_and_the_spend_in_the_title` |
+| Retries, and limits learned from errors | ✅ | `gives_up_when_retries_are_exhausted`, `a_max_output_error_caps_the_reply_and_retries_once` |
+| Subscription logins: GitHub Copilot, ChatGPT (codex), xAI (`nexo auth login`) | ✅ | `copilot_login_checks_the_subscription_and_finds_its_endpoint`, `an_account_without_copilot_is_told_so`, `chatgpt_login_trades_the_code_for_tokens_and_finds_the_account`, `xai_login_polls_with_the_device_grant_and_slows_down_when_asked` |
+| Copilot routes each model to its protocol | ✅ | `routes_by_model`, `requests_go_without_a_version_and_with_copilot_headers` |
+| Credential store, `nexo auth login/list/logout`, `nexo use`, `nexo doctor`, `nexo guide` | ✅ | `a_key_kept_with_auth_login_sets_up_a_directory_provider`, `a_known_name_is_adopted_and_an_unknown_one_is_not`, `the_hint_names_the_login_or_the_variable`, `a_hidden_key_is_what_was_typed_or_pasted_up_to_enter`, `the_guide_covers_every_command_and_login` |
+| Directory of 200+ providers usable with only their key (`nexo providers --all --json`) | ✅ | `the_directory_is_large_and_well_formed`, `a_key_kept_with_auth_login_sets_up_a_directory_provider` |
+
+## The interface
+
+| Feature | Status | Checked by |
+|---|---|---|
+| Ten themes, forced RGB, 256-colour fallback | ✅ | `every_colour_of_every_coloured_theme_is_an_explicit_rgb_value`, `downsampling_maps_to_the_nearest_of_the_cube_and_the_grey_ramp` |
+| Status bar (bottom line): model, effort, mode, gauge (a thin line in half cells; `~` when the model never said its window), memory, cost; `# root` | ✅ | `title_pieces_leave_in_order_and_the_session_name_is_bounded`, `the_layout_at_100_by_30` |
+| `/context`, `/usage` (and a click on the status bar): a window over the transcript with tabs Context · Usage · Session, a `[✗]` that lights up under the pointer and closes, a click outside closes; it grows open, the context grid (100 cells by kind) and the bars fill in, a sparkline of what each call sent | ✅ | `context_and_usage_open_a_window_with_tabs_and_a_close_button`, `sparkline_scales_to_the_largest`, `the_window_keeps_to_its_bounds` |
+| No text left behind on scroll: escapes, tabs, emoji joiners and presentation selectors are taken out before layout, and the interface's own marks avoid glyphs terminals draw at two widths | ✅ | `clean_takes_out_what_the_terminal_draws_differently` |
+| Activity line, blinking caret, logo intro, fading messages | ✅ | `the_files_panel_and_a_diff_card` (activity line), `the_caret_blinks_and_the_mark_lights_up`, `colours_mix_for_fades` |
+| Minimal cards: a finished tool shows one line (`✓ bash cargo test · 42 lines 1.2s ▸`), a failure keeps a short preview, a running one its last lines; open, the whole command is wrapped to the width, never cut | ✅ | `a_tool_card_folds_after_the_limit_and_expands_on_toggle`, `an_open_running_shell_card_shows_the_whole_command_wrapped`, `a_failed_card_keeps_a_short_preview_when_folded` |
+| Every block of more than one line folds to its first line (click on the selected block's head, `→`/`←`, `Enter`); new blocks fade in, an opened one grows, a running tool's name shimmers, a card whose head scrolled away keeps it pinned at the top | ✅ | `any_long_block_folds_to_its_first_line_and_opens_again`, `a_new_block_fades_in_and_an_opened_one_grows` |
+| Indented transcript: a one-column margin for every block, the steps of a turn (tool calls, thinking) two columns in under the reply, each result under its call behind a `│` guide that ends in `└`; one-line steps stack as a list, two blank lines start a new turn; narrow terminals drop the indent | ✅ | `the_steps_of_a_turn_sit_under_the_reply_and_one_line_steps_read_as_a_list`, `a_selected_block_has_a_bar_down_its_margin_in_every_theme` |
+| Keyboard over the blocks: `Shift+↑` (or `Tab`) on an empty draft selects the last one, `↑`/`↓` walk them, `→` opens, `←` folds, `Enter` toggles, `Esc` or typing goes back to the draft; the view keeps the selected block in sight (its head first when taller than the view); the selection is a bar down the block's margin and a lit head, also in `mono` | ✅ | `the_arrows_walk_the_blocks_and_open_and_fold_them`, `a_selected_block_has_a_bar_down_its_margin_in_every_theme` |
+| Mouse: scroll, select and copy, a click selects a block, a click on the selected block's head folds or opens it | ✅ | `a_drag_selects_and_a_click_toggles`, `extracts_by_columns_across_wrapped_lines` |
+| Scrollbars take the mouse everywhere (transcript, dialogs, pickers, `/context`): drag the thumb one to one, click the track to jump, lit under the pointer (the column left of it counts); a drag on them selects no text | ✅ | `the_transcript_thumb_drags_one_to_one_and_selects_no_text`, `a_click_on_the_track_glides_there_and_the_wheel_glides_too`, `the_thumb_lights_up_under_the_pointer`, `a_dialogs_scrollbar_drags_its_text`, `a_dragged_scrollbar_sets_the_body_or_moves_a_lists_selection` |
+| Motion: scrolling eases out, the thumb and a clickable `↓ N new` pill pulse when content arrives out of sight, dialogs and the palette pop in, a glow runs along the activity line, hovered rows and fold heads light up; `[ui] animations = false` stills it all | ✅ | `the_new_pill_beats_and_a_click_on_it_goes_to_the_end`, `dialogs_and_the_palette_pop_in_unless_the_animations_are_off`, `the_comet_runs_along_the_rule_and_keeps_its_width`, `a_tween_glides_to_its_target_and_stops` |
+| Status bar clicks: the model opens the model picker, the gauge `/context`, the cost `/usage` | ✅ | `the_status_bar_opens_the_model_the_context_and_the_usage` |
+| Search the transcript (`Ctrl+F`) | ✅ | `layout_scroll_and_search` |
+| Side panel: goal, todo, changed files | ✅ | `the_panel_shows_the_goal_and_the_todo_list_above_the_files` |
+| Command palette with aliases | ✅ | `ranks_commands_and_moves_the_selection`, `an_alias_finds_its_command_first_and_tab_completes_the_primary_name` |
+| Help that fits any width | ✅ | `modals_and_palette_draw_on_top` |
+| A bell and a desktop notification when a long turn ends | ✅ | `a_long_turn_rings_when_it_ends_and_a_short_one_does_not`, `the_notification_is_the_bell_and_both_desktop_forms`; and in a real terminal: BEL, OSC 9 and OSC 777 written after a 2.8 s turn. The notification is shown by the terminals that take OSC 9 (iTerm2, WezTerm, kitty, Windows Terminal, foot) or OSC 777 (GNOME Terminal, Konsole); every terminal rings the bell |
+| Copy to the clipboard (local, OSC 52 over SSH and tmux) | ✅ | `tries_the_tools_in_order_and_reports_the_one_that_took_the_text`, `osc52_is_base64_and_wrapped_for_tmux` |
+| `/copy code`: the last code block of the replies | ✅ | `the_last_code_block_is_found` |
+| A line typed fast (SSH, tmux) still sends on Enter; only multi-line bursts count as a paste | ✅ | `a_paste_that_comes_as_keys_is_one_draft_and_a_long_one_is_sent_whole` |
+| Counts read right: `1 line`, `2 matches`, `3 entries` | ✅ | `plurals` |
+| Terminal tab title: the session's name, a spinner while a turn runs | ✅ | `ctrl_c_clears_a_draft_first_and_the_title_follows_the_turn` |
+| `Ctrl+C` clears a draft first (kept in the history: `↑` brings it back); a draft left on quit is kept too | ✅ | `ctrl_c_clears_a_draft_first_and_the_title_follows_the_turn` |
+| Runs as root with root's own home, even under `sudo` | ✅ | `as_root_the_paths_are_roots_even_with_a_callers_home` (the binary, with a caller's `$HOME` and `$XDG_*`), `the_layout_at_100_by_30` (the `# root` mark) |
+| Tiny terminals do not break it | ✅ | `tiny_terminals_do_not_panic` |
+| Linux and Windows (Git Bash or PowerShell for commands, `%USERPROFILE%\\.nexo`, paths shown with `/`, Git Bash paths such as `/c/Users` and `/tmp` understood by the file tools) | ✅ | `unix_runs_sh_and_windows_prefers_git_bash_then_powershell`, `git_bash_paths_become_windows_paths`; the whole suite built for Windows passes (run under Wine here, and on Windows in CI on every push); the Windows `nexo.exe` was run: headless reply, session saved, `%APPDATA%` paths |
+| On Windows MCP servers are asked for UTF-8 stdio, so accents and emoji in their output arrive intact | ✅ | the environment variables the common runtimes read are set when a server starts |
+
+## Extending it
+
+| Way | Where |
+|---|---|
+| Commands of one's own | `.nexo/commands/*.md`, `~/.nexo/commands/*.md` |
+| Hooks | `[[hooks]]` in the configuration (a project's own once trusted: `nexo config trust`) |
+| More tools | MCP servers, `[mcp.<name>]` in the configuration (a project's own once trusted) |
+| Another vendor | a `[providers.<name>]` block, or `/model` |
+| Another protocol | one adapter in `crates/nexo-providers` |

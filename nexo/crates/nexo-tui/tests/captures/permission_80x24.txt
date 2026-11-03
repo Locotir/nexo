@@ -1,0 +1,24 @@
+                                                                               │
+   • the input is 3 1 2                                                        │
+   • the output must be 1 2 3                                                  │
+                                                                               │
+   ────────────────────────────────────────────────────────────────────── rust │
+  ╭ permission · bash ───────────────────────────────────────────────────────╮ │
+  │ bash  cargo test                                                         │ │
+  │                                                                          │ │
+  │ $ cargo test                                                             │ ┃
+  │                                                                          │ ┃
+  │ Allow always with a rule:                                                │ ┃
+  │   1  bash(cargo *)                                                       │ ┃
+  │                                                                          │ ┃
+  │ [y] allow   [a] always   [n] deny                                        │ ┃
+  ╰──────────────────────────────────────────────────────────────────────────╯ ┃
+                                                                               ┃
+ ◇ compacted 2 messages                                                        ┃
+                                                                               ┃
+      0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit           ┃
+                                                                               ┃
+────────────────────────────────────────────────────────────────────────────────
+›   ask anything
+ y allow · a always · n deny · 1-9 rule · ↑↓ scroll        20261102-100000-ef56
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

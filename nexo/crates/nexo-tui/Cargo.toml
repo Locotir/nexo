@@ -1,0 +1,38 @@
+[package]
+name = "nexo-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: the full-screen terminal interface (consumes AgentEvent, produces AgentCommand)"
+
+[dependencies]
+nexo-core = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tui-textarea = { workspace = true }
+pulldown-cmark = { workspace = true }
+syntect = { workspace = true }
+two-face = { workspace = true }
+similar = { workspace = true }
+nucleo-matcher = { workspace = true }
+ignore = { workspace = true }
+arboard = { workspace = true }
+image = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+base64 = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+time = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"

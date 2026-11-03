@@ -1,0 +1,2299 @@
+//! Drawing one frame from the app's state.
+
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block as Box_, BorderType, Borders, Clear, Paragraph};
+use ratatui::Frame;
+
+use crate::anim;
+use crate::app::{App, Hover, StatusHit, FILES_PANEL_MIN_W, FILES_PANEL_W, MAP_FLASH_MS, STATUS_FADE_MS, STATUS_MS};
+use crate::modal::{Modal, PickKind};
+use crate::overlay;
+use crate::palette::{PaletteKind, MAX_ROWS};
+use crate::render::blocks::{fmt_k, fmt_ms, todo_counts, todo_style, SPINNER};
+use crate::render::markdown::text_of;
+use crate::render::wrap::{truncate, width};
+use crate::scrollbar::{self, Bar, Target};
+use crate::select::style_cols;
+use crate::theme::{mix, Theme};
+use nexo_core::permission::PermissionMode;
+
+pub const MAX_INPUT_LINES: u16 = 8;
+
+/// Button labels of a permission dialog with the key each one stands for.
+type Buttons = (Vec<(String, char)>, usize);
+
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    app.term_width = area.width;
+    app.note_popups();
+    // the theme's ground under everything: no cell is left to the terminal's own colours
+    f.render_widget(Box_::default().style(app.theme.base()), area);
+    if let Some(dv) = &mut app.diffview {
+        crate::diffview::render::draw(f, dv, area, &app.theme);
+        // DF7: a dialog (permission, question, info) is always on top, the viewer never hides it
+        if app.modal.is_some() {
+            draw_modal(f, app, area);
+        }
+        scrub(f.buffer_mut());
+        app.dirty = false;
+        return;
+    }
+    if area.width < MIN_W || area.height < MIN_H {
+        draw_too_small(f, app, area);
+        app.files_area = Rect::default();
+        app.dirty = false;
+        return;
+    }
+    let input_h = (crate::input::wrapped_rows(&app.input, area.width.saturating_sub(2) as usize).0.len() as u16)
+        .clamp(1, MAX_INPUT_LINES);
+    // a short window gives its keys line to the text, unless a window or the commands list is open
+    let hints_h = if !hints_shown(app) || (area.height <= SHORT_H && app.modal.is_none() && app.palette.is_none()) {
+        0
+    } else {
+        1
+    };
+    // the keys right under the draft, the state (model, context, spend) on the last row
+    let [middle, sep, input, hints, title] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(input_h),
+        Constraint::Length(hints_h),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    let files_w = if (app.show_files || app.show_live) && area.width >= FILES_PANEL_MIN_W {
+        files_panel_width(area.width)
+    } else {
+        0
+    };
+    let [text_area, files] = Layout::horizontal([Constraint::Min(0), Constraint::Length(files_w)]).areas(middle);
+    let transcript = text_area;
+    app.files_area = if files_w > 0 { files } else { Rect::default() };
+    if files_w == 0 && (app.show_files || app.show_live) {
+        if !app.panel_hint_shown {
+            app.panel_hint_shown = true;
+            app.flash(&format!("panel hidden under {FILES_PANEL_MIN_W} columns"));
+        }
+    } else {
+        app.panel_hint_shown = false;
+    }
+    app.status_row = title.y;
+    draw_title(f, app, title);
+    draw_transcript(f, app, transcript);
+    if files_w > 0 {
+        draw_panel(f, app, files);
+    }
+    draw_separator(f, app, sep);
+    draw_input(f, app, input);
+    if !matches!(app.modal, Some(Modal::Permission(_))) {
+        draw_hints(f, app, hints);
+    }
+    // toasts: one row each, top right of the transcript, under every dialog and off the scrollbar column
+    let toast_area = Rect { width: transcript.width.saturating_sub(1), ..transcript };
+    crate::toast::draw(f, &app.toasts, &app.theme, toast_area, app.now(), app.opts.animations);
+    if app.palette.is_some() {
+        draw_palette(f, app, transcript);
+    }
+    if app.modal.is_some() {
+        // over the transcript only: the draft and the state line stay in sight
+        // the /context window wants 8 rows: on a short screen it also takes the rule's row under the text
+        let over = Rect { height: middle.height + sep.height, ..middle };
+        let area_for = match app.modal {
+            Some(Modal::Info(_) | Modal::Question(_)) if middle.height < 8 && over.height >= 6 => over,
+            _ if middle.height >= 5 => middle,
+            _ => area,
+        };
+        draw_modal(f, app, area_for);
+        if matches!(app.modal, Some(Modal::Permission(_))) {
+            draw_hints(f, app, hints);
+        }
+    }
+    scrub(f.buffer_mut());
+    app.dirty = false;
+}
+
+/// The last line of defence: a cell whose text would move the cursor, ring, recolour or draw
+/// differently from the layout (a tab, an escape, a line break, a joiner, a direction override)
+/// shows a space instead. Every text is cleaned where it arrives; this catches the one that was not.
+pub fn scrub(buf: &mut ratatui::buffer::Buffer) {
+    for cell in buf.content.iter_mut() {
+        if cell.symbol().chars().any(crate::render::wrap::unsafe_char) {
+            cell.set_symbol(" ");
+        }
+    }
+}
+
+/// One coloured piece of the status bar (the bottom line).
+pub struct Seg {
+    pub text: String,
+    pub style: Style,
+}
+
+/// The segments of the title bar, most important first within the drop
+/// order: `(model, mode[, goal], gauge, mem, branch, directory)`; when the
+/// bar does not fit, the directory goes first, then the branch, then the
+/// memory, then the gauge's counts, then the model is shortened.
+pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
+    let theme = &app.theme;
+    let base = theme.bar();
+    let model = |short: bool| Seg {
+        text: if short { app.model.clone() } else { format!("{}/{}", app.provider, app.model) },
+        style: base.fg(theme.accent).add_modifier(Modifier::BOLD),
+    };
+    let mode_color = match app.permission_mode {
+        PermissionMode::Ask => theme.bar_fg,
+        PermissionMode::AcceptEdits => theme.warn,
+        PermissionMode::Auto => theme.error,
+        PermissionMode::ReadOnly => theme.info,
+        PermissionMode::Plan => theme.accent2,
+    };
+    let mode = Seg { text: app.permission_mode.as_str().to_string(), style: base.fg(mode_color) };
+    let goal = app.goal.as_ref().map(|_| Seg { text: "◎ goal".to_string(), style: base.fg(theme.accent2) });
+    let gauge = {
+        let (num, den, guessed) = app.gauge_view();
+        let pct = share(num, den);
+        // drawn at the eased share: a new value slides in rather than jumps
+        let shown = if app.gauge_shown > 0.0 { app.gauge_shown } else { num as f64 / den.max(1) as f64 };
+        let colour = theme.level_color(pct);
+        let mut cells = if let Some(split) = app.gauge_split().filter(|_| !guessed) {
+            crate::render::gauge::stacked(theme, split, den, GAUGE_CELLS, colour)
+        } else {
+            gauge_segs(theme, shown, GAUGE_CELLS, colour, pct >= 90 && (app.spinner / 5) % 2 == 0)
+        };
+        cells.push(Seg {
+            text: if guessed { format!(" ~{pct}%") } else { format!(" {pct}%") },
+            style: base.fg(colour).add_modifier(Modifier::BOLD),
+        });
+        let counts = if guessed { fmt_k(num) } else { format!("{}/{}", fmt_k(num), fmt_k(den)) };
+        (cells, Seg { text: counts, style: base.fg(theme.dim) })
+    };
+    // what the policy does ("curator −38%", "curator idle"), not only its name
+    let policy = app
+        .context
+        .as_ref()
+        .map(|c| if c.label.is_empty() { c.policy.clone() } else { c.label.clone() })
+        .filter(|p| !p.is_empty());
+    // what the curator keeps out of the view, when the events say so
+    let kept = app.context.as_ref().filter(|c| c.history_tokens > c.view_tokens).map(|c| Seg {
+        text: format!("kept out {:>5}", fmt_k(c.history_tokens - c.view_tokens)),
+        style: base.fg(theme.info),
+    });
+    // the whole memory kept, in tokens; what each call sends is the gauge
+    let mem = app
+        .context
+        .as_ref()
+        .filter(|c| c.history_tokens > 0)
+        .map(|c| Seg { text: format!("mem {}", fmt_k(c.history_tokens)), style: base.fg(theme.accent2) });
+    // a glyph every common font has, not an icon font's
+    let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: base.fg(theme.hunk) });
+    let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: base.fg(theme.dim) };
+    let policy_seg = policy.map(|p| Seg { text: p, style: base.fg(theme.accent2) });
+    // the share of input the cache served (billed at a fraction) and the model calls so far
+    let extra = {
+        let u = &app.session_usage;
+        let mut g = Vec::new();
+        if u.total_input() > 0 {
+            let pct = share(u.cache_read, u.total_input());
+            let colour = if pct >= 50 {
+                theme.success
+            } else if pct >= 20 {
+                theme.warn
+            } else {
+                theme.dim
+            };
+            g.push(Seg { text: format!("{pct:>3}% cached"), style: base.fg(colour) });
+        }
+        let calls = app.call_inputs.len();
+        if calls > 0 {
+            let sep = if g.is_empty() { "" } else { " · " };
+            let word = if calls == 1 { "call" } else { "calls" };
+            g.push(Seg { text: format!("{sep}{calls} {word}"), style: base.fg(theme.dim) });
+        }
+        g
+    };
+
+    // what each candidate keeps, from the whole bar down to the model alone
+    struct Keep {
+        short_model: bool,
+        dir: bool,
+        branch: bool,
+        mem: bool,
+        extra: bool,
+        counts: bool,
+        goal: bool,
+        gauge: bool,
+        mode: bool,
+    }
+    let order = status_pieces(&app.opts.status_line);
+    let build = |k: &Keep| {
+        let mut out: Vec<Vec<Seg>> = Vec::new();
+        // the model and its reasoning level share a group when both are on, in the listed order
+        let mut model_done = false;
+        for piece in &order {
+            match *piece {
+                "model" | "effort" => {
+                    if model_done {
+                        continue;
+                    }
+                    model_done = true;
+                    let mut g = Vec::new();
+                    if order.contains(&"model") {
+                        g.push(model(k.short_model));
+                    }
+                    if order.contains(&"effort") {
+                        if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {
+                            g.push(Seg { text: format!(" ◆ {e}"), style: base.fg(theme.accent2) });
+                        }
+                    }
+                    if !g.is_empty() {
+                        out.push(g);
+                    }
+                }
+                "dir" if k.dir => out.push(vec![Seg { text: dir.text.clone(), style: dir.style }]),
+                "branch" if k.branch => {
+                    if let Some(b) = &branch {
+                        out.push(vec![Seg { text: b.text.clone(), style: b.style }]);
+                    }
+                }
+                "mode" if k.mode => {
+                    let mut m = vec![Seg { text: mode.text.clone(), style: mode.style }];
+                    if k.goal {
+                        if let Some(g) = &goal {
+                            m.push(Seg { text: " │ ".to_string(), style: base.fg(theme.border) });
+                            m.push(Seg { text: g.text.clone(), style: g.style });
+                        }
+                    }
+                    out.push(m);
+                }
+                "context" if k.gauge => {
+                    let (cells, counts) = &gauge;
+                    let mut g: Vec<Seg> = cells.iter().map(|c| Seg { text: c.text.clone(), style: c.style }).collect();
+                    if k.counts {
+                        g.push(Seg { text: format!(" {}", counts.text), style: counts.style });
+                        // the curator policy rides with the counts when it is listed right after
+                        let at = order.iter().position(|p| *p == "context");
+                        if at.is_some_and(|i| order.get(i + 1) == Some(&"curator")) {
+                            if let Some(p) = &policy_seg {
+                                g.push(Seg { text: format!(" {}", p.text), style: p.style });
+                            }
+                        }
+                    }
+                    out.push(g);
+                }
+                "curator" if k.counts => {
+                    let at = order.iter().position(|p| *p == "context");
+                    let joined = k.gauge && at.is_some_and(|i| order.get(i + 1) == Some(&"curator"));
+                    if let (false, Some(p)) = (joined, &policy_seg) {
+                        out.push(vec![Seg { text: p.text.clone(), style: p.style }]);
+                    }
+                }
+                "mem" if k.mem => {
+                    if let Some(m) = &mem {
+                        out.push(vec![Seg { text: m.text.clone(), style: m.style }]);
+                    }
+                }
+                "cache" if k.extra && !extra.is_empty() => {
+                    let mut g: Vec<Seg> = extra.iter().map(|e| Seg { text: e.text.clone(), style: e.style }).collect();
+                    // the savings go first when the bar narrows, with the directory
+                    if let (true, Some(kp)) = (k.dir, &kept) {
+                        g.push(Seg { text: format!(" · {}", kp.text), style: kp.style });
+                    }
+                    out.push(g);
+                }
+                _ => {}
+            }
+        }
+        out
+    };
+    let all = Keep {
+        short_model: false,
+        dir: true,
+        branch: true,
+        mem: true,
+        extra: true,
+        counts: true,
+        goal: true,
+        gauge: true,
+        mode: true,
+    };
+    let steps = [
+        Keep { ..all },
+        Keep { dir: false, ..all },
+        Keep { dir: false, branch: false, ..all },
+        Keep { dir: false, branch: false, extra: false, ..all },
+        Keep { dir: false, branch: false, mem: false, extra: false, ..all },
+        Keep { dir: false, branch: false, mem: false, extra: false, counts: false, ..all },
+        Keep { dir: false, branch: false, mem: false, extra: false, counts: false, short_model: true, ..all },
+        Keep {
+            dir: false,
+            branch: false,
+            mem: false,
+            extra: false,
+            counts: false,
+            short_model: true,
+            goal: false,
+            ..all
+        },
+        Keep {
+            dir: false,
+            branch: false,
+            mem: false,
+            extra: false,
+            counts: false,
+            short_model: true,
+            goal: false,
+            gauge: false,
+            ..all
+        },
+        Keep {
+            dir: false,
+            branch: false,
+            mem: false,
+            extra: false,
+            counts: false,
+            short_model: true,
+            goal: false,
+            gauge: false,
+            mode: false,
+        },
+    ];
+    for k in &steps {
+        let c = build(k);
+        if segs_width(app, &c) <= avail {
+            return c;
+        }
+    }
+    build(&steps[steps.len() - 1])
+}
+
+/// The status bar's pieces in the order they are drawn: the configured list (unknown names and
+/// repeats dropped), or all of them when it is empty. `tokens` and `cost` are drawn on the right.
+pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
+    const ALL: [&str; 11] =
+        ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "tokens", "cost"];
+    let mut out: Vec<&'static str> = Vec::new();
+    for n in cfg {
+        if let Some(p) = ALL.iter().find(|p| p.eq_ignore_ascii_case(n.trim())) {
+            if !out.contains(p) {
+                out.push(p);
+            }
+        }
+    }
+    if out.is_empty() && cfg.is_empty() {
+        out = ALL.to_vec();
+    }
+    out
+}
+
+/// " nexo", and " # root" after it when nexo runs as root, so that is never out of sight.
+const ROOT_MARK: &str = " # root";
+
+fn brand_width(app: &App) -> usize {
+    5 + if app.root { width(ROOT_MARK) } else { 0 }
+}
+
+fn segs_width(app: &App, segs: &[Vec<Seg>]) -> usize {
+    // the brand + " │ " between every group
+    brand_width(app) + segs.iter().map(|g| 3 + g.iter().map(|s| width(&s.text)).sum::<usize>()).sum::<usize>()
+}
+
+fn share(num: u64, den: u64) -> u64 {
+    ((num as f64 / den.max(1) as f64) * 100.0).round().clamp(0.0, 999.0) as u64
+}
+
+fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
+    app.status_hits.clear();
+    if area.height == 0 {
+        return;
+    }
+    let theme = &app.theme.clone();
+    let lit = |hit: StatusHit| match app.hover {
+        Hover::Status(h) if h == hit => Modifier::UNDERLINED,
+        _ => Modifier::empty(),
+    };
+    let base = theme.bar();
+    let tok_real = fmt_k(app.session_usage.total_input() + app.session_usage.output);
+    let tok = if app.opts.animations { crate::motion::fixed(&fmt_k(app.tok_shown), &tok_real) } else { tok_real };
+    let glow = if app.opts.animations {
+        crate::motion::hump(app.fx.turn_done, app.now(), crate::motion::GLOW_MS)
+    } else {
+        0.0
+    };
+    // every call re-sends its context, so this total of billed tokens grows much faster than mem
+    // narrow bars keep the cost and give the room to the gauge
+    let mut right = Vec::new();
+    let mut clock = false;
+    // while a turn runs, how long it has been running
+    if let (true, Some(t)) = (app.busy, app.turn_started) {
+        // a discreet spinner rides with the clock; with animations off it stays the plain clock glyph
+        let glyph = if app.opts.animations { SPINNER[app.spinner % SPINNER.len()] } else { "⏱" };
+        right.push(Seg {
+            text: format!(" {glyph} {}", crate::render::blocks::fmt_secs(t.elapsed().as_secs())),
+            style: base.fg(theme.accent),
+        });
+        clock = true;
+    }
+    // `[ui] status_command`: the person's script draws the bar; the turn's clock stays at the end
+    if let Some(line) = app.status_cmd.as_ref().and_then(|s| s.line.as_deref()) {
+        right.push(Seg { text: " ".to_string(), style: base });
+        let w = area.width as usize;
+        let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
+        let mut pieces = crate::status_cmd::spans(line, base);
+        if theme.mono {
+            pieces.iter_mut().for_each(|(_, s)| (s.fg, s.bg) = (base.fg, base.bg));
+        }
+        let pieces = crate::status_cmd::fit(pieces, w.saturating_sub(right_w + 1));
+        let used = 1 + pieces.iter().map(|(t, _)| width(t)).sum::<usize>();
+        let mut spans = vec![Span::styled(" ", base)];
+        spans.extend(pieces.into_iter().map(|(t, s)| Span::styled(t, s)));
+        spans.push(Span::styled(" ".repeat(w.saturating_sub(used + right_w)), base));
+        spans.extend(right.into_iter().map(|s| Span::styled(s.text, s.style)));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
+    let pieces = status_pieces(&app.opts.status_line);
+    if pieces.contains(&"tokens") && (area.width >= 80 || app.cost <= 0.0 || !pieces.contains(&"cost")) {
+        // a separator only between two pieces, never one left alone
+        if !right.is_empty() {
+            right.push(Seg { text: " ·".to_string(), style: base.fg(theme.border) });
+        }
+        let tstyle = if glow > 0.0 {
+            base.fg(crate::motion::fade(theme, theme.bar_fg, theme.accent2, glow)).add_modifier(Modifier::BOLD)
+        } else {
+            base
+        };
+        right.push(Seg { text: format!(" Σ {tok} billed"), style: tstyle });
+    }
+    // the cost, against the session's limit when there is one, coloured as it nears it
+    let limit = app.budget.and_then(|(_, _, l, _)| l);
+    let shown = if app.opts.animations { app.cost_shown } else { app.cost };
+    if pieces.contains(&"cost") && (app.cost > 0.0 || limit.is_some()) {
+        let sep = if right.is_empty() { " " } else { " · " };
+        right.push(Seg { text: sep.to_string(), style: base });
+        let (text, colour) = match limit {
+            Some(l) => {
+                let share = app.cost / l;
+                let c = if share >= 1.0 {
+                    theme.error
+                } else if share >= 0.8 {
+                    theme.warn
+                } else {
+                    theme.success
+                };
+                (format!("{}/{l:.2}", crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost))), c)
+            }
+            None => (crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost)), theme.success),
+        };
+        // while it rolls the figure is lit
+        let rolling = (app.cost - shown).abs() > 0.000_05;
+        let style = if rolling {
+            base.fg(theme.accent2).add_modifier(Modifier::BOLD)
+        } else if glow > 0.0 {
+            base.fg(crate::motion::fade(theme, colour, theme.accent2, glow)).add_modifier(Modifier::BOLD)
+        } else {
+            base.fg(colour)
+        };
+        right.push(Seg { text, style });
+    }
+    right.push(Seg { text: " ".to_string(), style: base });
+    let w = area.width as usize;
+    let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
+    let avail = w.saturating_sub(right_w);
+    let groups = title_segments(app, avail);
+    let order0 = status_pieces(&app.opts.status_line).first().copied();
+    let mut spans = vec![Span::styled(" nexo", base.add_modifier(Modifier::BOLD))];
+    if app.root {
+        spans.push(Span::styled(ROOT_MARK, base.fg(theme.error).add_modifier(Modifier::BOLD)));
+    }
+    let mut used = brand_width(app);
+    let mut hits = Vec::new();
+    'outer: for (gi, g) in groups.iter().enumerate() {
+        let sep = " │ ";
+        if used + width(sep) > avail {
+            break;
+        }
+        spans.push(Span::styled(sep.to_string(), base.fg(theme.border)));
+        used += width(sep);
+        let gw: usize = g.iter().map(|s| width(&s.text)).sum();
+        if used + gw > avail {
+            // a piece is shown whole or not at all: drop the separator just pushed
+            spans.pop();
+            used -= width(sep);
+            break 'outer;
+        }
+        let hit = if gi == 0 && matches!(order0, Some("model" | "effort")) {
+            Some(StatusHit::Model)
+        } else {
+            g.iter().any(is_gauge_pct).then_some(StatusHit::Gauge)
+        };
+        if let Some(h) = hit {
+            hits.push((Rect::new(area.x + used as u16, area.y, gw as u16, 1), h));
+        }
+        let m = hit.map(lit).unwrap_or_else(Modifier::empty);
+        for s in g {
+            used += width(&s.text);
+            spans.push(Span::styled(s.text.clone(), s.style.add_modifier(m)));
+        }
+    }
+    let pad = w.saturating_sub(used + right_w);
+    spans.push(Span::styled(" ".repeat(pad), base));
+    // the billed tokens and the cost open the usage (the trailing pad is not part of it)
+    // (nor is the turn's clock in front of it)
+    let lead = if clock { right.iter().take(2).map(|s| width(&s.text)).sum() } else { 0 };
+    let start = used + pad + lead;
+    let cost_w = right_w.saturating_sub(lead + 1);
+    if cost_w > 0 && start < w {
+        hits.push((Rect::new(area.x + start as u16, area.y, cost_w.min(w - start) as u16, 1), StatusHit::Cost));
+    }
+    let cm = lit(StatusHit::Cost);
+    let n = right.len();
+    let skip = if lead > 0 { 2 } else { 0 };
+    for (i, s) in right.into_iter().enumerate() {
+        let st = if i >= skip && i + 1 < n { s.style.add_modifier(cm) } else { s.style };
+        spans.push(Span::styled(s.text, st));
+    }
+    app.status_hits = hits;
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The gauge's percentage (" 42%", " ~42%"), not another piece that ends in one.
+fn is_gauge_pct(s: &Seg) -> bool {
+    let t = s.text.trim_start().trim_start_matches('~');
+    t.ends_with('%') && t.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// Clears a rectangle and paints the theme's ground on it (a `Clear` alone
+/// would leave the terminal's own background there).
+fn clear_bg(f: &mut Frame, r: Rect, theme: &Theme) {
+    f.render_widget(Clear, r);
+    f.render_widget(Box_::default().style(theme.base()), r);
+}
+
+/// One cell of clear ground on each side of a dialog, so the transcript's markers do not peek out beside it.
+fn clear_margin(f: &mut Frame, r: Rect, area: Rect, theme: &Theme) {
+    let x = r.x.saturating_sub(1).max(area.x);
+    let end = (r.x + r.width + 1).min(area.x + area.width);
+    clear_bg(f, Rect::new(x, r.y, end - x, r.height), theme);
+}
+
+/// Cells of the status bar's context gauge.
+pub const GAUGE_CELLS: usize = 8;
+
+/// The filled part of a gauge of `cells` cells at `share` (0..=1), in eighths of
+/// a cell, and how many empty cells follow it: `(fill, empty)`.
+pub fn gauge_cells(share: f64, cells: usize) -> (String, usize) {
+    const PART: [&str; 8] = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+    let eighths = (share.clamp(0.0, 1.0) * (cells * 8) as f64).round() as usize;
+    let full = eighths / 8;
+    let mut fill = "█".repeat(full);
+    fill.push_str(PART[eighths % 8]);
+    let used = full + usize::from(eighths % 8 > 0);
+    (fill, cells - used)
+}
+
+/// A thin line gauge of `cells` cells at `share` (0..=1), in half cells:
+/// `(fill, track)`, the fill heavy (`━`, `╸` for a half) and the track the same
+/// line in a dim colour, so the bar sits on the text's baseline rather than
+/// filling the whole row.
+pub fn line_gauge(share: f64, cells: usize) -> (String, String) {
+    let halves = (share.clamp(0.0, 1.0) * (cells * 2) as f64).round() as usize;
+    let mut fill = "━".repeat(halves / 2);
+    if halves % 2 == 1 {
+        fill.push('╸');
+    }
+    let used = halves.div_ceil(2);
+    (fill, "━".repeat(cells - used))
+}
+
+/// The gauge as coloured pieces: the fill in `colour` on a dim track, brighter while `pulse`.
+fn gauge_segs(theme: &Theme, share: f64, cells: usize, colour: ratatui::style::Color, pulse: bool) -> Vec<Seg> {
+    let track = mix(theme.bar_bg, theme.border, 0.7);
+    let fill_colour = if pulse { mix(colour, theme.fg, 0.35) } else { colour };
+    let (fill, rest) = line_gauge(share, cells);
+    let mut out = vec![Seg { text: fill, style: Style::default().fg(fill_colour) }];
+    if !rest.is_empty() {
+        out.push(Seg { text: rest, style: Style::default().fg(track) });
+    }
+    out
+}
+
+pub fn short_path(p: &str) -> String {
+    let p = nexo_core::paths::shown(std::path::Path::new(p));
+    if width(&p) > 40 {
+        let parts: Vec<&str> = p.rsplit('/').take(2).collect();
+        format!("…/{}", parts.into_iter().rev().collect::<Vec<_>>().join("/"))
+    } else {
+        p
+    }
+}
+
+fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
+    app.transcript_area = area;
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let text_w = area.width.saturating_sub(1).max(1) as usize;
+    let height = area.height as usize;
+    app.layout(text_w);
+    app.settle(height);
+    app.reveal_step();
+    let scroll = app.glide(height);
+    let theme = app.theme.clone();
+    let hovered_head = match app.hover {
+        Hover::Head(i) => Some(i),
+        _ => None,
+    };
+    let query = app.search.as_ref().filter(|s| !s.query.is_empty()).map(|s| s.query.to_lowercase());
+    let current_match = app.search.as_ref().and_then(|s| s.matches.get(s.current).copied());
+    let selected = app.selected;
+    let selection = app.selection.clone();
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(height);
+    let mut line = scroll;
+    let end = (scroll + height).min(app.total_lines);
+    let mut bi = match app.offsets.binary_search(&scroll) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    while line < end && bi < app.blocks.len() {
+        let off = app.offsets[bi];
+        let next = app.offsets.get(bi + 1).copied().unwrap_or(app.total_lines);
+        if line >= next {
+            bi += 1;
+            continue;
+        }
+        let n = app.shown(bi, text_w);
+        let j = line - off;
+        let mut l = if j < n { app.lines(bi, text_w)[j].clone() } else { Line::default() };
+        // the first line in sight of a card whose head scrolled away shows the head instead
+        if line == scroll && j > 0 && j + 1 < n && sticky(&app.blocks[bi]) {
+            l = app.lines(bi, text_w)[0].clone().patch_style(Style::default().bg(theme.bg_alt));
+        }
+        let t = app.fade(bi);
+        if t < 1.0 {
+            l = fade_in(l, &theme, t);
+        }
+        // the selected block: a bar down its margin, the whole height of it, and its head lit
+        if selected == Some(bi) && j < n {
+            l = mark_margin(l, theme.style(theme.accent).add_modifier(Modifier::BOLD));
+            if j == 0 {
+                l = l.patch_style(theme.selection());
+            }
+        } else if hovered_head == Some(bi) && j == 0 {
+            l = l.patch_style(theme.hover());
+        }
+        if let Some(q) = &query {
+            l = highlight(l, q, theme.highlight(), current_match == Some(line));
+        }
+        if let Some((from, to)) = selection.as_ref().and_then(|s| s.covers(line)) {
+            l = style_cols(l, from, to, theme.highlight());
+        }
+        out.push(l);
+        line += 1;
+    }
+    f.render_widget(Paragraph::new(Text::from(out)), Rect { width: text_w as u16, ..area });
+    app.transcript_bar = None;
+    let now = std::time::Instant::now();
+    let pulse = anim::pulse(app.unseen_at, now);
+    if app.total_lines > height && area.width > 1 {
+        let bar = Bar {
+            target: Target::Transcript,
+            x: area.x + area.width - 1,
+            y: area.y,
+            len: area.height,
+            content: app.total_lines,
+            viewport: height,
+            offset: scroll,
+        };
+        let look = scrollbar::Look { hot: app.bar_hot(Target::Transcript), pulse, track: true };
+        scrollbar::draw(f.buffer_mut(), &bar, &theme, look);
+        app.transcript_bar = Some(bar);
+    }
+    app.pill = Rect::default();
+    let unseen = app.unseen();
+    if unseen > 0 && area.height > 1 {
+        let pill = format!(" ↓ {unseen} new ");
+        let w = width(&pill) as u16;
+        if area.width > w + 2 {
+            let r = Rect::new(area.x + area.width - w - 2, area.y + area.height - 1, w, 1);
+            clear_bg(f, r, &theme);
+            f.render_widget(Paragraph::new(Span::styled(pill, pill_style(&theme, app.hover == Hover::Pill, pulse))), r);
+            app.pill = r;
+        }
+    }
+    app.evict_far(scroll, height);
+}
+
+/// The "new below" pill: lit under the pointer, beating while news arrives.
+fn pill_style(theme: &Theme, hot: bool, pulse: f32) -> Style {
+    let s = theme.bar().add_modifier(Modifier::BOLD);
+    if theme.mono {
+        return if hot { s.add_modifier(Modifier::UNDERLINED) } else { s };
+    }
+    if hot {
+        return s.bg(theme.accent).fg(theme.bg);
+    }
+    s.bg(mix(theme.bar_bg, theme.accent, pulse * 0.6))
+}
+
+/// The line with a bar in its first column, when that column is the margin.
+fn mark_margin(line: Line<'static>, style: Style) -> Line<'static> {
+    let Line { style: line_style, alignment, mut spans } = line;
+    if let Some(first) = spans.first_mut() {
+        if let Some(rest) = first.content.strip_prefix(' ') {
+            let rest = rest.to_string();
+            first.content = rest.into();
+            spans.insert(0, Span::styled("┃", style));
+        }
+    }
+    Line { style: line_style, alignment, spans }
+}
+
+/// Blocks whose first line names them, kept in sight while the rest scrolls past.
+fn sticky(b: &crate::render::blocks::Block) -> bool {
+    use crate::render::blocks::Block;
+    matches!(b, Block::Tool { .. } | Block::Reasoning { .. } | Block::Shell { .. })
+}
+
+/// A line `t` (0..1) of the way from the ground to its own colours.
+fn fade_in(line: Line<'static>, theme: &Theme, t: f32) -> Line<'static> {
+    let eased = 1.0 - (1.0 - t).powi(2);
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|s| {
+            let fg = s.style.fg.or(line.style.fg).unwrap_or(theme.fg);
+            let style = s.style.fg(mix(theme.bg, fg, eased));
+            Span::styled(s.content, style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans).style(line.style)
+}
+
+/// Marks every occurrence of `q` (lower-case) in the line.
+fn highlight(line: Line<'static>, q: &str, style: Style, current: bool) -> Line<'static> {
+    let mut spans = Vec::new();
+    for s in line.spans {
+        let text = s.content.to_string();
+        let lower = text.to_lowercase();
+        if lower.len() != text.len() || !lower.contains(q) {
+            if lower.contains(q) {
+                spans.push(Span::styled(text, s.style.patch(style)));
+            } else {
+                spans.push(s);
+            }
+            continue;
+        }
+        let mut pos = 0;
+        while let Some(i) = lower[pos..].find(q) {
+            let start = pos + i;
+            if start > pos {
+                spans.push(Span::styled(text[pos..start].to_string(), s.style));
+            }
+            let st = if current { style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED) } else { style };
+            spans.push(Span::styled(text[start..start + q.len()].to_string(), st));
+            pos = start + q.len();
+        }
+        if pos < text.len() {
+            spans.push(Span::styled(text[pos..].to_string(), s.style));
+        }
+    }
+    Line::from(spans).style(line.style)
+}
+
+fn draw_separator(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let theme = &app.theme;
+    let w = area.width as usize;
+    let line = match &app.search {
+        Some(s) => {
+            let n = s.matches.len();
+            let pos = if n == 0 { "no match".to_string() } else { format!("{}/{n}", s.current + 1) };
+            let label = if s.focused {
+                format!(" search: {}▏ {pos} ", s.query)
+            } else {
+                format!(" search: {} {pos} · n/N · Esc ", s.query)
+            };
+            let rest = w.saturating_sub(width(&label) + 2);
+            Line::from(vec![
+                Span::styled("─ ", theme.style(theme.border)),
+                Span::styled(label, theme.highlight()),
+                Span::styled(" ".to_string() + &"─".repeat(rest), theme.style(theme.border)),
+            ])
+        }
+        None => match app.activity() {
+            Some(verb) => activity_line(app, &verb, w),
+            None => match app.fx.turn_done.filter(|t| {
+                app.opts.animations && !theme.mono && crate::motion::within(Some(*t), app.now(), crate::motion::GLOW_MS)
+            }) {
+                Some(t) => Line::from(crate::motion::sweep(theme, w, t, app.now())),
+                None => Line::from(Span::styled("─".repeat(w), theme.style(theme.border))),
+            },
+        },
+    };
+    f.render_widget(Paragraph::new(line), area);
+}
+
+/// `─ ⠴ Thinking… 3.7s · ↓ 120 tok · Esc interrupts ───`: what the agent is doing, with a
+/// light sweeping across the verb.
+pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
+    let theme = &app.theme;
+    let frame = app.spinner;
+    let border = theme.style(theme.border);
+    let mut spans = vec![
+        Span::styled("─ ", border),
+        Span::styled(SPINNER[frame % SPINNER.len()].to_string(), theme.bold(theme.accent)),
+        Span::raw(" "),
+    ];
+    let word = format!("{verb}…");
+    let n = word.chars().count() as f32;
+    // the light runs left to right, rests a moment, and starts again
+    let pos = (frame as f32 * 0.7) % (n + 10.0) - 3.0;
+    for (i, c) in word.chars().enumerate() {
+        let near = (1.0 - ((i as f32 - pos).abs() / 3.0)).max(0.0);
+        let colour = mix(theme.accent, theme.fg, near);
+        spans.push(Span::styled(c.to_string(), Style::default().fg(colour).add_modifier(Modifier::BOLD)));
+    }
+    let secs = app.turn_started.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+    // segments in order of worth: a narrow line drops whole ones from the end of this list
+    // (the token count first, then the hint) instead of cutting a word or leaving a lone `·`
+    let time = fmt_ms(secs);
+    let toks = (app.streamed_chars > 0).then(|| format!("↓ {} tok", fmt_k((app.streamed_chars / 4) as u64)));
+    let mut parts: Vec<String> = vec![time, "Esc interrupts".to_string()];
+    parts.extend(toks);
+    let head: usize = spans.iter().map(|s| width(&s.content)).sum();
+    let fits = |p: &[String]| head + 2 + p.iter().map(|s| width(s)).sum::<usize>() + 3 * (p.len() - 1) <= w;
+    let mut keep = parts.len();
+    while keep > 0 && !fits(&parts[..keep]) {
+        keep -= 1;
+    }
+    parts.truncate(keep);
+    // on screen the count sits before the hint, as it always has
+    if keep == 3 {
+        parts.swap(1, 2);
+    }
+    if !parts.is_empty() {
+        let rest = format!(" {} ", parts.join(" · "));
+        spans.push(Span::styled(rest, theme.dim()));
+    }
+    let used: usize = spans.iter().map(|s| width(&s.content)).sum();
+    let tail = w.saturating_sub(used);
+    if app.opts.animations && !theme.mono {
+        spans.extend(comet(theme, tail, frame));
+    } else {
+        spans.push(Span::styled("─".repeat(tail), border));
+    }
+    Line::from(spans)
+}
+
+/// A rule of `n` cells with a glow running along it, frame by frame: the line under a
+/// working agent. Cells of the same colour share a span.
+pub fn comet(theme: &Theme, n: usize, frame: usize) -> Vec<Span<'static>> {
+    const TAIL: f32 = 8.0;
+    let head = (frame as f32 * 1.6) % (n as f32 + 2.0 * TAIL) - TAIL;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for i in 0..n {
+        let d = head - i as f32;
+        // bright at the head, fading behind it, nothing ahead of it
+        let glow = if d < 0.0 { (1.0 + d).max(0.0) } else { (1.0 - d / TAIL).max(0.0) };
+        let style = theme.style(mix(theme.border, theme.accent, glow));
+        match out.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push('─'),
+            _ => out.push(Span::styled("─".to_string(), style)),
+        }
+    }
+    out
+}
+
+fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
+    if area.height == 0 || area.width < 3 {
+        return;
+    }
+    let theme = app.theme.clone();
+    let prefix = Rect { width: 2, ..area };
+    // with the vim keys, the mark says the mode: › to type, ▮ in normal mode
+    let mark = match app.input.vim {
+        Some(crate::input::VimMode::Normal) => Span::styled("▮ ", theme.bold(theme.warn)),
+        _ => Span::styled("› ", theme.bold(theme.accent)),
+    };
+    let mut marks = vec![Line::from(mark)];
+    for _ in 1..area.height {
+        marks.push(Line::from(Span::styled("  ", theme.dim())));
+    }
+    f.render_widget(Paragraph::new(Text::from(marks)), prefix);
+    let editor = Rect { x: area.x + 2, width: area.width - 2, ..area };
+    draw_draft(f, app, editor);
+    f.render_widget(Box_::default().style(theme.base()), editor);
+    // on the rule above the box, at the right: the reasoning level and, for a long or
+    // multiline draft, its size; never over the text
+    let mut tags: Vec<String> = Vec::new();
+    if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {
+        tags.push(format!("◆ {e}"));
+    }
+    if let Some(c) = crate::input::counter(&app.input) {
+        tags.push(c);
+    }
+    while !tags.is_empty() {
+        let label = format!(" {} ", tags.join(" · "));
+        let w = crate::render::wrap::width(&label) as u16;
+        if area.y > 0 && area.width > w + 6 {
+            let r = Rect { x: area.x + area.width - w - 1, y: area.y - 1, width: w, height: 1 };
+            f.render_widget(Paragraph::new(Span::styled(label, theme.dim2())), r);
+            break;
+        }
+        tags.remove(0);
+    }
+    // an empty box says what it takes
+    if app.input.is_empty() && app.palette.is_none() && editor.width > 4 {
+        let shared;
+        let text = if app.busy {
+            "type a message: it joins the turn at its next step"
+        } else if let Some((id, title, _)) = app.shared.last() {
+            let name = if title.is_empty() { id } else { title };
+            shared = format!("⊕ what «{name}» knows goes with your next message · /shared-memory off drops it");
+            shared.as_str()
+        } else {
+            "ask anything"
+        };
+        // one cell right of the caret, so the caret never covers its first letter
+        let ph = Rect { x: editor.x + 2, width: editor.width - 2, height: 1, ..editor };
+        f.render_widget(Paragraph::new(Span::styled(truncate(text, ph.width as usize), theme.dim2())), ph);
+    }
+}
+
+/// The session name as the hint bar shows it: never longer than this, so the
+/// keys on the left always stay visible.
+pub const TITLE_COLS: usize = 24;
+
+/// The pieces of the right part of the hint bar, each already bounded, with the priority that
+/// keeps it (the lowest goes first when the bar is narrow): the state (a flash message, or the
+/// session), a todo count, running jobs, shared memory, queued messages.
+fn hint_pieces(app: &App) -> Vec<(u8, Vec<Span<'static>>)> {
+    let theme = &app.theme;
+    let base = theme.bar();
+    let mut out: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
+    let (done, total) = todo_counts(&app.todo);
+    if total > 0 && done < total {
+        out.push((2, vec![Span::styled(format!(" todo {done}/{total}"), base.fg(theme.accent2))]));
+    }
+    let running = app.jobs.iter().filter(|j| j.status.running()).count();
+    if running > 0 {
+        let word = if running == 1 { "job" } else { "jobs" };
+        out.push((3, vec![Span::styled(format!(" ⚙ {running} {word}"), base.fg(theme.accent))]));
+    }
+    if !app.shared.is_empty() {
+        let tok: usize = app.shared.iter().map(|s| s.2).sum();
+        out.push((
+            1,
+            vec![Span::styled(
+                format!(" ⊕ mem {} · {}", app.shared.len(), crate::render::blocks::fmt_k(tok as u64)),
+                base.fg(theme.accent2),
+            )],
+        ));
+    }
+    if app.queued > 0 {
+        out.push((4, vec![Span::styled(format!(" ◷ {} queued · Enter sends now", app.queued), base.fg(theme.warn))]));
+    }
+    if let Some((msg, at)) = &app.status {
+        // the message fades into the bar over its last moments
+        let age = at.elapsed().as_millis() as u64;
+        let fade = age.saturating_sub(STATUS_MS - STATUS_FADE_MS) as f32 / STATUS_FADE_MS as f32;
+        let colour = mix(theme.bar_fg, theme.bar_bg, fade);
+        out.push((
+            5,
+            vec![Span::styled(format!(" {} ", truncate(msg, 60)), base.fg(colour).add_modifier(Modifier::BOLD))],
+        ));
+    } else if let Some(id) = &app.session_id {
+        // the whole id or title, or nothing: a piece of a name tells nobody anything
+        let span = if app.session_title.is_empty() {
+            Span::styled(format!(" {id} "), base.fg(theme.dim))
+        } else {
+            Span::styled(format!(" {} ", truncate(&app.session_title, TITLE_COLS)), base.fg(theme.accent2))
+        };
+        out.push((0, vec![span]));
+    }
+    out
+}
+
+/// The pieces joined by a separator between them (never one at an end), the last one followed by a space.
+fn join_pieces(app: &App, pieces: &[(u8, Vec<Span<'static>>)]) -> Vec<Span<'static>> {
+    let theme = &app.theme;
+    let base = theme.bar();
+    let mut out = Vec::new();
+    for (i, (_, spans)) in pieces.iter().enumerate() {
+        if i > 0 {
+            out.push(Span::styled(" ·".to_string(), base.fg(theme.border)));
+        }
+        out.extend(spans.iter().cloned());
+    }
+    if out.last().is_some_and(|s| !s.content.ends_with(' ')) {
+        out.push(Span::styled(" ".to_string(), base));
+    }
+    out
+}
+
+/// The keys row is for a moment of doubt: while a draft is being typed it gives its line to the
+/// text, unless it carries something that must be seen (a queued message, a note, the vim mode),
+/// or a list or window is open whose keys are not obvious.
+pub fn hints_shown(app: &App) -> bool {
+    let typing = !app.input.is_empty()
+        && app.modal.is_none()
+        && app.palette.is_none()
+        && app.selected.is_none()
+        && !app.search.as_ref().is_some_and(|s| s.focused);
+    let urgent = app.queued > 0 || app.status.is_some() || app.input.vim.is_some();
+    !typing || urgent
+}
+
+/// The right part of the hint bar with everything on it.
+fn hint_right(app: &App) -> Vec<Span<'static>> {
+    join_pieces(app, &hint_pieces(app))
+}
+
+/// The right part of the hint bar as plain text (tests).
+pub fn hint_right_text(app: &App) -> String {
+    hint_right(app).iter().map(|s| s.content.to_string()).collect()
+}
+
+fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let theme = &app.theme;
+    let base = theme.bar();
+    let left = if app.modal.is_some() {
+        match app.modal.as_ref() {
+            Some(Modal::Permission(p)) if p.rules_shown == 0 => " y allow · a always · n deny · ↑↓ scroll".to_string(),
+            Some(Modal::Permission(_)) => " y allow · a always · n deny · 1-9 rule · ↑↓ scroll".to_string(),
+            Some(Modal::Question(a)) if a.typing => {
+                " type your answer · Enter send · Esc back to the options".to_string()
+            }
+            Some(Modal::Question(a)) if a.q.multi => {
+                " ↑↓ choose · Space tick · Enter send · PgUp/PgDn scroll · Esc close".to_string()
+            }
+            Some(Modal::Question(_)) => " ↑↓ choose · 1-9 pick · Enter send · PgUp/PgDn scroll · Esc close".to_string(),
+            Some(Modal::Picker(_)) => " type to filter · ↑↓ choose · Enter pick · Esc close".to_string(),
+            Some(Modal::Setup(s)) => s.hints().to_string(),
+            _ => " Esc close".to_string(),
+        }
+    } else if let Some(p) = &app.palette {
+        match p.kind {
+            PaletteKind::Files => " ↑↓ choose · Tab or Enter insert · PgUp/PgDn page · Esc close".to_string(),
+            _ if !p.runs_selection() => " ↑↓ choose · Tab complete · Enter send as typed · Esc close".to_string(),
+            _ => " ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close".to_string(),
+        }
+    } else if app.search.as_ref().is_some_and(|s| s.focused) {
+        " type to search · Enter next · Shift+Enter previous · Esc close".to_string()
+    } else if app.selected.is_some() && app.input.is_empty() {
+        let key = app.keymap.label(crate::keymap::Action::Diff).to_uppercase();
+        let dk = if app.selected_is_edit() { format!(" {key} diff · ") } else { " ".to_string() };
+        format!("{dk}↑↓ move · → open · ← fold · Enter toggle · Esc or typing back to the draft")
+    } else if app.busy {
+        " Esc interrupt · Enter add a message · PgUp/PgDn scroll · Shift+↑ blocks".to_string()
+    } else {
+        " Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks · ? help".to_string()
+    };
+    let left = if app.mouse_on { left } else { format!("{left} · mouse off · /mouse to enable") };
+    let left = match (app.input.vim, app.modal.is_some()) {
+        (Some(crate::input::VimMode::Normal), false) => format!(" NORMAL · i insert ·{left}"),
+        (Some(crate::input::VimMode::Insert), false) => format!(" INSERT · Esc normal ·{left}"),
+        _ => left,
+    };
+    // scrolled up: say first how to get back down
+    let left = if !app.follow && app.modal.is_none() && app.palette.is_none() && app.input.is_empty() {
+        format!(" End bottom ·{left}")
+    } else {
+        left
+    };
+    let w = area.width as usize;
+    // the keys come first, and the right side is whole pieces: the one that matters least goes first
+    let keys_min = if app.status.is_some() { width(&left).min(w / 2) } else { width(&left).min(w) };
+    let mut pieces = hint_pieces(app);
+    let mut right = join_pieces(app, &pieces);
+    let mut right_w: usize = right.iter().map(|s| width(&s.content)).sum();
+    while right_w > w.saturating_sub(keys_min) && !pieces.is_empty() {
+        let low = pieces.iter().enumerate().min_by_key(|(_, p)| p.0).map(|(i, _)| i).unwrap_or(0);
+        pieces.remove(low);
+        right = join_pieces(app, &pieces);
+        right_w = right.iter().map(|s| width(&s.content)).sum();
+    }
+    let left = fit_hints(&left, w.saturating_sub(right_w));
+    let pad = w.saturating_sub(width(&left) + right_w);
+    // the key names in the accent, the words between them dim
+    let mut spans = Vec::new();
+    for (i, part) in left.split(" · ").enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ".to_string(), base.fg(theme.border)));
+        }
+        match part.split_once(' ') {
+            Some((key, rest)) if !key.is_empty() => {
+                spans.push(Span::styled(key.to_string(), base.fg(theme.accent)));
+                spans.push(Span::styled(format!(" {rest}"), base));
+            }
+            _ => spans.push(Span::styled(part.to_string(), base)),
+        }
+    }
+    spans.push(Span::styled(" ".repeat(pad), base));
+    spans.extend(right);
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Whole hints are dropped from the end until the rest fits, so a key is never cut from its
+/// word; only a first hint wider than the bar itself is truncated.
+fn fit_hints(hints: &str, w: usize) -> String {
+    let mut parts: Vec<&str> = hints.split(" · ").collect();
+    while parts.len() > 1 && width(&parts.join(" · ")) > w {
+        parts.pop();
+    }
+    truncate(&parts.join(" · "), w)
+}
+
+/// The side panel at the right: the goal, the todo list and the files
+/// changed this session (`path  +n −m`, newest first).
+fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
+    if area.width < 6 || area.height == 0 {
+        return;
+    }
+    let theme = &app.theme;
+    let mut lines = Vec::with_capacity(area.height as usize);
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let rail = || Span::styled("│ ", theme.style(theme.border));
+    let header = |text: String| -> Line<'static> {
+        Line::from(vec![rail(), Span::styled(truncate(&text, inner_w), Style::default().add_modifier(Modifier::BOLD))])
+    };
+    if app.show_live {
+        lines.extend(context_map(app, inner_w, area.height as usize).into_iter().map(|mut l| {
+            l.spans.insert(0, rail());
+            l
+        }));
+        lines.push(Line::from(rail()));
+        if !app.show_files {
+            lines.truncate(area.height as usize);
+            while lines.len() < area.height as usize {
+                lines.push(Line::from(Span::styled("│", theme.style(theme.border))));
+            }
+            clear_bg(f, area, theme);
+            f.render_widget(Paragraph::new(Text::from(lines)), area);
+            return;
+        }
+    }
+    if let Some((text, round, max)) = &app.goal {
+        lines.push(header("goal".to_string()));
+        let runs = [(text.clone(), theme.style(theme.accent))];
+        let first = [rail(), Span::raw("◎ ")];
+        let rest = [rail(), Span::raw("  ")];
+        let body = crate::render::wrap::wrap_runs(&runs, inner_w, &first, &rest);
+        for (k, l) in body.into_iter().enumerate() {
+            if k < 4 {
+                lines.push(l);
+            }
+        }
+        if *round > 0 {
+            lines.push(Line::from(vec![rail(), Span::styled(format!("round {round}/{max}"), theme.dim())]));
+        }
+        lines.push(Line::from(rail()));
+    }
+    if !app.todo.is_empty() {
+        let (done, total) = todo_counts(&app.todo);
+        lines.push(header(format!("todo {done}/{total}")));
+        for it in &app.todo {
+            let (icon, style) = todo_style(it.status, theme);
+            let avail = inner_w.saturating_sub(2);
+            let text = if width(&it.text) > avail { truncate(&it.text, avail) } else { it.text.clone() };
+            lines.push(Line::from(vec![rail(), Span::styled(format!("{icon} "), style), Span::styled(text, style)]));
+        }
+        lines.push(Line::from(rail()));
+    }
+    lines.push(header(format!("changed files ({})", app.changed.len())));
+    if app.changed.is_empty() {
+        lines.push(Line::from(vec![rail(), Span::styled("none yet", theme.dim())]));
+    }
+    for c in &app.changed {
+        let counts = format!("+{} −{}", c.added, c.removed);
+        let avail = inner_w.saturating_sub(width(&counts) + 1);
+        let path = if width(&c.path) > avail {
+            format!("…{}", tail_cols(&c.path, avail.saturating_sub(1)))
+        } else {
+            c.path.clone()
+        };
+        let pad = avail.saturating_sub(width(&path));
+        lines.push(Line::from(vec![
+            rail(),
+            Span::raw(path),
+            Span::raw(" ".repeat(pad + 1)),
+            Span::styled(format!("+{}", c.added), theme.style(theme.diff_add)),
+            Span::raw(" "),
+            Span::styled(format!("−{}", c.removed), theme.style(theme.diff_del)),
+        ]));
+    }
+    lines.truncate(area.height as usize);
+    while lines.len() < area.height as usize {
+        lines.push(Line::from(Span::styled("│", theme.style(theme.border))));
+    }
+    clear_bg(f, area, theme);
+    f.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
+/// Token counts one cell of the context map can stand for.
+const MAP_UNITS: [u64; 12] = [50, 100, 250, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000, 200_000];
+
+/// The smallest unit at which `tokens` (one entry per message) fit in `cap`
+/// cells, each message taking at least one.
+fn map_unit(tokens: &[u64], cap: usize) -> u64 {
+    let cells = |u: u64| tokens.iter().map(|t| t.div_ceil(u).max(1) as usize).sum::<usize>();
+    MAP_UNITS.iter().copied().find(|&u| cells(u) <= cap).unwrap_or(MAP_UNITS[MAP_UNITS.len() - 1])
+}
+
+/// `/context-live`: the whole history as a grid, a cell per `unit` tokens,
+/// coloured by who wrote it and lit by how much of it the last call sent.
+/// With the curator, the grid is its memory in zones: the anchor, the topic in
+/// progress and the other topics, newest first, each under a line that says
+/// what of it the call takes.
+fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
+    use nexo_core::CellState;
+    let theme = &app.theme;
+    let fmt_k = crate::render::blocks::fmt_k;
+    let mut out = vec![Line::from(Span::styled("context live", Style::default().add_modifier(Modifier::BOLD)))];
+    let sent_of = |cells: &mut dyn Iterator<Item = &nexo_core::ContextCell>| {
+        cells.fold((0, 0), |(s, m), c| match c.state {
+            CellState::Dropped => (s, m + c.tokens),
+            _ => (s + c.tokens, m + c.tokens),
+        })
+    };
+    let (sent, mem) = sent_of(&mut app.map.iter());
+    if app.map.is_empty() {
+        out.push(Line::from(Span::styled("fills in with the next call", theme.dim())));
+        return out;
+    }
+    let policy = app.context.as_ref().map(|c| c.policy.clone()).unwrap_or_default();
+    let pct = sent * 100 / mem.max(1);
+    out.push(Line::from(vec![
+        Span::styled(format!("sent {}", fmt_k(sent)), theme.style(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" of {} · {pct}%", fmt_k(mem)), theme.dim()),
+    ]));
+    // the grid gets what the panel has left after the text around it
+    let zoned = !app.map_zones.is_empty();
+    let rows = height.saturating_sub(if zoned { 9 } else { 8 }).clamp(2, if zoned { 40 } else { 12 });
+    let w = w.max(1);
+    // the zones to draw, in order, each with its cells (index into the map)
+    let mut groups: Vec<(Option<usize>, Vec<usize>)> = if zoned {
+        let mut by: Vec<Vec<usize>> = vec![Vec::new(); app.map_zones.len()];
+        for (i, c) in app.map.iter().enumerate() {
+            if let Some(g) = by.get_mut(c.zone as usize) {
+                g.push(i);
+            }
+        }
+        let mut order: Vec<usize> = (0..by.len()).filter(|&z| !by[z].is_empty()).collect();
+        // anchor, then the topic in progress, then the others by their latest message
+        order.sort_by_key(|&z| (z != 0, !app.map_zones[z].active, std::cmp::Reverse(by[z].last().copied())));
+        order.into_iter().map(|z| (Some(z), std::mem::take(&mut by[z]))).collect()
+    } else {
+        vec![(None, (0..app.map.len()).collect())]
+    };
+    let lines_at = |u: u64, gs: &[(Option<usize>, Vec<usize>)]| -> usize {
+        gs.iter()
+            .map(|(z, ix)| {
+                let n: usize = ix.iter().map(|&i| app.map[i].tokens.div_ceil(u).max(1) as usize).sum();
+                n.div_ceil(w) + usize::from(z.is_some())
+            })
+            .sum()
+    };
+    let largest = MAP_UNITS[MAP_UNITS.len() - 1];
+    let unit = if zoned {
+        MAP_UNITS.iter().copied().find(|&u| lines_at(u, &groups) <= rows).unwrap_or(largest)
+    } else {
+        let tokens: Vec<u64> = app.map.iter().map(|c| c.tokens).collect();
+        map_unit(&tokens, rows * w)
+    };
+    // still too many lines: the oldest topics go, counted at the end
+    let mut hidden = 0;
+    while zoned && groups.len() > 2 && lines_at(unit, &groups) + 1 > rows {
+        groups.pop();
+        hidden += 1;
+    }
+    let flash = app.map_at.map(|t| t.elapsed().as_millis() as u64).filter(|&ms| ms < MAP_FLASH_MS);
+    for (z, ix) in &groups {
+        if let Some(z) = *z {
+            let zone = &app.map_zones[z];
+            let (s, m) = sent_of(&mut ix.iter().map(|&i| &app.map[i]));
+            let (mark, style, tag) = if z == 0 {
+                ("◆ ", theme.style(theme.accent2), String::new())
+            } else if zone.active {
+                ("● ", theme.style(theme.accent).add_modifier(Modifier::BOLD), " now".to_string())
+            } else if s > 0 {
+                ("◐ ", theme.style(theme.info), " back".to_string())
+            } else if zone.card {
+                ("▭ ", theme.style(theme.info), " card".to_string())
+            } else {
+                ("○ ", theme.dim2(), String::new())
+            };
+            let nums = format!(" {}/{}{tag}", fmt_k(s), fmt_k(m));
+            let label = truncate(&zone.label, w.saturating_sub(2 + width(&nums)).max(1));
+            out.push(Line::from(vec![
+                Span::styled(mark, style),
+                Span::styled(label, style),
+                Span::styled(nums, if zone.active || s > 0 { theme.dim() } else { theme.dim2() }),
+            ]));
+        }
+        let kinds = theme.kind_colours();
+        let mut cells: Vec<Span<'static>> = Vec::new();
+        for &i in ix {
+            cells.extend(cell_spans(app, i, unit, flash.is_some(), &kinds));
+        }
+        // too long even at the largest unit: the newest part
+        let cap = if z.is_some() { usize::MAX } else { rows * w };
+        if cells.len() > cap {
+            cells.drain(..cells.len() - cap);
+        }
+        while !cells.is_empty() {
+            let rest = cells.split_off(cells.len().min(w));
+            out.push(Line::from(std::mem::replace(&mut cells, rest)));
+        }
+    }
+    if hidden > 0 {
+        out.push(Line::from(Span::styled(format!("… {hidden} older topics"), theme.dim2())));
+    }
+    out.push(Line::from(Span::styled(format!("1 cell ≈ {} tok · {policy}", fmt_k(unit)), theme.dim())));
+    out.push(Line::from(vec![
+        Span::styled("█", theme.style(theme.user)),
+        Span::styled(" you ", theme.dim()),
+        Span::styled("█", theme.style(theme.assistant)),
+        Span::styled(" reply ", theme.dim()),
+        Span::styled("█", theme.style(theme.warn)),
+        Span::styled(" call ", theme.dim()),
+        Span::styled("█", theme.style(theme.info)),
+        Span::styled(" tool", theme.dim()),
+    ]));
+    let (recalled, left) = if zoned { ("░ back ", "· out") } else { ("", "· left out") };
+    out.push(Line::from(vec![
+        Span::styled(format!("█ sent ▒ cut {recalled}"), theme.dim()),
+        Span::styled(left, theme.dim2()),
+    ]));
+    out
+}
+
+/// The place of a kind of message in [`Theme::kind_colours`], the colours of the map and of the context chart.
+pub(crate) fn kind_ix(kind: nexo_core::CellKind) -> usize {
+    use nexo_core::CellKind;
+    match kind {
+        CellKind::Request => 0,
+        CellKind::Reply => 1,
+        CellKind::Call => 2,
+        CellKind::Output => 3,
+    }
+}
+
+/// The cells of message `i` of the map at `unit` tokens a cell.
+fn cell_spans(app: &App, i: usize, unit: u64, flash: bool, kinds: &[Color; 4]) -> impl Iterator<Item = Span<'static>> {
+    use nexo_core::CellState;
+    let theme = &app.theme;
+    let c = &app.map[i];
+    let colour = kinds[kind_ix(c.kind)];
+    let (glyph, mut style) = match c.state {
+        CellState::Whole => ("█", theme.style(colour)),
+        CellState::Shrunk => ("▒", theme.style(colour)),
+        CellState::Recalled => ("░", theme.style(colour)),
+        CellState::Dropped => ("·", theme.dim2()),
+    };
+    // a cell that just changed lights up, then settles
+    if flash && app.map_changed.get(i).copied().unwrap_or(false) {
+        style = style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    }
+    let n = c.tokens.div_ceil(unit).max(1) as usize;
+    std::iter::repeat(Span::styled(glyph, style)).take(n)
+}
+
+/// The last `w` columns of `s`.
+fn tail_cols(s: &str, w: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars().rev() {
+        let cw = width(&ch.to_string());
+        if used + cw > w {
+            break;
+        }
+        out.insert(0, ch);
+        used += cw;
+    }
+    out
+}
+
+fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
+    app.palette_rows.clear();
+    let theme = app.theme.clone();
+    let pop = app.palette_pop();
+    let hovered = match app.hover {
+        Hover::Palette(i) => Some(i),
+        _ => None,
+    };
+    let cwd = app.cwd.clone();
+    let Some(p) = &mut app.palette else { return };
+    if transcript.height == 0 || transcript.width < 10 {
+        return;
+    }
+    let is_files = p.kind == PaletteKind::Files;
+    let tw = transcript.width.min(if is_files { 160 } else { 100 });
+    // the file picker shows the head of the selected file beside the list when there is room
+    let preview_w = if is_files && tw >= 90 && !p.is_empty() { tw / 2 } else { 0 };
+    let list_w = tw - preview_w;
+    let cap = MAX_ROWS.min(transcript.height as usize);
+    let mut view = p.view(cap);
+    let footer = view.above + view.below > 0 && cap >= 3;
+    if footer {
+        view = p.view(cap - 1);
+    }
+    let list_h = view.entries.len().max(1) + usize::from(footer);
+    let full_h = if preview_w > 0 { cap.max(list_h) } else { list_h } as u16;
+    // it rises from the input: a few rows more each frame while it opens
+    let h = ((full_h as f64 * pop).ceil() as u16).clamp(1, full_h);
+    let r = Rect::new(transcript.x, transcript.y + transcript.height - h, tw, h);
+    // on a short screen a sliver of conversation above the list only distracts: clear it
+    if transcript.height.saturating_sub(full_h) < 5 {
+        clear_bg(f, transcript, &theme);
+    }
+    clear_bg(f, r, &theme);
+    let avail = list_w as usize;
+    let ground = theme.code_block();
+    let (name_cols, args_cols) = p.columns();
+    let slash = matches!(p.kind, PaletteKind::Commands);
+    // aligned columns: the name, the argument hint (when wide enough), what it does
+    // a file path is all there is on its row: it gets the whole width
+    let name_w = if is_files { avail } else { (name_cols + if slash { 4 } else { 3 }).min(avail * 45 / 100).max(8) };
+    let args_w = if avail >= 70 && args_cols > 0 { (args_cols + 2).min(avail * 25 / 100) } else { 0 };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut rows: Vec<(u16, usize)> = Vec::new();
+    if view.entries.is_empty() {
+        let q = truncate(&crate::render::wrap::clean(p.query.trim()), 24);
+        let msg = match &p.kind {
+            PaletteKind::Commands => match p.suggestion() {
+                Some(s) => format!(" no command “{q}” · did you mean /{s}? Tab takes it · /help lists all"),
+                None => format!(" no command “{q}” · Enter sends it as text · /help lists all"),
+            },
+            PaletteKind::Files => format!(" no file matches “{q}” · {} files here", p.items.len()),
+            PaletteKind::Args(c) => format!(" no value of /{c} matches “{q}”"),
+        };
+        let msg = truncate(&msg, avail);
+        let pad = avail.saturating_sub(width(&msg));
+        lines.push(Line::from(vec![
+            Span::styled(msg, ground.patch(theme.dim())),
+            Span::styled(" ".repeat(pad), ground),
+        ]));
+    }
+    for entry in &view.entries {
+        let (row, abs) = match entry {
+            crate::palette::Entry::Header(title) => {
+                // a section title: dim, with a rule to the edge
+                let t = truncate(&format!(" {title} "), avail);
+                let rule = "─".repeat(avail.saturating_sub(width(&t) + 1));
+                lines.push(Line::from(vec![
+                    Span::styled(t, ground.patch(theme.dim()).add_modifier(Modifier::BOLD)),
+                    Span::styled(rule, ground.patch(theme.dim2())),
+                    Span::styled(" ", ground),
+                ]));
+                continue;
+            }
+            crate::palette::Entry::Item(row, abs) => (row, *abs),
+        };
+        let selected = abs == p.selected;
+        let style = if selected {
+            theme.selection().add_modifier(Modifier::BOLD)
+        } else if hovered == Some(abs) {
+            ground.patch(theme.hover())
+        } else {
+            ground
+        };
+        let lit = style.fg(theme.accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        let mut spans = vec![Span::styled(if slash { " /" } else { " " }, style.fg(theme.accent))];
+        let lead = if slash { 2 } else { 1 };
+        // a path keeps its end, the file name: `…/render/markdown.rs`
+        let (label, shifted) = if is_files {
+            path_tail(&row.label, &row.hits, name_w.saturating_sub(lead + 1), avail < 60)
+        } else {
+            (truncate(&row.label, name_w.saturating_sub(lead + 1)), row.hits.clone())
+        };
+        let on_label = if row.alias.is_none() { shifted.as_slice() } else { &[] };
+        spans.extend(lit_spans(&label, on_label, style.fg(theme.fg), lit));
+        let mut used = lead + width(&label);
+        if let Some(a) = &row.alias {
+            // the alias the query matched, dim, right after the name: `/resume  (sessions)`
+            let room = name_w.saturating_sub(used + 5);
+            if room > 0 {
+                let a = truncate(a, room);
+                spans.push(Span::styled("  (", style.patch(theme.dim())));
+                spans.extend(lit_spans(&a, &row.hits, style.patch(theme.dim()), lit));
+                spans.push(Span::styled(")", style.patch(theme.dim())));
+                used += width(&a) + 4;
+            }
+        }
+        let pad = name_w.saturating_sub(used).max(1);
+        spans.push(Span::styled(" ".repeat(pad), style));
+        used += pad;
+        if args_w > 0 {
+            let a = truncate(&row.args, args_w.saturating_sub(2));
+            let pad = args_w.saturating_sub(width(&a));
+            spans.push(Span::styled(a, style.patch(theme.dim2())));
+            spans.push(Span::styled(" ".repeat(pad), style));
+            used += args_w;
+        }
+        let hint = truncate(&row.hint, avail.saturating_sub(used + 1));
+        let pad = avail.saturating_sub(used + width(&hint));
+        spans.push(Span::styled(hint, style.patch(theme.dim())));
+        spans.push(Span::styled(" ".repeat(pad), style));
+        rows.push((lines.len() as u16, abs));
+        lines.push(Line::from(spans));
+    }
+    if footer {
+        // where the list stands: what is hidden above and below, and the place of the selection
+        let up = if view.above > 0 { format!(" ↑ {} more", view.above) } else { String::new() };
+        let down = if view.below > 0 { format!("{} more ↓ ", view.below) } else { String::new() };
+        let mid = format!("{}/{}", p.selected + 1, p.len());
+        let gap = avail.saturating_sub(width(&up) + width(&down) + width(&mid));
+        let left = gap / 2;
+        lines.push(Line::from(vec![
+            Span::styled(up, ground.patch(theme.dim())),
+            Span::styled(" ".repeat(left), ground),
+            Span::styled(mid, ground.patch(theme.dim2())),
+            Span::styled(" ".repeat(gap - left), ground),
+            Span::styled(down, ground.patch(theme.dim())),
+        ]));
+    }
+    let list = Rect::new(r.x, r.y, list_w, h);
+    f.render_widget(Paragraph::new(Text::from(lines)).style(ground), list);
+    if preview_w > 0 {
+        let pr = Rect::new(r.x + list_w, r.y, preview_w, h);
+        let name = p.current().unwrap_or_default().to_string();
+        if let Some(pv) = p.preview(&cwd, full_h.saturating_sub(1) as usize) {
+            draw_preview(f, &theme, pr, &name, pv);
+        }
+    }
+    app.palette_rows =
+        rows.into_iter().filter(|(y, _)| *y < h).map(|(y, abs)| (Rect::new(r.x, r.y + y, list_w, 1), abs)).collect();
+}
+
+/// A path that does not fit, as `name  folder`: the file name stays whole and the folder is what is
+/// cut (from the left, behind a `…`); on a narrow list every folder row takes that form, so the
+/// rows line up; `hits` (positions in the path) are moved to match.
+fn path_tail(path: &str, hits: &[usize], max: usize, name_first: bool) -> (String, Vec<usize>) {
+    if max < 2 || (width(path) <= max && !(name_first && path.contains('/'))) {
+        return (path.to_string(), hits.to_vec());
+    }
+    let chars: Vec<char> = path.chars().collect();
+    let name_start = chars.iter().rposition(|c| *c == '/').map_or(0, |i| i + 1);
+    let name: Vec<char> = chars[name_start..].to_vec();
+    let name_w = width(&name.iter().collect::<String>());
+    // the file name alone does not fit: its end is cut, as before
+    if name_w + 4 > max {
+        let keep_from = chars.len().saturating_sub(max.saturating_sub(1));
+        let from = keep_from.max(name_start.min(chars.len()));
+        let tail: String = chars[from.min(chars.len())..].iter().collect();
+        let hits = hits.iter().filter(|&&h| h >= from).map(|h| h - from + 1).collect();
+        return (format!("…{tail}"), hits);
+    }
+    let dir: Vec<char> = chars[..name_start.saturating_sub(1)].to_vec();
+    let room = max - name_w - 2;
+    let mut out: Vec<char> = name.clone();
+    let mut moved: Vec<usize> = hits.iter().filter(|&&h| h >= name_start).map(|h| h - name_start).collect();
+    out.extend("  ".chars());
+    // the folder: whole when it fits, else its last columns behind a `…`
+    let mut keep = 0;
+    let mut w = 1;
+    if width(&dir.iter().collect::<String>()) <= room {
+        out.extend(dir.iter());
+        moved.extend(hits.iter().filter(|&&h| h < dir.len()).map(|h| h + name.len() + 2));
+    } else {
+        for c in dir.iter().rev() {
+            let cw = unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            if w + cw > room {
+                break;
+            }
+            w += cw;
+            keep += 1;
+        }
+        let dropped = dir.len() - keep;
+        out.push('…');
+        out.extend(dir[dropped..].iter());
+        moved.extend(hits.iter().filter(|&&h| h >= dropped && h < dir.len()).map(|h| h - dropped + 1 + name.len() + 2));
+    }
+    (out.iter().collect(), moved)
+}
+
+/// `text` with the characters at `hits` (positions in characters) in `lit`, the rest in `base`.
+fn lit_spans(text: &str, hits: &[usize], base: Style, lit: Style) -> Vec<Span<'static>> {
+    if hits.is_empty() {
+        return vec![Span::styled(text.to_string(), base)];
+    }
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_lit = false;
+    for (i, c) in text.chars().enumerate() {
+        let on = hits.contains(&i);
+        if on != run_lit && !run.is_empty() {
+            out.push(Span::styled(std::mem::take(&mut run), if run_lit { lit } else { base }));
+        }
+        run_lit = on;
+        run.push(c);
+    }
+    if !run.is_empty() {
+        out.push(Span::styled(run, if run_lit { lit } else { base }));
+    }
+    out
+}
+
+/// The head of the file the `@` picker has selected: its name and size on
+/// top, then its first lines with their numbers.
+fn draw_preview(f: &mut Frame, theme: &Theme, r: Rect, name: &str, pv: &crate::palette::Preview) {
+    let ground = theme.alt();
+    let w = r.width.saturating_sub(1) as usize;
+    let mut lines = Vec::new();
+    let note = format!(" · {}", pv.note);
+    let title = truncate(&format!(" {}", crate::render::wrap::clean(name)), w.saturating_sub(width(&note)).max(4));
+    lines.push(Line::from(vec![
+        Span::styled(title, ground.fg(theme.fg).add_modifier(Modifier::BOLD)),
+        Span::styled(truncate(&note, w), ground.patch(theme.dim())),
+    ]));
+    let num_w = pv.lines.len().to_string().len();
+    for (i, l) in pv.lines.iter().enumerate() {
+        let num = format!(" {:>num_w$} ", i + 1);
+        let text = truncate(&l.replace('\t', "    "), w.saturating_sub(num.len()));
+        lines.push(Line::from(vec![
+            Span::styled(num, ground.patch(theme.dim2())),
+            Span::styled(text, ground.fg(theme.code_fg)),
+        ]));
+    }
+    f.render_widget(Clear, r);
+    f.render_widget(Paragraph::new(Text::from(lines)).style(ground), r);
+}
+
+fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
+    app.picker_rows.clear();
+    app.modal_bar = None;
+    if matches!(app.modal, Some(Modal::Info(_))) {
+        return draw_info(f, app, area);
+    }
+    if matches!(app.modal, Some(Modal::Question(_))) {
+        return draw_question(f, app, area);
+    }
+    let theme = app.theme.clone();
+    let pop = app.modal_pop();
+    let hovered = match app.hover {
+        Hover::Picker(i) => Some(i),
+        _ => None,
+    };
+    let Some(modal) = &mut app.modal else { return };
+    if area.width < 12 || area.height < 5 {
+        return;
+    }
+    let w = (area.width.saturating_sub(4)).min(96);
+    let max_h = area.height.saturating_sub(2);
+    // laid out for the width it has now, so nothing is cut while it pops open
+    let inner_w = pop_rect(Rect::new(0, 0, w, 3), pop).width.saturating_sub(4) as usize;
+    let mut list_at: Option<usize> = None;
+    // the rules of a permission: pinned above the buttons, never scrolled out of sight
+    let mut pinned: Vec<Line<'static>> = Vec::new();
+    let (title, body, buttons): (String, Vec<Line<'static>>, Option<Buttons>) = match modal {
+        Modal::Permission(p) => {
+            let btn_h: u16 = if max_h < 9 { 1 } else { 2 };
+            // the command or diff keeps at least two lines; the rules take what is left, whole or not at all
+            let room = max_h.saturating_sub(2 + btn_h + 2) as usize;
+            let all = Modal::permission_rules(&p.req, &theme, true);
+            let n_rules = all.len().saturating_sub(1);
+            pinned = if all.len() < room {
+                // a blank line sets the rules apart from the command when there is room for it
+                std::iter::once(Line::default()).chain(all).collect()
+            } else if all.len() == room {
+                all
+            } else {
+                Modal::permission_rules(&p.req, &theme, false).into_iter().take(room).collect()
+            };
+            p.rules_shown = if pinned.len() > n_rules { n_rules } else { pinned.len() };
+            let mut lines = Modal::permission_lines_with(&p.req, inner_w, &theme, false, false);
+            if lines.len() as u16 + pinned.len() as u16 + 2 + btn_h > max_h {
+                lines = Modal::permission_lines_with(&p.req, inner_w, &theme, true, false);
+            }
+            let b = crate::modal::permission_buttons(inner_w.saturating_sub(1));
+            (format!(" permission · {} ", p.req.tool), lines, Some(b))
+        }
+        Modal::Picker(p) => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled("› ", theme.style(theme.accent)),
+                    Span::raw(p.query.clone()),
+                    Span::styled("▏", theme.dim()),
+                ]),
+                Line::default(),
+            ];
+            if p.ranked.is_empty() {
+                lines.push(Line::from(Span::styled("no match", theme.dim())));
+            }
+            for (i, &idx) in p.ranked.iter().enumerate() {
+                let it = &p.items[idx];
+                let armed = i == p.selected && p.armed.as_deref() == Some(it.value.as_str());
+                let label = truncate(&it.label, inner_w.saturating_sub(2));
+                let hint = if armed { "Del again deletes · Esc keeps" } else { it.hint.as_str() };
+                let hint = truncate(hint, inner_w.saturating_sub(width(&label) + 4));
+                let pad = inner_w.saturating_sub(width(&label) + width(&hint) + 2);
+                let style = if armed {
+                    // the row about to go: it turns to the error colour and breathes
+                    let on = !app.opts.animations || (app.spinner / 4) % 2 == 0;
+                    Style::default().fg(theme.bg).bg(theme.error).add_modifier(if on {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    })
+                } else if i == p.selected {
+                    theme.selection().add_modifier(Modifier::BOLD)
+                } else if hovered == Some(i) {
+                    theme.hover()
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {label}"), style),
+                    Span::styled(" ".repeat(pad), style),
+                    Span::styled(hint, style.patch(theme.dim())),
+                    Span::styled(" ", style),
+                ]));
+            }
+            let title = if p.kind == PickKind::Session && !p.items.is_empty() {
+                format!(" {} · {} · Del deletes ", p.title, p.items.len())
+            } else {
+                format!(" {} ", p.title)
+            };
+            (title, lines, None)
+        }
+        Modal::Help { .. } => (" help ".to_string(), Modal::help_lines(&theme, inner_w), None),
+        Modal::Info(_) | Modal::Question(_) => return,
+        Modal::Setup(s) => {
+            let (lines, at) = s.lines(inner_w, &theme, app.spinner, max_h < 12);
+            list_at = at;
+            (s.title(), lines, None)
+        }
+    };
+    // the gap above the buttons goes first when the screen is short
+    let button_h = match (buttons.is_some(), max_h < 9) {
+        (false, _) => 0,
+        (true, true) => 1,
+        (true, false) => 2,
+    };
+    let pinned_h = pinned.len() as u16;
+    let h = ((body.len() as u16) + pinned_h + 2 + button_h).min(max_h).max(5);
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + (area.height - h) / 2;
+    let r = pop_rect(Rect::new(x, y, w, h), pop);
+    clear_margin(f, r, area, &theme);
+    clear_bg(f, r, &theme);
+    let block = Box_::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(pop_style(&theme, theme.border, pop))
+        .title(Span::styled(title, theme.bold(theme.accent)))
+        .style(Style::default().bg(theme.modal_bg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let body_h = inner.height.saturating_sub(button_h + pinned_h) as usize;
+    let scroll = match modal {
+        Modal::Permission(p) => {
+            p.scroll = p.scroll.min(body.len().saturating_sub(body_h));
+            p.scroll
+        }
+        Modal::Help { scroll } => {
+            *scroll = (*scroll).min(body.len().saturating_sub(body_h));
+            *scroll
+        }
+        Modal::Info(_) | Modal::Question(_) => 0,
+        Modal::Picker(p) => {
+            // keep the selection in view: two header lines, then the rows
+            let row = p.selected + 2;
+            if row >= body_h {
+                row + 1 - body_h
+            } else {
+                0
+            }
+        }
+        Modal::Setup(s) => {
+            // the list's selection in view, else the end (where the spinner and errors are)
+            let row = match list_at {
+                Some(at) => at + s.list.selected,
+                // the line being typed, not the error under it
+                None => crate::modal::setup::Setup::prompt_row(&body)
+                    .or_else(|| crate::modal::setup::Setup::selected_row(&body))
+                    .unwrap_or(body.len().saturating_sub(1)),
+            };
+            if row >= body_h {
+                row + 1 - body_h
+            } else {
+                0
+            }
+        }
+    };
+    let body_area = Rect { height: body_h as u16, x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
+    let shown: Vec<Line<'static>> = body.iter().skip(scroll).take(body_h).cloned().collect();
+    f.render_widget(Paragraph::new(Text::from(shown)), body_area);
+    let rows = match modal {
+        Modal::Picker(p) => Some((2, p.ranked.len())),
+        Modal::Setup(s) => list_at.map(|at| (at, s.list.ranked.len())),
+        _ => None,
+    };
+    // a bar on the right border, for what scrolls: the text, or a list (moving its selection)
+    let bar = match modal {
+        Modal::Permission(_) | Modal::Help { .. } => Some(0),
+        Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
+        Modal::Info(_) | Modal::Question(_) => None,
+    };
+    let bar = bar.map(|first| (r, body_area.y, body_h, body.len(), scroll, first));
+    if let Some((first, n)) = rows {
+        for i in 0..n {
+            let row = i + first;
+            if row >= scroll && row < scroll + body_h {
+                app.picker_rows
+                    .push((Rect::new(body_area.x, body_area.y + (row - scroll) as u16, body_area.width, 1), i));
+            }
+        }
+    }
+    if pinned_h > 0 {
+        let py = inner.y + inner.height - button_h - pinned_h;
+        f.render_widget(
+            Paragraph::new(Text::from(pinned)),
+            Rect::new(inner.x + 1, py, inner.width.saturating_sub(2), pinned_h),
+        );
+    }
+    if let (Some(bs), Modal::Permission(p)) = (buttons, modal) {
+        let y = inner.y + inner.height - 1;
+        let mut x = inner.x + 1;
+        p.buttons.clear();
+        let mut spans = Vec::new();
+        let (bs, gap) = bs;
+        for (label, key) in bs {
+            let style = match key {
+                'y' => theme.bold(theme.success),
+                'a' => theme.bold(theme.accent),
+                _ => theme.bold(theme.error),
+            };
+            let wl = width(&label) as u16;
+            p.buttons.push((Rect::new(x, y, wl, 1), key));
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw(" ".repeat(gap)));
+            x += wl + gap as u16;
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), Rect::new(inner.x + 1, y, inner.width.saturating_sub(2), 1));
+    }
+    if let Some((r, y, h, content, offset, first)) = bar {
+        modal_scrollbar(f, app, r, y, h, content, offset, first);
+    }
+}
+
+/// A dialog's rectangle `r` while it pops open (`t` 0..1): smaller, around the same middle.
+pub fn pop_rect(r: Rect, t: f64) -> Rect {
+    if t >= 1.0 {
+        return r;
+    }
+    let s = 0.85 + 0.15 * t.clamp(0.0, 1.0);
+    let w = ((r.width as f64 * s).round() as u16).clamp(r.width.min(3), r.width);
+    let h = ((r.height as f64 * s).round() as u16).clamp(r.height.min(3), r.height);
+    Rect::new(r.x + (r.width - w) / 2, r.y + (r.height - h) / 2, w, h)
+}
+
+/// A border that comes out of the dialog's ground while it pops open.
+fn pop_style(theme: &Theme, colour: ratatui::style::Color, t: f64) -> Style {
+    if t >= 1.0 || theme.mono {
+        return theme.style(colour);
+    }
+    theme.style(mix(theme.modal_bg, colour, t as f32))
+}
+
+/// The scrollbar of a dialog, on its right border beside the `len` rows of its body
+/// from `y`, and remembered for the mouse. `first`: the body line a list starts at.
+#[allow(clippy::too_many_arguments)]
+fn modal_scrollbar(
+    f: &mut Frame,
+    app: &mut App,
+    r: Rect,
+    y: u16,
+    len: usize,
+    content: usize,
+    offset: usize,
+    first: usize,
+) {
+    if content <= len || len == 0 || r.width < 3 {
+        return;
+    }
+    let bar = Bar { target: Target::Modal, x: r.x + r.width - 1, y, len: len as u16, content, viewport: len, offset };
+    let look = scrollbar::Look { hot: app.bar_hot(Target::Modal), pulse: 0.0, track: false };
+    let theme = app.theme.clone();
+    scrollbar::draw(f.buffer_mut(), &bar, &theme, look);
+    app.modal_bar = Some(bar);
+    app.modal_list_first = first;
+}
+
+/// The rows of a question: each option (its description under it), then the row to write
+/// one's own answer. With the line each row starts at.
+pub fn question_rows(a: &crate::modal::Ask, w: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<usize>) {
+    let mut lines = Vec::new();
+    let mut starts = Vec::new();
+    let cursor = |i: usize| if i == a.selected { "❯ " } else { "  " };
+    for (i, o) in a.q.options.iter().enumerate() {
+        let on = i == a.selected;
+        let style = if on { theme.bold(theme.accent) } else { Style::default() };
+        let tick = if !a.q.multi {
+            String::new()
+        } else if a.picked[i] {
+            "[x] ".to_string()
+        } else {
+            "[ ] ".to_string()
+        };
+        starts.push(lines.len());
+        let head = format!("{}{}. {tick}", cursor(i), i + 1);
+        lines.push(Line::from(vec![
+            Span::styled(head.clone(), style),
+            Span::styled(truncate(&o.label, w.saturating_sub(width(&head))), style),
+        ]));
+        if !o.description.is_empty() {
+            let pad = " ".repeat(width(&head));
+            lines.push(Line::from(vec![
+                Span::raw(pad.clone()),
+                Span::styled(truncate(&o.description, w.saturating_sub(pad.len())), theme.dim()),
+            ]));
+        }
+    }
+    let n = a.q.options.len();
+    let on = a.selected == n;
+    let head = format!("{}{}. ", cursor(n), n + 1);
+    let style = if on { theme.bold(theme.accent) } else { theme.dim() };
+    starts.push(lines.len());
+    let line = if a.typing || !a.other.is_empty() {
+        let shown = truncate(&a.other, w.saturating_sub(width(&head) + 1));
+        let mut spans = vec![Span::styled(head, style), Span::raw(shown)];
+        if a.typing {
+            spans.push(Span::styled("▏", theme.style(theme.accent)));
+        }
+        Line::from(spans)
+    } else {
+        let hint = if a.q.plan.is_some() { "Tell the model what to change…" } else { "Something else…" };
+        Line::from(vec![Span::styled(head, style), Span::styled(hint.to_string(), style)])
+    };
+    lines.push(line);
+    (lines, starts)
+}
+
+/// A question from the model: the question (and the plan, as markdown) scrolls on top, the
+/// options stay at the bottom.
+fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
+    let pop = app.modal_pop();
+    let Some(Modal::Question(a)) = &mut app.modal else { return };
+    if area.width < 20 || area.height < 6 {
+        return;
+    }
+    let w = (area.width.saturating_sub(4)).min(100);
+    let inner_w = w.saturating_sub(4) as usize;
+    let mut body = Vec::new();
+    if let Some(plan) = &a.q.plan {
+        body.extend(crate::render::markdown::render(plan, inner_w, &theme));
+        body.push(Line::default());
+        body.push(Line::from(Span::styled("─".repeat(inner_w), theme.dim2())));
+    }
+    body.extend(crate::render::wrap::wrap_plain(&a.q.question, inner_w, theme.bold(theme.fg), &[]));
+    let (rows, starts) = question_rows(a, inner_w, &theme);
+    let a_selected = a.selected;
+    // a short area is used whole, so the options and a line of the question fit
+    let max_h = area.height.saturating_sub(if area.height < 10 { 0 } else { 2 });
+    let rows_h = rows.len() as u16;
+    let h = (body.len() as u16 + 1 + rows_h + 2).min(max_h);
+    let r = pop_rect(Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h), pop);
+    clear_bg(f, r, &theme);
+    let title = if a.q.plan.is_some() { " plan ".to_string() } else { format!(" {} ", a.q.header.to_lowercase()) };
+    let block = Box_::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(pop_style(&theme, theme.accent2, pop))
+        .title(Span::styled(title, theme.bold(theme.accent2)))
+        .style(Style::default().bg(theme.modal_bg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    // the options always show; the question and the plan get what is left
+    let rows_h = rows_h.min(inner.height);
+    let body_h = inner.height.saturating_sub(rows_h + 1) as usize;
+    a.scroll = a.scroll.min(body.len().saturating_sub(body_h));
+    let scroll = a.scroll;
+    let x = inner.x + 1;
+    let iw = inner.width.saturating_sub(2);
+    let body_len = body.len();
+    if body_h > 0 {
+        let more = scroll + body_h < body.len();
+        let shown: Vec<Line<'static>> = body.into_iter().skip(scroll).take(body_h).collect();
+        f.render_widget(Paragraph::new(Text::from(shown)), Rect::new(x, inner.y, iw, body_h as u16));
+        if more {
+            let tag = " PgDn ↓ ";
+            let tx = r.x + r.width.saturating_sub(width(tag) as u16 + 2);
+            f.render_widget(Paragraph::new(Span::styled(tag, theme.dim())), Rect::new(tx, r.y + r.height - 1, 8, 1));
+        }
+    }
+    let ry = inner.y + inner.height - rows_h;
+    let ends: Vec<usize> = starts.iter().skip(1).copied().chain([rows.len()]).collect();
+    // short screen: the options scroll so the chosen one stays whole in view
+    let off = ends.get(a_selected).map_or(0, |e| e.saturating_sub(rows_h as usize));
+    let shown_rows: Vec<Line<'static>> = rows.iter().skip(off).take(rows_h as usize).cloned().collect();
+    f.render_widget(Paragraph::new(Text::from(shown_rows)), Rect::new(x, ry, iw, rows_h));
+    for (i, (s, e)) in starts.iter().zip(ends).enumerate() {
+        if e > off && *s < off + rows_h as usize {
+            let top = (*s).max(off) - off;
+            let hgt = (e.min(off + rows_h as usize) - (*s).max(off)) as u16;
+            app.picker_rows.push((Rect::new(x, ry + top as u16, iw, hgt), i));
+        }
+    }
+    modal_scrollbar(f, app, r, inner.y, body_h, body_len, scroll, 0);
+}
+
+/// The `/context` · `/usage` window: it grows open from the middle, a tab
+/// row on top, `[✗]` on its border, the figures of the tab fill in.
+fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(Modal::Info(info)) = &app.modal else { return };
+    if area.width < 30 || area.height < 6 {
+        return;
+    }
+    let (tab, grow, fill, hover) = (info.tab, info.grow(), info.fill(), info.hover);
+    let theme = app.theme.clone();
+    let inner_w = overlay::window_rect(area, 0).width.saturating_sub(4) as usize;
+    // as tall as the tallest tab: the window does not jump when the tab changes
+    let tallest = (0..overlay::TABS.len()).map(|t| overlay::lines(app, t, inner_w, 1.0).len()).max().unwrap_or(0);
+    let body = overlay::lines(app, tab, inner_w, fill);
+    let full = overlay::window_rect(area, tallest);
+    let w = ((full.width as f64) * (0.7 + 0.3 * grow)).round() as u16;
+    let h = (3.0 + (full.height.saturating_sub(3)) as f64 * grow).round() as u16;
+    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    clear_bg(f, r, &theme);
+    let block = Box_::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.style(theme.border))
+        .title(Span::styled(format!(" {} ", overlay::TABS[tab].to_lowercase()), theme.bold(theme.accent)))
+        .style(Style::default().bg(theme.modal_bg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let close = Rect::new(r.x + r.width.saturating_sub(6), r.y, 3, 1);
+    let close_style = if hover { theme.bold(theme.error).add_modifier(Modifier::REVERSED) } else { theme.dim() };
+    f.render_widget(Paragraph::new(Span::styled("[✗]", close_style)), close);
+    let mut tabs = Vec::new();
+    if inner.height >= 4 {
+        let row = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1);
+        let (spans, at) = overlay::tab_row(tab, &theme);
+        tabs = at.iter().map(|(x, wl)| Rect::new(row.x + x, row.y, *wl, 1)).collect();
+        f.render_widget(Paragraph::new(Line::from(spans)), row);
+        let rule = "─".repeat(row.width as usize);
+        f.render_widget(Paragraph::new(Span::styled(rule, theme.dim2())), Rect { y: row.y + 1, ..row });
+    }
+    let body_h = inner.height.saturating_sub(3) as usize;
+    let Some(Modal::Info(info)) = &mut app.modal else { return };
+    info.scroll = info.scroll.min(body.len().saturating_sub(body_h));
+    let scroll = info.scroll;
+    info.window = r;
+    info.close = close;
+    info.tabs = tabs;
+    let body_len = body.len();
+    if body_h > 0 {
+        let body_area = Rect::new(inner.x + 1, inner.y + 2, inner.width.saturating_sub(2), body_h as u16);
+        let more = if scroll + body_h < body.len() { "  ↓" } else { "" };
+        let shown: Vec<Line<'static>> = body.into_iter().skip(scroll).take(body_h).collect();
+        f.render_widget(Paragraph::new(Text::from(shown)), body_area);
+        let hint = format!("Tab switch · ↑↓ scroll · Esc close{more}");
+        let foot = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
+        f.render_widget(Paragraph::new(Span::styled(truncate(&hint, foot.width as usize), theme.dim2())), foot);
+        modal_scrollbar(f, app, r, inner.y + 2, body_h, body_len, scroll, 0);
+    }
+}
+
+/// The text of a drawn buffer, row by row (tests).
+pub fn rows_of(buf: &ratatui::buffer::Buffer) -> Vec<String> {
+    let area = buf.area;
+    let mut rows = Vec::new();
+    for y in 0..area.height {
+        let mut s = String::new();
+        for x in 0..area.width {
+            s.push_str(buf[(x, y)].symbol());
+        }
+        rows.push(s.trim_end().to_string());
+    }
+    rows
+}
+
+#[allow(dead_code)]
+fn _unused(l: &Line) -> String {
+    text_of(l)
+}
+
+/// The draft in rows that fit the box, the cursor as a lit cell; the rows scroll to keep it in sight.
+fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
+    app.editor_area = editor;
+    app.input.wrap_width = editor.width as usize;
+    if app.input.is_empty() {
+        // the placeholder takes the box; the caret sits on its first cell
+        let cell = f.buffer_mut().cell_mut((editor.x, editor.y));
+        if let Some(c) = cell {
+            c.set_style(Style::default().add_modifier(Modifier::REVERSED));
+        }
+        return;
+    }
+    let (rows, (crow, ccol)) = crate::input::wrapped_rows(&app.input, editor.width as usize);
+    let h = editor.height as usize;
+    let top = (crow + 1).saturating_sub(h);
+    app.editor_top = top;
+    let sel = app.input.selection_cells();
+    let origins = crate::input::row_origins(&app.input, editor.width as usize);
+    for (i, row) in rows.iter().skip(top).take(h).enumerate() {
+        // the selected cells of this row
+        if let (Some(((r0, c0), (r1, c1))), Some(&(line, start))) = (sel, origins.get(top + i)) {
+            let n = row.chars().count();
+            let (from, to) = match (line.cmp(&r0), line.cmp(&r1)) {
+                (std::cmp::Ordering::Less, _) | (_, std::cmp::Ordering::Greater) => (n, n),
+                _ => {
+                    let f0 = if line == r0 { c0.saturating_sub(start) } else { 0 };
+                    let t0 = if line == r1 { c1.saturating_sub(start).min(n) } else { n };
+                    (f0.min(n), t0)
+                }
+            };
+            if from < to {
+                let cw = |s: &str| crate::render::wrap::width(s);
+                let x0: usize = cw(&row.chars().take(from).collect::<String>());
+                let x1: usize = cw(&row.chars().take(to).collect::<String>());
+                for x in x0..x1.min(editor.width as usize) {
+                    if let Some(c) = f.buffer_mut().cell_mut((editor.x + x as u16, editor.y + i as u16)) {
+                        c.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                    }
+                }
+            }
+        }
+        let r = Rect { y: editor.y + i as u16, height: 1, ..editor };
+        f.render_widget(Paragraph::new(Span::styled(row.clone(), app.theme.base())), r);
+    }
+    if crow >= top && crow - top < h {
+        let x = editor.x + (ccol as u16).min(editor.width.saturating_sub(1));
+        if let Some(c) = f.buffer_mut().cell_mut((x, editor.y + (crow - top) as u16)) {
+            c.set_style(Style::default().add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
+/// Below this the screen cannot hold a draft, a status line and a line of text: a notice is drawn instead.
+pub const MIN_W: u16 = 24;
+pub const MIN_H: u16 = 6;
+/// A window this short or shorter gives its keys line to the transcript.
+pub const SHORT_H: u16 = 12;
+
+/// The files panel grows with the window: the narrowest that fits, a wider one on a big screen.
+pub fn files_panel_width(total: u16) -> u16 {
+    match total {
+        0..=119 => FILES_PANEL_W,
+        120..=159 => FILES_PANEL_W + 6,
+        _ => FILES_PANEL_W + 12,
+    }
+}
+
+/// The notice under the minimum size: what is wrong and what the window has, nothing cut mid-word.
+fn draw_too_small(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let need = format!("needs {MIN_W}x{MIN_H}");
+    let have = format!("has {}x{}", area.width, area.height);
+    let lines: Vec<Line<'static>> = ["window too small".to_string(), need, have]
+        .into_iter()
+        .map(|s| s.chars().take(area.width as usize).collect::<String>())
+        .enumerate()
+        .map(|(i, s)| {
+            let style = if i == 0 { theme.style(theme.warn).add_modifier(Modifier::BOLD) } else { theme.dim() };
+            Line::from(Span::styled(s, style)).alignment(ratatui::layout::Alignment::Center)
+        })
+        .collect();
+    let h = lines.len().min(area.height as usize) as u16;
+    let top = area.y + area.height.saturating_sub(h) / 2;
+    f.render_widget(Paragraph::new(Text::from(lines)), Rect { y: top, height: h, ..area });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_long_path_keeps_its_file_name() {
+        use super::{path_tail, width};
+        let (t, h) = path_tail("crates/nexo-tui/src/render/markdown.rs", &[27, 28], 16, false);
+        assert_eq!(t, "markdown.rs  …er");
+        assert_eq!(width(&t), 16);
+        assert_eq!(h, [0, 1], "the marks stay on the m and a of markdown");
+        // the folder is what is cut, and as much of it as fits stays
+        let (t, _) = path_tail("crates/nexo-bench/src/tasks/inventory.rs", &[], 38, false);
+        assert_eq!(t, "inventory.rs  …es/nexo-bench/src/tasks");
+        assert_eq!(
+            path_tail("crates/nexo-bench/src/tasks/inventory.rs", &[], 30, false).0,
+            "inventory.rs  …bench/src/tasks"
+        );
+        // on a narrow list the short paths take the same form, so the rows line up
+        assert_eq!(path_tail("src/mod.rs", &[], 30, true).0, "mod.rs  src");
+        assert_eq!(path_tail("a.rs", &[0], 16, true), ("a.rs".to_string(), vec![0]));
+        assert_eq!(path_tail("a.rs", &[0], 16, false), ("a.rs".to_string(), vec![0]));
+    }
+
+    #[test]
+    fn hints_that_do_not_fit_are_dropped_whole() {
+        let h = " Enter send · Ctrl+J newline · / commands · @ files";
+        assert_eq!(super::fit_hints(h, 40), " Enter send · Ctrl+J newline");
+        assert_eq!(super::fit_hints(h, 100), h);
+        assert!(super::fit_hints(h, 5).chars().count() <= 5);
+    }
+
+    #[test]
+    fn status_pieces_follow_the_configured_order() {
+        let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(status_pieces(&[]).len(), 11);
+        assert_eq!(status_pieces(&v(&["Context", "model", "bogus", "context"])), vec!["context", "model"]);
+        assert!(status_pieces(&v(&["bogus"])).is_empty());
+    }
+
+    use super::*;
+    use crate::theme::Theme;
+
+    #[test]
+    fn the_comet_runs_along_the_rule_and_keeps_its_width() {
+        let t = Theme::nexo();
+        for frame in [0, 7, 30, 200] {
+            let spans = comet(&t, 40, frame);
+            let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(text, "─".repeat(40));
+        }
+        let lit = |frame| comet(&t, 40, frame).iter().any(|s| s.style.fg == Some(t.accent));
+        assert!((0..60).any(lit), "the head is drawn in the accent somewhere along the way");
+        assert!(comet(&t, 0, 3).is_empty());
+    }
+
+    #[test]
+    fn the_gauge_colour_follows_the_share() {
+        let t = Theme::nexo();
+        assert_eq!(t.level_color(0), t.success);
+        assert_eq!(t.level_color(49), t.success);
+        assert_eq!(t.level_color(50), t.warn);
+        assert_eq!(t.level_color(74), t.warn);
+        assert_eq!(t.level_color(75), t.warn2);
+        assert_eq!(t.level_color(89), t.warn2);
+        assert_eq!(t.level_color(90), t.error);
+        assert_eq!(t.level_color(130), t.error);
+        assert_eq!(share(92, 100), 92);
+        assert_eq!(gauge_cells(0.5, 8), ("████".to_string(), 4));
+        assert_eq!(gauge_cells(0.11, 8), ("▉".to_string(), 7));
+        assert_eq!(gauge_cells(1.0, 8), ("████████".to_string(), 0));
+        assert_eq!(gauge_cells(0.0, 8), (String::new(), 8));
+        assert_eq!(line_gauge(0.5, 10), ("━━━━━".to_string(), "━━━━━".to_string()));
+        assert_eq!(line_gauge(0.25, 10), ("━━╸".to_string(), "━━━━━━━".to_string()));
+        assert_eq!(line_gauge(1.0, 4), ("━━━━".to_string(), String::new()));
+        assert_eq!(line_gauge(0.0, 4), (String::new(), "━━━━".to_string()));
+    }
+
+    #[test]
+    fn every_theme_has_an_orange() {
+        for n in crate::theme::NAMES {
+            let t = Theme::by_name(n).unwrap();
+            if !t.mono {
+                assert_ne!(t.warn2, t.warn, "{n}");
+                assert_ne!(t.warn2, t.error, "{n}");
+            }
+        }
+    }
+}

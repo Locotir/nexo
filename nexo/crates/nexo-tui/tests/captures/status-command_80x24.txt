@@ -1,0 +1,24 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ●─╮ ╭─●   nexo 0.1.0                                                     │
+│   ╰●╯     deepseek/deepseek-chat · ask                                   │
+│ ●─╯ ╰─●   /tmp/project                                                   │
+│                                                                          │
+│ /model sets up a model · /resume picks a session · ? help                │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+›   ask anything
+ Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks
+ deepseek-chat on deepseek | ctx 42% | $0.0123 | 20261102-140000-ab12 | turns 0

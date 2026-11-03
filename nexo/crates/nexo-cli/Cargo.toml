@@ -1,0 +1,34 @@
+[package]
+name = "nexo-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: the terminal coding harness (binary)"
+
+[[bin]]
+name = "nexo"
+path = "src/main.rs"
+
+[dependencies]
+nexo-core = { workspace = true }
+nexo-providers = { workspace = true }
+nexo-tools = { workspace = true }
+nexo-agent = { workspace = true }
+nexo-tui = { workspace = true }
+nexo-bench = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }
+toml_edit = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
