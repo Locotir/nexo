@@ -23,6 +23,8 @@ runs all of them; the last column names the test function.
 | A long paste is folded to `[Pasted text #1 +40 lines]` in the draft and sent whole; its line breaks never send the message, also on Windows where a paste arrives as keys | ✅ | `a_long_paste_is_folded_in_the_draft_and_sent_whole`, `a_paste_that_comes_as_keys_is_one_draft_and_a_long_one_is_sent_whole` |
 | `!command` without a model call | ✅ | `attachments_shell_model_and_clear` |
 | Queue a message while a turn runs; Enter again runs it now | ✅ | `queued_requests_are_counted_as_events`, `enter_on_an_empty_draft_with_a_queue_interrupts_the_turn` |
+| Queued messages show as dim rows above the draft; ↑ on an empty draft (or a click on a row, or `/queue`) takes one back to edit it, and the agent drops it from its queue | ✅ | `unqueue_takes_a_waiting_request_out_by_text`, `up_on_an_empty_draft_takes_the_last_queued_message_back_to_edit_it`, `a_click_on_a_queued_row_takes_that_one_back_and_a_full_draft_is_kept` |
+| The pieces of the keys row (`todo`, `⚙ jobs`, `⊕ mem`, `◷ queued`, the session) underline under the pointer and open their view on a click; `/todo`, `/jobs`, `/shared-memory list`, `/queue`, `/resume` do the same from the keyboard | ✅ | `the_pieces_of_the_keys_row_light_up_and_open_their_views`, `todo_queue_and_memory_lists_answer_to_slash_commands` |
 | Interrupt (`Esc`), keeping the partial reply | ✅ | `an_interrupt_keeps_the_partial_reply_and_runs_the_queue`, `an_interrupt_cancels_a_running_tool` |
 | Commands of one's own (`.nexo/commands/*.md`) | ✅ | `commands_load_expand_and_the_project_wins`, `a_command_of_ones_own_is_offered_and_sends_its_text` |
 

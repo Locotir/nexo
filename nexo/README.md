@@ -55,6 +55,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 |---|---|
 | `Enter` / `Ctrl+J` | send / newline |
 | `Enter` on an empty box while a request waits in the queue | interrupt the turn and run the queued request now |
+| `↑` on an empty box while requests wait in the queue | take the last queued request back into the box to edit it (click a queued row for any other) |
 | `Esc` | interrupt the turn; again: clear the draft |
 | `Ctrl+C` ×2, `Ctrl+D` (empty draft) | quit |
 | wheel, `PgUp`/`PgDn`, `Home`/`End` | scroll the transcript (it glides there) |
@@ -75,7 +76,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/todo`, `/queue`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 
@@ -84,7 +85,7 @@ with a light sweeping across the word; the reply grows behind a blinking caret. 
 rings the terminal's bell when it ends, with a desktop notification where the terminal takes one (OSC 9/777):
 `[ui] notify_after = 0` turns it off.
 
-The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`.
+The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`. On the keys row, `todo d/t` opens the todo list (`/todo`), `⚙ N jobs` the jobs (`/jobs`), `⊕ mem` the shared memory that waits (`/shared-memory list`), `◷ N queued` the queued messages (`/queue`; pick one to edit it) and the session name the sessions (`/resume`); each is underlined under the pointer, and `Esc` closes the list.
 Scrolling eases out, new blocks fade in, dialogs and the palette pop open and a glow runs along the line
 under a working agent; `[ui] animations = false` turns all motion off (everything lands at once).
 Messages and replies carry a dim `HH:MM` at the right of their first line, and a reply its duration once it ends;
