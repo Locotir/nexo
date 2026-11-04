@@ -7,7 +7,9 @@ use ratatui::widgets::{Block as Box_, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::anim;
-use crate::app::{App, Hover, StatusHit, FILES_PANEL_MIN_W, FILES_PANEL_W, MAP_FLASH_MS, STATUS_FADE_MS, STATUS_MS};
+use crate::app::{
+    App, HintHit, Hover, StatusHit, FILES_PANEL_MIN_W, FILES_PANEL_W, MAP_FLASH_MS, STATUS_FADE_MS, STATUS_MS,
+};
 use crate::modal::{Modal, PickKind};
 use crate::overlay;
 use crate::palette::{PaletteKind, MAX_ROWS};
@@ -20,6 +22,8 @@ use crate::theme::{mix, Theme};
 use nexo_core::permission::PermissionMode;
 
 pub const MAX_INPUT_LINES: u16 = 8;
+/// Queued requests shown above the draft; the rest are one click away on the bar.
+pub const MAX_QUEUE_ROWS: usize = 3;
 
 /// Button labels of a permission dialog with the key each one stands for.
 type Buttons = (Vec<(String, char)>, usize);
@@ -27,6 +31,8 @@ type Buttons = (Vec<(String, char)>, usize);
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.term_width = area.width;
+    app.queue_rows.clear();
+    app.hint_hits.clear();
     app.note_popups();
     // the theme's ground under everything: no cell is left to the terminal's own colours
     f.render_widget(Box_::default().style(app.theme.base()), area);
@@ -54,9 +60,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         1
     };
+    // the requests waiting behind the turn, a dim row each, right above the draft
+    let queue_h = if app.queued_msgs.is_empty() || area.height <= SHORT_H {
+        0
+    } else {
+        app.queued_msgs.len().min(MAX_QUEUE_ROWS) as u16
+    };
     // the keys right under the draft, the state (model, context, spend) on the last row
-    let [middle, sep, input, hints, title] = Layout::vertical([
+    let [middle, queue, sep, input, hints, title] = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(queue_h),
         Constraint::Length(1),
         Constraint::Length(input_h),
         Constraint::Length(hints_h),
@@ -85,6 +98,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if files_w > 0 {
         draw_panel(f, app, files);
     }
+    draw_queue(f, app, queue);
     draw_separator(f, app, sep);
     draw_input(f, app, input);
     if !matches!(app.modal, Some(Modal::Permission(_))) {
@@ -980,6 +994,24 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// The newest queued requests as dim rows (`◷ first line`): a click takes one back into the draft.
+fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let rows = area.height as usize;
+    let first = app.queued_msgs.len().saturating_sub(rows);
+    let mut hits = Vec::new();
+    for (k, text) in app.queued_msgs.iter().enumerate().skip(first).take(rows) {
+        let r = Rect { y: area.y + (k - first) as u16, height: 1, ..area };
+        let line = text.lines().next().unwrap_or("");
+        let line = truncate(&format!(" ◷ {line}"), r.width as usize);
+        f.render_widget(Paragraph::new(Span::styled(line, app.theme.dim())), r);
+        hits.push((r, k));
+    }
+    app.queue_rows = hits;
+}
+
 /// The session name as the hint bar shows it: never longer than this, so the
 /// keys on the left always stay visible.
 pub const TITLE_COLS: usize = 24;
@@ -987,31 +1019,58 @@ pub const TITLE_COLS: usize = 24;
 /// The pieces of the right part of the hint bar, each already bounded, with the priority that
 /// keeps it (the lowest goes first when the bar is narrow): the state (a flash message, or the
 /// session), a todo count, running jobs, shared memory, queued messages.
-fn hint_pieces(app: &App) -> Vec<(u8, Vec<Span<'static>>)> {
+/// One piece of the right part of the keys row: its priority, what a click on it opens, its spans.
+type Piece = (u8, Option<HintHit>, Vec<Span<'static>>);
+
+fn hint_pieces(app: &App) -> Vec<Piece> {
     let theme = &app.theme;
     let base = theme.bar();
-    let mut out: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
+    // the piece under the pointer is underlined
+    let lit = |hit: HintHit| match app.hover {
+        Hover::Hint(h) if h == hit => Modifier::UNDERLINED,
+        _ => Modifier::empty(),
+    };
+    let mut out: Vec<Piece> = Vec::new();
     let (done, total) = todo_counts(&app.todo);
     if total > 0 && done < total {
-        out.push((2, vec![Span::styled(format!(" todo {done}/{total}"), base.fg(theme.accent2))]));
+        out.push((
+            2,
+            Some(HintHit::Todo),
+            vec![Span::styled(
+                format!(" todo {done}/{total}"),
+                base.fg(theme.accent2).add_modifier(lit(HintHit::Todo)),
+            )],
+        ));
     }
     let running = app.jobs.iter().filter(|j| j.status.running()).count();
     if running > 0 {
         let word = if running == 1 { "job" } else { "jobs" };
-        out.push((3, vec![Span::styled(format!(" ⚙ {running} {word}"), base.fg(theme.accent))]));
+        out.push((
+            3,
+            Some(HintHit::Jobs),
+            vec![Span::styled(format!(" ⚙ {running} {word}"), base.fg(theme.accent).add_modifier(lit(HintHit::Jobs)))],
+        ));
     }
     if !app.shared.is_empty() {
         let tok: usize = app.shared.iter().map(|s| s.2).sum();
         out.push((
             1,
+            Some(HintHit::Mem),
             vec![Span::styled(
                 format!(" ⊕ mem {} · {}", app.shared.len(), crate::render::blocks::fmt_k(tok as u64)),
-                base.fg(theme.accent2),
+                base.fg(theme.accent2).add_modifier(lit(HintHit::Mem)),
             )],
         ));
     }
     if app.queued > 0 {
-        out.push((4, vec![Span::styled(format!(" ◷ {} queued · Enter sends now", app.queued), base.fg(theme.warn))]));
+        out.push((
+            4,
+            Some(HintHit::Queued),
+            vec![Span::styled(
+                format!(" ◷ {} queued · Enter sends now", app.queued),
+                base.fg(theme.warn).add_modifier(lit(HintHit::Queued)),
+            )],
+        ));
     }
     if let Some((msg, at)) = &app.status {
         // the message fades into the bar over its last moments
@@ -1021,26 +1080,30 @@ fn hint_pieces(app: &App) -> Vec<(u8, Vec<Span<'static>>)> {
         let colour = if app.opts.animations { mix(theme.bar_fg, theme.bar_bg, fade) } else { theme.bar_fg };
         out.push((
             5,
+            None,
             vec![Span::styled(format!(" {} ", truncate(msg, 60)), base.fg(colour).add_modifier(Modifier::BOLD))],
         ));
     } else if let Some(id) = &app.session_id {
         // the whole id or title, or nothing: a piece of a name tells nobody anything
         let span = if app.session_title.is_empty() {
-            Span::styled(format!(" {id} "), base.fg(theme.dim))
+            Span::styled(format!(" {id} "), base.fg(theme.dim).add_modifier(lit(HintHit::Session)))
         } else {
-            Span::styled(format!(" {} ", truncate(&app.session_title, TITLE_COLS)), base.fg(theme.accent2))
+            Span::styled(
+                format!(" {} ", truncate(&app.session_title, TITLE_COLS)),
+                base.fg(theme.accent2).add_modifier(lit(HintHit::Session)),
+            )
         };
-        out.push((0, vec![span]));
+        out.push((0, Some(HintHit::Session), vec![span]));
     }
     out
 }
 
 /// The pieces joined by a separator between them (never one at an end), the last one followed by a space.
-fn join_pieces(app: &App, pieces: &[(u8, Vec<Span<'static>>)]) -> Vec<Span<'static>> {
+fn join_pieces(app: &App, pieces: &[Piece]) -> Vec<Span<'static>> {
     let theme = &app.theme;
     let base = theme.bar();
     let mut out = Vec::new();
-    for (i, (_, spans)) in pieces.iter().enumerate() {
+    for (i, (_, _, spans)) in pieces.iter().enumerate() {
         if i > 0 {
             out.push(Span::styled(" ·".to_string(), base.fg(theme.border)));
         }
@@ -1075,7 +1138,7 @@ pub fn hint_right_text(app: &App) -> String {
     hint_right(app).iter().map(|s| s.content.to_string()).collect()
 }
 
-fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
+fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
     }
@@ -1153,9 +1216,23 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
             _ => spans.push(Span::styled(part.to_string(), base)),
         }
     }
+    // where each clickable piece of the right part sits
+    let mut at = area.x as usize + width(&left) + pad;
+    let mut hits = Vec::new();
+    for (i, (_, hit, parts)) in pieces.iter().enumerate() {
+        if i > 0 {
+            at += width(" ·");
+        }
+        let w: usize = parts.iter().map(|s| width(&s.content)).sum();
+        if let Some(h) = hit {
+            hits.push((Rect::new(at as u16, area.y, w as u16, 1), *h));
+        }
+        at += w;
+    }
     spans.push(Span::styled(" ".repeat(pad), base));
     spans.extend(right);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+    app.hint_hits = hits;
 }
 
 /// Whole hints are dropped from the end until the rest fits, so a key is never cut from its

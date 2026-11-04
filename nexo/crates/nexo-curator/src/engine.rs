@@ -269,6 +269,16 @@ pub struct Params {
     /// leave on a guess, and the note left in its place names the file and the message of the edit. Decided
     /// only when the view is cut, so the view between two cuts stays as it was sent (0: off).
     pub stale: i64,
+    /// The provider keeps more than the last request in its cache: the last view sent on each topic (a
+    /// pocket) lives `life` seconds. A request back on a topic whose pocket lives reads it from the cache, so
+    /// the switch costs nothing. How long the provider keeps a view is also learned from what it says it read
+    /// from its cache (`Curator::cached`). 2: also, a view whose pocket is gone is read again anyway, so it is
+    /// cut down then, and a cut past where the cache stops is priced as free: cheaper after long pauses, but
+    /// what is cut early is missed more (0: off, the cache holds the last view).
+    pub pockets: i64,
+    /// Seconds a pocket is taken to live at most (`pockets`); 0: only the last view sent, as a local server
+    /// with one slot.
+    pub life: f64,
 }
 
 impl Params {
@@ -388,6 +398,8 @@ struct Built {
     on: Vec<Option<(usize, usize)>>,
     msg: Option<Value>,
     size: i64,
+    /// A hash of the message as built (`pockets`).
+    fp: u64,
 }
 
 /// The visible messages, by (messages, start, turns) they were worked out for.
@@ -538,9 +550,69 @@ pub struct Engine {
     edit_ok: FxHashMap<String, bool>,
     /// The reads that left the view while a later edit had made them out of date: (path, message of the edit).
     stale_gone: FxHashMap<usize, (String, usize)>,
+    /// Seconds, as the host gives them with each view (`Params.pockets`).
+    pub now: f64,
+    /// The last view sent on each topic, message by message as [`Engine::prints`] gives it, and when.
+    pockets: FxHashMap<usize, Pocket>,
+    /// The first message of the view the cache no longer holds, while `decide` weighs it (`usize::MAX`: all
+    /// of it is held, or new).
+    warm: usize,
+    /// How long the provider keeps a view, as learned (`learn`): at least `life_lo`, less than `life_hi`
+    /// seconds; and whether it ever said it read from its cache.
+    life_lo: f64,
+    life_hi: f64,
+    read_seen: bool,
+    /// What the cache gives the view last decided, by how long it keeps views (`learn`).
+    probe: Option<Probe>,
+    /// The hash of each message as it came (`prints`; 0: not taken yet).
+    raw_fp: Vec<u64>,
 }
 
 type Proposal = (usize, usize, Vec<usize>, i64);
+
+/// The last view sent on a topic (`Params.pockets`): (message, hash of it as sent), and when.
+struct Pocket {
+    sent: Vec<(usize, u64)>,
+    at: f64,
+}
+
+/// The view just decided, weighed against the pockets: the tokens the cache gives it if it keeps the views
+/// up to each age, (age, tokens) youngest first, each giving more than the one before; and its tokens.
+struct Probe {
+    steps: Vec<(f64, i64)>,
+    total: i64,
+}
+
+/// The pockets kept: a session of many topics drops the oldest.
+const POCKETS_KEPT: usize = 16;
+
+/// What the provider says it read tells a pocket's age apart only when the views it would and would not
+/// give differ by this share of the request at least; the provider counts in blocks and our tokens are
+/// estimates.
+const LIFE_GAP: f64 = 0.1;
+
+/// A view the provider did not give at this age or younger tells nothing of its lifetime: a cache keeps
+/// views at least this long, and a miss sooner is the provider's own load.
+const LIFE_LEAST: f64 = 60.0;
+
+/// A hash of a message as sent, never 0 (0 marks a message sent as it came).
+fn fingerprint(v: &Value) -> u64 {
+    use std::hash::Hasher;
+    struct H(rustc_hash::FxHasher);
+    impl std::io::Write for H {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.write(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut h = H(rustc_hash::FxHasher::default());
+    // writing to a hasher does not fail
+    let _ = serde_json::to_writer(&mut h, v);
+    h.0.finish() | 1
+}
 
 /// A worth that orders as a number (the parts [`Engine::cover`] weighs are never NaN).
 #[derive(PartialEq)]
@@ -934,6 +1006,14 @@ impl Engine {
             edits: Vec::new(),
             edit_ok: FxHashMap::default(),
             stale_gone: FxHashMap::default(),
+            now: 0.0,
+            pockets: FxHashMap::default(),
+            warm: usize::MAX,
+            life_lo: 0.0,
+            life_hi: f64::INFINITY,
+            read_seen: false,
+            probe: None,
+            raw_fp: Vec::new(),
         }
     }
 
@@ -1520,13 +1600,16 @@ impl Engine {
         let rewritten = n > 0 && (msgs.len() < n || !py_eq(&strip_cc(&msgs[n - 1]), &self.last_raw));
         if rewritten {
             let rules = std::mem::take(&mut self.rules).carried();
-            // what the host set (window, tools) is not part of the history: it survives the restart
+            // what the host set (window, tools, time) is not part of the history, and neither is what was
+            // learned of the provider: it survives the restart
             let (budget, note_tool, recall_tool) = (self.budget, self.note_tool, self.recall_tool);
+            let (now, life, read_seen) = (self.now, (self.life_lo, self.life_hi), self.read_seen);
             *self = Engine::new(self.p.clone());
             self.rules = rules;
             self.budget = budget;
             self.note_tool = note_tool;
             self.recall_tool = recall_tool;
+            (self.now, (self.life_lo, self.life_hi), self.read_seen) = (now, life, read_seen);
         }
         // a rewritten history is read anew: the rules found in it are the carried ones, where they were;
         // what the person wrote after the last reply comes with the rewrite and is new; with no reply at all
@@ -1597,7 +1680,8 @@ impl Engine {
         let fresh = self.built.get(&mi).is_some_and(|b| b.key == key && b.map_ver == map_ver && b.on == on);
         if !fresh {
             let (msg, size) = self.build(mi, !key.is_empty(), &on);
-            self.built.insert(mi, Built { key, map_ver, on, msg: Some(msg), size });
+            let fp = fingerprint(&msg);
+            self.built.insert(mi, Built { key, map_ver, on, msg: Some(msg), size, fp });
         }
         let b = &self.built[&mi];
         (b.msg.as_ref(), b.size)
@@ -1981,6 +2065,11 @@ impl Engine {
                 quiet.push(("miss_loops", mi));
             }
         }
+        // the provider's cache holds the last view of each topic for a while (`Params.pockets`): where it
+        // stops in the view as it stands, which cuts past it do not move
+        let (warm, warm_all, cold) =
+            if self.p.pockets != 0 { self.warm_now() } else { (usize::MAX, usize::MAX, false) };
+        self.warm = warm;
         let nt = self.goal.turns.len();
         // the oldest message closing steps changed in this request: the cache misses from there on
         let mut closed: Option<usize> = None;
@@ -2025,6 +2114,7 @@ impl Engine {
                 }
             }
         }
+        let mut switched = false;
         if nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread {
             let start = self.goal.turns[nt - 1].start;
             if !self.frozen.contains_key(&start) {
@@ -2034,40 +2124,76 @@ impl Engine {
                     self.bump("cards", 1);
                 }
                 self.bump("switches", 1);
+                switched = true;
                 // the view sends the messages of another topic: the cache misses from the first that differs
-                let vis = self.visible();
-                // (the message before it joins it when they are of the same role)
-                if let Some(p) = (0..sent.len()).find(|&p| vis.get(p) != Some(&sent[p])) {
-                    let role = |m: usize| self.tr.msgs[m].get("role").and_then(Value::as_str);
-                    let joined = p > 0 && vis.get(p).is_some_and(|&m| role(m) == role(vis[p - 1]));
-                    quiet.push((
-                        "miss_switch",
-                        if joined { vis[p - 1] } else { vis.get(p).map_or(sent[p], |&m| m.min(sent[p])) },
-                    ));
+                // from what it holds (with pockets, the last view of that topic, if it lives)
+                if self.p.pockets != 0 {
+                    if warm != usize::MAX {
+                        quiet.push(("miss_switch", warm));
+                    }
+                } else {
+                    let vis = self.visible();
+                    // (the message before it joins it when they are of the same role)
+                    if let Some(p) = (0..sent.len()).find(|&p| vis.get(p) != Some(&sent[p])) {
+                        let role = |m: usize| self.tr.msgs[m].get("role").and_then(Value::as_str);
+                        let joined = p > 0 && vis.get(p).is_some_and(|&m| role(m) == role(vis[p - 1]));
+                        quiet.push((
+                            "miss_switch",
+                            if joined { vis[p - 1] } else { vis.get(p).map_or(sent[p], |&m| m.min(sent[p])) },
+                        ));
+                    }
                 }
+            }
+        }
+        // the same topic, but its last view outlived the cache: what a cache that kept it would hold is read
+        // again
+        if warm < warm_all {
+            self.bump("pocket_cold", 1);
+            if !switched {
+                quiet.push(("miss_cold", warm));
             }
         }
         let t = self.tr.msgs.len();
         if t == 0 {
+            self.warm = usize::MAX;
             return;
         }
         let k = self.tr.steps.len();
         let mut sizes = self.sizes_now();
         let total: i64 = sizes.iter().sum();
-        let due = total - self.checked >= self.p.check || k as i64 - self.checked_at as i64 >= self.p.every;
+        // where the cache stops, the view is read again whatever is cut: what is worth cutting is weighed now
+        let due = warm != usize::MAX
+            || total - self.checked >= self.p.check
+            || k as i64 - self.checked_at as i64 >= self.p.every;
+        let held = if self.p.hold != 0 && self.p.eoq != 0 { self.held(&sizes) } else { 0 };
         if self.p.eoq != 0 {
-            (self.cap, self.floor) = self.eoq_cap(k);
+            // what no cut takes: the first message and the protected tail
+            let tail = (t as i64 - self.p.protect).clamp(1, t as i64) as usize;
+            let base = (sizes[0] + sizes[tail..].iter().sum::<i64>() - held).max(0);
+            let stuck;
+            (self.cap, self.floor, stuck) = self.eoq_cap(k, base);
+            if stuck {
+                self.bump("cap_stuck", 1);
+            }
         }
         let mut first: Option<usize> = None;
-        let held = if self.p.hold != 0 && self.p.eoq != 0 { self.held(&sizes) } else { 0 };
-        let mut over = self.cap != 0 && total - held > self.cap;
+        let capped = self.cap != 0 && total - held > self.cap;
+        // a view the cache holds no more of than its anchor is read again whole: it is cut down to what the
+        // cap leaves now, for free, rather than later at the price of breaking the cache (`Params.pockets` 2)
+        let squeeze = self.p.pockets >= 2
+            && !capped
+            && cold
+            && self.cap != 0
+            && (total - held) as f64 > self.floor * self.cap as f64;
+        let mut over = capped || squeeze;
         if over && self.p.cut_copies {
             let target = self.floor * self.cap as f64 + held as f64;
             if target != 0.0 {
                 first = self.need(t, &sizes, target, true);
                 sizes = self.sizes_now();
             }
-            over = sizes.iter().sum::<i64>() - held > 2 * self.cap;
+            let left = sizes.iter().sum::<i64>();
+            over = left - held > 2 * self.cap || (squeeze && left as f64 > target);
         }
         if over {
             if let Some(e) = self.evict(t, k, &sizes, true) {
@@ -2087,12 +2213,22 @@ impl Engine {
                     sizes = self.sizes_now();
                 }
             }
-            // `leave` writes the anchor again: the first message changes with it
-            if target != 0.0 && sizes.iter().sum::<i64>() as f64 > target && self.leave(&sizes, target) {
+            // `leave` writes the anchor again: the first message changes with it, and with it every topic's
+            // pocket, so a squeeze leaves only when no pocket that lives holds the anchor as it is
+            if target != 0.0
+                && sizes.iter().sum::<i64>() as f64 > target
+                && (!squeeze || warm == 0)
+                && self.leave(&sizes, target)
+            {
                 first = Some(0);
             }
-            self.bump("cap_rewrites", first.is_some() as i64);
-            self.miss("miss_cap", first, &sizes, t);
+            if squeeze {
+                self.bump("pocket_squeeze", first.is_some() as i64);
+                self.miss("miss_squeeze", first, &sizes, t);
+            } else {
+                self.bump("cap_rewrites", first.is_some() as i64);
+                self.miss("miss_cap", first, &sizes, t);
+            }
         } else if due {
             if let Some(e) = self.evict(t, k, &sizes, false) {
                 self.miss("miss_due", Some(e), &sizes, t);
@@ -2127,8 +2263,9 @@ impl Engine {
             missed = Some(missed.map_or(mi, |f| f.min(mi)));
         }
         self.recite(t);
-        // a view changed from message 1 on is read again nearly whole: the anchor can change with it
-        if self.refresh_rules(first.is_some_and(|f| f <= 1)) {
+        // a view changed from message 1 on is read again nearly whole: the anchor can change with it, as it can
+        // when no pocket that lives holds the anchor as it is (`Params.pockets`)
+        if self.refresh_rules(first.is_some_and(|f| f <= 1) || warm == 0) {
             self.miss("miss_anchor", Some(0), &sizes, t);
             missed = Some(0);
         }
@@ -2138,6 +2275,150 @@ impl Engine {
         }
         self.miss("miss", missed, &sizes, t);
         self.sent_vis = self.visible();
+        if self.p.pockets != 0 {
+            self.keep_pocket();
+        }
+        self.warm = usize::MAX;
+    }
+
+    /// The view `vis` as sent, message by message: (message, the hash of it as it goes), so that two views
+    /// hash alike as far as the provider reads them alike.
+    fn prints(&mut self, vis: &[usize]) -> Vec<(usize, u64)> {
+        if self.raw_fp.len() < self.tr.msgs.len() {
+            self.raw_fp.resize(self.tr.msgs.len(), 0);
+        }
+        vis.iter()
+            .map(|&mi| {
+                if self.message(mi).0.is_some() {
+                    return (mi, self.built[&mi].fp);
+                }
+                if self.raw_fp[mi] == 0 {
+                    self.raw_fp[mi] = fingerprint(&self.tr.msgs[mi]);
+                }
+                (mi, self.raw_fp[mi])
+            })
+            .collect()
+    }
+
+    /// The topic whose pocket the view is (`Params.pockets`): the one the person is on when the other topics
+    /// leave the view, else the one whole view.
+    fn pocket_key(&self) -> usize {
+        if !self.goal.turns.is_empty() && self.apart() {
+            self.goal.active()
+        } else {
+            usize::MAX
+        }
+    }
+
+    /// Where the provider's cache stops in the view as it stands, by the pockets (`Params.pockets`): the first
+    /// message no pocket that lives holds, the same by every pocket however old, and whether nothing past the
+    /// anchor is held (`usize::MAX`: all of it is held, or the cache has seen none of it yet). Counts what a
+    /// pocket older than the latest view brings, and a topic come back to after its pocket is gone.
+    fn warm_now(&mut self) -> (usize, usize, bool) {
+        if self.pockets.is_empty() {
+            return (usize::MAX, usize::MAX, false);
+        }
+        let vis = self.visible();
+        let cur = self.prints(&vis);
+        let life = self.p.life.min(self.life_hi);
+        let young = self.pockets.values().map(|p| p.at).fold(f64::NEG_INFINITY, f64::max);
+        let (now, own) = (self.now, self.pocket_key());
+        // each pocket: whether it lives, whether it is the latest, whether it is this topic's, and the first
+        // place of the view it does not hold (`usize::MAX`: none)
+        let held: Vec<(bool, bool, bool, usize)> = self
+            .pockets
+            .iter()
+            .map(|(&k, p)| {
+                let n = cur.iter().zip(&p.sent).take_while(|(a, b)| a == b).count();
+                let lives = if life > 0.0 { now - p.at <= life } else { p.at >= young };
+                (lives, p.at >= young, k == own, if n == p.sent.len().min(cur.len()) { usize::MAX } else { n })
+            })
+            .collect();
+        let live = held.iter().filter(|h| h.0).map(|h| h.3).max();
+        let all = held.iter().map(|h| h.3).max().unwrap_or(0);
+        let latest = held.iter().filter(|h| h.1).map(|h| h.3).max().unwrap_or(0);
+        if let Some(c) = live.filter(|&c| c > latest) {
+            let tokens: i64 = (latest..c.min(cur.len())).map(|j| self.message(cur[j].0).1).sum();
+            self.bump("pocket_back", 1);
+            self.bump("pocket_hit", tokens);
+        }
+        if held.iter().any(|h| h.2 && !h.0) {
+            self.bump("pocket_dead", 1);
+        }
+        let place = |c: usize| if c == usize::MAX { usize::MAX } else { cur[c].0 };
+        let warm = live.map_or(0, place);
+        (warm, place(all), warm != usize::MAX && live.is_none_or(|c| c <= 1))
+    }
+
+    /// The view just decided is the pocket of its topic (`Params.pockets`); what the cache gives it by how
+    /// long the cache keeps views is kept for `learn`.
+    fn keep_pocket(&mut self) {
+        let vis = self.visible();
+        let fin = self.prints(&vis);
+        let tokens: Vec<i64> = vis.iter().map(|&mi| self.message(mi).1).collect();
+        let now = self.now;
+        let mut by_age: Vec<(f64, i64)> = self
+            .pockets
+            .values()
+            .map(|p| {
+                let n = fin.iter().zip(&p.sent).take_while(|(a, b)| a == b).count();
+                (now - p.at, tokens[..n].iter().sum())
+            })
+            .collect();
+        by_age.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut steps: Vec<(f64, i64)> = Vec::new();
+        for (age, hit) in by_age {
+            if steps.last().is_none_or(|s| hit > s.1) {
+                steps.push((age, hit));
+            }
+        }
+        self.probe = Some(Probe { steps, total: tokens.iter().sum() });
+        let key = self.pocket_key();
+        self.pockets.insert(key, Pocket { sent: fin, at: now });
+        if self.pockets.len() > POCKETS_KEPT {
+            let oldest = self.pockets.iter().min_by(|a, b| a.1.at.total_cmp(&b.1.at)).map(|(k, _)| *k);
+            if let Some(k) = oldest {
+                self.pockets.remove(&k);
+            }
+        }
+    }
+
+    /// What the provider said of the call made with the view last decided (`Curator::cached`): the input
+    /// tokens it read from its cache, and all of them. The share it read tells which pockets it still kept,
+    /// so how long it keeps a view: a pocket it gave sets the least lifetime, one it did not give the most,
+    /// unless that age is too young to tell (`LIFE_LEAST`) or below one it gave. A provider that never says
+    /// it read from its cache teaches nothing.
+    pub fn learn(&mut self, sys: u64, read: u64, input: u64) {
+        let Some(probe) = self.probe.take() else { return };
+        self.read_seen |= read > 0;
+        if input == 0 || !self.read_seen {
+            return;
+        }
+        let all = (sys as i64 + probe.total).max(1) as f64;
+        // what it read, in the estimated tokens of the view
+        let got = read.min(input) as f64 / input as f64 * all;
+        let mut below = 0.0;
+        for &(age, hit) in &probe.steps {
+            let level = sys as f64 + hit as f64;
+            let gap = level - below;
+            if gap >= LIFE_GAP * all {
+                if got >= below + 0.7 * gap {
+                    self.life_lo = self.life_lo.max(age);
+                } else {
+                    if got <= below + 0.3 * gap && age >= LIFE_LEAST && age > self.life_lo && age < self.life_hi {
+                        self.life_hi = age;
+                        self.bump("life_learned", 1);
+                    }
+                    break;
+                }
+            }
+            below = level;
+        }
+        // it gave a view older than the lifetime learned: that was the provider's load, not its lifetime
+        if self.life_lo >= self.life_hi {
+            self.life_hi = f64::INFINITY;
+            self.bump("life_reset", 1);
+        }
     }
 
     /// Counts under `k` the tokens of the view from message `from` on: what the provider's cache misses
@@ -2821,13 +3102,18 @@ impl Engine {
         // The price also counts the messages after the previous request, which no cut makes dearer: priced
         // without them, as `rent` does, input cost falls 3.0 % on the 20 recorded sessions but 2 more of
         // 112 forgotten words are lost, so they stay as a margin.
+        // what the cache no longer holds (`Params.pockets` 2) is read again closed or not: closing there costs
+        // nothing, and what it saves there makes no closing before it cheaper
+        let warm = if self.p.pockets >= 2 { self.warm } else { usize::MAX };
         let (mut best, mut cut, mut paid, mut saved, mut first) = (0.0f64, None, 0.0f64, 0i64, sizes.len());
         for n in (0..cands.len()).rev() {
             paid += cands[n].1;
-            saved += cands[n].2;
             let s = &self.steps[cands[n].0];
+            if s.place() < warm {
+                saved += cands[n].2;
+            }
             first = first.min(s.place()).min(s.a);
-            let rest = (after[first] - saved).max(0);
+            let rest = (after[first] - after[first.max(warm).min(sizes.len())] - saved).max(0);
             let gain = paid - self.p.margin * (1.0 - r) * rest as f64;
             if gain > best {
                 (best, cut) = (gain, Some(n));
@@ -3293,19 +3579,28 @@ impl Engine {
         held
     }
 
-    fn eoq_cap(&self, k: usize) -> (i64, f64) {
+    /// The cap past which the view is cut, the share of it a cut brings the view down to, and whether
+    /// the cut is priced with `base` instead of `Params.eoq`. A cut is an order of the economic order
+    /// quantity: it costs reading again without the cache what the view keeps, and the tokens it lets
+    /// grow cost `ratio` of that on every request until the next cut. `base` is what no cut takes (the
+    /// first message and the protected tail). When even the deepest cut leaves no room for one more
+    /// step, the cap as priced would cut every request a little and the provider would read the whole
+    /// view again each time (a long text pasted into the latest request does it): the cut is then priced
+    /// with what it leaves, so the view grows as sent until the cut makes room.
+    fn eoq_cap(&self, k: usize, base: i64) -> (i64, f64, bool) {
         let r = self.p.ratio;
         if r <= 0.0 {
-            return (0, self.floor);
+            return (0, self.floor, false);
         }
         let g = self.raw_tokens as f64 / k.max(1) as f64;
-        let eoq = self.p.eoq as f64;
-        let q = if r < 1.0 { (2.0 * (1.0 - r) * eoq * g / r).sqrt() } else { 0.0 };
-        let mut cap = (eoq + q) as i64;
-        if cap == 0 {
-            cap = 1;
+        let cap_of = |e: f64| e + if r < 1.0 { (2.0 * (1.0 - r) * e * g / r).sqrt() } else { 0.0 };
+        let mut e = self.p.eoq as f64;
+        let stuck = base as f64 + g > cap_of(e);
+        if stuck {
+            e = base as f64;
         }
-        (cap, eoq / cap as f64)
+        let cap = (cap_of(e) as i64).max(1);
+        (cap, e / cap as f64, stuck)
     }
 
     fn prob(&self, x: &[f64]) -> f64 {
@@ -3669,15 +3964,20 @@ impl Engine {
             cum.push(cum[cum.len() - 1] + s);
         }
         let sent = self.tr.steps.last().map_or(t, |&s| s.min(t));
+        // what the cache no longer holds (`Params.pockets` 2) is read again cut or not: a cut there costs nothing,
+        // and what it saves there makes no cut before it cheaper
+        let warm = if self.p.pockets >= 2 { self.warm } else { usize::MAX };
         let (mut best_at, mut saved, mut paid, mut bought) = (None, 0i64, 0.0f64, (0.0f64, 0.0f64));
         for n in (0..proposal.len()).rev() {
             let (f, i, more, tokens) = &proposal[n];
-            saved += tokens;
+            if *f < warm {
+                saved += tokens;
+            }
             paid += more.iter().map(|j| self.held[&(*i, *j)]).sum::<f64>();
             if n > 0 && proposal[n - 1].0 == *f {
                 continue;
             }
-            let rest = (cum[sent] - cum[(*f).min(sent)] - saved).max(0);
+            let rest = (cum[(*f).max(warm).min(sent)] - cum[(*f).min(sent)] - saved).max(0);
             let price = self.p.margin * (1.0 - self.p.ratio) * rest as f64;
             let need = price;
             if paid >= need && paid - bought.0 >= need - bought.1 {
@@ -4992,6 +5292,39 @@ mod tests {
         assert_eq!(kept.iter().filter(|r| **r == log).count(), 1, "{kept:?}");
         // only parts a later output holds went
         assert!(need.stats.get("need_copies").is_some_and(|n| *n > 0) && !need.stats.contains_key("need_chunks"));
+    }
+
+    #[test]
+    fn a_long_paste_among_the_latest_messages_is_not_cut_around_on_every_request() {
+        // a request answered in ten small steps, then a long log pasted into the next request: while the log
+        // is among the protected latest messages no cut can take it, and cutting what is before it a little
+        // on every request would make the provider read the whole view again each time
+        let mut msgs = vec![json!({"role": "user", "content": "List the slots of listing.txt one range at a time."})];
+        for k in 0..10 {
+            msgs.extend(step(k, &format!("sed -n {k}p listing.txt"), &listing(10 * k, 10 * k + 9)));
+        }
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done: 100 slots listed."}]}));
+        let log: String = (0..1500)
+            .map(|k| format!("run {k} failed at {} with {}", word(k + 5000), word(k + 9000)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        msgs.push(json!({"role": "user", "content": format!("The run failed, here is its log:\n{log}")}));
+        let paste = msgs.len() - 1;
+        for k in 10..20 {
+            msgs.extend(step(k, &format!("grep -n {} run.log", word(k + 5000)), &format!("{k}: run {k} failed")));
+        }
+        let mut e = Engine::new(params("nudge=0;eoq=2000;protect=12").unwrap());
+        let mut seen = Vec::new();
+        for n in (paste + 1..=msgs.len()).step_by(2) {
+            e.sync(&msgs[..n]);
+            let view = sent(&e.view());
+            seen.push((n, e.stats.get("miss").copied().unwrap_or(0), view.contains(log.lines().nth(700).unwrap())));
+        }
+        let (held, after): (Vec<&(usize, i64, bool)>, Vec<_>) = seen.iter().partition(|s| s.0 <= paste + 12);
+        assert!(held.iter().all(|s| s.1 == held[0].1 && s.2), "the view grows as sent: {seen:?}");
+        assert!(e.stats.get("cap_stuck").is_some_and(|n| *n > 0), "{:?}", e.stats);
+        // once the log is out of the tail a cut makes room, and the view is cut
+        assert!(after.last().is_some_and(|s| s.1 > held[0].1), "{seen:?}");
     }
 
     #[test]

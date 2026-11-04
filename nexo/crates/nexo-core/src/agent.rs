@@ -32,6 +32,13 @@ pub enum AgentCommand {
     },
     /// Stop the running turn (tools are cancelled, the partial reply is kept).
     Interrupt,
+    /// Take a queued request back out of the queue (to edit it): the one at `index` if it still
+    /// reads `text`, else the first waiting one that does; answered with `Queued`. A request that
+    /// already started is not found, and nothing changes.
+    Unqueue {
+        index: usize,
+        text: String,
+    },
     Permission {
         id: String,
         decision: PermissionDecision,

@@ -229,6 +229,11 @@ pub fn key(app: &mut App, k: KeyEvent) {
             KeyCode::Char('?') => return app.run_command(crate::commands::Command::Help),
             KeyCode::Char('n') if app.search.is_some() => return app.search_jump(!shift),
             KeyCode::Char('N') if app.search.is_some() => return app.search_jump(false),
+            // ↑ with requests queued takes the last one back into the draft to edit it
+            KeyCode::Up if !shift && !ctrl && app.selected.is_none() && !app.queued_msgs.is_empty() => {
+                let last = app.queued_msgs.len() - 1;
+                return app.unqueue(last);
+            }
             // the blocks of the transcript: Shift+↑ steps in at the last one; with one
             // selected, ↑ ↓ walk them, → opens and ← folds the selected one
             KeyCode::Up if shift && app.selected.is_none() => return app.select_last(),
@@ -369,6 +374,17 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             if app.palette.is_none() && app.unseen() > 0 && contains(app.pill, m.column, m.row) {
                 app.scroll_to_end();
                 return;
+            }
+            // a queued row takes that request back into the draft; a piece of the keys row opens its view
+            if app.palette.is_none() {
+                if let Some((_, i)) = app.queue_rows.iter().find(|(r, _)| contains(*r, m.column, m.row)) {
+                    let i = *i;
+                    return app.unqueue(i);
+                }
+                if let Some((_, h)) = app.hint_hits.iter().find(|(r, _)| contains(*r, m.column, m.row)) {
+                    let h = *h;
+                    return app.open_hint(h);
+                }
             }
             // the status bar: the model opens its picker, the cost the usage, the rest the context window
             if m.row == app.status_row && app.palette.is_none() {

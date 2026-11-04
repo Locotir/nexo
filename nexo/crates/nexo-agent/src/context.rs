@@ -69,6 +69,9 @@ pub trait ContextPolicy: Send {
     /// The tokens the model takes in one call, less its reply, before each view (the curator keeps
     /// the view under it).
     fn window(&mut self, _tokens: u64) {}
+    /// What the provider said of the call made with the last view: the input tokens it read from its
+    /// cache, and all of them, from which the curator learns how long the cache keeps a view.
+    fn usage(&mut self, _read: u64, _input: u64) {}
     /// Whether the view keeps under the tokens `window` gives it, so a window learned smaller needs a
     /// new view rather than a compaction.
     fn fits_window(&self) -> bool {
@@ -376,6 +379,10 @@ impl ContextPolicy for BuiltIn {
         self.cur.window(tokens);
     }
 
+    fn usage(&mut self, read: u64, input: u64) {
+        self.cur.cached(read, input);
+    }
+
     fn fits_window(&self) -> bool {
         true
     }
@@ -390,6 +397,8 @@ impl ContextPolicy for BuiltIn {
 
     async fn view(&mut self, system_tokens: u64, history: &[Message]) -> anyhow::Result<View> {
         let hint = self.hint.take();
+        // the time the view is sent, which tells what the provider's cache still keeps
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
         // the same version and no fewer messages: only appends happened, what was seen still holds
         let same = match (hint, self.seen_version) {
             (Some(v), Some(s)) if v == s && history.len() >= self.seen.len() => self.seen.len(),
@@ -413,12 +422,12 @@ impl ContextPolicy for BuiltIn {
             // REPLAY replies, the older ones are taken in one step.
             let points: Vec<usize> = (1..history.len()).filter(|&p| history[p].role == Role::Assistant).collect();
             for &p in &points[points.len().saturating_sub(REPLAY)..] {
-                if let Err(e) = self.cur.view(system_tokens, &self.values[..p], 0.0) {
+                if let Err(e) = self.cur.view(system_tokens, &self.values[..p], now) {
                     anyhow::bail!("the built-in curator failed: {e}");
                 }
             }
         }
-        let r = match self.cur.view(system_tokens, &self.values, 0.0) {
+        let r = match self.cur.view(system_tokens, &self.values, now) {
             Ok(r) => r,
             Err(e) => anyhow::bail!("the built-in curator failed: {e}"),
         };

@@ -1176,6 +1176,34 @@ async fn queued_requests_are_counted_as_events() {
 }
 
 #[tokio::test]
+async fn unqueue_takes_a_waiting_request_out_by_text() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Hang(vec![StreamEvent::TextDelta("one".into())]), Reply::Events(text("three"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "1".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Submit { text: "2".into(), attachments: vec![] });
+    assert!(matches!(r.next().await, AgentEvent::Queued { pending: 1 }));
+    r.send(AgentCommand::Submit { text: "3".into(), attachments: vec![] });
+    assert!(matches!(r.next().await, AgentEvent::Queued { pending: 2 }));
+    // a wrong index still finds the request by its text
+    r.send(AgentCommand::Unqueue { index: 0, text: "2".into() });
+    assert!(matches!(r.next().await, AgentEvent::Queued { pending: 1 }));
+    // one that is not waiting changes nothing
+    r.send(AgentCommand::Unqueue { index: 0, text: "2".into() });
+    assert!(matches!(r.next().await, AgentEvent::Queued { pending: 1 }));
+    r.send(AgentCommand::Interrupt);
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Interrupted);
+    // what runs next is "3": "2" never reaches the model
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "three");
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn clear_tells_the_interface_to_start_over() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![Reply::Events(text("ok"))]);

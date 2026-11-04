@@ -1,6 +1,7 @@
 //! Replays a recorded conversation through the curator, offline, and shows what it keeps and cuts.
 //!
-//! `cargo run --release -p nexo-curator --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--save N FILE]`
+//! `cargo run --release -p nexo-curator --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--save N FILE]
+//!  [--life S] [--gap S] [--pause N:S]`
 //!
 //! `FILE` is either a golden fixture (`tests/fixtures/*.jsonl`, lines `{"now", "req", "reply"}`) or a
 //! `nexo bench` transcript of the plain arm (`realm-plain-0.jsonl`: each line holds the `messages` the model
@@ -30,7 +31,12 @@
 //!   time it is sent. The floor ignores that the cache is a prefix, so it can be out of reach.
 //!
 //! Costs are priced with a prefix cache: what a request sends unchanged at its start, message by message
-//! and then block by block within the first message that changed, is a hit.
+//! and then block by block within the first message that changed, is a hit. Without `--life` the cache holds
+//! only the last request (a local server with one slot); with `--life S` it holds every request sent in the
+//! last `S` seconds, and a request reads the most any of them starts with. `--gap S` spaces the requests
+//! `S` seconds apart instead of the times the file holds. `--pause N:S` adds a pause of `S` seconds after every `N`
+//! requests, as when the person comes back to a session later. The provider's answer (what it read, of all) goes
+//! back to the curator after each request, as a host does.
 //!
 //! `--save N FILE` writes the view of request N (the messages, as JSON) to FILE.
 //!
@@ -87,6 +93,29 @@ fn cached(prev: &[Value], now: &[Value]) -> i64 {
     hit + match (now.get(same), prev.get(same)) {
         (Some(a), Some(b)) => grown(a, b),
         _ => 0,
+    }
+}
+
+/// A provider's prefix cache over time: the requests sent in the last `life` seconds, each with when it
+/// was sent (`life` 0: only the last request, as a local server with one slot).
+struct Cache {
+    life: f64,
+    sent: Vec<(Vec<Value>, f64)>,
+}
+
+impl Cache {
+    /// Sends `now` (after a system prompt of `system` tokens) at second `at`: the tokens it reads from the
+    /// cache, the most any request still held starts it with.
+    fn send(&mut self, now: &[Value], system: i64, at: f64) -> i64 {
+        let life = self.life;
+        if life > 0.0 {
+            self.sent.retain(|(_, t)| at - t <= life);
+        } else if self.sent.len() > 1 {
+            self.sent.drain(..self.sent.len() - 1);
+        }
+        let hit = self.sent.iter().map(|(v, _)| cached(v, now)).max().map_or(0, |h| h + system);
+        self.sent.push((now.to_vec(), at));
+        hit
     }
 }
 
@@ -901,6 +930,7 @@ fn main() {
     let mut every = 1usize;
     let mut quiet = false;
     let mut save: Option<(usize, String)> = None;
+    let (mut life, mut gap, mut pause): (f64, Option<f64>, Option<(usize, f64)>) = (0.0, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -911,11 +941,19 @@ fn main() {
                 let n = it.next().and_then(|n| n.parse().ok()).unwrap_or(0);
                 save = it.next().map(|f| (n, f.clone()));
             }
+            "--life" => life = it.next().and_then(|n| n.parse().ok()).unwrap_or(0.0),
+            "--gap" => gap = it.next().and_then(|n| n.parse().ok()),
+            "--pause" => {
+                pause = it
+                    .next()
+                    .and_then(|p| p.split_once(':'))
+                    .and_then(|(n, s)| Some((n.parse::<usize>().ok()?.max(1), s.parse().ok()?)))
+            }
             _ => path = Some(a.clone()),
         }
     }
     let Some(path) = path else {
-        eprintln!("usage: replay FILE.jsonl [--spec SPEC] [--every N] [--quiet] [--save N FILE]");
+        eprintln!("usage: replay FILE.jsonl [--spec SPEC] [--every N] [--quiet] [--save N FILE] [--life S] [--gap S] [--pause N:S]");
         std::process::exit(2);
     };
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -939,8 +977,9 @@ fn main() {
     let mut last_view: Vec<Value> = Vec::new();
     let mut last_msgs: Vec<Value> = Vec::new();
     let (mut sum_raw, mut sum_view) = (0i64, 0i64);
-    // a prefix cache, message by message: what the previous view sent unchanged at its start is a hit
+    // a prefix cache, message by message: what a view it holds sent unchanged at the start is a hit
     let (mut prev_view, mut sum_miss, mut sum_hit, mut per_view) = (Vec::<Value>::new(), 0i64, 0i64, Vec::new());
+    let (mut cache, mut plain_cache) = (Cache { life, sent: Vec::new() }, Cache { life, sent: Vec::new() });
     let (mut replies, mut lost_replies, mut lost_words, mut lost_first) = (0, 0, 0, Vec::<String>::new());
     let mut copied_words = 0;
     let (mut blind_tokens, mut open_tokens) = (0i64, 0i64);
@@ -949,14 +988,15 @@ fn main() {
     // the shapes of the views sent so far: a view the model was already sent comes back the same way
     let (mut shapes, mut revisits, mut first_revisits) = (HashSet::<String>::new(), 0usize, Vec::<String>::new());
     // the same cache with the whole history sent each time: the plain policy
-    let (mut plain_prev, mut plain_miss, mut plain_hit) = (Vec::<Value>::new(), 0i64, 0i64);
+    let (mut plain_miss, mut plain_hit) = (0i64, 0i64);
     // requests whose view changed a message the previous view had sent: each one pays the rest of the view again
     let mut rewrites = 0usize;
     for (i, r) in requests.iter().enumerate() {
         if let Some(t) = &r.tools {
             cur.tools(t);
         }
-        let reply = cur.view(r.system_tokens, &r.messages, r.now).expect("a view");
+        let at = gap.map_or(r.now, |g| g * i as f64) + pause.map_or(0.0, |(n, s)| (i / n) as f64 * s);
+        let reply = cur.view(r.system_tokens, &r.messages, at).expect("a view");
         if let Some((n, file)) = &save {
             if *n == i + 1 {
                 std::fs::write(file, Value::Array(reply.view.clone()).to_string()).expect("the view is written");
@@ -996,23 +1036,24 @@ fn main() {
         let raw: i64 = r.messages.iter().map(tokens_of).sum();
         sum_raw += raw;
         sum_view += reply.tokens;
-        let hit = cached(&prev_view, &reply.view) + if i > 0 { r.system_tokens as i64 } else { 0 };
+        let hit = cache.send(&reply.view, r.system_tokens as i64, at);
         sum_hit += hit;
         // counted as the plain cost is, so that a view equal to the history costs the same
         let all = reply.view.iter().map(tokens_of).sum::<i64>() + r.system_tokens as i64;
         sum_miss += all - hit;
         per_view.push((all - hit, hit));
+        // what the provider answers: the tokens it read from its cache, of all
+        cur.cached(hit as u64, all as u64);
         rewrites +=
             usize::from(reply.view.iter().zip(&prev_view).take_while(|(a, b)| a == b).count() < prev_view.len());
         prev_view = reply.view.clone();
-        let hit = cached(&plain_prev, &r.messages) + if i > 0 { r.system_tokens as i64 } else { 0 };
+        let hit = plain_cache.send(&r.messages, r.system_tokens as i64, at);
         plain_hit += hit;
         plain_miss += raw + r.system_tokens as i64 - hit;
         // REPLAY_MISS=1 prints the tokens each request misses in the cache, this view and plain
         if std::env::var("REPLAY_MISS").is_ok_and(|v| v == "1") {
             println!("r{} miss view {} plain {}", i + 1, per_view[i].0, raw + r.system_tokens as i64 - hit);
         }
-        plain_prev = r.messages.clone();
         let nudge = reply.view.last().map(text_of).is_some_and(|t| t.contains("[curator] Call the `note` tool"));
         let stats: Vec<(String, i64)> = reply.stats.iter().map(|(k, v)| (k.to_string(), *v)).collect();
         let mut changed = Vec::new();

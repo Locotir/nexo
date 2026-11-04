@@ -56,9 +56,16 @@ Each message is processed once, when it arrives, and nothing is recomputed per c
     person or the agent wrote weighs twice a tool's output;
   - **the map**: the requests that moved out, each with the agent's closing reply, and the files changed
     and commands run in them.
-- **Cold storage.** An earlier, unpublished implementation rebuilt the view down to `cold` tokens after a
-  pause that let the provider's cache expire, since everything is paid in full then anyway. nexo does not
-  track the cache's time to live, so it has no such step: `cold` is not a setting and `ttl` is refused.
+- **Pockets (off by default).** With `pockets=1` the curator takes the provider to keep more than the
+  last request: the last view sent on each topic (its pocket) lives `life` seconds. Back on a topic whose
+  pocket lives, the switch costs nothing, and only a pocket that is gone counts as a miss. Nothing more
+  is cut for it: the setting for long work that needs all it holds and is taken up again later. How long
+  the provider keeps a view is also learned from what it says it read from its cache: a pocket it no
+  longer gave, older than a minute, lowers the lifetime, and one it gave older than that raises it back.
+  With `pockets=2`, a view whose pocket is gone is read again whole anyway, so it is cut down to the cap's
+  floor then, for free, and a cut past where the cache stops is priced as free. On the recorded sessions
+  replayed with a request every 30 s and a 2 h pause every 40, input cost falls up to 14 %, but up to
+  2.8 times as many words the agent used later had left the view. `ttl` and `cold` are not settings.
   The curator writes nothing to disk: what left the view comes back by the agent reading the file or
   running the command again.
 - **Directives (off by default).** With `directives=1` the curator appends its efficiency directives to the
@@ -69,7 +76,7 @@ The default spec (`D_SPEC` in the crate), with a default for every value; a test
 to it:
 
 ```
-threshold=0.02;head=turn;recall=0;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=1;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1
+threshold=0.02;head=turn;recall=0;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=1;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1;pockets=0;life=3600
 ```
 
 | setting | default | what it sets |
@@ -91,6 +98,8 @@ threshold=0.02;head=turn;recall=0;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `fresh=1` | `1` | the output just asked for goes whole; its repeated runs go as pointers from the next request on (a pointer in a fresh output sends the agent looking for the lines) |
 | `still=32000` | `32000` | the latest outputs the agent has not written about yet (no text, no note since), up to this many tokens, leave only as an exact copy of a later output, never on a guess, cap or not; older ones past the budget may go on a guess, so the view stays bounded when the agent never writes |
 | `stale=1` | on | past the cap, a read of a file that a later edit or write of it (one that did not fail) changed leaves with the exact copies, before any guess; its note names the file and the message of the edit, and says to read the file again (or `recall`, when the host offers it); decided only at a cut, so the view between cuts stays as sent |
+| `pockets=0` | off | 1: the last view sent on each topic stays in the provider's cache for `life` seconds; 2: also cut a view whose pocket is gone (see Pockets above) |
+| `life=S` | `3600` | the most seconds a pocket is taken to live; 0: only the last view, as a local server with one slot |
 | `directives=N` | `0` | 1 appends the efficiency directives to the system prompt |
 | `protect=M` | `12` | the last `M` messages never leave the view |
 

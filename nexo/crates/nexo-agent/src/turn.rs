@@ -325,6 +325,18 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             turn = Some(start_turn(&state, text, attachments, cancel.child_token()).await);
                         }
                     }
+                    AgentCommand::Unqueue { index, text } => {
+                        let mut st = state.lock().await;
+                        let at = if st.inbox.get(index).is_some_and(|(t, _)| *t == text) {
+                            Some(index)
+                        } else {
+                            st.inbox.iter().position(|(t, _)| *t == text)
+                        };
+                        if let Some(i) = at {
+                            st.inbox.remove(i);
+                        }
+                        emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
+                    }
                     AgentCommand::Interrupt => {
                         if turn.is_some() {
                             cancel.cancel();
@@ -1375,6 +1387,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             if !usage.is_empty() {
                 let model = st.target.model();
                 add_usage(&mut st, &events, &model, usage, call);
+                st.policy.usage(call.cache_read, call.total_input());
             }
             if !msg.content.is_empty() && call.total_input() > 0 {
                 let len = st.history.len();

@@ -57,7 +57,7 @@ pub const COMMANDS: &[Spec] = &[
         "shared-memory",
         &["memory-shared", "share"],
         "[id|off] [focus]",
-        "bring what another session knows into this one, with your next message",
+        "bring what another session knows into this one, with your next message; `list` shows what waits",
     ),
     spec("undelete", &["restore"], "[id]", "bring back a deleted session (the last one by default)"),
     spec("init", &[], "", "have the agent study the project and write AGENTS.md"),
@@ -81,6 +81,8 @@ pub const COMMANDS: &[Spec] = &[
     spec("copy", &[], "[code]", "copy the last reply to the clipboard; `code`: its last code block"),
     spec("context-live", &["live", "map"], "", "a live map of the context beside the transcript: what each call sends"),
     spec("quit", &["exit", "q"], "", "leave nexo"),
+    spec("todo", &["tasks"], "", "the todo list, every item with its state"),
+    spec("queue", &["queued"], "", "the requests waiting for the turn to end; pick one to edit it"),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +119,10 @@ pub enum Command {
     Undelete(Option<String>),
     /// Share another session's memory with this one: `id [focus]`, `off`, or None to pick.
     Mem(Option<String>),
+    /// `/todo`: the todo list.
+    Todo,
+    /// `/queue`: the requests waiting for the turn to end.
+    Queue,
     Rewind,
     Fork,
     Tree,
@@ -210,6 +216,8 @@ pub fn parse(line: &str) -> Option<Command> {
         "tree" => Command::Tree,
         "undelete" | "restore" => Command::Undelete(arg),
         "shared-memory" | "memory-shared" | "share" => Command::Mem(arg),
+        "todo" => Command::Todo,
+        "queue" => Command::Queue,
         "export" => Command::Export(arg),
         "rename" | "title" | "name" => Command::Rename(arg),
         "diff" => Command::Diff,
@@ -303,10 +311,11 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "goal",
             "plan",
             "shared-memory",
+            "queue",
         ],
     ),
     ("model", &["model", "provider", "effort", "pricing", "prompt", "budget"]),
-    ("context and tools", &["context", "context-live", "cost", "tools", "jobs", "diff", "init", "status"]),
+    ("context and tools", &["context", "context-live", "cost", "tools", "jobs", "todo", "diff", "init", "status"]),
     ("settings", &["permissions", "yolo", "theme", "mouse", "timestamps", "vim", "keys"]),
     ("nexo", &["help", "copy", "quit"]),
 ];

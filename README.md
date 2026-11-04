@@ -4,10 +4,7 @@
 
 ### The coding agent that doesn't run out of context.
 
-A terminal coding agent for any LLM API, written in Rust.<br>
-Its built-in **context curator** sends the model only what the next step needs.<br>
-Long sessions stay fast and cheap, the prompt cache stays warm, and nothing is summarised unless a provider
-refuses a request as too long.
+**Half the cost. Three times the tasks solved.** On a heavy session, against compaction at 100k.
 
 [![CI](https://github.com/Locotir/nexo/actions/workflows/ci.yml/badge.svg)](https://github.com/Locotir/nexo/actions/workflows/ci.yml)
 [![Rust 1.89+](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -16,21 +13,28 @@ refuses a request as too long.
 [![Providers](https://img.shields.io/badge/providers-19%20built--in%20%2B%20200%2B-1baf7a)](#any-provider)
 [![PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
+![A heavy session: compaction at 100k against the curator, three runs](docs/img/heavy-compact100.svg)
+
+| **−50 %** | **3 of 3** | **93k** |
+|:---:|:---:|:---:|
+| mean cost, \$0.169 against \$0.340 | runs solved, against 1 of 3 | largest request, against 134k |
+
+<sub>`marathon-heavy`, deepseek-flash, temperature 0, three runs per arm. Every figure and its limits: [`docs/results.md`](docs/results.md).</sub>
+
+```sh
+cargo install --locked --git https://github.com/Locotir/nexo nexo-cli && nexo
+```
+
 </div>
 
-![nexo in the terminal: npm test fails, the agent finds two bugs, fixes the code and the tests pass](docs/img/tui-session.png)
+## Why
 
-<sub>A real session with deepseek-chat: two bugs found and fixed, 4/4 tests passing, 6 steps, $0.0032.</sub>
+Every coding agent re-sends its **whole history** on every call: step 80 pays again for the logs of step 3.
+When the window fills it **compacts**: a summary replaces the work, the exact error line the model needed
+is gone, and the prompt cache starts from zero.
 
-## The problem
-
-Every coding agent re-sends its **whole history** on every call. Step 80 pays again for the logs of
-step 3. When the window fills, the agent **compacts**: a summary replaces the work, the exact error
-line or path the model needed is gone, and the prompt cache starts from zero.
-
-## What nexo does instead
-
-nexo keeps the whole history on disk and gives the model a **curated view** of it on every request.
+nexo keeps the whole history on disk and sends the model a **curated view** of it, built by its context
+curator for the next step only.
 
 | | Whole history | Compaction | **nexo curator** |
 |---|---|---|---|
@@ -40,25 +44,20 @@ nexo keeps the whole history on disk and gives the model a **curated view** of i
 | Your rules ("never touch prod") | drift out of attention | can be summarised away | **pinned** for the whole session |
 | A resumed session | same | starts from the summary | **same view as before**, cache still warm |
 
-![One 100-step session: whole history against the nexo curator](docs/img/hero.svg)
-
 ## The numbers
 
 | Test | Result |
 |---|---|
+| **A heavy session against compaction at 100k** (`marathon-heavy`, deepseek-flash, temperature 0, 3 runs per arm) | curator solved **3 of 3**, compaction **1 of 3**; mean cost **\$0.169 against \$0.340 (−50%)**; largest request 93k against 134k |
 | **One 100-step session in nexo** (deepseek-chat, one run per arm) | **−36% cost**, **−59% wall time**, **−48% tokens** to the same point; both arms stopped at step 100 without solving the task (score 1% each) |
 | Offline replay of the 7 recorded whole-history sessions in `nexo/crates/nexo-curator/tests/fixtures/` | **−26%** tokens sent in total (8.52M to 6.30M, estimated at 4 characters per token); per session from −49% to +7% |
-| **A heavy session against compaction at 100k** (`marathon-heavy`, deepseek-flash, temperature 0, 3 runs per arm) | curator solved **3 of 3**, compaction **1 of 3**; mean cost **\$0.169 against \$0.340 (−50%)**; largest request 93k against 134k |
 
-![A heavy session: compaction at 100k against the curator, three runs](docs/img/heavy-compact100.svg)
-
-What the model is sent, request by request, replaying a recorded 81-request session from the repository through today's curator:
+What the model is sent, request by request, replaying a recorded 81-request session through today's curator:
 
 ![Tokens per request: the whole history grows to 60k, the curated view is 30k at request 81](docs/img/tokens-per-step.svg)
 
 Every figure, its data and its limits (mostly one model, one author's tasks):
-[`docs/results.md`](docs/results.md). It also reports earlier simulations and live runs made with an
-earlier, unpublished implementation of the same engine. Measure it on your own tasks with [`nexo bench`](docs/usage.md).
+[`docs/results.md`](docs/results.md). Measure it on your own tasks with [`nexo bench`](docs/usage.md).
 
 ## How the curator works
 
@@ -72,6 +71,8 @@ earlier, unpublished implementation of the same engine. Measure it on your own t
   and a map of the work.
 - **Stale reads go first.** A file read before the agent edited it leaves before anything else, with a
   note to read it again.
+- **Cache pockets** (opt-in). Each topic keeps its own cached view, so coming back to a large piece of
+  work after a switch reads it from the cache; how long the provider keeps it is learned from its replies.
 - **Resume = same view.** Reopen or rewind a session and the curator replays its decisions, so the
   provider's cache still hits.
 
@@ -114,6 +115,10 @@ policy = "curator"               # auto | plain | compact | curator
 ```
 
 ## Everything else a coding agent needs
+
+![nexo in the terminal: npm test fails, the agent finds two bugs, fixes the code and the tests pass](docs/img/tui-session.png)
+
+<sub>A real session with deepseek-chat: two bugs found and fixed, 4/4 tests passing, 6 steps, $0.0032.</sub>
 
 - **Full-screen terminal UI**: mouse, folding transcript, search, command palette, diffs before every
   write, 16/256-colour, mono and `NO_COLOR` themes.

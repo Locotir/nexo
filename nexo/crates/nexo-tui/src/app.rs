@@ -127,6 +127,13 @@ pub struct App {
     pub toasts: crate::toast::Toasts,
     pub streamed_chars: usize,
     pub queued: usize,
+    /// The text of each queued request, oldest first (the agent keeps the same order); may hold
+    /// fewer than `queued` when the count came from the agent alone.
+    pub queued_msgs: Vec<String>,
+    /// The queued rows of the last frame, with the index of the request each one shows.
+    pub queue_rows: Vec<(Rect, usize)>,
+    /// The pieces of the keys row a click opens something from.
+    pub hint_hits: Vec<(Rect, HintHit)>,
     /// The background jobs, as the agent last listed them.
     pub jobs: Vec<nexo_core::jobs::JobInfo>,
     pub spinner: usize,
@@ -291,6 +298,21 @@ pub enum StatusHit {
     Cost,
 }
 
+/// A piece of the keys row that answers a click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintHit {
+    /// `todo d/t`: `/todo`.
+    Todo,
+    /// `⚙ N jobs`: `/jobs`.
+    Jobs,
+    /// `⊕ mem`: `/shared-memory list`.
+    Mem,
+    /// `◷ N queued`: `/queue`.
+    Queued,
+    /// The session id or title: `/resume`.
+    Session,
+}
+
 /// What the pointer is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Hover {
@@ -301,6 +323,8 @@ pub enum Hover {
     /// The "↓ new" pill.
     Pill,
     Status(StatusHit),
+    /// A piece of the keys row (todo, jobs, memory, queue, session).
+    Hint(HintHit),
     /// A row of the palette, of a picker or of a question.
     Palette(usize),
     Picker(usize),
@@ -345,6 +369,9 @@ impl App {
             toasts: Default::default(),
             streamed_chars: 0,
             queued: 0,
+            queued_msgs: Vec::new(),
+            queue_rows: Vec::new(),
+            hint_hits: Vec::new(),
             jobs: Vec::new(),
             spinner: 0,
             session_usage: Usage::default(),
@@ -590,6 +617,7 @@ impl App {
         self.map_changed.clear();
         self.marks.clear();
         self.queued = 0;
+        self.queued_msgs.clear();
         self.dirty = true;
         self.push_welcome();
     }
@@ -1354,6 +1382,7 @@ impl App {
                 self.turn_usage = Usage::default();
                 self.turn_cost_start = self.cost;
                 self.queued = self.queued.saturating_sub(1);
+                self.trim_queue();
             }
             AgentEvent::AssistantStart => {}
             AgentEvent::TextDelta { text } => {
@@ -1750,7 +1779,10 @@ impl App {
                 }
                 self.shared = pending;
             }
-            AgentEvent::Queued { pending } => self.queued = pending,
+            AgentEvent::Queued { pending } => {
+                self.queued = pending;
+                self.trim_queue();
+            }
             AgentEvent::Jobs { jobs } => {
                 for j in &jobs {
                     let was_running = self.jobs.iter().any(|o| o.id == j.id && o.status.running());
@@ -2184,6 +2216,9 @@ impl App {
         if let Some((_, h)) = self.status_hits.iter().find(|(r, _)| contains(*r, x, y)) {
             return Hover::Status(*h);
         }
+        if let Some((_, h)) = self.hint_hits.iter().find(|(r, _)| contains(*r, x, y)) {
+            return Hover::Hint(*h);
+        }
         let a = self.transcript_area;
         if contains(a, x, y) {
             let line = self.view_top() + (y - a.y) as usize;
@@ -2429,6 +2464,7 @@ impl App {
         let attachments = self.attachments_in(trimmed);
         if self.busy {
             self.queued += 1;
+            self.queued_msgs.push(trimmed.to_string());
             self.flash("queued: joins the turn at its next step · Enter again to send it now");
         }
         self.pending_stamps.push_back(trimmed.to_string());
@@ -2437,6 +2473,109 @@ impl App {
         }
         self.send(AgentCommand::Submit { text: trimmed.to_string(), attachments });
         self.scroll_to_end();
+    }
+
+    /// The texts kept for the queue never outnumber the requests the agent says wait: what started
+    /// (the oldest) leaves.
+    fn trim_queue(&mut self) {
+        let extra = self.queued_msgs.len().saturating_sub(self.queued);
+        if extra > 0 {
+            self.queued_msgs.drain(..extra);
+        }
+    }
+
+    /// Take queued request `index` back out of the queue and into the draft, to edit it and send it
+    /// again (the agent drops it from its own queue). Only into an empty draft.
+    pub fn unqueue(&mut self, index: usize) {
+        if index >= self.queued_msgs.len() {
+            return;
+        }
+        if !self.input.is_empty() {
+            self.flash("send or clear the draft first, then take the queued message back");
+            return;
+        }
+        let text = self.queued_msgs.remove(index);
+        self.queued = self.queued.saturating_sub(1);
+        if let Some(i) = self.pending_stamps.iter().position(|t| *t == text) {
+            self.pending_stamps.remove(i);
+        }
+        self.send(AgentCommand::Unqueue { index, text: text.clone() });
+        self.input.set_text(&text);
+        self.refresh_palette();
+        self.dirty = true;
+        self.flash("queued message back in the draft: edit it, Enter sends it again");
+    }
+
+    /// `/todo`: every item of the todo list with its state.
+    pub fn open_todo(&mut self) {
+        if self.todo.is_empty() {
+            return self.notice(Level::Info, "no todo list yet");
+        }
+        let (done, total) = crate::render::blocks::todo_counts(&self.todo);
+        let items = self
+            .todo
+            .iter()
+            .enumerate()
+            .map(|(i, it)| {
+                let (icon, _) = crate::render::blocks::todo_style(it.status, &self.theme);
+                let hint = match it.status {
+                    nexo_core::tool::TodoStatus::Pending => "pending",
+                    nexo_core::tool::TodoStatus::InProgress => "in progress",
+                    nexo_core::tool::TodoStatus::Done => "done",
+                };
+                let text = it.text.lines().next().unwrap_or("");
+                PickItem { label: format!("{icon} {text}"), value: i.to_string(), hint: hint.to_string() }
+            })
+            .collect();
+        let title = format!("Todo · {done}/{total} done");
+        self.modal = Some(Modal::Picker(Picker::new(PickKind::Todo, &title, items, None)));
+    }
+
+    /// `/queue`: the requests waiting for the turn to end; Enter takes one back into the draft.
+    pub fn open_queue(&mut self) {
+        if self.queued_msgs.is_empty() {
+            return self.notice(Level::Info, "nothing is queued");
+        }
+        let items = self
+            .queued_msgs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| PickItem {
+                label: t.lines().next().unwrap_or("").to_string(),
+                value: i.to_string(),
+                hint: String::new(),
+            })
+            .collect();
+        self.modal = Some(Modal::Picker(Picker::new(PickKind::Queue, "Queued · Enter edits", items, None)));
+    }
+
+    /// `/shared-memory list`: the memory of other sessions that goes with the next message.
+    pub fn open_shared(&mut self) {
+        if self.shared.is_empty() {
+            return self.notice(Level::Info, "no shared memory waits for the next message");
+        }
+        let items = self
+            .shared
+            .iter()
+            .map(|(id, title, tok)| PickItem {
+                label: if title.is_empty() { id.clone() } else { title.clone() },
+                value: id.clone(),
+                hint: format!("{id} · {} tok", crate::render::blocks::fmt_k(*tok as u64)),
+            })
+            .collect();
+        self.modal =
+            Some(Modal::Picker(Picker::new(PickKind::Shared, "Shared memory · joins your next message", items, None)));
+    }
+
+    /// A click on a piece of the keys row.
+    pub fn open_hint(&mut self, hit: HintHit) {
+        match hit {
+            HintHit::Todo => self.open_todo(),
+            HintHit::Jobs => self.run_command(Command::Jobs(None)),
+            HintHit::Mem => self.open_shared(),
+            HintHit::Queued => self.open_queue(),
+            HintHit::Session => self.run_command(Command::Sessions),
+        }
     }
 
     fn attachments_in(&self, text: &str) -> Vec<Attachment> {
@@ -2634,6 +2773,9 @@ impl App {
                     self.modal = Some(Modal::Picker(Picker::new(PickKind::Memory, "Share memory from", items, None)));
                 }
             }
+            Command::Mem(Some(arg)) if arg == "list" => self.open_shared(),
+            Command::Todo => self.open_todo(),
+            Command::Queue => self.open_queue(),
             Command::Mem(Some(arg)) => {
                 let (id, focus) = match arg.split_once(char::is_whitespace) {
                     Some((i, f)) => (i.to_string(), Some(f.trim().to_string()).filter(|f| !f.is_empty())),
@@ -3067,6 +3209,12 @@ impl App {
                     PickKind::Theme => {
                         self.end_theme_preview(true);
                         self.set_theme(&value, true);
+                    }
+                    PickKind::Todo | PickKind::Shared => {}
+                    PickKind::Queue => {
+                        if let Ok(i) = value.parse::<usize>() {
+                            self.unqueue(i);
+                        }
                     }
                     PickKind::History => {
                         self.input.set_text(&value);
@@ -5058,6 +5206,172 @@ mod tests {
         let row = a.status_row;
         pointer(&mut a, K::Down(MouseButton::Left), 1, row);
         assert!(matches!(&a.modal, Some(Modal::Info(i)) if i.tab == 0));
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<AgentCommand>) -> Vec<AgentCommand> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn queue_two(a: &mut App, rx: &mut mpsc::UnboundedReceiver<AgentCommand>) {
+        a.busy = true;
+        for t in ["first request", "second request"] {
+            a.input.set_text(t);
+            a.submit();
+        }
+        a.status = None;
+        drain(rx);
+    }
+
+    #[test]
+    fn up_on_an_empty_draft_takes_the_last_queued_message_back_to_edit_it() {
+        let (mut a, mut rx) = app();
+        queue_two(&mut a, &mut rx);
+        assert_eq!((a.queued, a.queued_msgs.len()), (2, 2));
+        let rows = frame(&mut a, 100, 20);
+        assert!(rows.iter().any(|r| r.contains("◷ first request")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("◷ second request")), "{rows:?}");
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.input.full_text(), "second request");
+        assert_eq!(a.queued_msgs, vec!["first request".to_string()]);
+        assert_eq!(a.queued, 1);
+        assert_eq!(drain(&mut rx), vec![AgentCommand::Unqueue { index: 1, text: "second request".into() }]);
+        let rows = frame(&mut a, 100, 20);
+        assert!(!rows.iter().any(|r| r.contains("◷ second request")), "the row went with it");
+        // Enter sends the edited text and queues it again
+        a.input.set_text("second request, edited");
+        a.submit();
+        assert!(matches!(&drain(&mut rx)[..], [AgentCommand::Submit { text, .. }] if text == "second request, edited"));
+        assert_eq!(a.queued_msgs, vec!["first request".to_string(), "second request, edited".to_string()]);
+        // the agent starts the first one: the count and the texts follow
+        a.handle_agent(AgentEvent::Queued { pending: 1 });
+        assert_eq!(a.queued_msgs, vec!["second request, edited".to_string()]);
+        a.handle_agent(AgentEvent::TurnStart { turn: 2 });
+        assert_eq!((a.queued, a.queued_msgs.len()), (0, 0));
+    }
+
+    #[test]
+    fn a_click_on_a_queued_row_takes_that_one_back_and_a_full_draft_is_kept() {
+        use crossterm::event::{MouseButton, MouseEventKind as K};
+        let (mut a, mut rx) = app();
+        queue_two(&mut a, &mut rx);
+        frame(&mut a, 100, 20);
+        let (row, i) = a.queue_rows[0];
+        assert_eq!(i, 0);
+        a.input.set_text("half typed");
+        pointer(&mut a, K::Down(MouseButton::Left), row.x + 2, row.y);
+        assert_eq!(a.input.full_text(), "half typed", "a draft in progress is never overwritten");
+        assert_eq!(a.queued_msgs.len(), 2);
+        a.input.clear();
+        pointer(&mut a, K::Down(MouseButton::Left), row.x + 2, row.y);
+        assert_eq!(a.input.full_text(), "first request");
+        assert_eq!(a.queued_msgs, vec!["second request".to_string()]);
+        assert_eq!(drain(&mut rx), vec![AgentCommand::Unqueue { index: 0, text: "first request".into() }]);
+    }
+
+    fn lit_cells(a: &mut App, r: Rect) -> bool {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 20)).unwrap();
+        term.draw(|f| crate::ui::draw(f, a)).unwrap();
+        let buf = term.backend().buffer();
+        (r.x + 1..r.x + r.width).all(|x| buf[(x, r.y)].modifier.contains(ratatui::style::Modifier::UNDERLINED))
+    }
+
+    #[test]
+    fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
+        use crossterm::event::{MouseButton, MouseEventKind as K};
+        use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
+        use nexo_core::tool::TodoStatus;
+        let (mut a, mut rx) = app();
+        queue_two(&mut a, &mut rx);
+        a.todo = vec![
+            TodoItem { text: "read".into(), status: TodoStatus::Done },
+            TodoItem { text: "fix".into(), status: TodoStatus::InProgress },
+            TodoItem { text: "ship".into(), status: TodoStatus::Pending },
+        ];
+        a.handle_agent(AgentEvent::Jobs {
+            jobs: vec![JobInfo {
+                id: 7,
+                kind: JobKind::Shell,
+                label: "cargo build".into(),
+                status: JobStatus::Running,
+                elapsed_ms: 0,
+                lines: 0,
+            }],
+        });
+        a.shared = vec![("s1".into(), "the parser".into(), 2100)];
+        a.session_id = Some("20261104-1".into());
+        a.opts.sessions = vec![("20261103-1".into(), "docs".into())];
+        a.status = None;
+        a.dirty = true;
+        frame(&mut a, 200, 20);
+        let hits: Vec<_> = a.hint_hits.clone();
+        let find = |h: HintHit| hits.iter().find(|(_, x)| *x == h).map(|(r, _)| *r).unwrap_or_else(|| panic!("{h:?}"));
+        for h in [HintHit::Todo, HintHit::Jobs, HintHit::Mem, HintHit::Queued, HintHit::Session] {
+            let r = find(h);
+            assert!(!lit_cells(&mut a, r), "{h:?} is plain until the pointer comes");
+            pointer(&mut a, K::Moved, r.x + 1, r.y);
+            assert_eq!(a.hover, Hover::Hint(h));
+            assert!(lit_cells(&mut a, r), "{h:?} is underlined under the pointer");
+            pointer(&mut a, K::Moved, 0, 0);
+            assert_eq!(a.hover, Hover::Nothing);
+        }
+        let click = |a: &mut App, h: HintHit| {
+            frame(a, 200, 20);
+            let r = a.hint_hits.iter().find(|(_, x)| *x == h).map(|(r, _)| *r).unwrap();
+            pointer(a, K::Down(MouseButton::Left), r.x + 1, r.y);
+        };
+        click(&mut a, HintHit::Todo);
+        match &a.modal {
+            Some(Modal::Picker(p)) => {
+                assert_eq!(p.kind, PickKind::Todo);
+                let labels: Vec<_> = p.items.iter().map(|i| (i.label.clone(), i.hint.clone())).collect();
+                assert_eq!(
+                    labels,
+                    vec![
+                        ("● read".to_string(), "done".to_string()),
+                        ("◐ fix".to_string(), "in progress".to_string()),
+                        ("○ ship".to_string(), "pending".to_string()),
+                    ]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        press(&mut a, KeyCode::Esc);
+        assert!(a.modal.is_none(), "Esc closes it");
+        click(&mut a, HintHit::Jobs);
+        assert!(drain(&mut rx).contains(&AgentCommand::ShowJobs));
+        click(&mut a, HintHit::Mem);
+        assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Shared && p.items.len() == 1));
+        press(&mut a, KeyCode::Esc);
+        click(&mut a, HintHit::Session);
+        assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Session));
+        press(&mut a, KeyCode::Esc);
+        // the queue: picking a message edits it
+        click(&mut a, HintHit::Queued);
+        assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Queue && p.items.len() == 2));
+        press(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Enter);
+        assert!(a.modal.is_none());
+        assert_eq!(a.input.full_text(), "second request");
+        assert_eq!(drain(&mut rx), vec![AgentCommand::Unqueue { index: 1, text: "second request".into() }]);
+    }
+
+    #[test]
+    fn todo_queue_and_memory_lists_answer_to_slash_commands() {
+        let (mut a, mut rx) = app();
+        assert_eq!(commands::parse("/todo"), Some(Command::Todo));
+        assert_eq!(commands::parse("/queue"), Some(Command::Queue));
+        assert_eq!(commands::parse("/shared-memory list"), Some(Command::Mem(Some("list".into()))));
+        // nothing to list: a notice, no window
+        for c in ["/todo", "/queue", "/shared-memory list"] {
+            a.input.set_text(c);
+            a.submit();
+            assert!(a.modal.is_none(), "{c}");
+        }
+        assert!(drain(&mut rx).is_empty(), "listing asks nothing of the agent");
+        a.shared = vec![("s1".into(), String::new(), 900)];
+        a.input.set_text("/shared-memory list");
+        a.submit();
+        assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Shared && p.items[0].label == "s1"));
     }
 
     #[test]

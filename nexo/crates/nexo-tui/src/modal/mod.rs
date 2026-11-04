@@ -33,6 +33,12 @@ pub enum PickKind {
     Tree,
     Effort,
     History,
+    /// The todo list (read only).
+    Todo,
+    /// The requests queued behind the running turn: picking one edits it.
+    Queue,
+    /// The memory of other sessions waiting to join the next message (read only).
+    Shared,
 }
 
 #[derive(Debug, Clone)]
