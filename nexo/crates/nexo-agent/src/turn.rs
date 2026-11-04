@@ -186,7 +186,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     if config.agent.subagents && tools.specs().iter().any(|s| s.name == "read" || s.name == "grep") {
         let profiles = crate::subagent::load(&cwd);
         let sub = crate::subagent::SubAgent::new(client.clone(), target.clone(), &tools, profiles, host.clone())
-            .with_brief(crate::brief::BriefConfig::from_agent(&config.agent));
+            .with_brief(crate::brief::BriefConfig::from_agent(&config.agent))
+            .with_providers(config.providers.clone());
         tools.add(Arc::new(sub));
     }
     // after the sub-agents: questions are the main agent's alone
@@ -1726,10 +1727,20 @@ async fn permit(
 /// attempt that answered, without the attempts the client retried, and empty for a side call (a
 /// sub-agent, the reader, a compaction) whose request is not the conversation's.
 fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage) {
+    add_usage_priced(st, events, model, usage, call, None)
+}
+
+/// [`add_usage`] with the prices of another provider (a sub-agent sent there); none: the main agent's.
+fn add_usage_priced(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage, other: Option<Pricing>) {
     st.usage += usage;
     let (_, cfg, main) = st.target.get();
-    let pricing =
-        if model == main { st.limits.pricing.or_else(|| cfg.pricing_for(model)) } else { cfg.pricing_for(model) };
+    let pricing = other.or_else(|| {
+        if model == main {
+            st.limits.pricing.or_else(|| cfg.pricing_for(model))
+        } else {
+            cfg.pricing_for(model)
+        }
+    });
     let cost = pricing.map(|p| p.cost(&usage)).unwrap_or(0.0);
     st.cost += cost;
     let _ = st.session.record_usage(usage, cost);
@@ -1765,10 +1776,10 @@ impl crate::subagent::Host for StateHost {
         }
     }
 
-    async fn spent(&self, model: &str, usage: Usage) {
+    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) {
         if let Some(state) = self.state.upgrade() {
             let mut st = state.lock().await;
-            add_usage(&mut st, &self.events, model, usage, Usage::default());
+            add_usage_priced(&mut st, &self.events, model, usage, Usage::default(), pricing);
         }
     }
 

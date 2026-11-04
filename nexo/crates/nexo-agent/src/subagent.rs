@@ -18,8 +18,10 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use nexo_core::config::ProviderConfig;
 use nexo_core::jobs::JobKind;
 use nexo_core::message::{Message, Part, Role};
+use nexo_core::pricing::Pricing;
 use nexo_core::provider::{ModelRequest, ToolSpec};
 use nexo_core::stream::{StreamEvent, Usage};
 use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
@@ -188,7 +190,8 @@ pub trait Host: Send + Sync {
         args: &Value,
         cancel: &CancellationToken,
     ) -> Result<(), String>;
-    async fn spent(&self, model: &str, usage: Usage);
+    /// `pricing`: the prices of another provider the sub-agent ran on; none: priced as the main agent prices `model`.
+    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>);
     /// The conversation so far, to brief the sub-agent from.
     async fn history(&self) -> Vec<Message> {
         Vec::new()
@@ -208,6 +211,8 @@ pub struct SubAgent {
     profiles: Vec<Profile>,
     host: HostCell,
     brief: BriefConfig,
+    /// The providers set up, by name: a sub-agent may be sent to another one.
+    providers: std::collections::BTreeMap<String, ProviderConfig>,
 }
 
 impl SubAgent {
@@ -227,12 +232,26 @@ impl SubAgent {
             }
         }
         let profiles = if profiles.is_empty() { builtin() } else { profiles };
-        SubAgent { client, target, all: tools, profiles, host, brief: BriefConfig { tokens: 0, ..Default::default() } }
+        SubAgent {
+            client,
+            target,
+            all: tools,
+            profiles,
+            host,
+            brief: BriefConfig { tokens: 0, ..Default::default() },
+            providers: Default::default(),
+        }
     }
 
     /// Hands every sub-agent a briefing picked from the conversation (see [`crate::brief`]).
     pub fn with_brief(mut self, cfg: BriefConfig) -> SubAgent {
         self.brief = cfg;
+        self
+    }
+
+    /// The providers a sub-agent may be sent to, besides the main agent's.
+    pub fn with_providers(mut self, providers: std::collections::BTreeMap<String, ProviderConfig>) -> SubAgent {
+        self.providers = providers;
         self
     }
 
@@ -267,6 +286,23 @@ impl SubAgent {
             }
         }
         set
+    }
+}
+
+/// A provider as the `task` tool offers it: its name and the models set up for it, a few at most.
+fn offer(name: &str, cfg: &ProviderConfig) -> String {
+    let mut models: Vec<&str> = cfg.default_model.iter().map(String::as_str).collect();
+    for m in &cfg.models {
+        if !models.contains(&m.as_str()) {
+            models.push(m);
+        }
+    }
+    let more = models.len() > 6;
+    models.truncate(6);
+    match (models.is_empty(), more) {
+        (true, _) => name.to_string(),
+        (false, false) => format!("{name} ({})", models.join(", ")),
+        (false, true) => format!("{name} ({}, ...)", models.join(", ")),
     }
 }
 
@@ -319,6 +355,9 @@ fn real_path(p: &Path) -> PathBuf {
 struct Run {
     client: Arc<dyn ModelClient>,
     target: Target,
+    /// Asked for this sub-agent: another provider (name and configuration) and another model.
+    provider: Option<(String, ProviderConfig)>,
+    model: Option<String>,
     tools: ToolSet,
     profile: Profile,
     host: Option<Arc<dyn Host>>,
@@ -333,8 +372,19 @@ impl Run {
         ctx: &ToolContext,
         say: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
-        let (_, cfg, main_model) = self.target.get();
-        let model = self.profile.model.clone().unwrap_or(main_model);
+        let (main_provider, main_cfg, main_model) = self.target.get();
+        let model = self.model.clone().or_else(|| self.profile.model.clone()).unwrap_or(main_model);
+        // on another provider, its prices; the same model name there is the same model
+        let (cfg, pricing) = match &self.provider {
+            Some((name, cfg)) if *name != main_provider => {
+                (cfg.clone(), crate::limits::resolve(name, cfg, &model, None).pricing)
+            }
+            _ => (main_cfg, None),
+        };
+        if self.provider.is_some() || self.model.is_some() {
+            let name = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());
+            say(format!("on {name}/{model}"));
+        }
         let rounds = self.profile.rounds;
         let system = format!("{BASE}\nYou have {rounds} rounds of tool calls.\n\n{}", self.profile.prompt);
         let first = match brief {
@@ -377,7 +427,7 @@ impl Run {
                 }
             };
             if let (Some(h), false) = (&self.host, usage.is_empty()) {
-                h.spent(&model, usage).await;
+                h.spent(&model, usage, pricing).await;
             }
             if let Some(why) = failed {
                 return Err(why);
@@ -463,6 +513,24 @@ impl Tool for SubAgent {
         let kinds: Vec<String> =
             self.profiles.iter().map(|p| format!("`{}`: {}", p.name, p.description.trim_end_matches('.'))).collect();
         let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
+        let (main_provider, _, main_model) = self.target.get();
+        let mut params = json!({
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "Three to six words saying what the task is."},
+                "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."},
+                "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
+                "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
+                "model": {"type": "string", "description": format!("Another model for this sub-agent, only when the person asks for one; the conversation's ({main_model}) otherwise. Write it as its provider names it.")}
+            },
+            "required": ["prompt"]
+        });
+        // another provider only when there is one to go to
+        if self.providers.keys().any(|n| *n != main_provider) {
+            let names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
+            let offered: Vec<String> = self.providers.iter().map(|(n, c)| offer(n, c)).collect();
+            params["properties"]["provider"] = json!({"type": "string", "enum": names, "description": format!("Another provider for this sub-agent, only when the person asks for one; the conversation's ({main_provider}) otherwise. Without `model` it runs the same model there. Set up: {}.", offered.join("; "))});
+        }
         ToolSpec {
             name: "task".into(),
             description: format!(
@@ -473,16 +541,7 @@ impl Tool for SubAgent {
                  ends and read its report with the `jobs` tool. Kinds ({DEFAULT} when not given): {}.",
                 kinds.join("; ")
             ),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "description": {"type": "string", "description": "Three to six words saying what the task is."},
-                    "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."},
-                    "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
-                    "background": {"type": "boolean", "description": "Run it as a background job and go on at once."}
-                },
-                "required": ["prompt"]
-            }),
+            parameters: params,
         }
     }
 
@@ -511,6 +570,13 @@ impl Tool for SubAgent {
         if let Some(a) = agent {
             tag.push_str(&format!(" [{a}]"));
         }
+        let on = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        match (on("provider"), on("model")) {
+            (Some(p), Some(m)) => tag.push_str(&format!(" [{p}/{m}]")),
+            (Some(p), None) => tag.push_str(&format!(" [{p}]")),
+            (None, Some(m)) => tag.push_str(&format!(" [{m}]")),
+            (None, None) => {}
+        }
         if bg {
             tag.push_str(" (background)");
         }
@@ -526,6 +592,19 @@ impl Tool for SubAgent {
             let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
             return ToolOutput::error(format!("no sub-agent `{name}`; there are: {}", names.join(", ")));
         };
+        let asked_for = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        let provider = match asked_for("provider") {
+            None => None,
+            Some(p) => match self.providers.iter().find(|(n, _)| n.eq_ignore_ascii_case(p)) {
+                Some((n, c)) => Some((n.clone(), c.clone())),
+                None => {
+                    let names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
+                    let set_up = if names.is_empty() { "none".to_string() } else { names.join(", ") };
+                    return ToolOutput::error(format!("no provider `{p}` is set up; there are: {set_up}"));
+                }
+            },
+        };
+        let model = asked_for("model").map(str::to_string);
         let host = self.host.get().cloned();
         let briefing = match &host {
             Some(h) if self.brief.tokens > 0 => brief::build(prompt, &h.history().await, &ctx.cwd, &self.brief).await,
@@ -534,6 +613,8 @@ impl Tool for SubAgent {
         let run = Run {
             client: self.client.clone(),
             target: self.target.clone(),
+            provider,
+            model,
             tools: self.tools_for(&profile),
             profile,
             host,

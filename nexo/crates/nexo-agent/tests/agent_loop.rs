@@ -29,11 +29,17 @@ enum Reply {
 struct Scripted {
     replies: Mutex<VecDeque<Reply>>,
     requests: Mutex<Vec<ModelRequest>>,
+    /// The provider each request went to, by its address.
+    bases: Mutex<Vec<String>>,
 }
 
 impl Scripted {
     fn new(replies: Vec<Reply>) -> Arc<Scripted> {
-        Arc::new(Scripted { replies: Mutex::new(replies.into()), requests: Mutex::new(Vec::new()) })
+        Arc::new(Scripted {
+            replies: Mutex::new(replies.into()),
+            requests: Mutex::new(Vec::new()),
+            bases: Mutex::new(Vec::new()),
+        })
     }
 
     fn requests(&self) -> Vec<ModelRequest> {
@@ -45,10 +51,11 @@ impl Scripted {
 impl ModelClient for Scripted {
     async fn stream(
         &self,
-        _cfg: &ProviderConfig,
+        cfg: &ProviderConfig,
         req: &ModelRequest,
         _retries: u32,
     ) -> Result<EventStream, ProviderError> {
+        self.bases.lock().unwrap().push(cfg.base_url.clone());
         self.requests.lock().unwrap().push(req.clone());
         let reply = self.replies.lock().unwrap().pop_front().unwrap_or(Reply::Events(text("(no script)")));
         match reply {
@@ -2521,5 +2528,56 @@ async fn moving_to_another_session_stops_the_jobs_of_the_one_left() {
         !reqs[2].messages.iter().any(|m| m.text().contains("[background jobs ended]")),
         "the old session's job is not reported in the new one"
     );
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_sub_agent_goes_to_the_provider_and_model_asked_for_and_is_priced_there() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t0", "task", json!({"prompt": "look", "provider": "nope"}))),
+        Reply::Events(call("t1", "task", json!({"prompt": "look", "provider": "Other", "model": "o1"}))),
+        Reply::Events(text("found it")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    let mut other = ProviderConfig::new("mock", "http://other", None);
+    other.models = vec!["o1".into()];
+    other.pricing.insert("o1".into(), Pricing { input: 10.0, output: 20.0, cache_read: 1.0, cache_write: 0.0 });
+    cfg.providers.insert("other".into(), other);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look with o1 on other".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let out = |want: &str| {
+        evs.iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolDone { id, output, .. } if id == want => Some(output.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let refused = out("t0");
+    assert!(refused.is_error && refused.content.contains("no provider `nope`"), "{refused:?}");
+    assert!(refused.content.contains("mock, other"), "{refused:?}");
+    let ran = out("t1");
+    assert!(!ran.is_error && ran.content == "found it", "{ran:?}");
+    let (reqs, bases) = (client.requests(), client.bases.lock().unwrap().clone());
+    let task = reqs[0].tools.iter().find(|t| t.name == "task").unwrap();
+    assert_eq!(task.parameters["properties"]["provider"]["enum"], json!(["mock", "other"]));
+    assert!(task.parameters["properties"]["provider"]["description"].as_str().unwrap().contains("other (o1)"));
+    // the refused call asked nothing of any model
+    assert_eq!(reqs.len(), 4);
+    assert_eq!((reqs[2].model.as_str(), bases[2].as_str()), ("o1", "http://other"));
+    assert_eq!((reqs[3].model.as_str(), bases[3].as_str()), ("m1", "http://mock"));
+    let cost = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::Usage { cost_usd, .. } = e { Some(*cost_usd) } else { None })
+        .next_back()
+        .unwrap();
+    // two rounds of calls and the answer at the main prices, the sub-agent at the other provider's
+    let main = 2.0 * (10.0 * 1.0 + 5.0 * 2.0) + (1000.0 * 1.0 + 100.0 * 2.0 + 2000.0 * 0.1);
+    let sub = 1000.0 * 10.0 + 100.0 * 20.0 + 2000.0 * 1.0;
+    assert!((cost - (main + sub) / 1e6).abs() < 1e-12, "{cost}");
     r.stop().await;
 }
