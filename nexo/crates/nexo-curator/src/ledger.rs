@@ -218,8 +218,11 @@ fn lines_but(text: &str, int: &mut Interner, skip: fn(&str) -> bool) -> Vec<(Str
     let mut out = Vec::new();
     for ln in text.split('\n') {
         let (bare, sure) = unnumbered(ln);
-        let (whole, bare) = (py::squash_ws(ln), py::squash_ws(bare));
-        if bare.is_empty() || skip(&whole) || skip(&bare) {
+        // a line with no viewer's number is its own bare text: squashed and tested once
+        let numbered = bare.len() != ln.len();
+        let whole = py::squash_ws(ln);
+        let bare = if numbered { py::squash_ws(bare) } else { whole.clone() };
+        if bare.is_empty() || skip(&whole) || (numbered && skip(&bare)) {
             continue;
         }
         let mut ln = if sure { bare } else { whole };
@@ -342,28 +345,27 @@ pub fn form(ln: &str) -> String {
     out
 }
 
-/// `lines` with every run of `FORM_RUN` or more lines of one form cut to its first `FORM_KEEP`, the last of
-/// them saying how many more there were.
+/// `lines` with every run of `FORM_RUN` or more consecutive lines of one form cut to its first `FORM_KEEP`, the
+/// last of them saying how many more there were. Plain words (no mark in the first token, no number, no path)
+/// are prose, not rows: they never fold.
 pub fn fold_forms(lines: Vec<(String, Set)>) -> Vec<(String, Set)> {
     let forms: Vec<String> = lines.iter().map(|(ln, _)| form(ln)).collect();
-    let mut total: FxHashMap<&str, usize> = FxHashMap::default();
-    for f in &forms {
-        *total.entry(f.as_str()).or_insert(0) += 1;
-    }
-    if total.values().all(|&n| n < FORM_RUN) {
-        return lines;
-    }
-    let mut seen: FxHashMap<&str, usize> = FxHashMap::default();
+    let prose = |f: &str| f.strip_prefix(' ').is_some_and(|r| r.chars().all(|c| c == 'w'));
     let mut out = Vec::with_capacity(lines.len());
-    for ((ln, ws), f) in lines.iter().zip(&forms) {
-        let n = total[f.as_str()];
-        let k = seen.entry(f.as_str()).or_insert(0);
-        *k += 1;
-        if n < FORM_RUN || *k < FORM_KEEP {
-            out.push((ln.clone(), ws.clone()));
-        } else if *k == FORM_KEEP {
-            out.push((format!("{ln} … (+{} more rows of the same form)", n - FORM_KEEP), ws.clone()));
+    let mut a = 0;
+    while a < lines.len() {
+        let mut b = a + 1;
+        while b < lines.len() && forms[b] == forms[a] {
+            b += 1;
         }
+        if b - a < FORM_RUN || prose(&forms[a]) {
+            out.extend_from_slice(&lines[a..b]);
+        } else {
+            out.extend_from_slice(&lines[a..a + FORM_KEEP - 1]);
+            let (ln, ws) = &lines[a + FORM_KEEP - 1];
+            out.push((format!("{ln} … (+{} more rows of the same form)", b - a - FORM_KEEP), ws.clone()));
+        }
+        a = b;
     }
     out
 }
@@ -386,6 +388,35 @@ mod tests {
         // a short table stays whole
         let short: String = (0..7).map(|i| format!("item_{i}|slot|{i}|ATK+1\n")).collect();
         assert_eq!(fold_forms(lines_of(&short, &mut int)).len(), 7);
+    }
+
+    #[test]
+    fn prose_lines_are_not_folded_as_a_table() {
+        let mut int = Interner::default();
+        let prose: String = (0..12)
+            .map(|i| {
+                format!(
+                    "the {} module keeps order_book_{i} apart from the Billing rest\n",
+                    ["cache", "queue", "store"][i % 3]
+                )
+            })
+            .collect();
+        let folded = fold_forms(lines_of(&prose, &mut int));
+        assert_eq!(folded.len(), 12, "{folded:?}");
+        assert!(folded.iter().all(|(l, _)| !l.contains("more rows")), "{folded:?}");
+        // a table split by prose folds run by run: two runs of 6 stay whole, a run of 10 folds on its own
+        let rows =
+            |a: usize, b: usize| -> String { (a..b).map(|i| format!("item_{i}|slot{i}|{i}|ATK+{i}\n")).collect() };
+        let text = format!(
+            "{}the cache module keeps order_book apart\n{}the queue module keeps order_queue apart\n{}",
+            rows(0, 6),
+            rows(6, 12),
+            rows(12, 22)
+        );
+        let folded = fold_forms(lines_of(&text, &mut int));
+        let lines: Vec<&str> = folded.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(lines.len(), 6 + 1 + 6 + 1 + 4, "{lines:?}");
+        assert!(lines[17].ends_with("… (+6 more rows of the same form)"), "{lines:?}");
     }
 
     #[test]

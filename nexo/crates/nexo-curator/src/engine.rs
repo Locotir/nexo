@@ -417,12 +417,14 @@ pub struct Engine {
     base_map: String,
     /// The rules block as the anchor has it now.
     rules_shown: String,
-    /// file name -> (read in message, path, text)
+    /// file path (`file_key`) -> (read in message, path, text)
     pins: IndexMap<String, (usize, String, String)>,
-    /// file name -> last message that wrote it (a tool or a shell command)
+    /// file path (`file_key`) -> last message that wrote it (a tool or a shell command)
     written: FxHashMap<String, usize>,
-    /// file name -> the agent's last whole write of it, oldest first
+    /// file path (`file_key`) -> the agent's last whole write of it, oldest first
     wrote: IndexMap<String, Wrote>,
+    /// call id -> the whole writes its write replaced, until its result says whether it wrote the file
+    replaced: FxHashMap<String, Vec<Wrote>>,
     /// Agent steps since the last one with a note line, and since the last nudge.
     since_note: usize,
     since_nudge: usize,
@@ -706,23 +708,45 @@ fn add_blocks(m: &mut Value, more: impl IntoIterator<Item = Value>) {
     m["content"] = Value::Array(bs);
 }
 
-/// Whether ``name`` looks like a scratch file ("_try.rs", "tmp_out.txt"): the first to go for the budget.
-fn scratch(name: &str) -> bool {
-    name.starts_with('_') || name.starts_with("tmp")
+/// Whether ``path`` looks like a scratch file ("tmp_out.txt", "_try.rs", "scratch.md", anything under
+/// "/tmp/"): the first to go for the budget. A leading underscore alone marks a private, partial or
+/// framework file ("_app.tsx", "__init__.py", "_variables.scss"), not a scratch one.
+fn scratch(path: &str) -> bool {
+    let name = basename(path).to_ascii_lowercase();
+    ["tmp", "_tmp", "_try", "_scratch", "scratch"].iter().any(|m| name.starts_with(m))
+        || path.starts_with("/tmp/")
+        || path.starts_with("/var/tmp/")
 }
 
-/// File ``base`` changed in message ``mi`` by an edit of ``size`` characters: its whole write in
-/// ``wrote``, if it has one from before, is marked stale, or goes when the edit is as big as half of it.
-fn edited(wrote: &mut IndexMap<String, Wrote>, base: &str, mi: usize, size: usize) {
-    let Some(w) = wrote.get_mut(base) else { return };
-    if w.mi >= mi {
-        return;
+/// The key of a file in the tracked files: its path as written, with "//" as "/" and without a leading "./".
+fn file_key(path: &str) -> String {
+    let mut key = String::with_capacity(path.len());
+    for c in path.chars() {
+        if c != '/' || !key.ends_with('/') {
+            key.push(c);
+        }
     }
-    if 2 * size >= w.text.chars().count() {
-        wrote.shift_remove(base);
-    } else {
+    let mut p = key.as_str();
+    while let Some(rest) = p.strip_prefix("./") {
+        p = rest;
+    }
+    p.to_string()
+}
+
+/// File ``path`` changed in message ``mi`` by an edit of ``size`` characters: the whole writes in ``wrote``
+/// of every file it may name (a bare file name names each file of that name), from before, are marked
+/// stale, or go when the edit is as big as half of one.
+fn edited(wrote: &mut IndexMap<String, Wrote>, path: &str, mi: usize, size: usize) {
+    wrote.retain(|key, w| {
+        if w.mi >= mi || !same_file(key, path) {
+            return true;
+        }
+        if 2 * size >= w.text.chars().count() {
+            return false;
+        }
         w.edited = Some(mi);
-    }
+        true
+    });
 }
 
 /// The lines of what ``old`` wrote, out of the ledger's pool: the file was written again since, and its old text
@@ -794,6 +818,7 @@ impl Engine {
             pins: IndexMap::new(),
             written: FxHashMap::default(),
             wrote: IndexMap::new(),
+            replaced: FxHashMap::default(),
             since_note: 0,
             since_nudge: usize::MAX,
             last_note: None,
@@ -931,32 +956,34 @@ impl Engine {
                 if u.kind == UKind::User {
                     self.asked.extend(u.words.iter().copied());
                 } else if u.kind == UKind::Result {
-                    // a whole write that failed did not write the file
+                    let id = key_of(self.tr.block(i).get("tool_use_id"));
+                    let old = self.replaced.remove(&id).unwrap_or_default();
+                    // a whole write that failed did not write the file: what it replaced is still there
                     let failed = self.fz.info.get(&i).is_some_and(|x| x.error && x.kind == Kind::Write);
                     if failed {
-                        let id = key_of(self.tr.block(i).get("tool_use_id"));
                         self.wrote.retain(|_, w| w.call != id);
+                        for w in old {
+                            self.wrote.insert(file_key(&w.path), w);
+                        }
+                        self.wrote.sort_by(|_, a, _, b| a.mi.cmp(&b.mi));
+                    } else {
+                        for w in &old {
+                            forget(&mut self.pool, w);
+                        }
                     }
                 } else if u.kind == UKind::Call {
                     let info = self.fz.info.get(&i);
                     let kind = info.map_or(Kind::Other, |x| x.kind);
+                    let mut whole: Vec<(String, String)> = Vec::new();
                     if kind == Kind::Write {
                         let b = self.tr.block(i);
                         let path = info.and_then(|x| x.path.clone()).unwrap_or_default();
-                        let base = basename(&path).to_string();
-                        if !base.is_empty() {
+                        if !basename(&path).is_empty() {
                             match full_write(get_str(b, "name"), b.get("input")) {
-                                Some(text) => {
-                                    let text = head_and_tail(text, WROTE_TOKENS);
-                                    let call = key_of(b.get("id"));
-                                    if let Some(old) = self.wrote.shift_remove(&base) {
-                                        forget(&mut self.pool, &old);
-                                    }
-                                    self.wrote.insert(base, Wrote { mi: u.msg, call, path, text, edited: None });
-                                }
+                                Some(text) => whole.push((path, text.to_string())),
                                 None => {
                                     let size = edit_size(b.get("input"));
-                                    edited(&mut self.wrote, &base, u.msg, size);
+                                    edited(&mut self.wrote, &path, u.msg, size);
                                 }
                             }
                         }
@@ -973,25 +1000,29 @@ impl Engine {
                     };
                     for w in written {
                         if kind == Kind::Exec {
-                            edited(&mut self.wrote, basename(&w), u.msg, 0);
+                            edited(&mut self.wrote, &w, u.msg, 0);
                         }
-                        self.written.insert(basename(&w).to_string(), u.msg);
+                        self.written.insert(file_key(&w), u.msg);
                     }
                     if kind == Kind::Exec {
                         // a file written whole by a here-document is as much a write as one by a write tool
                         let b = self.tr.block(i);
-                        let call = key_of(b.get("id"));
-                        for (path, text) in heredoc_writes(&command_of(b)) {
-                            let base = basename(&path).to_string();
-                            if base.is_empty() {
-                                continue;
+                        whole.extend(
+                            heredoc_writes(&command_of(b)).into_iter().filter(|(p, _)| !basename(p).is_empty()),
+                        );
+                    }
+                    let call = key_of(self.tr.block(i).get("id"));
+                    for (path, text) in whole {
+                        // the write replaces every earlier whole write of the file; they wait for its result
+                        let gone: Vec<String> = self.wrote.keys().filter(|k| same_file(k, &path)).cloned().collect();
+                        for k in gone {
+                            if let Some(old) = self.wrote.shift_remove(&k) {
+                                self.replaced.entry(call.clone()).or_default().push(old);
                             }
-                            let text = head_and_tail(&text, WROTE_TOKENS);
-                            if let Some(old) = self.wrote.shift_remove(&base) {
-                                forget(&mut self.pool, &old);
-                            }
-                            self.wrote.insert(base, Wrote { mi: u.msg, call: call.clone(), path, text, edited: None });
                         }
+                        let text = head_and_tail(&text, WROTE_TOKENS);
+                        let w = Wrote { mi: u.msg, call: call.clone(), path, text, edited: None };
+                        self.wrote.insert(file_key(&w.path), w);
                     }
                 }
             }
@@ -1823,8 +1854,8 @@ impl Engine {
             }
             lines.push(card);
         }
-        if (others.len() as i64) > self.p.cards {
-            lines.push(format!("• … and {} older topics.", others.len() as i64 - self.p.cards));
+        if shown < others.len() {
+            lines.push(format!("• … and {} older topics.", others.len() - shown));
         }
         lines.join("\n")
     }
@@ -2450,7 +2481,10 @@ impl Engine {
                     {
                         let gone = self.led.contains(&i)
                             || self.dropped.get(&i).map_or(0, |d| d.len()) == self.fz.chunks[i].len();
-                        if gone || kept.contains(&i) {
+                        // an output that sends the lines of a copy left out stays: its stub says this one
+                        // sends them, and with both gone they are lost
+                        let carries = (0..self.fz.chunks[i].len()).any(|j| self.carrying.contains(&(i, j)));
+                        if gone || carries || kept.contains(&i) {
                         } else if !noted.contains(&i) && u.words.iter().any(|w| said.contains(w)) {
                             self.live_since.remove(&i);
                         } else {
@@ -2648,6 +2682,10 @@ impl Engine {
         let last = self.tr.msgs.len() - 1;
         let vis = self.visible();
         let mut covered = self.words_in(vis.iter().copied(), &[UKind::Result]);
+        // only a closed step comes back. An open one the view does not send (it left with the history, or its
+        // topic is left out) counts as seen: the ledger keeps the facts of the first, the topic of the second
+        // comes back whole when the talk returns to it. Bringing them back here was measured on the 20
+        // recorded sessions: 1.9 % more input cost (up to 29 % in one), 5 fewer forgotten words of 112, all in one.
         for s in self.steps.iter().filter(|s| !s.out) {
             covered.extend(s.about.iter().copied());
         }
@@ -2682,18 +2720,23 @@ impl Engine {
     /// last one before the step that the view still sends (a repeat folded by `loops`, or one before
     /// `start`, is not sent either), so that all the cache holds up to it stays as it is. The steps of a request that left side by side share it. A message of the agent's there (a
     /// step that said something and called nothing) is no place for it: the request takes the line.
+    /// When the request itself is no longer sent (it is before `start`; the first message always is), the
+    /// line goes on the first message from `start` on that the view sends and that is not the agent's,
+    /// before the step if one is, else after it (and then it does not say the reply follows): a line on a
+    /// message not sent is lost.
     fn line_at(&self, i: usize, gone: &FxHashSet<usize>) -> usize {
         let s = &self.steps[i];
-        let mut mi = s.msgs[0].saturating_sub(1);
-        while mi > s.a && (gone.contains(&mi) || self.looped.contains(&mi) || mi < self.start) {
-            mi -= 1;
+        let agent =
+            |mi: usize| self.tr.msgs.get(mi).and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant");
+        let sent = |mi: usize| !gone.contains(&mi) && !self.looped.contains(&mi);
+        if s.a == 0 || s.a >= self.start {
+            let mut mi = s.msgs[0].saturating_sub(1);
+            while mi > s.a && (!sent(mi) || mi < self.start) {
+                mi -= 1;
+            }
+            return if mi <= s.a || agent(mi) { s.a } else { mi };
         }
-        let agent = self.tr.msgs.get(mi).and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant");
-        if mi <= s.a || agent {
-            s.a
-        } else {
-            mi
-        }
+        (self.start..self.tr.msgs.len()).find(|&mi| sent(mi) && !agent(mi)).unwrap_or(0)
     }
 
     /// The steps out of the view leave it, and each run of them side by side says which calls left, on
@@ -2725,7 +2768,21 @@ impl Engine {
             if !s.out && s.at.is_none() {
                 continue;
             }
-            let (d, outs, end) = runs.entry((self.line_at(i, &out), s.a)).or_default();
+            // a step that left with the messages before `start` has no place in the view to name it from
+            if s.msgs.iter().all(|&m| m < self.start) {
+                continue;
+            }
+            let at = self.line_at(i, &out);
+            // the reply follows only a line before the step, and only when the agent replied: a request left
+            // for a newer one (`task`) has none
+            let next = s.msgs.last().map_or(0, |m| m + 1);
+            let replied = self.tr.msgs.get(next).is_some_and(|m| {
+                m.get("role").and_then(Value::as_str) == Some("assistant")
+                    && !blocks(m.get("content"))
+                        .iter()
+                        .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+            });
+            let (d, outs, end) = runs.entry((at, s.a)).or_default();
             for &m in &s.msgs {
                 if self.tr.msgs[m].get("role").and_then(Value::as_str) != Some("assistant") {
                     outs.push(m);
@@ -2734,7 +2791,7 @@ impl Engine {
             for what in &s.did {
                 *d.entry(what.as_str()).or_insert(0) += 1;
             }
-            *end |= last.get(&s.a) == Some(&i);
+            *end |= last.get(&s.a) == Some(&i) && at < s.msgs[0] && replied;
         }
         // what came back to a message was there before the request it starts was closed: it goes first, so
         // the line that closes the request comes after it and the message only grows
@@ -2785,14 +2842,20 @@ impl Engine {
         self.tag_msgs(coming, false, "close");
         let relined: Vec<usize> =
             shut.keys().chain(self.shut.keys()).filter(|a| shut.get(a) != self.shut.get(a)).copied().collect();
-        let changed = moved.iter().chain(&relined).min().copied();
+        // the view changes only where it sends a message before or after: a step that leaves or comes back
+        // from where the view does not send it (before `start`, in a topic left out) changes nothing there
+        let before = self.visible();
+        self.shut_out = out;
+        self.vis = None;
+        let after = self.visible();
+        let sent: FxHashSet<usize> = before.iter().chain(after.iter()).copied().collect();
+        let changed = moved.iter().chain(&relined).filter(|m| sent.contains(m)).min().copied();
         for mi in moved.into_iter().chain(relined) {
             self.built.remove(&mi);
         }
         let closed = self.steps.iter().filter(|s| s.out).count() as i64;
         self.stats.insert("closed_steps", closed);
         self.shut = shut;
-        self.shut_out = out;
         self.vis = None;
         changed
     }
@@ -3525,7 +3588,15 @@ impl Engine {
         self.bump("left_messages", (new_start - self.start) as i64);
         self.tag_msgs(self.start..new_start, true, "leave");
         if self.p.ledger != 0 {
-            for mi in self.start..new_start {
+            // the pool keeps its latest `POOL` lines: the messages that left are read from the newest back,
+            // and the read stops once they alone fill it (a long history leaving at once is not read whole)
+            let mut batches: Vec<Vec<(usize, String, Set, f64)>> = Vec::new();
+            let mut filled = 0;
+            for mi in (self.start..new_start).rev() {
+                if filled >= POOL {
+                    break;
+                }
+                let mut batch = Vec::new();
                 for &i in self.fz.by_msg(mi) {
                     if self.tr.units[i].kind == UKind::Thinking {
                         continue;
@@ -3555,9 +3626,14 @@ impl Engine {
                         }
                     }
                     for (ln, ws) in lines {
-                        self.pool.push((mi, ln, ws, w));
+                        batch.push((mi, ln, ws, w));
                     }
                 }
+                filled += batch.len();
+                batches.push(batch);
+            }
+            for batch in batches.into_iter().rev() {
+                self.pool.extend(batch);
             }
             if self.pool.len() > POOL {
                 self.pool.drain(..self.pool.len() - POOL);
@@ -3599,7 +3675,7 @@ impl Engine {
             Some(Kind::Exec) => heredoc_writes(&command_of(b)),
             _ => Vec::new(),
         };
-        bodies.retain(|(p, _)| self.wrote.get(basename(p)).is_some_and(|w| w.mi > mi));
+        bodies.retain(|(p, _)| self.wrote.iter().any(|(k, w)| w.mi > mi && same_file(k, p)));
         bodies.iter().flat_map(|(_, t)| t.split('\n').map(py::squash_ws)).collect()
     }
 
@@ -3624,17 +3700,19 @@ impl Engine {
             }
         }
         self.names = Some(names);
+        let head = if self.recall_tool {
+            format!("{MARK} Facts from the messages that moved out, the ones most likely to be needed again (recall m##### brings a whole message back as it was):")
+        } else {
+            format!("{MARK} Facts from the messages that moved out, the ones most likely to be needed again:")
+        };
+        // the header is part of the text: the lines take what it leaves of the budget
+        let budget = budget - est_str(&head) - 1;
         let taken =
             if budget > 0 { select(&self.pool, &p, &covered, budget, self.p.least, PER_MESSAGE) } else { Vec::new() };
         self.bump("ledger_lines", taken.len() as i64);
         if taken.is_empty() {
             return String::new();
         }
-        let head = if self.recall_tool {
-            format!("{MARK} Facts from the messages that moved out, the ones most likely to be needed again (recall m##### brings a whole message back as it was):")
-        } else {
-            format!("{MARK} Facts from the messages that moved out, the ones most likely to be needed again:")
-        };
         let mut lines = vec![head];
         lines.extend(taken.iter().map(|(mi, ln)| format!("m{:05} {}", mi + 1, ln)));
         lines.join("\n")
@@ -3682,13 +3760,14 @@ impl Engine {
                         // the first n characters, n = 4 * floor(pin / 2); a negative n counts from the end
                         let n = 4 * self.p.pin.div_euclid(2);
                         let n = if n >= 0 { n as usize } else { (py::len(text) as i64 + n).max(0) as usize };
-                        self.pins.insert(base.to_string(), (mi, path.to_string(), py::head(text, n).to_string()));
+                        self.pins.insert(file_key(path), (mi, path.to_string(), py::head(text, n).to_string()));
                     }
                 }
             }
         }
         // a file written after it was read is not as it was read: the pin goes (the next read pins it again)
-        self.pins.retain(|name, (mi, _, _)| !self.written.get(name).is_some_and(|w| w > mi));
+        let written = &self.written;
+        self.pins.retain(|key, (mi, _, _)| !written.iter().any(|(k, w)| w > mi && same_file(k, key)));
         // the rules are never dropped: past their budget, the findings and then the pinned files yield
         let over = self.rules_excess();
         let (notes, pin) = (self.p.notes - over, self.p.pin - (over - self.p.notes).max(0));
@@ -3872,7 +3951,9 @@ impl Engine {
         let mut fixed: Vec<String> = Vec::new();
         let mut tests: Vec<String> = Vec::new();
         let mut pending: Vec<String> = Vec::new();
-        let mut failures: Vec<String> = Vec::new();
+        // each failing run with its test run (`test_run`): only a run of that command, or of a broader one, says
+        // whether its tests pass now
+        let mut failures: Vec<(String, String)> = Vec::new();
         let mut commands: FxHashMap<String, String> = FxHashMap::default();
         let mut unnamed: i64 = 0;
         let stop = end.min(limit.unwrap_or(self.start));
@@ -3905,14 +3986,25 @@ impl Engine {
                         if !TEST_COMMAND.is_match(cmd) {
                             continue;
                         }
+                        let cmd = test_run(cmd);
+                        let cmd = cmd.as_str();
                         let text = self.tr.unit_text(i);
                         if error || ERROR_MARKS.is_match(&text) {
                             let ls: Vec<&str> =
                                 py::splitlines(&text).into_iter().filter(|x| FAILURE_LINE.is_match(x)).collect();
-                            failures.push(ls.join("\n"));
-                        } else if !failures.is_empty() {
-                            let named: Vec<String> =
-                                pending.iter().filter(|p| named_in(p, &failures)).cloned().collect();
+                            let f = ls.join("\n");
+                            // a test failing again no longer passes
+                            let again = FAILED_TEST.findall(&f);
+                            tests.retain(|t| !again.contains(&t.as_str()));
+                            failures.push((cmd.to_string(), f));
+                        } else {
+                            let (done, rest): (Vec<_>, Vec<_>) = failures.drain(..).partition(|(c, _)| covers(cmd, c));
+                            failures = rest;
+                            if done.is_empty() {
+                                continue;
+                            }
+                            let done: Vec<String> = done.into_iter().map(|(_, f)| f).collect();
+                            let named: Vec<String> = pending.iter().filter(|p| named_in(p, &done)).cloned().collect();
                             let src = if named.is_empty() { &pending } else { &named };
                             for p in src {
                                 if !fixed.contains(p) {
@@ -3920,7 +4012,7 @@ impl Engine {
                                 }
                             }
                             let mut named_here: Vec<String> = Vec::new();
-                            for f in &failures {
+                            for f in &done {
                                 for t in FAILED_TEST.findall(f) {
                                     if !named_here.iter().any(|x| x == t) {
                                         named_here.push(t.to_string());
@@ -3932,11 +4024,12 @@ impl Engine {
                                     tests.push(t.clone());
                                 }
                             }
-                            for f in &failures {
+                            for f in &done {
                                 unnamed = unnamed.max(failure_count(f) - named_here.len() as i64);
                             }
-                            pending.clear();
-                            failures.clear();
+                            if failures.is_empty() {
+                                pending.clear();
+                            }
                         }
                     }
                     _ => {}
@@ -3944,7 +4037,7 @@ impl Engine {
             }
         }
         let mut open: Vec<String> = Vec::new();
-        if let Some(f) = failures.last() {
+        if let Some((_, f)) = failures.last() {
             for t in FAILED_TEST.findall(f) {
                 open.push(t.to_string());
             }
@@ -4133,6 +4226,36 @@ fn failure_count(f: &str) -> i64 {
         .sum()
 }
 
+/// Whether a passing run of ``pass`` speaks for the tests a failing run of ``failed`` ran: the same command, or
+/// a broader one (``failed`` is ``pass`` and more arguments).
+fn covers(pass: &str, failed: &str) -> bool {
+    failed.strip_prefix(pass).is_some_and(|r| r.is_empty() || r.starts_with(' '))
+}
+
+/// The test run a shell command makes: its first piece (between `&&`, `||`, `;`, `|`) that runs tests, without
+/// redirections, so `cd app && npm test 2>&1 | tail -5` and `npm test` are one run.
+fn test_run(command: &str) -> String {
+    let joined = command.replace("&&", "\n").replace("||", "\n");
+    let Some(piece) = joined.split(['\n', ';', '|']).find(|s| TEST_COMMAND.is_match(s)) else {
+        return command.trim().to_string();
+    };
+    let mut out: Vec<&str> = Vec::new();
+    let mut skip = false;
+    for t in py::split_ws(piece) {
+        let bare = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '&');
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        if bare.starts_with(['<', '>']) {
+            // `2>&1`, `>out.txt`; a bare `>` takes the next word as its file
+            skip = bare.trim_end_matches('&').chars().all(|c| c == '<' || c == '>');
+            continue;
+        }
+        out.push(t);
+    }
+    out.join(" ")
+}
+
 fn named_in(path: &str, failures: &[String]) -> bool {
     let base = path.rsplit('/').next().unwrap_or("");
     let stem = base.split('.').next().unwrap_or("");
@@ -4311,6 +4434,80 @@ mod tests {
         assert!(has("ran 4 times in this session: its output changed 1 of those times, this time too"), "{lines:?}");
         assert!(has("ran 5 times in this session: its output changed 2 of those times, this time too"), "{lines:?}");
         assert!(said("nudge=0;dedup=3;asked=3").is_empty());
+    }
+
+    /// What `fixes` says of a session that edits `src/calc.rs` between test runs, each run a command
+    /// and its output.
+    fn fixes_of(runs: &[(&str, &str)]) -> String {
+        let mut msgs = vec![json!({"role": "user", "content": "Make the test suite pass."})];
+        for (k, (cmd, out)) in runs.iter().enumerate() {
+            msgs.extend(step(2 * k + 1, cmd, out));
+            msgs.extend(step(2 * k + 2, &format!("sed -i 's/a{k}/b{k}/' src/calc.rs"), ""));
+        }
+        let mut e = Engine::new(params("nudge=0").unwrap());
+        e.sync(&msgs);
+        e.fixes(0, msgs.len(), Some(msgs.len()))
+    }
+
+    const FAILING_RUN: &str = "running 2 tests\ntest calc::test_round ... FAILED\nfailures:\n    calc::test_round\ntest result: FAILED. 1 passed; 1 failed";
+    const PASSING_RUN: &str = "running 2 tests\ntest result: ok. 2 passed; 0 failed";
+
+    #[test]
+    fn narrower_passing_run_does_not_mark_earlier_failures_fixed() {
+        for (broad, narrow) in [
+            ("cargo test", "cargo test unrelated"),
+            ("npm test", "npm test -- -t other"),
+            ("pytest", "pytest tests/b.py"),
+        ] {
+            let said = fixes_of(&[(broad, FAILING_RUN), (narrow, PASSING_RUN)]);
+            assert!(!said.contains("now pass"), "{narrow}: {said}");
+            assert!(!said.contains("made the failing tests pass"), "{narrow}: {said}");
+            assert!(said.contains("tests failing in the last run in them: test_round"), "{narrow}: {said}");
+        }
+        // the same command passing, or a broader one, still marks them fixed
+        for (failing, passing) in [
+            ("cargo test", "cargo test"),
+            ("cargo test calc", "cargo test"),
+            ("cd app && npm test 2>&1 | tail -40", "npm test > out.txt; cat out.txt"),
+        ] {
+            let said = fixes_of(&[(failing, FAILING_RUN), (passing, PASSING_RUN)]);
+            assert!(said.contains("the tests that failed and now pass: test_round"), "{said}");
+            assert!(said.contains("the changes that made the failing tests pass: src/calc.rs"), "{said}");
+            assert!(!said.contains("failing in the last run"), "{said}");
+        }
+    }
+
+    #[test]
+    fn test_that_fails_again_is_not_listed_as_now_passing() {
+        let said = fixes_of(&[("cargo test", FAILING_RUN), ("cargo test", PASSING_RUN), ("cargo test", FAILING_RUN)]);
+        assert!(!said.contains("now pass"), "{said}");
+        assert!(said.contains("tests failing in the last run in them: test_round"), "{said}");
+    }
+
+    #[test]
+    fn ledger_text_fits_its_budget_with_header() {
+        let mut msgs = vec![json!({"role": "user", "content": "Map where each module of the realm is configured."})];
+        for k in 0..40 {
+            let out: String = (0..6)
+                .map(|j| format!("{} = {} in config/{}.toml\n", word(k * 10 + j), word(k * 10 + j + 900), word(k)))
+                .collect();
+            msgs.extend(step(k + 1, &format!("cat config/{}.toml", word(k)), &out));
+            msgs.push(
+                json!({"role": "assistant", "content": format!("{} is set in config/{}.toml.", word(k * 10), word(k))}),
+            );
+            msgs.push(json!({"role": "user", "content": "Go on."}));
+        }
+        let mut e = Engine::new(params("ledger=6000;cap=3000;eoq=0;nudge=0").unwrap());
+        e.sync(&msgs);
+        e.view();
+        assert!(e.start > 0 && !e.pool.is_empty());
+        let mut some = false;
+        for budget in [40, 60, 100, 200, 400] {
+            let text = e.ledger_text(budget);
+            some |= !text.is_empty();
+            assert!(est_str(&text) <= budget, "{budget}: {} tokens\n{text}", est_str(&text));
+        }
+        assert!(some);
     }
 
     #[test]
@@ -4871,6 +5068,143 @@ mod tests {
     }
 
     #[test]
+    fn live_drop_keeps_part_carrying_a_copy() {
+        let log =
+            (0..200).map(|k| format!("event {} at {}", word(k + 2000), word(k + 3000))).collect::<Vec<_>>().join("\n");
+        let mut msgs = vec![json!({"role": "user", "content": "What does the log hold?"})];
+        msgs.extend(step(1, "cat run.log", &log));
+        msgs.extend(step(2, "cat run.log", &log));
+        for k in 3..8 {
+            msgs.extend(step(k, &format!("wc -l part{k}"), &format!("{k} lines")));
+        }
+        let seen = |view: &[Value]| -> (usize, bool) {
+            let text: String = view.iter().map(|m| crate::msg::flat(m.get("content")) + "\n").collect();
+            let lines: FxHashSet<&str> = text.lines().filter(|l| l.starts_with("event ")).collect();
+            (lines.len(), text.contains("a later output below sends"))
+        };
+        let mut whole = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+        whole.sync(&msgs);
+        let total = whole.tokens();
+        let cap = total - 1;
+        let floor = (total - est_str(&log) / 2) as f64 / cap as f64;
+        let given = format!(
+            "threshold=1;still=0;protect=2;nudge=0;sup=1;cut=copies;cap={cap};floor={floor};live=1;close=2;margin=0"
+        );
+        let mut e = Engine::new(params(&given).unwrap());
+        e.sync(&msgs);
+        let (lines, stub) = seen(&e.view());
+        assert!(stub && lines == 200 && !e.carrying.is_empty(), "{:?}", e.stats);
+        // more steps the agent never writes about: the idle outputs of the open request may leave, never the
+        // one that sends the lines of the copy left out
+        for k in 9..14 {
+            msgs.extend(step(k, &format!("wc -l part{k}"), &format!("{k} lines")));
+            e.sync(&msgs);
+            let (lines, stub) = seen(&e.view());
+            assert!(!stub || lines == 200, "request {k}: {lines} lines, {:?}", e.stats);
+        }
+    }
+    #[test]
+    fn close_line_survives_start_inside_request() {
+        // a first request answered, then one whose request message leaves the view while its calls stay
+        let mut msgs =
+            vec![json!({"role": "user", "content": "Which client has the largest invoice total in report.txt?"})];
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Client X."}]}));
+        msgs.push(json!({"role": "user", "content": "How long has the host been up?"}));
+        msgs.extend(step(1, "date", "Fri Oct 31 10:00:00 UTC 2026"));
+        msgs.extend(step(2, "uptime", "10:00 up 3 days"));
+        msgs.extend(step(3, "who", "root tty1"));
+        msgs.extend(step(4, "wc -l report.txt", "530 report.txt"));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Up 3 days."}]}));
+        msgs.push(json!({"role": "user", "content": "Thanks."}));
+        let mut e = Engine::new(params("nudge=0;eoq=0;close=1;margin=1000").unwrap());
+        e.sync(&msgs);
+        e.view();
+        assert_eq!((e.steps.len(), e.steps.iter().filter(|s| s.out).count()), (4, 0));
+        // the view starts at the second call: the request message is no longer sent
+        (e.start, e.vis) = (5, None);
+        (e.steps[1].out, e.steps[2].out) = (true, true);
+        e.shut_lines();
+        let view = sent(&e.view());
+        assert!(view.contains("2 tool calls made for this request"), "{:?} {view}", e.shut);
+        assert!(view.contains("bash uptime | bash who."), "{view}");
+        assert!(e.shut.keys().all(|&mi| mi >= e.start), "{:?}", e.shut);
+        // the run reaches the last call: its line is still sent, after the reply, and says no reply follows
+        e.steps[3].out = true;
+        e.shut_lines();
+        let view = sent(&e.view());
+        assert!(view.contains("3 tool calls made for this request") && !view.contains("follows"), "{view}");
+        assert!(e.shut.keys().all(|&mi| mi >= e.start), "{:?}", e.shut);
+    }
+
+    #[test]
+    fn cards_negative_limit_counts_hidden() {
+        let mut msgs: Vec<Value> = Vec::new();
+        for k in 0..6 {
+            if k > 0 {
+                msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": format!("It is {}.", word(k + 50))}]}));
+            }
+            msgs.push(json!({"role": "user", "content": format!("What does {} stand for?", word(k))}));
+        }
+        let mut e = Engine::new(params("nudge=0;eoq=0;link=1;apart=0").unwrap());
+        // the settings take no negative limit, a `Params` built in code can: all but the two oldest shown
+        e.p.cards = -2;
+        e.sync(&msgs);
+        e.view();
+        assert_eq!(e.goal.others().len(), 5);
+        let text = e.cards_text();
+        // five other topics, all but two shown: two are not
+        assert!(text.ends_with("• … and 2 older topics."), "{text}");
+        assert_eq!(text.lines().count(), 1 + 3 + 1, "{text}");
+    }
+
+    /// Whether every tool result of `view` has its call in the view, and every call its result.
+    fn paired(view: &[Value]) -> bool {
+        let ids = |kind: &str, key: &str| -> Vec<String> {
+            let mut v: Vec<String> = view
+                .iter()
+                .flat_map(|m| blocks(m.get("content")).into_owned())
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some(kind))
+                .filter_map(|b| b.get(key).and_then(Value::as_str).map(str::to_string))
+                .collect();
+            v.sort();
+            v
+        };
+        ids("tool_use", "id") == ids("tool_result", "tool_use_id")
+    }
+
+    #[test]
+    fn with_task_a_request_on_results_keeps_calls_and_results_together() {
+        // the person's next request rides on the results of a step, on another topic
+        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
+        for k in 0..3 {
+            msgs.extend(step(
+                k + 1,
+                &format!("sed -n '{},{}p' listing.txt", 10 * k + 1, 10 * k + 10),
+                &listing(10 * k + 1, 10 * k + 10),
+            ));
+        }
+        let last = msgs.len() - 1;
+        let mut bs = blocks(msgs[last].get("content")).into_owned();
+        bs.push(json!({"type": "text", "text": "Stop that. How many lines has notes.md?"}));
+        msgs[last]["content"] = Value::Array(bs);
+        msgs.extend(step(4, "wc -l notes.md", "12 notes.md"));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+        msgs.push(json!({"role": "user", "content": "And what does slot 7 of listing.txt hold?"}));
+        for spec in
+            ["nudge=0;eoq=0;task=1;link=1;apart=0", "nudge=0;eoq=0;task=1;link=1;apart=0;close=2;margin=0;ahead=1"]
+        {
+            let mut e = Engine::new(params(spec).unwrap());
+            for t in [last + 1, last + 3, msgs.len()] {
+                e.sync(&msgs[..t]);
+                let view = e.view();
+                assert!(paired(&view), "{spec}, {t} messages: {}", sent(&view));
+                let text = sent(&view);
+                // the request left for a newer one had no reply
+                assert!(!text.contains("The reply that closed the request follows"), "{spec}: {text}");
+            }
+        }
+    }
+    #[test]
     fn a_pointer_points_to_lines_sent_whole_and_short_runs_stay() {
         let mut e = reads("dedup=3;nudge=0", &[(1, 40), (21, 60), (22, 38), (42, 58), (58, 70)]);
         let view = e.view();
@@ -5231,6 +5565,26 @@ mod tests {
     }
 
     #[test]
+    fn rules_come_from_what_the_person_wrote_and_a_withdrawal_follows_the_rule_it_changes() {
+        let rules = |e: &Engine| e.rules.list.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
+        let mut e = Engine::new(params("").unwrap());
+        let first = vec![
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "<system-reminder>\nNever edit the lockfile.\nYou must reply in French.\n</system-reminder>"},
+                {"type": "text", "text": "Never use unwrap.\nERROR: not allowed to write /etc/x"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "Understood."}]}),
+            json!({"role": "user", "content": "you can use unwrap now"}),
+        ];
+        e.sync(&first);
+        assert_eq!(rules(&e), ["Never use unwrap.", "you can use unwrap now"]);
+        // a compaction: the later word stays after the rule it changes
+        e.sync(&[json!({"role": "user", "content": "Summary: the parser is half done."})]);
+        assert_eq!(rules(&e), ["Never use unwrap.", "you can use unwrap now"]);
+        let block = e.rules.text(|_| true);
+        assert!(block.find("Never use unwrap").unwrap() < block.find("you can use unwrap now").unwrap(), "{block}");
+    }
+
+    #[test]
     fn live_an_output_no_later_call_or_text_drew_on_leaves_in_its_place() {
         let spec = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1";
         // two more reads of other lines follow the first, and neither names anything it printed
@@ -5451,6 +5805,42 @@ mod tests {
     }
 
     #[test]
+    fn a_history_that_leaves_at_once_keeps_its_newest_lines_in_the_pool_in_order() {
+        // 24 requests of 500 lines read each leave together: more lines than the pool holds
+        let mut msgs = Vec::new();
+        for k in 0..24 {
+            msgs.push(json!({"role": "user", "content": format!("Read part {k} of listing.txt.")}));
+            msgs.extend(step(
+                k,
+                &format!("sed -n '{},{}p' listing.txt", 500 * k, 500 * k + 499),
+                &listing(500 * k, 500 * k + 499),
+            ));
+            msgs.push(json!({"role": "assistant", "content": listing(500 * k, 500 * k + 499)}));
+        }
+        msgs.push(json!({"role": "user", "content": "Say which slot holds the last word."}));
+        let mut e = Engine::new(params("nudge=0;ledger=6000;protect=2").unwrap());
+        e.sync(&msgs);
+        let sizes = vec![1000; msgs.len()];
+        assert!(e.leave(&sizes, 1.0));
+        assert!(e.start > 4 * 24 - 8, "start {}", e.start);
+        assert_eq!(e.pool.len(), POOL);
+        assert!(e.pool.windows(2).all(|w| w[0].0 <= w[1].0), "the pool keeps the order of the messages");
+        // the newest output that left is in the pool whole, the oldest is not
+        let last = (0..e.start).rev().find(|&mi| output_of(&msgs, mi).is_some()).unwrap();
+        let newest = output_of(&msgs, last).unwrap();
+        let first_line = crate::py::squash_ws(newest.lines().next().unwrap());
+        assert!(e.pool.iter().any(|(mi, ln, _, _)| *mi == last && *ln == first_line), "{first_line}");
+        assert!(e.pool.iter().all(|(mi, _, _, _)| *mi > 3), "the first read is out of the pool");
+    }
+
+    /// The text of the tool result of message `mi` of `msgs`, if it holds one.
+    fn output_of(msgs: &[Value], mi: usize) -> Option<String> {
+        let b = blocks(msgs[mi].get("content")).into_owned();
+        let r = b.iter().find(|x| get_str(x, "type") == "tool_result")?;
+        Some(text_of(r.get("content")).into_owned())
+    }
+
+    #[test]
     fn a_request_about_something_else_leaves_the_read_out() {
         let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1";
         let mut e = Engine::new(params(spec).unwrap());
@@ -5666,5 +6056,101 @@ mod tests {
         // a chat without tools has nothing to mark
         let chat = e(&[json!({"role": "user", "content": "Hi"}), json!({"role": "assistant", "content": "Hello"})]);
         assert!(chat.edits.is_empty() && chat.stale_reads(&[0, 1]).is_empty());
+    }
+
+    #[test]
+    fn underscore_framework_files_are_not_scratch() {
+        for name in [
+            "_app.tsx",
+            "pages/_document.tsx",
+            "pkg/__init__.py",
+            "__main__.py",
+            "styles/_variables.scss",
+            "_config.yml",
+            "src/tmpl/page.html",
+        ] {
+            assert!(!scratch(name), "{name}");
+        }
+        for name in
+            ["tmp_out.txt", "_tmp.rs", "_try.rs", "_scratch.md", "scratch.txt", "/tmp/out.json", "/var/tmp/run/x.csv"]
+        {
+            assert!(scratch(name), "{name}");
+        }
+        // over the budget, a framework file is kept like any other and the scratch file goes first
+        let mut msgs = vec![json!({"role": "user", "content": "Set up the app shell."})];
+        msgs.extend(tool(1, "write_file", json!({"path": "pages/_app.tsx", "content": source(0, 40)}), "ok", false));
+        msgs.extend(tool(2, "write_file", json!({"path": "_try.rs", "content": source(300, 40)}), "ok", false));
+        msgs.extend(tool(3, "write_file", json!({"path": "src/main.rs", "content": source(600, 40)}), "ok", false));
+        let mut e = Engine::new(params("pin=4000").unwrap());
+        e.sync(&msgs);
+        e.p.pin = est_str(&e.wrote_text(msgs.len())) - 1;
+        e.harvest(0, msgs.len());
+        let kept: Vec<&str> = e.wrote.values().map(|w| w.path.as_str()).collect();
+        assert!(kept.contains(&"pages/_app.tsx") && !kept.contains(&"_try.rs"), "{kept:?}");
+    }
+
+    #[test]
+    fn same_basename_in_two_dirs_keeps_both_writes_and_pins() {
+        let mut msgs = vec![json!({"role": "user", "content": "Compare src/a/index.ts with src/b/index.ts."})];
+        msgs.extend(tool(1, "read_file", json!({"path": "src/a/index.ts"}), &source(0, 10), false));
+        msgs.extend(tool(2, "read_file", json!({"path": "src/b/index.ts"}), &source(100, 10), false));
+        msgs.extend(tool(3, "write_file", json!({"path": "src/a/main.ts", "content": source(200, 10)}), "ok", false));
+        msgs.extend(tool(4, "write_file", json!({"path": "src/b/main.ts", "content": source(300, 10)}), "ok", false));
+        let edit = json!({"path": "src/b/main.ts", "old_str": "v1", "new_str": "w1"});
+        msgs.extend(tool(5, "edit_file", edit, "ok", false));
+        let mut e = Engine::new(params("pin=4000").unwrap());
+        e.sync(&msgs);
+        e.harvest(0, msgs.len());
+        // both writes stay, and the edit marks only its own file
+        let wrote: Vec<(&str, Option<usize>)> = e.wrote.values().map(|w| (w.path.as_str(), w.edited)).collect();
+        assert_eq!(wrote, vec![("src/a/main.ts", None), ("src/b/main.ts", Some(9))]);
+        // both reads are pinned
+        let mut pinned: Vec<&str> = e.pins.values().map(|p| p.1.as_str()).collect();
+        pinned.sort();
+        assert_eq!(pinned, vec!["src/a/index.ts", "src/b/index.ts"]);
+        assert_eq!(file_key(".//src//b/index.ts"), "src/b/index.ts");
+        // a later write of one takes its pin and leaves the other's
+        msgs.extend(step(6, "sed -i 's/v1/w1/' src/b/index.ts", "done"));
+        e.sync(&msgs);
+        e.harvest(0, msgs.len());
+        let pinned: Vec<&str> = e.pins.values().map(|p| p.1.as_str()).collect();
+        assert_eq!(pinned, vec!["src/a/index.ts"]);
+        // a write named by the file name alone reaches every file of that name
+        msgs.extend(step(7, "cd src && sed -i 's/v2/w2/' index.ts", "done"));
+        msgs.extend(step(8, "cd src && sed -i 's/v3/w3/' main.ts", "done"));
+        e.sync(&msgs);
+        e.harvest(0, msgs.len());
+        assert!(e.pins.is_empty(), "{:?}", e.pins);
+        assert!(e.wrote.values().all(|w| w.edited.is_some()), "{:?}", e.wrote);
+    }
+
+    #[test]
+    fn failed_whole_write_keeps_the_earlier_version() {
+        let mut msgs = vec![json!({"role": "user", "content": "Write the rates module."})];
+        msgs.extend(tool(1, "write_file", json!({"path": "src/rates.rs", "content": source(0, 10)}), "ok", false));
+        let mut e = Engine::new(params("pin=4000").unwrap());
+        e.sync(&msgs);
+        // the next write is sent, and its result says it failed
+        let [call, result] = tool(
+            2,
+            "write_file",
+            json!({"path": "src/rates.rs", "content": source(50, 10)}),
+            "permission denied",
+            true,
+        );
+        msgs.push(call);
+        e.sync(&msgs);
+        msgs.push(result);
+        e.sync(&msgs);
+        let kept: Vec<(&str, usize, &str)> =
+            e.wrote.values().map(|w| (w.path.as_str(), w.mi, w.text.as_str())).collect();
+        assert_eq!(kept, vec![("src/rates.rs", 1, source(0, 10).as_str())]);
+        // its lines are not taken for those of a later version
+        let first = *e.fz.by_msg(1).iter().find(|&&i| e.tr.units[i].kind == UKind::Call).unwrap();
+        assert!(e.superseded(first, 1).is_empty());
+        // a write that went through replaces it
+        msgs.extend(tool(3, "write_file", json!({"path": "src/rates.rs", "content": source(90, 10)}), "ok", false));
+        e.sync(&msgs);
+        assert_eq!(e.wrote.values().map(|w| w.mi).collect::<Vec<_>>(), vec![5]);
     }
 }

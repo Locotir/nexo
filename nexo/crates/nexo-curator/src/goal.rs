@@ -173,7 +173,16 @@ impl Threads {
                 best = k;
             }
         }
-        let th = if joint[best] >= self.link { best } else { self.members.len() };
+        // a request that rides on the results of a step stays on the topic of that step: the call and its
+        // results are sent together or not at all, whatever topic the view keeps
+        let rides = fz.by_msg(mi).iter().any(|&i| tr.units[i].kind == UKind::Result);
+        let th = if rides {
+            self.turns[n - 1].thread
+        } else if joint[best] >= self.link {
+            best
+        } else {
+            self.members.len()
+        };
         if th == self.members.len() {
             self.members.push(Vec::new());
             self.last.push(n);

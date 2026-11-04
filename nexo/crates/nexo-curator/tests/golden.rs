@@ -262,10 +262,12 @@ fn the_long_session_ends_with_the_reference_stats() {
     // gives every line back: 1799 saved at birth, and the cuts of closing miss 20992.
     // A part that sends the lines of a copy left out stays while the copy is out, or the stub of the copy would
     // point to nothing: 125 chunks leave, 22 messages, and the cache misses 39390 (was 41316).
+    // The ledger folds only forms that follow each other, so lines that differ stay apart (59, was 46), and the
+    // closing line sits on a message the view still sends: the cache misses 39518.
     let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
-        "dropped_chunks": 125, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 46,
-        "cap_rewrites": 1, "miss_cap": 22563, "miss": 39390, "closed_steps": 47, "miss_close": 15682, "recalled_steps": 5,
-        "live_dropped": 3, "cards": 1, "switches": 1, "miss_anchor": 1311});
+        "dropped_chunks": 125, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 59,
+        "cap_rewrites": 1, "miss_cap": 22563, "miss": 39518, "closed_steps": 47, "miss_close": 15746, "recalled_steps": 5,
+        "live_dropped": 3, "cards": 1, "switches": 1, "miss_anchor": 1375});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }

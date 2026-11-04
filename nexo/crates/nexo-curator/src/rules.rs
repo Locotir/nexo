@@ -18,32 +18,177 @@ const WEAK_CHARS: usize = 160;
 
 const A: &str = "['’]";
 
-/// Cues that make a line a rule wherever they stand ("I'd rather…", "a partir de ahora…").
-static STRONG: LazyLock<String> = LazyLock::new(|| {
+/// Cues that make a line a rule wherever they stand, even one that reports a fault ("from now on…",
+/// "make sure…", "a partir de ahora…").
+static FIRM: LazyLock<String> = LazyLock::new(|| {
     [
         format!(r"i (?:do not|don{A}?t|dont) want"),
-        format!(r"i{A}d rather|i would rather|i want you to|from now on|make sure|every time|whenever|no more"),
-        format!(r"not allowed|forbidden|prohibited|must(?:n{A}?t| not)?|instead of|prefer(?:ably)?|avoid(?:ing)?"),
-        r"stop \w+ing|important(?:ly)?|importante".into(),
+        format!(r"i{A}d rather|i would rather|i want you to|from now on|make sure"),
+        format!(r"not allowed|forbidden|prohibited|must(?:n{A}?t| not)?"),
         r"a partir de ahora|de ahora en adelante|prohibid[oa]s?|deber[ií]as|debes|deb[eé]is|tienes que".into(),
-        r"ten[eé]is que|hay que|quiero que|prefiero|ten en cuenta|tened en cuenta|ojo|en vez de|en lugar de".into(),
-        r"cuidado con|evita\w*|deja de|dejad de|no quiero|no vuelvas|no volv[aá]is".into(),
+        r"ten[eé]is que|quiero que|no quiero|no vuelvas|no volv[aá]is".into(),
         r"no (?:hagas|hag[aá]is|uses|us[eé]is|utilices|ejecutes|escribas|toques|modifiques|borres|cambies|pongas|a[nñ]adas|metas|lances|corras|subas|crees|instales|inventes|expliques|repitas|mezcles)".into(),
     ]
     .join("|")
 });
+/// Cues that make a line a rule wherever they stand, but are as common in a report of what goes wrong
+/// ("every time I run it, it fails", "it returns None instead of an error").
+static SOFT: LazyLock<String> = LazyLock::new(|| {
+    [
+        r"every time|whenever|no more|instead of|prefer(?:ably)?|avoid(?:ing)?".to_string(),
+        r"stop \w+ing|important(?:ly)?|importante".into(),
+        r"hay que|prefiero|ten en cuenta|tened en cuenta|ojo|en vez de|en lugar de".into(),
+        r"cuidado con|evita\w*|deja de|dejad de".into(),
+    ]
+    .join("|")
+});
+/// Words that report a fault: a line with one is a rule only through a firm cue or a clause that opens
+/// with an order ("Never swallow errors"), not through a soft or weak cue ("It only fails on CI").
+static FAULT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:fail(?:s|ed|ing|ures?)?|crash(?:es|ed|ing)?|errors?|errores|broken|bugs?|buggy|panic(?:s|ked|king)?|exceptions?|falla[ns]?|fallando|fall[oó]s?|fallid[oa]s?|rot[oa]s?|peta[ns]?|pet[oó]|no funciona\w*|se cuelga\w*)\b",
+    )
+    .expect("static pattern")
+});
+/// Lines that change or withdraw an earlier instruction ("forget the tabs rule", "ya no hace falta…"):
+/// kept as rules, after the one they change, so the latest word is in the block. Matched on [`fold`].
+static WITHDRAW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(?:forget (?:about )?(?:the|that|my|what|this|those|these|all|it)\b|scratch that|never ?mind|disregard (?:the|that|my|what|this)|ignore (?:the|that|my|this) (?:\w+ )?(?:rule|instruction)s?|no longer (?:need|have|has|must|required|necessary|appl(?:y|ies))|(?:it'?s|it is) (?:fine|ok|okay|allowed) (?:now )?to|feel free to|olvida(?:te|d)? (?:de|lo|la|el|los|las|eso|esa|ese|aquello)\b|olvidate\b|ya no (?:hace falta|es necesario|tienes que|hay que)|no hace falta que|puedes volver a|ya se puede)",
+    )
+    .expect("static pattern")
+});
+/// "You can now…", "you can use it again", "ya puedes…": a permission that lifts an earlier rule, unless its
+/// verb only points at something ("you can see the error in the log"). Matched on [`fold`].
+static CAN_NOW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:(?:you|we) (?:can|may|are allowed to)|(?P<ya>ya) (?:puedes|podeis|se puede)) (?P<pre>(?:now|again) )?(?P<verb>[\w']+)(?P<post>[^.!?]*\b(?:now|again|de nuevo|otra vez)\b)?")
+        .expect("static pattern")
+});
+/// Verbs after "you can" that point at something rather than allow it ("you can see…", "ya puedes probarlo").
+const POINTING: &[&str] = &[
+    "see",
+    "find",
+    "read",
+    "look",
+    "check",
+    "tell",
+    "notice",
+    "view",
+    "watch",
+    "try",
+    "test",
+    "run",
+    "open",
+    "start",
+    "continue",
+    "go",
+    "proceed",
+    "ver",
+    "verlo",
+    "mirar",
+    "mirarlo",
+    "leer",
+    "encontrar",
+    "comprobar",
+    "comprobarlo",
+    "probar",
+    "probarlo",
+    "seguir",
+    "continuar",
+    "empezar",
+    "abrir",
+    "ejecutar",
+    "lanzar",
+];
+/// Whether ``line`` changes or withdraws an earlier instruction.
+fn withdraws(line: &str) -> bool {
+    let f = fold(line);
+    WITHDRAW.is_match(&f)
+        || CAN_NOW.captures_iter(&f).any(|c| {
+            let verb = c.name("verb").map_or("", |m| m.as_str());
+            let timed = c.name("ya").is_some() || c.name("pre").is_some() || c.name("post").is_some();
+            timed && !POINTING.contains(&verb)
+        })
+}
 /// Cues that are a rule only at the head of a clause: "Always run the tests", not "it always fails".
 const LEAD: &str = r"never|always|remember|nunca|siempre|jam[aá]s|recu[eé]rd\w*|recordad|recordar|usa|utiliza|escribe";
-/// "Do not": a rule unless what comes before says it describes something ("I don't know").
+/// "Do not": a rule at the head of a clause, after a head word or after "you" ("and don't push", not "we don't have CI").
 const NEG: &str = r"do not|don['’]?t|dont";
 /// Cues that count only in a short line ("only the tests", "keep it short", "sin comentarios").
 const WEAK: &str =
     r"only|keep|without|rules?|use\b[^.;!?]{1,60}?\b(?:not|instead)|solo|s[oó]lo|[uú]nicamente|sin|solamente";
 
 static CUE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(r"(?i)\b(?:(?P<strong>{})|(?P<lead>{LEAD})|(?P<neg>{NEG})|(?P<weak>{WEAK}))\b", *STRONG))
-        .expect("static pattern")
+    Regex::new(&format!(
+        r"(?i)\b(?:(?P<strong>{}|{})|(?P<lead>{LEAD})|(?P<neg>{NEG})|(?P<weak>{WEAK}))\b",
+        *FIRM, *SOFT
+    ))
+    .expect("static pattern")
 });
+static FIRM_CUE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)\b(?:{})\b", *FIRM)).expect("static pattern"));
+/// Words that open an order at the head of a clause, besides the task verbs and the lead cues.
+const ORDER_WORDS: &[&str] = &["don't", "dont", "use", "keep", "make", "avoid", "prefer", "stop", "evita", "deja"];
+static LEAD_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("^(?:{LEAD})$")).expect("static pattern"));
+/// Fault verbs in the bare form an order gives them ("never panic", "don't crash", "no falles").
+const BARE_FAULTS: &[&str] = &["fail", "crash", "panic", "break", "error", "falles", "petes", "rompas"];
+/// Words a clause may open with before its order ("so never push", "por favor, usa…").
+const CLAUSE_OPENERS: &[&str] = &[
+    "please", "pls", "so", "then", "also", "just", "now", "ok", "okay", "vale", "ahora", "por", "favor", "entonces",
+    "luego",
+];
+/// Words after an opening verb that make it a subject: "Build fails", "Test is broken", "Prueba falla".
+const NOT_AFTER_ORDER: &[&str] = &[
+    "is",
+    "was",
+    "are",
+    "were",
+    "has",
+    "had",
+    "keeps",
+    "kept",
+    "still",
+    "sometimes",
+    "randomly",
+    "only",
+    "step",
+    "job",
+    "script",
+    "output",
+    "log",
+    "process",
+    "es",
+    "esta",
+    "sigue",
+    "solo",
+];
+
+/// Whether a clause of ``line`` (between punctuation) opens with an order: a lead cue ("never",
+/// "siempre"), "don't", a task verb or another imperative, after any opener words.
+fn a_clause_opens_with_an_order(line: &str) -> bool {
+    let f = fold(line);
+    f.split([',', '.', ';', ':', '!', '(', ')', '"']).any(|clause| {
+        let words: Vec<&str> = clause
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\''))
+            .filter(|w| !w.is_empty())
+            .skip_while(|w| CLAUSE_OPENERS.contains(w))
+            .collect();
+        let Some(&first) = words.first() else { return false };
+        let next = words.get(1).copied().unwrap_or("");
+        if next == "not" && first == "do" {
+            return true;
+        }
+        // after "never", "always" or "don't" a fault verb in its bare form is the order ("Never panic",
+        // "Don't fail silently"); an inflected one is a report ("Always fails on CI")
+        let leads = LEAD_WORD.is_match(first) || first == "don't" || first == "dont";
+        if leads && BARE_FAULTS.contains(&next) {
+            return true;
+        }
+        let verb = TASK_VERBS.contains(&first) || ORDER_WORDS.contains(&first) || LEAD_WORD.is_match(first);
+        verb && !FAULT.is_match(next) && !NOT_AFTER_ORDER.contains(&next)
+    })
+}
 
 /// Verbs that open a task request ("Implement…", "Ahora ejecuta…"): what follows is the task, and a
 /// "must" or "make sure" in it is about the task, not a rule for the rest of the session.
@@ -145,9 +290,11 @@ const HEAD_WORDS: &[&str] = &[
     "you", "you'll", "please", "pls", "and", "but", "so", "then", "also", "should", "must", "will", "to", "just", "we",
     "we'll", "por", "favor", "y", "e", "o", "or", "pero", "que", "tambien", "también", "ahora", "now",
 ];
-/// Words before "do not" that make it a description, not an instruction ("I don't know", "it doesn't").
-const DESCRIBING: &[&str] =
-    &["i", "it", "this", "that", "he", "she", "they", "which", "who", "there", "what", "why", "it's", "i'm", "these"];
+/// Words after which "do not" is an order: "and don't push", "you don't push" (not "we don't have CI").
+const NEG_HEADS: &[&str] = &[
+    "you", "please", "pls", "and", "but", "so", "then", "also", "just", "now", "or", "ok", "okay", "y", "o", "pero",
+    "vale", "ahora",
+];
 /// Words after "do not" that make it a description ("don't know", "don't understand").
 const NOT_ORDERS: &[&str] = &["know", "understand", "see", "get", "think", "care", "worry", "mind"];
 /// Replies that only acknowledge.
@@ -236,9 +383,17 @@ pub fn is_rule(line: &str) -> bool {
     if line.ends_with('?') || line.starts_with('¿') || line.ends_with(['{', '}', ';']) {
         return false;
     }
+    // a line that changes or withdraws an earlier instruction: kept, so the latest word is in the block
+    if withdraws(line) {
+        return true;
+    }
     // a plain task request: its "must" and "make sure" are about the task
     if opens_as_task(line) && !STANDING.is_match(line) {
         return false;
+    }
+    // a report of a fault: only a firm cue or a clause that opens with an order makes it a rule
+    if FAULT.is_match(line) {
+        return FIRM_CUE.is_match(line) || a_clause_opens_with_an_order(line);
     }
     let short = line.chars().count() <= WEAK_CHARS;
     for c in CUE.captures_iter(line) {
@@ -256,7 +411,7 @@ pub fn is_rule(line: &str) -> bool {
         }
         if c.name("neg").is_some() {
             let next = fold(line[m.end()..].split_whitespace().next().unwrap_or(""));
-            if !DESCRIBING.contains(&prev) && !NOT_ORDERS.contains(&next.as_str()) {
+            if (clause_head || NEG_HEADS.contains(&prev)) && !NOT_ORDERS.contains(&next.as_str()) {
                 return true;
             }
         }
@@ -292,14 +447,47 @@ fn sentences(line: &str) -> Vec<&str> {
     out
 }
 
-/// The rules in the person's ``text``, code blocks left out: each line that reads as one, or, in a long
-/// line or one with a task request in it, the sentences that do.
+/// A line that opens a block a host puts in the person's message (`<system-reminder>`, `<command-output>`):
+/// its tag name.
+static TAG_OPEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^<([A-Za-z][\w:.-]*)(?:\s[^>]*)?>").expect("static pattern"));
+/// A line that opens as a log line: a level, a compiler message, a timestamp or a bracketed level.
+static LOG_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:\[?(?:ERROR|WARN|WARNING|INFO|DEBUG|FATAL|TRACE|CRITICAL)\b|(?:error|warning)(?:\[\w+\])?:|\[(?i:error|warn|warning|info|debug|fatal|trace)\]|\[?\d{4}-\d{2}-\d{2}|\[?\d{1,2}:\d{2}:\d{2})",
+    )
+    .expect("static pattern")
+});
+
+/// The rules in the person's ``text``, code blocks, blocks a host put in it and log lines left out: each
+/// line that reads as one, or, in a long line or one with a task request in it, the sentences that do.
 pub fn rules_in(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut code = false;
+    // the tag of the host block the line is in
+    let mut block: Option<String> = None;
     for line in text.lines() {
-        if line.trim_start().starts_with("```") {
+        let t = line.trim_start();
+        if t.starts_with("```") {
             code = !code;
+            continue;
+        }
+        if let Some(tag) = &block {
+            if t.contains(&format!("</{tag}>")) {
+                block = None;
+            }
+            continue;
+        }
+        if let Some(c) = TAG_OPEN.captures(t) {
+            let tag = &c[1];
+            // a host's tag is a compound name (`system-reminder`, `user_instructions`); a plain one (`<p>`,
+            // `<br>`) is the person's own markup and opens no block that would hide the rest of the message
+            if tag.contains(['-', '_']) && !t.contains(&format!("</{tag}>")) {
+                block = Some(tag.to_string());
+            }
+            continue;
+        }
+        if t.starts_with('<') || LOG_LINE.is_match(t) {
             continue;
         }
         let all = sentences(line);
@@ -338,11 +526,19 @@ pub struct Rules {
 
 impl Rules {
     /// Adds a rule; one with the same wording is kept once (the first, in the message that has it now).
+    /// Given again after other rules (a new message, not a rewritten history read anew), it moves to the
+    /// end with its new turn: it is the latest word over whatever changed it in between.
     pub fn add(&mut self, msg: usize, text: String, restated: bool) {
         let k = key(&text);
-        if let Some(r) = self.list.iter_mut().find(|r| r.key == k) {
+        if let Some(i) = self.list.iter().position(|r| r.key == k) {
+            let last = i + 1 == self.list.len();
+            let r = &mut self.list[i];
             if r.msg.is_none() {
                 r.msg = Some(msg);
+            } else if !last && r.msg != Some(msg) {
+                let mut r = self.list.remove(i);
+                (r.turn, r.msg) = (self.turn.max(1), Some(msg));
+                self.list.push(r);
             }
             return;
         }
@@ -551,5 +747,108 @@ mod tests {
         assert_eq!(c.turn, 3);
         c.add(1, "never push".into(), false);
         assert_eq!((c.list.len(), c.list[0].msg, c.list[0].turn), (1, Some(1), 3), "found again: tied anew");
+    }
+
+    #[test]
+    fn a_fault_report_is_not_a_rule_without_a_firm_cue_or_an_order() {
+        for l in [
+            "The parser returns None instead of an error",
+            "Every time I run the tests they fail",
+            "Whenever I open it, it crashes",
+            "This is an important bug",
+            "no more errors now",
+            "It only fails on CI",
+            "El test falla sin motivo",
+            "Solo falla en Windows",
+            "the lint rules fail",
+            "It crashes, but never on Linux",
+            "On Linux, build fails every time",
+            "Always fails on CI",
+            "Nunca falla en Linux",
+        ] {
+            assert!(!is_rule(l), "{l}");
+        }
+        for l in [
+            "Whenever a test fails, fix it before moving on",
+            "Never swallow errors",
+            "Always fix failing tests first",
+            "Don't commit code with errors",
+            "Make sure the build has no errors",
+            "Use tabs instead of spaces",
+            "Every time you touch the parser, run its tests",
+            "The build is broken, so never push to main",
+            "Nunca ignores los errores",
+            "Si falla un test, no hagas commit",
+            "Never panic in library code",
+            "Don't fail silently",
+            "Always crash loudly on bad input",
+        ] {
+            assert!(is_rule(l), "{l}");
+        }
+    }
+
+    #[test]
+    fn do_not_after_a_subject_describes() {
+        for l in ["We don't have CI yet", "Users don't see the button", "The tests do not cover it"] {
+            assert!(!is_rule(l), "{l}");
+        }
+        for l in ["Don't use unwrap", "Please don't touch main", "and don't push to main", "you don't push to main"] {
+            assert!(is_rule(l), "{l}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_withdraws_a_rule_is_kept_as_one() {
+        for l in [
+            "Forget the tabs rule",
+            "you can use unwrap now",
+            "You can now push to main",
+            "ya puedes usar unwrap",
+            "olvida lo de los tabs",
+            "ya no hace falta que pases clippy",
+            "You no longer need to sign the commits",
+            "scratch that",
+        ] {
+            assert!(is_rule(l), "{l}");
+        }
+        for l in ["you can see the error in the log", "you can see the error in the log now", "ya puedes probarlo"] {
+            assert!(!is_rule(l), "{l}");
+        }
+    }
+
+    #[test]
+    fn a_rule_given_again_after_others_moves_to_the_end() {
+        let mut rs = Rules { turn: 2, ..Default::default() };
+        rs.add(3, "Never use unwrap.".into(), false);
+        rs.turn = 5;
+        rs.add(9, "you can use unwrap now".into(), false);
+        rs.turn = 8;
+        rs.add(15, "never use unwrap".into(), false);
+        let t = rs.text(|_| true);
+        assert!(
+            t.find("turn 5: you can use unwrap now").unwrap() < t.find("turn 8: Never use unwrap.").unwrap(),
+            "{t}"
+        );
+        assert_eq!(rs.list.len(), 2);
+        // carried over a rewrite and found again in a summary: it keeps its place
+        let mut c = rs.carried();
+        c.turn = 9;
+        c.add(1, "you can use unwrap now".into(), false);
+        assert_eq!((c.list[0].turn, c.list[1].turn, c.list[0].msg), (5, 8, Some(1)), "{:?}", c.list);
+    }
+
+    #[test]
+    fn host_blocks_and_log_lines_give_no_rules() {
+        let text = "<system-reminder>\nNever use tabs.\nYou must answer in French.\n</system-reminder>\n\
+                    <command-output>Always run the linter</command-output>\n\
+                    ERROR: not allowed to write /etc/x\n\
+                    2026-11-04 10:00:01 must restart the worker\n\
+                    [INFO] make sure the cache is warm\n\
+                    error: you must not borrow twice\n\
+                    warning: never used variable\n\
+                    Warning: never push on Fridays.";
+        assert_eq!(rules_in(text), vec!["Warning: never push on Fridays.".to_string()]);
+        // the person's own markup opens no block: the line after it still counts
+        assert_eq!(rules_in("<p>\nNever use tabs."), vec!["Never use tabs.".to_string()]);
     }
 }
