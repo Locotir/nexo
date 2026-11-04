@@ -41,8 +41,12 @@ say "building the latest nexo (a few minutes the first time)"
 cargo install --locked --git "$repo" nexo-cli
 
 bin="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
-if command -v nexo >/dev/null 2>&1; then
-    say "installed: $(command -v nexo). Run: nexo"
+found="$(command -v nexo 2>/dev/null || true)"
+if [ "$found" = "$bin/nexo" ]; then
+    say "installed: $found. Run: nexo"
+elif [ -n "$found" ]; then
+    say "installed in $bin, but another nexo comes first on your PATH: $found"
+    say "remove that one, or put $bin first on your PATH."
 else
     say "installed in $bin, which is not on your PATH. Add it:"
     # shellcheck disable=SC2016 # $PATH is for the person to paste

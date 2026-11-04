@@ -40,8 +40,11 @@ function Install-Nexo {
     }
 
     $exe = Get-Command nexo -ErrorAction SilentlyContinue
-    if ($exe) {
+    if ($exe -and ((Split-Path $exe.Source -Parent) -eq $cargoBin)) {
         Write-Host "nexo: installed: $($exe.Source). Run: nexo"
+    } elseif ($exe) {
+        Write-Host "nexo: installed in $cargoBin, but another nexo comes first on your PATH: $($exe.Source)"
+        Write-Host "nexo: remove that one, or put $cargoBin first on your PATH."
     } else {
         Write-Host "nexo: installed in $cargoBin, which is not on this terminal's PATH yet: open a new terminal, then run nexo."
     }
