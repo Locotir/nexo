@@ -347,13 +347,29 @@ fn holder(lock: &Path) -> Option<Option<u32>> {
     judge(lock)?.1
 }
 
+/// Whether process `pid` is stopped (Ctrl+Z or a stop signal), where the system says so (Linux).
+fn stopped(pid: u32) -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    // the state is the first field after the name, which can hold spaces and parentheses
+    stat.rfind(')').and_then(|i| stat.get(i + 1..)).and_then(|s| s.split_whitespace().next()).is_some_and(|s| s == "T")
+}
+
 fn in_use(lock: &Path, pid: Option<u32>) -> anyhow::Error {
-    anyhow::anyhow!(
-        "session {} is in use by another nexo (pid {}); if none runs, delete {}",
-        lock.file_stem().and_then(|s| Path::new(s).file_stem()).unwrap_or_default().to_string_lossy(),
-        pid.map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()),
-        lock.display()
-    )
+    let id = lock.file_stem().and_then(|s| Path::new(s).file_stem()).unwrap_or_default().to_string_lossy();
+    match pid {
+        Some(p) if stopped(p) => anyhow::anyhow!(
+            "session {id} is held by a paused nexo (pid {p}, stopped by Ctrl+Z or a signal): type `fg` in its \
+             terminal to go back to it, or end it with `kill {p}` and resume here"
+        ),
+        _ => anyhow::anyhow!(
+            "session {id} is in use by another nexo (pid {}); if none runs, delete {}",
+            pid.map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()),
+            lock.display()
+        ),
+    }
 }
 
 /// Takes the advisory lock next to a session file (`<id>.jsonl.lock`, created exclusively, holding
@@ -1755,5 +1771,30 @@ mod tests {
         assert!(!lock.exists(), "no lock taken again");
         drop(s);
         assert_eq!(Session::open_path(&p).unwrap().messages().len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_paused_holder_is_named_with_the_way_back() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let lock = Path::new("/x/20260101-000000-abcd.jsonl.lock");
+        assert!(!stopped(pid));
+        assert!(in_use(lock, Some(pid)).to_string().contains("in use by another nexo"));
+        std::process::Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap();
+        let mut paused = false;
+        for _ in 0..200 {
+            paused = stopped(pid);
+            if paused {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let msg = in_use(lock, Some(pid)).to_string();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(paused, "a stopped process reads as paused");
+        assert!(msg.contains("paused nexo") && msg.contains("`fg`") && msg.contains(&format!("kill {pid}")), "{msg}");
+        assert!(msg.contains("20260101-000000-abcd"), "{msg}");
     }
 }
