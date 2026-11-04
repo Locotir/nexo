@@ -26,13 +26,23 @@ const KEEP_WINDOWS: &[&str] = &[
     "CommonProgramW6432",
 ];
 
-/// Whether the variable `name` is kept. On Windows names match without regard to case (`Path`).
-fn kept(name: &str, windows: bool) -> bool {
+/// The name the variable `name` is kept under, if it is kept. On Windows names match without regard
+/// to case and take the list's spelling: Windows stores `Path`, and Git Bash handed a `Path` and no
+/// `PATH` finds none of its own commands (`env`, `ls`).
+fn canonical(name: &str, windows: bool) -> Option<String> {
     if !windows {
-        return KEEP.contains(&name) || name.starts_with("LC_");
+        return (KEEP.contains(&name) || name.starts_with("LC_")).then(|| name.to_string());
     }
-    KEEP.iter().chain(KEEP_WINDOWS).any(|w| w.eq_ignore_ascii_case(name))
-        || name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("LC_"))
+    if let Some(w) = KEEP.iter().chain(KEEP_WINDOWS).find(|w| w.eq_ignore_ascii_case(name)) {
+        return Some(w.to_string());
+    }
+    name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("LC_")).then(|| name.to_string())
+}
+
+/// Whether the variable `name` is kept.
+#[cfg(test)]
+fn kept(name: &str, windows: bool) -> bool {
+    canonical(name, windows).is_some()
 }
 
 /// The Windows profile folders, under `AppData` in a run's home.
@@ -44,7 +54,7 @@ pub fn clean(home: &Path, tmp: &Path) -> Vec<(String, String)> {
     let key = std::env::var(crate::run::KEY_ENV).ok().filter(|k| !k.is_empty());
     let mut env: Vec<(String, String)> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-        .filter(|(k, _)| kept(k, cfg!(windows)))
+        .filter_map(|(k, v)| Some((canonical(&k, cfg!(windows))?, v)))
         .collect();
     for (var, dir) in [("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")] {
         if let Some(p) = toolchain_home(var, dir) {
@@ -120,6 +130,9 @@ mod tests {
         for name in ["Path", "PATH", "SystemRoot", "SYSTEMROOT", "ComSpec", "ProgramFiles(x86)", "lc_all", "os"] {
             assert!(kept(name, true), "{name}");
         }
+        assert_eq!(canonical("Path", true).as_deref(), Some("PATH"));
+        assert_eq!(canonical("windir", true).as_deref(), Some("windir"));
+        assert_eq!(canonical("Path", false), None);
         for name in [crate::run::KEY_ENV, "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SSH_AUTH_SOCK"] {
             assert!(!kept(name, true) && !kept(name, false), "{name}");
         }
