@@ -164,8 +164,15 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
 mod tests {
     use super::*;
 
+    /// The prompt reads `prompt.md` from `NEXO_CONFIG_DIR`, one variable for the whole process:
+    /// the tests that point it somewhere take turns, so one never sees another's file.
+    static CONFIG_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn carries_directory_instructions_and_extra() {
+        let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_CONFIG_DIR", home.path());
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("NEXO.md"), "Use tabs.").unwrap();
         std::fs::create_dir(d.path().join(".git")).unwrap();
@@ -179,10 +186,12 @@ mod tests {
         std::fs::write(&f, "Custom.").unwrap();
         let cfg = AgentConfig { system_prompt_file: Some(f), ..Default::default() };
         assert!(system_prompt(d.path(), &cfg, &ToolSet::new()).starts_with("Custom."));
+        std::env::remove_var("NEXO_CONFIG_DIR");
     }
 
     #[test]
     fn the_persons_prompt_file_replaces_the_text_and_raw_sends_it_alone() {
+        let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("NEXO_CONFIG_DIR", home.path());

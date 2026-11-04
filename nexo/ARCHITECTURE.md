@@ -214,7 +214,7 @@ measures the time of a call. Its default spec is `D_SPEC`, which holds the
 default of every value (`eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;
 protect=12`, birth `squeeze`, a pure view with `directives=0;nudge=0`, and
 the closing, idle and copy mechanics `close=2;live=1;dedup=3;named=1` among
-others; `docs/how-it-works.md` shows it whole and a test keeps that copy
+others; [`docs/how-it-works.md`](../docs/how-it-works.md) shows it whole and a test keeps that copy
 equal). `[context] curator_spec` is laid over it, pairs separated by `;`.
 `params` refuses an unknown key, a negative or non-finite number and a key
 the engine does not support (`spill`, `recall`, `ttl` …); the agent leaves

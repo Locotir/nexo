@@ -1,5 +1,5 @@
 //! `report.html`: one self-contained page (inline CSS and SVG, no scripts) comparing the arms of
-//! one or more `results.jsonl`, with conclusions written out in Spanish. Short sentences, bold
+//! one or more `results.jsonl`, with conclusions written out in English. Short sentences, bold
 //! numbers and tables, so it reads easily.
 
 use std::collections::BTreeMap;
@@ -107,7 +107,7 @@ fn n(x: u64) -> String {
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
         if i > 0 && (s.len() - i) % 3 == 0 {
-            out.push('.');
+            out.push(',');
         }
         out.push(c);
     }
@@ -127,12 +127,12 @@ pub fn savings(records: &[Record], a: &str, b: &str) -> Option<(f64, u64, u64, u
     (sb > 0).then(|| (100.0 * (1.0 - sa as f64 / sb as f64), sa, sb, common.len()))
 }
 
-/// The conclusions, in Spanish, one short sentence per item.
+/// The conclusions, in English, one short sentence per item.
 pub fn conclusions(records: &[Record]) -> Vec<String> {
     let mut out = Vec::new();
     let arms = arms(records);
     if arms.is_empty() {
-        out.push("No hay ejecuciones que comparar.".into());
+        out.push("No runs to compare.".into());
         return out;
     }
     let all: Vec<(String, String, Totals)> =
@@ -142,7 +142,7 @@ pub fn conclusions(records: &[Record]) -> Vec<String> {
         .max_by(|x, y| x.2.mean().total_cmp(&y.2.mean()).then(y.2.cost.total_cmp(&x.2.cost)))
         .expect("an arm");
     out.push(format!(
-        "El mejor brazo es <b>{}</b>{}: puntuación media <b>{:.1}%</b> en <b>{}</b> ejecuciones.",
+        "The best arm is <b>{}</b>{}: mean score <b>{:.1}%</b> over <b>{}</b> runs.",
         esc(&best.0),
         if best.1.is_empty() { String::new() } else { format!(" ({})", esc(&best.1)) },
         best.2.mean(),
@@ -151,12 +151,12 @@ pub fn conclusions(records: &[Record]) -> Vec<String> {
     for (a, _, t) in &all {
         match t.cost_per_point() {
             Some(c) => out.push(format!(
-                "<b>{}</b> cuesta <b>${:.5}</b> por punto (gasto total <b>${:.4}</b>).",
+                "<b>{}</b> costs <b>${:.5}</b> per point (total cost <b>${:.4}</b>).",
                 esc(a),
                 c,
                 t.cost
             )),
-            None => out.push(format!("<b>{}</b> no sumó puntos (gasto total <b>${:.4}</b>).", esc(a), t.cost)),
+            None => out.push(format!("<b>{}</b> scored no points (total cost <b>${:.4}</b>).", esc(a), t.cost)),
         }
     }
     let by_policy = |p: &str| arms.iter().find(|(_, q)| q == p).map(|(a, _)| a.clone());
@@ -165,19 +165,19 @@ pub fn conclusions(records: &[Record]) -> Vec<String> {
             let Some(o) = by_policy(other) else { continue };
             match savings(records, &cur, &o) {
                 Some((pct, sa, sb, k)) if pct >= 0.0 => out.push(format!(
-                    "El curador (<b>{}</b>) ahorra <b>{:.1}%</b> de tokens de entrada frente a <b>{}</b>: <b>{}</b> contra <b>{}</b>, en <b>{k}</b> ejecuciones comunes.",
+                    "The curator (<b>{}</b>) saves <b>{:.1}%</b> input tokens against <b>{}</b>: <b>{}</b> versus <b>{}</b>, over <b>{k}</b> common runs.",
                     esc(&cur), pct, esc(&o), n(sa), n(sb)
                 )),
                 Some((pct, sa, sb, k)) => out.push(format!(
-                    "El curador (<b>{}</b>) gasta <b>{:.1}%</b> más tokens de entrada que <b>{}</b>: <b>{}</b> contra <b>{}</b>, en <b>{k}</b> ejecuciones comunes.",
+                    "The curator (<b>{}</b>) uses <b>{:.1}%</b> more input tokens than <b>{}</b>: <b>{}</b> versus <b>{}</b>, over <b>{k}</b> common runs.",
                     esc(&cur), -pct, esc(&o), n(sa), n(sb)
                 )),
-                None => out.push(format!("No hay ejecuciones comunes entre <b>{}</b> y <b>{}</b>.", esc(&cur), esc(&o))),
+                None => out.push(format!("No common runs between <b>{}</b> and <b>{}</b>.", esc(&cur), esc(&o))),
             }
         }
     }
     if records.iter().any(|r| r.estimated) {
-        out.push("Ojo: los costes son <b>estimados</b> (precios de un modelo desconocido).".into());
+        out.push("Note: costs are <b>estimated</b> (prices of an unknown model).".into());
     }
     out
 }
@@ -245,26 +245,26 @@ pub fn render(records: &[Record]) -> String {
         }
     }
     let mut s = String::new();
-    s.push_str("<!doctype html><html lang=\"es\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>nexo bench</title><style>");
+    s.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>nexo bench</title><style>");
     s.push_str(STYLE);
-    s.push_str("</style></head><body><h1>nexo bench: informe</h1>");
+    s.push_str("</style></head><body><h1>nexo bench: report</h1>");
     let spent: f64 = records.iter().map(|r| r.cost).sum();
     let _ = write!(
         s,
-        "<p class=\"m\"><b>{}</b> ejecuciones. <b>{}</b> brazos. <b>{}</b> familias. Gasto total <b>${:.4}</b>.</p>",
+        "<p class=\"m\"><b>{}</b> runs. <b>{}</b> arms. <b>{}</b> families. Total cost <b>${:.4}</b>.</p>",
         records.len(),
         arms.len(),
         families.len(),
         spent
     );
 
-    s.push_str("<h2>Conclusiones</h2><ul class=\"c\">");
+    s.push_str("<h2>Conclusions</h2><ul class=\"c\">");
     for c in conclusions(records) {
         let _ = write!(s, "<li>{c}</li>");
     }
     s.push_str("</ul>");
 
-    s.push_str("<h2>Brazos</h2>");
+    s.push_str("<h2>Arms</h2>");
     for fam in std::iter::once(None).chain(families.iter().map(Some)) {
         let rows: Vec<&Record> = records
             .iter()
@@ -273,8 +273,8 @@ pub fn render(records: &[Record]) -> String {
                 Some(f) => *f == family(&r.task),
             })
             .collect();
-        let _ = write!(s, "<h3>{}</h3>", fam.map_or("Todas las tareas".to_string(), |f| format!("Familia {}", esc(f))));
-        s.push_str("<div class=\"scroll\"><table><tr><th>brazo</th><th>política</th><th>ejecuciones</th><th>puntuación</th><th>todo bien</th><th>pasos</th><th>coste $</th><th>$ / punto</th><th>entrada</th><th>caché</th><th>salida</th><th>tiempo s</th><th>errores de herramienta</th></tr>");
+        let _ = write!(s, "<h3>{}</h3>", fam.map_or("All tasks".to_string(), |f| format!("Family {}", esc(f))));
+        s.push_str("<div class=\"scroll\"><table><tr><th>arm</th><th>policy</th><th>runs</th><th>score</th><th>all passed</th><th>steps</th><th>cost $</th><th>$ / point</th><th>input</th><th>cache</th><th>output</th><th>time s</th><th>tool errors</th></tr>");
         let mut chart_score = Vec::new();
         let mut chart_tokens = Vec::new();
         let mut chart_cost = Vec::new();
@@ -308,16 +308,16 @@ pub fn render(records: &[Record]) -> String {
         s.push_str("</table></div>");
         if fam.is_some() {
             s.push_str("<div class=\"charts\">");
-            s.push_str(&bars("Puntuación media", &chart_score));
-            s.push_str(&bars("Tokens por ejecución", &chart_tokens));
-            s.push_str(&bars("Coste total", &chart_cost));
+            s.push_str(&bars("Mean score", &chart_score));
+            s.push_str(&bars("Tokens per run", &chart_tokens));
+            s.push_str(&bars("Total cost", &chart_cost));
             s.push_str("</div>");
         }
     }
 
-    s.push_str("<h2>Por instancia</h2><p class=\"m\">Puntuación, coste y tokens de entrada de cada ejecución.</p><div class=\"scroll\"><table><tr><th>tarea</th><th>rep.</th>");
+    s.push_str("<h2>Per instance</h2><p class=\"m\">Score, cost and input tokens of each run.</p><div class=\"scroll\"><table><tr><th>task</th><th>rep.</th>");
     for (a, _) in &arms {
-        let _ = write!(s, "<th>{0} punt.</th><th>{0} $</th><th>{0} tokens</th>", esc(a));
+        let _ = write!(s, "<th>{0} score</th><th>{0} $</th><th>{0} tokens</th>", esc(a));
     }
     s.push_str("</tr>");
     let mut keys: Vec<(String, u32)> = Vec::new();
@@ -335,7 +335,7 @@ pub fn render(records: &[Record]) -> String {
                         s,
                         "<td><b>{:.0}%</b>{}</td><td>{:.4}</td><td>{}</td>",
                         r.score * 100.0,
-                        if r.finished { "" } else { " (parado)" },
+                        if r.finished { "" } else { " (stopped)" },
                         r.cost,
                         n(prompt_tokens(r))
                     );
@@ -403,21 +403,21 @@ mod tests {
         let path = write(dir.path(), &loaded).unwrap();
         let html = std::fs::read_to_string(path).unwrap();
         assert!(!html.contains("<script"));
-        assert!(html.contains("El mejor brazo es <b>curator</b>"), "{html}");
+        assert!(html.contains("The best arm is <b>curator</b>"), "{html}");
         assert!(html.contains("<b>62.5%</b>"), "curator's mean over its two runs");
-        // curator vs plain on the one common run: 4.000 against 10.000 tokens, 60% saved
-        assert!(html.contains("ahorra <b>60.0%</b>") && html.contains("<b>4.000</b> contra <b>10.000</b>"));
-        assert!(html.contains("ahorra <b>50.0%</b>"), "against compact");
+        // curator vs plain on the one common run: 4,000 against 10,000 tokens, 60% saved
+        assert!(html.contains("saves <b>60.0%</b>") && html.contains("<b>4,000</b> versus <b>10,000</b>"));
+        assert!(html.contains("saves <b>50.0%</b>"), "against compact");
         // $0.02 for 125 points
-        assert!(html.contains("<b>$0.00016</b> por punto"), "{html}");
-        assert!(html.contains("Familia repoqa") && html.contains("Familia canonstep") && html.contains("<svg"));
+        assert!(html.contains("<b>$0.00016</b> per point"), "{html}");
+        assert!(html.contains("Family repoqa") && html.contains("Family canonstep") && html.contains("<svg"));
     }
 
     #[test]
     fn families_and_thousands() {
         assert_eq!(family("repoqa/x"), "repoqa");
         assert_eq!(family("fix-bug"), "nexo");
-        assert_eq!(n(1_234_567), "1.234.567");
+        assert_eq!(n(1_234_567), "1,234,567");
         assert_eq!(n(12), "12");
     }
 }

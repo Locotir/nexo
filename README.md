@@ -8,15 +8,18 @@ A terminal coding agent for any LLM API, written in Rust.<br>
 Its built-in **context curator** sends the model only what the next step needs.<br>
 Long sessions stay fast and cheap, the prompt cache stays warm, and nothing is summarised away.
 
+[![CI](https://github.com/Locotir/nexo/actions/workflows/ci.yml/badge.svg)](https://github.com/Locotir/nexo/actions/workflows/ci.yml)
 [![Rust 1.80+](https://img.shields.io/badge/Rust-1.80%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
 [![Linux | Windows](https://img.shields.io/badge/Linux%20%7C%20Windows-supported-52514e)](#install)
-[![Providers](https://img.shields.io/badge/providers-20%20built--in%20%2B%20200%2B-1baf7a)](#any-provider)
+[![Providers](https://img.shields.io/badge/providers-19%20built--in%20%2B%20200%2B-1baf7a)](#any-provider)
 [![PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
 </div>
 
-![One 100-step session: whole history against the nexo curator](docs/img/hero.svg)
+![nexo in the terminal: npm test fails, the agent finds two bugs, fixes the code and the tests pass](docs/img/tui-session.png)
+
+<sub>A real session with deepseek-chat: two bugs found and fixed, 4/4 tests passing, 6 steps, $0.0032.</sub>
 
 ## The problem
 
@@ -36,12 +39,14 @@ nexo keeps the whole history on disk and gives the model a **curated view** of i
 | Your rules ("never touch prod") | drift out of attention | can be summarised away | **pinned** for the whole session |
 | A resumed session | same | starts from the summary | **same view as before**, cache still warm |
 
+![One 100-step session: whole history against the nexo curator](docs/img/hero.svg)
+
 ## The numbers
 
 | Test | Result |
 |---|---|
 | **One 100-step session in nexo** (deepseek-chat) | **−36% cost**, **−59% wall time**, **−48% tokens**, same score |
-| **Live runs**, 10 per arm over 5 tasks (DeepSeek, reference implementation of the same engine) | **−56% tokens**, **−38% cost**; solved 9/10 vs 10/10 |
+| **Live runs**, 10 per arm over 5 tasks (DeepSeek, reference implementation of the same engine) | **−56% tokens**, **−38% cost**; solved: nexo 9/10, whole history 10/10 |
 | Replay of 28 recorded nexo sessions | **−42%** tokens sent |
 | Simulation on unseen recorded sessions | **61.5%** of the bill saved (5-minute cache) |
 | Proved ceiling for any curator that sends literal text | **89.7%** |
@@ -94,6 +99,7 @@ nexo                             # full-screen interface
 nexo -p "run the tests and fix what fails"   # headless: prints the reply
 nexo --continue                  # resume the latest session here
 nexo doctor                      # checks files, provider, model and key with one live call
+nexo --provider ollama --model qwen3:8b       # no key: a local model
 ```
 
 The status bar shows what the curator is doing (`curator −62%`: sending 62% less than the whole history).
@@ -117,6 +123,10 @@ policy = "curator"               # auto | plain | compact | curator
 - **Undo and rewind**: go back to any message, and the files the agent wrote go back too.
 - **Images**: attach them or paste a screenshot with `Ctrl+V`.
 
+Before a command runs, nexo shows it and offers a rule to allow it from now on:
+
+![The permission prompt: the command, three rules to allow it always, and allow, always or deny](docs/img/tui-permission.png)
+
 86 features, each with the test that checks it: [`nexo/FEATURES.md`](nexo/FEATURES.md).
 Full guide: [`nexo/README.md`](nexo/README.md).
 
@@ -130,8 +140,8 @@ and local servers (**Ollama**, LM Studio, vLLM, llama.cpp). Over 200 more come f
 ## FAQ
 
 **Can I use it with Claude?** Yes, with an Anthropic API key (`ANTHROPIC_API_KEY`). nexo never signs in
-with a Claude.ai subscription: Anthropic's terms do not allow third-party tools to use subscription
-logins, and nexo follows them.
+with a Claude.ai subscription: Anthropic's [terms](https://code.claude.com/docs/en/legal-and-compliance)
+do not allow third-party tools to use subscription logins, and nexo follows them.
 
 **Does it still compact?** Only if you choose the `compact` policy, or as a last resort when a provider
 rejects a request as too long. With the curator, the view stays far below the window.
@@ -148,7 +158,8 @@ nexo is free and MIT-licensed. If it saves you money, you can share a little of 
 
 [![Support nexo on PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
-A star helps others find it. Issues and pull requests are welcome.
+A star helps others find it. Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md),
+and report security problems privately as [SECURITY.md](SECURITY.md) explains.
 
 ## License
 

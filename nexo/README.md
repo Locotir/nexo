@@ -360,7 +360,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 
 ### Providers
 
-Four wire protocols cover every provider (`docs/providers-base.md` is the
+Four wire protocols cover every provider ([`docs/providers-base.md`](../docs/providers-base.md) is the
 specification): `openai-chat`, `openai-responses`, `anthropic`, `gemini`.
 Presets exist for openai, gemini, deepseek, xai, groq, mistral, openrouter,
 together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, copilot, codex,
