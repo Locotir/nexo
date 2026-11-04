@@ -753,7 +753,8 @@ impl Session {
         Ok(())
     }
 
-    /// The file is no longer the one this session wrote, as far as it left it: longer, or replaced.
+    /// The file is no longer the one this session wrote, as far as it left it: longer, or (on Unix,
+    /// where files are told apart by device and inode) replaced.
     fn file_changed(&self) -> bool {
         let Ok(now) = std::fs::metadata(&self.path) else { return false };
         if now.len() != self.size {
@@ -1723,14 +1724,18 @@ mod tests {
         drop(s);
         let on_disk: Vec<String> = Session::open_path(&p).unwrap().messages().iter().map(|m| m.text()).collect();
         assert_eq!(on_disk, ["one", "theirs"]);
-        // and one that replaced the file
-        let mut s = Session::open_path(&p).unwrap();
-        s.claim().unwrap();
-        let other = d.path().join("other");
-        std::fs::copy(&p, &other).unwrap();
-        std::fs::rename(&other, &p).unwrap();
-        std::fs::remove_file(&lock).unwrap();
-        assert!(s.append(&Message::user("mine")).unwrap_err().to_string().contains("taken over"));
+        // and one that replaced the file with one of the same length: only Unix tells files apart
+        // (device and inode); elsewhere a taker that wrote is caught by the length
+        #[cfg(unix)]
+        {
+            let mut s = Session::open_path(&p).unwrap();
+            s.claim().unwrap();
+            let other = d.path().join("other");
+            std::fs::copy(&p, &other).unwrap();
+            std::fs::rename(&other, &p).unwrap();
+            std::fs::remove_file(&lock).unwrap();
+            assert!(s.append(&Message::user("mine")).unwrap_err().to_string().contains("taken over"));
+        }
     }
 
     #[test]
