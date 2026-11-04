@@ -2684,8 +2684,9 @@ impl Engine {
         let mut covered = self.words_in(vis.iter().copied(), &[UKind::Result]);
         // only a closed step comes back. An open one the view does not send (it left with the history, or its
         // topic is left out) counts as seen: the ledger keeps the facts of the first, the topic of the second
-        // comes back whole when the talk returns to it. Bringing them back here was measured on the 20
-        // recorded sessions: 1.9 % more input cost (up to 29 % in one), 5 fewer forgotten words of 112, all in one.
+        // comes back whole when the talk returns to it. Bringing them back here was measured on the 20 recorded
+        // sessions: 1.9 % more input cost (up to 29 % in one), and 5 fewer forgotten words of 112 (7 fewer in
+        // one, one more in two others).
         for s in self.steps.iter().filter(|s| !s.out) {
             covered.extend(s.about.iter().copied());
         }
