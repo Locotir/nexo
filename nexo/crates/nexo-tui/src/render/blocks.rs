@@ -650,6 +650,11 @@ fn welcome(
     // Narrow boxes drop the mark and keep the text.
     let gutter = if inner >= 40 { width(LOGO[0]) + 3 } else { 0 };
     let text = inner - gutter;
+    // the mode that never asks shows as YOLO, in red
+    let (permissions, mode_style) = match permissions {
+        "auto" => ("YOLO", theme.bold(theme.error)),
+        p => (p, theme.dim()),
+    };
     let info: [Vec<Span<'static>>; 3] = [
         vec![
             Span::styled("nexo", theme.bold(theme.accent)),
@@ -657,7 +662,8 @@ fn welcome(
         ],
         vec![
             Span::raw(truncate(model, text.saturating_sub(width(permissions) + 3))),
-            Span::styled(format!(" · {permissions}"), theme.dim()),
+            Span::styled(" · ", theme.dim()),
+            Span::styled(permissions.to_string(), mode_style),
         ],
         vec![Span::styled(truncate(place, text), theme.dim())],
     ];

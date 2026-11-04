@@ -364,6 +364,62 @@ async fn read_only_calls_run_in_parallel_and_others_in_order() {
 }
 
 #[tokio::test]
+async fn a_command_among_reads_does_not_make_the_reads_wait_for_each_other() {
+    /// Two of these finish only when both run at once: one after the other, neither ends.
+    struct Meet(Arc<tokio::sync::Barrier>);
+    #[async_trait]
+    impl Tool for Meet {
+        fn name(&self) -> &str {
+            "meet"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "meet".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+        }
+        fn kind(&self) -> ToolKind {
+            ToolKind::Search
+        }
+        fn summary(&self, _: &Value) -> String {
+            "meet".into()
+        }
+        async fn run(&self, _: Value, _: &ToolContext) -> ToolOutput {
+            match tokio::time::timeout(Duration::from_secs(5), self.0.wait()).await {
+                Ok(_) => ToolOutput::ok("met"),
+                Err(_) => ToolOutput::error("ran alone"),
+            }
+        }
+    }
+    let d = tempfile::tempdir().unwrap();
+    let mut evs = Vec::new();
+    for (id, name, args) in [("w", "write", json!({"path": "x"})), ("m1", "meet", json!({})), ("m2", "meet", json!({}))]
+    {
+        evs.push(StreamEvent::ToolCallStart { id: id.into(), name: name.into() });
+        evs.push(StreamEvent::ToolCallEnd { id: id.into(), name: name.into(), args });
+    }
+    evs.extend([StreamEvent::Finish(FinishReason::ToolUse), StreamEvent::Done]);
+    let client = Scripted::new(vec![Reply::Events(evs), Reply::Events(text("ok"))]);
+    let tools = tools().with(Arc::new(Meet(Arc::new(tokio::sync::Barrier::new(2)))));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), tools).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let results = &reqs[1].messages.last().unwrap().content;
+    let outs: Vec<String> = results
+        .iter()
+        .filter_map(|p| match p {
+            Part::ToolResult { call_id, content, .. } => Some(format!("{call_id}={}", text_of_parts(content))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outs, ["w=write:x", "m1=met", "m2=met"], "the write first, then both reads at once");
+    r.stop().await;
+}
+
+fn text_of_parts(parts: &[Part]) -> String {
+    parts.iter().filter_map(|p| if let Part::Text { text } = p { Some(text.as_str()) } else { None }).collect()
+}
+
+#[tokio::test]
 async fn a_write_asks_and_a_denial_reaches_the_model() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![

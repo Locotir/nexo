@@ -4437,6 +4437,9 @@ mod tests {
         assert!(a.has_welcome(), "a notice sits under the banner");
         a.handle_agent(AgentEvent::PermissionModeChanged { mode: PermissionMode::Auto });
         assert!(matches!(&a.blocks[0], Block::Welcome { permission_mode, .. } if permission_mode == "auto"));
+        let bar = crate::ui::title_segments(&a, 200);
+        let yolo = bar.iter().flatten().find(|s| s.text == "YOLO").expect("the mode that never asks reads YOLO");
+        assert_eq!(yolo.style.fg, Some(a.theme.error), "and is red");
         a.handle_agent(AgentEvent::History { index: 0, message: Message::user("go") });
         assert!(a.has_welcome(), "the banner stays and scrolls away with the transcript");
         assert!(matches!(&a.blocks[1], Block::Notice { .. }) && !a.fresh());

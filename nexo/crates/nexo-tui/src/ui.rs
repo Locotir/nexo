@@ -163,7 +163,13 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         PermissionMode::ReadOnly => theme.info,
         PermissionMode::Plan => theme.accent2,
     };
-    let mode = Seg { text: app.permission_mode.as_str().to_string(), style: base.fg(mode_color) };
+    let mode = match app.permission_mode {
+        // never asking is said plainly, and loud
+        PermissionMode::Auto => {
+            Seg { text: "YOLO".to_string(), style: base.fg(mode_color).add_modifier(Modifier::BOLD) }
+        }
+        m => Seg { text: m.as_str().to_string(), style: base.fg(mode_color) },
+    };
     let goal = app.goal.as_ref().map(|_| Seg { text: "◎ goal".to_string(), style: base.fg(theme.accent2) });
     let gauge = {
         let (num, den, guessed) = app.gauge_view();

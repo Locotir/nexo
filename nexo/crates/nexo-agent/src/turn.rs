@@ -1911,31 +1911,27 @@ async fn run_tools(
         let v = permit(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel).await;
         verdicts.push(v);
     }
-    let parallel = calls.len() > 1
-        && calls.iter().all(|(_, n, a)| {
-            // every verdict is in by now: reads, searches and page fetches can overlap
+    // every verdict is in by now: reads, searches and page fetches can overlap
+    let overlaps: Vec<bool> = calls
+        .iter()
+        .map(|(_, n, a)| {
             tools
                 .get(n)
                 .map(|t| matches!(t.call_kind(a), ToolKind::Read | ToolKind::Search | ToolKind::Network))
                 .unwrap_or(false)
-        });
+        })
+        .collect();
     let mut results: Vec<Option<Part>> = (0..calls.len()).map(|_| None).collect();
     let mut cancelled = false;
-    if parallel {
-        let futs = calls
-            .iter()
-            .zip(verdicts.iter())
-            .map(|((id, name, args), v)| run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, cancel));
-        let outs = futures::future::join_all(futs).await;
-        for (i, (part, c)) in outs.into_iter().enumerate() {
-            results[i] = Some(part);
-            cancelled |= c;
-        }
-    } else {
-        for (i, ((id, name, args), v)) in calls.iter().zip(verdicts.iter()).enumerate() {
-            if cancelled || cancel.is_cancelled() {
-                cancelled = true;
-                results[i] = Some(
+    // in the order asked: each run of calls that can overlap goes at once, any other call alone, so one
+    // command among three sub-agents does not make the sub-agents wait for each other
+    let mut i = 0;
+    while i < calls.len() {
+        let end = if overlaps[i] { i + overlaps[i..].iter().take_while(|o| **o).count() } else { i + 1 };
+        if cancelled || cancel.is_cancelled() {
+            cancelled = true;
+            for (j, (id, name, args)) in calls.iter().enumerate().take(end).skip(i) {
+                results[j] = Some(
                     cancelled_results(&[(id.clone(), name.clone(), args.clone())], "interrupted by the person")
                         .remove(0),
                 );
@@ -1943,12 +1939,17 @@ async fn run_tools(
                     events,
                     AgentEvent::ToolDone { id: id.clone(), output: ToolOutput::error("interrupted"), elapsed_ms: 0 },
                 );
-                continue;
             }
-            let (part, c) = run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, cancel).await;
-            results[i] = Some(part);
-            cancelled |= c;
+        } else {
+            let futs = calls[i..end].iter().zip(verdicts[i..end].iter()).map(|((id, name, args), v)| {
+                run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, cancel)
+            });
+            for (k, (part, c)) in futures::future::join_all(futs).await.into_iter().enumerate() {
+                results[i + k] = Some(part);
+                cancelled |= c;
+            }
         }
+        i = end;
     }
     (results.into_iter().flatten().collect(), cancelled)
 }
