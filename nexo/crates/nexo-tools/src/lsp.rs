@@ -133,7 +133,11 @@ fn initialize_params(program: &str, root: &Path) -> Value {
 impl Server {
     async fn start(cmd: &[&str], root: &Path) -> Result<Server, String> {
         let program = nexo_core::shell::find_program(cmd[0]).unwrap_or_else(|| cmd[0].into());
-        let mut child = tokio::process::Command::new(program)
+        let mut child = tokio::process::Command::new(program);
+        if let Some(env) = crate::child_env() {
+            child.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+        }
+        let mut child = child
             .args(&cmd[1..])
             .current_dir(root)
             .stdin(Stdio::piped())
@@ -308,7 +312,7 @@ impl Server {
         loop {
             let notified = self.published.notified();
             if let Some((v, _)) = self.diags.lock().await.get(&u) {
-                if v.map_or(true, |v| v >= version) {
+                if v.is_none_or(|v| v >= version) {
                     break;
                 }
             }
@@ -387,7 +391,11 @@ fn usable(cmd: &[&str]) -> bool {
     if cmd[0] != "rust-analyzer" {
         return true;
     }
-    std::process::Command::new(cmd[0])
+    let mut probe = std::process::Command::new(cmd[0]);
+    if let Some(env) = crate::child_env() {
+        probe.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+    }
+    probe
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -469,7 +477,9 @@ impl Tool for Diagnostics {
             };
         };
         ctx.report(format!("asking {} in {}", cmd[0], display_path(&ctx.cwd, &root)));
-        let key = (cmd.join(" "), root.clone());
+        // a server started with another environment is another server
+        let env = crate::child_env().map(|e| format!(" {e:?}")).unwrap_or_default();
+        let key = (format!("{}{env}", cmd.join(" ")), root.clone());
         let server = {
             let mut table = servers().lock().await;
             match table.get(&key) {

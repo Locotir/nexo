@@ -160,7 +160,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         let mut cells = if let Some(split) = app.gauge_split().filter(|_| !guessed) {
             crate::render::gauge::stacked(theme, split, den, GAUGE_CELLS, colour)
         } else {
-            gauge_segs(theme, shown, GAUGE_CELLS, colour, pct >= 90 && (app.spinner / 5) % 2 == 0)
+            gauge_segs(theme, shown, GAUGE_CELLS, colour, pct >= 90 && (app.spinner / 5).is_multiple_of(2))
         };
         cells.push(Seg {
             text: if guessed { format!(" ~{pct}%") } else { format!(" {pct}%") },
@@ -595,7 +595,7 @@ pub fn gauge_cells(share: f64, cells: usize) -> (String, usize) {
     let full = eighths / 8;
     let mut fill = "█".repeat(full);
     fill.push_str(PART[eighths % 8]);
-    let used = full + usize::from(eighths % 8 > 0);
+    let used = full + usize::from(!eighths.is_multiple_of(8));
     (fill, cells - used)
 }
 
@@ -1417,7 +1417,7 @@ fn cell_spans(app: &App, i: usize, unit: u64, flash: bool, kinds: &[Color; 4]) -
         style = style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
     }
     let n = c.tokens.div_ceil(unit).max(1) as usize;
-    std::iter::repeat(Span::styled(glyph, style)).take(n)
+    std::iter::repeat_n(Span::styled(glyph, style), n)
 }
 
 /// The last `w` columns of `s`.
@@ -1751,7 +1751,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 let pad = inner_w.saturating_sub(width(&label) + width(&hint) + 2);
                 let style = if armed {
                     // the row about to go: it turns to the error colour and breathes
-                    let on = !app.opts.animations || (app.spinner / 4) % 2 == 0;
+                    let on = !app.opts.animations || (app.spinner / 4).is_multiple_of(2);
                     Style::default().fg(theme.bg).bg(theme.error).add_modifier(if on {
                         Modifier::BOLD
                     } else {

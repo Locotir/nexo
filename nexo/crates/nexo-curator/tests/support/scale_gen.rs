@@ -76,7 +76,7 @@ impl Gen {
                 if c == 0 {
                     out.push(json!({"role": "user", "content": "Keep the service healthy and fix what breaks."}));
                 }
-                if c % 25 == 0 {
+                if c.is_multiple_of(25) {
                     if self.kind == "a" && c > 0 {
                         out.push(json!({"role": "assistant", "content": format!("Module m{} is done: the failing jobs trace back to one loader.", c / 25 - 1)}));
                     }
@@ -87,7 +87,7 @@ impl Gen {
             "b" => {
                 let r = c / 3;
                 let m = 2 * (r / 40) + r % 2;
-                if c % 3 == 0 {
+                if c.is_multiple_of(3) {
                     if r > 0 {
                         let p = r - 1;
                         out.push(json!({"role": "assistant", "content": format!("That covers what module m{} showed so far.", 2 * (p / 40) + p % 2)}));
@@ -202,7 +202,7 @@ pub fn run(kind: &str, plan: &Plan) -> Vec<Row> {
             g.advance();
             let r = g.requests;
             let timed = r + plan.tail > cp;
-            if !timed && r > plan.dense_until && r % plan.stride != 0 {
+            if !timed && r > plan.dense_until && !r.is_multiple_of(plan.stride) {
                 continue;
             }
             if timed && cpu0.is_none() {

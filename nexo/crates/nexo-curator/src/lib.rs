@@ -307,6 +307,8 @@ pub struct Curator {
     last: Vec<u8>,
     /// The tools the host offers (their names), when it said.
     tools: Option<Vec<String>>,
+    /// For each position of the last view, a hash of the text the window paged there (`None`: not paged).
+    paged: Vec<Option<u64>>,
 }
 
 impl Curator {
@@ -319,6 +321,7 @@ impl Curator {
             window: 0,
             last: Vec::new(),
             tools: None,
+            paged: Vec::new(),
         })
     }
 
@@ -333,6 +336,7 @@ impl Curator {
         if let Ok(p) = params(&self.spec) {
             self.eng = Engine::new(p);
             self.last.clear();
+            self.paged.clear();
             if let Some(t) = &self.tools {
                 self.eng.tools(t);
             }
@@ -362,12 +366,38 @@ impl Curator {
             w => w.saturating_sub(system_tokens).max(1) as i64,
         };
         self.eng.set_budget(budget);
+        let missed = self.eng.stats.get("miss").copied().unwrap_or(0);
         self.eng.sync(messages);
         let mut view = self.eng.view();
         let mut tokens = self.eng.tokens();
-        if budget > 0 && tokens > budget && page(&mut view, tokens - budget) {
-            tokens = view.iter().map(json::est).sum();
+        let mut paged = Vec::new();
+        if budget > 0 && tokens > budget {
+            paged = page(&mut view, tokens - budget);
+            if !paged.is_empty() {
+                tokens = view.iter().map(json::est).sum();
+            }
         }
+        // a text paged otherwise than in the last request (or no longer paged) is sent otherwise: the
+        // provider's cache misses from there, past what the engine counted for its own changes
+        let now: Vec<Option<u64>> = (0..view.len())
+            .map(|i| {
+                paged.contains(&i).then(|| {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    std::hash::Hash::hash(&view[i].to_string(), &mut h);
+                    std::hash::Hasher::finish(&h)
+                })
+            })
+            .collect();
+        let differs = |p: usize| now.get(p).copied().flatten() != self.paged.get(p).copied().flatten();
+        if let Some(p) = (0..now.len().max(self.paged.len())).find(|&p| differs(p)).filter(|&p| p < view.len()) {
+            let behind: i64 = view[p..].iter().map(json::est).sum();
+            // a history the host rewrote starts the engine's stats over
+            let total = self.eng.stats.get("miss").copied().unwrap_or(0);
+            let counted = if total < missed { total } else { total - missed };
+            *self.eng.stats.entry("miss_page").or_insert(0) += behind;
+            *self.eng.stats.entry("miss").or_insert(0) += (behind - counted).max(0);
+        }
+        self.paged = now;
         let memory = self.eng.memory();
         let (added, removed) = self.activity(&memory);
         Ok(Reply { view, tokens, stats: self.eng.stats.clone(), memory, added, removed })
@@ -473,10 +503,10 @@ impl Curator {
 }
 
 /// Pages the longest texts of a view until ``over`` tokens are gone: each keeps its head and tail and
-/// says which lines were left out and why. Only for what the window cannot take. Whether anything changed.
-fn page(view: &mut [Value], over: i64) -> bool {
+/// says which lines were left out and why. Only for what the window cannot take. The messages it changed.
+fn page(view: &mut [Value], over: i64) -> Vec<usize> {
     let mut left = over;
-    let mut changed = false;
+    let mut changed = Vec::new();
     // a few passes: one text past the window is the common case
     for _ in 0..8 {
         if left <= 0 {
@@ -485,7 +515,7 @@ fn page(view: &mut [Value], over: i64) -> bool {
         let mut best: Option<(usize, Vec<usize>, usize)> = None;
         for (i, m) in view.iter().enumerate() {
             longest(m, &mut Vec::new(), &mut |path, n| {
-                if best.as_ref().map_or(true, |b| n > b.2) {
+                if best.as_ref().is_none_or(|b| n > b.2) {
                     best = Some((i, path.to_vec(), n));
                 }
             });
@@ -553,7 +583,9 @@ fn page(view: &mut [Value], over: i64) -> bool {
         }
         *s = paged;
         left -= saved;
-        changed = true;
+        if !changed.contains(&i) {
+            changed.push(i);
+        }
     }
     changed
 }
@@ -703,7 +735,7 @@ mod tests {
         let long: String = (0..4000).map(|k| format!("line {k} of the pasted log\n")).collect();
         let paged = |over: i64| {
             let mut view = vec![json!({"role": "user", "content": long.clone()})];
-            assert!(page(&mut view, over));
+            assert!(!page(&mut view, over).is_empty());
             view
         };
         // the next request adds a few hundred tokens past the window: the paged text is sent as before
@@ -715,7 +747,7 @@ mod tests {
     fn a_first_line_longer_than_what_is_kept_is_paged_by_characters() {
         let long = format!("{}\nsecond line\nthird line", "x".repeat(200_000));
         let mut view = vec![json!({"role": "user", "content": long})];
-        assert!(page(&mut view, 20_000));
+        assert!(!page(&mut view, 20_000).is_empty());
         let text = view[0]["content"].as_str().unwrap();
         assert!(text.contains("characters") && text.contains("third line"), "{text}");
         assert!(text.len() > 100_000, "{}", text.len());
@@ -728,5 +760,36 @@ mod tests {
         assert_eq!(refused("eoq=1,ledger=2"), "eoq takes a whole number of 0 or more, not \"1,ledger=2\"");
         // a cap without a view after the rewrite takes none
         assert_eq!(params("cap=9000").unwrap().eoq, 0);
+    }
+
+    /// A text the window pages, sent paged otherwise in the next request, is a miss from where it is.
+    #[test]
+    fn a_text_paged_otherwise_than_in_the_last_request_counts_its_miss() {
+        let paste: String = (0..2000).map(|k| format!("row {k:05} value {} ok\n", k * 7)).collect();
+        let mut msgs = vec![json!({"role": "user", "content": format!("Why does this log stop?\n{paste}")})];
+        let mut cur = Curator::new("").unwrap();
+        cur.window(9000);
+        let miss = |r: &Reply| r.stats.get("miss").copied().unwrap_or(0);
+        let first = cur.view(0, &msgs, 0.0).unwrap();
+        let mut prev = (first.view.clone(), miss(&first));
+        let mut changed = 0;
+        for k in 0..6 {
+            msgs.push(
+                json!({"role": "assistant", "content": format!("Step {k}. {}", "Reading the rows again. ".repeat(80))}),
+            );
+            msgs.push(json!({"role": "user", "content": format!("Go on with part {k}.")}));
+            let r = cur.view(0, &msgs, 0.0).unwrap();
+            if let Some(p) = (0..prev.0.len()).find(|&p| r.view.get(p) != Some(&prev.0[p])) {
+                changed += 1;
+                let behind: i64 = r.view[p..].iter().map(json::est).sum();
+                assert!(
+                    (miss(&r) - prev.1) as f64 >= 0.9 * behind as f64 - 50.0,
+                    "request {k}: changed at {p}, {} of {behind}",
+                    miss(&r) - prev.1
+                );
+            }
+            prev = (r.view.clone(), miss(&r));
+        }
+        assert!(changed > 0, "the paged text never changed");
     }
 }

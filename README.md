@@ -6,10 +6,11 @@
 
 A terminal coding agent for any LLM API, written in Rust.<br>
 Its built-in **context curator** sends the model only what the next step needs.<br>
-Long sessions stay fast and cheap, the prompt cache stays warm, and nothing is summarised away.
+Long sessions stay fast and cheap, the prompt cache stays warm, and nothing is summarised unless a provider
+refuses a request as too long.
 
 [![CI](https://github.com/Locotir/nexo/actions/workflows/ci.yml/badge.svg)](https://github.com/Locotir/nexo/actions/workflows/ci.yml)
-[![Rust 1.80+](https://img.shields.io/badge/Rust-1.80%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Rust 1.89+](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
 [![Linux | Windows](https://img.shields.io/badge/Linux%20%7C%20Windows-supported-52514e)](#install)
 [![Providers](https://img.shields.io/badge/providers-19%20built--in%20%2B%20200%2B-1baf7a)](#any-provider)
@@ -45,18 +46,16 @@ nexo keeps the whole history on disk and gives the model a **curated view** of i
 
 | Test | Result |
 |---|---|
-| **One 100-step session in nexo** (deepseek-chat) | **−36% cost**, **−59% wall time**, **−48% tokens**, same score |
-| **Live runs**, 10 per arm over 5 tasks (DeepSeek, reference implementation of the same engine) | **−56% tokens**, **−38% cost**; solved: nexo 9/10, whole history 10/10 |
-| Replay of 28 recorded nexo sessions | **−42%** tokens sent |
-| Simulation on unseen recorded sessions | **61.5%** of the bill saved (5-minute cache) |
-| Proved ceiling for any curator that sends literal text | **89.7%** |
+| **One 100-step session in nexo** (deepseek-chat, one run per arm) | **−36% cost**, **−59% wall time**, **−48% tokens** to the same point; both arms stopped at step 100 without solving the task (score 1% each) |
+| Offline replay of the 7 recorded whole-history sessions in `nexo/crates/nexo-curator/tests/fixtures/` | **−26%** tokens sent in total (8.52M to 6.30M, estimated at 4 characters per token); per session from −49% to +7% |
 
 What the model is sent, request by request, in that 100-step session:
 
 ![Tokens per request: the whole history grows to 97k, the curated view is 19k at request 100](docs/img/tokens-per-step.svg)
 
 Every figure, its data and its limits (mostly one model, one author's tasks):
-[`docs/results.md`](docs/results.md). Measure it on your own tasks with [`nexo bench`](docs/usage.md).
+[`docs/results.md`](docs/results.md). It also reports earlier simulations and live runs made with an
+earlier, unpublished implementation of the same engine. Measure it on your own tasks with [`nexo bench`](docs/usage.md).
 
 ## How the curator works
 
@@ -77,7 +76,7 @@ The engine, every setting and its default: [`docs/how-it-works.md`](docs/how-it-
 
 ## Install
 
-Rust 1.80 or newer. Linux or Windows.
+Rust 1.89 or newer. Linux or Windows.
 
 ```sh
 cargo install --locked --git https://github.com/Locotir/nexo nexo-cli
@@ -88,6 +87,7 @@ Or from source:
 ```sh
 git clone https://github.com/Locotir/nexo && cd nexo/nexo
 cargo build --release            # target/release/nexo (nexo.exe on Windows)
+install -m 755 target/release/nexo ~/.local/bin/   # or put target/release on your PATH
 ```
 
 ## Quick start
@@ -139,9 +139,13 @@ and local servers (**Ollama**, LM Studio, vLLM, llama.cpp). Over 200 more come f
 
 ## FAQ
 
-**Can I use it with Claude?** Yes, with an Anthropic API key (`ANTHROPIC_API_KEY`). nexo never signs in
-with a Claude.ai subscription: Anthropic's [terms](https://code.claude.com/docs/en/legal-and-compliance)
-do not allow third-party tools to use subscription logins, and nexo follows them.
+**Can I use it with Claude?** Yes, with an Anthropic API key (`ANTHROPIC_API_KEY`). nexo has no sign-in
+for a Claude.ai subscription.
+
+**Can I use a subscription instead of a key?** `nexo auth login copilot`, `codex` (ChatGPT) and `xai`
+(SuperGrok) run the vendor's own device sign-in: nexo shows a web address and a code, you approve on the
+vendor's site, and the tokens stay in nexo's credential store on your machine. Whether your plan allows
+use from a third-party tool is up to the vendor's terms: check them before you sign in.
 
 **Does it still compact?** Only if you choose the `compact` policy, or as a last resort when a provider
 rejects a request as too long. With the curator, the view stays far below the window.

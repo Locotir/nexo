@@ -1,6 +1,6 @@
 # Related work
 
-The references the thesis builds on, grouped by the question each answers. Peer-reviewed venues are marked
+The references this work builds on, grouped by the question each answers. Peer-reviewed venues are marked
 [PR]; documentation, preprints, technical reports and books [NPR]. Every entry was checked against the
 publisher's page or the web index at the time of writing; the three marked "DOI unconfirmed" are
 bibliographically consistent across sources but their DOI page was not opened. Provider documentation
@@ -17,7 +17,7 @@ changes often: the version read is the one dated here (October 2026).
 3. [NPR] Anthropic. *How Claude Code uses prompt caching*. https://code.claude.com/docs/en/prompt-caching —
    the prefix layers (system → project → conversation), what invalidates the cache, that compaction invalidates
    the conversation layer on purpose, warm and cold cache after idle gaps, the 5-minute against 1-hour
-   trade-off: a production statement of the rent-or-buy decision this thesis formalises.
+   trade-off: a production statement of the rent-or-buy decision the curator's cost model formalises.
 4. [NPR] Anthropic. *Manage costs effectively*. https://code.claude.com/docs/en/costs — the bill of a session
    split into cache read, cache write, input and output; why usage climbs in a long session.
 5. [NPR] OpenAI (2024-10-01). *Prompt Caching in the API*. https://openai.com/index/api-prompt-caching —
@@ -44,7 +44,7 @@ changes often: the version read is the one dated here (October 2026).
 
 No peer-reviewed paper was found that models the economics of commercial prefix caches (TTL, write premium,
 read discount) for agent sessions; the closest are 9 (an external audit), 10 (serving cost) and the Claude
-Code documentation (3, 4). This is the gap the cost model of the thesis fills.
+Code documentation (3, 4). This is the gap the curator's cost model fills.
 
 ## Context management, compaction and memory for agents
 

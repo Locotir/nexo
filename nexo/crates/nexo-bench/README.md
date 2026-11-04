@@ -17,7 +17,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--model NAME` | the model | required |
 | `--key KEY` | the API key (leave out for a local server; `-` reads it from stdin, out of the process list) | none |
 | `--protocol P` | `anthropic`, `openai-chat`, `openai-responses`, `gemini` | guessed from the address |
-| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `more`, `hard`, `padded`), comma separated or repeated | `all` |
+| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `more`, `hard`, `padded`), or the external benchmark's `repoqa` and `canonstep` (with `--llmb`), comma separated or repeated | `all` |
 | `--arms LIST` | arms, comma separated or repeated (see below) | `plain,compact,curator` |
 | `--repeats N` | times each task runs with each arm | 1 |
 | `--max-steps N` | most steps (model requests that offer tools) per task | 100 |
@@ -27,6 +27,15 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--temperature T` | sampling temperature of every request | the provider's own |
 | `--out DIR` | where the results go (refused when it holds an earlier `results.jsonl`) | `./bench-out` |
 | `--skip-preflight` | do not send the preflight request | off |
+| `--llmb DIR` | the external benchmark's distribution folder (for `--tasks repoqa,canonstep`) | none |
+| `--instances IDS` | instance ids of `repoqa` and `canonstep`, comma separated | all of them |
+| `--limit N` | at most this many instances per task, in id order | none |
+| `--cache DIR` | where `repoqa`'s repositories are cloned once | `<out>/.cache/repos` |
+
+`nexo bench report [RESULTS...] [--out DIR] [--summary FILE]` writes `report.html` in `--out` (default
+`./bench-out`) from one or more `results.jsonl` (files or folders holding one; default: `--out`).
+`--summary FILE` also writes the Markdown summary there, with the counters read again from the
+transcripts.
 
 Before any task, the preflight sends one tiny request asking the model to call the `ls` tool. It stops
 the benchmark when the key, the address or the model fail, or when the model writes its tool calls as
@@ -35,7 +44,11 @@ one step.
 
 The agents keep their settings, sessions and caches under `<out>/.nexo`, never in the user's own nexo
 folders, and every permission is granted (nobody is there to ask). Sub-agents, hooks and MCP servers are
-off. The exit code is 0, or 2 when the budget stopped the benchmark.
+off. Every program started for a run (the agent's shell commands, the language servers and checkers of
+`diagnostics`, the graders' commands) gets a cleared environment: only `PATH`, `LANG`, `LC_*`, `TERM`,
+the Rust toolchain's `CARGO_HOME`, `RUSTUP_HOME` and `RUSTUP_TOOLCHAIN`, and a `HOME` and `TMPDIR` of
+the run's own, so no key, token or session socket reaches them (on Windows' PowerShell only the bench
+key is removed). The exit code is 0, or 2 when the budget stopped the benchmark.
 
 ## Arms
 
@@ -88,7 +101,7 @@ applies equally to plain, compact and curator.
 
 | section | contents |
 |---|---|
-| header | model, commit, max steps, max tokens, repeats, budget, spent |
+| header | model, commit, max steps, max tokens, repeats, budget, spent (every priced reply, runs skipped after an error included, with their share) |
 | Arms | one row per arm: settings, runs, **score** (mean), steps, requests, input, cache read, output, cost $, wall s, tool errors (sums), final view and max view (means), compactions, rewrites (sums) |
 | Paired with the first arm | per other arm, over the tasks both ran: Δ score (points), Δ cost, Δ steps, Δ recall calls, Δ re-reads, Δ dup lines (points), Δ wall s, each with a **95% paired bootstrap interval** (10000 resamples, fixed seed) once there are at least 5 tasks and 3 runs per task and arm (else "not enough runs"); left out when the arms share no task |
 | Runs | one row per run, same columns |
@@ -155,10 +168,12 @@ scores 0.
 The game is built from C with the system C compiler (`cc`, `gcc` or `clang`), so realm needs one, plus
 `rustc`. It is also *sealed*: on Linux, every shell command of the agent and the checker's run go
 through `unshare -r -m -n -p --mount-proc --fork` with no network, the system read-only and the home and
-temporary folders hidden, except the working directory and the Rust toolchain; the folder the benchmark
-runs from and `--out` are hidden too, file tools refuse paths outside the working directory, and the
-programs a task names in `mask` (realm: the script interpreters) answer "not found" inside the box. Where
-that is not possible (another system, no user namespaces), realm is skipped and the summary says why.
+temporary folders, `/run` and `/dev/shm` hidden, except the working directory and the Rust toolchain;
+the folder the benchmark runs from and `--out` are hidden too, file tools refuse paths outside the
+working directory, `diagnostics` is not offered (its language servers would run outside the box), and
+the programs a task names in `mask` (realm: the script interpreters) answer "not found" inside the box,
+by name and by full path. Where that is not possible (another system, no user namespaces), realm is
+skipped and the summary says why.
 
 ## Adding a task
 

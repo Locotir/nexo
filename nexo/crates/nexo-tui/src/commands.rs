@@ -376,7 +376,7 @@ pub fn closest(query: &str) -> Option<&'static str> {
     let mut best: Option<(usize, &'static str)> = None;
     for (word, name) in words {
         let d = distance(&q, word);
-        if best.map_or(true, |(b, _)| d < b) {
+        if best.is_none_or(|(b, _)| d < b) {
             best = Some((d, name));
         }
     }

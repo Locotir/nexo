@@ -403,7 +403,7 @@ impl Config {
     /// protocol, `extra` settings and prices (the user's own stay), a default provider the user's file
     /// does not define, MCP servers, hooks, allow rules, the `auto` and `accept-edits` modes, the
     /// status command, the system prompt file, the web backend's address and key, and a `max_cost` or
-    /// `max_cost_day` above the user's. Returns their names.
+    /// `max_cost_day` that is not a positive finite number at most the user's. Returns their names.
     pub fn strip_untrusted(&mut self, user: &Config) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(n) = self.provider.take() {
@@ -417,8 +417,9 @@ impl Config {
             ("max_cost", &mut self.agent.max_cost, user.agent.max_cost),
             ("max_cost_day", &mut self.agent.max_cost_day, user.agent.max_cost_day),
         ] {
-            if let (Some(m), Some(o)) = (*mine, own) {
-                if m > o {
+            // Only a lower, positive and finite limit: 0, a negative number or nan reads as "no limit".
+            if let Some(m) = *mine {
+                if !(m.is_finite() && m > 0.0 && own.is_none_or(|o| m <= o)) {
                     out.push(format!("agent.{field}"));
                     *mine = own;
                 }
@@ -505,8 +506,9 @@ impl Config {
             _ => None,
         };
         if let (Some(mut base), Some(over)) = (table(self), table(&other)) {
+            // Only the servers `other` still holds replace the user's: one a strip took out leaves it.
             if let (Some(toml::Value::Table(names)), Some(toml::Value::Table(b))) =
-                (said.get("mcp"), base.get_mut("mcp"))
+                (over.get("mcp"), base.get_mut("mcp"))
             {
                 for n in names.keys() {
                     b.remove(n);
@@ -841,6 +843,33 @@ cache_read = 0.028
         assert_eq!(t.provider.as_deref(), Some("x"));
         assert_eq!(t.agent.max_cost, Some(10000.0));
         assert_eq!(t.providers["deepseek"].pricing["m"].input, 0.0);
+    }
+
+    #[test]
+    fn an_untrusted_project_cannot_lift_a_spend_limit_with_zero_negative_or_nan() {
+        let user = "[agent]\nmax_cost = 1.0\nmax_cost_day = 3.0\n";
+        for bad in ["0", "0.0", "-1.0", "nan", "inf", "-inf"] {
+            let proj = format!("[agent]\nmax_cost = {bad}\nmax_cost_day = {bad}\n");
+            let c = load_pair(user, &proj, false);
+            assert_eq!((c.agent.max_cost, c.agent.max_cost_day), (Some(1.0), Some(3.0)), "{bad}");
+            let n = &c.notices[0];
+            assert!(n.contains("agent.max_cost,") && n.contains("agent.max_cost_day"), "{bad}: {n}");
+            let none = load_pair("", &proj, false);
+            assert_eq!((none.agent.max_cost, none.agent.max_cost_day), (None, None), "{bad} with no user limit");
+        }
+        let lower = load_pair(user, "[agent]\nmax_cost = 0.5\nmax_cost_day = 2.0\n", false);
+        assert_eq!((lower.agent.max_cost, lower.agent.max_cost_day), (Some(0.5), Some(2.0)));
+        assert!(lower.notices.is_empty(), "{:?}", lower.notices);
+    }
+
+    #[test]
+    fn an_untrusted_projects_mcp_server_leaves_the_users_server_of_that_name() {
+        let user = "[mcp.github]\ncommand = 'gh-mcp'\n";
+        let c = load_pair(user, "[mcp.github]\ncommand = 'evil'\n", false);
+        assert_eq!(c.mcp["github"].command, "gh-mcp");
+        assert!(c.notices[0].contains("mcp.github"));
+        let t = load_pair(user, "[mcp.github]\ncommand = 'other'\n", true);
+        assert_eq!(t.mcp["github"], McpServerConfig { command: "other".into(), ..Default::default() });
     }
 
     #[test]

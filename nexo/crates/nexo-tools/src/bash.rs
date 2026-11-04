@@ -499,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn lines_are_decoded_lossily_and_cut_to_a_bound() {
         let mut input = b"caf\xe9\nok\r\n".to_vec();
-        input.extend(std::iter::repeat(b'y').take(LINE_BYTES * 4));
+        input.extend(std::iter::repeat_n(b'y', LINE_BYTES * 4));
         input.extend_from_slice(b"\nlast");
         let (tx, mut rx) = mpsc::unbounded_channel();
         read_lines(&input[..], tx).await;

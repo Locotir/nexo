@@ -126,11 +126,12 @@ impl Client {
         let this = self.clone();
         let Call { protocol, cfg, key, req, retries } = call;
         tokio::spawn(async move {
+            // what comes before the first content (start, opaque reasoning, usage) is held
+            // back, so a retry never hands the caller the same preamble twice; the usage of an
+            // attempt thrown away stays held, since it was billed all the same
+            let mut held: Vec<StreamEvent> = Vec::new();
             'attempts: loop {
                 let mut content = false;
-                // what comes before the first content (start, opaque reasoning, usage) is held
-                // back, so a retry never hands the caller the same preamble twice
-                let mut held: Vec<StreamEvent> = Vec::new();
                 while let Some(ev) = inner.next().await {
                     let preamble = matches!(
                         ev,
@@ -149,6 +150,7 @@ impl Client {
                         | StreamEvent::ToolCallStart { .. } => content = true,
                         StreamEvent::Error(e) if !content && e.is_retryable() && attempt < retries => {
                             let mut last = e.clone();
+                            held.retain(|h| matches!(h, StreamEvent::Usage(_)));
                             loop {
                                 attempt += 1;
                                 let wait = this.backoff(attempt, &last);
@@ -287,6 +289,26 @@ mod tests {
             retries,
         };
         client.forward(Box::pin(futures::stream::iter(first)), call, 0).collect().await
+    }
+
+    #[tokio::test]
+    async fn the_usage_of_a_thrown_away_attempt_is_still_counted_once() {
+        let mut empty = ProviderError::new(ErrorKind::Overloaded, "no content");
+        empty.retry_after = Some(Duration::ZERO);
+        let billed = |n| StreamEvent::Usage(Usage { input: n, output: 1, ..Default::default() });
+        let failed = |n| vec![billed(n), StreamEvent::Error(empty.clone()), StreamEvent::Done];
+        let good = vec![StreamEvent::TextDelta("hi".into()), billed(5), StreamEvent::Done];
+        let evs = run(failed(100), vec![Ok(failed(200)), Ok(good)], 3).await;
+        let mut acc = nexo_core::Collector::new();
+        for e in &evs {
+            acc.push(e.clone());
+        }
+        assert_eq!(acc.usage.input, 305, "{evs:?}");
+        assert_eq!(acc.usage.output, 3);
+        assert_eq!(evs.iter().filter(|e| matches!(e, StreamEvent::TextDelta(_))).count(), 1);
+        // with no retries left the failed attempts' usage still comes with the error
+        let evs = run(failed(100), vec![Err(empty.clone())], 1).await;
+        assert_eq!(evs.iter().filter(|e| matches!(e, StreamEvent::Usage(_))).count(), 1, "{evs:?}");
     }
 
     #[tokio::test]

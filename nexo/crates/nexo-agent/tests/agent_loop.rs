@@ -903,6 +903,44 @@ async fn resume_and_rewind_wait_for_the_turn() {
 }
 
 #[tokio::test]
+async fn a_session_another_nexo_holds_is_not_resumed() {
+    let d = tempfile::tempdir().unwrap();
+    let mut r = start(Scripted::new(vec![Reply::Events(text("a"))]), config(PermissionMode::Ask), None, d.path()).await;
+    let a = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "in a".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let file = nexo_agent::session::dir().join(format!("{a}.jsonl"));
+    let lock = file.with_extension("jsonl.lock");
+    std::fs::write(&lock, "1").unwrap(); // another nexo, still running, holds it
+    let before = std::fs::read(&file).unwrap();
+    // `/resume` from a nexo already running
+    let client = Scripted::new(vec![]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let b = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Resume { id: a.clone() });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::HistoryCleared | AgentEvent::SessionChanged { .. })));
+    assert!(matches!(evs.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("in use")), "{evs:?}");
+    r.stop().await;
+    assert_ne!(a, b);
+    // `--resume` at startup
+    let r = start(client.clone(), config(PermissionMode::Ask), Some(a.clone()), d.path()).await;
+    let e = r.task.await.unwrap().unwrap_err().to_string();
+    assert!(e.contains("in use"), "{e}");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing written to the file another nexo holds");
+    assert!(client.requests().is_empty(), "nothing spent");
+    assert_eq!(std::fs::read_to_string(&lock).unwrap(), "1", "its lock stays");
+    std::fs::remove_file(&lock).unwrap();
+}
+
+#[tokio::test]
 async fn rewind_cuts_before_the_calls_and_rewrites_the_file() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![

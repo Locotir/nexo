@@ -28,12 +28,15 @@ static TEST_COMMAND: LazyLock<Re> = LazyLock::new(|| {
     )
 });
 /// A failing test run, in the output shapes the runners of most ecosystems share: a line that starts with a
-/// failure word (`--- FAIL:`, `FAIL`, `FAILED`, `FAILURES!`, `Failed!`, `BUILD FAILURE`, `not ok 2`, `✕`), a
-/// count of one or more failures (`1 failed`, `2 failing`, `1 failure`, `1 tests failed`, `Failures: 1`,
-/// `errors=1`, `# fail 1`) or a non-zero exit status. A run piped through `tail` exits 0 whatever its tests did.
+/// failure word (`--- FAIL:`, `FAIL`, `FAILED`, `FAILURES!`, `Failed!`, `BUILD FAILURE`, `not ok 2`, `✕`,
+/// `# fail 1`, `make: *** ... Error 2`), a count of one or more failures (`1 failed`, `2 failing`, `1 failure`,
+/// `1 tests failed`) or a labelled one where a summary prints it (`Failures: 1,`, `Failed: 1`, `errors=1)`), or a
+/// non-zero exit status at a line start (`exit status 1`, `[exit code 1]`) or after `failed with`. A word and a
+/// number in a test name, a package path or a log line (`returns error 404`, `api/errors 1.2s`) are not one. A
+/// run piped through `tail` exits 0 whatever its tests did.
 static TEST_FAILED: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
-        r"^\s*(?:--- FAIL:|FAIL\b|FAILED\b|FAILURES?!|Failed!|(?:\[\w+\]\s+)?BUILD FAIL|not ok \d|[✕✗]\s)|\b[1-9]\d* (?:tests? )?(?:failed|failing|failures?|errors?)\b(?![ \t]*[:=]?[ \t]*\d)|(?i:\b(?:failures?|failed|errors?|fail)[ \t]*[:=]?[ \t]*[1-9]\d*\b)|\bexit (?:status|code) [1-9]\d*\b",
+        r"^\s*(?:--- FAIL:|FAIL\b|FAILED\b|FAILURES?!|Failed!|(?:\[\w+\]\s+)?BUILD FAIL|not ok \d|[✕✗]\s|#\s*fail\s+[1-9]|make(?:\[\d+\])?: \*\*\* .*\bError [1-9])|\b[1-9]\d* (?:tests? )?(?:failed|failing|failures?|errors?)\b(?![ \t]*[:=]?[ \t]*\d)|(?i:(?:^|[,;(\-]|\btests?)[ \t]*(?:failures?|failed|errors?)[ \t]*[:=][ \t]*[1-9]\d*(?=[ \t]*(?:[,.;)]|$)))|(?i:^\s*\[?exit (?:status|code)[ \t]*:?[ \t]*[1-9]\d*\b|\b(?:failed|finished|exited) with (?:exit )?(?:code|status) [1-9]\d*\b)",
         py::M,
     )
 });
@@ -1524,10 +1527,12 @@ impl Engine {
             self.note_tool = note_tool;
             self.recall_tool = recall_tool;
         }
-        // a rewritten history is read anew: the rules found in it are the carried ones, where they were
-        self.rules.replay = rewritten;
+        // a rewritten history is read anew: the rules found in it are the carried ones, where they were;
+        // what the person wrote after the last reply comes with the rewrite and is new
         let n = self.tr.msgs.len();
-        for m in &msgs[n..] {
+        let last_reply = msgs.iter().rposition(|m| m.get("role").and_then(Value::as_str) == Some("assistant"));
+        for (k, m) in msgs.iter().enumerate().skip(n) {
+            self.rules.replay = rewritten && last_reply.is_some_and(|r| k <= r);
             self.add(m);
         }
         self.rules.replay = false;
@@ -4366,7 +4371,7 @@ fn thousands(n: i64) -> String {
     let s = n.unsigned_abs().to_string();
     let mut out = String::new();
     for (k, c) in s.chars().enumerate() {
-        if k > 0 && (s.len() - k) % 3 == 0 {
+        if k > 0 && (s.len() - k).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -4705,6 +4710,45 @@ mod tests {
         // a count the run's own script prints next to another number is a label, not a failure
         let said = fixes_of(&[("pytest", FAILING_RUN), ("pytest; ./check", "3 passed\nrows 20 failures 0\nerrors: 0")]);
         assert!(said.contains("the tests that failed and now pass: test_round"), "{said}");
+    }
+
+    #[test]
+    fn passing_runs_that_name_errors_or_exit_codes_are_passing() {
+        // test names, package paths and logs of a passing run that hold a failure word and a number
+        let passing = [
+            "ok  \tgithub.com/acme/api/errors\t1.204s\nok  \tgithub.com/acme/api/fail\t0.3s",
+            "PASS src/api.test.js\n  ✓ returns error 404 for an unknown id (5 ms)\n  ✓ returns error 422\nTests:       2 passed, 2 total",
+            "  ✓ exits with exit code 2 on bad args\n  ✓ prints usage on exit code 1\n  2 passing (4ms)",
+            "  returns error 404 for an unknown id\n  2 passing (9ms)",
+            "INFO HTTP error 503, retrying\nWARN upstream error: 502 from cache\n3 passed in 0.2s",
+            "Cart\n  reports failed 2 items as skipped\n2 examples, 0 failures",
+        ];
+        for out in passing {
+            assert!(!TEST_FAILED.is_match(out), "{out}");
+            assert!(!ERROR_MARKS.is_match(out), "{out}");
+        }
+        let said = fixes_of(&[(FAILING_RUNS[0].0, FAILING_RUNS[0].1), (FAILING_RUNS[0].0, passing[0])]);
+        assert!(said.contains("the tests that failed and now pass: TestAdd"), "{said}");
+        let said = fixes_of(&[("npx jest", FAILING_RUNS[3].1), ("npx jest", passing[1])]);
+        assert!(said.contains("the tests that failed and now pass: Cart › adds item"), "{said}");
+        // failure counts and exit codes as runners and hosts print them still read as failing
+        for out in FAILING_RUNS.iter().map(|r| r.1).chain([
+            FAILING_RUN,
+            "Tests run: 3, Failures: 1, Errors: 0",
+            "Tests: 3, Assertions: 3, Failures: 1.",
+            "Test summary: total: 3, failed: 1, succeeded: 2",
+            "Total tests: 3\n     Passed: 2\n     Failed: 1",
+            "Ran 3 tests in 0.01s\n\n(failures=1)",
+            "Tests failed: 1, passed: 2",
+            "# pass 2\n# fail 1",
+            "ok 1 - a\n\n[exit code 1]",
+            "Exit code: 2\nWall time: 1.2 seconds",
+            "error Command failed with exit code 1.",
+            "make: *** [Makefile:4: test] Error 2",
+            "exit status 1",
+        ]) {
+            assert!(TEST_FAILED.is_match(out), "{out}");
+        }
     }
 
     #[test]
@@ -6534,5 +6578,27 @@ mod tests {
         msgs.extend(tool(3, "write_file", json!({"path": "src/rates.rs", "content": source(90, 10)}), "ok", false));
         e.sync(&msgs);
         assert_eq!(e.wrote.values().map(|w| w.mi).collect::<Vec<_>>(), vec![5]);
+    }
+
+    #[test]
+    fn a_rule_given_again_in_the_message_that_comes_with_a_rewrite_moves_past_what_withdrew_it() {
+        let user = |t: &str| json!({"role": "user", "content": t});
+        let reply = |t: &str| json!({"role": "assistant", "content": t});
+        let texts = |e: &Engine| e.rules.list.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
+        let mut e = Engine::new(params("nudge=0").unwrap());
+        let mut msgs = vec![user("Fix the login form."), reply("On it.")];
+        msgs.extend([user("Never push to main."), reply("Understood.")]);
+        msgs.extend([user("You may push to main from now on."), reply("Noted.")]);
+        e.sync(&msgs);
+        assert_eq!(texts(&e), ["Never push to main.", "You may push to main from now on."]);
+        // the host compacts the history; the same request carries the person's new message
+        let summary = "Summary: the person said never push to main, then allowed it.";
+        e.sync(&[user(summary), reply("Continuing."), user("Never push to main.")]);
+        assert_eq!(texts(&e), ["You may push to main from now on.", "Never push to main."]);
+        // read anew, a rule before the last reply stays where it was
+        let mut e = Engine::new(params("nudge=0").unwrap());
+        e.sync(&[user("Never push to main."), reply("Ok."), user("You may push to main from now on.")]);
+        e.sync(&[user("Never push to main."), reply("Ok."), user("Go on.")]);
+        assert_eq!(texts(&e), ["Never push to main.", "You may push to main from now on."]);
     }
 }

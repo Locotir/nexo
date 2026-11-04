@@ -81,12 +81,16 @@ pub struct Session {
     locked: bool,
     /// When the lock was last touched by this session.
     touched: std::time::Instant,
+    /// The file ends inside a line (a process died mid-write): closed once the lock is held.
+    open_tail: bool,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if self.locked {
-            let _ = std::fs::remove_file(lock_path(&self.path));
+        // only a lock still this process's: another nexo may have taken it over
+        let lock = lock_path(&self.path);
+        if self.locked && std::fs::read_to_string(&lock).is_ok_and(|t| t == stamp()) {
+            let _ = std::fs::remove_file(lock);
         }
     }
 }
@@ -170,6 +174,33 @@ fn private_file() -> OpenOptions {
     o
 }
 
+/// A rewrite replaced the file but could not open it again.
+#[derive(Debug)]
+struct NotReopened(std::io::Error);
+
+impl std::fmt::Display for NotReopened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the session file was rewritten but cannot be opened again: {}", self.0)
+    }
+}
+
+impl std::error::Error for NotReopened {}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests make the next reopenings of a session file fail.
+    static FAIL_REOPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The session file, opened again to append to it.
+fn reopen(path: &Path) -> std::io::Result<File> {
+    #[cfg(test)]
+    if FAIL_REOPEN.with(|f| f.get()) {
+        return Err(std::io::Error::other("cannot open (test)"));
+    }
+    OpenOptions::new().append(true).open(path)
+}
+
 /// One line in one write, so a line from another writer never lands inside it.
 fn write_line(f: &mut File, line: &Line) -> anyhow::Result<()> {
     let mut s = serde_json::to_string(line)?;
@@ -184,23 +215,76 @@ const STALE_LOCK: std::time::Duration = std::time::Duration::from_secs(24 * 3600
 /// How often a writer touches its lock, at most, so that only an idle lock grows old.
 const LOCK_TOUCH: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// The pid written in a lock, if it can be read.
-fn lock_pid(lock: &Path) -> Option<u32> {
-    std::fs::read_to_string(lock).ok().and_then(|t| t.trim().parse().ok())
+/// What this process writes in the locks it takes: its pid and, where the system tells (Linux),
+/// when it started and the boot it runs in, so that the same pid used later by another process
+/// (after a reboot, or in another container) is not taken for this one.
+fn stamp() -> &'static str {
+    static STAMP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STAMP.get_or_init(|| {
+        let pid = std::process::id();
+        match (proc_start(pid), boot_id()) {
+            (Some(start), Some(boot)) => format!("{pid} {start} {boot}"),
+            _ => pid.to_string(),
+        }
+    })
 }
 
-/// Who holds the lock at `lock` (`Some(pid)`, the pid unknown when unreadable), or None when it is
-/// free or stale: its process is gone (where the system says so) or, where it cannot say, the lock
-/// is older than [`STALE_LOCK`].
-fn holder(lock: &Path) -> Option<Option<u32>> {
+/// When process `pid` started (clock ticks after boot), where the system says so (Linux).
+fn proc_start(pid: u32) -> Option<u64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // the fields after the name, which can hold spaces and parentheses; the start is field 22
+    stat.get(stat.rfind(')')? + 1..)?.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// The id of the running boot, where the system says so (Linux).
+fn boot_id() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    Some(id.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The pid written in a lock, if it can be read.
+#[cfg(test)]
+fn lock_pid(lock: &Path) -> Option<u32> {
+    std::fs::read_to_string(lock).ok().and_then(|t| t.split_whitespace().next()?.parse().ok())
+}
+
+/// The text of the lock at `lock` and who holds it (`Some(pid)`, the pid unknown when unreadable),
+/// or None as holder when it is stale: written in another boot, by a process that is gone or by
+/// one that started at another time than the process now under its pid (where the system says
+/// so), or, where it cannot say, older than [`STALE_LOCK`]. None when there is no lock.
+fn judge(lock: &Path) -> Option<(String, Option<Option<u32>>)> {
     let md = std::fs::metadata(lock).ok()?;
-    let pid = lock_pid(lock);
-    let old = md.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STALE_LOCK);
-    let stale = match pid.and_then(alive) {
-        Some(live) => !live,
-        None => old,
+    let text = std::fs::read_to_string(lock).unwrap_or_default();
+    let mut words = text.split_whitespace();
+    let pid: Option<u32> = words.next().and_then(|p| p.parse().ok());
+    let start: Option<u64> = words.next().and_then(|s| s.parse().ok());
+    let other_boot = match (words.next(), boot_id()) {
+        (Some(was), Some(now)) => was != now,
+        _ => false,
     };
-    (!stale).then_some(pid)
+    let old = md.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STALE_LOCK);
+    let live = pid.and_then(|p| {
+        let reused = matches!((start, proc_start(p)), (Some(was), Some(now)) if was != now);
+        alive(p).map(|live| live && !reused)
+    });
+    let stale = other_boot
+        || match live {
+            Some(live) => !live,
+            None => old,
+        };
+    let holder = (!stale).then_some(pid);
+    Some((text, holder))
+}
+
+/// Who holds the lock at `lock`, or None when it is free or stale (see [`judge`]).
+fn holder(lock: &Path) -> Option<Option<u32>> {
+    judge(lock)?.1
 }
 
 fn in_use(lock: &Path, pid: Option<u32>) -> anyhow::Error {
@@ -213,22 +297,27 @@ fn in_use(lock: &Path, pid: Option<u32>) -> anyhow::Error {
 }
 
 /// Takes the advisory lock next to a session file (`<id>.jsonl.lock`, created exclusively, holding
-/// the writer's pid). A stale lock (see [`holder`]) is taken over.
+/// the writer's [`stamp`]). A stale lock (see [`judge`]) is taken over.
 fn take_lock(lock: &Path) -> anyhow::Result<()> {
-    for _ in 0..2 {
+    for _ in 0..3 {
         match private_file().write(true).create_new(true).open(lock) {
             Ok(mut f) => {
-                f.write_all(std::process::id().to_string().as_bytes())?;
+                f.write_all(stamp().as_bytes())?;
                 return Ok(());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if lock_pid(lock) == Some(std::process::id()) {
+                let Some((text, held)) = judge(lock) else { continue }; // gone meanwhile
+                if text == stamp() {
                     return Ok(()); // this process holds it already
                 }
-                if let Some(pid) = holder(lock) {
-                    return Err(in_use(lock, pid));
+                // under this pid: a process gone before this one, never another live writer
+                let ours = text.split_whitespace().next() == Some(std::process::id().to_string().as_str());
+                match held {
+                    Some(pid) if !ours => return Err(in_use(lock, pid)),
+                    _ => {
+                        take_over(lock, &text);
+                    }
                 }
-                let _ = std::fs::remove_file(lock);
             }
             Err(e) => return Err(e.into()),
         }
@@ -236,10 +325,42 @@ fn take_lock(lock: &Path) -> anyhow::Result<()> {
     anyhow::bail!("cannot take the lock {}", lock.display())
 }
 
-/// Whether process `pid` runs, where the system says so cheaply (Linux); None elsewhere.
+/// Removes the lock at `lock` when it still holds `judged`, the text found stale: moved aside
+/// first, so that one taken meanwhile by another nexo is put back, never deleted. Whether it went.
+fn take_over(lock: &Path, judged: &str) -> bool {
+    let aside = lock.with_extension(format!("lock.{}.stale", std::process::id()));
+    if std::fs::rename(lock, &aside).is_err() {
+        return false; // another took it over first
+    }
+    let same = std::fs::read_to_string(&aside).is_ok_and(|t| t == judged);
+    if !same {
+        // a lock taken since: back in place, unless yet another is there now
+        let _ = std::fs::hard_link(&aside, lock);
+    }
+    let _ = std::fs::remove_file(&aside);
+    same
+}
+
+/// Whether process `pid` runs, where the system says so: Linux from `/proc`, other unix systems
+/// from `ps`; None elsewhere (the age of the lock decides).
 fn alive(pid: u32) -> Option<bool> {
-    let proc = Path::new("/proc");
-    (cfg!(target_os = "linux") && proc.join("self").exists()).then(|| proc.join(pid.to_string()).exists())
+    if cfg!(target_os = "linux") {
+        let proc = Path::new("/proc");
+        return proc.join("self").exists().then(|| proc.join(pid.to_string()).exists());
+    }
+    if cfg!(unix) {
+        // `ps -p` lists the process when it runs, and nothing (with no complaint) when it does not
+        let out = std::process::Command::new("ps")
+            .args(["-o", "pid=", "-p", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !String::from_utf8_lossy(&out.stdout).trim().is_empty() {
+            return Some(true);
+        }
+        return (!out.status.success() && out.stderr.is_empty()).then_some(false);
+    }
+    None
 }
 
 /// Moves session `id` to the trash and says where it went. Nothing is erased: `restore` brings it back.
@@ -398,6 +519,7 @@ impl Session {
             goal: None,
             locked: true,
             touched: std::time::Instant::now(),
+            open_tail: false,
         })
     }
 
@@ -426,6 +548,7 @@ impl Session {
             goal: None,
             locked: false,
             touched: std::time::Instant::now(),
+            open_tail: false,
         }
     }
 
@@ -472,12 +595,7 @@ impl Session {
             }
         }
         meta.messages = messages.len();
-        let mut file = OpenOptions::new().append(true).open(path)?;
-        // a process killed mid-write leaves a last line without its end: close it, so that the
-        // next message starts on a line of its own
-        if bytes.last().is_some_and(|b| *b != b'\n') {
-            file.write_all(b"\n")?;
-        }
+        let file = OpenOptions::new().append(true).open(path)?;
         Ok(Session {
             meta,
             path: path.to_path_buf(),
@@ -489,7 +607,47 @@ impl Session {
             goal,
             locked: false,
             touched: std::time::Instant::now(),
+            // a process killed mid-write leaves a last line without its end
+            open_tail: bytes.last().is_some_and(|b| *b != b'\n'),
         })
+    }
+
+    /// Takes the session for writing now, as a resume does before anything is spent: fails when
+    /// another nexo holds it. Reading a session never takes it; its first write does.
+    pub fn claim(&mut self) -> anyhow::Result<()> {
+        let Some(f) = &mut self.file else { return Ok(()) };
+        let lock = lock_path(&self.path);
+        if !self.locked {
+            take_lock(&lock)?;
+            (self.locked, self.touched) = (true, std::time::Instant::now());
+        } else {
+            // the lock is still this process's: one that judged it stale may have taken it over
+            match std::fs::read_to_string(&lock) {
+                Ok(t) if t == stamp() => {
+                    if self.touched.elapsed() > LOCK_TOUCH {
+                        // a lock in use stays young: only an idle one can be taken over by its age
+                        self.touched = std::time::Instant::now();
+                        if let Ok(l) = File::options().write(true).open(&lock) {
+                            let _ = l.set_modified(std::time::SystemTime::now());
+                        }
+                    }
+                }
+                // deleted by hand while in use: taken again
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => take_lock(&lock)?,
+                Ok(t) => anyhow::bail!(
+                    "session {} was taken over by another nexo (pid {}): nothing more is saved here",
+                    self.meta.id,
+                    t.split_whitespace().next().unwrap_or("unknown")
+                ),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if self.open_tail {
+            // so that the next line starts on a line of its own
+            f.write_all(b"\n")?;
+            self.open_tail = false;
+        }
+        Ok(())
     }
 
     pub fn id(&self) -> &str {
@@ -520,18 +678,19 @@ impl Session {
         self.cost
     }
 
+    /// The file of a session saved on disk, opened again when a rewrite could not reopen it: a
+    /// write that cannot reach it fails instead of going unsaved without a word.
+    fn ensure_open(&mut self) -> anyhow::Result<()> {
+        if self.file.is_none() && !self.path.as_os_str().is_empty() {
+            self.file = Some(reopen(&self.path)?);
+        }
+        Ok(())
+    }
+
     fn write(&mut self, line: &Line) -> anyhow::Result<()> {
+        self.ensure_open()?;
+        self.claim()?;
         if let Some(f) = &mut self.file {
-            if !self.locked {
-                take_lock(&lock_path(&self.path))?;
-                (self.locked, self.touched) = (true, std::time::Instant::now());
-            } else if self.touched.elapsed() > LOCK_TOUCH {
-                // a lock in use stays young: only an idle one can be taken over by its age
-                self.touched = std::time::Instant::now();
-                if let Ok(l) = File::options().write(true).open(lock_path(&self.path)) {
-                    let _ = l.set_modified(std::time::SystemTime::now());
-                }
-            }
             write_line(f, line)?;
         }
         self.meta.updated = now();
@@ -609,7 +768,8 @@ impl Session {
             self.messages.iter().flat_map(|m| m.tool_calls().map(|(id, _, _)| id.to_string())).collect();
         self.outputs.retain(|id, _| ids.contains(id));
         let done = self.rewrite();
-        if done.is_err() {
+        // a file replaced but not opened again holds the kept messages: memory stays as they are
+        if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
             (self.messages, self.outputs) = (messages, outputs);
             self.meta.messages = self.messages.len();
         }
@@ -620,13 +780,11 @@ impl Session {
     fn rewrite(&mut self) -> anyhow::Result<()> {
         self.meta.messages = self.messages.len();
         self.meta.updated = now();
-        if self.file.is_none() {
-            return Ok(());
+        if self.path.as_os_str().is_empty() {
+            return Ok(()); // saved nowhere
         }
-        if !self.locked {
-            take_lock(&lock_path(&self.path))?;
-            self.locked = true;
-        }
+        self.ensure_open()?;
+        self.claim()?;
         // one temporary name per process: two writers never share it
         let tmp = self.path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
         // a write that fails leaves no partial copy (it holds tool outputs) behind
@@ -675,13 +833,20 @@ impl Session {
         self.file = None;
         let renamed = std::fs::rename(&tmp, &self.path);
         // the file is opened again even when the rename failed (Windows, a virus scanner), so the
-        // session keeps being saved; the failure is still reported
-        self.file = Some(OpenOptions::new().append(true).open(&self.path)?);
-        if let Err(e) = renamed {
-            let _ = std::fs::remove_file(&tmp);
-            anyhow::bail!("cannot replace {}: {e}", self.path.display());
+        // session keeps being saved; the failure is still reported. One that cannot be opened is
+        // tried again at the next write.
+        let reopened = reopen(&self.path);
+        match renamed {
+            Ok(()) => {
+                self.file = Some(reopened.map_err(NotReopened)?);
+                Ok(())
+            }
+            Err(e) => {
+                self.file = reopened.ok();
+                let _ = std::fs::remove_file(&tmp);
+                anyhow::bail!("cannot replace {}: {e}", self.path.display());
+            }
         }
-        Ok(())
     }
 
     /// A new session that starts as a copy of the first `keep` messages of this one (and the
@@ -1109,7 +1274,8 @@ mod tests {
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600)).unwrap();
         drop(f);
         s.append(&Message::user("y")).unwrap();
-        assert_eq!(std::fs::read_to_string(&lock).unwrap(), std::process::id().to_string());
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), stamp());
+        assert_eq!(lock_pid(&lock), Some(std::process::id()));
         drop(s);
         if cfg!(target_os = "linux") {
             // a lock whose process is gone is taken over at once
@@ -1157,7 +1323,7 @@ mod tests {
         drop(f);
         let mut s = Session::open_path(&p).unwrap();
         let r = s.append(&Message::user("x"));
-        if cfg!(target_os = "linux") {
+        if cfg!(unix) {
             assert!(r.unwrap_err().to_string().contains("in use"));
         } else {
             r.unwrap(); // no liveness check here: the age decides
@@ -1180,6 +1346,24 @@ mod tests {
         s.rewind(2).unwrap();
         let g = Session::open_path(s.path()).unwrap();
         assert_eq!(g.messages().iter().map(|m| m.text()).collect::<Vec<_>>(), ["one", "two"]);
+    }
+
+    #[test]
+    fn a_file_replaced_but_not_reopened_keeps_memory_as_the_file_and_says_so() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        for t in ["one", "two", "three"] {
+            s.append(&Message::user(t)).unwrap();
+        }
+        FAIL_REOPEN.with(|f| f.set(true));
+        assert!(s.rewind(1).is_err());
+        assert_eq!(s.messages().len(), 1, "the file holds only the kept message now");
+        // while it cannot be opened, every write says it was not saved
+        assert!(s.append(&Message::user("lost")).is_err());
+        FAIL_REOPEN.with(|f| f.set(false));
+        s.append(&Message::user("four")).unwrap();
+        let on_disk: Vec<String> = Session::open_path(s.path()).unwrap().messages().iter().map(|m| m.text()).collect();
+        assert_eq!(on_disk, ["one", "four"]);
     }
 
     #[test]
@@ -1210,6 +1394,100 @@ mod tests {
         drop(s);
         let m = &list_in(d.path())[0];
         assert_eq!((m.messages, m.title.as_str()), (2, "later"));
+    }
+
+    #[test]
+    fn a_held_session_is_read_but_not_claimed_nor_touched() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("one")).unwrap();
+        let p = s.path().to_path_buf();
+        drop(s);
+        // the other writer is in the middle of a line
+        OpenOptions::new().append(true).open(&p).unwrap().write_all(b"{\"type\":\"ti").unwrap();
+        let before = std::fs::read(&p).unwrap();
+        std::fs::write(lock_path(&p), "1").unwrap(); // pid 1 always runs
+        let mut s = Session::open_path(&p).unwrap();
+        assert_eq!(s.messages().len(), 1);
+        assert!(s.claim().unwrap_err().to_string().contains("in use"));
+        drop(s);
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        std::fs::remove_file(lock_path(&p)).unwrap();
+        let mut s = Session::open_path(&p).unwrap();
+        s.claim().unwrap();
+        s.append(&Message::user("two")).unwrap();
+        assert_eq!(Session::open_path(&p).unwrap().messages().len(), 2);
+    }
+
+    #[test]
+    fn a_lock_taken_over_stops_the_saving_and_is_left_to_its_new_holder() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("one")).unwrap();
+        let lock = lock_path(s.path());
+        // another nexo judged the lock stale and took it
+        std::fs::write(&lock, "1").unwrap();
+        let e = s.append(&Message::user("two")).unwrap_err().to_string();
+        assert!(e.contains("taken over") && e.contains("pid 1"), "{e}");
+        let p = s.path().to_path_buf();
+        drop(s);
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), "1", "its lock stays");
+        assert_eq!(Session::open_path(&p).unwrap().messages().len(), 1);
+        // a live lock deleted by hand is taken again by its writer
+        std::fs::remove_file(&lock).unwrap();
+        let mut s = Session::open_path(&p).unwrap();
+        s.append(&Message::user("two")).unwrap();
+        std::fs::remove_file(&lock).unwrap();
+        s.append(&Message::user("three")).unwrap();
+        assert_eq!(lock_pid(&lock), Some(std::process::id()));
+        std::fs::write(&lock, "1").unwrap();
+        assert!(s.append(&Message::user("four")).is_err());
+        drop(s);
+        std::fs::remove_file(&lock).unwrap();
+        assert_eq!(Session::open_path(&p).unwrap().messages().len(), 3);
+    }
+
+    #[test]
+    fn a_stale_lock_is_taken_over_only_while_it_is_the_one_judged() {
+        let d = tempfile::tempdir().unwrap();
+        let lock = d.path().join("x.jsonl.lock");
+        // judged stale, but another nexo took it over first and holds a fresh one
+        std::fs::write(&lock, "1").unwrap();
+        assert!(!take_over(&lock, "4000000000"));
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), "1", "the fresh lock stays");
+        // still the one judged: it goes
+        std::fs::write(&lock, "4000000000").unwrap();
+        assert!(take_over(&lock, "4000000000"));
+        assert!(!lock.exists());
+        // already gone: nothing to take over
+        assert!(!take_over(&lock, "4000000000"));
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0, "nothing left aside");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_lock_whose_pid_now_names_another_process_is_stale() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        let p = s.path().to_path_buf();
+        let lock = lock_path(&p);
+        drop(s);
+        let stat = std::fs::read_to_string("/proc/1/stat").unwrap();
+        let start: u64 = stat[stat.rfind(')').unwrap() + 1..].split_whitespace().nth(19).unwrap().parse().unwrap();
+        let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim().to_string();
+        // pid 1 runs, but it is not the process that wrote these: it started at another time
+        // (a reused pid, or a pid of a container), or the machine has booted since
+        for other in [format!("1 {} {boot}", start + 12_345), format!("1 {start} not-this-boot")] {
+            std::fs::write(&lock, &other).unwrap();
+            let mut s = Session::open_path(&p).unwrap();
+            s.append(&Message::user("x")).unwrap();
+            assert_eq!(lock_pid(&lock), Some(std::process::id()));
+            drop(s);
+        }
+        // the same process, still running: in use
+        std::fs::write(&lock, format!("1 {start} {boot}")).unwrap();
+        let mut s = Session::open_path(&p).unwrap();
+        assert!(s.append(&Message::user("y")).unwrap_err().to_string().contains("in use"));
     }
 
     #[test]

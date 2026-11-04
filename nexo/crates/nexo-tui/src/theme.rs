@@ -540,7 +540,7 @@ impl Theme {
             let rank = ((0..4).all(|i| (i + 1..4).all(|j| shown[i] != shown[j])), k / 5 < 3 && k % 5 < 3);
             let gap = min_gap(&seen).unwrap_or(0.0);
             // a pair only takes the place of an earlier one of the same rank when clearly farther apart
-            let better = best.map_or(true, |(_, r, g)| rank > r || (rank == r && gap > g + 0.02));
+            let better = best.is_none_or(|(_, r, g)| rank > r || (rank == r && gap > g + 0.02));
             if better {
                 best = Some((k, rank, gap));
             }

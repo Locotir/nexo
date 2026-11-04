@@ -32,3 +32,21 @@ jobs:
       - run: cargo build --workspace
       - run: cargo test --workspace --no-fail-fast
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  msrv:
+    # the oldest Rust nexo supports (rust-version in nexo/Cargo.toml) builds and tests it with the locked dependencies
+    runs-on: ubuntu-latest
+    env:
+      COLORTERM: truecolor
+    defaults:
+      run:
+        working-directory: nexo
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.89.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nexo
+      - run: cargo test --workspace --locked --no-fail-fast

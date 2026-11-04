@@ -64,7 +64,7 @@ fn serve() {
             ),
             "notifications/initialized" => {}
             "tools/list" => {
-                if params.get("cursor").map_or(true, Value::is_null) {
+                if params.get("cursor").is_none_or(Value::is_null) {
                     reply(&mut out, &id, Some(json!({"tools": all[..2], "nextCursor": "page2"})), None);
                 } else {
                     reply(&mut out, &id, Some(json!({"tools": all[2..]})), None);

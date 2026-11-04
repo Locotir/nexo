@@ -1,12 +1,14 @@
 # Results
 
-Every figure below names its data. Unless a table says otherwise, the simulated figures and the live
-runs were measured with **the earlier reference implementation** of the curator, from which nexo's
-`nexo-curator` crate was ported. The port is checked against fixtures recorded from it, so the engine
-and its settings are the same.
+nexo began as a university thesis on context curation. Unless a table says otherwise, the simulated
+figures and the live runs below were measured with **an earlier implementation** of the curator, written
+for that thesis and not published, from which nexo's `nexo-curator` crate was ported. The port is checked
+against fixtures recorded from it (`nexo/crates/nexo-curator/tests/`). Its settings have been retuned
+since, so those figures describe the earlier engine, not nexo as shipped.
 
-The raw records named below (`experiments/...`) live in the author's research repository; the tables
-here carry every figure they give.
+The raw records named below (`experiments/...`) are **not published**; the tables here carry every
+figure they give, and they cannot be reproduced from this repository. The figures you can reproduce
+are in "Measured in nexo" and "One long run, step by step".
 
 ## The hypothesis
 
@@ -214,9 +216,30 @@ shown, and none is ruled out.
 
 ## Measured in nexo
 
-On a scripted 37-call session through an OpenAI-compatible endpoint, the whole history sends 2.78M
-tokens and the curator 0.90M (−68%); with cached input at a tenth of the price, −42% of the input cost.
-Replaying 28 recorded nexo sessions of 8 to 52 calls: −42% of the tokens sent. The engine scales with
+**Replay of the public fixtures.** The 7 whole-history recordings in
+`nexo/crates/nexo-curator/tests/fixtures/` (`bench-*-full*.jsonl`), replayed offline through the curator
+with its default settings (`examples/replay.rs`: what the curator would have sent at each recorded
+request; tokens estimated at four characters per token):
+
+| fixture | requests | whole history | curator | change |
+|---|---|---|---|---|
+| `bench-realm100-full` | 100 | 3.53M | 3.59M | +1.5% |
+| `bench-marathon4-full` | 81 | 2.97M | 1.51M | −49.0% |
+| `bench-marathon-full` | 55 | 1.63M | 0.86M | −47.6% |
+| `bench-dir-full-4` | 22 | 204k | 187k | −8.3% |
+| `bench-long-full-1` | 21 | 152k | 127k | −16.5% |
+| `bench-results-full-4` | 5 | 21.7k | 21.7k | 0.0% |
+| `bench-results-full-0` | 8 | 6.0k | 6.4k | +6.8% |
+| **all** | | **8.52M** | **6.30M** | **−26%** |
+
+Reproduce one with `cargo run --release -p nexo-curator --example replay -- crates/nexo-curator/tests/fixtures/<file>.jsonl --quiet`
+(from `nexo/`; the `total over all requests` line). The replay cannot show how the model would have
+reacted to the smaller view; only a live run does.
+
+Not reproducible from this repository (the recordings are not published): on a scripted 37-call session
+through an OpenAI-compatible endpoint, the whole history sends 2.78M tokens and the curator 0.90M (−68%);
+with cached input at a tenth of the price, −42% of the input cost. Replaying 28 recorded nexo sessions of
+8 to 52 calls: −42% of the tokens sent. The engine scales with
 the history: on conversations built from real sessions (measured with the earlier reference
 implementation), one call's view takes 5 ms median / 19 ms p95 at 1M tokens of history (0.1 GB of
 memory), 6 / 23 ms at 10M (0.24 GB), 9 / 30 ms at 25M (0.5 GB) and 11 / 35 ms at 50M (0.9 GB).
@@ -249,7 +272,7 @@ Neither arm solves the puzzle in 100 steps (the earlier 1000-step runs put the c
 at the same point of the work the curator spends a third less and runs in less than half the time.
 
 Replaying the curator offline on the plain run's recorded requests (`examples/replay.rs`, see
-[`usage.md`](usage.md)) shows what it would have sent at each of the 100 requests:
+[`usage.md`](usage.md); that transcript is not in the repository) shows what it would have sent at each of the 100 requests:
 
 ![tokens per request](img/tokens-per-step.svg)
 

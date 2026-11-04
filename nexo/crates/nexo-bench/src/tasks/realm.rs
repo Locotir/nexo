@@ -99,7 +99,7 @@ fn world() -> World {
     while items.len() < 150 {
         let n = name(&mut r, 2)
             + "_"
-            + r.pick(&["ring", "band", "boots", "helm", "charm", "idol", "glove", "mail", "blade"]);
+            + *r.pick(&["ring", "band", "boots", "helm", "charm", "idol", "glove", "mail", "blade"]);
         if !seen.insert(n.clone()) {
             continue;
         }
@@ -122,7 +122,7 @@ fn world() -> World {
     }
     let mut zones = Vec::new();
     while zones.len() < 16 {
-        let n = name(&mut r, 2) + "_" + r.pick(&["vale", "crypt", "marsh", "spire", "wastes", "hollow"]);
+        let n = name(&mut r, 2) + "_" + *r.pick(&["vale", "crypt", "marsh", "spire", "wastes", "hollow"]);
         if !seen.insert(n.clone()) {
             continue;
         }

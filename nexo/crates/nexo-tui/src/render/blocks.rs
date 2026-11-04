@@ -169,7 +169,7 @@ impl Block {
                 }
                 // a blinking caret where the next words will land
                 if *streaming {
-                    let on = (o.spinner / 6) % 2 == 0;
+                    let on = (o.spinner / 6).is_multiple_of(2);
                     let caret = if on { theme.style(theme.accent) } else { theme.style(theme.dim2) };
                     if let Some(last) = lines.last_mut() {
                         last.spans.push(Span::styled("▍", caret));

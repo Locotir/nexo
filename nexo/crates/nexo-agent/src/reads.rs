@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use nexo_core::message::{Message, Part};
+use nexo_core::tool::{ToolDisplay, ToolOutput};
 
 /// What the curator puts where it left something out.
 const OMITTED: &str = "[curator]";
@@ -176,6 +177,17 @@ impl Reads {
     }
 }
 
+/// How many characters of the lines asked for `out` holds: a `read` counts the lines it shows,
+/// without their numbers, and an output the tool cut in the middle holds none for sure (what was
+/// added to each line, such as `cat -n` numbers, can outweigh what the cut took out).
+pub fn printed(out: &ToolOutput) -> usize {
+    match &out.display {
+        ToolDisplay::File { text, .. } => text.chars().count(),
+        _ if out.content.contains(" characters omitted] …") => 0,
+        _ => out.content.chars().count(),
+    }
+}
+
 /// The file and the lines a shell command prints, when printing them is all it does: `cat [-n] F`,
 /// `sed -n 'A,Bp' F` (or `Ap`), `head [-n N | -N] F`, `tail [-n N | -n +N | -N] F`, after
 /// `cd D;` or `cd D &&` if any. Pipes, redirections, globs, expansions and other commands: None.
@@ -336,6 +348,35 @@ mod tests {
         // a whole output does
         r.note_view(&[result("c2", "lines 150-160")]);
         assert!(r.after_lines(&p, "a.log", Span::From(152, Some(155)), "c3", 500).is_some());
+    }
+
+    #[test]
+    fn numbered_lines_do_not_hide_a_cut() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.rs");
+        let body: String = (1..=900).map(|i| format!("let value_{i:04} = compute({i});\n")).collect();
+        std::fs::write(&p, &body).unwrap();
+        // `cat -n`: about 7 more characters a line, capped in the middle by the shell tool
+        let numbered: String = body.lines().enumerate().map(|(i, l)| format!("{:>6}\t{l}\n", i + 1)).collect();
+        let n = numbered.chars().count();
+        assert!(n > 31_000 && body.chars().count() < 30_000, "{n}");
+        let head: String = numbered.chars().take(15_000).collect();
+        let tail: String = numbered.chars().skip(n - 15_000).collect();
+        let capped = format!("{head}\n… [{} characters omitted] …\n\n{tail}", n - 30_000);
+        let mut r = Reads::default();
+        let out = ToolOutput::ok(capped);
+        assert!(r.after_lines(&p, "a.rs", Span::From(1, None), "c1", printed(&out)).is_none());
+        r.note_view(&[result("c1", "numbered lines")]);
+        assert!(r.after_lines(&p, "a.rs", Span::From(400, Some(450)), "c2", 2_000).is_none(), "lines never sent");
+        // a `read` whose long line was cut: its numbers do not make up for it
+        let q = d.path().join("b.txt");
+        std::fs::write(&q, format!("short\n{}\n", "y".repeat(2_005))).unwrap();
+        let shown = format!("     1│ short\n     2│ {}…\n", "y".repeat(1_999));
+        let text = format!("short\n{}…\n", "y".repeat(1_999));
+        let out = ToolOutput::ok(shown).with_display(ToolDisplay::File { path: "b.txt".into(), text, start_line: 1 });
+        assert!(r.after_read(&q, "b.txt", None, 2000, "c3", printed(&out)).is_none());
+        r.note_view(&[result("c3", "the read")]);
+        assert!(r.after_read(&q, "b.txt", None, 2000, "c4", 10_000).is_none(), "the long line was never sent whole");
     }
 
     #[test]

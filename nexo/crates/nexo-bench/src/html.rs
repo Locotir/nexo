@@ -22,10 +22,12 @@ pub fn load(paths: &[PathBuf]) -> Result<Vec<Record>, String> {
 }
 
 /// Writes `report.html` for `records` into `out`; its path.
-pub fn write(out: &Path, records: &[Record]) -> std::io::Result<PathBuf> {
+/// `spent` is what every priced reply cost, runs that ended in an error included (none: the
+/// records' sum).
+pub fn write(out: &Path, records: &[Record], spent: Option<f64>) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(out)?;
     let path = out.join("report.html");
-    std::fs::write(&path, render(records))?;
+    std::fs::write(&path, render(records, spent))?;
     Ok(path)
 }
 
@@ -106,7 +108,7 @@ fn n(x: u64) -> String {
     let s = x.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -137,6 +139,11 @@ pub fn savings(records: &[Record], a: &str, b: &str) -> Option<(f64, u64, u64, u
     (sb > 0).then(|| (100.0 * (1.0 - sa as f64 / sb as f64), sa, sb, common.len()))
 }
 
+/// The runs of `arm` on `task` the budget did not cut.
+fn whole<'a>(records: &'a [Record], arm: &'a str, task: &'a str) -> impl Iterator<Item = &'a Record> + 'a {
+    records.iter().filter(move |r| r.arm == arm && r.task == task && !cut(r))
+}
+
 /// The conclusions, in English, one short sentence per item.
 pub fn conclusions(records: &[Record]) -> Vec<String> {
     let mut out = Vec::new();
@@ -146,31 +153,66 @@ pub fn conclusions(records: &[Record]) -> Vec<String> {
         return out;
     }
     let unknown = records.iter().any(|r| r.estimated);
-    let all: Vec<(String, String, Totals)> = arms
-        .iter()
-        .map(|(a, p)| (a.clone(), p.clone(), totals(records.iter().filter(|r| &r.arm == a && !cut(r)))))
-        .collect();
-    let best = all
-        .iter()
-        .max_by(|x, y| x.2.mean().total_cmp(&y.2.mean()).then(y.2.cost.total_cmp(&x.2.cost)))
-        .expect("an arm");
-    out.push(format!(
-        "The best arm is <b>{}</b>{}: mean score <b>{:.1}%</b> over <b>{}</b> runs.",
-        esc(&best.0),
-        if best.1.is_empty() { String::new() } else { format!(" ({})", esc(&best.1)) },
-        best.2.mean(),
-        best.2.runs
-    ));
-    for (a, _, t) in all.iter().filter(|_| !unknown) {
-        match t.cost_per_point() {
-            Some(c) => out.push(format!(
-                "<b>{}</b> costs <b>${:.5}</b> per point (total cost <b>${:.4}</b>).",
-                esc(a),
-                c,
-                t.cost
-            )),
-            None => out.push(format!("<b>{}</b> scored no points (total cost <b>${:.4}</b>).", esc(a), t.cost)),
+    // arms are compared on the tasks every arm has whole runs of, each task's mean first, so a task
+    // only some arms ran (the budget stopped the others) does not decide the winner
+    let mut tasks: Vec<&str> = Vec::new();
+    for r in records.iter().filter(|r| !cut(r)) {
+        if !tasks.contains(&r.task.as_str()) {
+            tasks.push(&r.task);
         }
+    }
+    let common: Vec<&str> =
+        tasks.iter().copied().filter(|t| arms.iter().all(|(a, _)| whole(records, a, t).next().is_some())).collect();
+    let left_out = tasks.len() - common.len();
+    // per arm: (mean score 0..100, summed per-task mean cost, summed per-task mean score)
+    let all: Vec<(String, String, f64, f64, f64)> = arms
+        .iter()
+        .map(|(a, p)| {
+            let (mut cost, mut score) = (0.0, 0.0);
+            for t in &common {
+                let tt = totals(whole(records, a, t));
+                cost += tt.cost / tt.runs as f64;
+                score += tt.score / tt.runs as f64;
+            }
+            let mean = if common.is_empty() { 0.0 } else { 100.0 * score / common.len() as f64 };
+            (a.clone(), p.clone(), mean, cost, score)
+        })
+        .collect();
+    if common.is_empty() {
+        out.push("No task has whole runs of every arm, so the arms are not compared.".into());
+    } else {
+        let best = all.iter().max_by(|x, y| x.2.total_cmp(&y.2).then(y.3.total_cmp(&x.3))).expect("an arm");
+        let k = common.len();
+        out.push(format!(
+            "The best arm is <b>{}</b>{}: mean score <b>{:.1}%</b> over <b>{k}</b> task{} every arm ran.",
+            esc(&best.0),
+            if best.1.is_empty() { String::new() } else { format!(" ({})", esc(&best.1)) },
+            best.2,
+            if k == 1 { "" } else { "s" }
+        ));
+        for (a, _, _, cost, score) in all.iter().filter(|_| !unknown) {
+            if *score > 0.0 {
+                out.push(format!(
+                    "<b>{}</b> costs <b>${:.5}</b> per point (a mean run of each of these tasks: <b>${:.4}</b>).",
+                    esc(a),
+                    cost / (score * 100.0),
+                    cost
+                ));
+            } else {
+                out.push(format!(
+                    "<b>{}</b> scored no points on these tasks (a mean run of each: <b>${:.4}</b>).",
+                    esc(a),
+                    cost
+                ));
+            }
+        }
+    }
+    if left_out > 0 {
+        out.push(format!(
+            "<b>{left_out}</b> task{} left out of the comparison: some arm has no whole run of {}.",
+            if left_out == 1 { " is" } else { "s are" },
+            if left_out == 1 { "it" } else { "them" }
+        ));
     }
     let by_policy = |p: &str| arms.iter().find(|(_, q)| q == p).map(|(a, _)| a.clone());
     if let Some(cur) = by_policy("curator") {
@@ -260,8 +302,8 @@ fn same(r: &Record, arm: &str, task: &str, rep: u32) -> bool {
     r.arm == arm && r.task == task && r.rep == rep
 }
 
-/// The page for `records`.
-pub fn render(records: &[Record]) -> String {
+/// The page for `records`; `spent` as in [`write`].
+pub fn render(records: &[Record], spent: Option<f64>) -> String {
     let arms = arms(records);
     let mut families: Vec<&str> = Vec::new();
     for r in records {
@@ -277,10 +319,16 @@ pub fn render(records: &[Record]) -> String {
     // no prices known: every cost is 0, so none is shown
     let unknown = records.iter().any(|r| r.estimated);
     let usd = |x: f64, places: usize| if unknown { "unknown".to_string() } else { format!("{x:.places$}") };
-    let spent: f64 = records.iter().map(|r| r.cost).sum();
+    let recorded: f64 = records.iter().map(|r| r.cost).sum();
+    let spent = spent.unwrap_or(recorded).max(recorded);
+    let skipped = if !unknown && spent - recorded >= 0.00005 {
+        format!(", of which <b>${:.4}</b> in runs that were skipped", spent - recorded)
+    } else {
+        String::new()
+    };
     let _ = write!(
         s,
-        "<p class=\"m\"><b>{}</b> runs. <b>{}</b> arms. <b>{}</b> families. Total cost <b>{}</b>.</p>",
+        "<p class=\"m\"><b>{}</b> runs. <b>{}</b> arms. <b>{}</b> families. Total cost <b>{}</b>{skipped}.</p>",
         records.len(),
         arms.len(),
         families.len(),
@@ -437,7 +485,7 @@ mod tests {
         std::fs::write(dir.path().join("results.jsonl"), lines).unwrap();
         let loaded = load(&[dir.path().to_path_buf()]).unwrap();
         assert_eq!(loaded.len(), 4);
-        let path = write(dir.path(), &loaded).unwrap();
+        let path = write(dir.path(), &loaded, None).unwrap();
         let html = std::fs::read_to_string(path).unwrap();
         assert!(!html.contains("<script"));
         assert!(html.contains("The best arm is <b>curator</b>"), "{html}");
@@ -445,8 +493,8 @@ mod tests {
         // curator vs plain on the one common run: 4,000 against 10,000 tokens, 60% saved
         assert!(html.contains("saves <b>60.0%</b>") && html.contains("<b>4,000</b> versus <b>10,000</b>"));
         assert!(html.contains("saves <b>50.0%</b>"), "against compact");
-        // $0.02 for 125 points
-        assert!(html.contains("<b>$0.00016</b> per point"), "{html}");
+        // on the one task every arm ran: $0.01 for 100 points; canonstep (curator only) is left out
+        assert!(html.contains("<b>$0.00010</b> per point") && html.contains("<b>1</b> task is left out"), "{html}");
         assert!(html.contains("Family repoqa") && html.contains("Family canonstep") && html.contains("<svg"));
     }
 
@@ -457,7 +505,7 @@ mod tests {
             rec("repoqa/a", "curator", "curator", 1.0, 0.0, 4_000),
         ];
         records.iter_mut().for_each(|r| r.estimated = true);
-        let html = render(&records);
+        let html = render(&records, None);
         assert!(!html.contains("$0.0") && !html.contains("0.0000<") && !html.contains("per point"), "{html}");
         assert!(!html.contains("Total cost</text>") && html.contains("costs are unknown"), "{html}");
         assert!(html.contains("Total cost <b>unknown</b>"), "{html}");
@@ -480,6 +528,21 @@ mod tests {
     }
 
     #[test]
+    fn the_best_arm_is_judged_on_the_tasks_every_arm_ran() {
+        // plain also ran a hard task the budget stopped before curator got to it
+        let records = vec![
+            rec("repoqa/a", "plain", "plain", 1.0, 0.02, 10_000),
+            rec("repoqa/a", "curator", "curator", 0.8, 0.01, 4_000),
+            rec("repoqa/hard", "plain", "plain", 0.0, 0.02, 10_000),
+        ];
+        let c = conclusions(&records).join("\n");
+        assert!(c.contains("The best arm is <b>plain</b>"), "{c}");
+        assert!(c.contains("mean score <b>100.0%</b> over <b>1</b> task every arm ran"), "{c}");
+        assert!(c.contains("<b>1</b> task is left out"), "{c}");
+        assert!(c.contains("<b>plain</b> costs <b>$0.00020</b> per point"), "{c}");
+    }
+
+    #[test]
     fn merged_runs_of_the_same_task_and_repeat_are_all_counted() {
         let records = vec![
             rec("repoqa/a", "plain", "plain", 0.5, 0.02, 10_000),
@@ -491,8 +554,11 @@ mod tests {
         let (pct, sa, sb, _) = savings(&records, "curator", "plain").unwrap();
         assert_eq!((sa, sb), (10_000, 15_000));
         assert!((pct - 33.333).abs() < 0.01);
-        let html = render(&records);
+        let html = render(&records, None);
         assert!(html.contains("16,000") && html.contains("20,000"), "{html}");
+        assert!(!html.contains("runs that were skipped"));
+        let billed = render(&records, Some(1.0));
+        assert!(billed.contains("Total cost <b>$1.0000</b>, of which <b>$0.9400</b> in runs that were skipped"));
     }
 
     #[test]

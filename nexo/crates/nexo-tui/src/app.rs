@@ -1550,7 +1550,7 @@ impl App {
                 self.map_changed = cells
                     .iter()
                     .enumerate()
-                    .map(|(i, c)| self.map.get(i).map_or(true, |old| old.state != c.state))
+                    .map(|(i, c)| self.map.get(i).is_none_or(|old| old.state != c.state))
                     .collect();
                 self.map = cells;
                 self.map_zones = zones;

@@ -430,7 +430,7 @@ impl Featurizer {
 
     fn memory(&self, tr: &Tracer, c: &Chunk, t: usize) -> (f64, f64) {
         let mut act = self.act.borrow_mut();
-        if act.as_ref().map_or(true, |a| a.t != t) {
+        if act.as_ref().is_none_or(|a| a.t != t) {
             *act = Some(self.activation(tr, t));
         }
         let Some(a) = act.as_mut() else { return (ACTR_FLOOR, 0.0) };

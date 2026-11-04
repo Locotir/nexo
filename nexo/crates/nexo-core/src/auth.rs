@@ -94,10 +94,7 @@ pub fn set(name: &str, cred: Credential) -> std::io::Result<()> {
 /// Sets the entry `name` of the store at `f`. Only that entry changes: the others, those of a kind this
 /// build does not know included, are written back as they were.
 pub fn set_in(f: &Path, name: &str, cred: Credential) -> std::io::Result<()> {
-    let _lock = Lock::take(f)?;
-    let mut map = read_raw(f)?;
-    map.insert(name.to_string(), serde_json::to_value(cred).map_err(std::io::Error::other)?);
-    write_to(f, &map)
+    lock_in(f)?.set(name, cred)
 }
 
 /// Removes an entry; true when there was one.
@@ -134,40 +131,108 @@ fn read_raw(path: &Path) -> std::io::Result<BTreeMap<String, serde_json::Value>>
     })
 }
 
-/// `<store>.lock`, held while one writer reads, changes and writes the store, so two sessions refreshing
-/// their tokens at once do not drop each other's. A lock older than [`Lock::STALE`] was left by a
-/// process that died and is taken over.
-struct Lock(PathBuf);
+/// The store, locked: while this is held no other nexo reads-and-writes it, so a session can read an
+/// entry, renew its tokens and write them back without another session doing the same at once.
+pub struct Locked {
+    _lock: Lock,
+    path: PathBuf,
+}
+
+impl Locked {
+    /// The entry as it is on disk now (another process may have changed it before the lock was taken).
+    pub fn get(&self, name: &str) -> Option<Credential> {
+        read_from(&self.path).remove(name)
+    }
+
+    /// Sets the entry `name`; the others, those of a kind this build does not know included, stay.
+    pub fn set(&self, name: &str, cred: Credential) -> std::io::Result<()> {
+        let mut map = read_raw(&self.path)?;
+        map.insert(name.to_string(), serde_json::to_value(cred).map_err(std::io::Error::other)?);
+        write_to(&self.path, &map)
+    }
+}
+
+/// Locks the store (blocking, for up to a minute while another nexo holds it).
+pub fn lock() -> std::io::Result<Locked> {
+    lock_in(&file())
+}
+
+pub fn lock_in(f: &Path) -> std::io::Result<Locked> {
+    Ok(Locked { _lock: Lock::take(f)?, path: f.to_path_buf() })
+}
+
+/// An OS lock on `<store>.lock`, held while one writer reads, changes and writes the store (and, for a
+/// login renewal, while it asks for the new tokens), so two sessions do not drop each other's entries
+/// or renew the same login twice. The system lets it go when the holder exits, even by a crash, so a
+/// lock file left behind never blocks anyone; the file itself stays.
+struct Lock(#[allow(dead_code)] std::fs::File);
 
 impl Lock {
-    const STALE: std::time::Duration = std::time::Duration::from_secs(10);
+    /// Longest wait for another holder before giving up with an error.
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
     fn take(store: &Path) -> std::io::Result<Lock> {
+        Lock::take_within(store, Lock::WAIT)
+    }
+
+    fn take_within(store: &Path, wait: std::time::Duration) -> std::io::Result<Lock> {
         let path = store.with_extension("json.lock");
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d)?;
         }
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            o.share_mode(0); // the open itself is the lock: a second one fails while this handle lives
+        }
+        let start = std::time::Instant::now();
         loop {
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(Lock(path)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
-                    if age.is_some_and(|a| a > Lock::STALE) {
-                        let _ = std::fs::remove_file(&path);
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
+            match o.open(&path) {
+                Ok(f) => {
+                    if try_lock(&f)? {
+                        return Ok(Lock(f));
                     }
                 }
+                // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION: another handle holds it
+                Err(e) if cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33)) => {}
                 Err(e) => return Err(e),
             }
+            if start.elapsed() >= wait {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("{} is held by another nexo for over {}s", path.display(), wait.as_secs()),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 }
 
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+/// True when this handle now holds the lock, false when another one does.
+#[cfg(unix)]
+fn try_lock(f: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: flock on a descriptor this File owns; it is released when the File is closed.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(true);
     }
+    let e = std::io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(c) if c == libc::EWOULDBLOCK || c == libc::EINTR => Ok(false),
+        _ => Err(e),
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock(_f: &std::fs::File) -> std::io::Result<bool> {
+    Ok(true) // on Windows the exclusive open already is the lock
 }
 
 pub fn read_from(path: &Path) -> BTreeMap<String, Credential> {
@@ -287,6 +352,22 @@ mod tests {
         let map = read_from(&f);
         assert_eq!(map.len(), 8, "{map:?}");
         assert!(map.values().all(|c| c.secret() == "k9"));
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no lock or temporary file stays");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "only the store and its lock file stay");
+    }
+
+    #[test]
+    fn a_lock_left_by_a_dead_process_is_taken_at_once_and_a_held_one_is_waited_for_a_bounded_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("auth.json");
+        std::fs::write(dir.path().join("auth.json.lock"), "").unwrap(); // its taker died just now
+        let t = std::time::Instant::now();
+        let held = Lock::take_within(&f, std::time::Duration::from_secs(5)).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let e = Lock::take_within(&f, std::time::Duration::from_millis(200)).err().expect("held");
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() >= std::time::Duration::from_millis(200));
+        drop(held);
+        Lock::take_within(&f, std::time::Duration::from_millis(200)).unwrap();
     }
 }

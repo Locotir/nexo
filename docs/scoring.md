@@ -45,8 +45,8 @@ every (task, arm) with replacement, 2,000 times.
 > The arm is **non-inferior** when the lower end of that interval is above
 > **−0.10** (ten points). This is a one-sided test at 5%.
 
-The pilot of §8 was summed up this way (margin 0.10) with the tooling of the
-earlier reference implementation; its records are in `experiments/live/`.
+The pilot of §8 was summed up this way (margin 0.10) with the tooling of an
+earlier, unpublished implementation; its records are not in this repository.
 
 ## 3. Secondary endpoint: what does it cost?
 
@@ -74,7 +74,7 @@ Always reported for every arm, so none of them is picked after the fact:
 ## 5. Offline evaluation (no model calls)
 
 The offline results replay recorded sessions and synthetic ones through the
-simulated agent of the earlier reference implementation.
+simulated agent of an earlier, unpublished implementation.
 
 - **Tuning and report data are disjoint.**
   - Settings are chosen on the *tune* data: the recorded segments the model was

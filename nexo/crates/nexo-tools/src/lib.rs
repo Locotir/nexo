@@ -62,6 +62,20 @@ pub fn local() -> ToolSet {
         .with(Arc::new(lsp::Diagnostics))
 }
 
+/// Variables as `(name, value)`.
+pub type Env = Arc<Vec<(String, String)>>;
+
+tokio::task_local! {
+    /// Set around a tool call: the programs the tool starts on its own (language servers,
+    /// checkers) get exactly these variables instead of this process's environment.
+    pub static CHILD_ENV: Env;
+}
+
+/// The environment set by [`CHILD_ENV`] for the call running now, if any.
+pub(crate) fn child_env() -> Option<Env> {
+    CHILD_ENV.try_with(Arc::clone).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

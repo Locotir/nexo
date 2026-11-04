@@ -7,6 +7,7 @@ pub mod check;
 pub mod client;
 pub mod cost;
 pub mod counters;
+pub mod env;
 pub mod html;
 pub mod llmb;
 pub mod preflight;
@@ -194,6 +195,8 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
             }
         }
     }
+    let spent = *bench.spent.lock().unwrap();
+    let stopped = stopped.or_else(|| budget_spent(opts.budget, spent, &records));
     let header = report::Header {
         model: opts.model.clone(),
         upstream: opts.upstream.clone(),
@@ -207,15 +210,24 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         arm_order: Some(ARM_ORDER.into()),
         skipped,
         stopped: stopped.clone(),
+        spent: Some(spent),
     };
     let summary = report::summary(&header, &records);
     std::fs::write(out.join("summary.md"), &summary)?;
     println!("{summary}");
-    match html::write(&out, &records) {
+    match html::write(&out, &records, Some(spent)) {
         Ok(p) => eprintln!("bench: report at {}", p.display()),
         Err(e) => eprintln!("bench: no report.html: {e}"),
     }
     Ok(if stopped.is_some() { 2 } else { 0 })
+}
+
+/// Why the benchmark stopped early when the loop ended on its own: the budget ran out during the
+/// last run (that run was cut, or everything priced reached the budget).
+fn budget_spent(budget: Option<f64>, spent: f64, records: &[run::Record]) -> Option<String> {
+    let b = budget?;
+    let cut = records.iter().any(|r| r.stop == Some(client::Stop::Budget));
+    (cut || spent >= b).then(|| format!("the budget of ${b} is spent"))
 }
 
 /// How the report says the arms were ordered.
@@ -271,7 +283,7 @@ pub fn report(out: &std::path::Path, inputs: &[PathBuf], summary: Option<&std::p
         std::fs::write(file, report::summary(&report::header_of(&records), &records))?;
         println!("{}: {} runs", file.display(), records.len());
     }
-    let path = html::write(out, &records)?;
+    let path = html::write(out, &records, None)?;
     println!("{}: {} runs", path.display(), records.len());
     Ok(0)
 }
@@ -316,6 +328,16 @@ mod tests {
         assert!(fresh_out(dir.path()).is_ok(), "an empty file holds no runs");
         std::fs::write(dir.path().join("results.jsonl"), "{}\n").unwrap();
         assert!(fresh_out(dir.path()).unwrap_err().to_string().contains("results.jsonl"));
+    }
+
+    #[test]
+    fn a_budget_cut_in_the_last_run_still_stops_early() {
+        let cut = run::Record { stop: Some(client::Stop::Budget), ..Default::default() };
+        let done = run::Record::default;
+        assert!(budget_spent(Some(5.0), 4.2, &[done(), cut]).is_some());
+        assert!(budget_spent(Some(5.0), 5.0, &[done()]).is_some());
+        assert!(budget_spent(Some(5.0), 4.2, &[done()]).is_none());
+        assert!(budget_spent(None, 9.0, &[done()]).is_none());
     }
 
     #[test]

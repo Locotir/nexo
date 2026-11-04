@@ -315,9 +315,7 @@ fn gemini_models(body: &Value) -> Vec<ModelInfo> {
         .map(|ms| {
             ms.iter()
                 .filter(|m| {
-                    m["supportedGenerationMethods"]
-                        .as_array()
-                        .map_or(true, |g| g.iter().any(|x| x == "generateContent"))
+                    m["supportedGenerationMethods"].as_array().is_none_or(|g| g.iter().any(|x| x == "generateContent"))
                 })
                 .filter_map(|m| {
                     Some(ModelInfo {

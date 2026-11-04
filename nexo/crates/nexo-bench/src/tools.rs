@@ -10,7 +10,7 @@ use nexo_core::{
 };
 use serde_json::Value;
 
-use crate::seal::Seal;
+use crate::seal::{quote, Seal};
 
 /// The most characters of a tool's output the model reads.
 pub const CAP: usize = 30_000;
@@ -42,18 +42,29 @@ pub fn toolset(wd: &Path, seal: Option<Seal>) -> ToolSet {
 }
 
 /// The local tools named in `only` (every one when None) for a run in `wd`: sealed when `seal` is
-/// given, their paths kept inside `wd` when sealed or `confine`.
+/// given, their paths kept inside `wd` when sealed or `confine`. Every program they start gets a
+/// cleared environment with a home of its own ([`crate::env`]). A sealed set has no `diagnostics`:
+/// its language servers and checkers would run outside the box.
 pub fn toolset_with(wd: &Path, seal: Option<Seal>, only: Option<&[&str]>, confine: bool) -> ToolSet {
     let seal = seal.map(Arc::new);
+    let home = Arc::new(crate::env::Home::new().expect("a temporary folder for the run's home"));
+    let env: nexo_tools::Env = Arc::new(home.env());
     let local = nexo_tools::local();
     let mut set = ToolSet::new();
     for name in local.names() {
-        if only.is_some_and(|o| !o.contains(&name)) {
+        if only.is_some_and(|o| !o.contains(&name)) || (seal.is_some() && name == "diagnostics") {
             continue;
         }
         let inner = local.get(name).cloned().expect("a listed tool");
         let confine = confine || seal.is_some();
-        set.add(Arc::new(Bench { inner, wd: wd.to_path_buf(), seal: seal.clone(), confine }));
+        set.add(Arc::new(Bench {
+            inner,
+            wd: wd.to_path_buf(),
+            seal: seal.clone(),
+            confine,
+            env: env.clone(),
+            _home: home.clone(),
+        }));
     }
     set
 }
@@ -65,6 +76,10 @@ struct Bench {
     seal: Option<Arc<Seal>>,
     /// Paths outside `wd` are refused.
     confine: bool,
+    /// The whole environment of the programs the tool starts.
+    env: nexo_tools::Env,
+    /// Where `env`'s home and temporary folder are, kept while the tools live.
+    _home: Arc<crate::env::Home>,
 }
 
 impl Bench {
@@ -115,19 +130,24 @@ impl Tool for Bench {
             }
         }
         if let Some(cmd) = args.get("command").and_then(Value::as_str).filter(|_| self.inner.name() == "bash") {
-            // the key stays with the provider: a command never sees it in its environment
-            let unset = if nexo_core::shell::shell().kind == "powershell" {
-                format!("Remove-Item Env:{} -ErrorAction SilentlyContinue; ", crate::run::KEY_ENV)
-            } else {
-                format!("unset {}; ", crate::run::KEY_ENV)
-            };
-            let cmd = format!("{unset}{cmd}");
+            // keys, tokens and session sockets stay out: a command gets a cleared environment
+            let shell = nexo_core::shell::shell();
             args["command"] = Value::String(match &self.seal {
-                Some(seal) => seal.wrap(&cmd),
-                None => cmd,
+                Some(seal) => seal.wrap(cmd),
+                // PowerShell has no `env -i`: there only the bench key is removed
+                None if shell.kind == "powershell" => {
+                    format!("Remove-Item Env:{} -ErrorAction SilentlyContinue; {cmd}", crate::run::KEY_ENV)
+                }
+                None => {
+                    let mut parts = vec!["env".to_string(), "-i".to_string()];
+                    parts.extend(self.env.iter().map(|(k, v)| quote(&format!("{k}={v}"))));
+                    parts.push(quote(&shell.program.to_string_lossy()));
+                    parts.extend(shell.args_for(cmd).iter().map(|a| quote(a)));
+                    parts.join(" ")
+                }
             });
         }
-        let mut out = self.inner.run(args, ctx).await;
+        let mut out = nexo_tools::CHILD_ENV.scope(self.env.clone(), self.inner.run(args, ctx)).await;
         out.content = cap(&out.content);
         out
     }
@@ -249,5 +269,28 @@ mod tests {
             )
             .await;
         assert!(out.content.contains("[]") && !out.content.contains("bench-key-marker"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn commands_get_a_cleared_environment_and_a_home_of_their_own() {
+        if nexo_core::shell::shell().kind == "powershell" {
+            return;
+        }
+        let wd = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_BENCH_TOOLS_TOKEN", "tools-token-marker");
+        let set = toolset(wd.path(), None);
+        let bash = set.get("bash").unwrap();
+        let ctx = ToolContext::new(wd.path().to_path_buf());
+        let out = bash.run(serde_json::json!({"command": "env; echo \"home=$HOME\""}), &ctx).await;
+        assert!(!out.content.contains("tools-token-marker"), "{}", out.content);
+        let home = std::env::var("HOME").unwrap_or_default();
+        let shown = format!("home={home}");
+        assert!(!out.content.lines().any(|l| l.trim() == shown) && out.content.contains("home=/"), "{}", out.content);
+        assert!(out.content.contains("PATH="), "{}", out.content);
+        assert!(set.get("diagnostics").is_some());
+        if let Ok(seal) = Seal::new(wd.path(), vec![], vec![]) {
+            let sealed = toolset(wd.path(), Some(seal));
+            assert!(sealed.get("diagnostics").is_none() && sealed.get("bash").is_some());
+        }
     }
 }

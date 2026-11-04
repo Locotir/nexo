@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" role="img" aria-labelledby="t d">
 <title id="t">One 100-step coding session: whole history against the nexo curator</title>
-<desc id="d">Cost 0.266 dollars against 0.170 (36 percent less). Wall time 521 seconds against 213 (59 percent less). Tokens sent 7.79 million against 4.04 million (48 percent less). Same score in both.</desc>
+<desc id="d">Cost 0.266 dollars against 0.170 (36 percent less). Wall time 521 seconds against 213 (59 percent less). Tokens sent 7.79 million against 4.04 million (48 percent less). Both stopped at step 100 without solving the task (score 1 percent each).</desc>
 <style>
 .bg{fill:#fcfcfb}.t1{fill:#0b0b0b}.t2{fill:#52514e}.t3{fill:#898781}.base{fill:#a3a29a}.cur{fill:#2a78d6}.grid{stroke:#e4e3de}
 @media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.t3{fill:#9c9b93}.base{fill:#6e6d67}.cur{fill:#3987e5}.grid{stroke:#383835}}
 </style>
 <rect class="bg" width="760" height="300" rx="10"/>
 <text class="t1" x="20" y="32" font-size="17" font-weight="700">One 100-step coding session. Same model, same task.</text>
-<text class="t2" x="20" y="54">deepseek-chat on a reverse-engineering task, one run per arm, both stopped at step 100 with the same score</text>
+<text class="t2" x="20" y="54">deepseek-chat, reverse-engineering task, one run per arm; both stopped at step 100 unsolved (score 1% each)</text>
 <rect class="base" x="20" y="70" width="12" height="12" rx="2"/><text class="t2" x="38" y="81">whole history (what agents send today)</text>
 <rect class="cur" x="300" y="70" width="12" height="12" rx="2"/><text class="t2" x="318" y="81">nexo curator</text>
 <line class="grid" x1="170" y1="98" x2="170" y2="262"/>

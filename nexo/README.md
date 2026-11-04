@@ -4,7 +4,7 @@ A terminal coding harness for any model provider: a full-screen interface
 (mouse, folding transcript, search, palette) and a headless mode, with tools
 (read, edit, write, shell, search), permissions, sessions, MCP servers, and
 a built-in context curator as its default context policy.
-Written in Rust (ratatui), Linux first.
+Written in Rust (ratatui), for Linux and Windows (both built and tested on every push; macOS is not tested).
 
 Everything it does, and the test that checks each thing: [FEATURES.md](FEATURES.md).
 
@@ -152,8 +152,8 @@ conversation that sends it what bears on its task and puts it ahead of the task,
   thread model) and each paragraph by the task's rare words and names it adds; `"lexical"` uses a
   plainer selection of the same kind, by word overlap alone. The same conversation and task give the
   same briefing. On the conversations and tasks of `crates/nexo-agent/tests/fixtures/brief/` nexo
-  picks the same spans, with the same labels and texts, as the earlier reference implementation of the
-  selection (`the_selection_matches_the_reference`).
+  picks the same spans, with the same labels and texts, as an earlier, unpublished implementation of the
+  selection, whose output is recorded in those fixtures (`the_selection_matches_the_reference`).
 
 The sub-agent is told not to read again what is marked current, and its report comes back without the
 lines it copied from the briefing and cut at about 2000 tokens. Where the sub-agent works, a line says
@@ -322,7 +322,9 @@ a spend limit are ignored, and the session opens with a notice naming them: a pr
 `api_key_*`, `auth`, `login`, `headers`, `protocol`, `extra` and `pricing` (your own for that provider
 stay), a `provider` your file does not define, `[mcp.*]`, `[[hooks]]`, `permissions.allow`,
 `permissions.mode` set to `auto` or `accept-edits`, `ui.status_command`, `agent.system_prompt_file`,
-`web.url` and `web.api_key_env`, and `agent.max_cost` or `max_cost_day` above yours. Everything else in it applies, and its `deny` rules always do.
+`web.url` and `web.api_key_env`, and an `agent.max_cost` or `max_cost_day` above yours or not a positive
+number (0, a negative number or `nan` would mean no limit). Everything else in it applies, and its `deny`
+rules always do.
 The project's `.nexo/commands/` and `.nexo/agents/` are not loaded either until you trust it.
 `nexo config trust [DIR]` trusts the project (its resolved folder is added to `~/.nexo/trusted-projects`,
 one per line; remove the line to take it back) and `nexo config path` says whether it is trusted.
@@ -565,7 +567,11 @@ that stopped between a tool call and its result (a session closed or killed
 mid-step) is mended before it is sent: the call is answered as not run, and
 nothing it holds is lost.
 
-Measured on a scripted 37-call session (reading and searching this
+Replayed offline on the 7 whole-history recordings in
+`crates/nexo-curator/tests/fixtures/` (`examples/replay.rs`), the curator sends
+26% fewer tokens in total, from −49% to +7% per session
+([`docs/results.md`](../docs/results.md), "Measured in nexo"). On recordings
+that are not in this repository: a scripted 37-call session (reading and searching this
 repository's modules, an OpenAI-compatible endpoint): plain sends 2.78M tokens,
 the curator 0.90M (−68%); with cached input at a tenth of the price, −42% of
 the input cost. Replaying 28 recorded sessions of 8 to 52 calls: −42% of the

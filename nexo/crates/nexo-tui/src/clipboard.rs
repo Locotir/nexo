@@ -50,7 +50,7 @@ pub fn copy_with(text: &str, system: bool, tools: &[Tool]) -> Result<&'static st
     // A tool that forks keeps the content after nexo exits, so it is fed even
     // when the system clipboard took the text already.
     for (name, args, needs) in tools {
-        if !needs.is_empty() && std::env::var_os(needs).map_or(true, |v| v.is_empty()) {
+        if !needs.is_empty() && std::env::var_os(needs).is_none_or(|v| v.is_empty()) {
             continue;
         }
         match run_tool(name, args, text) {
@@ -131,7 +131,7 @@ pub fn paste() -> Result<Pasted, String> {
         Err(_) => why.push("clipboard lock poisoned".into()),
     }
     for (name, args, needs) in IMAGE_TOOLS {
-        if !needs.is_empty() && std::env::var_os(needs).map_or(true, |v| v.is_empty()) {
+        if !needs.is_empty() && std::env::var_os(needs).is_none_or(|v| v.is_empty()) {
             continue;
         }
         if let Ok(out) = Command::new(name).args(*args).stderr(Stdio::null()).output() {

@@ -392,20 +392,52 @@ pub async fn refresh_at(at: &Endpoints, cred: &Credential) -> Result<Credential,
 /// `auth`) is used, renewed first when it is about to expire, and what its
 /// login learned is applied.
 pub async fn prepare(cfg: &ProviderConfig) -> Result<(ProviderConfig, Option<String>), ProviderError> {
+    prepare_in(&auth::file(), &Endpoints::default(), cfg).await
+}
+
+pub async fn prepare_in(
+    store: &std::path::Path,
+    at: &Endpoints,
+    cfg: &ProviderConfig,
+) -> Result<(ProviderConfig, Option<String>), ProviderError> {
     let direct = ProviderConfig { auth: None, ..cfg.clone() };
     if let Some(k) = direct.resolve_key() {
         return Ok((cfg.clone(), Some(k)));
     }
     let Some(name) = cfg.auth.as_deref() else { return Ok((cfg.clone(), None)) };
-    let Some(mut cred) = auth::get(name) else { return Ok((cfg.clone(), None)) };
+    let Some(mut cred) = auth::read_from(store).remove(name) else { return Ok((cfg.clone(), None)) };
     if cred.expiring(auth::now(), 60) {
-        cred = refresh(&cred).await?;
-        // a store that cannot be written still leaves this request working
-        if let Err(e) = auth::set(name, cred.clone()) {
-            tracing::warn!("could not save the renewed login for {name}: {e}");
-        }
+        cred = renew_locked(store, at, name).await?.unwrap_or(cred);
     }
     Ok((apply(cfg, &cred), Some(cred.secret().to_string())))
+}
+
+/// Renews the entry `name` holding the store's lock from the read to the write, so two sessions never
+/// spend the same refresh token: after the lock is taken the entry is read again, and one another
+/// process renewed meanwhile is used as it is. None when the entry is gone.
+async fn renew_locked(
+    store: &std::path::Path,
+    at: &Endpoints,
+    name: &str,
+) -> Result<Option<Credential>, ProviderError> {
+    let f = store.to_path_buf();
+    let lock = tokio::task::spawn_blocking(move || auth::lock_in(&f))
+        .await
+        .map_err(|e| fail(format!("the credential store could not be locked: {e}")))?
+        .map_err(|e| fail(format!("the credential store could not be locked: {e}")))?;
+    let Some(cred) = lock.get(name) else { return Ok(None) };
+    if !cred.expiring(auth::now(), 60) {
+        return Ok(Some(cred));
+    }
+    // bounded, so a stuck renewal does not keep the other sessions waiting on the lock
+    let renewed = tokio::time::timeout(Duration::from_secs(30), refresh_at(at, &cred))
+        .await
+        .map_err(|_| fail(format!("renewing the login for {name} took over 30s; try again")))??;
+    // a store that cannot be written still leaves this request working
+    if let Err(e) = lock.set(name, renewed.clone()) {
+        tracing::warn!("could not save the renewed login for {name}: {e}");
+    }
+    Ok(Some(renewed))
 }
 
 /// What a login adds to the provider's configuration.
@@ -563,6 +595,34 @@ mod tests {
         let renewed = refresh_at(&at(&s), &cred).await.unwrap();
         assert_eq!(renewed.secret(), "at2");
         assert_eq!(renewed.metadata("account_id"), Some("acct"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_sessions_renewing_the_same_login_at_once_renew_it_once() {
+        let s = MockServer::start();
+        let renew = s.mock(|w, t| {
+            w.method(POST).path("/oauth/token").body_includes("refresh_token=rt1");
+            t.status(200)
+                .delay(Duration::from_millis(300))
+                .json_body(json!({"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}));
+        });
+        let dir = std::env::temp_dir().join(format!("nexo-login-test-{}", std::process::id()));
+        let store = dir.join("auth.json");
+        let mut md = BTreeMap::new();
+        md.insert("flow".to_string(), "codex".to_string());
+        let old =
+            Credential::Oauth { access: "at1".into(), refresh: "rt1".into(), expires: auth::now() + 5, metadata: md };
+        auth::set_in(&store, "codex", old).unwrap();
+        let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+        cfg.auth = Some("codex".into());
+        let e = at(&s);
+        let (a, b) = tokio::join!(prepare_in(&store, &e, &cfg), prepare_in(&store, &e, &cfg));
+        let (a, b) = (a.unwrap().1.unwrap(), b.unwrap().1.unwrap());
+        let saved = auth::read_from(&store);
+        let _ = std::fs::remove_dir_all(&dir);
+        renew.assert_calls(1);
+        assert!(a == "at2" && b == "at2", "both sessions use the renewed token");
+        assert_eq!(saved["codex"].secret(), "at2");
     }
 
     #[tokio::test]

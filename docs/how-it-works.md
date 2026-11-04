@@ -56,7 +56,7 @@ Each message is processed once, when it arrives, and nothing is recomputed per c
     person or the agent wrote weighs twice a tool's output;
   - **the map**: the requests that moved out, each with the agent's closing reply, and the files changed
     and commands run in them.
-- **Cold storage.** The earlier reference implementation rebuilt the view down to `cold` tokens after a
+- **Cold storage.** An earlier, unpublished implementation rebuilt the view down to `cold` tokens after a
   pause that let the provider's cache expire, since everything is paid in full then anyway. nexo does not
   track the cache's time to live, so it has no such step: `cold` is not a setting and `ttl` is refused.
   The curator writes nothing to disk: what left the view comes back by the agent reading the file or
@@ -87,9 +87,9 @@ threshold=0.02;head=turn;recall=0;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `live=1` | on | outputs of the open request that no later message drew on go idle and leave when that pays |
 | `digest=1`, `hold=1` | on | what the agent has not yet written about is not idle and does not count toward the cap |
 | `dedup=3` | `3` | a run of 3+ lines already whole in the view goes as a pointer to it (`asked=3`: not when asked again, unless the same call gave the very same output: then one line says nothing changed) |
-| `loops=0` | off | folding a run of identical steps (first and latest stay) sends a view the model already saw, so at a fixed temperature it takes the same step again; off by default (cycle 56) |
-| `fresh=1` | `1` | the output just asked for goes whole; its repeated runs go as pointers from the next request on (a pointer in a fresh output sends the agent looking for the lines; cycle 57) |
-| `still=32000` | `32000` | the latest outputs the agent has not written about yet (no text, no note since), up to this many tokens, leave only as an exact copy of a later output, never on a guess, cap or not; older ones past the budget may go on a guess, so the view stays bounded when the agent never writes (cycle 57) |
+| `loops=0` | off | folding a run of identical steps (first and latest stay) sends a view the model already saw, so at a fixed temperature it takes the same step again; off by default |
+| `fresh=1` | `1` | the output just asked for goes whole; its repeated runs go as pointers from the next request on (a pointer in a fresh output sends the agent looking for the lines) |
+| `still=32000` | `32000` | the latest outputs the agent has not written about yet (no text, no note since), up to this many tokens, leave only as an exact copy of a later output, never on a guess, cap or not; older ones past the budget may go on a guess, so the view stays bounded when the agent never writes |
 | `stale=1` | on | past the cap, a read of a file that a later edit or write of it (one that did not fail) changed leaves with the exact copies, before any guess; its note names the file and the message of the edit, and says to read the file again (or `recall`, when the host offers it); decided only at a cut, so the view between cuts stays as sent |
 | `directives=N` | `0` | 1 appends the efficiency directives to the system prompt |
 | `protect=M` | `12` | the last `M` messages never leave the view |

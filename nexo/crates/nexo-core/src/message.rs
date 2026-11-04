@@ -342,8 +342,9 @@ mod string_or_parts {
 /// The tokens an image counts for in [`estimate_tokens`], whatever its bytes (the curator's figure).
 pub const MEDIA_TOKENS: u64 = 1500;
 
-/// A cheap token estimate (about four characters per token), the same the
-/// curator uses, so the agent and the curator agree on sizes.
+/// A cheap token estimate (about four characters per token), the curator's rule with one
+/// difference: the visible text of reasoning counts here, while the curator counts a reasoning
+/// block as its type alone. Sizes agree for a history without reasoning text.
 pub fn estimate_tokens(messages: &[Message]) -> u64 {
     messages.iter().map(message_tokens).sum()
 }

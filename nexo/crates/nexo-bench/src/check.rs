@@ -73,8 +73,12 @@ pub fn tail(s: &str, n: usize) -> String {
 
 /// Runs `cmd`, feeding it `stdin`, and kills it after `timeout`.
 pub fn run(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -> Output {
-    // a checker runs the agent's code: it never sees the bench key
-    cmd.env_remove(crate::run::KEY_ENV);
+    // a checker runs the agent's code: a cleared environment with a home of its own, no key
+    let home = match crate::env::Home::new() {
+        Ok(h) => h,
+        Err(e) => return Output { code: None, stdout: String::new(), stderr: format!("cannot start: {e}") },
+    };
+    crate::env::apply(cmd, &home.env());
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -321,7 +325,11 @@ mod tests {
     #[cfg(unix)]
     fn a_checked_program_never_sees_the_bench_key() {
         std::env::set_var(crate::run::KEY_ENV, "bench-key-marker");
-        let out = run(Command::new("sh").args(["-c", "env"]), None, Duration::from_secs(60));
+        std::env::set_var("NEXO_BENCH_CHECK_TOKEN", "check-token-marker");
+        let out = run(Command::new("sh").args(["-c", "env"]).env("OWN", "kept"), None, Duration::from_secs(60));
         assert!(out.success() && !out.stdout.contains("bench-key-marker"), "{}", out.tail(200));
+        assert!(!out.stdout.contains("check-token-marker") && out.stdout.contains("OWN=kept"), "{}", out.stdout);
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert!(!out.stdout.lines().any(|l| l == format!("HOME={home}")), "{}", out.stdout);
     }
 }

@@ -38,6 +38,9 @@ fn is_plain_js(file: &Path) -> bool {
 /// Runs a command to its end or the limit; kills the whole group on the limit.
 async fn run(mut cmd: tokio::process::Command, limit: Duration) -> Result<(String, String, bool), String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    if let Some(env) = crate::child_env() {
+        cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+    }
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|e| format!("cannot start the checker: {e}"))?;
@@ -165,6 +168,20 @@ mod tests {
         std::fs::write(&f, "fn main() {}").unwrap();
         assert!(check(&f, d.path(), "rust", LIMIT).await.is_none());
         assert!(check(&f, d.path(), "python", LIMIT).await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_set_environment_replaces_the_process_own() {
+        std::env::set_var("NEXO_TOOLS_TEST_TOKEN", "token-marker");
+        let env: crate::Env = std::sync::Arc::new(vec![
+            ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
+            ("ONLY".into(), "1".into()),
+        ]);
+        let mut c = tokio::process::Command::new("sh");
+        c.args(["-c", "env"]);
+        let (out, _, ok) = crate::CHILD_ENV.scope(env, run(c, LIMIT)).await.unwrap();
+        assert!(ok && out.contains("ONLY=1") && !out.contains("token-marker"), "{out}");
     }
 
     #[tokio::test]

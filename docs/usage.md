@@ -2,7 +2,7 @@
 
 ## Build and run
 
-Rust 1.80 or newer, on Linux or Windows.
+Rust 1.89 or newer, on Linux or Windows.
 
 ```sh
 cd nexo

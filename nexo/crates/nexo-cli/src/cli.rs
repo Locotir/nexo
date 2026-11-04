@@ -44,7 +44,7 @@ pub struct Args {
     /// Curator settings for this run, over [context] curator_spec (`eoq=32000;dedup=0`)
     #[arg(long, value_name = "SPEC", env = "NEXO_CURATOR_SPEC")]
     pub curator_spec: Option<String>,
-    /// Theme: dark | light | mono
+    /// Theme: dark, nexo, light, mono, catppuccin-mocha, gruvbox, nord, dracula, solarized-dark, tokyo-night
     #[arg(long)]
     pub theme: Option<String>,
     /// Disable mouse capture (lets the terminal select text natively).

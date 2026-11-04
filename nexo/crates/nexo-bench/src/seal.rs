@@ -6,9 +6,11 @@
 use std::path::{Path, PathBuf};
 
 /// Runs as `sh -c SCRIPT seal WD KEEP MASK CMD HIDE...`: binds the system read-only, hides the homes,
-/// temporary folders and HIDE under empty filesystems, then puts back WD (writable) and each
-/// colon-separated KEEP folder (read-only) at their own paths. Each colon-separated program name in
-/// MASK is shadowed by a stub that says the program is not found, so the box lacks it.
+/// temporary folders, `/run`, `/dev/shm` and HIDE under empty filesystems, then puts back WD
+/// (writable) and each colon-separated KEEP folder (read-only) at their own paths. Each
+/// colon-separated program name in MASK is shadowed by a stub that says the program is not found,
+/// first on PATH and bound over the real file (and its versioned names, `python3.12`) in every PATH
+/// folder and the system's `bin` folders, so a full path finds the stub too.
 pub const SCRIPT: &str = r#"set -e
 wd="$1"; keep="$2"; mask="$3"; cmd="$4"; shift 4
 for d in /usr /etc /bin /sbin /lib /lib32 /lib64 /boot /var /nix; do
@@ -24,9 +26,10 @@ for k in $keep; do
   i=$((i+1))
 done
 unset IFS
-for d in /tmp /root /home /var/tmp /opt /srv /media "$@"; do
+for d in /tmp /root /home /var/tmp /opt /srv /media /run /dev/shm "$@"; do
   if [ -d "$d" ]; then mount -t tmpfs none "$d"; fi
 done
+if [ -d /var/run ] && [ ! -L /var/run ]; then mount -t tmpfs none /var/run; fi
 mkdir -p "$wd"
 mount --bind /mnt/wd "$wd"
 i=0; IFS=:
@@ -37,8 +40,14 @@ done
 unset IFS
 if [ -n "$mask" ]; then
   mkdir -p /tmp/.mask; IFS=:
+  dirs="$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   for m in $mask; do
     printf '#!/bin/sh\necho "sh: 1: %s: not found" >&2\nexit 127\n' "$m" > "/tmp/.mask/$m"; chmod +x "/tmp/.mask/$m"
+    for d in $dirs; do
+      for f in "$d/$m" "$d/$m"[0-9]*; do
+        if [ -f "$f" ]; then mount --bind "/tmp/.mask/$m" "$f"; fi
+      done
+    done
   done
   unset IFS; export PATH="/tmp/.mask:$PATH"
 fi
@@ -72,9 +81,19 @@ impl Seal {
 
     /// `cmd` as a shell command line that runs it sealed.
     pub fn wrap(&self, cmd: &str) -> String {
-        let mut parts = vec!["env".to_string()];
-        if let Some(s) = &self.sysroot {
-            parts.push(format!("PATH={}:\"$PATH\"", quote(&s.join("bin").to_string_lossy())));
+        // a cleared environment: inside, the home and the temporary folder are the empty /tmp
+        let mut parts = vec!["env".to_string(), "-i".to_string()];
+        let tmp = Path::new("/tmp");
+        for (k, v) in crate::env::clean(tmp, tmp) {
+            let v = match k.as_str() {
+                "PATH" => match &self.sysroot {
+                    Some(s) => format!("{}:{v}", s.join("bin").to_string_lossy()),
+                    None => v,
+                },
+                "CARGO_HOME" => continue,
+                _ => v,
+            };
+            parts.push(quote(&format!("{k}={v}")));
         }
         parts.push("CARGO_HOME=/tmp/.cargo-home".into());
         parts.push("unshare".into());
@@ -157,5 +176,29 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("visible") && text.contains("hidden") && !text.contains("42"), "{text}");
         assert!(text.contains("awk 127"), "{text}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sealed_command_sees_no_session_sockets_no_secrets_and_no_masked_program_by_full_path() {
+        if available().is_err() {
+            eprintln!("skipped: {}", available().unwrap_err());
+            return;
+        }
+        let Some(awk) = nexo_core::shell::find_program("awk") else { return };
+        let wd = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_BENCH_SEAL_TOKEN", "seal-token-marker");
+        let seal = Seal::new(wd.path(), vec![], vec!["awk".into()]).unwrap();
+        let cmd = format!(
+            "echo \"run=[$(ls -A /run | grep -vx mount)] shm=[$(ls -A /dev/shm)] varrun=[$(ls -A /var/run/ | grep -vx mount)]\"; env; \
+             {} 'BEGIN{{print \"ran\"}}' 2>/dev/null; echo \"full $?\"; touch /dev/shm/x && echo shm-writable",
+            awk.display()
+        );
+        let out = std::process::Command::new("sh").arg("-c").arg(seal.wrap(&cmd)).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        // `mount` itself keeps its table in /run/mount, inside the empty /run
+        assert!(text.contains("run=[] shm=[] varrun=[]"), "{text}");
+        assert!(!text.contains("seal-token-marker") && text.contains("HOME=/tmp"), "{text}");
+        assert!(text.contains("full 127") && !text.contains("ran\n"), "{text}");
     }
 }

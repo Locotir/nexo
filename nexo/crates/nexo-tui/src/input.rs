@@ -573,7 +573,7 @@ impl Input {
         let (rows, (crow, _), origins) = layout(self, self.wrap_width);
         let (line, start) = origins[crow.min(origins.len() - 1)];
         let n = rows[crow.min(rows.len() - 1)].chars().count();
-        let last_of_line = origins.get(crow + 1).map_or(true, |o| o.0 != line);
+        let last_of_line = origins.get(crow + 1).is_none_or(|o| o.0 != line);
         // at a wrapped row's end the cursor stays before the break, not on the next row
         let at = if !end {
             start

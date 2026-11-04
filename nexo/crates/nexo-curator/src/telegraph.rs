@@ -156,8 +156,8 @@ fn prose(text: &str, lang: Lang) -> String {
         .collect();
     let prev_char = |a: usize| text[..a].trim_end_matches([' ', '\t']).chars().last();
     let next_char = |b: usize| text[b..].trim_start_matches([' ', '\t']).chars().next();
-    let clause_start = |a: usize| prev_char(a).map_or(true, |c| ".!?¿¡,;:\n(".contains(c));
-    let stop_after = |b: usize| next_char(b).map_or(true, |c| ",.!?;:\n)".contains(c));
+    let clause_start = |a: usize| prev_char(a).is_none_or(|c| ".!?¿¡,;:\n(".contains(c));
+    let stop_after = |b: usize| next_char(b).is_none_or(|c| ",.!?;:\n)".contains(c));
     // The word right before token `i`, when only blanks sit between them.
     let prev_word = |i: usize| (i > 0 && is_blank(&text[toks[i - 1].b..toks[i].a])).then(|| toks[i - 1].low.as_str());
     let next_word =

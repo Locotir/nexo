@@ -29,6 +29,8 @@ pub struct Header {
     pub price: Option<String>,
     /// Why the benchmark stopped early, if it did.
     pub stopped: Option<String>,
+    /// What every priced reply cost, runs that ended in an error included (none: the records' sum).
+    pub spent: Option<f64>,
 }
 
 /// The columns after the arm or the run, in both tables.
@@ -68,6 +70,7 @@ pub fn header_of(records: &[Record]) -> Header {
         arm_order: None,
         skipped: vec![],
         stopped: None,
+        spent: None,
     }
 }
 
@@ -121,7 +124,9 @@ pub fn price_line(p: &nexo_core::Pricing) -> String {
 
 /// The summary of `records` in Markdown.
 pub fn summary(h: &Header, records: &[Record]) -> String {
-    let total: f64 = records.iter().map(|r| r.cost).sum();
+    let recorded: f64 = records.iter().map(|r| r.cost).sum();
+    // what the provider billed: runs that ended in an error (no record) spent money too
+    let total = h.spent.unwrap_or(recorded).max(recorded);
     let estimated = records.iter().any(|r| r.estimated);
     let mut s = format!(
         "# nexo bench\n\n| model | commit | max steps | max tokens | temperature | repeats | budget | spent |\n\
@@ -136,6 +141,9 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
         if estimated { "unknown".into() } else { format!("${total:.4}") },
         h.upstream,
     );
+    if !estimated && total - recorded >= 0.00005 {
+        s.push_str(&format!("\nOf what was spent, ${:.4} went to runs that were skipped.\n", total - recorded));
+    }
     if let Some(p) = &h.price {
         s.push_str(&format!("\nPrices given with --price: {p}.\n"));
     }
@@ -434,6 +442,7 @@ mod tests {
             arm_order: None,
             skipped: vec![],
             stopped: None,
+            spent: None,
         }
     }
 
@@ -457,6 +466,9 @@ mod tests {
             "{s}"
         );
         assert!(s.contains("## Paired with plain"), "{s}");
+        assert!(!s.contains("runs that were skipped"), "{s}");
+        let billed = summary(&Header { spent: Some(2.0), ..head(1) }, &recs);
+        assert!(billed.contains("| $5 | **$2.0000** |") && billed.contains("$0.2500 went to runs that were skipped"));
         assert!(
             s.contains(
                 "| compact | 1 | 1 | -79.2 (not enough runs) | +0.5000 (not enough runs) | +0.0 (not enough runs) |"

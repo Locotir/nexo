@@ -197,7 +197,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     tools.add(Arc::new(crate::ask::ExitPlan::new((!headless).then(|| asker.clone()), plan.clone())));
     let (session, history, replay) = match &resume {
         Some(id) => {
-            let s = Session::open(id).map_err(|e| anyhow::anyhow!("cannot resume session {id}: {e}"))?;
+            // taken before anything is spent: a session another nexo writes is not resumed here
+            let s = Session::open(id)
+                .and_then(|mut s| s.claim().map(|_| s))
+                .map_err(|e| anyhow::anyhow!("cannot resume session {id}: {e}"))?;
             let h = s.messages().to_vec();
             (s, h, true)
         }
@@ -728,7 +731,8 @@ async fn goal_follow_up(state: &Shared) -> Option<String> {
 
 async fn resume_session(state: &Shared, id: &str) {
     let mut st = state.lock().await;
-    match Session::open(id) {
+    // taken before anything is spent: a session another nexo writes is not resumed here
+    match Session::open(id).and_then(|mut s| s.claim().map(|_| s)) {
         Ok(s) => {
             install_session(&mut st, s);
             if !st.history.is_empty() {
@@ -1985,11 +1989,11 @@ async fn run_one(
                     ("read", Some((path, p))) if !out.is_error => {
                         let offset = args.get("offset").and_then(Value::as_u64);
                         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(READ_LIMIT);
-                        st.reads.after_read(path, p, offset, limit, id, out.content.chars().count())
+                        st.reads.after_read(path, p, offset, limit, id, crate::reads::printed(&out))
                     }
                     ("bash", Some((path, p))) if !out.is_error => {
                         let span = args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print);
-                        let printed = out.content.chars().count();
+                        let printed = crate::reads::printed(&out);
                         span.and_then(|(_, span)| st.reads.after_lines(path, p, span, id, printed))
                     }
                     _ => None,
@@ -2456,7 +2460,7 @@ async fn learn(state: &Shared, e: &ProviderError) -> Lesson {
     if let Some(n) = hints::context_window(&e.message) {
         let before = st.limits.context_window;
         remember(st, &provider, &mut cfg, &model, "context_window", n);
-        if before.map_or(true, |b| n < b) && st.policy.fits_window() {
+        if before.is_none_or(|b| n < b) && st.policy.fits_window() {
             return Lesson::Refit;
         }
         return Lesson::Context;
