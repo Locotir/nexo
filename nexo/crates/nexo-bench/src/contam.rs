@@ -249,6 +249,8 @@ mod tests {
     }
 
     #[test]
+    // the command parser reads Unix paths; a Windows temp folder is not one
+    #[cfg(unix)]
     fn temporary_files_made_during_the_run_are_its_own() {
         let f = tempfile::Builder::new().prefix("contam-own-").tempfile().unwrap();
         let p = f.path().display().to_string();
