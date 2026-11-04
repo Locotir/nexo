@@ -13,7 +13,7 @@ use crate::py::{self, Re};
 
 pub static ERROR_MARKS: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
-        r"^(Traceback \(most recent call last\)|\w*Error: |error: |FAIL: |FAILED |E   )|\b[1-9]\d* failed\b|(?i:^\s*\[?exit code[ \t]*:?[ \t]*[1-9]\d*\b|\b(?:failed|finished|exited) with exit code [1-9]\d*\b)",
+        r"^(Traceback \(most recent call last\)|\w*Error: |error: |FAIL: |FAILED |E   )|\b[1-9]\d* failed\b|(?i:^\s*\[?exit code[ \t]*:?[ \t]*[1-9]\d*\b|^(?![ \t]*(?-i:[✓✔√]|ok\s|PASS\b))[^\n]*?\b(?:failed|finished|exited) with exit code [1-9]\d*\b)",
         py::M,
     )
 });

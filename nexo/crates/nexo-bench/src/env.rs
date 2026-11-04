@@ -7,9 +7,36 @@ use std::path::{Path, PathBuf};
 /// The variables kept as they are, when set.
 const KEEP: &[&str] = &["PATH", "LANG", "LANGUAGE", "TERM", "RUSTUP_TOOLCHAIN"];
 
-/// What Windows needs to start any program.
-#[cfg(windows)]
-const KEEP_WINDOWS: &[&str] = &["SystemRoot", "windir", "PATHEXT", "ComSpec", "SystemDrive", "NUMBER_OF_PROCESSORS"];
+/// What Windows needs to start any program (the profile folders are set to the run's own home).
+const KEEP_WINDOWS: &[&str] = &[
+    "SystemRoot",
+    "windir",
+    "PATHEXT",
+    "ComSpec",
+    "SystemDrive",
+    "OS",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+];
+
+/// Whether the variable `name` is kept. On Windows names match without regard to case (`Path`).
+fn kept(name: &str, windows: bool) -> bool {
+    if !windows {
+        return KEEP.contains(&name) || name.starts_with("LC_");
+    }
+    KEEP.iter().chain(KEEP_WINDOWS).any(|w| w.eq_ignore_ascii_case(name))
+        || name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("LC_"))
+}
+
+/// The Windows profile folders, under `AppData` in a run's home.
+const PROFILE: [(&str, &str); 2] = [("APPDATA", "Roaming"), ("LOCALAPPDATA", "Local")];
 
 /// The environment of a run's program: `PATH`, `LANG`, `LC_*`, `TERM`, the Rust toolchain's
 /// homes, `HOME` set to `home` and `TMPDIR` to `tmp`.
@@ -17,7 +44,7 @@ pub fn clean(home: &Path, tmp: &Path) -> Vec<(String, String)> {
     let key = std::env::var(crate::run::KEY_ENV).ok().filter(|k| !k.is_empty());
     let mut env: Vec<(String, String)> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-        .filter(|(k, _)| KEEP.contains(&k.as_str()) || k.starts_with("LC_") || keep_windows(k))
+        .filter(|(k, _)| kept(k, cfg!(windows)))
         .collect();
     for (var, dir) in [("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")] {
         if let Some(p) = toolchain_home(var, dir) {
@@ -31,20 +58,13 @@ pub fn clean(home: &Path, tmp: &Path) -> Vec<(String, String)> {
             let to = if var == "USERPROFILE" { home } else { tmp };
             env.push((var.into(), to.to_string_lossy().into_owned()));
         }
+        for (var, dir) in PROFILE {
+            env.push((var.into(), home.join("AppData").join(dir).to_string_lossy().into_owned()));
+        }
     }
     // a safeguard: whatever its name, a value that is the key stays out
     env.retain(|(_, v)| key.as_deref().is_none_or(|k| !v.contains(k)));
     env
-}
-
-#[cfg(windows)]
-fn keep_windows(k: &str) -> bool {
-    KEEP_WINDOWS.iter().any(|w| w.eq_ignore_ascii_case(k))
-}
-
-#[cfg(not(windows))]
-fn keep_windows(_: &str) -> bool {
-    false
 }
 
 /// Where the Rust toolchain keeps `var` (`CARGO_HOME`, `RUSTUP_HOME`): the variable, else `dir`
@@ -75,6 +95,11 @@ impl Home {
         let dir = tempfile::Builder::new().prefix("nexo-bench-home-").tempdir()?;
         std::fs::create_dir(dir.path().join("home"))?;
         std::fs::create_dir(dir.path().join("tmp"))?;
+        if cfg!(windows) {
+            for (_, sub) in PROFILE {
+                std::fs::create_dir_all(dir.path().join("home").join("AppData").join(sub))?;
+            }
+        }
         Ok(Home { dir })
     }
 
@@ -89,12 +114,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn names_match_without_case_on_windows_only() {
+        assert!(kept("PATH", false) && kept("LC_ALL", false));
+        assert!(!kept("Path", false) && !kept("SystemRoot", false) && !kept("lc_all", false));
+        for name in ["Path", "PATH", "SystemRoot", "SYSTEMROOT", "ComSpec", "ProgramFiles(x86)", "lc_all", "os"] {
+            assert!(kept(name, true), "{name}");
+        }
+        for name in [crate::run::KEY_ENV, "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SSH_AUTH_SOCK"] {
+            assert!(!kept(name, true) && !kept(name, false), "{name}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_keeps_what_programs_need_and_redirects_the_profile() {
+        let home = Home::new().unwrap();
+        let env = home.env();
+        let get = |k: &str| env.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone());
+        for var in ["PATH", "SystemRoot", "ComSpec", "PATHEXT"] {
+            assert!(get(var).is_some(), "{var}: {env:?}");
+        }
+        let h = home.dir.path().join("home");
+        assert_eq!(get("USERPROFILE").unwrap(), h.to_string_lossy());
+        assert!(get("APPDATA").unwrap().starts_with(&*h.to_string_lossy()));
+        assert!(std::path::Path::new(&get("LOCALAPPDATA").unwrap()).is_dir());
+    }
+
+    #[test]
     fn only_the_allow_list_is_kept_and_home_is_the_runs_own() {
         std::env::set_var("NEXO_BENCH_TEST_TOKEN", "token-marker");
         let home = Home::new().unwrap();
         let env = home.env();
         assert!(env.iter().all(|(k, v)| k != "NEXO_BENCH_TEST_TOKEN" && !v.contains("token-marker")), "{env:?}");
-        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        // Windows stores `Path`, and its names match without regard to case
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| if cfg!(windows) { n.eq_ignore_ascii_case(k) } else { n == k })
+                .map(|(_, v)| v.clone())
+        };
         assert_eq!(get("HOME").unwrap(), home.dir.path().join("home").to_string_lossy());
         assert_eq!(get("PATH"), std::env::var("PATH").ok());
         let mut cmd = std::process::Command::new("x");

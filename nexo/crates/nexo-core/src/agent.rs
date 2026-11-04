@@ -314,10 +314,15 @@ pub enum AgentEvent {
         id: String,
         answer: Option<String>,
     },
-    /// After each model call: `turn` is that call's usage (a turn of several
-    /// calls sends several of these), `session` the running total.
+    /// After each model call: `turn` is what that call spent, attempts the client retried
+    /// included (a turn of several calls sends several of these), `call` the usage of the attempt
+    /// that answered alone (the size of the request it sent; empty for a side call, a sub-agent,
+    /// the reader or a compaction, whose request is not the conversation's), `session` the running
+    /// total.
     Usage {
         turn: Usage,
+        #[serde(default)]
+        call: Usage,
         session: Usage,
         cost_usd: f64,
     },

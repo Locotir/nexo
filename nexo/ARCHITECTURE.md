@@ -125,7 +125,12 @@ partial assistant message is kept and the turn ends `Interrupted`. A
 queue's length is reported as `Queued { pending }` whenever it changes. A
 `ContextLength` error compacts once and retries. Usage is accumulated per
 turn and session and priced with the provider's pricing (`cost_usd`, 0 when
-unknown). The `Context` event is emitted after every view. Every message and
+unknown); attempts the client threw away and retried are spent too
+(`RetriedUsage`), while the size of the last request, which decides
+compaction and fills the context gauge, is the answering attempt's alone; side
+calls (a sub-agent, the reader, a compaction) are spent but leave the gauge,
+the per-call sparkline and the call count to the conversation's own calls. The
+`Context` event is emitted after every view. Every message and
 tool output is appended to the session file as it happens, so a crash loses
 nothing and `resume` replays `History` events.
 

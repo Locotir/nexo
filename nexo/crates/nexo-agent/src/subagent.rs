@@ -370,7 +370,7 @@ impl Run {
                 match ev {
                     Some(StreamEvent::TextDelta(d)) => text.push_str(&d),
                     Some(StreamEvent::ToolCallEnd { id, name, args }) => calls.push((id, name, args)),
-                    Some(StreamEvent::Usage(u)) => usage += u,
+                    Some(StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u)) => usage += u,
                     Some(StreamEvent::Error(e)) => break Some(format!("the sub-agent's model failed: {}", e.message)),
                     Some(StreamEvent::Done) | None => break None,
                     _ => {}

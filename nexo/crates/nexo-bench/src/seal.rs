@@ -6,7 +6,8 @@
 use std::path::{Path, PathBuf};
 
 /// Runs as `sh -c SCRIPT seal WD KEEP MASK CMD HIDE...`: binds the system read-only, hides the homes,
-/// temporary folders, `/run`, `/dev/shm` and HIDE under empty filesystems, then puts back WD
+/// temporary folders, `/run` (but for the PATH folders under it, put back read-only: NixOS keeps its programs
+/// there), `/dev/shm` and HIDE under empty filesystems, then puts back WD
 /// (writable) and each colon-separated KEEP folder (read-only) at their own paths. Each
 /// colon-separated program name in MASK is shadowed by a stub that says the program is not found,
 /// first on PATH and bound over the real file (and its versioned names, `python3.12`) in every PATH
@@ -26,10 +27,24 @@ for k in $keep; do
   i=$((i+1))
 done
 unset IFS
+path0="$PATH"; real=""; runs=""; j=0; IFS=:
+for p in $PATH; do
+  r=$(readlink -f "$p" 2>/dev/null) || r="$p"; real="$real:$r"
+  case "$p" in /run/user|/run/user/*) continue;; /run/?*) ;; *) continue;; esac
+  t="${p#/run/}"; t="/run/${t%%/*}"
+  case "$runs:" in *":$t:"*) continue;; esac
+  if [ -d "$t" ]; then mkdir "/mnt/r$j"; mount --bind "$t" "/mnt/r$j"; mount -o remount,bind,ro "/mnt/r$j"; runs="$runs:$t"; j=$((j+1)); fi
+done
+unset IFS; PATH="${real#:}"
 for d in /tmp /root /home /var/tmp /opt /srv /media /run /dev/shm "$@"; do
   if [ -d "$d" ]; then mount -t tmpfs none "$d"; fi
 done
 if [ -d /var/run ] && [ ! -L /var/run ]; then mount -t tmpfs none /var/run; fi
+j=0; IFS=:
+for t in ${runs#:}; do
+  mkdir -p "$t"; mount --bind "/mnt/r$j" "$t"; mount -o remount,bind,ro "$t"; j=$((j+1))
+done
+unset IFS; PATH="$path0"
 mkdir -p "$wd"
 mount --bind /mnt/wd "$wd"
 i=0; IFS=:
@@ -176,6 +191,37 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("visible") && text.contains("hidden") && !text.contains("42"), "{text}");
         assert!(text.contains("awk 127"), "{text}");
+    }
+
+    /// Systems whose programs live under /run (NixOS: /run/current-system is a link into the store,
+    /// /run/wrappers a folder of its own), reproduced in a namespace where /run is a fresh tmpfs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn programs_on_a_path_under_run_keep_working_and_the_rest_of_run_stays_hidden() {
+        if available().is_err() {
+            eprintln!("skipped: {}", available().unwrap_err());
+            return;
+        }
+        let Some(sh) = nexo_core::shell::find_program("sh") else { return };
+        let bin = sh.canonicalize().unwrap().parent().unwrap().to_path_buf();
+        let wd = tempfile::tempdir().unwrap();
+        let seal = Seal::new(wd.path(), vec![], vec![]).unwrap();
+        let wrapped = seal.wrap("nexo-run-probe; echo \"run=[$(ls -A /run | grep -vx mount | tr '\\n' ' ')]\"");
+        // only the folders under /run are on PATH, as on NixOS
+        let start = wrapped.find("'PATH=").unwrap();
+        let end = start + 1 + wrapped[start + 1..].find('\'').unwrap();
+        let wrapped =
+            format!("{}'PATH=/run/wrappers/bin:/run/current-system/bin'{}", &wrapped[..start], &wrapped[end + 1..]);
+        let outer = format!(
+            "set -e; mount -t tmpfs none /run; mkdir -p /run/wrappers/bin /run/user/1000; touch /run/user/1000/bus /run/secret.sock; \
+             ln -s {} /run/current-system; printf '#!/bin/sh\\necho probe-ran\\n' > /run/wrappers/bin/nexo-run-probe; \
+             chmod +x /run/wrappers/bin/nexo-run-probe; {wrapped}",
+            quote(&bin.parent().unwrap().to_string_lossy())
+        );
+        let out = std::process::Command::new("unshare").args(["-r", "-m", "sh", "-c", &outer]).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("probe-ran"), "{text}{}", String::from_utf8_lossy(&out.stderr));
+        assert!(text.contains("run=[current-system wrappers ]"), "{text}");
     }
 
     #[cfg(target_os = "linux")]

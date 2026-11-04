@@ -35,7 +35,9 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 `nexo bench report [RESULTS...] [--out DIR] [--summary FILE]` writes `report.html` in `--out` (default
 `./bench-out`) from one or more `results.jsonl` (files or folders holding one; default: `--out`).
 `--summary FILE` also writes the Markdown summary there, with the counters read again from the
-transcripts.
+transcripts. When every input has its `bench.json`, both files show the run's own spent figure (skipped
+runs included), and the summary its budget (one input), "Stopped early" line and skipped tasks; else
+they only know the recorded runs.
 
 Before any task, the preflight sends one tiny request asking the model to call the `ls` tool. It stops
 the benchmark when the key, the address or the model fail, or when the model writes its tool calls as
@@ -48,7 +50,11 @@ off. Every program started for a run (the agent's shell commands, the language s
 `diagnostics`, the graders' commands) gets a cleared environment: only `PATH`, `LANG`, `LC_*`, `TERM`,
 the Rust toolchain's `CARGO_HOME`, `RUSTUP_HOME` and `RUSTUP_TOOLCHAIN`, and a `HOME` and `TMPDIR` of
 the run's own, so no key, token or session socket reaches them (on Windows' PowerShell only the bench
-key is removed). The exit code is 0, or 2 when the budget stopped the benchmark.
+key is removed). On Windows names match without regard to case (`Path`), what programs need to start
+is kept too (`SystemRoot`, `windir`, `ComSpec`, `PATHEXT`, `SystemDrive`, `OS`, `NUMBER_OF_PROCESSORS`,
+`PROCESSOR_ARCHITECTURE`, `ProgramData`, the `ProgramFiles` and `CommonProgramFiles` folders), and
+`USERPROFILE`, `APPDATA` and `LOCALAPPDATA` point into the run's home.
+The exit code is 0, or 2 when the budget cut a run or left runs undone.
 
 ## Arms
 
@@ -97,6 +103,8 @@ applies equally to plain, compact and curator.
   `step` (null for a summary), `compaction`, `view_tokens` (provider count) and `view_est_tokens`
   (characters / 4). **It never holds the address, the headers or the key**; the key is also scrubbed
   from every line as a safeguard.
+- `bench.json`: what the records do not hold (budget, spent with the skipped runs, why it stopped
+  early, the skipped tasks), for `nexo bench report`.
 - `summary.md` (also printed at the end):
 
 | section | contents |
@@ -168,7 +176,8 @@ scores 0.
 The game is built from C with the system C compiler (`cc`, `gcc` or `clang`), so realm needs one, plus
 `rustc`. It is also *sealed*: on Linux, every shell command of the agent and the checker's run go
 through `unshare -r -m -n -p --mount-proc --fork` with no network, the system read-only and the home and
-temporary folders, `/run` and `/dev/shm` hidden, except the working directory and the Rust toolchain;
+temporary folders, `/run` (but for the PATH folders under it, put back read-only, as on NixOS) and `/dev/shm`
+hidden, except the working directory and the Rust toolchain;
 the folder the benchmark runs from and `--out` are hidden too, file tools refuse paths outside the
 working directory, `diagnostics` is not offered (its language servers would run outside the box), and
 the programs a task names in `mask` (realm: the script interpreters) answer "not found" inside the box,

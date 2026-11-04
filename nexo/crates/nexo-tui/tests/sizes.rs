@@ -105,6 +105,7 @@ fn conversation(a: &mut App) {
     });
     a.handle_agent(AgentEvent::Usage {
         turn: Usage { input: 1200, output: 340, cache_read: 5000, ..Default::default() },
+        call: Usage { input: 1200, output: 340, cache_read: 5000, ..Default::default() },
         session: Usage { input: 1200, output: 340, cache_read: 5000, ..Default::default() },
         cost_usd: 0.0031,
     });

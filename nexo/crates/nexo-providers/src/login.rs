@@ -429,14 +429,22 @@ async fn renew_locked(
     if !cred.expiring(auth::now(), 60) {
         return Ok(Some(cred));
     }
-    // bounded, so a stuck renewal does not keep the other sessions waiting on the lock
-    let renewed = tokio::time::timeout(Duration::from_secs(30), refresh_at(at, &cred))
+    // the server may spend the old refresh token before it answers: the renewal and its save go on
+    // in a task of their own, holding the lock, even when this request stops waiting or is dropped
+    let (at, owned) = (at.clone(), name.to_string());
+    let task = tokio::spawn(async move {
+        let renewed = refresh_at(&at, &cred).await?;
+        // a store that cannot be written still leaves this request working
+        if let Err(e) = lock.set(&owned, renewed.clone()) {
+            tracing::warn!("could not save the renewed login for {owned}: {e}");
+        }
+        Ok::<_, ProviderError>(renewed)
+    });
+    // bounded: on timeout only this request fails; the next one reads what the task saved
+    let renewed = tokio::time::timeout(Duration::from_secs(30), task)
         .await
-        .map_err(|_| fail(format!("renewing the login for {name} took over 30s; try again")))??;
-    // a store that cannot be written still leaves this request working
-    if let Err(e) = lock.set(name, renewed.clone()) {
-        tracing::warn!("could not save the renewed login for {name}: {e}");
-    }
+        .map_err(|_| fail(format!("renewing the login for {name} took over 30s; try again")))?
+        .map_err(|e| fail(format!("renewing the login for {name} failed: {e}")))??;
     Ok(Some(renewed))
 }
 
@@ -623,6 +631,39 @@ mod tests {
         renew.assert_calls(1);
         assert!(a == "at2" && b == "at2", "both sessions use the renewed token");
         assert_eq!(saved["codex"].secret(), "at2");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_renewal_given_up_by_its_request_still_saves_the_new_tokens() {
+        let s = MockServer::start();
+        s.mock(|w, t| {
+            w.method(POST).path("/oauth/token").body_includes("refresh_token=rt1");
+            t.status(200)
+                .delay(Duration::from_millis(400))
+                .json_body(json!({"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}));
+        });
+        let dir = std::env::temp_dir().join(format!("nexo-login-cancel-test-{}", std::process::id()));
+        let store = dir.join("auth.json");
+        let mut md = BTreeMap::new();
+        md.insert("flow".to_string(), "codex".to_string());
+        let old =
+            Credential::Oauth { access: "at1".into(), refresh: "rt1".into(), expires: auth::now() + 5, metadata: md };
+        auth::set_in(&store, "codex", old).unwrap();
+        let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+        cfg.auth = Some("codex".into());
+        // the turn is interrupted while the server, which has spent rt1 already, still answers
+        let e = at(&s);
+        assert!(tokio::time::timeout(Duration::from_millis(100), prepare_in(&store, &e, &cfg)).await.is_err());
+        let mut saved = auth::read_from(&store);
+        for _ in 0..50 {
+            if saved["codex"].secret() == "at2" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            saved = auth::read_from(&store);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(saved["codex"].secret(), "at2", "the rotated tokens are kept");
     }
 
     #[tokio::test]

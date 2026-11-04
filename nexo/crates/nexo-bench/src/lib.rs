@@ -196,7 +196,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         }
     }
     let spent = *bench.spent.lock().unwrap();
-    let stopped = stopped.or_else(|| budget_spent(opts.budget, spent, &records));
+    let stopped = stopped.or_else(|| budget_spent(opts.budget, &records));
     let header = report::Header {
         model: opts.model.clone(),
         upstream: opts.upstream.clone(),
@@ -212,6 +212,8 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         stopped: stopped.clone(),
         spent: Some(spent),
     };
+    let meta = Meta { budget: opts.budget, spent, stopped: stopped.clone(), skipped: header.skipped.clone() };
+    std::fs::write(out.join(Meta::FILE), serde_json::to_string(&meta)?)?;
     let summary = report::summary(&header, &records);
     std::fs::write(out.join("summary.md"), &summary)?;
     println!("{summary}");
@@ -222,12 +224,12 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     Ok(if stopped.is_some() { 2 } else { 0 })
 }
 
-/// Why the benchmark stopped early when the loop ended on its own: the budget ran out during the
-/// last run (that run was cut, or everything priced reached the budget).
-fn budget_spent(budget: Option<f64>, spent: f64, records: &[run::Record]) -> Option<String> {
+/// Why the benchmark stopped early when the loop ended on its own: the budget cut a run. Spend that
+/// reached the budget with the last run's last reply left nothing undone, so it is no stop.
+fn budget_spent(budget: Option<f64>, records: &[run::Record]) -> Option<String> {
     let b = budget?;
     let cut = records.iter().any(|r| r.stop == Some(client::Stop::Budget));
-    (cut || spent >= b).then(|| format!("the budget of ${b} is spent"))
+    cut.then(|| format!("the budget of ${b} is spent"))
 }
 
 /// How the report says the arms were ordered.
@@ -279,13 +281,44 @@ pub fn report(out: &std::path::Path, inputs: &[PathBuf], summary: Option<&std::p
     let inputs = if inputs.is_empty() { vec![out.to_path_buf()] } else { inputs.to_vec() };
     // No model call: the counters are read again from the transcripts next to each results.jsonl.
     let records = counters::load_with_counters(&inputs).map_err(anyhow::Error::msg)?;
+    let mut header = report::header_of(&records);
+    // what the benchmarks themselves knew (spent with skipped runs, why they stopped), when every
+    // input has it
+    let metas: Option<Vec<Meta>> = inputs.iter().map(|p| Meta::read(p)).collect();
+    if let Some(metas) = metas.filter(|m| !m.is_empty()) {
+        header.spent = Some(metas.iter().map(|m| m.spent).sum());
+        header.budget = metas.first().and_then(|m| m.budget).filter(|_| metas.len() == 1);
+        header.stopped = metas.iter().find_map(|m| m.stopped.clone());
+        header.skipped = metas.into_iter().flat_map(|m| m.skipped).collect();
+    }
     if let Some(file) = summary {
-        std::fs::write(file, report::summary(&report::header_of(&records), &records))?;
+        std::fs::write(file, report::summary(&header, &records))?;
         println!("{}: {} runs", file.display(), records.len());
     }
-    let path = html::write(out, &records, None)?;
+    let path = html::write(out, &records, header.spent)?;
     println!("{}: {} runs", path.display(), records.len());
     Ok(0)
+}
+
+/// What a benchmark knew that its records do not, kept in `bench.json` next to `results.jsonl` so
+/// `nexo bench report` rebuilds the same header.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Meta {
+    budget: Option<f64>,
+    /// Every priced reply, runs skipped after an error included.
+    spent: f64,
+    stopped: Option<String>,
+    skipped: Vec<String>,
+}
+
+impl Meta {
+    const FILE: &'static str = "bench.json";
+
+    /// The meta of the results at `p` (a results.jsonl or its folder), if it has one.
+    fn read(p: &std::path::Path) -> Option<Meta> {
+        let dir = if p.is_dir() { p } else { p.parent()? };
+        serde_json::from_str(&std::fs::read_to_string(dir.join(Meta::FILE)).ok()?).ok()
+    }
 }
 
 /// Refuses an `out` that holds an earlier benchmark's runs: a new run would overwrite their
@@ -334,10 +367,33 @@ mod tests {
     fn a_budget_cut_in_the_last_run_still_stops_early() {
         let cut = run::Record { stop: Some(client::Stop::Budget), ..Default::default() };
         let done = run::Record::default;
-        assert!(budget_spent(Some(5.0), 4.2, &[done(), cut]).is_some());
-        assert!(budget_spent(Some(5.0), 5.0, &[done()]).is_some());
-        assert!(budget_spent(Some(5.0), 4.2, &[done()]).is_none());
-        assert!(budget_spent(None, 9.0, &[done()]).is_none());
+        assert!(budget_spent(Some(5.0), &[done(), cut]).is_some());
+        assert!(budget_spent(Some(5.0), &[done()]).is_none(), "every run finished: nothing was left undone");
+        assert!(budget_spent(None, &[done()]).is_none());
+    }
+
+    #[test]
+    fn the_report_rebuilds_spent_and_the_early_stop_of_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = run::Record { task: "t".into(), arm: "a".into(), cost: 1.75, ..Default::default() };
+        run::append(dir.path(), &rec).unwrap();
+        let meta = Meta {
+            budget: Some(2.0),
+            spent: 2.0,
+            stopped: Some("the budget of $2 is spent".into()),
+            skipped: vec!["x: no compiler".into()],
+        };
+        std::fs::write(dir.path().join(Meta::FILE), serde_json::to_string(&meta).unwrap()).unwrap();
+        let file = dir.path().join("again.md");
+        report(dir.path(), &[], Some(&file)).unwrap();
+        let s = std::fs::read_to_string(&file).unwrap();
+        assert!(s.contains("| $2 | **$2.0000** |") && s.contains("$0.2500 went to runs that were skipped"), "{s}");
+        assert!(
+            s.contains("**Stopped early**: the budget of $2 is spent.") && s.contains("Skipped: x: no compiler"),
+            "{s}"
+        );
+        let html = std::fs::read_to_string(dir.path().join("report.html")).unwrap();
+        assert!(html.contains("$2.0000") && html.contains("$0.2500"), "the page shows the same spent");
     }
 
     #[test]

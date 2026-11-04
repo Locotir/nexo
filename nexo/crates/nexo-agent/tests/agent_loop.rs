@@ -546,6 +546,66 @@ async fn compact_summarises_past_its_threshold_and_keeps_the_task_and_files() {
         .find_map(|e| if let AgentEvent::Usage { session, .. } = e { Some(*session) } else { None })
         .unwrap();
     assert_eq!(session.total_input(), 2 * 5000 + 2 * 3000);
+    // the summary's request is not the conversation's: it is spent but sized as no call
+    let calls: Vec<(u64, u64)> = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Usage { turn, call, .. } => Some((turn.total_input(), call.total_input())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, vec![(5000, 5000), (5000, 5000), (3000, 0), (3000, 3000)]);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_retried_attempt_is_spent_but_does_not_count_in_the_size_of_the_request() {
+    let d = tempfile::tempdir().unwrap();
+    let mid = |id: &str, path: &str, used: u64| {
+        let mut evs = call(id, "read", json!({"path": path}));
+        evs[2] = StreamEvent::Usage(Usage { input: used, output: 5, ..Default::default() });
+        evs
+    };
+    let client = Scripted::new(vec![
+        Reply::Events({
+            let mut evs = mid("c1", "a.rs", 1000);
+            evs.insert(0, StreamEvent::TextDelta("x".repeat(20_000)));
+            evs
+        }),
+        // the client retried this call once: the first attempt was billed 2500 and thrown away
+        Reply::Events({
+            let mut evs = mid("c2", "b.rs", 1000);
+            evs.insert(0, StreamEvent::RetriedUsage(Usage { input: 2500, ..Default::default() }));
+            evs
+        }),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.context.policy = "compact".into();
+    cfg.context.compact_at = 3000;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "fix the bug in a.rs".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), format!("{}done", "x".repeat(20_000)));
+    let reqs = client.requests();
+    assert!(reqs.iter().all(|q| !is_summary(q)), "the last request held 1000 tokens, not 3500: no summary");
+    assert_eq!(reqs.len(), 3);
+    let usages: Vec<(Usage, Usage)> = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::Usage { turn, call, .. } = e { Some((*turn, *call)) } else { None })
+        .collect();
+    assert_eq!((usages[1].0.input, usages[1].1.input), (3500, 1000), "{usages:?}");
+    let (session, cost) = evs
+        .iter()
+        .rev()
+        .find_map(
+            |e| if let AgentEvent::Usage { session, cost_usd, .. } = e { Some((*session, *cost_usd)) } else { None },
+        )
+        .unwrap();
+    assert_eq!(session.input, 1000 + 3500 + 1000, "the retried attempt is spent");
+    // 5500 in x 1 + 110 out x 2 + 2000 cached x 0.1, per million
+    assert!((cost - 0.00592).abs() < 1e-9, "{cost}");
     r.stop().await;
 }
 
@@ -938,6 +998,25 @@ async fn a_session_another_nexo_holds_is_not_resumed() {
     assert!(client.requests().is_empty(), "nothing spent");
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), "1", "its lock stays");
     std::fs::remove_file(&lock).unwrap();
+}
+
+#[tokio::test]
+async fn resuming_the_session_in_use_keeps_its_lock() {
+    let d = tempfile::tempdir().unwrap();
+    let mut r = start(Scripted::new(vec![Reply::Events(text("a"))]), config(PermissionMode::Ask), None, d.path()).await;
+    let a = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "in a".into(), attachments: vec![] });
+    r.turn().await;
+    let lock = nexo_agent::session::dir().join(format!("{a}.jsonl.lock"));
+    assert!(lock.is_file());
+    r.send(AgentCommand::Resume { id: a.clone() });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. } | AgentEvent::HistoryCleared)).await;
+    assert!(lock.is_file(), "the session in use stays locked");
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::HistoryCleared)), "{evs:?}");
+    r.stop().await;
 }
 
 #[tokio::test]

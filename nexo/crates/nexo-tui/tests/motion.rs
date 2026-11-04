@@ -147,6 +147,7 @@ fn the_end_of_a_turn_glows_along_the_rule_and_the_figures_count_up() {
     a.tick();
     a.handle_agent(AgentEvent::Usage {
         turn: Usage { input: 1200, output: 340, ..Default::default() },
+        call: Usage { input: 1200, output: 340, ..Default::default() },
         session: Usage { input: 1200, output: 340, ..Default::default() },
         cost_usd: 0.0031,
     });
@@ -188,6 +189,7 @@ fn with_animations_off_everything_is_final_at_once() {
     a.handle_agent(AgentEvent::ToolDone { id: "c1".into(), output: ToolOutput::ok("x"), elapsed_ms: 5 });
     a.handle_agent(AgentEvent::Usage {
         turn: Usage { input: 1200, output: 340, ..Default::default() },
+        call: Usage { input: 1200, output: 340, ..Default::default() },
         session: Usage { input: 1200, output: 340, ..Default::default() },
         cost_usd: 0.0031,
     });

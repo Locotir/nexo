@@ -118,7 +118,7 @@ fn world() -> World {
                 (c, v)
             })
             .collect();
-        items.push(Item { id: n, slot: r.pick(&SLOTS), weight: r.int(1, 30), effects });
+        items.push(Item { id: n, slot: r.pick::<&str>(&SLOTS), weight: r.int(1, 30), effects });
     }
     let mut zones = Vec::new();
     while zones.len() < 16 {
@@ -129,7 +129,7 @@ fn world() -> World {
         zones.push(Zone {
             id: n,
             tier: r.int(0, 4),
-            biome: r.pick(&["forest", "cave", "swamp", "ruin", "desert"]),
+            biome: r.pick::<&str>(&["forest", "cave", "swamp", "ruin", "desert"]),
             danger: r.int(1, 9),
         });
     }

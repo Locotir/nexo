@@ -128,7 +128,7 @@ impl Client {
         tokio::spawn(async move {
             // what comes before the first content (start, opaque reasoning, usage) is held
             // back, so a retry never hands the caller the same preamble twice; the usage of an
-            // attempt thrown away stays held, since it was billed all the same
+            // attempt thrown away stays held as RetriedUsage, since it was billed all the same
             let mut held: Vec<StreamEvent> = Vec::new();
             'attempts: loop {
                 let mut content = false;
@@ -150,7 +150,16 @@ impl Client {
                         | StreamEvent::ToolCallStart { .. } => content = true,
                         StreamEvent::Error(e) if !content && e.is_retryable() && attempt < retries => {
                             let mut last = e.clone();
-                            held.retain(|h| matches!(h, StreamEvent::Usage(_)));
+                            // spend, not the size of the request that will answer
+                            held = held
+                                .into_iter()
+                                .filter_map(|h| match h {
+                                    StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u) => {
+                                        Some(StreamEvent::RetriedUsage(u))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
                             loop {
                                 attempt += 1;
                                 let wait = this.backoff(attempt, &last);
@@ -305,10 +314,12 @@ mod tests {
         }
         assert_eq!(acc.usage.input, 305, "{evs:?}");
         assert_eq!(acc.usage.output, 3);
+        // the size of the request is the answering attempt's alone
+        assert_eq!((acc.call.input, acc.call.output), (5, 1), "{evs:?}");
         assert_eq!(evs.iter().filter(|e| matches!(e, StreamEvent::TextDelta(_))).count(), 1);
         // with no retries left the failed attempts' usage still comes with the error
         let evs = run(failed(100), vec![Err(empty.clone())], 1).await;
-        assert_eq!(evs.iter().filter(|e| matches!(e, StreamEvent::Usage(_))).count(), 1, "{evs:?}");
+        assert_eq!(evs.iter().filter(|e| matches!(e, StreamEvent::RetriedUsage(_))).count(), 1, "{evs:?}");
     }
 
     #[tokio::test]

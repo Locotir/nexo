@@ -346,8 +346,8 @@ mod tests {
         assert!(osc52_sequence(&"a".repeat(200_000), false).is_none());
     }
 
-    /// With an X display and xclip (CI or a desktop), a screenshot in the clipboard comes back as
-    /// the same picture; elsewhere there is no clipboard to read and the test says so.
+    /// With a bare X display (xvfb-run) and xclip, a screenshot in the clipboard comes back as the
+    /// same picture; elsewhere (no display, or a person's desktop) the test says why it skipped.
     #[cfg(unix)]
     #[test]
     fn ctrl_v_reads_an_image_from_a_real_x_clipboard() {
@@ -355,6 +355,13 @@ mod tests {
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         if std::env::var_os("DISPLAY").is_none() || Command::new("xclip").arg("-version").output().is_err() {
             eprintln!("no X display with xclip: skipped");
+            return;
+        }
+        // a display with a window manager is someone's desktop: its clipboard is the person's (and
+        // a clipboard manager may take it over), so only a bare display (xvfb-run, CI) is written to
+        let wm = Command::new("xprop").args(["-root", "_NET_SUPPORTING_WM_CHECK"]).output();
+        if !wm.is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).contains("window id")) {
+            eprintln!("a desktop's display (or no xprop to tell): skipped, the person's clipboard is left alone");
             return;
         }
         let d = tempfile::tempdir().unwrap();

@@ -354,6 +354,7 @@ async fn play(events: &nexo_core::agent::EventTx, commands: &mut nexo_core::agen
     let _ = events.send(AgentEvent::AssistantDone { message: Message::assistant(REPLY) });
     let _ = events.send(AgentEvent::Usage {
         turn: Usage { input: 1840, output: 412, cache_read: 12_300, ..Default::default() },
+        call: Usage { input: 1840, output: 412, cache_read: 12_300, ..Default::default() },
         session: Usage { input: 1840, output: 412, cache_read: 12_300, ..Default::default() },
         cost_usd: 0.0042,
     });

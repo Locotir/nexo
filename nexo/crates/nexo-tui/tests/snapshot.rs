@@ -102,6 +102,7 @@ fn fill(a: &mut App) {
     });
     a.handle_agent(AgentEvent::Usage {
         turn: Usage { input: 1200, output: 340, cache_read: 5000, ..Default::default() },
+        call: Usage { input: 1200, output: 340, cache_read: 5000, ..Default::default() },
         session: Usage { input: 1200, output: 340, cache_read: 5000, ..Default::default() },
         cost_usd: 0.0031,
     });
@@ -557,7 +558,7 @@ fn context_and_usage_open_a_window_with_tabs_and_a_close_button() {
     let mut a = app();
     fill(&mut a);
     let session = Usage { input: 2000, output: 500, cache_read: 6000, ..Default::default() };
-    a.handle_agent(AgentEvent::Usage { turn: session, session, cost_usd: 0.0123 });
+    a.handle_agent(AgentEvent::Usage { turn: session, call: session, session, cost_usd: 0.0123 });
     a.run_command(nexo_tui::commands::Command::Context);
     settled(&mut a);
     let rows = draw(&mut a, 120, 40);

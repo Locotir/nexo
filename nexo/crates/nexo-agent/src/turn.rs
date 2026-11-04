@@ -618,7 +618,15 @@ fn replay_history(events: &EventTx, session: &Session, tools: &ToolSet) {
             }
         }
     }
-    emit(events, AgentEvent::Usage { turn: Usage::default(), session: session.usage(), cost_usd: session.cost() });
+    emit(
+        events,
+        AgentEvent::Usage {
+            turn: Usage::default(),
+            call: Usage::default(),
+            session: session.usage(),
+            cost_usd: session.cost(),
+        },
+    );
 }
 
 /// Makes `session` the conversation: the interface starts over and gets the replay.
@@ -731,6 +739,11 @@ async fn goal_follow_up(state: &Shared) -> Option<String> {
 
 async fn resume_session(state: &Shared, id: &str) {
     let mut st = state.lock().await;
+    if id == st.session.id() {
+        // a second copy would drop the lock this one holds when it replaced it
+        notice(&st.events, Level::Info, format!("session {id} is the one in use"));
+        return;
+    }
     // taken before anything is spent: a session another nexo writes is not resumed here
     match Session::open(id).and_then(|mut s| s.claim().map(|_| s)) {
         Ok(s) => {
@@ -1326,7 +1339,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
                 msg = m;
             }
         }
-        let usage = c.usage;
+        let (usage, call) = (c.usage, c.call);
         let cut = c.finish == Some(FinishReason::Length);
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
@@ -1359,11 +1372,11 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             }
             if !usage.is_empty() {
                 let model = st.target.model();
-                add_usage(&mut st, &events, &model, usage);
+                add_usage(&mut st, &events, &model, usage, call);
             }
-            if !msg.content.is_empty() && usage.total_input() > 0 {
+            if !msg.content.is_empty() && call.total_input() > 0 {
                 let len = st.history.len();
-                st.last_prompt = Some((usage.total_input() + usage.output, len));
+                st.last_prompt = Some((call.total_input() + call.output, len));
             }
             if !msg.content.is_empty() {
                 emit(&events, AgentEvent::AssistantDone { message: msg.clone() });
@@ -1709,8 +1722,10 @@ async fn permit(
     }
 }
 
-/// Adds what a model call spent to the session and the day, and says so.
-fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage) {
+/// Adds what a model call spent to the session and the day, and says so; `call` is the usage of the
+/// attempt that answered, without the attempts the client retried, and empty for a side call (a
+/// sub-agent, the reader, a compaction) whose request is not the conversation's.
+fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage) {
     st.usage += usage;
     let (_, cfg, main) = st.target.get();
     let pricing =
@@ -1718,7 +1733,7 @@ fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage) {
     let cost = pricing.map(|p| p.cost(&usage)).unwrap_or(0.0);
     st.cost += cost;
     let _ = st.session.record_usage(usage, cost);
-    emit(events, AgentEvent::Usage { turn: usage, session: st.usage, cost_usd: st.cost });
+    emit(events, AgentEvent::Usage { turn: usage, call, session: st.usage, cost_usd: st.cost });
     let day = budget::add(cost);
     emit(events, budget_event(st, day));
 }
@@ -1753,7 +1768,7 @@ impl crate::subagent::Host for StateHost {
     async fn spent(&self, model: &str, usage: Usage) {
         if let Some(state) = self.state.upgrade() {
             let mut st = state.lock().await;
-            add_usage(&mut st, &self.events, model, usage);
+            add_usage(&mut st, &self.events, model, usage, Usage::default());
         }
     }
 
@@ -2070,7 +2085,7 @@ async fn digest(
     let mut st = state.lock().await;
     match done {
         Ok((notes, usage, model)) => {
-            add_usage(&mut st, events, &model, usage);
+            add_usage(&mut st, events, &model, usage, Usage::default());
             st.digests.insert(ask.key(), notes.clone());
             Some(reader::shown(&ask.label, &notes))
         }
@@ -2130,7 +2145,7 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
                 c.0 = if c.0 >= from { c.0 - from + shift } else { 0 };
             }
             st.history.replace(work);
-            add_usage(st, &events, &done.model, done.usage);
+            add_usage(st, &events, &done.model, done.usage, Usage::default());
             st.last_prompt = None;
             st.turn_start = 0;
             if let Err(e) = st.session.reset_with(&st.history.to_vec()) {

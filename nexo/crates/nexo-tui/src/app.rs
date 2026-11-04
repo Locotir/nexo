@@ -1498,12 +1498,13 @@ impl App {
                     }
                 }
             }
-            AgentEvent::Usage { turn, session, cost_usd } => {
-                // one event per model call: its input is what that call sent
-                if turn.total_input() > 0 {
-                    self.last_call_input = turn.total_input();
-                    self.last_call_cached = turn.cache_read;
-                    self.call_inputs.push(turn.total_input());
+            AgentEvent::Usage { turn, call, session, cost_usd } => {
+                // one event per model call: its input is what that call sent (the attempt that
+                // answered), while the turn counts all it spent
+                if call.total_input() > 0 {
+                    self.last_call_input = call.total_input();
+                    self.last_call_cached = call.cache_read;
+                    self.call_inputs.push(call.total_input());
                 }
                 self.turn_tally.steps += 1;
                 self.turn_usage += turn;
@@ -3549,6 +3550,7 @@ mod tests {
         a.handle_agent(AgentEvent::AssistantDone { message: Message::assistant("Hello") });
         a.handle_agent(AgentEvent::Usage {
             turn: Usage { input: 1, output: 1, ..Default::default() },
+            call: Usage { input: 1, output: 1, ..Default::default() },
             session: Usage::default(),
             cost_usd: 0.0,
         });
@@ -3763,6 +3765,7 @@ mod tests {
         a.handle_agent(AgentEvent::History { index: 1, message: Message::assistant("ok") });
         a.handle_agent(AgentEvent::Usage {
             turn: Usage { input: 5, ..Default::default() },
+            call: Usage { input: 5, ..Default::default() },
             session: Usage { input: 5, ..Default::default() },
             cost_usd: 0.01,
         });
@@ -4339,6 +4342,7 @@ mod tests {
         a.handle_agent(AgentEvent::TurnStart { turn: 1 });
         let u = |i: u64| AgentEvent::Usage {
             turn: Usage { input: i, ..Default::default() },
+            call: Usage { input: i, ..Default::default() },
             session: Usage { input: i, ..Default::default() },
             cost_usd: 0.0,
         };
@@ -4360,6 +4364,15 @@ mod tests {
         a.handle_agent(AgentEvent::TurnStart { turn: 2 });
         a.handle_agent(u(3000));
         assert_eq!(a.last_call_input, 3000);
+        // a call the client retried: the turn counts both attempts, the gauge the one that answered
+        a.handle_agent(AgentEvent::Usage {
+            turn: Usage { input: 5000, ..Default::default() },
+            call: Usage { input: 2000, ..Default::default() },
+            session: Usage::default(),
+            cost_usd: 0.0,
+        });
+        assert_eq!((a.last_call_input, a.call_inputs.last().copied()), (2000, Some(2000)));
+        assert_eq!(a.turn_usage.input, 3000 + 5000, "the turn counts what was spent");
     }
 
     #[test]

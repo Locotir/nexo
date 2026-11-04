@@ -108,6 +108,7 @@ fn hostile(a: &mut App) {
     a.handle_agent(AgentEvent::Notice { level: Level::Error, text: long_word() });
     a.handle_agent(AgentEvent::Usage {
         turn: Usage { input: u64::MAX / 4, output: 9_999_999_999, cache_read: 1, ..Default::default() },
+        call: Usage { input: u64::MAX / 4, output: 9_999_999_999, cache_read: 1, ..Default::default() },
         session: Usage { input: u64::MAX / 4, output: 9_999_999_999, cache_read: 1, ..Default::default() },
         cost_usd: 123_456.789,
     });

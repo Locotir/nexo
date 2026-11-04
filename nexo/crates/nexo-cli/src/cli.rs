@@ -534,7 +534,8 @@ async fn headless(
     let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
     let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume, Some(gate)).await?;
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
-    handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] })?;
+    // an agent that already stopped (a session that cannot be resumed) closed its end: its own error says why
+    let sent = handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] }).is_ok();
     let mut out = std::io::stdout().lock();
     let mut code = 0;
     let mut printed = false;
@@ -568,6 +569,7 @@ async fn headless(
     let failed = match tokio::time::timeout(std::time::Duration::from_secs(2), agent).await {
         Ok(Ok(Err(e))) => Some(format!("{e:#}")),
         Ok(Err(e)) => Some(format!("the agent stopped: {e}")),
+        _ if !sent => Some("the agent stopped before the request".to_string()),
         _ => None,
     };
     if let Some(e) = failed {

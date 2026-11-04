@@ -28,15 +28,16 @@ static TEST_COMMAND: LazyLock<Re> = LazyLock::new(|| {
     )
 });
 /// A failing test run, in the output shapes the runners of most ecosystems share: a line that starts with a
-/// failure word (`--- FAIL:`, `FAIL`, `FAILED`, `FAILURES!`, `Failed!`, `BUILD FAILURE`, `not ok 2`, `✕`,
-/// `# fail 1`, `make: *** ... Error 2`), a count of one or more failures (`1 failed`, `2 failing`, `1 failure`,
-/// `1 tests failed`) or a labelled one where a summary prints it (`Failures: 1,`, `Failed: 1`, `errors=1)`), or a
-/// non-zero exit status at a line start (`exit status 1`, `[exit code 1]`) or after `failed with`. A word and a
-/// number in a test name, a package path or a log line (`returns error 404`, `api/errors 1.2s`) are not one. A
-/// run piped through `tail` exits 0 whatever its tests did.
+/// failure word (`--- FAIL:`, `FAIL`, `FAILED`, `FAILURES!`, `Failed!`, `BUILD FAILURE`, `not ok 2`, `✕`, `✖`,
+/// `# fail 1`, `ℹ fail 1`, `make: *** ... Error 2`), a count of one or more failures (`1 failed`, `2 failing`,
+/// `1 failure`, `1 tests failed`) or a labelled one where a summary prints it (`Failures: 1,`, `Failed: 1`,
+/// `errors=1)`, `, Failed 1,`), or a non-zero exit status at a line start (`exit status 1`, `[exit code 1]`) or
+/// after `failed with` on a line that is not a passing test's (`✓`, `ok `, `PASS`). A word and a number in a
+/// test name, a package path or a log line (`returns error 404`, `api/errors 1.2s`) are not one. A run piped
+/// through `tail` exits 0 whatever its tests did.
 static TEST_FAILED: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
-        r"^\s*(?:--- FAIL:|FAIL\b|FAILED\b|FAILURES?!|Failed!|(?:\[\w+\]\s+)?BUILD FAIL|not ok \d|[✕✗]\s|#\s*fail\s+[1-9]|make(?:\[\d+\])?: \*\*\* .*\bError [1-9])|\b[1-9]\d* (?:tests? )?(?:failed|failing|failures?|errors?)\b(?![ \t]*[:=]?[ \t]*\d)|(?i:(?:^|[,;(\-]|\btests?)[ \t]*(?:failures?|failed|errors?)[ \t]*[:=][ \t]*[1-9]\d*(?=[ \t]*(?:[,.;)]|$)))|(?i:^\s*\[?exit (?:status|code)[ \t]*:?[ \t]*[1-9]\d*\b|\b(?:failed|finished|exited) with (?:exit )?(?:code|status) [1-9]\d*\b)",
+        r"^\s*(?:--- FAIL:|FAIL\b|FAILED\b|FAILURES?!|Failed!|(?:\[\w+\]\s+)?BUILD FAIL|not ok \d|[✕✗✖]\s|[#ℹ]\s*fail\s+[1-9]|make(?:\[\d+\])?: \*\*\* .*\bError [1-9])|\b[1-9]\d* (?:tests? )?(?:failed|failing|failures?|errors?)\b(?![ \t]*[:=]?[ \t]*\d)|(?i:(?:^|[,;(\-]|\btests?)[ \t]*(?:failures?|failed|errors?)[ \t]*[:=][ \t]*[1-9]\d*(?=[ \t]*(?:[,.;)]|$))|[,;(][ \t]*(?:failures?|failed|errors?)[ \t]+[1-9]\d*(?=[ \t]*[,;)]))|(?i:^\s*\[?exit (?:status|code)[ \t]*:?[ \t]*[1-9]\d*\b|^(?![ \t]*(?-i:[✓✔√]|ok\s|PASS\b))[^\n]*?\b(?:failed|finished|exited) with (?:exit )?(?:code|status) [1-9]\d*\b)",
         py::M,
     )
 });
@@ -1528,11 +1529,13 @@ impl Engine {
             self.recall_tool = recall_tool;
         }
         // a rewritten history is read anew: the rules found in it are the carried ones, where they were;
-        // what the person wrote after the last reply comes with the rewrite and is new
+        // what the person wrote after the last reply comes with the rewrite and is new; with no reply at all
+        // (a summary), only the newest message is, and a rewrite of one message is all summary
         let n = self.tr.msgs.len();
         let last_reply = msgs.iter().rposition(|m| m.get("role").and_then(Value::as_str) == Some("assistant"));
+        let fresh_from = last_reply.map_or(msgs.len().saturating_sub(1).max(1), |r| r + 1);
         for (k, m) in msgs.iter().enumerate().skip(n) {
-            self.rules.replay = rewritten && last_reply.is_some_and(|r| k <= r);
+            self.rules.replay = rewritten && k < fresh_from;
             self.add(m);
         }
         self.rules.replay = false;
@@ -4722,6 +4725,11 @@ mod tests {
             "  returns error 404 for an unknown id\n  2 passing (9ms)",
             "INFO HTTP error 503, retrying\nWARN upstream error: 502 from cache\n3 passed in 0.2s",
             "Cart\n  reports failed 2 items as skipped\n2 examples, 0 failures",
+            "  ✓ rejects when the worker exited with code 1 (3 ms)\nTests:       4 passed, 4 total",
+            "✔ reports a build that failed with exit code 2 (1.2ms)\nℹ tests 1\nℹ pass 1\nℹ fail 0",
+            "ok 3 - process exited with code 1 is shown\nPASS job finished with exit code 1 is retried",
+            "[info] Passed: Total 2, Failed 0, Errors 0, Passed 2",
+            "Tests: succeeded 2, failed 0, canceled 0, ignored 0, pending 0",
         ];
         for out in passing {
             assert!(!TEST_FAILED.is_match(out), "{out}");
@@ -4741,6 +4749,10 @@ mod tests {
             "Ran 3 tests in 0.01s\n\n(failures=1)",
             "Tests failed: 1, passed: 2",
             "# pass 2\n# fail 1",
+            "ℹ tests 3\nℹ pass 2\nℹ fail 1",
+            "✖ adds item (2.1ms)\n  AssertionError: expected 3 to equal 4",
+            "[error] Failed: Total 2, Failed 1, Errors 0, Passed 1",
+            "Tests: succeeded 1, failed 1, canceled 0, ignored 0, pending 0",
             "ok 1 - a\n\n[exit code 1]",
             "Exit code: 2\nWall time: 1.2 seconds",
             "error Command failed with exit code 1.",
@@ -6600,5 +6612,34 @@ mod tests {
         e.sync(&[user("Never push to main."), reply("Ok."), user("You may push to main from now on.")]);
         e.sync(&[user("Never push to main."), reply("Ok."), user("Go on.")]);
         assert_eq!(texts(&e), ["Never push to main.", "You may push to main from now on."]);
+    }
+
+    #[test]
+    fn a_rewrite_with_no_reply_is_read_anew_but_its_newest_message() {
+        let user = |t: &str| json!({"role": "user", "content": t});
+        let reply = |t: &str| json!({"role": "assistant", "content": t});
+        let rules = |e: &Engine| e.rules.list.iter().map(|r| (r.text.clone(), r.turn)).collect::<Vec<_>>();
+        let mut msgs = vec![user("Fix the login form."), reply("On it.")];
+        msgs.extend([user("Never push to main."), reply("Understood.")]);
+        msgs.extend([user("You may push to main from now on."), reply("Noted.")]);
+        let fresh = || {
+            let mut e = Engine::new(params("nudge=0").unwrap());
+            e.sync(&msgs);
+            e
+        };
+        let before = rules(&fresh());
+        // the host compacts the history into one summary that quotes the rules in another order
+        let summary = "Summary of the session so far.\nYou may push to main from now on.\nNever push to main.";
+        let mut e = fresh();
+        e.sync(&[user(summary)]);
+        assert_eq!(rules(&e), before);
+        // the summary and a new message, no reply between them: only the new message is new
+        let mut e = fresh();
+        e.sync(&[user(summary), user("Go on.")]);
+        assert_eq!(rules(&e), before);
+        let mut e = fresh();
+        e.sync(&[user(summary), user("Never push to main.")]);
+        let texts: Vec<String> = rules(&e).into_iter().map(|r| r.0).collect();
+        assert_eq!(texts, ["You may push to main from now on.", "Never push to main."]);
     }
 }

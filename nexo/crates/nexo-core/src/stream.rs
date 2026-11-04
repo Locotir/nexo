@@ -40,6 +40,9 @@ pub enum StreamEvent {
         args: Value,
     },
     Usage(Usage),
+    /// What an attempt was billed that the client threw away and sent again: it counts as spend,
+    /// but says nothing of the size of the request the reply came from.
+    RetriedUsage(Usage),
     Finish(FinishReason),
     Error(ProviderError),
     Done,
@@ -103,7 +106,10 @@ pub struct Collector {
     parts: Vec<Part>,
     /// Open tool calls: id -> (name, json fragments).
     open: Vec<(String, String, String)>,
+    /// What the response cost, attempts the client retried included.
     pub usage: Usage,
+    /// The usage of the attempt that gave the reply alone: the size of the request it answered.
+    pub call: Usage,
     pub finish: Option<FinishReason>,
     pub error: Option<ProviderError>,
     pub response_id: Option<String>,
@@ -172,7 +178,11 @@ impl Collector {
                 self.open.retain(|o| o.0 != id);
                 self.parts.push(Part::ToolCall { id, name, args });
             }
-            StreamEvent::Usage(u) => self.usage += u,
+            StreamEvent::Usage(u) => {
+                self.usage += u;
+                self.call += u;
+            }
+            StreamEvent::RetriedUsage(u) => self.usage += u,
             StreamEvent::Finish(f) => self.finish = Some(f),
             StreamEvent::Error(e) => self.error = Some(e),
             StreamEvent::Done => {}
