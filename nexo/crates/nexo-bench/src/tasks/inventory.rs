@@ -10,9 +10,9 @@ use super::{always, manifest, Task};
 use crate::check::{read, text, unchanged, Copy, Outcome, Part};
 use crate::rng::Rng;
 
-/// The long-haul and marathon tasks.
+/// The long-haul and marathon tasks, and the marathon with twenty times the examples.
 pub fn tasks() -> Vec<Task> {
-    vec![long_haul(), marathon()]
+    vec![long_haul(), marathon(), marathon_heavy()]
 }
 
 const LIB: &str = r##"//! Stock, prices, units, orders, reports and planning of the warehouse.
@@ -986,6 +986,11 @@ fn spec(title: &str, purpose: &str, interface: &str, rules: &[&str], head: &str,
 }
 
 fn specs() -> Vec<(String, String)> {
+    specs_scaled(1)
+}
+
+/// The five specifications with `k` times the rows of examples each.
+fn specs_scaled(k: usize) -> Vec<(String, String)> {
     vec![
         (
             "docs/spec/01-restock.md".into(),
@@ -1000,7 +1005,7 @@ fn specs() -> Vec<(String, String)> {
                     "An empty list of items gives an empty plan.",
                 ],
                 "| items | threshold | plan |\n|---|---|---|",
-                rows(60, 1, ex_restock),
+                rows(60 * k, 1, ex_restock),
             ),
         ),
         (
@@ -1019,7 +1024,7 @@ fn specs() -> Vec<(String, String)> {
                     "On success the units are removed from that location only.",
                 ],
                 "| location | stock at location | lines | stock at location after |\n|---|---|---|---|",
-                rows(60, 2, ex_reserve),
+                rows(60 * k, 2, ex_reserve),
             ),
         ),
         (
@@ -1035,7 +1040,7 @@ fn specs() -> Vec<(String, String)> {
                     "`heaviest` works with tonnes too, since it uses `parse_weight`.",
                 ],
                 "| text | kilograms |\n|---|---|",
-                rows(60, 3, ex_tonnes),
+                rows(60 * k, 3, ex_tonnes),
             ),
         ),
         (
@@ -1052,7 +1057,7 @@ fn specs() -> Vec<(String, String)> {
                     "No trailing newline.",
                 ],
                 "| stock | table |\n|---|---|",
-                rows(20, 4, ex_markdown),
+                rows(20 * k, 4, ex_markdown),
             ),
         ),
         (
@@ -1070,7 +1075,7 @@ fn specs() -> Vec<(String, String)> {
                     "Round the total once, at the end.",
                 ],
                 "| price | units | total |\n|---|---|---|",
-                rows(60, 5, ex_bulk),
+                rows(60 * k, 5, ex_bulk),
             ),
         ),
     ]
@@ -1102,6 +1107,28 @@ fn marathon() -> Task {
                tables of examples), then values and facts from the very start; the history grows well past a \
                curated view",
         group: "long",
+        files,
+        turns: marathon_turns().into_iter().map(|t| (1, t)).collect(),
+        check: marathon_check,
+        solution: marathon_solution,
+        setup: None,
+        sealed: false,
+        mask: &[],
+        ready: always,
+    }
+}
+
+/// The marathon with twenty times the rows of examples in each specification: reading them takes
+/// the history well past 200k tokens, so a summary at 100k or 200k falls in the middle of the work
+/// and the last request still needs what the first one found.
+fn marathon_heavy() -> Task {
+    let mut files = crate_files();
+    files.extend(specs_scaled(20));
+    Task {
+        id: "marathon-heavy",
+        trap: "the marathon with twenty times the examples in each specification: the history grows past 200k \
+               tokens, so a summary falls in the middle of the work",
+        group: "heavy",
         files,
         turns: marathon_turns().into_iter().map(|t| (1, t)).collect(),
         check: marathon_check,
@@ -1375,5 +1402,19 @@ mod tests {
         assert_eq!(ref_tonnes("2.5 t"), 2500.0);
         let st: Plain = [("north", [("bolt", 5)].into_iter().collect())].into_iter().collect();
         assert_eq!(ref_markdown(&st).lines().last(), Some("| bolt | 5 | 0 | 0 | 0 | 5 |"));
+    }
+}
+
+#[cfg(test)]
+mod heavy {
+    use super::*;
+
+    #[test]
+    fn the_heavy_specs_hold_twenty_times_the_examples() {
+        let bytes = |s: Vec<(String, String)>| s.iter().map(|(_, t)| t.len()).sum::<usize>();
+        let (one, eight) = (bytes(specs()), bytes(specs_scaled(20)));
+        eprintln!("spec bytes: {one} and {eight}");
+        assert!(eight > 15 * one, "{one} {eight}");
+        assert!(specs_scaled(20)[0].1.starts_with(&specs()[0].1[..200]));
     }
 }

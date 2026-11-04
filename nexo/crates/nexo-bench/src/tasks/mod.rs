@@ -65,7 +65,7 @@ pub(crate) fn always() -> Result<(), String> {
 }
 
 /// The groups `--tasks` accepts besides task ids.
-pub const GROUPS: [&str; 6] = ["all", "core", "long", "more", "hard", "padded"];
+pub const GROUPS: [&str; 7] = ["all", "core", "long", "heavy", "more", "hard", "padded"];
 
 /// Every task, in the order they run.
 pub fn all() -> Vec<Task> {
@@ -119,10 +119,11 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), every.len());
-        assert_eq!(every.len(), 14);
+        assert_eq!(every.len(), 15);
         assert_eq!(select(&["realm"]).unwrap().len(), 1);
         assert_eq!(select(&["core,realm"]).unwrap().len(), 7);
-        assert_eq!(select::<&str>(&[]).unwrap().len(), 14);
+        assert_eq!(select::<&str>(&[]).unwrap().len(), 15);
+        assert_eq!(select(&["heavy"]).unwrap().len(), 1);
         assert!(select(&["nope"]).is_err());
     }
 
