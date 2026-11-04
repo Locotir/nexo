@@ -296,7 +296,7 @@ without any policy), `deepseek-flash`, temperature 0, three runs per arm, `--max
 | compaction at 100k | **1 of 3** | $0.340 (0.164 to 0.574) | 137 | 134k | 31 |
 | **curator** | **3 of 3** | **$0.169 (0.112 to 0.216)** | 100 | **93k** | 0 |
 
-![A heavy session: compaction at 100k against the curator, three runs](img/heavy-compact100.svg)
+![marathon-heavy, three runs per arm](img/heavy.svg)
 
 Compaction at 100k lost the task twice. Once its summary dropped the list of tests that failed at the
 start, which the last request asks for; once it summarised, read a large specification again, passed
@@ -304,3 +304,41 @@ start, which the last request asks for; once it summarised, read a large specifi
 runs stayed under its limit, so it ran as plain with fewer steps. The curator was right in every run,
 cheaper than plain in every run (−45% on the mean) and than compaction at 100k in every run; against
 compaction at 200k the means differ by less than the runs do.
+
+## A noisy session: the same four arms
+
+`marathon-noisy` (the heavy marathon with a noisy build script and long CI logs), `deepseek-flash`,
+temperature 0, two runs per arm, `--max-steps 200`. The second compaction-at-100k run is from a later
+build (a third run of every arm was stopped by hand and is left out).
+
+| arm | right | cost, mean (min to max) | largest request | summaries |
+|---|---|---|---|---|
+| plain | 1 of 2 | $0.292 (0.125 to 0.458) | 222k | 0 |
+| compaction at 200k | 1 of 2 | $0.318 (0.241 to 0.395) | 198k | 1 |
+| compaction at 100k | 1 of 2 | $0.332 (0.264 to 0.399) | 110k | 6 |
+| **curator** | **2 of 2** | **$0.265 (0.137 to 0.392)** | **105k** | 0 |
+
+![marathon-noisy, two runs per arm](img/noisy.svg)
+
+## Both sessions together
+
+Five runs per arm (three heavy, two noisy):
+
+| arm | right | cost, mean |
+|---|---|---|
+| **curator** | **5 of 5** | **$0.207** |
+| compaction at 200k | 4 of 5 | $0.239 |
+| plain | 4 of 5 | $0.300 |
+| compaction at 100k | 2 of 5 | $0.337 |
+
+![Five runs per arm, four arms](img/scoreboard.svg)
+
+Five runs are few: the curator's lead in cost over compaction at 200k is smaller than the spread
+between runs. What holds in every run is that it never lost the task and never sent more than 105k.
+
+## A pasted-log session
+
+`marathon-pasted` (the user pastes long logs into the messages), one run per arm. The curator solved
+it ($0.769, largest request 213k); compaction at 200k did not ($0.628, three summaries). A second
+curator run on a later build did not solve it ($0.348): the hidden test did not compile against the
+interface it wrote. One run each cannot rank the arms; it is listed so no result is left out.

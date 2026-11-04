@@ -4,7 +4,7 @@
 
 ### The coding agent that doesn't run out of context.
 
-**Half the cost. Three times the tasks solved.** On a heavy session, against compaction at 100k.
+**Every run solved. The lowest cost of the four.** Two heavy sessions, five runs, against compaction and the whole history.
 
 [![CI](https://github.com/Locotir/nexo/actions/workflows/ci.yml/badge.svg)](https://github.com/Locotir/nexo/actions/workflows/ci.yml)
 [![Rust 1.89+](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -13,9 +13,9 @@
 [![Providers](https://img.shields.io/badge/providers-19%20built--in%20%2B%20200%2B-1baf7a)](#any-provider)
 [![PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
-![A heavy session: compaction at 100k against the curator, three runs](docs/img/heavy-compact100.svg)
+![Five runs per arm: the curator solves 5 of 5 at $0.207, compaction at 200k 4 of 5 at $0.239, the whole history 4 of 5 at $0.300, compaction at 100k 2 of 5 at $0.337](docs/img/scoreboard.svg)
 
-<sub>`marathon-heavy`, deepseek-flash, temperature 0, three runs per arm. Every figure and its limits: [`docs/results.md`](docs/results.md).</sub>
+<sub>`marathon-heavy` and `marathon-noisy`, deepseek-flash, temperature 0. Every figure and its limits: [`docs/results.md`](docs/results.md).</sub>
 
 ```sh
 cargo install --locked --git https://github.com/Locotir/nexo nexo-cli && nexo
@@ -44,9 +44,16 @@ curator for the next step only.
 
 | Test | Result |
 |---|---|
-| **A heavy session against compaction at 100k** (`marathon-heavy`, deepseek-flash, temperature 0, 3 runs per arm) | curator solved **3 of 3**, compaction **1 of 3**; mean cost **\$0.169 against \$0.340 (−50%)**; largest request 93k against 134k |
+| **Two heavy sessions, four arms** (`marathon-heavy` ×3 and `marathon-noisy` ×2, deepseek-flash, temperature 0) | curator **5 of 5** at **\$0.207** a run; compaction at 200k 4 of 5 at \$0.239; whole history 4 of 5 at \$0.300; compaction at 100k 2 of 5 at \$0.337. Largest request: 105k against 198k to 222k |
+| **A pasted-log session** (`marathon-pasted`, one run per arm) | curator solved it at \$0.769, compaction at 200k did not (\$0.628); a repeat of the curator did not solve it (\$0.348). Too few runs to call |
 | **One 100-step session in nexo** (deepseek-chat, one run per arm) | **−36% cost**, **−59% wall time**, **−48% tokens** to the same point; both arms stopped at step 100 without solving the task (score 1% each) |
 | Offline replay of the 7 recorded whole-history sessions in `nexo/crates/nexo-curator/tests/fixtures/` | **−26%** tokens sent in total (8.52M to 6.30M, estimated at 4 characters per token); per session from −49% to +7% |
+
+Each run, request by request (ticks: each summary):
+
+![marathon-heavy, three runs: the whole history climbs past 200k, compaction at 100k saws and fails 2 of 3, the curator stays under 93k and solves 3 of 3](docs/img/heavy.svg)
+
+![marathon-noisy, two runs: the curator solves both, each other arm one of two](docs/img/noisy.svg)
 
 What the model is sent, request by request, replaying a recorded 81-request session through today's curator:
 
