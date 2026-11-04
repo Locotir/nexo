@@ -108,6 +108,8 @@ pub struct Record {
     pub contaminated: bool,
     /// Those paths, the first few.
     pub outside: Vec<String>,
+    /// Its commands ran sealed: no network, nothing outside its folders.
+    pub sealed: bool,
 }
 
 /// One graded part of a run: right, wrong, or never answered (`ok` None).
@@ -180,6 +182,8 @@ pub struct Driven {
     pub wd: PathBuf,
     /// When the run started: temporary files made after it are the run's own.
     pub since: SystemTime,
+    /// Its commands ran sealed: nothing outside its folders could be reached.
+    pub sealed: bool,
 }
 
 /// The transcript file name of a run.
@@ -232,7 +236,17 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
     }
     let wall_s = started.elapsed().as_secs_f64();
     let tally = tally.lock().unwrap().clone();
-    Ok(Driven { tally, stats, wall_s, transcript: name, answers, replies, wd: plan.wd.clone(), since })
+    Ok(Driven {
+        tally,
+        stats,
+        wall_s,
+        transcript: name,
+        answers,
+        replies,
+        wd: plan.wd.clone(),
+        since,
+        sealed: plan.seal.is_some(),
+    })
 }
 
 /// The record of a driven run graded `score` (0..1).
@@ -248,7 +262,12 @@ pub fn record(
     detail: String,
 ) -> Record {
     let t = &d.tally;
-    let outside = crate::contam::Scope::new(&d.wd).made_since(d.since).file(&bench.out.join(&d.transcript));
+    // a sealed run saw only its own folders: the paths it names are inside the box
+    let outside = if d.sealed {
+        Vec::new()
+    } else {
+        crate::contam::Scope::new(&d.wd).made_since(d.since).file(&bench.out.join(&d.transcript))
+    };
     Record {
         task: task.to_string(),
         arm: arm.name.clone(),
@@ -289,6 +308,7 @@ pub fn record(
         counters: crate::counters::from_file(&bench.out.join(&d.transcript)),
         contaminated: !outside.is_empty(),
         outside,
+        sealed: d.sealed,
     }
 }
 
@@ -299,11 +319,17 @@ pub async fn run(bench: &Bench, task: &Task, arm: &Arm, rep: u32, budget_left: f
     let dir = tempfile::Builder::new().prefix("nexo-bench-").tempdir().map_err(|e| e.to_string())?;
     let wd = dir.path().canonicalize().map_err(|e| e.to_string())?;
     task.materialize(&wd)?;
-    let seal = if task.sealed {
-        let hide = bench.hide.iter().filter(|h| !wd.starts_with(h)).cloned().collect();
-        Some(Seal::new(&wd, hide, task.mask.iter().map(|s| s.to_string()).collect())?)
-    } else {
-        None
+    // every task is sealed where this machine can seal commands, with a /tmp of its own; a sealed
+    // task refuses to run elsewhere, the rest run open and their transcripts are checked afterwards
+    let tmp = tempfile::Builder::new().prefix("nexo-bench-tmp-").tempdir().map_err(|e| e.to_string())?;
+    let seal = match crate::seal::available() {
+        Ok(()) => {
+            let hide = bench.hide.iter().filter(|h| !wd.starts_with(h)).cloned().collect();
+            let mask = task.mask.iter().map(|s| s.to_string()).collect();
+            Some(Seal::new(&wd, hide, mask)?.with_tmp(tmp.path()))
+        }
+        Err(e) if task.sealed => return Err(e),
+        Err(_) => None,
     };
     let plan = Plan {
         name: task.id.into(),
@@ -320,6 +346,7 @@ pub async fn run(bench: &Bench, task: &Task, arm: &Arm, rep: u32, budget_left: f
     let check = task.check;
     let graded = wd.clone();
     let outcome = tokio::task::spawn_blocking(move || check(&graded)).await.map_err(|e| e.to_string())?;
+    drop(tmp);
     drop(dir);
     Ok(record(bench, arm, rep, task.id, &driven, outcome.score, outcome.ok, outcome.detail))
 }
@@ -475,6 +502,7 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
         counters: Default::default(),
         contaminated: false,
         outside: Vec::new(),
+        sealed: false,
     }
 }
 

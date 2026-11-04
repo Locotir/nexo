@@ -5,15 +5,16 @@
 
 use std::path::{Path, PathBuf};
 
-/// Runs as `sh -c SCRIPT seal WD KEEP MASK CMD HIDE...`: binds the system read-only, hides the homes,
+/// Runs as `sh -c SCRIPT seal WD KEEP MASK TMP CMD HIDE...`: binds the system read-only, hides the homes,
 /// temporary folders, `/run` (but for the PATH folders under it, put back read-only: NixOS keeps its programs
 /// there), `/dev/shm` and HIDE under empty filesystems, then puts back WD
 /// (writable) and each colon-separated KEEP folder (read-only) at their own paths. Each
 /// colon-separated program name in MASK is shadowed by a stub that says the program is not found,
 /// first on PATH and bound over the real file (and its versioned names, `python3.12`) in every PATH
 /// folder and the system's `bin` folders, so a full path finds the stub too.
+/// A non-empty TMP is a folder of the run put at /tmp, so what a command leaves there is still there for the next.
 pub const SCRIPT: &str = r#"set -e
-wd="$1"; keep="$2"; mask="$3"; cmd="$4"; shift 4
+wd="$1"; keep="$2"; mask="$3"; tmp="$4"; cmd="$5"; shift 5
 for d in /usr /etc /bin /sbin /lib /lib32 /lib64 /boot /var /nix; do
   case "$wd/" in "$d"/*) continue;; esac
   if [ -d "$d" ] && [ ! -L "$d" ]; then mount --rbind "$d" "$d"; mount -o remount,bind,ro "$d"; fi
@@ -21,6 +22,7 @@ done
 mount -t tmpfs none /mnt
 mkdir /mnt/wd
 mount --bind "$wd" /mnt/wd
+if [ -n "$tmp" ]; then mkdir /mnt/tmp; mount --bind "$tmp" /mnt/tmp; fi
 i=0; IFS=:
 for k in $keep; do
   if [ -d "$k" ]; then mkdir "/mnt/k$i"; mount --bind "$k" "/mnt/k$i"; mount -o remount,bind,ro "/mnt/k$i"; fi
@@ -40,6 +42,7 @@ for d in /tmp /root /home /var/tmp /opt /srv /media /run /dev/shm "$@"; do
   if [ -d "$d" ]; then mount -t tmpfs none "$d"; fi
 done
 if [ -d /var/run ] && [ ! -L /var/run ]; then mount -t tmpfs none /var/run; fi
+if [ -n "$tmp" ]; then mount --bind /mnt/tmp /tmp; fi
 j=0; IFS=:
 for t in ${runs#:}; do
   mkdir -p "$t"; mount --bind "/mnt/r$j" "$t"; mount -o remount,bind,ro "$t"; j=$((j+1))
@@ -85,13 +88,21 @@ pub struct Seal {
     pub sysroot: Option<PathBuf>,
     /// Programs the box lacks: each name answers "not found" however the system has it.
     pub mask: Vec<String>,
+    /// A folder of the run that commands see as /tmp, kept between commands; none: an empty /tmp each time.
+    pub tmp: Option<PathBuf>,
 }
 
 impl Seal {
     /// The seal for `wd`, or why commands cannot be sealed on this machine.
     pub fn new(wd: &Path, hide: Vec<PathBuf>, mask: Vec<String>) -> Result<Seal, String> {
         available()?;
-        Ok(Seal { wd: wd.to_path_buf(), hide, sysroot: sysroot(), mask })
+        Ok(Seal { wd: wd.to_path_buf(), hide, sysroot: sysroot(), mask, tmp: None })
+    }
+
+    /// The same seal with `tmp` as every command's /tmp.
+    pub fn with_tmp(mut self, tmp: &Path) -> Seal {
+        self.tmp = Some(tmp.to_path_buf());
+        self
     }
 
     /// `cmd` as a shell command line that runs it sealed.
@@ -117,6 +128,7 @@ impl Seal {
         parts.push(quote(&self.wd.to_string_lossy()));
         parts.push(quote(&self.sysroot.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()));
         parts.push(quote(&self.mask.join(":")));
+        parts.push(quote(&self.tmp.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()));
         parts.push(quote(cmd));
         parts.extend(self.hide.iter().map(|h| quote(&h.to_string_lossy())));
         parts.join(" ")
@@ -191,6 +203,55 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("visible") && text.contains("hidden") && !text.contains("42"), "{text}");
         assert!(text.contains("awk 127"), "{text}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_runs_tmp_is_kept_between_commands_and_the_machines_is_not_seen() {
+        if available().is_err() {
+            eprintln!("skipped: {}", available().unwrap_err());
+            return;
+        }
+        let wd = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("theirs.txt"), "secret").unwrap();
+        let seal = Seal::new(wd.path(), vec![], vec!["awk".into()]).unwrap().with_tmp(tmp.path());
+        let sh = |c: &str| {
+            let out = std::process::Command::new("sh").arg("-c").arg(seal.wrap(c)).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        sh("echo kept > /tmp/note.txt; echo mine > \"$TMPDIR/b.txt\"; echo here > in-wd.txt");
+        let seen = sh(&format!(
+            "cat /tmp/note.txt /tmp/b.txt in-wd.txt; cat {}/theirs.txt || echo hidden",
+            other.path().display()
+        ));
+        assert!(
+            seen.contains("kept") && seen.contains("mine") && seen.contains("here") && seen.contains("hidden"),
+            "{seen}"
+        );
+        assert!(!seen.contains("secret"), "{seen}");
+        assert_eq!(std::fs::read_to_string(tmp.path().join("note.txt")).unwrap(), "kept\n");
+        assert_eq!(std::fs::read_to_string(wd.path().join("in-wd.txt")).unwrap(), "here\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cargo_tests_a_crate_without_dependencies_inside_the_seal() {
+        if available().is_err() || sysroot().is_none() {
+            eprintln!("skipped: no seal or no Rust toolchain");
+            return;
+        }
+        let wd = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(wd.path().join("src")).unwrap();
+        std::fs::write(wd.path().join("Cargo.toml"), crate::tasks::manifest("boxed", "")).unwrap();
+        std::fs::write(wd.path().join("src/lib.rs"), "#[test]\nfn adds() { assert_eq!(1 + 1, 2); }\n").unwrap();
+        let seal = Seal::new(wd.path(), vec![], vec![]).unwrap().with_tmp(tmp.path());
+        let out =
+            std::process::Command::new("sh").arg("-c").arg(seal.wrap("cargo test --quiet 2>&1")).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}");
     }
 
     /// Systems whose programs live under /run (NixOS: /run/current-system is a link into the store,

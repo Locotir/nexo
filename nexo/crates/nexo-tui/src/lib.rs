@@ -417,7 +417,9 @@ mod tests {
         for sig in ["-HUP", "-TERM"] {
             let mut h = super::Hangup::new();
             let pid = std::process::id().to_string();
-            assert!(std::process::Command::new("kill").args([sig, &pid]).status().unwrap().success());
+            // the shell's own `kill`: other tests change PATH while this one runs
+            let kill = format!("kill {sig} {pid}");
+            assert!(std::process::Command::new("/bin/sh").args(["-c", &kill]).status().unwrap().success());
             let ended = tokio::time::timeout(std::time::Duration::from_secs(10), h.wait()).await;
             assert!(ended.is_ok(), "{sig} did not end the wait");
         }
