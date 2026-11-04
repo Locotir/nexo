@@ -695,6 +695,14 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         if let Some((from, to)) = selection.as_ref().and_then(|s| s.covers(line)) {
             l = style_cols(l, from, to, theme.highlight());
         }
+        // the person's message: its band is filled to the edge here, on screen only, so copying
+        // its text never picks up the padding
+        if j < n && matches!(app.blocks[bi], crate::render::blocks::Block::User { .. }) {
+            let used = l.width();
+            if used < text_w {
+                l.spans.push(Span::styled(" ".repeat(text_w - used), l.style));
+            }
+        }
         out.push(l);
         line += 1;
     }
@@ -1943,14 +1951,26 @@ fn modal_scrollbar(
 }
 
 /// The rows of a question: each option (its description under it), then the row to write
-/// one's own answer. With the line each row starts at.
+/// one's own answer. With the line each row starts at. The row the cursor is on is a band across
+/// the dialog, and an answer being written wraps onto as many lines as it needs (its last
+/// [`TYPED_LINES`] show), so its end is always in view.
 pub fn question_rows(a: &crate::modal::Ask, w: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<usize>) {
     let mut lines = Vec::new();
     let mut starts = Vec::new();
     let cursor = |i: usize| if i == a.selected { "❯ " } else { "  " };
+    // the chosen row filled to the full width, so the band reaches the border
+    let band = |spans: Vec<Span<'static>>, on: bool| {
+        if !on {
+            return Line::from(spans);
+        }
+        let used: usize = spans.iter().map(|s| width(&s.content)).sum();
+        let mut spans: Vec<Span<'static>> =
+            spans.into_iter().map(|s| Span::styled(s.content, s.style.patch(theme.chosen()))).collect();
+        spans.push(Span::styled(" ".repeat(w.saturating_sub(used)), theme.chosen()));
+        Line::from(spans)
+    };
     for (i, o) in a.q.options.iter().enumerate() {
         let on = i == a.selected;
-        let style = if on { theme.bold(theme.accent) } else { Style::default() };
         let tick = if !a.q.multi {
             String::new()
         } else if a.picked[i] {
@@ -1960,10 +1980,8 @@ pub fn question_rows(a: &crate::modal::Ask, w: usize, theme: &Theme) -> (Vec<Lin
         };
         starts.push(lines.len());
         let head = format!("{}{}. {tick}", cursor(i), i + 1);
-        lines.push(Line::from(vec![
-            Span::styled(head.clone(), style),
-            Span::styled(truncate(&o.label, w.saturating_sub(width(&head))), style),
-        ]));
+        let label = truncate(&o.label, w.saturating_sub(width(&head)));
+        lines.push(band(vec![Span::raw(head.clone()), Span::raw(label)], on));
         if !o.description.is_empty() {
             let pad = " ".repeat(width(&head));
             lines.push(Line::from(vec![
@@ -1975,21 +1993,58 @@ pub fn question_rows(a: &crate::modal::Ask, w: usize, theme: &Theme) -> (Vec<Lin
     let n = a.q.options.len();
     let on = a.selected == n;
     let head = format!("{}{}. ", cursor(n), n + 1);
-    let style = if on { theme.bold(theme.accent) } else { theme.dim() };
     starts.push(lines.len());
-    let line = if a.typing || !a.other.is_empty() {
-        let shown = truncate(&a.other, w.saturating_sub(width(&head) + 1));
-        let mut spans = vec![Span::styled(head, style), Span::raw(shown)];
-        if a.typing {
-            spans.push(Span::styled("▏", theme.style(theme.accent)));
+    if a.typing || !a.other.is_empty() {
+        // room for the caret at the end of the last line
+        let room = w.saturating_sub(width(&head) + 1).max(1);
+        let mut pieces = hard_wrap(&a.other, room);
+        let hidden = pieces.len().saturating_sub(TYPED_LINES);
+        pieces.drain(..hidden);
+        let last = pieces.len() - 1;
+        for (k, piece) in pieces.into_iter().enumerate() {
+            let lead = if k == 0 { head.clone() } else { " ".repeat(width(&head)) };
+            let lead = if k == 0 && hidden > 0 { lead.replacen(". ", ".…", 1) } else { lead };
+            let mut spans = vec![Span::raw(lead), Span::raw(piece)];
+            if a.typing && k == last {
+                spans.push(Span::styled("▏", theme.style(theme.accent)));
+            }
+            lines.push(band(spans, on));
         }
-        Line::from(spans)
     } else {
         let hint = if a.q.plan.is_some() { "Tell the model what to change…" } else { "Something else…" };
-        Line::from(vec![Span::styled(head, style), Span::styled(hint.to_string(), style)])
-    };
-    lines.push(line);
+        let spans = vec![Span::raw(head), Span::styled(hint.to_string(), theme.dim())];
+        lines.push(band(spans, on));
+    }
     (lines, starts)
+}
+
+/// A title shown as a filled tag in `colour`, the dialog's background as its ink.
+fn badge(theme: &Theme, colour: ratatui::style::Color) -> Style {
+    if theme.mono {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.modal_bg).bg(colour).add_modifier(Modifier::BOLD)
+    }
+}
+
+/// The most lines an answer being written takes in a question; past it, its start scrolls away.
+const TYPED_LINES: usize = 5;
+
+/// `s` cut into pieces at most `room` columns wide, keeping every character (spaces included,
+/// so the caret sits where the next one will go). Never empty.
+fn hard_wrap(s: &str, room: usize) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut used = 0;
+    for c in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + cw > room && used > 0 {
+            out.push(String::new());
+            used = 0;
+        }
+        out.last_mut().expect("never empty").push(c);
+        used += cw;
+    }
+    out
 }
 
 /// A question from the model: the question (and the plan, as markdown) scrolls on top, the
@@ -2021,9 +2076,10 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
     let title = if a.q.plan.is_some() { " plan ".to_string() } else { format!(" {} ", a.q.header.to_lowercase()) };
     let block = Box_::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(pop_style(&theme, theme.accent2, pop))
-        .title(Span::styled(title, theme.bold(theme.accent2)))
+        // a question waits for the person: a heavier frame in the warning colour, so it is not missed
+        .border_type(BorderType::Thick)
+        .border_style(pop_style(&theme, theme.warn, pop))
+        .title(Span::styled(title, badge(&theme, theme.warn)))
         .style(Style::default().bg(theme.modal_bg));
     let inner = block.inner(r);
     f.render_widget(block, r);

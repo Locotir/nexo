@@ -160,6 +160,14 @@ impl Block {
                         first.spans.push(Span::styled(at.clone(), theme.dim2()));
                     }
                 }
+                // the whole message on a band of the person's colour, edge to edge
+                let band = theme.user_band();
+                for l in &mut lines {
+                    l.style = band.patch(l.style);
+                    for s in &mut l.spans {
+                        s.style = band.patch(s.style);
+                    }
+                }
                 lines
             }
             Block::Assistant { text, streaming } => {

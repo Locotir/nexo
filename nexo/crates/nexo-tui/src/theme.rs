@@ -660,6 +660,28 @@ impl Theme {
         }
     }
 
+    /// The background of the person's own messages: a faint wash of their colour, so they are
+    /// found at a glance in a long conversation. None without colour.
+    pub fn user_band(&self) -> Style {
+        if self.mono {
+            return Style::default();
+        }
+        let tint = match (self.bg, self.user) {
+            (Color::Rgb(..), Color::Rgb(..)) => mix(self.bg, self.user, 0.16),
+            _ => self.bg_alt,
+        };
+        Style::default().bg(tint)
+    }
+
+    /// The row the cursor is on in a list of choices: a band across the row, so it is seen at a glance.
+    pub fn chosen(&self) -> Style {
+        if self.mono {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            Style::default().fg(self.accent).bg(self.selection_bg).add_modifier(Modifier::BOLD)
+        }
+    }
+
     pub fn highlight(&self) -> Style {
         if self.mono {
             Style::default().add_modifier(Modifier::REVERSED)

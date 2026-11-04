@@ -367,3 +367,44 @@ fn the_review_keeps_the_chosen_field_in_view_under_a_long_error() {
         }
     }
 }
+
+#[test]
+fn a_long_answer_being_written_wraps_and_its_end_stays_in_view() {
+    use nexo_core::permission::{Question, QuestionOption};
+    use nexo_tui::modal::{Ask, Modal};
+    let mut a = app();
+    let mut ask = Ask::new(Question {
+        id: "q".into(),
+        header: "Approach".into(),
+        question: "Which way?".into(),
+        options: vec![QuestionOption { label: "one".into(), description: String::new() }],
+        multi: false,
+        plan: None,
+    });
+    ask.selected = 1;
+    ask.typing = true;
+    ask.other = format!("{} the very end", "words of a long answer ".repeat(12));
+    a.modal = Some(Modal::Question(Box::new(ask)));
+    let rows = draw(&mut a, 60, 24);
+    let dump = rows.join("\n");
+    assert!(dump.contains("the very end▏"), "the end of the answer is not in view\n{dump}");
+    assert!(rows.iter().filter(|r| r.contains("words of a long")).count() >= 2, "the answer did not wrap\n{dump}");
+}
+
+#[test]
+fn the_persons_own_message_sits_on_a_band_that_reaches_the_edge() {
+    use nexo_tui::render::blocks::Block;
+    let mut a = app();
+    a.push(Block::User { text: "hello there".into(), at: None });
+    let mut t = Terminal::new(TestBackend::new(60, 16)).unwrap();
+    draw_frame(&mut t, &mut a).unwrap();
+    let buf = t.backend().buffer().clone();
+    let row = (0..16)
+        .find(|&y| (0..60).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().contains("hello there"));
+    let y = row.expect("message not drawn");
+    let start = (0..60).find(|&x| buf[(x, y)].symbol() == "h").unwrap();
+    let message_bg = buf[(start, y)].bg;
+    let page_bg = buf[(0, 15)].bg;
+    assert_ne!(message_bg, page_bg, "the message has no band");
+    assert_eq!(buf[(start + 30, y)].bg, message_bg, "the band stops at the text");
+}
