@@ -283,3 +283,24 @@ was no longer in the view (it stays on disk and can be read back). On the 100-st
 `bench-realm100-full` recording the curator finds no cut worth breaking the prompt cache for and sends
 it whole (+1.5%, table above). The replay cannot show how the model reacts to the notes and nudges;
 only a live run does.
+
+## A heavy session: compaction at 100k and 200k against the curator
+
+`marathon-heavy` (the marathon with twenty times the examples, so the history passes 200k tokens
+without any policy), `deepseek-flash`, temperature 0, three runs per arm, `--max-steps 200`.
+
+| arm | right | cost, mean (min to max) | steps, mean | largest view | compactions |
+|---|---|---|---|---|---|
+| plain | 3 of 3 | $0.305 (0.220 to 0.352) | 94 | 212k | 0 |
+| compaction at 200k | 3 of 3 | $0.187 (0.182 to 0.197) | 72 | 144k | 0 |
+| compaction at 100k | **1 of 3** | $0.340 (0.164 to 0.574) | 137 | 134k | 31 |
+| **curator** | **3 of 3** | **$0.169 (0.112 to 0.216)** | 100 | **93k** | 0 |
+
+![A heavy session: compaction at 100k against the curator, three runs](img/heavy-compact100.svg)
+
+Compaction at 100k lost the task twice. Once its summary dropped the list of tests that failed at the
+start, which the last request asks for; once it summarised, read a large specification again, passed
+100k again and summarised again, 28 times, until the step cap. Compaction at 200k never started: the
+runs stayed under its limit, so it ran as plain with fewer steps. The curator was right in every run,
+cheaper than plain in every run (−45% on the mean) and than compaction at 100k in every run; against
+compaction at 200k the means differ by less than the runs do.

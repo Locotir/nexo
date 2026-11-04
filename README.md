@@ -48,6 +48,9 @@ nexo keeps the whole history on disk and gives the model a **curated view** of i
 |---|---|
 | **One 100-step session in nexo** (deepseek-chat, one run per arm) | **−36% cost**, **−59% wall time**, **−48% tokens** to the same point; both arms stopped at step 100 without solving the task (score 1% each) |
 | Offline replay of the 7 recorded whole-history sessions in `nexo/crates/nexo-curator/tests/fixtures/` | **−26%** tokens sent in total (8.52M to 6.30M, estimated at 4 characters per token); per session from −49% to +7% |
+| **A heavy session against compaction at 100k** (`marathon-heavy`, deepseek-flash, temperature 0, 3 runs per arm) | curator solved **3 of 3**, compaction **1 of 3**; mean cost **\$0.169 against \$0.340 (−50%)**; largest request 93k against 134k |
+
+![A heavy session: compaction at 100k against the curator, three runs](docs/img/heavy-compact100.svg)
 
 What the model is sent, request by request, replaying a recorded 81-request session from the repository through today's curator:
 
