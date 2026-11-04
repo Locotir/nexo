@@ -1,32 +1,15 @@
-//! Updates: once a day nexo asks GitHub how many commits `main` has past the one it was built from,
-//! and says so in the interface; `nexo update` builds the latest with cargo.
+//! Updates: each time the interface starts, nexo asks GitHub (in the background) how many commits
+//! `main` has past the one it was built from, and says so; `nexo update` builds the latest with cargo.
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::time::Duration;
 
 pub const REPO: &str = "https://github.com/Locotir/nexo";
 const API: &str = "https://api.github.com/repos/Locotir/nexo/compare";
-const DAY: u64 = 24 * 60 * 60;
 
 /// The commit this binary was built from (`unknown` outside a git checkout).
 pub fn commit() -> &'static str {
     nexo_bench::run::COMMIT
-}
-
-fn cache_file() -> PathBuf {
-    nexo_core::paths::cache_dir().join("update-check")
-}
-
-fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-/// The last answer, `<when> <commit> <behind>`, when it is for `commit` and less than a day old.
-fn cached(text: &str, commit: &str, now: u64) -> Option<u32> {
-    let mut it = text.split_whitespace();
-    let when: u64 = it.next()?.parse().ok()?;
-    let (c, behind) = (it.next()?, it.next()?.parse().ok()?);
-    (c == commit && now.saturating_sub(when) < DAY).then_some(behind)
 }
 
 /// What the interface shows: nothing when up to date.
@@ -64,25 +47,17 @@ pub fn off(config: &nexo_core::Config) -> bool {
     !config.ui.update_check || std::env::var_os("NEXO_NO_UPDATE_CHECK").is_some() || commit() == "unknown"
 }
 
-/// The notice for the interface, from the cache when it is fresh, else from GitHub (then cached).
-pub async fn check(force: bool) -> Result<Option<String>, String> {
+/// The notice for the interface: none when up to date.
+pub async fn check() -> Result<Option<String>, String> {
     let c = commit();
-    let file = cache_file();
-    if !force {
-        if let Some(b) = std::fs::read_to_string(&file).ok().and_then(|t| cached(&t, c, now())) {
-            return Ok(notice(b));
-        }
-    }
     let behind = ask(c).await.ok_or_else(|| format!("GitHub does not know commit {c}, or cannot be reached"))?;
-    let _ = std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")));
-    let _ = std::fs::write(&file, format!("{} {c} {behind}\n", now()));
     Ok(notice(behind))
 }
 
 /// `nexo update`: `--check` only says; otherwise `cargo install` builds the latest `main`.
 pub async fn run(check_only: bool) -> anyhow::Result<i32> {
     if check_only {
-        match check(true).await {
+        match check().await {
             Ok(Some(n)) => println!("{n}"),
             Ok(None) => println!("nexo is up to date ({}).", short(commit())),
             Err(e) => {
@@ -105,7 +80,6 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
         }
         return Ok(status.code().unwrap_or(1));
     }
-    let _ = std::fs::remove_file(cache_file());
     Ok(0)
 }
 
@@ -124,14 +98,6 @@ fn short(c: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_cache_holds_for_a_day_and_one_commit() {
-        assert_eq!(cached("1000 abc 3\n", "abc", 1000 + DAY - 1), Some(3));
-        assert_eq!(cached("1000 abc 3\n", "abc", 1000 + DAY), None, "a day old: ask again");
-        assert_eq!(cached("1000 abc 3\n", "def", 1001), None, "another build: ask again");
-        assert_eq!(cached("garbage", "abc", 1001), None);
-    }
 
     #[test]
     fn the_notice_shows_only_when_behind() {

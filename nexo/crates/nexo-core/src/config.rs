@@ -300,7 +300,7 @@ pub struct UiConfig {
     pub status_command: String,
     /// A dim `HH:MM` at the right of each message and reply, and a reply's duration (`/timestamps` toggles it).
     pub timestamps: bool,
-    /// Once a day, ask GitHub whether `main` has commits past the one nexo was built from, and say so
+    /// At each start of the interface, ask GitHub whether `main` has commits past the one nexo was built from, and say so
     /// (`NEXO_NO_UPDATE_CHECK` also turns it off).
     pub update_check: bool,
 }

@@ -528,7 +528,7 @@ async fn interactive(
     if !crate::update::off(&config) {
         let events = ends.events.clone();
         tokio::spawn(async move {
-            if let Ok(Some(text)) = crate::update::check(false).await {
+            if let Ok(Some(text)) = crate::update::check().await {
                 let _ = events.send(AgentEvent::Notice { level: nexo_core::agent::Level::Info, text });
             }
         });

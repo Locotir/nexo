@@ -83,7 +83,7 @@ The engine, every setting and its default: [`docs/how-it-works.md`](docs/how-it-
 
 ## Install
 
-Rust 1.89 or newer (the scripts offer to install it). Linux or Windows.
+Linux or Windows. The scripts install whatever is missing (Rust, a C compiler or the Visual Studio build tools) and build nexo, no questions asked.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh     # Linux
@@ -95,7 +95,7 @@ irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex       
 
 Or directly: `cargo install --locked --git https://github.com/Locotir/nexo nexo-cli`.
 
-**Updates.** Once a day nexo checks GitHub and tells you in the interface when `main` has new commits;
+**Updates.** Each time it starts, nexo checks GitHub in the background and tells you when `main` has new commits;
 `nexo update` installs them. `[ui] update_check = false` or `NEXO_NO_UPDATE_CHECK=1` turns it off.
 
 Or from source:
