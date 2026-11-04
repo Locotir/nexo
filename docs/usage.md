@@ -33,8 +33,8 @@ as needed, keeping the task statement and the files touched. The status bar show
 with the task's own checker. The tasks run commands the model writes, so run it in a container or a VM.
 
 ```sh
-nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat \
-  --key "$DEEPSEEK_API_KEY" --tasks realm --arms plain,compact,curator \
+printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat \
+  --key - --tasks realm --arms plain,compact,curator \
   --repeats 1 --max-steps 1000 --budget 5 --out bench-out
 ```
 
