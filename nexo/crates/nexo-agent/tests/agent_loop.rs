@@ -2703,3 +2703,46 @@ async fn a_file_one_sub_agent_is_changing_is_closed_to_another_at_the_same_time(
     assert_eq!(got[1], "written");
     r.stop().await;
 }
+
+/// A reply that only thinks.
+fn thought(s: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::Start { response_id: None, model: None },
+        StreamEvent::ReasoningDelta(s.into()),
+        StreamEvent::Usage(Usage { input: 1000, output: 100, cache_read: 2000, ..Default::default() }),
+        StreamEvent::Finish(FinishReason::Length),
+        StreamEvent::Done,
+    ]
+}
+
+#[tokio::test]
+async fn a_reply_of_only_reasoning_is_asked_to_go_on() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(thought("now write it: first")), Reply::Events(text("done"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(notices(&evs).iter().any(|n| n.contains("only reasoning")), "{:?}", notices(&evs));
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let sent = &reqs[1].messages;
+    assert!(nexo_core::message::is_well_formed(sent), "{sent:?}");
+    assert!(sent.last().unwrap().text().contains("only reasoning"), "{sent:?}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn replies_of_only_reasoning_stop_after_two_asks() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(thought("a")), Reply::Events(thought("b")), Reply::Events(thought("c"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests().len(), 3);
+    r.stop().await;
+}

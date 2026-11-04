@@ -1253,6 +1253,8 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
     let mut answer = Answer::No;
     // replies in a row cut at max_tokens while writing their calls
     let mut cut_calls = 0u32;
+    // replies in a row that held only reasoning: no answer and no call
+    let mut mute = 0u32;
     loop {
         if rounds >= max_turns {
             notice(
@@ -1429,6 +1431,15 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             continue;
         }
         cut_calls = 0;
+        if calls.is_empty() && msg.text().trim().is_empty() && !msg.reasoning().trim().is_empty() && mute < 2 {
+            // the model thought and stopped before writing anything: ending here would leave the request
+            // undone with nothing said, so it is asked to go on from its reasoning
+            mute += 1;
+            notice(&events, Level::Warn, "the reply held only reasoning, with no answer and no call; asked to go on");
+            push_results(&state, vec![Part::text(MUTE_NOTE)]).await;
+            continue;
+        }
+        mute = 0;
         if calls.is_empty() {
             if cut {
                 notice(&events, Level::Warn, "the reply was cut at max_tokens (agent.max_tokens)");
@@ -1512,6 +1523,11 @@ enum Answer {
     /// The model called a tool all the same: the protocol is told that none may be called.
     Forced,
 }
+
+/// Sent when a reply held only reasoning (often cut at max_tokens while thinking): not a request of the person.
+const MUTE_NOTE: &str =
+    "<system-reminder>Your last reply held only reasoning: no answer and no tool call reached the person. \
+     Go on from it now with a tool call or the answer, keeping the reasoning short.</system-reminder>";
 
 const ANSWER_NOW: &str =
     "Tool calls are off for the rest of this request: they will not run. Give your answer now, from what you have already seen. \
