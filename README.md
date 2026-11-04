@@ -15,10 +15,6 @@
 
 ![A heavy session: compaction at 100k against the curator, three runs](docs/img/heavy-compact100.svg)
 
-| **−50 %** | **3 of 3** | **93k** |
-|:---:|:---:|:---:|
-| mean cost, \$0.169 against \$0.340 | runs solved, against 1 of 3 | largest request, against 134k |
-
 <sub>`marathon-heavy`, deepseek-flash, temperature 0, three runs per arm. Every figure and its limits: [`docs/results.md`](docs/results.md).</sub>
 
 ```sh
