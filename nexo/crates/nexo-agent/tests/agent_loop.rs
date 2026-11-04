@@ -493,24 +493,28 @@ async fn a_context_length_error_compacts_once_and_retries() {
     r.stop().await;
 }
 
+fn big_call(id: &str, name: &str, path: &str) -> Vec<StreamEvent> {
+    let mut evs = call(id, name, json!({"path": path}));
+    evs[2] = StreamEvent::Usage(Usage { input: 5000, output: 5, ..Default::default() });
+    evs
+}
+
+fn is_summary(r: &ModelRequest) -> bool {
+    r.system == nexo_agent::compact::SUMMARY_SYSTEM && r.tools.is_empty()
+}
+
 #[tokio::test]
-async fn compact_summarises_past_its_threshold_every_time_and_keeps_the_task_and_files() {
+async fn compact_summarises_past_its_threshold_and_keeps_the_task_and_files() {
     let d = tempfile::tempdir().unwrap();
-    let big = |id: &str, name: &str, path: &str| {
-        let mut evs = call(id, name, json!({"path": path}));
-        evs[2] = StreamEvent::Usage(Usage { input: 5000, output: 5, ..Default::default() });
-        evs
-    };
     let client = Scripted::new(vec![
         Reply::Events({
-            // a long explanation with the first call: it is summarised away by the second compaction
-            let mut evs = big("c1", "write", "b.rs");
+            // a long explanation with the first call: it is summarised away once a later call keeps the tail
+            let mut evs = big_call("c1", "write", "b.rs");
             evs.insert(0, StreamEvent::TextDelta("x".repeat(20_000)));
             evs
         }),
+        Reply::Events(big_call("c2", "read", "a.rs")),
         Reply::Events(text("SUMMARY ONE")),
-        Reply::Events(big("c2", "read", "a.rs")),
-        Reply::Events(text("SUMMARY TWO")),
         Reply::Events(text("done")),
     ]);
     let mut cfg = config(PermissionMode::Auto);
@@ -523,30 +527,51 @@ async fn compact_summarises_past_its_threshold_every_time_and_keeps_the_task_and
     let shown = text_of(&evs);
     assert!(shown.ends_with("xdone") && !shown.contains("SUMMARY"), "summaries are not shown as replies");
     let reqs = client.requests();
-    assert_eq!(reqs.len(), 5, "two summaries inside one turn");
-    let summary = |i: usize| reqs[i].system == nexo_agent::compact::SUMMARY_SYSTEM && reqs[i].tools.is_empty();
-    assert!(!summary(0) && summary(1) && !summary(2) && summary(3) && !summary(4));
-    // after each summary: the summary, then the last call with its result, nothing orphaned
-    for i in [2, 4] {
-        let m = &reqs[i].messages;
-        assert_eq!(m.len(), 3, "{m:?}");
-        let head = m[0].text();
-        assert!(head.contains("[request] fix the bug in a.rs"), "{head}");
-        let id = if i == 2 { "c1" } else { "c2" };
-        assert!(m[1].content.iter().any(|p| matches!(p, Part::ToolCall { id: c, .. } if c == id)), "{m:?}");
-        assert!(m[2].content.iter().any(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id == id)));
-    }
-    let head = reqs[4].messages[0].text();
-    assert!(head.contains("SUMMARY TWO") && head.contains("[files]") && head.contains("b.rs"), "{head}");
+    assert_eq!(reqs.len(), 4, "one summary: the task alone was too little to summarise");
+    assert!(!is_summary(&reqs[0]) && !is_summary(&reqs[1]) && is_summary(&reqs[2]) && !is_summary(&reqs[3]));
+    // after the summary: the summary, then the last call with its result, nothing orphaned
+    let m = &reqs[3].messages;
+    assert_eq!(m.len(), 3, "{m:?}");
+    let head = m[0].text();
+    assert!(head.contains("[request] fix the bug in a.rs"), "{head}");
+    assert!(head.contains("SUMMARY ONE") && head.contains("[files]") && head.contains("b.rs"), "{head}");
+    assert!(m[1].content.iter().any(|p| matches!(p, Part::ToolCall { id, .. } if id == "c2")), "{m:?}");
+    assert!(m[2].content.iter().any(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id == "c2")));
     let size = |i: usize| serde_json::to_string(&reqs[i].messages).unwrap().len();
-    assert!(size(2) > 20_000 && size(4) < 2_000, "{} then {}", size(2), size(4));
-    // the summaries are billed like any request: 2 calls, 2 summaries, 1 answer
+    assert!(size(1) > 20_000 && size(3) < 2_000, "{} then {}", size(1), size(3));
+    // the summary is billed like any request: 2 calls, 1 summary, 1 answer
     let session = evs
         .iter()
         .rev()
         .find_map(|e| if let AgentEvent::Usage { session, .. } = e { Some(*session) } else { None })
         .unwrap();
-    assert_eq!(session.total_input(), 2 * 5000 + 3 * 3000);
+    assert_eq!(session.total_input(), 2 * 5000 + 2 * 3000);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn compact_does_not_summarise_every_round_a_request_its_fixed_part_keeps_over_the_threshold() {
+    let d = tempfile::tempdir().unwrap();
+    // every request counts 5000 tokens (a long system prompt, many tools) while each round adds little
+    let client = Scripted::new(vec![
+        Reply::Events(big_call("c1", "read", "a.py")),
+        Reply::Events(big_call("c2", "read", "b.py")),
+        Reply::Events(big_call("c3", "read", "c.py")),
+        Reply::Events(big_call("c4", "read", "d.py")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.context.policy = "compact".into();
+    cfg.context.compact_at = 3000;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "look at the scripts".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5);
+    assert!(!reqs.iter().any(is_summary), "no summary of a summary each round");
+    assert_eq!(reqs[4].messages.len(), 9, "the history is as it was");
     r.stop().await;
 }
 
@@ -1111,6 +1136,48 @@ async fn a_context_error_with_a_number_records_the_window() {
         .iter()
         .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("context window of m1"))));
     assert_eq!(user_config().providers["mock"].context_window["m1"], 131_072);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_window_learned_smaller_gets_a_new_curated_view_before_a_compaction() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let too_long = || {
+        Reply::Err(ProviderError::new(
+            ErrorKind::ContextLength,
+            "This model's maximum context length is 65536 tokens. However, you requested 70000 tokens.",
+        ))
+    };
+    let client = Scripted::new(vec![
+        Reply::Events(text("first")),
+        too_long(),
+        Reply::Events(text("after")),
+        // the same window again: a new view would not help, the history is compacted
+        too_long(),
+        Reply::Events(text("SUMMARY")),
+        Reply::Events(text("third")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.context.policy = "curator".into();
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "after");
+    assert!(!notices(&evs).iter().any(|n| n.starts_with("history compacted")), "{evs:?}");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(!is_summary(&reqs[2]) && reqs[2].messages == reqs[1].messages, "the history kept as it is");
+    r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "third");
+    assert!(notices(&evs).iter().any(|n| n.starts_with("history compacted")), "{evs:?}");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 6);
+    assert!(is_summary(&reqs[4]));
     r.stop().await;
 }
 
@@ -2113,5 +2180,134 @@ async fn explore_respects_deny() {
         .collect();
     assert!(said[0].contains("Permission denied") && said[0].contains("read(.env*)"), "{said:?}");
     assert!(!said[1].contains("Permission denied"), "{said:?}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_rewind_puts_back_what_a_sub_agent_wrote() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.txt"), "old").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "change a.txt"}))),
+        Reply::Events(call("s1", "write", json!({"path": "a.txt"}))),
+        Reply::Events(text("changed a.txt")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.permissions.allow.push("write".into());
+    let mut r = start(client, cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
+    r.turn().await;
+    // what the (fake) write would have done
+    std::fs::write(d.path().join("a.txt"), "changed").unwrap();
+    r.send(AgentCommand::Rewind { index: 0 });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("rewound"))).await;
+    let AgentEvent::Notice { text, .. } = evs.last().unwrap() else { unreachable!() };
+    assert!(text.contains("1 file put back"), "{text}");
+    assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "old");
+    r.stop().await;
+}
+
+/// A write that takes a moment, so a sub-agent running beside another would let it in.
+struct SlowWrite;
+
+#[async_trait]
+impl Tool for SlowWrite {
+    fn name(&self) -> &str {
+        "write"
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "write".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+    }
+    fn kind(&self) -> ToolKind {
+        ToolKind::Write
+    }
+    fn summary(&self, _args: &Value) -> String {
+        "write".into()
+    }
+    async fn run(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        ToolOutput::ok("written")
+    }
+}
+
+#[tokio::test]
+async fn sub_agents_that_can_write_run_one_after_the_other() {
+    let d = tempfile::tempdir().unwrap();
+    let two = vec![
+        StreamEvent::ToolCallStart { id: "t1".into(), name: "task".into() },
+        StreamEvent::ToolCallEnd {
+            id: "t1".into(),
+            name: "task".into(),
+            args: json!({"agent": "general", "prompt": "first"}),
+        },
+        StreamEvent::ToolCallStart { id: "t2".into(), name: "task".into() },
+        StreamEvent::ToolCallEnd {
+            id: "t2".into(),
+            name: "task".into(),
+            args: json!({"agent": "general", "prompt": "second"}),
+        },
+        StreamEvent::Finish(FinishReason::ToolUse),
+        StreamEvent::Done,
+    ];
+    let client = Scripted::new(vec![
+        Reply::Events(two),
+        // the first sub-agent writes, then reports; only then does the second start
+        Reply::Events(call("s1", "write", json!({"path": "x.txt"}))),
+        Reply::Events(text("first report")),
+        Reply::Events(text("second report")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.permissions.allow.push("write".into());
+    let set = tools().with(Arc::new(SlowWrite));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "two changes".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let report = |want: &str| {
+        evs.iter().find_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == want => Some(output.content.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(report("t1").as_deref(), Some("first report"));
+    assert_eq!(report("t2").as_deref(), Some("second report"));
+    let reqs = client.requests();
+    // the second sub-agent's first request comes after the first one's two
+    assert_eq!(reqs[3].messages.len(), 1, "{:?}", reqs[3].messages);
+    assert!(reqs[3].messages[0].text().contains("second"));
+    r.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn moving_to_another_session_stops_the_jobs_of_the_one_left() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 30", "background": true}))),
+        Reply::Events(text("started")),
+        Reply::Events(text("in the fork")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run it in the background".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Fork { index: None });
+    r.until(|e| {
+        matches!(e, AgentEvent::Jobs { jobs } if jobs.iter().any(|j| j.id == 1 && j.status == nexo_core::jobs::JobStatus::Killed))
+    })
+    .await;
+    r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "in the fork");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3, "no turn of its own for the old session's job");
+    assert!(
+        !reqs[2].messages.iter().any(|m| m.text().contains("[background jobs ended]")),
+        "the old session's job is not reported in the new one"
+    );
     r.stop().await;
 }

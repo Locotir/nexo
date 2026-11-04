@@ -200,3 +200,62 @@ fn with_animations_off_everything_is_final_at_once() {
     assert_eq!(one, two, "no frame differs from the final one");
     assert!(rows_of(&one).last().unwrap().contains("$0.0031"));
 }
+
+#[test]
+fn with_animations_off_a_flash_message_keeps_its_colour_to_the_end() {
+    for animations in [true, false] {
+        let mut a = app(animations);
+        // in the last 900 ms, where the message fades into the bar
+        let at = Instant::now().checked_sub(Duration::from_millis(3500)).unwrap();
+        a.status = Some(("model switched".into(), at));
+        let b = draw(&mut a);
+        let rows = rows_of(&b);
+        let y = rows.iter().position(|r| r.contains("model switched")).expect("message on screen");
+        let x = rows[y].find("model switched").unwrap();
+        let x = rows[y][..x].chars().count() as u16;
+        let fg = b[(x, y as u16)].fg;
+        if animations {
+            assert_ne!(fg, a.theme.bar_fg, "fading");
+        } else {
+            assert_eq!(fg, a.theme.bar_fg, "no shade in between");
+            // and the clock is not asked for a frame of it
+            a.dirty = false;
+            a.tick();
+            assert!(!a.dirty);
+        }
+    }
+}
+
+#[test]
+fn with_animations_off_a_changed_context_cell_does_not_blink() {
+    use nexo_core::{CellKind, CellState, ContextCell};
+    use ratatui::style::Modifier;
+    for animations in [true, false] {
+        let mut a = app(animations);
+        let cell = |kind, tokens, state| ContextCell { kind, tokens, state, zone: 0 };
+        a.handle_agent(AgentEvent::ContextMap {
+            cells: vec![cell(CellKind::Request, 40, CellState::Whole), cell(CellKind::Output, 900, CellState::Shrunk)],
+            zones: Vec::new(),
+            calls: Vec::new(),
+        });
+        a.toggle_live(120);
+        assert!(a.show_live);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        draw_frame(&mut t, &mut a).unwrap();
+        let lit = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|c| ["█", "▒"].contains(&c.symbol()) && c.modifier.contains(Modifier::REVERSED))
+            .count();
+        a.tick();
+        if animations {
+            assert!(lit > 0, "a changed cell lights up");
+            assert!(a.moving);
+        } else {
+            assert_eq!(lit, 0, "nothing blinks");
+            assert!(!a.moving, "the loop is not kept moving");
+        }
+    }
+}

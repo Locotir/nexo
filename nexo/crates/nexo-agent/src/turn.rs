@@ -46,10 +46,13 @@ const ATTACHMENT_BYTES: usize = 200_000;
 /// Characters of a `!` command's output kept.
 const SHELL_CHARS: usize = 30_000;
 const SUMMARY_TOKENS: u32 = 4_096;
+/// The `compact` policy compacts only when the part it would replace holds, besides an earlier
+/// summary, at least this fraction (1/n) of its threshold.
+const COMPACT_MARGIN: u64 = 10;
 /// Continuation rounds a goal gets after a turn ends without `GOAL DONE` (`NEXO_GOAL_ROUNDS`).
 const GOAL_ROUNDS: u32 = 5;
 /// What the agent submits by itself to keep working towards the goal.
-const GOAL_CONTINUE: &str = "The goal is not marked done yet. Keep working on it. When it is fully met, end your \
+pub(crate) const GOAL_CONTINUE: &str = "The goal is not marked done yet. Keep working on it. When it is fully met, end your \
                              reply with the single line GOAL DONE; if nothing is left to do, say so and end with that line.";
 /// Characters at the end of a reply where `GOAL DONE` counts even when it is not the last line.
 const GOAL_TAIL: usize = 200;
@@ -155,8 +158,6 @@ struct State {
     /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
     /// length of the history then: what the `compact` policy measures the next request from.
     last_prompt: Option<(u64, usize)>,
-    /// The length of the history right after the last compaction: no new compaction until it grows.
-    compacted_len: usize,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -280,7 +281,6 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         jobs: jobs.clone(),
         plan,
         last_prompt: None,
-        compacted_len: 0,
     }));
     let _ = host.set(Arc::new(StateHost { state: Arc::downgrade(&state), events: events.clone() }));
     {
@@ -620,6 +620,9 @@ fn replay_history(events: &EventTx, session: &Session, tools: &ToolSet) {
 
 /// Makes `session` the conversation: the interface starts over and gets the replay.
 fn install_session(st: &mut State, session: Session) {
+    // the jobs of the session left behind stop, and none of them is reported to this one
+    st.jobs.kill_all();
+    st.jobs.take_ended();
     st.session = session;
     st.checkpoints.clear();
     st.history.replace(st.session.messages().to_vec());
@@ -627,7 +630,6 @@ fn install_session(st: &mut State, session: Session) {
     st.cost = st.session.cost();
     st.policy.reset();
     st.last_prompt = None;
-    st.compacted_len = 0;
     st.turn_start = 0;
     st.turns = 0;
     st.goal = st.session.goal().map(String::from);
@@ -833,7 +835,6 @@ async fn rewind(state: &Shared, index: usize) {
     let restored = restore_files(&mut st, keep);
     st.policy.reset();
     st.last_prompt = None;
-    st.compacted_len = 0;
     st.turn_start = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
@@ -1087,9 +1088,14 @@ async fn prepare(
     let specs = offered(st);
     if let Some(at) = st.policy.compact_at() {
         let at = compact_threshold(at, st.limits.context_window, st.limits.max_tokens(st.config.agent.max_tokens));
-        if st.history.len() > st.compacted_len && request_tokens(st, &specs) > at {
+        if request_tokens(st, &specs) > at {
+            // a compaction is worth its call only when what it replaces holds enough that the last one
+            // did not: a request kept over the threshold by its tail, the system prompt or the tools is
+            // not summarised again every round
             if let Some(keep) = compact::keep_recent(&st.history) {
-                compact_locked(st, keep, cancel).await;
+                if compact::fresh_tokens(&st.history[..keep]) >= at / COMPACT_MARGIN {
+                    compact_locked(st, keep, cancel).await;
+                }
             }
         }
     }
@@ -1204,6 +1210,8 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
     };
     emit(&events, AgentEvent::TurnStart { turn: turn_no });
     let mut compacted = false;
+    // the view was asked again after the window was learned smaller (once, before any compaction)
+    let mut refitted = false;
     let mut capped = false;
     let mut rounds = 0u32;
     // each tool round of this request as one hash of its calls and outputs (`agent.loop_guard`)
@@ -1257,7 +1265,11 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         let mut stream = match started {
             Ok(s) => s,
             Err(e) => match learn(&state, &e).await {
-                Lesson::Context if !compacted => {
+                Lesson::Refit if !refitted => {
+                    refitted = true;
+                    continue;
+                }
+                Lesson::Context | Lesson::Refit if !compacted => {
                     compacted = true;
                     if compact_now(&state, &events, Some(()), &cancel).await {
                         continue;
@@ -1313,7 +1325,11 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
                 match learn(&state, e).await {
-                    Lesson::Context if !compacted => {
+                    Lesson::Refit if !refitted => {
+                        refitted = true;
+                        continue;
+                    }
+                    Lesson::Context | Lesson::Refit if !compacted => {
                         compacted = true;
                         if compact_now(&state, &events, Some(()), &cancel).await {
                             continue;
@@ -1741,6 +1757,16 @@ impl crate::subagent::Host for StateHost {
             None => Vec::new(),
         }
     }
+
+    /// A sub-agent's write is put back by a rewind like the main agent's.
+    async fn before_write(&self, path: PathBuf) {
+        if let Some(state) = self.state.upgrade() {
+            let before = std::fs::read(&path).ok();
+            let mut st = state.lock().await;
+            let at = st.history.len();
+            st.checkpoints.push((at, path, before));
+        }
+    }
 }
 
 /// Changes the permission mode; entering or leaving plan mode changes the system prompt.
@@ -1791,11 +1817,11 @@ async fn run_tools(
         verdicts.push(v);
     }
     let parallel = calls.len() > 1
-        && calls.iter().all(|(_, n, _)| {
+        && calls.iter().all(|(_, n, a)| {
             // every verdict is in by now: reads, searches and page fetches can overlap
             tools
                 .get(n)
-                .map(|t| matches!(t.kind(), ToolKind::Read | ToolKind::Search | ToolKind::Network))
+                .map(|t| matches!(t.call_kind(a), ToolKind::Read | ToolKind::Search | ToolKind::Network))
                 .unwrap_or(false)
         });
     let mut results: Vec<Option<Part>> = (0..calls.len()).map(|_| None).collect();
@@ -2076,6 +2102,7 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
         target: st.target.clone(),
         retries: st.config.agent.retries,
         max_tokens: SUMMARY_TOKENS,
+        window: st.limits.context_window,
     };
     let before = st.history.len();
     let (tokens_before, events) = (st.history.tokens(), st.events.clone());
@@ -2090,7 +2117,6 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
             st.history.replace(work);
             add_usage(st, &events, &done.model, done.usage);
             st.last_prompt = None;
-            st.compacted_len = st.history.len();
             st.turn_start = 0;
             if let Err(e) = st.session.reset_with(&st.history.to_vec()) {
                 notice(&events, Level::Warn, format!("cannot save the session: {e}"));
@@ -2402,6 +2428,9 @@ enum Lesson {
     None,
     /// The request is longer than the window (compaction is the answer).
     Context,
+    /// The request is longer than the window, which was just learned smaller than thought, and the
+    /// policy keeps its view under the window: a new view may fit with the history as it is.
+    Refit,
     /// `max_tokens` was above the largest reply; it is capped now (retry).
     Output,
     UnknownModel,
@@ -2414,7 +2443,11 @@ async fn learn(state: &Shared, e: &ProviderError) -> Lesson {
     let st = &mut *guard;
     let (provider, mut cfg, model) = st.target.get();
     if let Some(n) = hints::context_window(&e.message) {
+        let before = st.limits.context_window;
         remember(st, &provider, &mut cfg, &model, "context_window", n);
+        if before.map_or(true, |b| n < b) && st.policy.fits_window() {
+            return Lesson::Refit;
+        }
         return Lesson::Context;
     }
     if e.kind == ErrorKind::ContextLength {
@@ -2498,7 +2531,6 @@ async fn clear(state: &Shared) {
     st.checkpoints.clear();
     st.policy.reset();
     st.last_prompt = None;
-    st.compacted_len = 0;
     st.reads.clear();
     st.digests.clear();
     st.inbox.clear();

@@ -441,9 +441,15 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
         let w = area.width as usize;
         let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
         let mut pieces = crate::status_cmd::spans(line, base);
-        if theme.mono {
-            pieces.iter_mut().for_each(|(_, s)| (s.fg, s.bg) = (base.fg, base.bg));
-        }
+        // the script's colours are checked against nothing: only a 24-bit theme keeps them; on 256
+        // or 16 colours and in mono the bar's own colours stand in. Italics never reach the screen.
+        let own_colours = theme.mono || theme.degraded;
+        pieces.iter_mut().for_each(|(_, s)| {
+            if own_colours {
+                (s.fg, s.bg) = (base.fg, base.bg);
+            }
+            *s = s.remove_modifier(Modifier::ITALIC);
+        });
         let pieces = crate::status_cmd::fit(pieces, w.saturating_sub(right_w + 1));
         let used = 1 + pieces.iter().map(|(t, _)| width(t)).sum::<usize>();
         let mut spans = vec![Span::styled(" ", base)];
@@ -777,7 +783,9 @@ fn highlight(line: Line<'static>, q: &str, style: Style, current: bool) -> Line<
     for s in line.spans {
         let text = s.content.to_string();
         let lower = text.to_lowercase();
-        if lower.len() != text.len() || !lower.contains(q) {
+        // offsets found in `lower` cut `text` only where both have the same character boundaries
+        let aligned = lower.len() == text.len() && lower.char_indices().all(|(i, _)| text.is_char_boundary(i));
+        if !aligned || !lower.contains(q) {
             if lower.contains(q) {
                 spans.push(Span::styled(text, s.style.patch(style)));
             } else {
@@ -1001,7 +1009,8 @@ fn hint_pieces(app: &App) -> Vec<(u8, Vec<Span<'static>>)> {
         // the message fades into the bar over its last moments
         let age = at.elapsed().as_millis() as u64;
         let fade = age.saturating_sub(STATUS_MS - STATUS_FADE_MS) as f32 / STATUS_FADE_MS as f32;
-        let colour = mix(theme.bar_fg, theme.bar_bg, fade);
+        // with animations off it keeps the bar's colour to the end, no shade in between
+        let colour = if app.opts.animations { mix(theme.bar_fg, theme.bar_bg, fade) } else { theme.bar_fg };
         out.push((
             5,
             vec![Span::styled(format!(" {} ", truncate(msg, 60)), base.fg(colour).add_modifier(Modifier::BOLD))],
@@ -1314,7 +1323,12 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         groups.pop();
         hidden += 1;
     }
-    let flash = app.map_at.map(|t| t.elapsed().as_millis() as u64).filter(|&ms| ms < MAP_FLASH_MS);
+    // with animations off a changed cell does not blink
+    let flash = app
+        .map_at
+        .filter(|_| app.opts.animations)
+        .map(|t| t.elapsed().as_millis() as u64)
+        .filter(|&ms| ms < MAP_FLASH_MS);
     for (z, ix) in &groups {
         if let Some(z) = *z {
             let zone = &app.map_zones[z];
@@ -2212,6 +2226,19 @@ fn draw_too_small(f: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_highlight_survives_case_folds_that_move_character_boundaries() {
+        use ratatui::style::Style;
+        use ratatui::text::Line;
+        // "Ⱥ" (2 bytes) folds to 3, "ẞ" (3 bytes) folds to 2: same length, other boundaries
+        let l = super::highlight(Line::from("Ⱥẞ ñ"), "ß", Style::default(), true);
+        let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Ⱥẞ ñ");
+        let l = super::highlight(Line::from("año ÑU"), "ñ", Style::default(), false);
+        let parts: Vec<&str> = l.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(parts, ["a", "ñ", "o ", "Ñ", "U"]);
+    }
+
     #[test]
     fn a_long_path_keeps_its_file_name() {
         use super::{path_tail, width};

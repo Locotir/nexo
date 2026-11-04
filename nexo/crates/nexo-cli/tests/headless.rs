@@ -188,3 +188,21 @@ fn the_curator_spec_can_be_given_for_one_run() {
     let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!all.contains("rule=lru"), "without the flag the file's spec holds: {all}");
 }
+
+/// A session that cannot be resumed ends the run with an error, not a silent success.
+#[test]
+fn a_session_that_cannot_be_resumed_fails_loudly() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["-p", "hi", "--resume", "nonexistent"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("nonexistent"), "{err}");
+    let out = nexo(d.path(), &["-p", "hi", "--resume", "nonexistent", "--json"]);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.lines().any(|l| l.contains("\"event\":\"error\"")), "{text}");
+    // an id that is a path out of the sessions folder is refused as such
+    let out = nexo(d.path(), &["-p", "hi", "--resume", "../x"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("not a session id"), "{err}");
+}

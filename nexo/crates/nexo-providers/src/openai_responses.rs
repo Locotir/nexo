@@ -165,6 +165,7 @@ impl Feed for ResponsesParser {
                 let msg = http::pretty_error(&v.to_string());
                 let kind = stream_error_kind(e["type"].as_str().or_else(|| e["code"].as_str()).unwrap_or(""), &msg);
                 out.push(StreamEvent::Error(ProviderError::new(kind, msg)));
+                self.calls.clear(); // calls cut by the error are dropped, not closed
                 self.prog.started = true;
                 self.prog.finished = true;
                 return out;
@@ -257,7 +258,11 @@ impl Feed for ResponsesParser {
                 }
             }
             "response.completed" | "response.incomplete" | "response.failed" => {
-                out.extend(self.end_calls());
+                if t == "response.failed" {
+                    self.calls.clear(); // calls cut by the failure are dropped, not closed
+                } else {
+                    out.extend(self.end_calls());
+                }
                 let r = &v["response"];
                 if let Some(u) = r.get("usage").filter(|u| u.is_object()) {
                     out.push(StreamEvent::Usage(usage(u)));
@@ -284,6 +289,7 @@ impl Feed for ResponsesParser {
                 let kind =
                     stream_error_kind(v["code"].as_str().or_else(|| v["error"]["type"].as_str()).unwrap_or(""), msg);
                 out.push(StreamEvent::Error(ProviderError::new(kind, msg)));
+                self.calls.clear(); // calls cut by the error are dropped, not closed
                 self.prog.finished = true;
             }
             _ => {}
@@ -292,7 +298,8 @@ impl Feed for ResponsesParser {
     }
 
     fn fail(&mut self, e: String) -> Vec<StreamEvent> {
-        let mut out = self.end_calls();
+        let mut out = Vec::new();
+        self.calls.clear(); // calls cut by the transport are dropped, not closed
         if !self.prog.finished {
             self.prog.finished = true;
             out.push(StreamEvent::Error(ProviderError::new(ErrorKind::Network, format!("stream cut: {e}"))));
@@ -301,9 +308,10 @@ impl Feed for ResponsesParser {
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {
-        let mut out = self.end_calls();
-        out.extend(self.prog.at_end());
-        out
+        // calls still open without a completed response: their arguments may be cut
+        let open = !self.calls.is_empty();
+        self.calls.clear();
+        self.prog.at_end_with_calls(open).into_iter().collect()
     }
 }
 
@@ -352,6 +360,43 @@ impl Protocol for OpenAiResponses {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CALL_OPEN: [&str; 3] = [
+        r#"{"type":"response.created","response":{"id":"r"}}"#,
+        r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"read"}}"#,
+        r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"pa"}"#,
+    ];
+
+    #[test]
+    fn an_error_drops_open_tool_calls_instead_of_closing_them() {
+        for err in [
+            r#"{"type":"error","code":"server_error","message":"boom"}"#,
+            r#"{"type":"response.failed","response":{"id":"r","error":{"code":"server_error","message":"boom"}}}"#,
+        ] {
+            let mut p = ResponsesParser::default();
+            let mut evs: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
+            evs.extend(p.feed(err));
+            evs.extend(p.finish());
+            assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. })), "{evs:?}");
+            assert!(matches!(evs.last(), Some(StreamEvent::Error(_))), "{evs:?}");
+        }
+    }
+
+    #[test]
+    fn a_clean_end_inside_a_tool_call_is_a_truncation_error() {
+        let mut p = ResponsesParser::default();
+        let mut evs: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
+        evs.extend(p.finish());
+        assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. } | StreamEvent::Finish(_))), "{evs:?}");
+        assert!(matches!(evs.last(), Some(StreamEvent::Error(e)) if e.message.contains("truncated")), "{evs:?}");
+    }
+
+    #[test]
+    fn a_mid_stream_context_error_without_a_number_is_the_context_kind() {
+        let mut p = ResponsesParser::default();
+        let evs = p.feed(r#"{"type":"response.failed","response":{"id":"r","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}}"#);
+        assert!(matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::ContextLength), "{evs:?}");
+    }
 
     #[test]
     fn a_failed_response_and_a_cut_stream_are_errors() {

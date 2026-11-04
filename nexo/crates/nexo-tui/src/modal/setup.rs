@@ -394,6 +394,8 @@ impl Setup {
 
     /// Typed text pasted in one go.
     pub fn paste(&mut self, text: &str) {
+        // escapes and control characters out; a key wrapped over lines is joined back
+        let text = crate::render::wrap::clean(&text.replace('\r', "\n")).replace('\n', "");
         let text = text.trim();
         match self.step {
             Step::Address | Step::Key => self.field.push_str(text),
@@ -805,6 +807,17 @@ mod tests {
             vec![("deepseek".into(), "deepseek-chat".into())],
             "deepseek/deepseek-chat",
         )
+    }
+
+    #[test]
+    fn a_pasted_key_or_address_loses_escapes_controls_and_line_breaks() {
+        let mut s = setup();
+        for step in [Step::Key, Step::Address] {
+            s.step = step;
+            s.field.clear();
+            s.paste("  key-abc\x1b[2J\r\ndef\x07\r\n");
+            assert_eq!(s.field, "key-abcdef", "{step:?}");
+        }
     }
 
     #[test]

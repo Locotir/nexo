@@ -26,6 +26,9 @@ pub struct SseParser {
     event: Option<String>,
     id: Option<String>,
     data: Vec<String>,
+    /// Lines of a plain JSON body spread over several lines, joined at the end.
+    raw: Vec<String>,
+    raw_len: usize,
 }
 
 impl SseParser {
@@ -60,6 +63,9 @@ impl SseParser {
                 return Some(ev);
             }
         }
+        if !self.raw.is_empty() {
+            self.data.push(std::mem::take(&mut self.raw).join("\n"));
+        }
         self.dispatch()
     }
 
@@ -81,11 +87,20 @@ impl SseParser {
             "retry" => {}
             _ => {
                 // a 200 whose body is plain JSON (an error some gateways send without
-                // SSE framing, or a whole response): the line is the data
+                // SSE framing, or a whole response): a line that is whole JSON is the
+                // data; one that only opens it starts a body that is joined and sent
+                // as one event at the end of the stream
                 let t = line.trim_start();
-                if t.starts_with('{') || t.starts_with('[') {
-                    self.data.push(line.to_string());
-                    return self.dispatch();
+                if self.raw.is_empty() && (t.starts_with('{') || t.starts_with('[')) {
+                    if serde_json::from_str::<serde_json::Value>(t).is_ok() {
+                        self.data.push(line.to_string());
+                        return self.dispatch();
+                    }
+                    self.raw.push(line.to_string());
+                    self.raw_len = line.len();
+                } else if !self.raw.is_empty() && self.raw_len + line.len() <= MAX_LINE {
+                    self.raw_len += line.len();
+                    self.raw.push(line.to_string());
                 }
             }
         }
@@ -276,6 +291,20 @@ mod tests {
         let mut p = SseParser::new();
         assert!(p.push(b"<html><body>502</body></html>\n").is_empty(), "markup is not data");
         assert!(p.finish().is_none());
+    }
+
+    #[test]
+    fn a_json_body_over_several_lines_is_one_event_at_the_end() {
+        let body = "{\n  \"error\": {\n    \"message\": \"Quota exceeded\",\n    \"code\": 429\n  }\n}\n";
+        let mut p = SseParser::new();
+        let mut all = Vec::new();
+        for b in body.as_bytes() {
+            all.extend(p.push(&[*b]));
+        }
+        assert!(all.is_empty(), "nothing before the body is complete: {all:?}");
+        let ev = p.finish().expect("the body");
+        let v: serde_json::Value = serde_json::from_str(&ev.data).expect("parsed once, whole");
+        assert_eq!(v["error"]["code"], 429);
     }
 
     #[test]

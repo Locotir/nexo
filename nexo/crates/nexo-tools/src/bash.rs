@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
@@ -217,8 +217,80 @@ fn background(command: &str, ctx: &ToolContext) -> ToolOutput {
     ToolOutput::ok(content)
 }
 
+/// Bytes kept of one line of output; the rest of a longer line is dropped as it comes.
+pub const LINE_BYTES: usize = 16 * 1024;
+/// How long output still in the pipes is read after the shell exits: a process it left running
+/// may hold them open for good.
+const DRAIN: Duration = Duration::from_millis(300);
+
+/// Sends each line `r` gives to `tx`, decoded lossily (a byte that is not UTF-8 does not stop the
+/// reading) and cut to `LINE_BYTES` (a line with no end costs no more memory than that).
+async fn read_lines<R: tokio::io::AsyncRead + Unpin>(r: R, tx: mpsc::UnboundedSender<String>) {
+    let mut r = BufReader::new(r);
+    let mut line: Vec<u8> = Vec::new();
+    let mut cut = 0usize;
+    loop {
+        let (used, ended) = match r.fill_buf().await {
+            Ok([]) | Err(_) => break,
+            Ok(buf) => {
+                let (chunk, ended) = match buf.iter().position(|b| *b == b'\n') {
+                    Some(i) => (&buf[..i], true),
+                    None => (buf, false),
+                };
+                let room = LINE_BYTES.saturating_sub(line.len());
+                line.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                cut += chunk.len().saturating_sub(room);
+                (chunk.len() + usize::from(ended), ended)
+            }
+        };
+        r.consume(used);
+        if ended && tx.send(finish_line(&mut line, &mut cut)).is_err() {
+            return;
+        }
+    }
+    if !line.is_empty() || cut > 0 {
+        let _ = tx.send(finish_line(&mut line, &mut cut));
+    }
+}
+
+/// The line read so far as text, said to be cut when it was; both are reset.
+fn finish_line(line: &mut Vec<u8>, cut: &mut usize) -> String {
+    if *cut > 0 {
+        // a character split by the cut goes whole
+        if let Err(e) = std::str::from_utf8(line) {
+            if e.error_len().is_none() {
+                *cut += line.len() - e.valid_up_to();
+                line.truncate(e.valid_up_to());
+            }
+        }
+    } else if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    let mut s = String::from_utf8_lossy(line).into_owned();
+    if *cut > 0 {
+        s.push_str(&format!(" … [{} bytes of this line cut]", *cut));
+    }
+    line.clear();
+    *cut = 0;
+    s
+}
+
+/// Kills the command's process group when the call is dropped before the command ended (the
+/// person interrupted the turn): `kill_on_drop` alone ends the shell, not what it started.
+struct GroupGuard {
+    pid: Option<u32>,
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        kill_group(self.pid.take());
+    }
+}
+
 /// Runs `command` in `cwd`, each line of its output (stdout and stderr) to
-/// `on_line`, until it exits, `timeout` passes or `cancel` fires.
+/// `on_line`, until it exits, `timeout` passes or `cancel` fires. The call ends
+/// when the shell exits, even if something it left running still holds the pipes.
 async fn run_command(
     command: &str,
     cwd: &std::path::Path,
@@ -241,72 +313,65 @@ async fn run_command(
         Err(e) => return End::Failed(e.to_string()),
     };
     let pid = child.id();
+    // declared after `child`: dropped before it, while the group's leader is still there
+    let mut guard = GroupGuard { pid };
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let mut readers = Vec::new();
     if let Some(out) = child.stdout.take() {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(out).lines();
-            while let Ok(Some(l)) = lines.next_line().await {
-                if tx.send(l).is_err() {
-                    break;
-                }
-            }
-        });
+        readers.push(tokio::spawn(read_lines(out, tx.clone())));
     }
     if let Some(err) = child.stderr.take() {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(err).lines();
-            while let Ok(Some(l)) = lines.next_line().await {
-                if tx.send(l).is_err() {
-                    break;
-                }
-            }
-        });
+        readers.push(tokio::spawn(read_lines(err, tx.clone())));
     }
     drop(tx);
-    let started = Instant::now();
     // no timeout: a year is as good as forever, and keeps one code path
     let timeout = timeout.unwrap_or(Duration::from_secs(86_400 * 365));
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
-    let mut end: Option<End> = None;
-    loop {
+    let mut open = true;
+    let end = loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => { end = Some(End::Cancelled); break; }
-            _ = &mut deadline => { end = Some(End::TimedOut); break; }
-            line = rx.recv() => match line {
+            _ = cancel.cancelled() => break End::Cancelled,
+            _ = &mut deadline => break End::TimedOut,
+            status = child.wait() => break match status {
+                Ok(s) => match s.code() {
+                    Some(c) => End::Exited(c),
+                    None => End::Signalled,
+                },
+                Err(e) => End::Failed(e.to_string()),
+            },
+            line = rx.recv(), if open => match line {
                 Some(l) => on_line(&l),
-                None => break,
-            }
+                None => open = false,
+            },
         }
-    }
-    if end.is_some() {
+    };
+    if matches!(end, End::Cancelled | End::TimedOut) {
         kill_group(pid);
         let _ = child.kill().await;
+        let _ = child.wait().await;
     }
-    // the pipes closed: what is left of the timeout is for the exit itself
-    let left = timeout.saturating_sub(started.elapsed()).max(Duration::from_secs(1));
-    let end = match end {
-        Some(e) => {
-            let _ = child.wait().await;
-            e
-        }
-        None => match tokio::time::timeout(left, child.wait()).await {
-            Ok(Ok(status)) => match status.code() {
-                Some(c) => End::Exited(c),
-                None => End::Signalled,
+    // the shell is gone (and reaped): its pid may be another process's soon
+    guard.pid = None;
+    // what is still in the pipes, for a short while: they close at once unless something the
+    // command left running holds them
+    let drain = tokio::time::sleep(DRAIN);
+    tokio::pin!(drain);
+    while open {
+        tokio::select! {
+            biased;
+            _ = &mut drain => break,
+            line = rx.recv() => match line {
+                Some(l) => on_line(&l),
+                None => open = false,
             },
-            Ok(Err(e)) => End::Failed(e.to_string()),
-            Err(_) => {
-                kill_group(pid);
-                let _ = child.kill().await;
-                End::TimedOut
-            }
-        },
-    };
-    // lines still in flight after the process ended
+        }
+    }
+    for r in readers {
+        r.abort();
+    }
+    // lines already read when the readers stopped
     while let Ok(l) = rx.try_recv() {
         on_line(&l);
     }
@@ -429,5 +494,88 @@ mod tests {
             _ => panic!(),
         }
         assert_eq!(Bash.summary(&json!({"command": "cargo test\n# second"})), "bash: cargo test …");
+    }
+
+    #[tokio::test]
+    async fn lines_are_decoded_lossily_and_cut_to_a_bound() {
+        let mut input = b"caf\xe9\nok\r\n".to_vec();
+        input.extend(std::iter::repeat(b'y').take(LINE_BYTES * 4));
+        input.extend_from_slice(b"\nlast");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        read_lines(&input[..], tx).await;
+        assert_eq!(rx.recv().await.unwrap(), "caf\u{fffd}");
+        assert_eq!(rx.recv().await.unwrap(), "ok");
+        let long = rx.recv().await.unwrap();
+        assert!(long.starts_with(&"y".repeat(LINE_BYTES)), "the head is kept");
+        assert!(long.ends_with(&format!(" … [{} bytes of this line cut]", LINE_BYTES * 3)), "{}", &long[LINE_BYTES..]);
+        assert_eq!(rx.recv().await.unwrap(), "last");
+        assert!(rx.recv().await.is_none());
+        // a character split by the cut is not half kept
+        let mut s = "a".repeat(LINE_BYTES - 1).into_bytes();
+        s.extend_from_slice("é tail\n".as_bytes());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        read_lines(&s[..], tx).await;
+        let l = rx.recv().await.unwrap();
+        assert!(!l.contains('\u{fffd}') && l.contains("bytes of this line cut"), "{}", &l[LINE_BYTES - 4..]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_that_is_not_utf8_or_one_huge_line_is_kept_bounded() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Bash.run(json!({"command": "printf 'caf\\351\\n'; echo after"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("caf\u{fffd}\nafter"), "{}", out.content);
+        // 8 MB with no line end
+        let out = Bash.run(json!({"command": "head -c 8000000 /dev/zero | tr '\\0' y; echo; echo end"}), &c).await;
+        assert!(!out.is_error, "{}", &out.content[out.content.len().saturating_sub(200)..]);
+        assert!(out.content.contains("bytes of this line cut") && out.content.trim_end().ends_with("end"));
+        assert!(out.content.chars().count() < MAX_OUTPUT_CHARS + 200);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_call_ends_when_the_shell_exits_even_if_a_child_holds_the_pipes() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let t = std::time::Instant::now();
+        let out = Bash.run(json!({"command": "sleep 20 & echo $!", "timeout": 30}), &c).await;
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert!(!out.is_error, "{}", out.content);
+        let pid: i32 = out.content.trim().parse().unwrap();
+        // SAFETY: a signal to the child this test started
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+
+    /// Whether process `pid` still runs (a zombie counts as gone).
+    #[cfg(target_os = "linux")]
+    fn alive(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(s) => !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dropping_the_call_kills_what_the_command_started() {
+        let d = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut c = ToolContext::new(d.path().to_path_buf());
+        c.progress = Some(tx);
+        let run = Bash.run(json!({"command": "sleep 300 & echo $!; wait", "timeout": 600}), &c);
+        // the turn's select drops the call when the person interrupts it
+        let pid: i32 = tokio::select! {
+            _ = run => panic!("the command ended by itself"),
+            p = rx.recv() => p.unwrap().line.trim().parse().unwrap(),
+        };
+        let t = std::time::Instant::now();
+        while alive(pid) && t.elapsed() < Duration::from_secs(2) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!alive(pid), "the background child of the dropped command still runs");
     }
 }

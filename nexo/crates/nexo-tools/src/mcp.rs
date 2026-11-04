@@ -20,6 +20,31 @@ use tokio::sync::{oneshot, Mutex as AsyncMutex};
 pub const PROTOCOL_VERSIONS: [&str; 2] = ["2025-06-18", "2024-11-05"];
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest line a server may send; past it the connection ends.
+const MAX_LINE: usize = 16 << 20;
+
+/// The variables of nexo's environment a server gets (with its own `env`): what a process needs
+/// to run, and never another service's keys.
+fn passed_env(name: &str) -> bool {
+    const UNIX: [&str; 9] = ["PATH", "HOME", "USER", "LANG", "TERM", "TMPDIR", "TMP", "TEMP", "SHELL"];
+    const WINDOWS: [&str; 10] = [
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PATHEXT",
+        "COMSPEC",
+        "WINDIR",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+    ];
+    let up = if cfg!(windows) { name.to_ascii_uppercase() } else { name.to_string() };
+    UNIX.contains(&up.as_str())
+        || up.starts_with("LC_")
+        || up.starts_with("XDG_")
+        || (cfg!(windows) && WINDOWS.contains(&up.as_str()))
+}
 
 /// A connected server.
 pub struct McpClient {
@@ -58,6 +83,8 @@ impl McpClient {
         // on Windows `npx` and `uvx` are `.cmd` files, which a bare name does not find
         let mut cmd = tokio::process::Command::new(nexo_core::shell::program(&cfg.command));
         cmd.args(&cfg.args)
+            .env_clear()
+            .envs(std::env::vars_os().filter(|(k, _)| k.to_str().is_some_and(passed_env)))
             .envs(&cfg.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -80,8 +107,14 @@ impl McpClient {
         tokio::spawn(async move {
             let mut r = BufReader::new(stdout);
             let mut buf = Vec::new();
+            let mut why = "the server closed the connection".to_string();
             // bytes, not lines(): one non-UTF-8 byte would end the connection
-            while matches!(r.read_until(b'\n', &mut buf).await, Ok(n) if n > 0) {
+            while matches!(read_line(&mut r, &mut buf).await, Ok(n) if n > 0) {
+                if buf.len() > MAX_LINE {
+                    why = format!("the server sent a line over {} MiB; the connection was ended", MAX_LINE >> 20);
+                    tracing::warn!(server = %reader.name, "mcp: {why}");
+                    break;
+                }
                 let line = String::from_utf8_lossy(&buf).trim().to_string();
                 buf.clear();
                 if line.is_empty() {
@@ -95,7 +128,7 @@ impl McpClient {
             // the server went away: fail what is still waiting
             let pending: Vec<_> = reader.pending.lock().map(|mut p| p.drain().collect()).unwrap_or_default();
             for (_, tx) in pending {
-                let _ = tx.send(Err("the server closed the connection".into()));
+                let _ = tx.send(Err(why.clone()));
             }
         });
         let mut init = Err(anyhow!("no protocol version accepted"));
@@ -156,6 +189,12 @@ impl McpClient {
     pub async fn close(mut self) {
         let _ = self.child.kill().await;
     }
+}
+
+/// Reads up to a newline into `buf`, stopping once it holds more than [`MAX_LINE`] bytes.
+async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+    use tokio::io::AsyncReadExt;
+    (&mut *r).take(MAX_LINE as u64 + 1).read_until(b'\n', buf).await
 }
 
 async fn list_tools(inner: &Arc<Inner>) -> anyhow::Result<Vec<ToolDef>> {
@@ -350,5 +389,28 @@ mod tests {
         let cfg = McpServerConfig { command: "/nonexistent/mcp-server".into(), ..Default::default() };
         assert!(McpClient::connect("x", &cfg).await.is_err());
         assert!(McpClient::connect("x", &McpServerConfig::default()).await.is_err());
+    }
+    #[test]
+    fn a_server_gets_only_what_a_process_needs_to_run() {
+        for k in ["PATH", "HOME", "LANG", "LC_ALL", "XDG_RUNTIME_DIR", "TMPDIR"] {
+            assert!(passed_env(k), "{k}");
+        }
+        for k in ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK"] {
+            assert!(!passed_env(k), "{k}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_line_without_end_is_cut_off_at_the_cap() {
+        // after the first request the server writes 17 MiB with no newline and keeps the pipe open
+        let script = "read l; yes x | tr -d '\\n' | head -c 17825792; sleep 30";
+        let cfg =
+            McpServerConfig { command: "sh".into(), args: vec!["-c".into(), script.into()], ..Default::default() };
+        let e = match McpClient::connect("big", &cfg).await {
+            Ok(_) => panic!("connected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(e.contains("over 16 MiB"), "{e}");
     }
 }

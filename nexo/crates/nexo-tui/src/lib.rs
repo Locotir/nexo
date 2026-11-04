@@ -172,6 +172,39 @@ impl Keys {
     }
 }
 
+/// SIGTERM and SIGHUP (`kill`, the window closed): the run loop ends the normal way, so the
+/// terminal is given back (raw mode, alternate screen, mouse capture, bracketed paste).
+/// Elsewhere it never fires.
+struct Hangup {
+    #[cfg(unix)]
+    signals: Option<(tokio::signal::unix::Signal, tokio::signal::unix::Signal)>,
+}
+
+impl Hangup {
+    fn new() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Hangup { signals: signal(SignalKind::terminate()).ok().zip(signal(SignalKind::hangup()).ok()) }
+        }
+        #[cfg(not(unix))]
+        Hangup {}
+    }
+
+    async fn wait(&mut self) {
+        #[cfg(unix)]
+        if let Some((term, hup)) = self.signals.as_mut() {
+            let got = tokio::select! { t = term.recv() => t, h = hup.recv() => h };
+            if got.is_some() {
+                return;
+            }
+            // the signal driver is gone: nothing more will come
+            self.signals = None;
+        }
+        std::future::pending::<()>().await
+    }
+}
+
 fn end_paste(app: &mut App, pasting: &mut Option<(String, Instant)>) {
     if let Some((text, _)) = pasting.take() {
         event::handle(app, crossterm::event::Event::Paste(event::unmark(&text)));
@@ -186,6 +219,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
     // the requests sent before, kept between runs (↑ and Ctrl+R reach them)
     app.input.persist_history(nexo_core::paths::data_dir().join("prompt-history.jsonl"));
     let mut events = Keys::spawn();
+    let mut hangup = Hangup::new();
     let mut pacer = frame::Pacer::new(Instant::now(), app.opts.animations);
     frame::draw_synced(&mut term.terminal, &mut app)?;
     app.dirty = false;
@@ -247,6 +281,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
                 }
                 None => break,
             },
+            _ = hangup.wait() => break,
             _ = async { match wake { Some(t) => tokio::time::sleep_until(t).await, None => std::future::pending().await } } => { by_event = false; }
         }
         if app.should_quit {
@@ -375,6 +410,19 @@ fn edit_file(path: &std::path::Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hangup_or_a_terminate_signal_ends_the_wait() {
+        // the handlers are in place before the signal is sent, so the test process lives on
+        for sig in ["-HUP", "-TERM"] {
+            let mut h = super::Hangup::new();
+            let pid = std::process::id().to_string();
+            assert!(std::process::Command::new("kill").args([sig, &pid]).status().unwrap().success());
+            let ended = tokio::time::timeout(std::time::Duration::from_secs(10), h.wait()).await;
+            assert!(ended.is_ok(), "{sig} did not end the wait");
+        }
+    }
+
     #[test]
     fn the_notification_is_the_bell_and_both_desktop_forms() {
         assert_eq!(

@@ -29,11 +29,18 @@ impl CustomCommand {
 }
 
 /// The commands in the user's directory and the project's, the project's winning on a
-/// name both have; names of built-in commands are left out.
+/// name both have; names of built-in commands are left out. A project nobody trusted yet
+/// (`nexo config trust`) has its commands left out: their text comes from the repository.
 pub fn load(cwd: &Path) -> Vec<CustomCommand> {
-    let mut dirs = vec![nexo_core::paths::config_dir().join("commands")];
+    load_from(cwd, &nexo_core::paths::config_dir(), &nexo_core::paths::trusted_projects_file())
+}
+
+fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path) -> Vec<CustomCommand> {
+    let mut dirs = vec![config_dir.join("commands")];
     if let Some(p) = nexo_core::paths::project_dir(cwd) {
-        dirs.push(p.join("commands"));
+        if p.parent().is_some_and(|root| nexo_core::config::is_trusted(root, trust_file)) {
+            dirs.push(p.join("commands"));
+        }
     }
     let mut out: Vec<CustomCommand> = Vec::new();
     for d in dirs {
@@ -101,9 +108,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(theirs.join("explain.md"), "# Explain the code\nExplain it simply.").unwrap();
-        std::env::set_var("NEXO_CONFIG_DIR", home.path());
-        let cmds = load(proj.path());
-        std::env::remove_var("NEXO_CONFIG_DIR");
+        let trust = home.path().join("trusted-projects");
+        let untrusted = load_from(proj.path(), home.path(), &trust);
+        let names: Vec<&str> = untrusted.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["review"], "an untrusted project's commands are left out");
+        assert_eq!(untrusted[0].description, "Review the diff for bugs.");
+        nexo_core::config::trust_project(proj.path(), &trust).unwrap();
+        let cmds = load_from(proj.path(), home.path(), &trust);
         let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["explain", "review"]);
         let review = &cmds[1];

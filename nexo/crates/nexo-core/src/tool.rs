@@ -163,6 +163,11 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn spec(&self) -> ToolSpec;
     fn kind(&self) -> ToolKind;
+    /// The kind of this call, where `args` change it (a sub-agent that may write is a write);
+    /// it decides which calls of one round may run at the same time.
+    fn call_kind(&self, _args: &Value) -> ToolKind {
+        self.kind()
+    }
     /// One line that says what this call does (`read src/main.rs`, `bash: cargo test`).
     fn summary(&self, args: &Value) -> String;
     /// Never panics on bad `args`: it answers with an error output the model can read.

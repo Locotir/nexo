@@ -14,7 +14,7 @@ use nexo_core::message::{Message, Part};
 /// What the curator puts where it left something out.
 const OMITTED: &str = "[curator]";
 /// The end of the line that heads a file attached whole.
-const ATTACHED: &str = "(attached in full, as it is now):";
+pub(crate) const ATTACHED: &str = "(attached in full, as it is now):";
 
 /// The line that heads a file attached whole to a request.
 pub fn attached_header(shown: &str) -> String {

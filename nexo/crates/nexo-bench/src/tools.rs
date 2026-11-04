@@ -99,6 +99,9 @@ impl Tool for Bench {
     fn kind(&self) -> ToolKind {
         self.inner.kind()
     }
+    fn call_kind(&self, args: &Value) -> ToolKind {
+        self.inner.call_kind(args)
+    }
     fn summary(&self, args: &Value) -> String {
         self.inner.summary(args)
     }

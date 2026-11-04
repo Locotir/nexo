@@ -175,3 +175,33 @@ fn a_script_that_fails_later_keeps_its_last_good_line() {
     assert!(rows.last().unwrap().contains("first and last good line"), "{:?}", rows.last());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_scripts_colours_stay_only_on_24_bit_and_italics_never_show() {
+    for degraded in [false, true] {
+        let mut a = app(&script("echo.sh"));
+        if degraded {
+            // a 256- or 16-colour terminal: the theme is mapped and the bar keeps its own colours
+            a.theme = a.theme.clone().downsampled();
+            assert!(a.theme.degraded);
+        }
+        tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some());
+        assert!(line(&a).is_some(), "no line within 5 s");
+        let (rows, t) = screen(&mut a, 80, 24);
+        let bar = rows.last().unwrap();
+        let buf = t.backend().buffer();
+        let x = bar.find("deepseek-chat").unwrap() as u16;
+        let cell = &buf[(x, 23)];
+        assert!(cell.modifier.contains(Modifier::BOLD), "the script's bold stays");
+        if degraded {
+            assert_eq!((cell.fg, cell.bg), (a.theme.bar_fg, a.theme.bar_bg));
+        } else {
+            assert_eq!(cell.fg, Color::Indexed(5));
+        }
+    }
+    let mut a = app("printf '\\033[3mslanted\\033[0m plain\\n'");
+    tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some());
+    assert!(line(&a).is_some_and(|l| l.contains("slanted")), "{:?}", line(&a));
+    let (_, t) = screen(&mut a, 80, 24);
+    assert!(t.backend().buffer().content().iter().all(|c| !c.modifier.contains(Modifier::ITALIC)));
+}

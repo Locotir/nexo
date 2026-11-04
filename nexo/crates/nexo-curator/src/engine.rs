@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::goal::{action, head_slice, Threads};
 use crate::hindsight::{Interner, Set, Sym, Tracer, UKind};
-use crate::json::{est, est_str, py_eq, strip_cc};
+use crate::json::{est, est_str, py_eq, str_chars, strip_cc};
 use crate::learn::{Featurizer, MODEL};
 use crate::ledger::{
     fold_forms, lines_of, prior, said_lines, select, Names, ERROR_MARKS, ON_DISK, PER_MESSAGE, POOL, SAID,
@@ -298,7 +298,7 @@ fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<
             if t == Some("tool_result") && sq && process(o) {
                 match o.get("content") {
                     Some(Value::String(c)) => {
-                        let s = squeeze(c, true);
+                        let s = squeeze(c, name.is_some());
                         if *s != **c {
                             let mut x = o.clone();
                             x.insert("content".into(), Value::String(back(c, s)));
@@ -312,7 +312,7 @@ fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<
                             .map(|x| {
                                 if x.get("type").and_then(Value::as_str) == Some("text") {
                                     if let Some(tx) = x.get("text").and_then(Value::as_str) {
-                                        let s = squeeze(tx, true);
+                                        let s = squeeze(tx, name.is_some());
                                         if *s != *tx {
                                             any = true;
                                             let mut y = x.clone();
@@ -385,6 +385,9 @@ pub struct Engine {
     lead_lines: FxHashMap<usize, Vec<String>>,
     /// The parts left out because a later output in the view sends every line of them (result, part).
     copied: FxHashSet<(usize, usize)>,
+    /// The parts that send the lines of a part left out as a copy (`copied`): they stay while it is out, or
+    /// the stub that says a later output sends them would point to nothing.
+    carrying: FxHashSet<(usize, usize)>,
     start: usize,
     map_text: String,
     map_ver: u64,
@@ -651,18 +654,19 @@ fn window(ids: &[u32]) -> [u32; 3] {
     w
 }
 
-/// ``text`` within ``tokens``: its head and tail lines, and how many lines were cut between them.
+/// ``text`` within ``tokens``: its head and tail lines, and how many lines were cut between them. Lines and
+/// characters are weighed as the budget is (`est_str`), so a text dense in quotes or control bytes keeps less.
 fn head_and_tail(text: &str, tokens: i64) -> String {
     if est_str(text) <= tokens {
         return text.to_string();
     }
     let half = (tokens.max(2) * 4 / 2) as usize;
-    let lines: Vec<&str> = text.lines().collect();
-    let take = |it: &mut dyn Iterator<Item = &&str>| {
-        let mut used = 0;
-        let mut n = 0;
-        for l in it {
-            used += l.chars().count() + 1;
+    // what a piece adds to `str_chars`, without the two quotes of a string
+    let weight = |s: &str| str_chars(s) - 2;
+    let fit = |pieces: &mut dyn Iterator<Item = usize>| {
+        let (mut used, mut n) = (0, 0);
+        for w in pieces {
+            used += w;
             if used > half {
                 break;
             }
@@ -670,13 +674,20 @@ fn head_and_tail(text: &str, tokens: i64) -> String {
         }
         n
     };
-    let head = take(&mut lines.iter());
-    let tail = take(&mut lines.iter().rev()).min(lines.len() - head);
+    let lines: Vec<&str> = text.lines().collect();
+    // at least one line goes, or the cut would only add its note
+    let head = fit(&mut lines.iter().map(|l| weight(l) + 1)).min(lines.len().saturating_sub(1));
+    let tail = fit(&mut lines.iter().rev().map(|l| weight(l) + 1)).min(lines.len().saturating_sub(head + 1));
     if head == 0 && tail == 0 {
-        // one long line: its first and last characters
+        // one long line, or lines each longer than half the budget: the first and last characters that fit
         let chars: Vec<char> = text.chars().collect();
-        let (a, b): (String, String) = (chars[..half].iter().collect(), chars[chars.len() - half..].iter().collect());
-        return format!("{a}\n… {} characters cut …\n{b}", chars.len() - 2 * half);
+        let mut buf = [0u8; 4];
+        let mut w = |c: &char| weight(c.encode_utf8(&mut buf));
+        let a = fit(&mut chars.iter().map(&mut w)).min(chars.len().saturating_sub(1));
+        let b = fit(&mut chars.iter().rev().map(&mut w)).min(chars.len().saturating_sub(a + 1));
+        let n = chars.len();
+        let (a_s, b_s): (String, String) = (chars[..a].iter().collect(), chars[n - b..].iter().collect());
+        return format!("{a_s}\n… {} characters cut …\n{b_s}", n - a - b);
     }
     format!(
         "{}\n… {} lines cut …\n{}",
@@ -684,6 +695,15 @@ fn head_and_tail(text: &str, tokens: i64) -> String {
         lines.len() - head - tail,
         lines[lines.len() - tail..].join("\n")
     )
+}
+
+/// ``more`` blocks at the end of message ``m``'s content. A text block left empty (a message that came with
+/// no text) goes: providers refuse an empty text block, and what is added says more than it.
+fn add_blocks(m: &mut Value, more: impl IntoIterator<Item = Value>) {
+    let mut bs = blocks(m.get("content")).into_owned();
+    bs.retain(|b| get_str(b, "type") != "text" || !get_str(b, "text").is_empty());
+    bs.extend(more);
+    m["content"] = Value::Array(bs);
 }
 
 /// Whether ``name`` looks like a scratch file ("_try.rs", "tmp_out.txt"): the first to go for the budget.
@@ -747,6 +767,7 @@ impl Engine {
             led: FxHashSet::default(),
             lead_lines: FxHashMap::default(),
             copied: FxHashSet::default(),
+            carrying: FxHashSet::default(),
             start: 1,
             map_text: String::new(),
             map_ver: 0,
@@ -1311,6 +1332,10 @@ impl Engine {
             if (m, k) == at {
                 break;
             }
+            // a copy out of the view sends nothing, so it carries nothing: no need to weigh its lines
+            if vis.binary_search(&m).is_err() {
+                continue;
+            }
             let e = &self.dups[&m][k];
             let theirs = self.sent_lines(e.unit, vis);
             let carried = !theirs[e.lines.0..e.lines.1].contains(&true)
@@ -1505,37 +1530,25 @@ impl Engine {
             }
         }
         if mi == 0 && !self.map_text.is_empty() {
-            let mut bs = blocks(m2.get("content")).into_owned();
-            bs.push(text_block(&self.map_text));
-            m2["content"] = Value::Array(bs);
+            add_blocks(&mut m2, [text_block(&self.map_text)]);
         }
         if let Some(lines) = self.shut.get(&mi) {
-            let mut bs = blocks(m2.get("content")).into_owned();
-            bs.extend(lines.iter().map(|l| text_block(l)));
-            m2["content"] = Value::Array(bs);
+            add_blocks(&mut m2, lines.iter().map(|l| text_block(l)));
         }
         if let Some(line) = self.loop_line.get(&mi) {
-            let mut bs = blocks(m2.get("content")).into_owned();
-            bs.push(text_block(line));
-            m2["content"] = Value::Array(bs);
+            add_blocks(&mut m2, [text_block(line)]);
         }
         if let Some(line) = self.recited.get(&mi) {
-            let mut bs = blocks(m2.get("content")).into_owned();
-            bs.push(text_block(line));
-            m2["content"] = Value::Array(bs);
+            add_blocks(&mut m2, [text_block(line)]);
         }
         if let Some(lines) = self.rerun_line.get(&mi) {
-            let mut bs = blocks(m2.get("content")).into_owned();
-            bs.extend(lines.iter().map(|l| text_block(l)));
-            m2["content"] = Value::Array(bs);
+            add_blocks(&mut m2, lines.iter().map(|l| text_block(l)));
         }
         let mut size = est(&m2);
         if let Some(card) = self.frozen.get(&mi) {
             let tb = text_block(card);
             size += est(&tb);
-            let mut bs = blocks(m2.get("content")).into_owned();
-            bs.push(tb);
-            m2["content"] = Value::Array(bs);
+            add_blocks(&mut m2, [tb]);
         }
         (m2, size)
     }
@@ -1550,13 +1563,17 @@ impl Engine {
         let mut out = b.clone();
         if u.kind == UKind::Call {
             if let Some(Value::Object(args)) = b.get("input") {
+                // only a write leaves its text in a file to read back; a command or a prompt does not
+                let wrote = classify(get_str(b, "name"), b.get("input")).0 == Kind::Write;
                 let args: Map<String, Value> = args
                     .iter()
                     .map(|(k, v)| {
                         let v = match v {
                             Value::String(s) if py::len(s) > 200 => Value::String(format!(
-                                "{MARK} {} lines written here are omitted; the file on disk is current",
-                                s.matches('\n').count() + 1
+                                "{MARK} {} lines {} here are omitted{}",
+                                s.matches('\n').count() + 1,
+                                if wrote { "written" } else { "of this argument" },
+                                if wrote { "; the file on disk is current" } else { "" }
                             )),
                             _ => v.clone(),
                         };
@@ -3068,10 +3085,14 @@ impl Engine {
     }
 
     /// The parts of the results in the view whose every line a later output in the view sends too, as
-    /// (result, part): the agent read the same lines again, and the later copy is the one it asked for.
-    fn copies(&self, vis: &[usize]) -> FxHashSet<(usize, usize)> {
-        let mut later: FxHashSet<String> = FxHashSet::default();
-        let mut out = FxHashSet::default();
+    /// (result, part), each with the parts that send those lines: the agent read the same lines again, and
+    /// the later copy is the one it asked for. Only the lines a part still sends count: a part already left
+    /// out carries nothing.
+    fn copies(&self, vis: &[usize]) -> FxHashMap<(usize, usize), Vec<(usize, usize)>> {
+        // each line sent below, with the latest part that sends it (`usize::MAX`: a line no part holds,
+        // which never leaves)
+        let mut later: FxHashMap<String, (usize, usize)> = FxHashMap::default();
+        let mut out = FxHashMap::default();
         for &mi in vis.iter().rev() {
             for &i in self.fz.by_msg(mi).iter().rev() {
                 if self.tr.units[i].kind != UKind::Result {
@@ -3080,16 +3101,28 @@ impl Engine {
                 let text = self.tr.unit_text(i);
                 let lines: Vec<&str> = text.split('\n').map(str::trim).collect();
                 let have = self.dropped.get(&i);
+                let mut owner: Vec<Option<usize>> = vec![Some(usize::MAX); lines.len()];
                 for (j, c) in self.fz.chunks[i].iter().enumerate() {
-                    if have.is_some_and(|h| h.contains(&j)) {
+                    let (a, b) = (c.start.max(0) as usize, (c.end.max(0) as usize).min(lines.len()));
+                    let gone = have.is_some_and(|h| h.contains(&j));
+                    owner[a.min(b)..b].iter_mut().for_each(|o| *o = (!gone).then_some(j));
+                    if gone {
                         continue;
                     }
-                    let own = &lines[c.start.max(0) as usize..(c.end.max(0) as usize).min(lines.len())];
-                    if own.iter().any(|l| !l.is_empty()) && own.iter().all(|l| l.is_empty() || later.contains(*l)) {
-                        out.insert((i, j));
+                    let own = &lines[a.min(b)..b];
+                    if own.iter().any(|l| !l.is_empty()) && own.iter().all(|l| l.is_empty() || later.contains_key(*l)) {
+                        let mut by: Vec<(usize, usize)> =
+                            own.iter().filter(|l| !l.is_empty()).map(|l| later[*l]).collect();
+                        by.sort_unstable();
+                        by.dedup();
+                        out.insert((i, j), by);
                     }
                 }
-                later.extend(lines.iter().filter(|l| !l.is_empty()).map(|l| l.to_string()));
+                for (l, o) in lines.iter().zip(owner) {
+                    if let (false, Some(j)) = (l.is_empty(), o) {
+                        later.entry(l.to_string()).or_insert((i, j));
+                    }
+                }
             }
         }
         out
@@ -3098,7 +3131,9 @@ impl Engine {
     fn evict(&mut self, t: usize, k: usize, sizes: &[i64], free: bool) -> Option<usize> {
         self.fz.context(&self.tr, t);
         let vis = self.visible();
-        let copies = if self.p.sup > 0 { self.copies(&vis) } else { FxHashSet::default() };
+        let copies = if self.p.sup > 0 { self.copies(&vis) } else { FxHashMap::default() };
+        // a part that sends the lines of a copy left out (now or before) stays: they would be gone
+        let mut carried = self.carrying.clone();
         // past the cap, a read a later edit made out of date goes with the copies, before any guess
         let stale = if free { self.stale_reads(&vis) } else { FxHashSet::default() };
         // what the agent read and has not written about yet is what it is working from: no guess takes it
@@ -3112,6 +3147,10 @@ impl Engine {
             let held = pointed.entry(u).or_insert_with(|| vec![false; n]);
             held.iter_mut().take(lines.1).skip(lines.0).for_each(|l| *l = true);
         }
+        // the latest reply's reasoning goes back with its calls (a provider refuses a call without it), so no
+        // tail short enough to leave that reply open lets it go
+        let last_reply =
+            (0..t).rev().find(|&m| self.tr.msgs[m].get("role").and_then(Value::as_str) == Some("assistant"));
         let mut proposal: Vec<Proposal> = Vec::new();
         for &mi in vis.iter() {
             if mi as i64 >= t as i64 - self.p.protect {
@@ -3119,6 +3158,9 @@ impl Engine {
             }
             for &i in self.fz.by_msg(mi) {
                 let u = &self.tr.units[i];
+                if u.kind == UKind::Thinking && Some(mi) == last_reply {
+                    continue;
+                }
                 // a short output is a measurement or a verdict: its stub saves next to nothing, and running
                 // the tool again to see it costs a whole request
                 if u.saving == 0 || (u.kind == UKind::Result && u.tokens < SMALL_RESULT) {
@@ -3132,10 +3174,11 @@ impl Engine {
                 let more: Vec<usize> = (0..chunks.len())
                     .filter(|j| {
                         !have.is_some_and(|h| h.contains(j))
-                            && (copies.contains(&(i, *j))
-                                || stale.contains(&i)
-                                || (!still.contains(&mi)
-                                    && self.prob(&self.fz.vector(&self.tr, i, *j)) < self.p.threshold))
+                            && (copies.contains_key(&(i, *j))
+                                || (!carried.contains(&(i, *j))
+                                    && (stale.contains(&i)
+                                        || (!still.contains(&mi)
+                                            && self.prob(&self.fz.vector(&self.tr, i, *j)) < self.p.threshold))))
                     })
                     .collect();
                 let free = |j: usize| -> i64 {
@@ -3152,6 +3195,9 @@ impl Engine {
                     }
                 };
                 let more: Vec<usize> = more.into_iter().filter(|&j| free(j) > 0).collect();
+                for j in &more {
+                    carried.extend(copies.get(&(i, *j)).into_iter().flatten().copied());
+                }
                 if !more.is_empty() {
                     let tokens = more.iter().map(|&j| free(j)).sum();
                     proposal.push((self.tr.units[i].msg, i, more, tokens));
@@ -3166,7 +3212,7 @@ impl Engine {
         let best_at = if free { 0 } else { self.rent(t, k, sizes, &proposal)? };
         for (_, i, more, _) in &proposal[best_at..] {
             for &j in more {
-                let rule = if copies.contains(&(*i, j)) {
+                let rule = if copies.contains_key(&(*i, j)) {
                     "sup"
                 } else if stale.contains(i) {
                     "stale"
@@ -3179,7 +3225,8 @@ impl Engine {
             }
             self.bump("dropped_chunks", more.len() as i64);
             for j in more {
-                if copies.contains(&(*i, *j)) {
+                if let Some(by) = copies.get(&(*i, *j)) {
+                    self.carrying.extend(by.iter().copied());
                     self.copied.insert((*i, *j));
                     self.bump("sup_chunks", 1);
                 }
@@ -3203,8 +3250,9 @@ impl Engine {
         self.fz.context(&self.tr, t);
         let vis = self.visible();
         let stale = self.stale_reads(&vis);
-        // the lines each visible output still sends, the latest first
-        let mut later: FxHashSet<String> = FxHashSet::default();
+        // the lines each visible output still sends, the latest first, with the part that sends them
+        let mut later: FxHashMap<String, (usize, usize)> = FxHashMap::default();
+        let mut carriers: FxHashMap<(usize, usize), Vec<(usize, usize)>> = FxHashMap::default();
         let mut parts: Vec<(f64, usize, usize, usize, i64, bool)> = Vec::new();
         for &mi in vis.iter().rev() {
             for &i in self.fz.by_msg(mi).iter().rev() {
@@ -3223,25 +3271,42 @@ impl Engine {
                     }
                     let own = &lines[c.start.max(0) as usize..(c.end.max(0) as usize).min(lines.len())];
                     if open {
-                        let copy = own.iter().all(|l| l.trim().is_empty() || later.contains(l.trim()));
+                        let copy = own.iter().all(|l| l.trim().is_empty() || later.contains_key(l.trim()));
+                        if copy {
+                            let mut by: Vec<(usize, usize)> =
+                                own.iter().filter_map(|l| later.get(l.trim()).copied()).collect();
+                            by.sort_unstable();
+                            by.dedup();
+                            carriers.insert((i, j), by);
+                        }
                         if only_copies && !copy && !stale.contains(&i) {
-                            later.extend(own.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
+                            for l in own.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                                later.entry(l.to_string()).or_insert((i, j));
+                            }
                             continue;
                         }
                         let score =
                             if copy || stale.contains(&i) { -1.0 } else { self.prob(&self.fz.vector(&self.tr, i, j)) };
                         parts.push((score, mi, i, j, c.tokens, copy));
                     }
-                    later.extend(own.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
+                    for l in own.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                        later.entry(l.to_string()).or_insert((i, j));
+                    }
                 }
             }
         }
-        parts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        // the copies first: a part that sends a copy's lines may itself be one to leave, and it stays once
+        // the copy has gone
+        parts.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.5.cmp(&a.5)).then(a.1.cmp(&b.1)));
+        let mut carried = self.carrying.clone();
         let mut total = sizes.iter().sum::<i64>() as f64;
         let mut first: Option<usize> = None;
         for (score, mi, i, j, tokens, copy) in parts {
             if total <= target {
                 break;
+            }
+            if !copy && carried.contains(&(i, j)) {
+                continue;
             }
             let (rule, stat) = match (copy, score < 0.0) {
                 (true, _) => ("cap_copies", "need_copies"),
@@ -3252,6 +3317,9 @@ impl Engine {
             self.held.remove(&(i, j));
             self.bump(stat, 1);
             if copy {
+                let by = carriers.remove(&(i, j)).unwrap_or_default();
+                carried.extend(by.iter().copied());
+                self.carrying.extend(by);
                 self.copied.insert((i, j));
             }
             total -= tokens as f64;
@@ -3295,7 +3363,8 @@ impl Engine {
                     if have.is_some_and(|h| h.contains(&j)) {
                         continue;
                     }
-                    if open {
+                    // a part that sends the lines of a copy left out stays, as what is known
+                    if open && !self.carrying.contains(&(i, j)) {
                         parts.push((mi, i, j, c.tokens));
                         open_tokens += c.tokens;
                     } else if u.kind == UKind::Result {
@@ -3429,6 +3498,10 @@ impl Engine {
         }
         if new_start == self.start {
             return false;
+        }
+        // a message that left the view is not built again: its built form goes with it
+        for mi in self.start.max(1)..new_start {
+            self.built.remove(&mi);
         }
         for mi in self.start..new_start {
             self.gone_tokens += self.sizes[mi];
@@ -4339,10 +4412,19 @@ mod tests {
         msgs.extend(step(1, "cd material; sed -n 1,60p listing.txt", &rows));
         msgs.extend(step(2, "./gen.sh", &rows));
         let mut e = Engine::new(params("nudge=0").unwrap());
+        // with a way back (the host offers `recall`) the output of a process folds with a loss
+        e.tools(&[RECALL_TOOL.to_string()]);
         e.sync(&msgs);
         let view = e.view();
         assert_eq!(output(&view, 2), rows);
         assert!(output(&view, 4).contains("more lines with the same pattern"), "{view:?}");
+        // without one it folds only what comes back whole: every value is still there
+        let mut e = Engine::new(params("nudge=0").unwrap());
+        e.sync(&msgs);
+        let view = e.view();
+        let out = output(&view, 4);
+        assert!(!out.contains("more lines with the same pattern"), "{out}");
+        assert!((0..60).all(|k| out.contains(&(4340 + 10 * k).to_string())), "{out}");
     }
 
     #[test]
@@ -4386,6 +4468,114 @@ mod tests {
         assert_eq!(kept.iter().filter(|r| **r == log).count(), 1, "{kept:?}");
         // only parts a later output holds went
         assert!(need.stats.get("need_copies").is_some_and(|n| *n > 0) && !need.stats.contains_key("need_chunks"));
+    }
+
+    #[test]
+    fn the_output_that_sends_the_lines_of_a_copy_left_out_stays_in_that_pass_and_the_next() {
+        let log =
+            (0..200).map(|k| format!("event {} at {}", word(k + 2000), word(k + 3000))).collect::<Vec<_>>().join("\n");
+        let mut msgs = vec![json!({"role": "user", "content": "What does the log hold?"})];
+        msgs.extend(step(1, "cat run.log", &log));
+        msgs.extend(step(2, "cat run.log", &log));
+        for k in 3..8 {
+            msgs.extend(step(k, &format!("wc -l part{k}"), &format!("{k} lines")));
+        }
+        // how many of the log's distinct lines the view sends, and whether it says a later output sends a copy's lines
+        let seen = |view: &[Value]| -> (usize, bool) {
+            let text: String = view.iter().map(|m| crate::msg::flat(m.get("content")) + "\n").collect();
+            let lines: FxHashSet<&str> = text.lines().filter(|l| l.starts_with("event ")).collect();
+            (lines.len(), text.contains("a later output below sends"))
+        };
+        let mut whole = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+        whole.sync(&msgs);
+        let total = whole.tokens();
+        // a cap one token short, a floor that leaving one copy of the log is enough for, and every other part
+        // a guess would let go (`threshold=1`): only the stub of the copy says the log is still sent
+        let cap = total - 1;
+        let floor = (total - est_str(&log) / 2) as f64 / cap as f64;
+        for cut in ["age", "need", "copies", "cover"] {
+            let given = format!("threshold=1;still=0;protect=2;nudge=0;sup=1;cap={cap};floor={floor};cut={cut}");
+            let mut e = Engine::new(params(&given).unwrap());
+            e.sync(&msgs);
+            let (lines, stub) = seen(&e.view());
+            assert!(stub && !e.copied.is_empty(), "{cut}: {:?}", e.stats);
+            assert_eq!(lines, 200, "{cut}: {:?}", e.stats);
+            // the next requests weigh what to leave again: the output that sends the copy's lines stays
+            let mut more = msgs.clone();
+            for k in 9..12 {
+                more.extend(step(k, &format!("wc -l part{k}"), &format!("{k} lines")));
+                e.sync(&more);
+                let (lines, stub) = seen(&e.view());
+                assert!(!stub || lines == 200, "{cut}, request {k}: {lines} lines, {:?}", e.stats);
+            }
+        }
+    }
+
+    #[test]
+    fn the_reasoning_of_the_latest_reply_stays_with_its_calls_whatever_the_tail() {
+        let thought =
+            (0..120).map(|k| format!("maybe {} then {}", word(k), word(k + 500))).collect::<Vec<_>>().join("\n");
+        let msgs = vec![
+            json!({"role": "user", "content": "Find slot 50."}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": thought, "signature": "s"},
+                {"type": "tool_use", "id": "call_1", "name": "bash", "input": {"command": "cat listing.txt"}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": listing(1, 120)}]}),
+        ];
+        let mut whole = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+        whole.sync(&msgs);
+        let cap = whole.tokens() - 1;
+        // no tail kept whole and every part a guess: the reasoning of the reply the request goes back to stays
+        let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;protect=0;cap={cap};floor=0.5")).unwrap());
+        e.sync(&msgs);
+        let view = e.view();
+        let kept = blocks(view[1].get("content")).iter().any(|b| get_str(b, "thinking") == thought);
+        assert!(kept && e.stats.contains_key("cap_rewrites"), "{:?} {:?}", view[1], e.stats);
+    }
+
+    #[test]
+    fn a_long_argument_left_out_says_the_file_on_disk_is_current_only_for_a_write() {
+        let script = (0..40).map(|k| format!("echo {} {}", word(k), word(k + 70))).collect::<Vec<_>>().join("\n");
+        let mut msgs = vec![json!({"role": "user", "content": "Run the checks."})];
+        msgs.extend(step(1, &script, "ok"));
+        for k in 2..8 {
+            msgs.extend(step(k, &format!("wc -l part{k}"), &format!("{k} lines")));
+        }
+        let mut whole = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+        whole.sync(&msgs);
+        let total = whole.tokens();
+        // a floor that leaving most of the script is enough for: no message has to leave
+        let cap = total - 1;
+        let floor = (total - est_str(&script) / 2) as f64 / cap as f64;
+        let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;cap={cap};floor={floor}")).unwrap());
+        e.sync(&msgs);
+        let call = e.view()[1].to_string();
+        assert!(call.contains("lines of this argument here are omitted"), "{call} {:?}", e.stats);
+        assert!(!call.contains("the file on disk is current"), "{call}");
+    }
+
+    #[test]
+    fn what_is_added_to_a_message_that_came_with_no_text_leaves_no_empty_text_block() {
+        for content in [json!(""), json!([]), json!([{"type": "text", "text": ""}])] {
+            let mut m = json!({"role": "user", "content": content});
+            add_blocks(&mut m, [text_block("[curator] the map")]);
+            assert_eq!(m["content"], json!([{"type": "text", "text": "[curator] the map"}]));
+        }
+        let mut m = json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": ""}]});
+        add_blocks(&mut m, [text_block("x")]);
+        assert_eq!(m["content"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn one_long_line_dense_in_tokens_is_cut_to_its_budget_without_a_panic() {
+        // control bytes weigh more than a quarter token each: the budget holds fewer characters than four a token
+        let dense = "\u{1}".repeat(100);
+        let cut = head_and_tail(&dense, 100);
+        assert!(cut.contains("characters cut") && cut.chars().filter(|c| *c == '\u{1}').count() < 100, "{cut:?}");
+        // quotes weigh half a token: the head and tail never overlap
+        let quotes = "\"".repeat(100);
+        let cut = head_and_tail(&quotes, 30);
+        assert!(cut.chars().filter(|c| *c == '"').count() < 100, "{cut:?}");
     }
 
     #[test]

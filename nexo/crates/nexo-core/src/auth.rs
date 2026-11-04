@@ -117,7 +117,8 @@ pub fn write_to(path: &Path, map: &BTreeMap<String, Credential>) -> std::io::Res
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let tmp = path.with_extension("json.tmp");
+    // one temporary name per process: two writing at once never share it
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let text = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
     {
         let mut o = std::fs::OpenOptions::new();
@@ -163,6 +164,11 @@ mod tests {
         );
         write_to(&f, &map).unwrap();
         assert_eq!(read_from(&f), map);
+        // another writer's temporary file is not this one
+        std::fs::write(dir.path().join("auth.json.tmp"), "other").unwrap();
+        write_to(&f, &map).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("auth.json.tmp")).unwrap(), "other");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "no temporary file of its own stays");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

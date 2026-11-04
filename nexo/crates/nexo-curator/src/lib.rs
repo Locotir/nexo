@@ -350,10 +350,12 @@ impl Curator {
     /// The view for the model call that follows ``messages`` (the whole conversation so far).
     pub fn view(&mut self, system_tokens: u64, messages: &[Value], _now: f64) -> Result<Reply, String> {
         self.head_tokens = system_tokens;
-        // the view takes what the window leaves after the system prompt and tools, never under a quarter
+        // the view takes what the window leaves after the system prompt and tools: a floor above that would
+        // only move the overflow to the provider (a small local window under many tools); 0 means no limit,
+        // so the least is one token
         let budget = match self.window {
             0 => 0,
-            w => w.saturating_sub(system_tokens).max(w / 4) as i64,
+            w => w.saturating_sub(system_tokens).max(1) as i64,
         };
         self.eng.set_budget(budget);
         self.eng.sync(messages);

@@ -19,6 +19,8 @@ use tokio_util::sync::CancellationToken;
 pub const KEEP_CHARS: usize = 200_000;
 /// Characters of new output one read gives (head and tail).
 pub const READ_CHARS: usize = 30_000;
+/// Characters kept of one line; the rest of a longer one is dropped.
+pub const LINE_CHARS: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -155,9 +157,16 @@ impl JobHandle {
     }
 
     pub fn line(&self, line: &str) {
+        let n = line.chars().count();
+        let line = if n > LINE_CHARS {
+            let head: String = line.chars().take(LINE_CHARS).collect();
+            format!("{head} … [{} characters of this line cut]", n - LINE_CHARS)
+        } else {
+            line.to_string()
+        };
         let mut o = self.entry.out.lock().unwrap();
         o.chars += line.chars().count() + 1;
-        o.lines.push_back(line.to_string());
+        o.lines.push_back(line);
         while o.chars > KEEP_CHARS && o.lines.len() > 1 {
             let l = o.lines.pop_front().unwrap();
             o.chars -= l.chars().count() + 1;
@@ -474,5 +483,18 @@ mod tests {
         drop(h);
         assert_eq!(jobs.get(1).unwrap().status, JobStatus::Killed, "a dropped runner ends the job");
         assert_eq!(duration(65_000), "1 min 5 s");
+    }
+
+    #[test]
+    fn one_huge_line_is_kept_bounded() {
+        let jobs = Jobs::new();
+        let h = jobs.start(JobKind::Shell, "yes | tr -d '\\n'");
+        h.line(&"y".repeat(LINE_CHARS * 10));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let r = rt.block_on(jobs.read(1, Duration::ZERO, &CancellationToken::new())).unwrap();
+        assert!(r.new.starts_with(&"y".repeat(100)));
+        assert!(r.new.trim_end().ends_with(&format!("[{} characters of this line cut]", LINE_CHARS * 9)));
+        assert!(r.new.chars().count() < LINE_CHARS + 100);
+        drop(h);
     }
 }

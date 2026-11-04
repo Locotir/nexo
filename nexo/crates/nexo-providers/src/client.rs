@@ -128,7 +128,21 @@ impl Client {
         tokio::spawn(async move {
             'attempts: loop {
                 let mut content = false;
+                // what comes before the first content (start, opaque reasoning, usage) is held
+                // back, so a retry never hands the caller the same preamble twice
+                let mut held: Vec<StreamEvent> = Vec::new();
                 while let Some(ev) = inner.next().await {
+                    let preamble = matches!(
+                        ev,
+                        StreamEvent::Start { .. }
+                            | StreamEvent::RedactedReasoning { .. }
+                            | StreamEvent::ReasoningMeta { .. }
+                            | StreamEvent::Usage(_)
+                    );
+                    if preamble && !content {
+                        held.push(ev);
+                        continue;
+                    }
                     match &ev {
                         StreamEvent::TextDelta(_)
                         | StreamEvent::ReasoningDelta(_)
@@ -144,6 +158,9 @@ impl Client {
                                     continue 'attempts;
                                 }
                                 Err(e) => {
+                                    for h in held.drain(..) {
+                                        let _ = tx.send(h);
+                                    }
                                     let _ = tx.send(StreamEvent::Error(this.explain(&cfg, key.is_some(), e)));
                                     let _ = tx.send(StreamEvent::Done);
                                     return;
@@ -152,6 +169,11 @@ impl Client {
                         }
                         _ => {}
                     }
+                    for h in held.drain(..) {
+                        if tx.send(h).is_err() {
+                            return;
+                        }
+                    }
                     let done = matches!(ev, StreamEvent::Done);
                     if tx.send(ev).is_err() {
                         return; // the caller went away
@@ -159,6 +181,9 @@ impl Client {
                     if done {
                         return;
                     }
+                }
+                for h in held.drain(..) {
+                    let _ = tx.send(h);
                 }
                 let _ = tx.send(StreamEvent::Done);
                 return;
@@ -191,5 +216,64 @@ impl Client {
         let protocol = self.protocol(cfg)?;
         let (shaped, key) = crate::login::prepare(cfg).await.map_err(|e| self.explain(cfg, true, e))?;
         protocol.list_models(&shaped, key.as_deref()).await.map_err(|e| self.explain(cfg, key.is_some(), e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use nexo_core::{Message, Usage};
+    use std::sync::Mutex;
+
+    /// A protocol that answers each re-issued request with the next scripted stream.
+    struct Scripted(Mutex<Vec<Vec<StreamEvent>>>);
+
+    #[async_trait]
+    impl Protocol for Scripted {
+        fn id(&self) -> &'static str {
+            "scripted"
+        }
+
+        async fn stream(
+            &self,
+            _cfg: &ProviderConfig,
+            _key: Option<&str>,
+            _req: &ModelRequest,
+        ) -> Result<EventStream, ProviderError> {
+            let evs = self.0.lock().unwrap().remove(0);
+            Ok(Box::pin(futures::stream::iter(evs)))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retry_never_repeats_the_preamble_of_the_failed_attempt() {
+        let start = StreamEvent::Start { response_id: Some("r".into()), model: Some("m".into()) };
+        let mut overloaded = ProviderError::new(ErrorKind::Overloaded, "Overloaded").with_status(529);
+        overloaded.retry_after = Some(Duration::ZERO);
+        let failed = vec![
+            start.clone(),
+            StreamEvent::RedactedReasoning { data: "R".into() },
+            StreamEvent::ReasoningMeta { signature: Some("S".into()), encrypted: None },
+            StreamEvent::Error(overloaded),
+            StreamEvent::Done,
+        ];
+        let good = vec![
+            start.clone(),
+            StreamEvent::TextDelta("hi".into()),
+            StreamEvent::Usage(Usage { input: 1, output: 1, ..Default::default() }),
+            StreamEvent::Done,
+        ];
+        let protocol: Arc<dyn Protocol> = Arc::new(Scripted(Mutex::new(vec![good.clone()])));
+        let client = Client::new(Registry::new());
+        let call = Call {
+            protocol,
+            cfg: ProviderConfig::new("scripted", "http://127.0.0.1:9", None),
+            key: None,
+            req: ModelRequest::new("m", "", vec![Message::user("hi")]),
+            retries: 2,
+        };
+        let evs: Vec<StreamEvent> = client.forward(Box::pin(futures::stream::iter(failed)), call, 0).collect().await;
+        assert_eq!(evs, good, "only the second attempt reaches the caller");
     }
 }

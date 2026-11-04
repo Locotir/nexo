@@ -532,6 +532,19 @@ async fn headless(
         }
     }
     let _ = handle.commands.send(AgentCommand::Shutdown);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), agent).await;
+    // the agent can stop before any turn (a session that cannot be resumed): that is a failure
+    let failed = match tokio::time::timeout(std::time::Duration::from_secs(2), agent).await {
+        Ok(Ok(Err(e))) => Some(format!("{e:#}")),
+        Ok(Err(e)) => Some(format!("the agent stopped: {e}")),
+        _ => None,
+    };
+    if let Some(e) = failed {
+        if json {
+            writeln!(out, "{}", serde_json::json!({"event": "error", "message": e}))?;
+        }
+        out.flush()?;
+        eprintln!("nexo: {e}");
+        return Ok(1);
+    }
     Ok(code)
 }

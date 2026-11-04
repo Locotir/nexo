@@ -120,6 +120,23 @@ pub fn key(app: &mut App, k: KeyEvent) {
     app.dirty = true;
     // a permission or question dialog takes the keys first; the diff viewer waits under it
     if let Some(m) = &mut app.modal {
+        // Ctrl+C is never swallowed by a dialog: a permission is denied, a question left
+        // unanswered, any other dialog closed; then it acts as at the prompt (stop, arm quit)
+        if app.keymap.action(&k) == Some(Action::Cancel) {
+            let waits = matches!(m, crate::modal::Modal::Permission(_) | crate::modal::Modal::Question(_));
+            if waits {
+                let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+                let mut out = m.key(esc);
+                if out == crate::modal::ModalOut::Nothing {
+                    // a question being typed into leaves the text box first
+                    out = m.key(esc);
+                }
+                app.modal_out(out);
+            } else {
+                app.modal_out(crate::modal::ModalOut::Close);
+            }
+            return app.ctrl_c();
+        }
         let out = m.key(k);
         app.modal_out(out);
         return;

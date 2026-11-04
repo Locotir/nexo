@@ -65,15 +65,58 @@ fn private_ip(ip: std::net::IpAddr) -> bool {
                 || v.is_unspecified()
                 || v.is_broadcast()
                 || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                || o[0] == 0
         }
         std::net::IpAddr::V6(v) => {
-            let s = v.segments()[0];
+            let g = v.segments();
+            let s = g[0];
+            let v4 = |hi: u16, lo: u16| {
+                let [a, b] = hi.to_be_bytes();
+                let [c, d] = lo.to_be_bytes();
+                private_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d)))
+            };
             v.is_loopback()
                 || v.is_unspecified()
                 || (s & 0xfe00) == 0xfc00
                 || (s & 0xffc0) == 0xfe80
+                || (s & 0xffc0) == 0xfec0
                 || v.to_ipv4_mapped().is_some_and(|m| private_ip(std::net::IpAddr::V4(m)))
+                // an IPv4 address inside: `::a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, Teredo
+                || (g[..6].iter().all(|&x| x == 0) && v4(g[6], g[7]))
+                || (s == 0x64 && g[1] == 0xff9b && g[2..6].iter().all(|&x| x == 0) && v4(g[6], g[7]))
+                || (s == 0x64 && g[1] == 0xff9b && g[2] == 1)
+                || (s == 0x2002 && v4(g[1], g[2]))
+                || (s == 0x2001 && g[1] == 0 && v4(!g[6], !g[7]))
         }
+    }
+}
+
+/// The addresses a name resolved to, when every one is public; `localhost` and `*.localhost`,
+/// local by their name (the person saw it when asked), keep theirs.
+fn public_only(host: &str, addrs: Vec<std::net::SocketAddr>) -> Result<Vec<std::net::SocketAddr>, String> {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    if h == "localhost" || h.ends_with(".localhost") {
+        return Ok(addrs);
+    }
+    match addrs.iter().find(|a| private_ip(a.ip())) {
+        Some(a) => Err(format!("{host} resolves to {}, a local or private address", a.ip())),
+        None => Ok(addrs),
+    }
+}
+
+/// The resolver of `web_fetch`: a name is checked before anything connects to it, on the first
+/// request and every redirect, so a public-looking name cannot lead to this machine or the local
+/// network. An address written as such (`http://127.0.0.1/`) is not resolved and stays allowed.
+struct PublicResolver;
+
+impl reqwest::dns::Resolve for PublicResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            let addrs = public_only(&host, addrs)?;
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
     }
 }
 
@@ -615,7 +658,13 @@ pub struct WebFetch {
 impl WebFetch {
     pub fn new(cfg: &WebConfig) -> WebFetch {
         // redirects are followed by hand, each one checked (`hop`)
-        WebFetch { http: builder(cfg).redirect(reqwest::redirect::Policy::none()).build().unwrap_or_default() }
+        WebFetch {
+            http: builder(cfg)
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(Arc::new(PublicResolver))
+                .build()
+                .unwrap_or_default(),
+        }
     }
 }
 
@@ -1153,17 +1202,49 @@ mod tests {
             "http://localhost/",
             "http://[::ffff:192.168.1.1]/",
             "http://[fe80::1]/",
+            "http://0.1.2.3/",
+            "http://[::127.0.0.1]/",
+            "http://[::169.254.169.254]/",
+            "http://[64:ff9b::7f00:1]/",
+            "http://[64:ff9b::10.0.0.1]/",
+            "http://[64:ff9b:1::8.8.8.8]/",
+            "http://[2002:7f00:1::]/",
+            "http://[2001:0:4136:e378:8000:63bf:80ff:fffe]/",
+            "http://[fec0::1]/",
         ] {
             assert!(private_host(&u(s)), "{s}");
             assert!(!redirect_ok(&[u("https://docs.rs/")], &u(s)), "{s}");
         }
         assert!(!private_host(&u("https://docs.rs/")));
         assert!(!private_host(&u("http://8.8.8.8/")));
+        for s in ["http://[2606:4700::1111]/", "http://[64:ff9b::808:808]/", "http://[2002:808:808::]/"] {
+            assert!(!private_host(&u(s)), "{s}");
+        }
         assert!(redirect_ok(&[u("https://docs.rs/")], &u("https://crates.io/")));
         assert!(
             redirect_ok(&[u("http://127.0.0.1:8080/")], &u("http://127.0.0.1:8080/b")),
             "a local start may stay local"
         );
+    }
+
+    #[test]
+    fn a_name_is_refused_before_connecting_when_it_resolves_to_a_private_address() {
+        let a = |s: &str| -> std::net::SocketAddr { s.parse().unwrap() };
+        let public = vec![a("93.184.216.34:0"), a("[2606:2800:220:1::1]:0")];
+        assert_eq!(public_only("example.com", public.clone()), Ok(public));
+        for addrs in [
+            vec![a("127.0.0.1:0")],
+            vec![a("93.184.216.34:0"), a("10.0.0.5:0")],
+            vec![a("[::1]:0")],
+            vec![a("[::ffff:169.254.169.254]:0")],
+            vec![a("[64:ff9b::c0a8:101]:0")],
+        ] {
+            let e = public_only("rebind.example", addrs).unwrap_err();
+            assert!(e.contains("local or private"), "{e}");
+        }
+        let local = vec![a("127.0.0.1:0")];
+        assert_eq!(public_only("localhost", local.clone()), Ok(local.clone()));
+        assert_eq!(public_only("app.localhost.", local.clone()), Ok(local));
     }
 
     #[test]

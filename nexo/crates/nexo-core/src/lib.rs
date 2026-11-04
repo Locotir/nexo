@@ -40,7 +40,7 @@ pub use agent::{
     EventTx, Level, TurnEnd,
 };
 pub use config::{Config, ProviderConfig, WebConfig};
-pub use error::{ErrorKind, ProviderError};
+pub use error::{is_context_error, ErrorKind, ProviderError};
 pub use jobs::{JobInfo, JobKind, JobStatus, Jobs};
 pub use message::{ImageSource, Message, Part, Role};
 pub use permission::{PermissionDecision, PermissionGate, PermissionMode, PermissionRequest, Question, QuestionOption};

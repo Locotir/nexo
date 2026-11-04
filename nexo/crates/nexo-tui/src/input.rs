@@ -53,7 +53,8 @@ pub fn cell_at(input: &Input, width: usize, vrow: usize, vcol: usize) -> (usize,
     // the cursor goes before the character under the cell; past the row's end, at its end
     let (mut used, mut n) = (0, 0);
     for c in row.chars() {
-        let w = crate::render::wrap::width(c.encode_utf8(&mut [0; 4])).max(1);
+        // combining marks and joiners take no cell, as ratatui draws them
+        let w = crate::render::wrap::width(c.encode_utf8(&mut [0; 4]));
         if vcol < used + w {
             break;
         }
@@ -79,7 +80,8 @@ fn layout(input: &Input, width: usize) -> Layout {
     let mut cursor = (0, 0);
     for (li, line) in input.editor.lines().iter().enumerate() {
         let chars: Vec<char> = line.chars().collect();
-        let cw = |c: char| crate::render::wrap::width(c.encode_utf8(&mut [0; 4])).max(1);
+        // a zero-width character (a combining mark) adds no column: ratatui draws it in the cell before
+        let cw = |c: char| crate::render::wrap::width(c.encode_utf8(&mut [0; 4]));
         let mut start = 0;
         loop {
             // the row takes what fits; at a word it breaks after the last space
@@ -212,7 +214,8 @@ impl Input {
     }
 
     pub fn set_text(&mut self, text: &str) {
-        let lines: Vec<String> = text.split('\n').map(String::from).collect();
+        // what the box draws goes to the terminal as is: escapes and tabs never reach it
+        let lines: Vec<String> = crate::render::wrap::clean(text).split('\n').map(String::from).collect();
         self.editor = TextArea::new(lines);
         self.style();
         self.editor.move_cursor(CursorMove::Bottom);
@@ -308,6 +311,8 @@ impl Input {
     /// which [`Input::full_text`] puts back.
     pub fn insert_paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        // escapes and other control characters out, tabs as spaces: the box draws the text as is
+        let text = crate::render::wrap::clean(&text).into_owned();
         let lines = text.trim_end_matches('\n').lines().count();
         if lines <= PASTE_LINES && text.chars().count() <= PASTE_CHARS {
             self.editor.insert_str(text);
@@ -691,6 +696,35 @@ impl Input {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paste_or_a_recalled_draft_never_carries_escapes_or_tabs() {
+        let mut i = Input::new("");
+        i.insert_paste("a\tb\x1b[2Jc\x07\nd");
+        assert_eq!(i.text(), "a    bc\nd", "escapes and controls out, tabs as spaces, line breaks kept");
+        let long: String = (1..=40).map(|n| format!("\x1b[31mline\t{n}\n")).collect();
+        i.clear();
+        i.insert_paste(&long);
+        assert!(!i.full_text().contains(['\x1b', '\t']), "{:?}", i.full_text());
+        i.set_text("x\x1b]0;title\x07y\tz");
+        assert_eq!(i.text(), "xy    z");
+        let (rows, _) = wrapped_rows(&i, 20);
+        assert!(rows.iter().all(|r| !r.chars().any(char::is_control)), "{rows:?}");
+    }
+
+    #[test]
+    fn a_combining_mark_takes_no_column() {
+        // "e" + U+0301 is one cell on screen: the caret after it sits at column 1, not 2
+        let mut i = Input::new("");
+        i.set_text("e\u{301}x");
+        let (rows, cursor) = wrapped_rows(&i, 20);
+        assert_eq!((rows.len(), cursor), (1, (0, 2)));
+        // the row of two cells is not cut early in a box two cells wide
+        let (rows, _) = wrapped_rows(&i, 2);
+        assert_eq!(rows[0], "e\u{301}x");
+        // a click on the second cell lands before the "x", past the mark
+        assert_eq!(cell_at(&i, 20, 0, 1), (0, 2));
+    }
 
     #[test]
     fn a_wide_character_in_a_one_cell_box_still_lays_out() {

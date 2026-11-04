@@ -56,7 +56,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | `Enter` / `Ctrl+J` | send / newline |
 | `Enter` on an empty box while a request waits in the queue | interrupt the turn and run the queued request now |
 | `Esc` | interrupt the turn; again: clear the draft |
-| `Ctrl+C` ×2 | quit |
+| `Ctrl+C` ×2, `Ctrl+D` (empty draft) | quit |
 | wheel, `PgUp`/`PgDn`, `Home`/`End` | scroll the transcript (it glides there) |
 | scrollbar | drag the thumb, or click the track to jump; it lights up under the pointer, in every window and picker too. While you read further up, `↓ N new` (click it) and the thumb pulse when more arrives |
 | click on a block | select it; a click on the first line of the selected block folds or opens it (a drag still selects text) |
@@ -75,7 +75,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 
@@ -231,6 +231,9 @@ like `bash(git *)` or `edit(src/**)`. `~` and links are resolved before a path r
 sees both the path as written and where its links lead, and an allow rule must match both, so
 `edit(src/**)` does not reach a link in `src/` that points out of the project. `accept-edits` writes
 without asking only inside the project, never in `.git`, `.nexo` or shell start-up files.
+An allow rule for `bash` covers a command only when it is plainly that command: a redirection to a
+file, `$'..'`, `${..@..}`, a substitution or an option that runs code (`git -c`, `find -exec`,
+`xargs`) is asked about. Deny rules for `bash` are a guard against mistakes, not a sandbox.
 
 Reading and searching are not asked about, except for files that hold keys or credentials: `.env` and
 `.env.*`, anything under `.ssh`, `.gnupg`, `.aws`, `.kube` or `.docker`, private keys and certificates
@@ -296,9 +299,9 @@ background included, and nexo paints its own ground, so it looks the same in
 any terminal whatever palette the terminal has configured (a terminal
 without 24-bit colour gets the nearest of the 256-colour cube, and `/theme`
 says so). `/theme` opens a picker that previews each theme as you move and
-remembers the choice (`[ui] theme` in the user configuration). `nexo` is the
-default (a deep blue-grey ground, a teal accent, a warm marker for the
-assistant). The others: `dark` (neutral, the classic terminal colours fixed),
+remembers the choice (`[ui] theme` in the user configuration). `dark` is the
+default (neutral, the classic terminal colours fixed). The others: `nexo` (a
+deep blue-grey ground, a teal accent, a warm marker for the assistant),
 `light`, `mono` (no colour at all; also when `NO_COLOR` is set),
 `catppuccin-mocha`, `gruvbox`, `nord`, `dracula`, `solarized-dark`,
 `tokyo-night`. Code highlighting follows the theme.
@@ -357,6 +360,11 @@ command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 # trust_read_only = true             # believe the server's readOnlyHint (off: every tool is asked about)
 ```
+
+An MCP server gets only these variables of your environment, plus its own `env`: `PATH`, `HOME`, `USER`,
+`LANG`, `LC_*`, `TERM`, `TMPDIR`, `TMP`, `TEMP`, `SHELL`, `XDG_*`, and on Windows `SystemRoot`,
+`SystemDrive`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PATHEXT`, `COMSPEC`, `WINDIR`, `ProgramData`
+and `ProgramFiles`; a key it needs goes in its `env`.
 
 ### Providers
 
@@ -490,6 +498,8 @@ allows it. A rule names hosts: `web_fetch(docs.rs)`, and
 offers the rule for the page's host. A redirect from a public address to this
 machine or a private one (`localhost`, `127.0.0.1`, `10.*`, `192.168.*`,
 `169.254.*`, `[::1]`, ...) is refused, by name and by the address reached.
+A name that resolves to such an address is refused before anything connects to it; to read a
+local service, write its address (`http://127.0.0.1:8080/`) or `localhost`.
 Every redirect is checked by the rules as if its target had been asked for: a
 deny rule refuses it, and another site no rule allows is not read on the way
 (the reply gives its address, and fetching it is asked about as usual).
@@ -576,7 +586,7 @@ view, each within its budget in tokens (0 turns it off):
   once in the chat holds natively, without a system prompt or a file;
 - `notes=` the model's own `Finding:` and `Plan:` lines, in its text or in a
   `note` call, so settled facts are not worked out again (oldest out first).
-  After `nudge=` steps without a note (default 8, 0 turns it off) the curator
+  After `nudge=N` steps without a note (off by default, `nudge=0`) the curator
   appends one request for the notes to the end of the last tool result (a
   `note` call when that tool is offered, lines of the reply when not), never
   inside the cached prefix, at most once per `nudge` steps, not between two

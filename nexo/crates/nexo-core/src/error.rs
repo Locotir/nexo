@@ -55,16 +55,8 @@ impl ProviderError {
         let kind = match status {
             401 | 403 => ErrorKind::Auth,
             429 => ErrorKind::RateLimit,
-            400 | 413 | 422
-                if lower.contains("context length")
-                    || lower.contains("context_length")
-                    || lower.contains("too many tokens")
-                    || lower.contains("maximum context")
-                    || lower.contains("prompt is too long")
-                    || lower.contains("exceeds the model") =>
-            {
-                ErrorKind::ContextLength
-            }
+            400 | 413 | 422 if is_context_error(Some(status), "", body) => ErrorKind::ContextLength,
+            408 => ErrorKind::Network,
             400..=499 => ErrorKind::BadRequest,
             503 | 529 => ErrorKind::Overloaded,
             500..=599 => ErrorKind::Server,
@@ -78,6 +70,34 @@ impl ProviderError {
     pub fn is_retryable(&self) -> bool {
         matches!(self.kind, ErrorKind::RateLimit | ErrorKind::Overloaded | ErrorKind::Server | ErrorKind::Network)
     }
+}
+
+/// Whether an error says the request is longer than the model's window,
+/// from its HTTP status (when there is one), its code or type, and its
+/// message. The one test every protocol and the HTTP layer share.
+pub fn is_context_error(status: Option<u16>, code: &str, message: &str) -> bool {
+    if status == Some(413) {
+        return true;
+    }
+    let c = code.to_ascii_lowercase();
+    if c.contains("context_length") || c.contains("context_size") {
+        return true;
+    }
+    let m = message.to_ascii_lowercase();
+    [
+        "context length",
+        "context_length",
+        "context window",
+        "context size",
+        "context_size",
+        "maximum context",
+        "too many tokens",
+        "prompt is too long",
+        "exceeds the model",
+        "exceeds the maximum number of tokens",
+    ]
+    .iter()
+    .any(|k| m.contains(k))
 }
 
 fn shorten(s: &str, n: usize) -> String {
@@ -106,5 +126,36 @@ mod tests {
         assert_eq!(ProviderError::from_http(500, "{\"type\":\"overloaded_error\"}").kind, ErrorKind::Overloaded);
         assert!(ProviderError::from_http(502, "").is_retryable());
         assert!(!ProviderError::from_http(400, "").is_retryable());
+    }
+
+    #[test]
+    fn one_test_knows_every_too_long_wording() {
+        assert!(is_context_error(None, "context_length_exceeded", ""));
+        assert!(is_context_error(None, "exceed_context_size_error", ""));
+        assert!(is_context_error(
+            None,
+            "",
+            "The input token count (300000) exceeds the maximum number of tokens allowed (262144)."
+        ));
+        assert!(is_context_error(
+            None,
+            "",
+            "the request (9000 tokens) exceeds the available context size (8192 tokens)"
+        ));
+        assert!(is_context_error(Some(413), "", "Request Entity Too Large"));
+        assert!(!is_context_error(None, "invalid_request_error", "max_tokens: 65536 > 8192"));
+        assert!(!is_context_error(Some(400), "", "bad json"));
+        assert_eq!(ProviderError::from_http(413, "").kind, ErrorKind::ContextLength);
+        assert_eq!(
+            ProviderError::from_http(400, r#"{"error":{"code":"exceed_context_size_error","message":"too big"}}"#).kind,
+            ErrorKind::ContextLength
+        );
+    }
+
+    #[test]
+    fn a_request_timeout_is_retried_as_a_network_error() {
+        let e = ProviderError::from_http(408, "Request Timeout");
+        assert_eq!(e.kind, ErrorKind::Network);
+        assert!(e.is_retryable());
     }
 }

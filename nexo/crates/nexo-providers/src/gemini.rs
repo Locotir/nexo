@@ -198,6 +198,10 @@ pub fn fresh_call_id() -> String {
 pub struct GeminiParser {
     prog: Progress,
     usage: Option<Usage>,
+    /// Usage was already reported (a later copy is not sent again).
+    usage_sent: bool,
+    /// A `Finish` was emitted (not an error).
+    stopped: bool,
 }
 
 impl Feed for GeminiParser {
@@ -276,8 +280,10 @@ impl Feed for GeminiParser {
             if !self.prog.finished {
                 self.prog.finished = true;
                 if let Some(u) = self.usage.take() {
+                    self.usage_sent = true;
                     out.push(StreamEvent::Usage(u));
                 }
+                self.stopped = true;
                 out.push(StreamEvent::Finish(match r {
                     "MAX_TOKENS" => FinishReason::Length,
                     "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
@@ -302,8 +308,10 @@ impl Feed for GeminiParser {
     /// Some responses end without a `finishReason`; what is pending is flushed.
     fn finish(&mut self) -> Vec<StreamEvent> {
         let mut out = Vec::new();
-        if !self.prog.finished && self.prog.content {
+        // usage can come in a chunk after the one with finishReason
+        if !self.usage_sent && (self.stopped || (!self.prog.finished && self.prog.content)) {
             if let Some(u) = self.usage.take() {
+                self.usage_sent = true;
                 out.push(StreamEvent::Usage(u));
             }
         }
@@ -447,6 +455,25 @@ mod tests {
         let mut p = GeminiParser::default();
         p.feed(r#"{"candidates":[{"content":{"parts":[],"role":"model"}}]}"#);
         assert!(matches!(&p.finish()[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network));
+    }
+
+    #[test]
+    fn usage_after_the_finish_reason_is_still_reported_once() {
+        let late = [
+            r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"},"finishReason":"STOP"}]}"#,
+            r#"{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}"#,
+        ];
+        let mut p = GeminiParser::default();
+        let mut evs: Vec<StreamEvent> = late.iter().flat_map(|d| p.feed(d)).collect();
+        evs.extend(p.finish());
+        let usages: Vec<_> = evs.iter().filter(|e| matches!(e, StreamEvent::Usage(_))).collect();
+        assert_eq!(usages, vec![&StreamEvent::Usage(Usage { input: 10, output: 2, ..Default::default() })]);
+        // usage sent with the finish is not sent again when a later chunk repeats it
+        let mut p = GeminiParser::default();
+        let mut evs = p.feed(r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}"#);
+        evs.extend(p.feed(late[1]));
+        evs.extend(p.finish());
+        assert_eq!(evs.iter().filter(|e| matches!(e, StreamEvent::Usage(_))).count(), 1);
     }
 
     #[test]

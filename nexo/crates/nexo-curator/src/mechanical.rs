@@ -101,35 +101,38 @@ fn same_blocks(lines: &[String], i: usize, period: usize, r: usize) -> bool {
 
 /// The text as a terminal shows it once the process is done: colours and other escape sequences go, and
 /// what a carriage return, a backspace or a cursor move redrew (a progress bar, a spinner, a status block
-/// drawn again in place) keeps only its last frame. A carriage return that more text follows starts the
-/// line over, as the redraws of progress bars mean it to.
+/// drawn again in place) keeps only its last frame. As on a terminal, new text writes over the old one
+/// character by character: what a shorter frame does not cover stays, unless a sequence erased it.
 fn clean(text: &str) -> Cow<'_, str> {
     if !text.contains(['\r', '\x1b', '\x08']) {
         return Cow::Borrowed(text);
     }
     let mut rows: Vec<Vec<char>> = vec![Vec::new()];
-    let (mut row, mut col, mut fresh) = (0usize, 0usize, false);
+    let (mut row, mut col) = (0usize, 0usize);
     let mut cs = text.chars().peekable();
     while let Some(c) = cs.next() {
         match c {
             '\n' => {
                 row += 1;
                 col = 0;
-                fresh = false;
                 if rows.len() <= row {
                     rows.push(Vec::new());
                 }
             }
-            '\r' => {
-                col = 0;
-                fresh = true;
-            }
+            '\r' => col = 0,
             '\x08' => col = col.saturating_sub(1),
-            '\x1b' => match cs.next() {
+            '\x1b' => match cs.peek().copied() {
                 Some('[') => {
+                    cs.next();
+                    // parameters and intermediates, then one final character; anything else (a line break,
+                    // text past a cut-off sequence) ends the sequence and is read as itself
                     let mut arg = String::new();
                     let mut end = None;
-                    for d in cs.by_ref() {
+                    while let Some(&d) = cs.peek() {
+                        if !(' '..='~').contains(&d) {
+                            break;
+                        }
+                        cs.next();
                         if ('@'..='~').contains(&d) {
                             end = Some(d);
                             break;
@@ -138,16 +141,12 @@ fn clean(text: &str) -> Cow<'_, str> {
                     }
                     let n = arg.split(';').next().and_then(|x| x.parse::<usize>().ok());
                     match end {
-                        Some('A') => {
-                            row = row.saturating_sub(n.unwrap_or(1).max(1));
-                            fresh = true;
-                        }
+                        Some('A') => row = row.saturating_sub(n.unwrap_or(1).max(1)),
                         Some('B') => {
                             row += n.unwrap_or(1).max(1);
                             while rows.len() <= row {
                                 rows.push(Vec::new());
                             }
-                            fresh = true;
                         }
                         Some('C') => col += n.unwrap_or(1).max(1),
                         Some('D') => col = col.saturating_sub(n.unwrap_or(1).max(1)),
@@ -166,23 +165,26 @@ fn clean(text: &str) -> Cow<'_, str> {
                 // a two-character sequence (a character set) takes one more
                 Some(d) if (' '..='/').contains(&d) => {
                     cs.next();
+                    cs.next_if(|&e| e != '\n');
                 }
-                // an operating system command (a window title, a link) runs to a bell or a string terminator
+                // an operating system command (a window title, a link) runs to a bell or a string terminator;
+                // one cut off ends at the line break, which is read as itself
                 Some(']') => {
-                    while let Some(d) = cs.next() {
+                    cs.next();
+                    while let Some(d) = cs.next_if(|&d| d != '\n') {
                         if d == '\x07' || (d == '\x1b' && cs.next_if_eq(&'\\').is_some()) {
                             break;
                         }
                     }
                 }
+                // any other sequence is one more character (`ESC 7`, `ESC M`); a lone escape is dropped
+                Some(d) if (' '..='~').contains(&d) => {
+                    cs.next();
+                }
                 _ => {}
             },
             _ => {
                 let line = &mut rows[row];
-                if fresh {
-                    line.clear();
-                    fresh = false;
-                }
                 if col < line.len() {
                     line[col] = c;
                 } else {
@@ -259,9 +261,50 @@ fn long_line(line: &str) -> Cow<'_, str> {
     Cow::Owned(format!("{} … {MARK} +{cut} chars … {}", py::head(line, LINE_HEAD), py::tail(line, LINE_TAIL)))
 }
 
+/// Which lines of a run stand out: in a column (the words counted from the start of the line, and from its
+/// end) where most lines of the run say the same word, a line that says another one (`FAILED` among `ok`,
+/// `ERROR` among `INFO`, `exit 1` among `exit 0`) carries news, and no fold may hide it. A column whose words
+/// all differ (a counter, a name, a time) says nothing either way.
+fn odd_lines(lines: &[String]) -> Vec<bool> {
+    const FROM_START: usize = 8;
+    const FROM_END: usize = 2;
+    let n = lines.len();
+    let cols: Vec<[&str; FROM_START + FROM_END]> = lines
+        .iter()
+        .map(|l| {
+            let w: Vec<&str> = py::split_ws(l).collect();
+            let mut c = [""; FROM_START + FROM_END];
+            for (k, x) in w.iter().take(FROM_START).enumerate() {
+                c[k] = x;
+            }
+            for (k, x) in w.iter().rev().take(FROM_END).enumerate() {
+                c[FROM_START + k] = x;
+            }
+            c
+        })
+        .collect();
+    let mut odd = vec![false; n];
+    for k in 0..FROM_START + FROM_END {
+        let mut count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for c in &cols {
+            *count.entry(c[k]).or_insert(0) += 1;
+        }
+        let Some((&top, &most)) = count.iter().max_by_key(|(_, &c)| c) else { continue };
+        if 2 * most > n && most < n {
+            for (j, c) in cols.iter().enumerate() {
+                if c[k] != top {
+                    odd[j] = true;
+                }
+            }
+        }
+    }
+    odd
+}
+
 /// The fold that hides most at line `i`: (period, repeats), or (0, 0). Without `lossy` only blocks that are
 /// the same, character for character, fold (their count brings every one back); single lines of one form
-/// still do, as a table of what differs (`table`).
+/// still do, as a table of what differs (`table`). A line that stands out never joins a fold here: a word
+/// that differs changes its template, a number that differs makes the run data (`is_data`).
 fn best_run(lines: &[String], tmpl: &[String], i: usize, lossy: bool) -> (usize, usize) {
     let mut best = (0, 0);
     let mut best_hidden = 0;
@@ -484,6 +527,9 @@ fn shape(line: &str) -> String {
     out
 }
 
+/// A very long run of lines of one form keeps its head and its tail; of the middle only the lines that
+/// stand out (`odd_lines`: the one `FAILED` among hundreds of `ok`) stay, in place, as many as the head
+/// holds (past that it is a second kind of line more than news, and the rest of it folds).
 fn clip_shape_runs(lines: Vec<String>) -> Vec<String> {
     let shapes: Vec<String> = lines.iter().map(|l| shape(l)).collect();
     let mut out = Vec::with_capacity(lines.len());
@@ -497,9 +543,25 @@ fn clip_shape_runs(lines: Vec<String>) -> Vec<String> {
         }
         let r = j - i;
         if !sig.is_empty() && r > SHAPE_RUN {
-            let hidden = r - SHAPE_HEAD - SHAPE_TAIL;
+            let odd = odd_lines(&lines[i..j]);
             out.extend(lines[i..i + SHAPE_HEAD].iter().cloned());
-            out.push(format!("{MARK} … (+{hidden} more lines of the same form)"));
+            let mut hidden = 0;
+            let mut kept = 0;
+            for k in i + SHAPE_HEAD..j - SHAPE_TAIL {
+                if odd[k - i] && kept < SHAPE_HEAD {
+                    kept += 1;
+                    if hidden > 0 {
+                        out.push(format!("{MARK} … (+{hidden} more lines of the same form)"));
+                    }
+                    hidden = 0;
+                    out.push(lines[k].clone());
+                } else {
+                    hidden += 1;
+                }
+            }
+            if hidden > 0 {
+                out.push(format!("{MARK} … (+{hidden} more lines of the same form)"));
+            }
             out.extend(lines[j - SHAPE_TAIL..j].iter().cloned());
         } else {
             out.extend(lines[i..j].iter().cloned());
@@ -718,5 +780,59 @@ mod tests {
         // a short line is cheaper than a pointer: it stays
         let short: String = (0..40).map(|i| format!("step {i}\nok\n")).collect();
         assert!(!squeeze(&short, false).contains("again"));
+    }
+
+    /// A name made of letters only, so lines that carry it differ in their form, not only in a number.
+    fn letters(mut k: usize) -> String {
+        let mut s = String::new();
+        loop {
+            s.push((b'a' + (k % 26) as u8) as char);
+            k /= 26;
+            if k == 0 {
+                return s;
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_that_stands_out_is_never_folded_away() {
+        // a test run: hundreds of `ok`, one `FAILED`, every name different
+        let run: Vec<String> =
+            (0..400).map(|k| format!("test parser::tests::case_{} ... ok", letters(k + 700))).collect();
+        let failed = run[217].replace("... ok", "... FAILED");
+        let text = run.join("\n").replacen(&run[217], &failed, 1);
+        let s = squeeze(&text, true).into_owned();
+        assert!(s.contains(&failed), "{s}");
+        assert_eq!(s.matches("more lines of the same form").count(), 2, "{s}");
+        // a log: one ERROR among INFO lines that all say something else
+        let log: Vec<String> =
+            (0..300).map(|k| format!("INFO handled request from {} in cache", letters(k + 900))).collect();
+        let error = log[150].replace("INFO handled", "ERROR dropped");
+        let text = log.join("\n").replacen(&log[150], &error, 1);
+        let s = squeeze(&text, true).into_owned();
+        assert!(s.contains(&error), "{s}");
+        // a second kind of line, not news: past what the head holds, it folds with the rest
+        let listing: Vec<String> = (0..600)
+            .map(|k| format!("{} 1 owner staff {}", if k % 3 == 0 { "drwxr-xr-x" } else { "-rw-r--r--" }, letters(k)))
+            .collect();
+        let s = squeeze(&listing.join("\n"), true).into_owned();
+        assert!(s.lines().count() <= 3 * SHAPE_HEAD + SHAPE_TAIL + 1, "{}", s.lines().count());
+    }
+
+    #[test]
+    fn a_carriage_return_writes_over_as_a_terminal_does() {
+        // a shorter frame leaves what it does not cover, as a terminal shows it: nothing is lost
+        assert_eq!(clean("error: the disk is full\rretrying"), "retryinghe disk is full");
+        // a frame that erases the line first keeps only itself
+        assert_eq!(clean("error: the disk is full\r\x1b[Kretrying"), "retrying");
+        // a line ending in a carriage return and a line feed is one line
+        assert_eq!(clean("one\r\ntwo\r\n"), "one\ntwo\n");
+    }
+
+    #[test]
+    fn a_sequence_cut_off_takes_nothing_past_its_line() {
+        assert_eq!(clean("a\x1b[31\nkept line\n"), "a\nkept line\n");
+        assert_eq!(clean("\x1b]0;title cut\nkept line\n"), "\nkept line\n");
+        assert_eq!(clean("end\x1b"), "end");
     }
 }

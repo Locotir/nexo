@@ -170,7 +170,8 @@ pub struct ChatParser {
     /// Open tool calls by chunk index: (index, id, name, argument fragments).
     calls: Vec<(usize, String, String, String)>,
     prog: Progress,
-    usage_seen: bool,
+    /// The latest usage: servers that send running counts end with the final ones.
+    usage: Option<Usage>,
 }
 
 impl Feed for ChatParser {
@@ -189,6 +190,7 @@ impl Feed for ChatParser {
             let msg = http::pretty_error(&v.to_string());
             let kind = stream_error_kind(e["type"].as_str().or_else(|| e["code"].as_str()).unwrap_or(""), &msg);
             out.push(StreamEvent::Error(ProviderError::new(kind, msg)));
+            self.calls.clear(); // calls cut by the error are dropped, not closed
             self.prog.finished = true;
             return out;
         }
@@ -294,17 +296,15 @@ impl Feed for ChatParser {
             }
         }
         if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
-            if !self.usage_seen {
-                self.usage_seen = true;
-                out.push(StreamEvent::Usage(usage(u)));
-            }
+            self.usage = Some(usage(u));
         }
         out
     }
 
     /// The transport failed: what is open is closed and the error reported.
     fn fail(&mut self, e: String) -> Vec<StreamEvent> {
-        let mut out = self.end_calls();
+        let mut out = Vec::new();
+        self.calls.clear(); // calls cut by the transport are dropped, not closed
         if !self.prog.finished {
             out.push(StreamEvent::Error(ProviderError::new(ErrorKind::Network, format!("stream cut: {e}"))));
             self.prog.finished = true;
@@ -313,8 +313,11 @@ impl Feed for ChatParser {
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {
-        let mut out = self.end_calls();
-        out.extend(self.prog.at_end());
+        // calls still open without a finish_reason or [DONE]: their arguments may be cut
+        let open = !self.calls.is_empty();
+        self.calls.clear();
+        let mut out: Vec<StreamEvent> = self.prog.at_end_with_calls(open).into_iter().collect();
+        out.extend(self.usage.take().map(StreamEvent::Usage));
         out
     }
 }
@@ -336,6 +339,7 @@ impl ChatParser {
             self.prog.started = true;
             out.push(StreamEvent::Finish(if self.prog.saw_tool { FinishReason::ToolUse } else { FinishReason::Stop }));
         }
+        out.extend(self.usage.take().map(StreamEvent::Usage));
         out
     }
 }
@@ -573,5 +577,46 @@ mod tests {
         let mut p = ChatParser::default();
         let evs = p.feed(r#"{"error":{"message":"overloaded","type":"server_error"}}"#);
         assert!(matches!(&evs[0], StreamEvent::Error(e) if e.message.contains("overloaded")));
+    }
+
+    #[test]
+    fn running_usage_reports_the_last_figures_once() {
+        let chunks = [
+            r#"{"id":"x","choices":[{"index":0,"delta":{"content":"a"}}],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#,
+            r#"{"id":"x","choices":[{"index":0,"delta":{"content":"b"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}"#,
+            r#"{"id":"x","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#,
+            "[DONE]",
+        ];
+        let mut p = ChatParser::default();
+        let mut evs: Vec<StreamEvent> = chunks.iter().flat_map(|c| p.feed(c)).collect();
+        evs.extend(p.finish());
+        let usages: Vec<_> = evs.iter().filter(|e| matches!(e, StreamEvent::Usage(_))).collect();
+        assert_eq!(usages, vec![&StreamEvent::Usage(Usage { input: 10, output: 5, ..Default::default() })]);
+        // a stream without [DONE] reports it at its end
+        let mut p = ChatParser::default();
+        let mut evs: Vec<StreamEvent> = chunks[..3].iter().flat_map(|c| p.feed(c)).collect();
+        evs.extend(p.finish());
+        assert_eq!(evs.last(), Some(&StreamEvent::Usage(Usage { input: 10, output: 5, ..Default::default() })));
+    }
+
+    const CALL_OPEN: &str = r#"{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"read","arguments":"{\"pa"}}]}}]}"#;
+
+    #[test]
+    fn an_error_drops_open_tool_calls_instead_of_closing_them() {
+        let mut p = ChatParser::default();
+        let mut evs = p.feed(CALL_OPEN);
+        evs.extend(p.feed(r#"{"error":{"message":"overloaded","type":"server_error"}}"#));
+        evs.extend(p.finish());
+        assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. })), "{evs:?}");
+        assert!(matches!(evs.last(), Some(StreamEvent::Error(_))), "{evs:?}");
+    }
+
+    #[test]
+    fn a_clean_end_inside_a_tool_call_is_a_truncation_error() {
+        let mut p = ChatParser::default();
+        let mut evs = p.feed(CALL_OPEN);
+        evs.extend(p.finish());
+        assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. } | StreamEvent::Finish(_))), "{evs:?}");
+        assert!(matches!(evs.last(), Some(StreamEvent::Error(e)) if e.message.contains("truncated")), "{evs:?}");
     }
 }

@@ -100,24 +100,11 @@ fn limit_among(nums: &[Num], at_least: u64) -> Option<u64> {
 /// Whether the message is about the request being longer than the window.
 pub fn is_context_message(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
-    [
-        "context length",
-        "context window",
-        "context_length",
-        "maximum context",
-        "prompt is too long",
-        "too long",
-        "too large",
-        "too many tokens",
-        "exceeds the maximum number of tokens",
-        "input token count",
-        "exceeds the model",
-        "reduce the length",
-        "prompt length",
-        "maximum prompt",
-    ]
-    .iter()
-    .any(|k| m.contains(k))
+    // the shared test, and looser wordings that only matter once the message is known to be an error
+    (nexo_core::is_context_error(None, "", message)
+        || ["too long", "too large", "input token count", "reduce the length", "prompt length", "maximum prompt"]
+            .iter()
+            .any(|k| m.contains(k)))
         && !is_output_message(message)
 }
 
@@ -251,6 +238,7 @@ mod tests {
             ("Your input exceeds the context window of this model (256k). Please adjust your input and try again.", 256000),
             ("{\"error\":{\"message\":\"Input is too long for requested model. maximum context length is 1,048,576 tokens\",\"type\":\"invalid_request_error\"}}", 1048576),
             ("context_length_exceeded: the request has 120500 tokens but the limit is 120000", 120000),
+            ("the request (9000 tokens) exceeds the available context size (8192 tokens)", 8192),
         ];
         for (msg, want) in cases {
             assert_eq!(context_window(msg), Some(want), "{msg}");

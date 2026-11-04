@@ -74,6 +74,20 @@ impl Progress {
             StreamEvent::Finish(if self.saw_tool { FinishReason::ToolUse } else { FinishReason::Stop })
         })
     }
+
+    /// The end of a stream that left tool calls open (`open`): without a
+    /// proper stop their arguments may be cut, so this is an error, not a
+    /// finish, and the caller drops the open calls instead of closing them.
+    pub fn at_end_with_calls(&mut self, open: bool) -> Option<StreamEvent> {
+        if open && !self.finished {
+            self.finished = true;
+            return Some(StreamEvent::Error(ProviderError::new(
+                ErrorKind::Network,
+                "the stream ended in the middle of a tool call (truncated)",
+            )));
+        }
+        self.at_end()
+    }
 }
 
 /// The kind of an error a server reports inside its stream, from the
@@ -92,11 +106,7 @@ pub fn stream_error_kind(error_type: &str, message: &str) -> ErrorKind {
         || t.contains("invalid_api_key")
     {
         ErrorKind::Auth
-    } else if m.contains("context length")
-        || m.contains("too many tokens")
-        || m.contains("maximum context")
-        || m.contains("prompt is too long")
-    {
+    } else if nexo_core::is_context_error(None, error_type, message) {
         ErrorKind::ContextLength
     } else if t.contains("invalid_request") || t.contains("invalid_argument") || t.contains("bad_request") {
         ErrorKind::BadRequest
@@ -130,5 +140,34 @@ mod tests {
         assert_eq!(stream_error_kind("", "This model's maximum context length is 8192"), ErrorKind::ContextLength);
         assert_eq!(stream_error_kind("authentication_error", ""), ErrorKind::Auth);
         assert_eq!(stream_error_kind("server_error", "boom"), ErrorKind::Server);
+    }
+
+    #[test]
+    fn a_too_long_error_in_a_stream_is_the_context_kind_with_or_without_a_number() {
+        assert_eq!(stream_error_kind("context_length_exceeded", "Your input is too long."), ErrorKind::ContextLength);
+        assert_eq!(stream_error_kind("exceed_context_size_error", ""), ErrorKind::ContextLength);
+        assert_eq!(stream_error_kind("", "Input exceeds the model's context window"), ErrorKind::ContextLength);
+        assert_eq!(
+            stream_error_kind(
+                "INVALID_ARGUMENT",
+                "The input token count (300000) exceeds the maximum number of tokens allowed (262144)."
+            ),
+            ErrorKind::ContextLength
+        );
+        assert_eq!(
+            stream_error_kind("", "request (9000 tokens) exceeds the available context size (8192 tokens)"),
+            ErrorKind::ContextLength
+        );
+    }
+
+    #[test]
+    fn open_calls_at_the_end_of_a_stream_are_a_truncation_error() {
+        let mut p = Progress { started: true, content: true, saw_tool: true, ..Default::default() };
+        assert!(matches!(p.at_end_with_calls(true), Some(StreamEvent::Error(e)) if e.message.contains("truncated")));
+        assert_eq!(p.at_end_with_calls(true), None, "once");
+        let mut p = Progress { started: true, content: true, saw_tool: true, ..Default::default() };
+        assert_eq!(p.at_end_with_calls(false), Some(StreamEvent::Finish(FinishReason::ToolUse)));
+        let mut p = Progress { finished: true, ..Default::default() };
+        assert_eq!(p.at_end_with_calls(true), None, "a stream that already stopped");
     }
 }

@@ -592,7 +592,7 @@ model = "deepseek-chat"
 #   nexo providers --all                the 200+ providers nexo knows by name
 #   nexo guide                          the whole setup guide
 #
-# Presets exist for: openai, gemini, deepseek, xai, groq, mistral, openrouter,
+# Presets exist for: openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter,
 # together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, copilot, codex,
 # ollama, lmstudio, vllm, llamacpp; any directory entry works with its key set.
 # A block here adds a provider or overrides a preset's fields.
@@ -618,7 +618,7 @@ max_tokens = 16384
 # max_cost_day = 5.0                # and every session together at this many a day
 
 [permissions]
-mode = "ask"                        # ask | accept-edits | auto | read-only
+mode = "ask"                        # ask | accept-edits | plan | auto | read-only
 allow = ["read", "glob", "grep", "ls", "bash(git status*)", "bash(git diff*)"]
 deny = []
 

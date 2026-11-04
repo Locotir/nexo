@@ -146,6 +146,39 @@ pub fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|b| *b == 0)
 }
 
+/// Writes `data` to `path` whole or not at all: into a new file beside it, then renamed over it
+/// (`rename` replaces an existing file on Windows too). A link is followed, so the file it points
+/// to is the one replaced; an existing file keeps its permissions, and a read-only one is refused.
+pub async fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::io::AsyncWriteExt;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let target = tokio::fs::canonicalize(path).await.unwrap_or_else(|_| path.to_path_buf());
+    let perms = tokio::fs::metadata(&target).await.ok().map(|m| m.permissions());
+    if perms.as_ref().is_some_and(|p| p.readonly()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is read-only"));
+    }
+    let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.nexo-{}-{n}.tmp", std::process::id()));
+    let written = async {
+        let mut f = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).await?;
+        f.write_all(data).await?;
+        f.sync_all().await?;
+        drop(f);
+        if let Some(p) = perms {
+            tokio::fs::set_permissions(&tmp, p).await?;
+        }
+        tokio::fs::rename(&tmp, &target).await
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    written
+}
+
 /// The first line of a command, cut for a summary.
 pub fn one_line(s: &str, max: usize) -> String {
     let first = s.trim().lines().next().unwrap_or("").trim();

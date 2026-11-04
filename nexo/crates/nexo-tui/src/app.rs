@@ -1199,7 +1199,10 @@ impl App {
             any = true;
         }
         // cells of the context map that changed blink a moment
-        if self.show_live && self.map_at.is_some_and(|t| t.elapsed().as_millis() <= MAP_FLASH_MS as u128 + 100) {
+        if self.opts.animations
+            && self.show_live
+            && self.map_at.is_some_and(|t| t.elapsed().as_millis() <= MAP_FLASH_MS as u128 + 100)
+        {
             any = true;
         }
         // the gauge eases towards the real share
@@ -1266,9 +1269,12 @@ impl App {
         if let Some((_, t)) = &self.status {
             if t.elapsed().as_millis() >= STATUS_MS as u128 {
                 self.status = None;
+                self.dirty = true;
             }
-            // a message fades out: every frame of it is drawn
-            self.dirty = true;
+            // a message fades out: every frame of it is drawn (with animations off, only its end)
+            if self.opts.animations {
+                self.dirty = true;
+            }
         }
     }
 
@@ -2901,6 +2907,7 @@ impl App {
         } else if !self.input.is_empty() {
             self.keep_draft();
             self.input.clear();
+            self.palette = None;
             self.dirty = true;
             self.flash("draft cleared, ↑ brings it back (Ctrl+C again to quit)");
         } else {
@@ -3301,7 +3308,9 @@ pub fn summarise(name: &str, args: &serde_json::Value) -> String {
     let _ = name;
     let s = args.to_string();
     if s.len() > 80 {
-        format!("{}…", &s[..79])
+        // cut on a character boundary: the JSON keeps non-ASCII text as is
+        let cut = (0..=79).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        format!("{}…", &s[..cut])
     } else {
         s
     }
@@ -5101,5 +5110,53 @@ mod tests {
         screen(&mut a, 80, 24);
         assert!(a.looks.iter().all(|l| l.born.is_none() && l.opened.is_none()));
         assert_eq!(a.fade(0), 1.0);
+    }
+
+    #[test]
+    fn a_long_call_summary_cuts_non_ascii_json_on_a_character_boundary() {
+        // byte 79 falls inside a two-byte "ñ"
+        let args = serde_json::json!({ "x": format!("{}{}", "a".repeat(72), "ñ".repeat(10)) });
+        let s = summarise("other", &args);
+        assert!(s.ends_with('…'), "{s}");
+        assert!(crate::render::wrap::width(&s) <= 80, "{s}");
+    }
+
+    #[test]
+    fn ctrl_c_with_the_palette_open_clears_the_draft_and_the_palette() {
+        let (mut a, _rx) = app();
+        for c in "/m".chars() {
+            crate::event::key(&mut a, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert!(a.palette.is_some());
+        crate::event::key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(a.input.is_empty());
+        assert!(a.palette.is_none(), "no list left over an empty prompt");
+    }
+
+    #[test]
+    fn ctrl_c_in_a_permission_dialog_denies_it_and_stops_the_turn() {
+        let (mut a, mut rx) = app();
+        a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+        a.handle_agent(AgentEvent::PermissionAsk {
+            request: PermissionRequest {
+                id: "p1".into(),
+                tool: "bash".into(),
+                kind: nexo_core::tool::ToolKind::Exec,
+                summary: "x".into(),
+                detail: ToolDisplay::Plain,
+                suggested_rules: vec![],
+            },
+        });
+        while rx.try_recv().is_ok() {}
+        crate::event::key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(a.modal.is_none());
+        let sent: Vec<AgentCommand> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(&sent[..], [AgentCommand::Permission { id, decision: PermissionDecision::Deny { .. } }, AgentCommand::Interrupt] if id == "p1"),
+            "{sent:?}"
+        );
+        // a second press quits, as at the prompt
+        crate::event::key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(a.should_quit);
     }
 }

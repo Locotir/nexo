@@ -69,6 +69,11 @@ pub trait ContextPolicy: Send {
     /// The tokens the model takes in one call, less its reply, before each view (the curator keeps
     /// the view under it).
     fn window(&mut self, _tokens: u64) {}
+    /// Whether the view keeps under the tokens `window` gives it, so a window learned smaller needs a
+    /// new view rather than a compaction.
+    fn fits_window(&self) -> bool {
+        false
+    }
     /// What the last view changed: messages put in (new or brought back) and taken out or cut.
     fn activity(&self) -> Option<(usize, usize)> {
         None
@@ -369,6 +374,10 @@ impl ContextPolicy for BuiltIn {
 
     fn window(&mut self, tokens: u64) {
         self.cur.window(tokens);
+    }
+
+    fn fits_window(&self) -> bool {
+        true
     }
 
     fn activity(&self) -> Option<(usize, usize)> {

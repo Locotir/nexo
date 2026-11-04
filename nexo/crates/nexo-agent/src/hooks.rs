@@ -36,6 +36,17 @@ fn matches(pattern: Option<&str>, tool: Option<&str>) -> bool {
 
 /// Runs the hooks of `event` (for `tool`, when it is a tool event), one after another.
 pub async fn run(hooks: &[HookConfig], event: &str, tool: Option<&str>, payload: &Value, cwd: &Path) -> Outcome {
+    run_within(hooks, event, tool, payload, cwd, LIMIT).await
+}
+
+async fn run_within(
+    hooks: &[HookConfig],
+    event: &str,
+    tool: Option<&str>,
+    payload: &Value,
+    cwd: &Path,
+    limit: Duration,
+) -> Outcome {
     let mut out = Outcome::default();
     for h in hooks.iter().filter(|h| h.event == event && matches(h.matcher.as_deref(), tool)) {
         let shell = nexo_core::shell::shell();
@@ -56,10 +67,16 @@ pub async fn run(hooks: &[HookConfig], event: &str, tool: Option<&str>, payload:
                 continue;
             }
         };
+        // the payload is written on its own: a hook that never reads it must not hold the run past
+        // the limit (the write ends when the child is killed and its pipe closes)
         if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(payload.to_string().as_bytes()).await;
+            let text = payload.to_string();
+            tokio::spawn(async move {
+                let _ = stdin.write_all(text.as_bytes()).await;
+            });
         }
-        let done = match tokio::time::timeout(LIMIT, child.wait_with_output()).await {
+        // on a timeout the child is dropped, and `kill_on_drop` stops it
+        let done = match tokio::time::timeout(limit, child.wait_with_output()).await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 out.failures.push(format!("hook `{}`: {e}", h.command));
@@ -69,7 +86,7 @@ pub async fn run(hooks: &[HookConfig], event: &str, tool: Option<&str>, payload:
                 out.failures.push(format!(
                     "hook `{}` took longer than {} s and was stopped",
                     h.command,
-                    LIMIT.as_secs()
+                    limit.as_secs()
                 ));
                 continue;
             }
@@ -135,5 +152,16 @@ mod tests {
         assert!(std::fs::read_to_string(d.path().join("seen.json")).unwrap().contains("\"tool\":\"read\""));
         let end = run(&hooks, "turn_end", None, &json!({}), d.path()).await;
         assert_eq!(end.failures, ["hook `exit 3` failed (3)"]);
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_that_never_reads_a_large_payload_is_stopped_at_the_limit() {
+        let d = tempfile::tempdir().unwrap();
+        let hooks = vec![hook("turn_end", None, "sleep 30")];
+        let payload = json!({"big": "x".repeat(1 << 20)});
+        let start = std::time::Instant::now();
+        let out = run_within(&hooks, "turn_end", None, &payload, d.path(), Duration::from_secs(1)).await;
+        assert!(start.elapsed() < Duration::from_secs(10), "it waited {:?}", start.elapsed());
+        assert_eq!(out.failures, ["hook `sleep 30` took longer than 1 s and was stopped"]);
     }
 }

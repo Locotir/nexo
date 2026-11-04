@@ -466,8 +466,10 @@ impl Config {
         if other.model.is_some() {
             self.model = other.model;
         }
+        // a provider counts field by field too: a project that sets only `default_model` keeps the
+        // user's protocol, address and key source
         for (k, v) in other.providers {
-            self.providers.insert(k, v);
+            merge_fields(self.providers.entry(k).or_default(), v);
         }
         for (k, v) in other.mcp {
             self.mcp.insert(k, v);
@@ -754,6 +756,18 @@ cache_read = 0.028
         assert_eq!(c.hooks.len(), 2);
         assert_eq!(c.permissions.mode, PermissionMode::Auto);
         assert!(c.notices.is_empty());
+    }
+
+    #[test]
+    fn a_project_provider_entry_merges_field_by_field() {
+        for trusted in [true, false] {
+            let c = load_pair(USER, "[providers.deepseek]\ndefault_model = 'b'\n", trusted);
+            let p = &c.providers["deepseek"];
+            assert_eq!(p.default_model.as_deref(), Some("b"));
+            assert_eq!(p.protocol, "openai-chat");
+            assert_eq!(p.base_url, "https://api.deepseek.com");
+            assert_eq!(p.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+        }
     }
 
     #[test]

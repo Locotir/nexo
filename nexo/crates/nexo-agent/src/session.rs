@@ -77,6 +77,20 @@ pub struct Session {
     cost: f64,
     file: Option<File>,
     goal: Option<String>,
+    /// Whether this session holds the lock next to its file (taken at the first write).
+    locked: bool,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.locked {
+            let _ = std::fs::remove_file(lock_path(&self.path));
+        }
+    }
+}
+
+fn lock_path(session: &Path) -> PathBuf {
+    session.with_extension("jsonl.lock")
 }
 
 fn now() -> String {
@@ -130,6 +144,82 @@ fn checked_id(id: &str) -> anyhow::Result<&str> {
     }
 }
 
+/// Sessions hold tool outputs, which can hold secrets: the folder is the user's alone (on unix).
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
+}
+
+/// Options for a session file only the user can read (on unix).
+fn private_file() -> OpenOptions {
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut o = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o
+}
+
+/// One line in one write, so a line from another writer never lands inside it.
+fn write_line(f: &mut File, line: &Line) -> anyhow::Result<()> {
+    let mut s = serde_json::to_string(line)?;
+    s.push('\n');
+    f.write_all(s.as_bytes())?;
+    Ok(())
+}
+
+/// A lock older than this is taken over whoever left it.
+const STALE_LOCK: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Takes the advisory lock next to a session file (`<id>.jsonl.lock`, created exclusively, holding
+/// the writer's pid). A lock whose process is gone, or older than a day, is taken over.
+fn take_lock(lock: &Path) -> anyhow::Result<()> {
+    for _ in 0..2 {
+        match private_file().write(true).create_new(true).open(lock) {
+            Ok(mut f) => {
+                f.write_all(std::process::id().to_string().as_bytes())?;
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let pid: Option<u32> = std::fs::read_to_string(lock).ok().and_then(|t| t.trim().parse().ok());
+                if pid == Some(std::process::id()) {
+                    return Ok(()); // this process holds it already
+                }
+                let old = std::fs::metadata(lock)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > STALE_LOCK);
+                if !(old || pid.is_some_and(|p| !alive(p))) {
+                    anyhow::bail!(
+                        "session {} is in use by another nexo (pid {}); if none runs, delete {}",
+                        lock.file_stem().and_then(|s| Path::new(s).file_stem()).unwrap_or_default().to_string_lossy(),
+                        pid.map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()),
+                        lock.display()
+                    );
+                }
+                let _ = std::fs::remove_file(lock);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    anyhow::bail!("cannot take the lock {}", lock.display())
+}
+
+/// Whether process `pid` runs, where the system says so cheaply (Linux); elsewhere the age decides.
+fn alive(pid: u32) -> bool {
+    let proc = Path::new("/proc");
+    !cfg!(target_os = "linux") || !proc.join("self").exists() || proc.join(pid.to_string()).exists()
+}
+
 /// Moves session `id` to the trash and says where it went. Nothing is erased: `restore` brings it back.
 pub fn trash(id: &str) -> anyhow::Result<PathBuf> {
     trash_in(&dir(), id)
@@ -172,9 +262,27 @@ pub fn trashed() -> Vec<SessionMeta> {
     list_in(&trash_dir_in(&dir()))
 }
 
-/// The session most recently touched in `cwd`.
+/// The session most recently touched in `cwd` that something was said in.
 pub fn latest_for(cwd: &Path) -> Option<SessionMeta> {
-    list().into_iter().find(|m| m.cwd == cwd)
+    latest_for_in(&dir(), cwd)
+}
+
+pub fn latest_for_in(dir: &Path, cwd: &Path) -> Option<SessionMeta> {
+    let want = same_form(cwd);
+    list_in(dir).into_iter().find(|m| m.messages > 0 && same_form(&m.cwd) == want)
+}
+
+/// A folder in one form, however it was written: canonical where it exists, and on Windows
+/// without the `\\?\` prefix canonicalizing adds.
+fn same_form(p: &Path) -> PathBuf {
+    let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if cfg!(windows) {
+        let s = c.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\").filter(|r| !r.starts_with(r"UNC\")) {
+            return PathBuf::from(rest);
+        }
+    }
+    c
 }
 
 fn read_meta(path: &Path) -> Option<SessionMeta> {
@@ -223,14 +331,14 @@ impl Session {
         parent: Option<String>,
         fork_at: Option<usize>,
     ) -> anyhow::Result<Session> {
-        std::fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
         // an id is the second it was made in and 4 random hex digits: two sessions born in the same
         // second can draw the same one, and the later takes another instead of going unsaved
         let mut tries = 0;
         let (id, path, mut file) = loop {
             let id = new_id();
             let path = dir.join(format!("{id}.jsonl"));
-            match OpenOptions::new().create_new(true).append(true).open(&path) {
+            match private_file().create_new(true).append(true).open(&path) {
                 Ok(f) => break (id, path, f),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 32 => tries += 1,
                 Err(e) => return Err(e.into()),
@@ -248,7 +356,8 @@ impl Session {
             parent,
             fork_at,
         };
-        writeln!(file, "{}", serde_json::to_string(&Line::Meta(meta.clone()))?)?;
+        take_lock(&lock_path(&path))?;
+        write_line(&mut file, &Line::Meta(meta.clone()))?;
         Ok(Session {
             meta,
             path,
@@ -258,6 +367,7 @@ impl Session {
             cost: 0.0,
             file: Some(file),
             goal: None,
+            locked: true,
         })
     }
 
@@ -284,19 +394,24 @@ impl Session {
             cost: 0.0,
             file: None,
             goal: None,
+            locked: false,
         }
     }
 
     pub fn open(id: &str) -> anyhow::Result<Session> {
-        Session::open_path(&dir().join(format!("{id}.jsonl")))
+        Session::open_path(&dir().join(format!("{}.jsonl", checked_id(id)?)))
     }
 
-    /// Reads a session file; a truncated last line is ignored.
+    /// Reads a session file; a truncated last line is ignored. Each line is read on its own, so a
+    /// UTF-8 sequence cut by a crash spoils only the line it is in.
     pub fn open_path(path: &Path) -> anyhow::Result<Session> {
-        let text = std::fs::read_to_string(path)?;
-        let mut lines = text.lines().peekable();
+        let bytes = std::fs::read(path)?;
+        let mut lines = bytes
+            .split(|b| *b == b'\n')
+            .map(|l| String::from_utf8_lossy(l.strip_suffix(b"\r").unwrap_or(l)))
+            .filter(|l| !l.is_empty());
         let first = lines.next().ok_or_else(|| anyhow::anyhow!("empty session file {}", path.display()))?;
-        let Line::Meta(mut meta) = serde_json::from_str(first)? else {
+        let Line::Meta(mut meta) = serde_json::from_str(&first)? else {
             anyhow::bail!("{} does not start with a meta line", path.display());
         };
         let mut messages = Vec::new();
@@ -305,7 +420,7 @@ impl Session {
         let mut cost = 0.0;
         let mut goal = None;
         for l in lines {
-            match serde_json::from_str::<Line>(l) {
+            match serde_json::from_str::<Line>(&l) {
                 Ok(Line::Message { message, .. }) => messages.push(message),
                 Ok(Line::ToolOutput { call_id, output }) => {
                     outputs.insert(call_id, output);
@@ -329,10 +444,20 @@ impl Session {
         let mut file = OpenOptions::new().append(true).open(path)?;
         // a process killed mid-write leaves a last line without its end: close it, so that the
         // next message starts on a line of its own
-        if !text.ends_with('\n') {
+        if bytes.last().is_some_and(|b| *b != b'\n') {
             file.write_all(b"\n")?;
         }
-        Ok(Session { meta, path: path.to_path_buf(), messages, outputs, usage, cost, file: Some(file), goal })
+        Ok(Session {
+            meta,
+            path: path.to_path_buf(),
+            messages,
+            outputs,
+            usage,
+            cost,
+            file: Some(file),
+            goal,
+            locked: false,
+        })
     }
 
     pub fn id(&self) -> &str {
@@ -365,7 +490,11 @@ impl Session {
 
     fn write(&mut self, line: &Line) -> anyhow::Result<()> {
         if let Some(f) = &mut self.file {
-            writeln!(f, "{}", serde_json::to_string(line)?)?;
+            if !self.locked {
+                take_lock(&lock_path(&self.path))?;
+                self.locked = true;
+            }
+            write_line(f, line)?;
         }
         self.meta.updated = now();
         Ok(())
@@ -450,9 +579,14 @@ impl Session {
         if self.file.is_none() {
             return Ok(());
         }
-        let tmp = self.path.with_extension("jsonl.tmp");
+        if !self.locked {
+            take_lock(&lock_path(&self.path))?;
+            self.locked = true;
+        }
+        // one temporary name per process: two writers never share it
+        let tmp = self.path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
         {
-            let mut f = File::create(&tmp)?;
+            let mut f = private_file().write(true).create(true).truncate(true).open(&tmp)?;
             writeln!(f, "{}", serde_json::to_string(&Line::Meta(self.meta.clone()))?)?;
             if !self.meta.title.is_empty() {
                 writeln!(f, "{}", serde_json::to_string(&Line::Title { title: self.meta.title.clone() })?)?;
@@ -489,8 +623,14 @@ impl Session {
         }
         // Windows refuses to replace a file that is open: the handle closes first
         self.file = None;
-        std::fs::rename(&tmp, &self.path)?;
+        let renamed = std::fs::rename(&tmp, &self.path);
+        // the file is opened again even when the rename failed (Windows, a virus scanner), so the
+        // session keeps being saved; the failure is still reported
         self.file = Some(OpenOptions::new().append(true).open(&self.path)?);
+        if let Err(e) = renamed {
+            let _ = std::fs::remove_file(&tmp);
+            anyhow::bail!("cannot replace {}: {e}", self.path.display());
+        }
         Ok(())
     }
 
@@ -866,5 +1006,87 @@ mod tests {
         let s = Session::open_path(&p).unwrap();
         assert_eq!(s.messages().len(), 1);
         assert!(s.messages()[0].text().starts_with("[summary]"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn sessions_are_readable_only_by_their_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("sessions");
+        let mut s = Session::create_in(&dir, Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("a secret")).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(s.path()), 0o600);
+        s.rewind(0).unwrap();
+        assert_eq!(mode(s.path()), 0o600, "the rewritten file too");
+    }
+
+    #[test]
+    fn a_utf8_sequence_cut_by_a_crash_keeps_the_session() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("héllo")).unwrap();
+        let p = s.path().to_path_buf();
+        drop(s);
+        let mut f = OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(b"{\"type\":\"title\",\"title\":\"h\xc3").unwrap();
+        drop(f);
+        let s = Session::open_path(&p).unwrap();
+        assert_eq!(s.messages().len(), 1);
+        assert_eq!(s.messages()[0].text(), "héllo");
+    }
+
+    #[test]
+    fn a_second_writer_is_refused_and_a_stale_lock_taken_over() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        let p = s.path().to_path_buf();
+        let lock = lock_path(&p);
+        assert!(lock.is_file());
+        drop(s);
+        assert!(!lock.exists(), "the lock goes with its session");
+        // another live writer (pid 1 always runs) holds it
+        std::fs::write(&lock, "1").unwrap();
+        let mut s = Session::open_path(&p).unwrap();
+        let e = s.append(&Message::user("x")).unwrap_err().to_string();
+        assert!(e.contains("in use"), "{e}");
+        // the same lock left a day and more ago is taken over
+        let f = File::options().write(true).open(&lock).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600)).unwrap();
+        drop(f);
+        s.append(&Message::user("y")).unwrap();
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), std::process::id().to_string());
+        drop(s);
+        if cfg!(target_os = "linux") {
+            // a lock whose process is gone is taken over at once
+            std::fs::write(&lock, "4000000000").unwrap();
+            let mut s = Session::open_path(&p).unwrap();
+            s.append(&Message::user("z")).unwrap();
+            drop(s);
+        }
+        // the temporary file of a rewrite is named for its process and does not stay
+        let mut s = Session::open_path(&p).unwrap();
+        s.rewind(1).unwrap();
+        drop(s);
+        let left: Vec<_> = std::fs::read_dir(d.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+    }
+
+    #[test]
+    fn continue_skips_empty_sessions_and_matches_the_folder_however_written() {
+        let d = tempfile::tempdir().unwrap();
+        let work = d.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let dir = d.path().join("sessions");
+        let mut s = Session::create_in(&dir, &work, "mock", "m").unwrap();
+        s.append(&Message::user("said something")).unwrap();
+        let id = s.id().to_string();
+        drop(s);
+        let empty = Session::create_in(&dir, &work, "mock", "m").unwrap();
+        drop(empty);
+        let other_form = d.path().join("work").join("..").join("work");
+        assert_eq!(latest_for_in(&dir, &other_form).map(|m| m.id), Some(id));
+        assert!(Session::open("../x").is_err_and(|e| e.to_string().contains("not a session id")));
     }
 }

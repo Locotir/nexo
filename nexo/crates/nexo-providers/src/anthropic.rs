@@ -115,8 +115,9 @@ impl Anthropic {
         // `nexo-agent/src/turn.rs` keeps serving while the turn task runs). The protocol
         // wants the thinking block of a tool round back, so when the model that made it is
         // gone, this request goes without thinking rather than invalid.
-        if let Some(b) = budget.filter(|_| !broken_round) {
-            let b = b.min(req.max_tokens.saturating_sub(1).max(1024));
+        // the budget must stay below max_tokens and at least 1024: a reply too small for that goes without
+        if let Some(b) = budget.filter(|_| !broken_round && req.max_tokens > 1024) {
+            let b = b.min(req.max_tokens - 1);
             body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
             if body["temperature"].is_number() {
                 body.as_object_mut().map(|o| o.remove("temperature")); // not allowed with thinking
@@ -206,6 +207,7 @@ impl Feed for MessagesParser {
             let msg = http::pretty_error(&v.to_string());
             let kind = stream_error_kind(e["type"].as_str().unwrap_or(""), &msg);
             out.push(StreamEvent::Error(ProviderError::new(kind, msg)));
+            self.blocks.clear(); // calls cut by the error are dropped, not closed
             self.prog.started = true;
             self.prog.finished = true;
             return out;
@@ -328,6 +330,7 @@ impl Feed for MessagesParser {
                 let msg = http::pretty_error(&v.to_string());
                 let kind = stream_error_kind(v["error"]["type"].as_str().unwrap_or(""), &msg);
                 out.push(StreamEvent::Error(ProviderError::new(kind, msg)));
+                self.blocks.clear(); // calls cut by the error are dropped, not closed
                 self.prog.finished = true;
             }
             _ => {} // ping
@@ -336,7 +339,8 @@ impl Feed for MessagesParser {
     }
 
     fn fail(&mut self, e: String) -> Vec<StreamEvent> {
-        let mut out = self.end_calls();
+        let mut out = Vec::new();
+        self.blocks.clear(); // calls cut by the transport are dropped, not closed
         if !self.prog.finished {
             self.prog.finished = true;
             out.push(StreamEvent::Error(ProviderError::new(ErrorKind::Network, format!("stream cut: {e}"))));
@@ -345,12 +349,15 @@ impl Feed for MessagesParser {
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {
-        let mut out = self.end_calls();
+        let mut out = Vec::new();
         if !self.prog.finished && self.prog.content && !self.usage_sent && !self.usage.is_empty() {
             self.usage_sent = true;
             out.push(StreamEvent::Usage(self.usage));
         }
-        out.extend(self.prog.at_end());
+        // calls still open without a stop: their arguments may be cut
+        let open = self.blocks.iter().any(|b| b.1 == "tool_use");
+        self.blocks.clear();
+        out.extend(self.prog.at_end_with_calls(open));
         out
     }
 }
@@ -436,6 +443,48 @@ mod tests {
         let evs = p.feed(r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#);
         assert!(matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::Overloaded));
         assert!(p.finish().is_empty(), "nothing more after an error");
+    }
+
+    const CALL_OPEN: [&str; 3] = [
+        r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":5}}}"#,
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"read","input":{}}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"pa"}}"#,
+    ];
+
+    #[test]
+    fn an_error_drops_open_tool_calls_instead_of_closing_them() {
+        let mut p = MessagesParser::default();
+        let mut evs: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
+        evs.extend(p.feed(r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#));
+        evs.extend(p.finish());
+        assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. })), "{evs:?}");
+        assert!(matches!(evs.last(), Some(StreamEvent::Error(e)) if e.kind == ErrorKind::Overloaded));
+    }
+
+    #[test]
+    fn a_clean_end_inside_a_tool_call_is_a_truncation_error() {
+        let mut p = MessagesParser::default();
+        let mut evs: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
+        evs.extend(p.finish());
+        assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. } | StreamEvent::Finish(_))), "{evs:?}");
+        assert!(matches!(evs.last(), Some(StreamEvent::Error(e)) if e.message.contains("truncated")), "{evs:?}");
+    }
+
+    #[test]
+    fn the_thinking_budget_stays_below_max_tokens() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        let mut req = ModelRequest::new("claude-x", "", vec![Message::user("hi")]);
+        req.reasoning = Some(ReasoningConfig::Budget(4000));
+        req.max_tokens = 1000;
+        assert!(Anthropic::body(&cfg, &req).get("thinking").is_none(), "no room for the 1024 minimum");
+        req.max_tokens = 1024;
+        assert!(Anthropic::body(&cfg, &req).get("thinking").is_none());
+        req.max_tokens = 2000;
+        assert_eq!(Anthropic::body(&cfg, &req)["thinking"]["budget_tokens"], 1999);
+        req.max_tokens = 1025;
+        assert_eq!(Anthropic::body(&cfg, &req)["thinking"]["budget_tokens"], 1024);
+        req.max_tokens = 8192;
+        assert_eq!(Anthropic::body(&cfg, &req)["thinking"]["budget_tokens"], 4000);
     }
 
     #[test]

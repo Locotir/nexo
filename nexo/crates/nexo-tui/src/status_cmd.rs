@@ -257,11 +257,10 @@ fn sgr(params: &str, mut s: Style, base: Style) -> Style {
             0 => s = base,
             1 => s = s.add_modifier(Modifier::BOLD),
             2 => s = s.add_modifier(Modifier::DIM),
-            3 => s = s.add_modifier(Modifier::ITALIC),
+            // italics are drawn nowhere in nexo: SGR 3 and 23 change nothing
             4 => s = s.add_modifier(Modifier::UNDERLINED),
             7 => s = s.add_modifier(Modifier::REVERSED),
             22 => s = s.remove_modifier(Modifier::BOLD | Modifier::DIM),
-            23 => s = s.remove_modifier(Modifier::ITALIC),
             24 => s = s.remove_modifier(Modifier::UNDERLINED),
             27 => s = s.remove_modifier(Modifier::REVERSED),
             c @ 30..=37 => s = s.fg(Color::Indexed((c - 30) as u8)),
@@ -342,6 +341,13 @@ mod tests {
         assert_eq!(p[2], ("x".into(), Style::default().fg(Color::Indexed(208))));
         assert_eq!(p[3], ("y".into(), Style::default().fg(Color::Rgb(1, 2, 3))));
         assert_eq!(p[4], ("z".into(), Style::default()));
+    }
+
+    #[test]
+    fn italics_from_the_script_change_nothing() {
+        let p = spans("\u{1b}[3;1ma\u{1b}[23mb", Style::default());
+        assert!(p.iter().all(|(_, s)| !s.add_modifier.contains(Modifier::ITALIC)), "{p:?}");
+        assert_eq!(p[0].1, Style::default().add_modifier(Modifier::BOLD));
     }
 
     #[test]

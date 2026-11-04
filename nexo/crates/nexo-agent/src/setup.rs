@@ -166,12 +166,22 @@ pub fn keep_key(name: &str, key: &str, cfg: &mut ProviderConfig) -> anyhow::Resu
     if let Some(d) = f.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(&f, key.trim())?;
+    // created readable only by the user, never for a moment by others; a file that was there
+    // already is narrowed before the key goes in
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let mut file = o.open(&f)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+    std::io::Write::write_all(&mut file, key.trim().as_bytes())?;
     cfg.api_key_file = Some(f.clone());
     cfg.api_key_cmd = None;
     cfg.api_key_env = None;

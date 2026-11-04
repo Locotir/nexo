@@ -258,11 +258,14 @@ fn the_long_session_ends_with_the_reference_stats() {
     // The line that says which calls left goes just before them, and back on the request once its message
     // has left the view: 150 more missed here (20426 for closing, was 20276), fewer over all the fixtures.
     // A block of lines an output already sent further up goes as a pointer to its first copy: 2945 saved at
-    // birth, 129 chunks leave.
-    let want = serde_json::json!({"birth_saved": 2945, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
-        "dropped_chunks": 129, "sup_chunks": 31, "rewrites": 1, "left_messages": 10, "ledger_lines": 41,
-        "cap_rewrites": 1, "miss_cap": 19330, "miss": 40750, "closed_steps": 53, "miss_close": 20426, "recalled_steps": 7,
-        "live_dropped": 3, "cards": 1, "switches": 1, "miss_anchor": 1160});
+    // birth, 129 chunks leave. Without a way back (the host offers no `recall`) an output folds only into what
+    // gives every line back: 1799 saved at birth, and the cuts of closing miss 20992.
+    // A part that sends the lines of a copy left out stays while the copy is out, or the stub of the copy would
+    // point to nothing: 125 chunks leave, 22 messages, and the cache misses 39390 (was 41316).
+    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
+        "dropped_chunks": 125, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 46,
+        "cap_rewrites": 1, "miss_cap": 22563, "miss": 39390, "closed_steps": 47, "miss_close": 15682, "recalled_steps": 5,
+        "live_dropped": 3, "cards": 1, "switches": 1, "miss_anchor": 1311});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }

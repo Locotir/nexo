@@ -96,12 +96,19 @@ pub fn builtin() -> Vec<Profile> {
 }
 
 /// The built-in kinds, then the person's, then the project's; a later one
-/// with the same name replaces the earlier.
+/// with the same name replaces the earlier. A project nobody trusted yet (`nexo config trust`) has
+/// its agents left out: their instructions come from the repository.
 pub fn load(cwd: &Path) -> Vec<Profile> {
+    load_from(cwd, &nexo_core::paths::config_dir(), &nexo_core::paths::trusted_projects_file())
+}
+
+fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path) -> Vec<Profile> {
     let mut out = builtin();
-    let mut dirs = vec![nexo_core::paths::config_dir().join("agents")];
+    let mut dirs = vec![config_dir.join("agents")];
     if let Some(p) = nexo_core::paths::project_dir(cwd) {
-        dirs.push(p.join("agents"));
+        if p.parent().is_some_and(|root| nexo_core::config::is_trusted(root, trust_file)) {
+            dirs.push(p.join("agents"));
+        }
     }
     for dir in dirs {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
@@ -186,6 +193,8 @@ pub trait Host: Send + Sync {
     async fn history(&self) -> Vec<Message> {
         Vec::new()
     }
+    /// The sub-agent is about to write `path`: what it holds now, for a rewind.
+    async fn before_write(&self, _path: PathBuf) {}
 }
 
 /// Set once the agent's state exists (the tool is made before it).
@@ -229,6 +238,16 @@ impl SubAgent {
 
     pub fn profiles(&self) -> &[Profile] {
         &self.profiles
+    }
+
+    /// Whether a sub-agent of `p` has a tool that may change something (anything but reads and searches).
+    fn can_write(&self, p: &Profile) -> bool {
+        let set = self.tools_for(p);
+        let writes = set
+            .names()
+            .filter_map(|n| set.get(n))
+            .any(|t| !matches!(t.kind(), ToolKind::Read | ToolKind::Search | ToolKind::Network));
+        writes
     }
 
     /// The tools a sub-agent of `p` gets.
@@ -423,6 +442,12 @@ impl Run {
         if let Err(why) = verdict {
             return ToolOutput::error(format!("Permission denied: {why}"));
         }
+        if let (Some(h), ToolKind::Write) = (&self.host, t.kind()) {
+            if let Some(p) = args.get("path").and_then(Value::as_str) {
+                let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { ctx.cwd.join(p) };
+                h.before_write(path).await;
+            }
+        }
         say(format!("→ {}", t.summary(args)));
         t.run(args.clone(), ctx).await
     }
@@ -462,6 +487,18 @@ impl Tool for SubAgent {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Search
+    }
+
+    /// A sub-agent that can change files runs on its own, as a write: two at once could edit the same
+    /// file and lose a change. Read-only ones still run side by side.
+    fn call_kind(&self, args: &Value) -> ToolKind {
+        let name = args.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).unwrap_or(DEFAULT);
+        match self.profiles.iter().find(|p| p.name == name) {
+            Some(p) if !self.can_write(p) => ToolKind::Search,
+            // an unknown kind is refused at once: nothing to keep apart
+            None => ToolKind::Search,
+            Some(_) => ToolKind::Write,
+        }
     }
 
     fn summary(&self, args: &Value) -> String {
@@ -604,7 +641,14 @@ mod tests {
             .unwrap();
         std::fs::write(dir.path().join(".nexo/agents/explore.md"), "---\nname: explore\ndescription: mine\n---\nX")
             .unwrap();
-        let all = load(dir.path());
+        let home = tempfile::tempdir().unwrap();
+        let trust = home.path().join("trusted-projects");
+        // not trusted yet: only the built-in kinds
+        let untrusted = load_from(dir.path(), home.path(), &trust);
+        assert!(!untrusted.iter().any(|p| p.name == "docs"));
+        assert!(untrusted.iter().any(|p| p.name == "explore" && p.source.is_none()));
+        nexo_core::config::trust_project(dir.path(), &trust).unwrap();
+        let all = load_from(dir.path(), home.path(), &trust);
         assert!(all.iter().any(|p| p.name == "docs" && p.description == "writes docs"));
         let ex: Vec<&Profile> = all.iter().filter(|p| p.name == "explore").collect();
         assert_eq!(ex.len(), 1);

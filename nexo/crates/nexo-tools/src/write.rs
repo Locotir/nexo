@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
-use crate::util::{display_path, is_binary, outside_note, resolve, str_arg};
+use crate::util::{display_path, is_binary, outside_note, resolve, str_arg, write_atomic};
 
 pub struct Write;
 
@@ -67,7 +67,7 @@ impl Tool for Write {
                 return ToolOutput::error(format!("write: cannot create {}: {e}", parent.display()));
             }
         }
-        if let Err(e) = tokio::fs::write(&path, content).await {
+        if let Err(e) = write_atomic(&path, content.as_bytes()).await {
             return ToolOutput::error(format!("write: cannot write {shown}: {e}"));
         }
         let lines = content.lines().count();
@@ -106,5 +106,21 @@ mod tests {
         assert!(Write.run(json!({"path": "a"}), &c).await.is_error);
         assert!(Write.run(json!({"path": "a", "content": "x"}), &c).await.content.contains("directory"));
         assert_eq!(Write.summary(&json!({"path": "x.rs"})), "write x.rs");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_replaced_file_keeps_its_mode_and_no_temporary_file_stays() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let f = d.path().join("run.sh");
+        std::fs::write(&f, "old\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o751)).unwrap();
+        let out = Write.run(json!({"path": "run.sh", "content": "new\n"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new\n");
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o751);
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 }

@@ -16,9 +16,16 @@ fn save(file: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
     if let Some(d) = file.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let tmp = file.with_extension("toml.tmp");
+    // a linked file (dotfiles kept elsewhere) is written where it lives, the link stays, and so do
+    // its permissions
+    let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let perms = std::fs::metadata(&file).ok().map(|m| m.permissions());
+    let tmp = file.with_extension(format!("toml.{}.tmp", std::process::id()));
     std::fs::write(&tmp, doc.to_string())?;
-    std::fs::rename(&tmp, file)?;
+    if let Some(p) = perms {
+        std::fs::set_permissions(&tmp, p)?;
+    }
+    std::fs::rename(&tmp, &file)?;
     Ok(())
 }
 
@@ -135,5 +142,20 @@ mod tests {
         set(&f, &["agent"], "max_tokens", Value::from(4096)).unwrap();
         let cfg = nexo_core::Config::parse(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(cfg.agent.max_tokens, 4096);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_file_is_written_through_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("dotfiles-config.toml");
+        std::fs::write(&real, "# mine\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = d.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        set(&link, &["agent"], "max_tokens", Value::from(4096)).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays");
+        assert!(std::fs::read_to_string(&real).unwrap().contains("max_tokens = 4096"));
+        assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }
