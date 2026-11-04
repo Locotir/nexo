@@ -34,9 +34,11 @@ impl Limits {
         }
     }
 
-    /// `wanted` capped by the largest reply, when known.
+    /// `wanted` capped by the largest reply, when known, and by a quarter of the window: a reply as large as
+    /// a small window (16k asked of an 8k local model) would leave no room for the conversation.
     pub fn max_tokens(&self, wanted: u32) -> u32 {
-        self.max_output.map(|m| wanted.min(m)).unwrap_or(wanted)
+        let wanted = self.max_output.map(|m| wanted.min(m)).unwrap_or(wanted);
+        self.context_window.map(|w| wanted.min((w / 4).max(256))).unwrap_or(wanted)
     }
 
     /// Whether the vendor's list could still add something.
@@ -140,5 +142,14 @@ mod tests {
         m.insert("gpt-5*".to_string(), 400_000);
         assert_eq!(by_model(&m, "gpt-5-mini"), Some(400_000));
         assert_eq!(by_model(&m, "o3"), None);
+    }
+
+    #[test]
+    fn a_small_window_keeps_three_quarters_for_the_conversation() {
+        let l = Limits { context_window: Some(8_000), ..Default::default() };
+        assert_eq!(l.max_tokens(16_384), 2_000);
+        let l = Limits { context_window: Some(1_000_000), max_output: Some(8_192), ..Default::default() };
+        assert_eq!(l.max_tokens(16_384), 8_192);
+        assert_eq!(Limits::default().max_tokens(16_384), 16_384);
     }
 }

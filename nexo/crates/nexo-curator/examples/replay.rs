@@ -1,6 +1,6 @@
 //! Replays a recorded conversation through the curator, offline, and shows what it keeps and cuts.
 //!
-//! `cargo run --release -p nexo-curator --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--save N FILE]
+//! `cargo run --release -p nexo-curator --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--window N] [--save N FILE]
 //!  [--life S] [--gap S] [--pause N:S]`
 //!
 //! `FILE` is either a golden fixture (`tests/fixtures/*.jsonl`, lines `{"now", "req", "reply"}`) or a
@@ -38,7 +38,8 @@
 //! requests, as when the person comes back to a session later. The provider's answer (what it read, of all) goes
 //! back to the curator after each request, as a host does.
 //!
-//! `--save N FILE` writes the view of request N (the messages, as JSON) to FILE.
+//! `--window N` gives the curator a window of N tokens (system prompt and tools included), as a small local
+//! model has. `--save N FILE` writes the view of request N (the messages, as JSON) to FILE.
 //!
 //! `--bank FILE...` reads sessions of the corpus (`examples/corpus.rs`) and prints one JSON line for each:
 //! the whole history, the agent's own requests (with its compaction) and the curator's view, side by side.
@@ -929,6 +930,7 @@ fn main() {
     let mut spec = String::new();
     let mut every = 1usize;
     let mut quiet = false;
+    let mut window = 0u64;
     let mut save: Option<(usize, String)> = None;
     let (mut life, mut gap, mut pause): (f64, Option<f64>, Option<(usize, f64)>) = (0.0, None, None);
     let mut it = args.iter();
@@ -937,6 +939,7 @@ fn main() {
             "--spec" => spec = it.next().cloned().unwrap_or_default(),
             "--every" => every = it.next().and_then(|n| n.parse().ok()).unwrap_or(1).max(1),
             "--quiet" => quiet = true,
+            "--window" => window = it.next().and_then(|n| n.parse().ok()).unwrap_or(0),
             "--save" => {
                 let n = it.next().and_then(|n| n.parse().ok()).unwrap_or(0);
                 save = it.next().map(|f| (n, f.clone()));
@@ -953,7 +956,7 @@ fn main() {
         }
     }
     let Some(path) = path else {
-        eprintln!("usage: replay FILE.jsonl [--spec SPEC] [--every N] [--quiet] [--save N FILE] [--life S] [--gap S] [--pause N:S]");
+        eprintln!("usage: replay FILE.jsonl [--spec SPEC] [--every N] [--quiet] [--window N] [--save N FILE] [--life S] [--gap S] [--pause N:S]");
         std::process::exit(2);
     };
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -971,6 +974,7 @@ fn main() {
         eprintln!("bad spec: {e}");
         std::process::exit(2);
     });
+    cur.window(window);
     println!("{} requests from {path}", requests.len());
     println!(" req  msgs  raw≈tok  view  viewtok  kept  nudge stats changed");
     let mut prev_stats: Vec<(String, i64)> = Vec::new();
