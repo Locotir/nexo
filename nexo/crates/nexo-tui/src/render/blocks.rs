@@ -315,9 +315,14 @@ impl Block {
                 };
                 let mut head = vec![Span::styled(format!("{icon} "), istyle)];
                 // a sub-agent shows as a small robot (plain ASCII, any terminal) that blinks while it works
+                // the shell tool goes by the shell that really runs it (`sh`, `bash`, `pwsh`)
+                let shell;
                 let shown = if name == "task" {
                     head.push(Span::styled(format!("{} ", robot(running, o.spinner)), theme.style(theme.accent2)));
                     "agent"
+                } else if name == "bash" {
+                    shell = nexo_core::shell::shell().label();
+                    shell.as_str()
                 } else {
                     name.as_str()
                 };
@@ -975,7 +980,8 @@ mod tests {
             folded: true,
         };
         let t = texts(&b.render(60, &Theme::dark(), opts()));
-        assert!(t[0].starts_with("✓ bash ls"), "{}", t[0]);
+        let sh = nexo_core::shell::shell().label();
+        assert!(t[0].starts_with(&format!("✓ {sh} ls")), "{}", t[0]);
         assert!(t[0].contains("1.5s"));
         assert_eq!(t.len(), 1, "a finished card folds to its head: {t:?}");
         assert!(t[0].contains("· 10 lines") && t[0].ends_with('▸'), "{}", t[0]);

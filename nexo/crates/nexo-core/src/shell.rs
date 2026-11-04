@@ -29,6 +29,19 @@ impl Shell {
         c
     }
 
+    /// The name people know it by, from its program: `sh`, `bash`, `pwsh`, `powershell`.
+    pub fn label(&self) -> String {
+        // both separators, so a Windows path reads the same wherever it is looked at
+        let path = self.program.to_string_lossy().to_ascii_lowercase();
+        let file = path.rsplit(['/', '\\']).next().unwrap_or_default();
+        let stem = file.strip_suffix(".exe").unwrap_or(file);
+        if stem.is_empty() {
+            self.kind.to_string()
+        } else {
+            stem.to_string()
+        }
+    }
+
     /// The arguments for `command` (for a `tokio::process::Command` on `program`).
     pub fn args_for(&self, command: &str) -> Vec<String> {
         let mut a = self.args.clone();
@@ -189,6 +202,11 @@ mod tests {
         assert_eq!(usual.kind, "bash");
         let pwsh = pick(true, |n| (n == "pwsh").then(|| PathBuf::from("C:\\pwsh\\pwsh.exe")), none);
         assert_eq!(pwsh.program, PathBuf::from("C:\\pwsh\\pwsh.exe"));
+        // the name shown is the program's own, not the tool's
+        assert_eq!(pwsh.label(), "pwsh");
+        assert_eq!(pick(true, |_| None, none).label(), "powershell");
+        assert_eq!(git.label(), "bash");
+        assert_eq!(pick(false, |_| None, none).label(), "sh");
         // PowerShell writes to a pipe in the console's code page unless told to write UTF-8
         let last = pwsh.args_for("Get-Date").pop().unwrap();
         assert!(last.starts_with(UTF8_OUTPUT) && last.ends_with("Get-Date"), "{last}");

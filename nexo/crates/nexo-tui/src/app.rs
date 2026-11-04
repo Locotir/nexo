@@ -4246,9 +4246,10 @@ mod tests {
         };
         assert_eq!(text(&mut a, 0), vec![" ▌ go"], "a margin of one column");
         assert_eq!(text(&mut a, 1), vec![" ◆ On it."]);
-        assert!(text(&mut a, 2)[0].starts_with("   ✓ bash run a"), "{:?}", text(&mut a, 2));
+        let sh = nexo_core::shell::shell().label();
+        assert!(text(&mut a, 2)[0].starts_with(&format!("   ✓ {sh} run a")), "{:?}", text(&mut a, 2));
         let open = text(&mut a, 3);
-        assert!(open[0].starts_with("   ✓ bash run b"), "{open:?}");
+        assert!(open[0].starts_with(&format!("   ✓ {sh} run b")), "{open:?}");
         assert_eq!(open[1], "   │ b line 1", "the result under its call, behind a guide");
         assert_eq!(open[2], "   └ b line 2", "and the guide ends in a corner");
         // no blank line between a one-line step and the next; one after the open card; two
@@ -4257,7 +4258,7 @@ mod tests {
         assert_eq!(a.offsets[4], a.offsets[3] + open.len() + 2);
         // a narrow terminal keeps every column for the text
         let narrow: Vec<String> = a.lines(3, 20).iter().map(crate::render::markdown::text_of).collect();
-        assert!(narrow[0].starts_with("✓ bash"), "{narrow:?}");
+        assert!(narrow[0].starts_with(&format!("✓ {sh}")), "{narrow:?}");
     }
 
     #[test]

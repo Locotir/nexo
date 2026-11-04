@@ -111,7 +111,7 @@ impl Tool for Bash {
                 true
             }
             End::Failed(ref e) => {
-                content = format!("bash: cannot run the command: {e}");
+                content = format!("{}: cannot run the command: {e}", nexo_core::shell::shell().label());
                 true
             }
         };
