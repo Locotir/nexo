@@ -362,6 +362,12 @@ async fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if nexo_bench::cost::price_of(&a.model).is_none() {
+        return Err(format!(
+            "nexo has no prices for {}, so the budget ({} $) could not stop the run",
+            a.model, a.budget
+        ));
+    }
     let log = match &a.out {
         Some(p) => Some(std::fs::OpenOptions::new().create(true).append(true).open(p).map_err(|e| e.to_string())?),
         None => None,

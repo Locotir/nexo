@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _};
-use nexo_core::ProviderConfig;
+use nexo_core::{Pricing, ProviderConfig};
 
 /// What `nexo bench` was asked to do.
 #[derive(Debug, Clone)]
@@ -39,8 +39,10 @@ pub struct Options {
     pub arms: Vec<String>,
     pub repeats: u32,
     pub max_steps: u32,
-    /// Dollars after which the whole benchmark stops.
+    /// Dollars after which the whole benchmark stops; it needs prices (`price`, or nexo's own for the model).
     pub budget: Option<f64>,
+    /// The model's prices; None: nexo's own for the model, if it has any.
+    pub price: Option<Pricing>,
     pub max_tokens: Option<u32>,
     /// Sampling temperature of every request; None: the provider's own.
     pub temperature: Option<f32>,
@@ -69,6 +71,20 @@ pub fn protocol_of(upstream: &str) -> &'static str {
     }
 }
 
+/// The model's prices: `--price`, else nexo's own; an error when a budget is set and there are none, because
+/// the budget could not stop the run.
+fn prices(opts: &Options) -> anyhow::Result<Option<Pricing>> {
+    let priced = opts.price.or_else(|| cost::price_of(&opts.model));
+    if opts.budget.is_some() && priced.is_none() {
+        bail!(
+            "--budget cannot stop a run without prices, and nexo has none for {:?}: give them with --price MISS,HIT,OUT \
+             (dollars per million tokens: input on a cache miss, input on a cache hit, output)",
+            opts.model
+        );
+    }
+    Ok(priced)
+}
+
 /// Runs the benchmark; the exit code is 0, or 2 when it stopped at the budget.
 pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let arms = arm::Arm::parse_all(&opts.arms).map_err(anyhow::Error::msg)?;
@@ -94,6 +110,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     if opts.repeats == 0 || opts.max_steps == 0 {
         bail!("--repeats and --max-steps must be at least 1");
     }
+    let priced = prices(&opts)?;
     std::fs::create_dir_all(&opts.out).with_context(|| format!("creating {}", opts.out.display()))?;
     let out = opts.out.canonicalize()?;
     isolate(&out, opts.key.as_deref())?;
@@ -108,10 +125,9 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
             Err(why) => bail!("preflight failed ({}): {why}\n(--skip-preflight starts anyway)", opts.model),
         }
     }
-    let priced = cost::price_of(&opts.model);
     let (price, estimated) = (priced.unwrap_or_default(), priced.is_none());
     if estimated {
-        eprintln!("bench: no prices known for {:?}; costs are unknown (shown as 0 and marked), the budget cannot stop the run", opts.model);
+        eprintln!("bench: no prices known for {:?}; costs are unknown (--price MISS,HIT,OUT gives them)", opts.model);
     }
     let mut hide = vec![out.clone()];
     hide.extend(std::env::current_dir().ok().and_then(|d| d.canonicalize().ok()));
@@ -185,6 +201,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         temperature: opts.temperature,
         repeats: opts.repeats,
         budget: opts.budget,
+        price: opts.price.map(|p| report::price_line(&p)),
         arm_order: Some(ARM_ORDER.into()),
         skipped,
         stopped: stopped.clone(),
@@ -306,5 +323,52 @@ mod tests {
         assert_eq!(protocol_of("https://api.deepseek.com/anthropic"), "anthropic");
         assert_eq!(protocol_of("https://generativelanguage.googleapis.com/v1beta"), "gemini");
         assert_eq!(protocol_of("http://localhost:8000/v1"), "openai-chat");
+    }
+
+    fn opts(model: &str, budget: Option<f64>, price: Option<Pricing>, out: PathBuf) -> Options {
+        Options {
+            upstream: "http://127.0.0.1:9".into(),
+            model: model.into(),
+            key: None,
+            protocol: None,
+            tasks: vec![],
+            arms: vec![],
+            repeats: 1,
+            max_steps: 1,
+            budget,
+            price,
+            max_tokens: None,
+            temperature: None,
+            out,
+            skip_preflight: false,
+            llmb: None,
+            instances: vec![],
+            limit: None,
+            cache: None,
+        }
+    }
+
+    #[test]
+    fn a_budget_needs_prices() {
+        let out = PathBuf::from("unused");
+        let err = prices(&opts("no-such-model", Some(1.0), None, out.clone())).unwrap_err().to_string();
+        assert!(err.contains("--budget") && err.contains("--price"), "{err}");
+        assert_eq!(
+            prices(&opts("no-such-model", None, None, out.clone())).unwrap(),
+            None,
+            "no budget: unknown costs are fine"
+        );
+        let p = Pricing { input: 0.1, output: 0.2, cache_read: 0.01, cache_write: 0.0 };
+        assert_eq!(prices(&opts("no-such-model", Some(1.0), Some(p), out.clone())).unwrap(), Some(p));
+        assert_eq!(prices(&opts("deepseek-chat", Some(1.0), Some(p), out.clone())).unwrap(), Some(p), "--price wins");
+        assert!(prices(&opts("deepseek-chat", Some(1.0), None, out.clone())).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_budget_without_prices_stops_before_anything_is_written() {
+        let dir = std::env::temp_dir().join(format!("nexo-bench-budget-{}", std::process::id()));
+        let err = run(opts("no-such-model", Some(1.0), None, dir.clone())).await.unwrap_err().to_string();
+        assert!(err.contains("--budget"), "{err}");
+        assert!(!dir.exists(), "nothing is written before the refusal");
     }
 }

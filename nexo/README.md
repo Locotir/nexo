@@ -626,7 +626,9 @@ to `--out`, with `results.jsonl` (one line per run) and `summary.md` (score,
 steps, requests, tokens, cost, tool errors and repeated calls per arm). The
 `realm` task asks the agent to rebuild a game's coin rule into a `coins.rs`
 from experiments on a binary; the small tasks are Rust mini-projects with a
-trap long runs tend to fall into. `--budget` caps the spending, in dollars.
+trap long runs tend to fall into. `--budget` caps the spending, in dollars; for a
+model nexo has no prices for, give them with `--price MISS,HIT,OUT` (dollars per
+million tokens), or the bench refuses to start.
 External tasks `repoqa` and `canonstep` (with `--llmb DIR`) and `nexo bench report` (report.html): see `nexo bench --help`.
 
 ## Layout of the code

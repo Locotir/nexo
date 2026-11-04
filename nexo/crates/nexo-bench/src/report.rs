@@ -25,6 +25,8 @@ pub struct Header {
     pub skipped: Vec<String>,
     /// How the arms were ordered in each repeat (none: not known, rebuilt from results).
     pub arm_order: Option<String>,
+    /// The prices given with `--price`, as the summary shows them (none: nexo's own for the model).
+    pub price: Option<String>,
     /// Why the benchmark stopped early, if it did.
     pub stopped: Option<String>,
 }
@@ -62,6 +64,7 @@ pub fn header_of(records: &[Record]) -> Header {
         temperature: first.temperature,
         repeats: records.iter().map(|r| r.rep + 1).max().unwrap_or(1),
         budget: None,
+        price: None,
         arm_order: None,
         skipped: vec![],
         stopped: None,
@@ -107,6 +110,15 @@ fn usd(unknown: bool, x: f64, places: usize) -> String {
     }
 }
 
+/// Prices given on the command line, as the summary shows them.
+pub fn price_line(p: &nexo_core::Pricing) -> String {
+    let write = if p.cache_write > 0.0 { format!(", ${} a cache write", p.cache_write) } else { String::new() };
+    format!(
+        "${} input on a cache miss, ${} on a cache hit, ${} output{write}, per million tokens",
+        p.input, p.cache_read, p.output
+    )
+}
+
 /// The summary of `records` in Markdown.
 pub fn summary(h: &Header, records: &[Record]) -> String {
     let total: f64 = records.iter().map(|r| r.cost).sum();
@@ -124,8 +136,11 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
         if estimated { "unknown".into() } else { format!("${total:.4}") },
         h.upstream,
     );
+    if let Some(p) = &h.price {
+        s.push_str(&format!("\nPrices given with --price: {p}.\n"));
+    }
     if estimated {
-        s.push_str("\nPrices unknown: nexo has no price list for this model, so costs are shown as unknown, not guessed from another vendor, and the budget cannot stop a run.\n");
+        s.push_str("\nPrices unknown: nexo has no price list for this model, so costs are shown as unknown, not guessed from another vendor (--price gives them).\n");
     }
     if let Some(order) = &h.arm_order {
         s.push_str(&format!("\nArm order: {order}.\n"));
@@ -415,6 +430,7 @@ mod tests {
             temperature: None,
             repeats,
             budget: Some(5.0),
+            price: None,
             arm_order: None,
             skipped: vec![],
             stopped: None,
@@ -562,6 +578,16 @@ mod tests {
         assert!(s.contains("| cache read | cache write | output |"), "{s}");
         assert!(s.contains("| 5000 | 777 | 300 | unknown |"), "{s}");
         assert!(!s.contains("0.5000"), "no guessed dollar figure: {s}");
+    }
+
+    #[test]
+    fn prices_from_the_command_line_are_named_in_the_summary() {
+        let mut h = head(1);
+        h.price =
+            Some(price_line(&nexo_core::Pricing { input: 0.14, output: 0.28, cache_read: 0.0028, cache_write: 0.0 }));
+        let s = summary(&h, &grid(1, 1));
+        assert!(s.contains("Prices given with --price: $0.14 input on a cache miss, $0.0028 on a cache hit, $0.28 output, per million tokens."), "{s}");
+        assert!(!s.contains("Prices unknown"), "{s}");
     }
 
     #[test]

@@ -178,9 +178,13 @@ pub struct BenchArgs {
     /// Most tool steps (model requests) a task may take.
     #[arg(long, default_value_t = 100)]
     pub max_steps: u32,
-    /// Stop the whole benchmark once this many dollars are spent.
+    /// Stop the whole benchmark once this many dollars are spent (needs prices: nexo's own or --price).
     #[arg(long, value_name = "USD")]
     pub budget: Option<f64>,
+    /// The model's prices in dollars per million tokens: input on a cache miss, on a cache hit, output
+    /// (default: nexo's own for the model, if it has any).
+    #[arg(long, value_name = "MISS,HIT,OUT", value_parser = price_arg)]
+    pub price: Option<nexo_core::Pricing>,
     /// Largest reply, in tokens.
     #[arg(long)]
     pub max_tokens: Option<u32>,
@@ -237,6 +241,7 @@ impl BenchArgs {
             repeats: self.repeats,
             max_steps: self.max_steps,
             budget: self.budget,
+            price: self.price,
             max_tokens: self.max_tokens,
             temperature: self.temperature,
             out: self.out.clone(),
@@ -246,6 +251,18 @@ impl BenchArgs {
             limit: self.limit,
             cache: self.cache.clone(),
         })
+    }
+}
+
+/// `--price MISS,HIT,OUT`: dollars per million tokens of input on a cache miss, input on a cache hit, output.
+fn price_arg(s: &str) -> Result<nexo_core::Pricing, String> {
+    let n: Vec<f64> =
+        s.split(',').map(|p| p.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    match n[..] {
+        [input, cache_read, output] if n.iter().all(|x| x.is_finite() && *x >= 0.0) && input + output > 0.0 => {
+            Ok(nexo_core::Pricing { input, output, cache_read, cache_write: 0.0 })
+        }
+        _ => Err("three prices, not all zero: MISS,HIT,OUT in dollars per million tokens, e.g. 0.28,0.028,0.42".into()),
     }
 }
 
@@ -566,7 +583,7 @@ async fn headless(
 
 #[cfg(test)]
 mod tests {
-    use super::key_arg;
+    use super::{key_arg, price_arg};
 
     #[test]
     fn bench_key_dash_reads_stdin() {
@@ -575,5 +592,14 @@ mod tests {
         assert_eq!(key(Some("k-456"), "ignored"), Ok(Some("k-456".to_string())));
         assert_eq!(key(None, "ignored"), Ok(None));
         assert_eq!(key(Some("-"), " \n"), Err("--key -: nothing on stdin".to_string()));
+    }
+
+    #[test]
+    fn bench_price_reads_miss_hit_out() {
+        let p = price_arg("0.28, 0.028,0.42").unwrap();
+        assert_eq!((p.input, p.cache_read, p.output, p.cache_write), (0.28, 0.028, 0.42, 0.0));
+        for bad in ["0.28,0.028", "0.28,0.028,0.42,1", "a,b,c", "0,0,0", "-1,0,1", "NaN,0,1", ""] {
+            assert!(price_arg(bad).is_err(), "{bad:?}");
+        }
     }
 }

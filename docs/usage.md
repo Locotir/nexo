@@ -46,7 +46,9 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 - `--arms`: one arm per context policy, `[NAME@]plain|compact|curator[:k=v;k=v]`;
   `lean@curator:eoq=15000` is the curator with that spec, reported as `lean`.
 - `--repeats`, `--max-steps`: runs per task and arm, and the step limit of each run.
-- `--budget`: stops starting runs once that many dollars are spent.
+- `--budget`: stops starting runs once that many dollars are spent. It needs prices: nexo knows
+  DeepSeek's and those its provider presets list; for another model give them with
+  `--price MISS,HIT,OUT` (dollars per million tokens), or the bench refuses to start.
 - `--out DIR`: `results.jsonl` (one line per run), each run's transcript, and `summary.md` with, per
   arm, the score, steps, requests, tokens, cost, tool errors and repeated calls.
 

@@ -21,8 +21,10 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--arms LIST` | arms, comma separated or repeated (see below) | `plain,compact,curator` |
 | `--repeats N` | times each task runs with each arm | 1 |
 | `--max-steps N` | most steps (model requests that offer tools) per task | 100 |
-| `--budget USD` | stop the whole benchmark once this much is spent | none |
+| `--budget USD` | stop the whole benchmark once this much is spent; with no prices for the model it refuses to start | none |
+| `--price MISS,HIT,OUT` | the model's prices in dollars per million tokens: input on a cache miss, on a cache hit, output | nexo's own (DeepSeek chat and reasoner, and the models its provider presets price) |
 | `--max-tokens N` | largest reply, in tokens | nexo's default |
+| `--temperature T` | sampling temperature of every request | the provider's own |
 | `--out DIR` | where the results go | `./bench-out` |
 | `--skip-preflight` | do not send the preflight request | off |
 
@@ -101,8 +103,8 @@ What the columns mean:
 - **compactions**: summary requests. **rewrites**: steps whose messages do not start with the previous
   step's messages (the history was changed, not just extended). Plain has none of either.
 - **cost**: the provider's token counts priced per million. DeepSeek (`deepseek-chat`) is 0.28 input,
-  0.028 cache hit, 0.42 output; other models use the prices nexo's provider presets know, and a model
-  with no known prices is priced as DeepSeek and marked estimated.
+  0.028 cache hit, 0.42 output; other models use the prices nexo's provider presets know; `--price`
+  overrides both, and a model with neither has its cost shown as unknown, never guessed from another vendor.
 - **tool errors**: tool results flagged as errors.
 - **repeated calls**: a tool called again with the same arguments (in any key order) that got the same
   output back: the model asked for something it already had.

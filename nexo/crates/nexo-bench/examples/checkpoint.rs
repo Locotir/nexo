@@ -280,6 +280,12 @@ async fn run() -> Result<(), String> {
     if a.dry {
         return Ok(());
     }
+    if !price.is_known() {
+        return Err(format!(
+            "nexo has no prices for {}, so the budget ({} $) could not stop the run",
+            a.model, a.budget
+        ));
+    }
 
     let provider = ProviderConfig::new(nexo_bench::protocol_of(&a.upstream), &a.upstream, Some(a.key_env.as_str()));
     let client = nexo_providers::Client::new(nexo_providers::registry());
