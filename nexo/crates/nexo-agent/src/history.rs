@@ -9,7 +9,7 @@
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nexo_core::message::Message;
+use nexo_core::message::{message_tokens, Message};
 
 static VERSIONS: AtomicU64 = AtomicU64::new(1);
 
@@ -22,13 +22,17 @@ pub fn size_of(m: &Message) -> u64 {
     serde_json::to_string(m).map(|s| s.len() as u64).unwrap_or(0)
 }
 
+fn sizes(m: &Message) -> (u64, u64) {
+    (size_of(m), message_tokens(m))
+}
+
 #[derive(Default)]
 pub struct History {
     messages: Vec<Message>,
-    /// The JSON length of each message.
-    sizes: Vec<u64>,
+    /// The JSON length and the `message_tokens` of each message.
+    sizes: Vec<(u64, u64)>,
     bytes: u64,
-    /// `estimate_tokens` of the whole history: the sum of each message's length over 4.
+    /// `estimate_tokens` of the whole history: the sum of each message's tokens.
     tokens: u64,
     version: u64,
 }
@@ -53,10 +57,10 @@ impl History {
     }
 
     pub fn push(&mut self, m: Message) {
-        let n = size_of(&m);
-        self.sizes.push(n);
+        let (n, t) = sizes(&m);
+        self.sizes.push((n, t));
         self.bytes += n;
-        self.tokens += n / 4;
+        self.tokens += t;
         self.messages.push(m);
     }
 
@@ -75,7 +79,7 @@ impl History {
     }
 
     pub fn replace(&mut self, messages: Vec<Message>) {
-        self.sizes = messages.iter().map(size_of).collect();
+        self.sizes = messages.iter().map(sizes).collect();
         self.messages = messages;
         self.version = next_version();
         self.totals();
@@ -85,15 +89,15 @@ impl History {
     #[cfg(test)]
     pub fn edit<R>(&mut self, f: impl FnOnce(&mut Vec<Message>) -> R) -> R {
         let r = f(&mut self.messages);
-        self.sizes = self.messages.iter().map(size_of).collect();
+        self.sizes = self.messages.iter().map(sizes).collect();
         self.version = next_version();
         self.totals();
         r
     }
 
     fn totals(&mut self) {
-        self.bytes = self.sizes.iter().sum();
-        self.tokens = self.sizes.iter().map(|n| n / 4).sum();
+        self.bytes = self.sizes.iter().map(|s| s.0).sum();
+        self.tokens = self.sizes.iter().map(|s| s.1).sum();
     }
 
     /// Same as `estimate_tokens(&history)`.
@@ -103,7 +107,7 @@ impl History {
 
     /// Same as `estimate_tokens(&history[from..])`.
     pub fn tokens_from(&self, from: usize) -> u64 {
-        self.sizes[from.min(self.sizes.len())..].iter().map(|n| n / 4).sum()
+        self.sizes[from.min(self.sizes.len())..].iter().map(|s| s.1).sum()
     }
 
     /// The JSON bytes of the whole history.

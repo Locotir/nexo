@@ -101,7 +101,7 @@ max_cost_day = 5.0   # dollars per day, all sessions
 ```
 
 **Commands of your own.** A markdown file in `~/.nexo/commands/` or in the project's `.nexo/commands/`
-is a command named after it: `.nexo/commands/review.md` is `/review`. Its text is sent as the request, with
+(once the project is trusted: `nexo config trust`) is a command named after it: `.nexo/commands/review.md` is `/review`. Its text is sent as the request, with
 `$ARGUMENTS` replaced by what follows the name (appended when there is no `$ARGUMENTS`). The palette lists them
 after the built-in ones, with the `description:` of a front matter block or the file's first line:
 
@@ -123,7 +123,7 @@ one message. Two kinds come built in:
 
 Several `task` calls run at once. A sub-agent's spending is added to the session's. Your own kinds go in
 `~/.nexo/agents/<name>.md` or `.nexo/agents/<name>.md` (the project's wins over a built-in of the
-same name):
+same name, and is read once the project is trusted):
 
 ```markdown
 ---
@@ -178,7 +178,8 @@ the briefing's tokens once, then read from the cache on every later call of the 
 3.1k × (1.25 + 0.1 × calls) input tokens): it pays for itself when it spares two or three calls.
 
 **Background work.** `bash` with `background: true` starts a command (a server, a watcher, a long build) and
-returns at once with its job id; `task` with `background: true` does the same for a sub-agent. The model goes
+returns at once with its job id; `task` with `background: true` does the same for a sub-agent that changes
+nothing (one that can change files runs in the foreground, so it never edits beside another). The model goes
 on with its work and uses the `jobs` tool to list jobs, read new output (optionally waiting for it) or kill
 one. When a job ends, the model is told once, and if it was idle it wakes up to look. `/jobs` lists them,
 `/jobs kill [id]` stops one (or all), and the status line shows `⚙ N jobs` while any runs. In a `-p` run,
@@ -309,17 +310,20 @@ deep blue-grey ground, a teal accent, a warm marker for the assistant),
 ## Configuration
 
 `~/.nexo/config.toml` (user) and `.nexo/config.toml` (project; wins key by key:
-a project's `[context] reader_at` leaves your `curator_spec` and `policy` alone).
+a project's `[context] reader_at` leaves your `curator_spec` and `policy` alone, a price it sets for one
+model leaves your others, and a key it sets to its default value still wins).
 A key nexo does not read (a typo such as `curator_specs`, a section that does not exist, a setting since
 retired) does not stop it: the session opens with a notice naming the key and the closest one it reads,
 and `nexo doctor` lists it. Your own `~/.nexo` is never taken for a project, even when your home is kept in git.
 
 **Untrusted projects.** A repository you clone may carry its own `.nexo/config.toml`. Until you trust the
-project, the settings that could run a command or send a key, a file or the conversation elsewhere are
-ignored, and the session opens with a notice naming them: a provider's `base_url`, `api_key_*`, `auth`,
-`login` and `headers` (your own for that provider stay), `[mcp.*]`, `[[hooks]]`, `permissions.allow`,
-`permissions.mode` set to `auto` or `accept-edits`, `ui.status_command`, `agent.system_prompt_file`, and
-`web.url` and `web.api_key_env`. Everything else in it applies, and its `deny` rules always do.
+project, the settings that could run a command, send a key, a file or the conversation elsewhere, or lift
+a spend limit are ignored, and the session opens with a notice naming them: a provider's `base_url`,
+`api_key_*`, `auth`, `login`, `headers`, `protocol`, `extra` and `pricing` (your own for that provider
+stay), a `provider` your file does not define, `[mcp.*]`, `[[hooks]]`, `permissions.allow`,
+`permissions.mode` set to `auto` or `accept-edits`, `ui.status_command`, `agent.system_prompt_file`,
+`web.url` and `web.api_key_env`, and `agent.max_cost` or `max_cost_day` above yours. Everything else in it applies, and its `deny` rules always do.
+The project's `.nexo/commands/` and `.nexo/agents/` are not loaded either until you trust it.
 `nexo config trust [DIR]` trusts the project (its resolved folder is added to `~/.nexo/trusted-projects`,
 one per line; remove the line to take it back) and `nexo config path` says whether it is trusted.
 An `a` (always) answer saved to the project file applies in later sessions once the project is trusted.
@@ -370,7 +374,7 @@ and `ProgramFiles`; a key it needs goes in its `env`.
 
 Four wire protocols cover every provider ([`docs/providers-base.md`](../docs/providers-base.md) is the
 specification): `openai-chat`, `openai-responses`, `anthropic`, `gemini`.
-Presets exist for openai, gemini, deepseek, xai, groq, mistral, openrouter,
+Presets exist for openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter,
 together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, copilot, codex,
 and the local servers ollama, lmstudio, vllm and llamacpp. Beyond them, a
 built-in directory of 200+ providers works with only the key set.

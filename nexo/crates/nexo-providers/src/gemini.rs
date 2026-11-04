@@ -168,6 +168,14 @@ pub fn clean_schema(v: &Value) -> Value {
         Value::Object(o) => {
             let mut m = Map::new();
             for (k, v) in o {
+                // the children of `properties` are names chosen by the tool, not keywords
+                if k == "properties" {
+                    if let Value::Object(props) = v {
+                        let kept = props.iter().map(|(n, s)| (n.clone(), clean_schema(s))).collect();
+                        m.insert(k.clone(), Value::Object(kept));
+                        continue;
+                    }
+                }
                 if matches!(
                     k.as_str(),
                     "additionalProperties" | "$schema" | "$id" | "default" | "examples" | "const" | "patternProperties"
@@ -284,11 +292,20 @@ impl Feed for GeminiParser {
                     out.push(StreamEvent::Usage(u));
                 }
                 self.stopped = true;
+                let filtered = matches!(r, "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII");
+                // a broken call, or a non-content stop with nothing said, is a failed attempt, not an empty reply
+                if matches!(r, "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL")
+                    || (!self.prog.content && !filtered && r != "MAX_TOKENS")
+                {
+                    out.push(StreamEvent::Error(ProviderError::new(
+                        ErrorKind::Server,
+                        format!("the model ended without a usable reply ({r})"),
+                    )));
+                    return out;
+                }
                 out.push(StreamEvent::Finish(match r {
                     "MAX_TOKENS" => FinishReason::Length,
-                    "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
-                        FinishReason::ContentFilter
-                    }
+                    _ if filtered => FinishReason::ContentFilter,
                     _ if self.prog.saw_tool => FinishReason::ToolUse,
                     _ => FinishReason::Stop,
                 }));
@@ -455,6 +472,33 @@ mod tests {
         let mut p = GeminiParser::default();
         p.feed(r#"{"candidates":[{"content":{"parts":[],"role":"model"}}]}"#);
         assert!(matches!(&p.finish()[0], StreamEvent::Error(e) if e.kind == ErrorKind::Network));
+    }
+
+    #[test]
+    fn a_malformed_call_or_an_empty_finish_is_a_retryable_error() {
+        for r in ["MALFORMED_FUNCTION_CALL", "OTHER"] {
+            let mut p = GeminiParser::default();
+            let mut evs = p.feed(&format!(r#"{{"candidates":[{{"finishReason":"{r}"}}]}}"#));
+            evs.extend(p.finish());
+            assert!(!evs.iter().any(|e| matches!(e, StreamEvent::Finish(_))), "{evs:?}");
+            assert!(evs
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Error(e) if e.is_retryable() && e.message.contains(r))));
+        }
+        let mut p = GeminiParser::default();
+        let evs = p.feed(r#"{"candidates":[{"finishReason":"SAFETY"}]}"#);
+        assert!(evs.contains(&StreamEvent::Finish(FinishReason::ContentFilter)), "a block stays a block");
+    }
+
+    #[test]
+    fn clean_schema_keeps_properties_named_like_keywords() {
+        let s = json!({"type": "object", "additionalProperties": false,
+            "properties": {"default": {"type": "string", "default": "x"}, "const": {"type": "integer"}},
+            "required": ["default"]});
+        let c = clean_schema(&s);
+        assert_eq!(c["properties"]["default"], json!({"type": "string"}));
+        assert_eq!(c["properties"]["const"], json!({"type": "integer"}));
+        assert!(c.get("additionalProperties").is_none());
     }
 
     #[test]

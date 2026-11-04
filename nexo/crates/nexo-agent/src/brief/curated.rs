@@ -694,6 +694,8 @@ impl<'a> Trace<'a> {
         let mut tool_names: HashMap<String, String> = HashMap::new();
         let mut calls: HashMap<String, Info> = HashMap::new();
         let mut writes: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut write_calls: Vec<(String, String, usize)> = vec![];
+        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
         let (null, empty) = (Value::Null, Value::String(String::new()));
         for (mi, m) in msgs.iter().enumerate() {
             let lo = units.len();
@@ -723,13 +725,20 @@ impl<'a> Trace<'a> {
                 let info = match kind {
                     Kind::Call => {
                         let info = classify(str_of(o, "name"), o.get("input"));
-                        calls.insert(key(o.get("id"), &empty), info.clone());
+                        let id = key(o.get("id"), &empty);
                         if let (Some(p), ToolKind::Write) = (&info.path, info.kind) {
-                            writes.entry(p.clone()).or_default().push(mi);
+                            write_calls.push((id.clone(), p.clone(), mi));
                         }
+                        calls.insert(id, info.clone());
                         Some(info)
                     }
-                    Kind::Result => calls.get(&key(o.get("tool_use_id"), &empty)).cloned(),
+                    Kind::Result => {
+                        let id = key(o.get("tool_use_id"), &empty);
+                        if o.get("is_error").and_then(Value::as_bool) == Some(true) {
+                            failed.insert(id.clone());
+                        }
+                        calls.get(&id).cloned()
+                    }
                     _ => None,
                 };
                 let (chunks, words, terms) = if kind == Kind::Result {
@@ -753,6 +762,12 @@ impl<'a> Trace<'a> {
                 units.push(Unit { msg: mi, block: bi, kind, tool, tokens: est(b), words, text, info, chunks, terms });
             }
             by_msg.push((lo, units.len()));
+        }
+        // a write counts at its call unless its result says it failed (one still running counts)
+        for (id, p, mi) in write_calls {
+            if !failed.contains(&id) {
+                writes.entry(p).or_default().push(mi);
+            }
         }
         Trace { msgs, units, by_msg, writes }
     }

@@ -67,7 +67,19 @@ fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) ->
         out: out.to_path_buf(),
         hide: vec![],
         client,
+        spent: Arc::default(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_ends_in_an_error_still_counts_what_it_spent() {
+    let out = tempfile::tempdir().unwrap();
+    let bench = bench(Arc::new(Script::default()), 100, out.path());
+    let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
+    task.check = |_| panic!("a checker that breaks");
+    assert!(run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.is_err());
+    let one = (1000.0 * 0.28 + 4000.0 * 0.028 + 100.0 * 0.42) / 1e6;
+    assert!((*bench.spent.lock().unwrap() - 2.0 * one).abs() < 1e-12, "{}", bench.spent.lock().unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread")]

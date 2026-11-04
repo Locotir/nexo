@@ -1487,6 +1487,36 @@ async fn a_rewind_puts_back_the_files_the_agent_wrote() {
 }
 
 #[tokio::test]
+async fn a_rewind_after_a_compaction_keeps_the_writes_the_summary_holds() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.txt"), "old").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "write", json!({"path": "a.txt"}))),
+        Reply::Events(text("done")),
+        Reply::Events(text("SUMMARY")),
+        Reply::Events(text("ok")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.permissions.allow.push("write".into());
+    let mut r = start(client, cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "change it".into(), attachments: vec![] });
+    r.turn().await;
+    std::fs::write(d.path().join("a.txt"), "changed").unwrap();
+    r.send(AgentCommand::Compact);
+    r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("history compacted"))).await;
+    r.send(AgentCommand::Submit { text: "something else".into(), attachments: vec![] });
+    r.turn().await;
+    // drop only the last request: the write before the compaction stays
+    r.send(AgentCommand::Rewind { index: 1 });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("rewound"))).await;
+    let AgentEvent::Notice { text, .. } = evs.last().unwrap() else { unreachable!() };
+    assert!(!text.contains("put back"), "{text}");
+    assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "changed");
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn an_attached_image_goes_as_an_image_part() {
     let d = tempfile::tempdir().unwrap();
     // the eight bytes every PNG starts with are enough for the attachment
@@ -1919,7 +1949,7 @@ async fn a_call_written_as_text_runs_as_a_call() {
     let written = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"read\">\n<｜｜DSML｜｜ parameter name=\"path\" string=\"true\">a</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
     let client = Scripted::new(vec![Reply::Events(text(written)), Reply::Events(text("a is x"))]);
     let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
-    r.next().await;
+    let AgentEvent::Ready { session_id: id, .. } = r.next().await else { panic!() };
     r.send(AgentCommand::Submit { text: "what is in a".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done, "the markup is not the answer");
@@ -1927,6 +1957,18 @@ async fn a_call_written_as_text_runs_as_a_call() {
     assert_eq!(reqs.len(), 2, "the call ran and the model was asked again");
     let sent = serde_json::to_string(&reqs[1].messages).unwrap();
     assert!(sent.contains("read:a") && !sent.contains("DSML"), "the call and its output go back, not the markup");
+    r.stop().await;
+    // a resumed session counts its turns from 0 again: a new call written as text gets an id of its own
+    let client = Scripted::new(vec![Reply::Events(text(&written.replace(">a<", ">b<"))), Reply::Events(text("b"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), Some(id), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "and b".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let ids: Vec<String> =
+        reqs[1].messages.iter().flat_map(|m| m.tool_calls().map(|(id, _, _)| id.to_string())).collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "{ids:?}");
     r.stop().await;
 }
 
@@ -2206,6 +2248,29 @@ async fn a_rewind_puts_back_what_a_sub_agent_wrote() {
     let AgentEvent::Notice { text, .. } = evs.last().unwrap() else { unreachable!() };
     assert!(text.contains("1 file put back"), "{text}");
     assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "old");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_sub_agent_that_can_write_does_not_run_in_the_background() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "change a.txt", "background": true}))),
+        Reply::Events(text("changed a.txt")),
+        Reply::Events(text("done")),
+    ]);
+    let mut r = start(client, config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let out = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(out.contains("changed a.txt") && !out.contains("Started sub-agent job"), "{out}");
     r.stop().await;
 }
 

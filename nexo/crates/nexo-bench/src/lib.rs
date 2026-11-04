@@ -113,6 +113,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let priced = prices(&opts)?;
     std::fs::create_dir_all(&opts.out).with_context(|| format!("creating {}", opts.out.display()))?;
     let out = opts.out.canonicalize()?;
+    fresh_out(&out)?;
     isolate(&out, opts.key.as_deref())?;
 
     let protocol = opts.protocol.clone().unwrap_or_else(|| protocol_of(&opts.upstream).into());
@@ -142,6 +143,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         out: out.clone(),
         hide,
         client,
+        spent: Arc::default(),
     };
 
     let ctx = llmb::Ctx {
@@ -152,11 +154,12 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let mut records = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut stopped = None;
-    let mut spent = 0.0;
     'all: for rep in 0..opts.repeats {
         for (ui, unit) in units.iter().enumerate() {
             let order = arm_order(&arms, rep, ui);
             for a in &order {
+                // every reply priced so far, those of runs that ended in an error included
+                let spent = *bench.spent.lock().unwrap();
                 let left = opts.budget.map_or(f64::INFINITY, |b| b - spent);
                 if left <= 0.0 {
                     stopped = Some(format!("the budget of ${} is spent", opts.budget.unwrap_or_default()));
@@ -169,7 +172,6 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
                 };
                 match done {
                     Ok(rec) => {
-                        spent += rec.cost;
                         eprintln!(
                             "bench: {} {}: score {:.2}% in {} steps, ${:.4}",
                             rec.task,
@@ -274,6 +276,16 @@ pub fn report(out: &std::path::Path, inputs: &[PathBuf], summary: Option<&std::p
     Ok(0)
 }
 
+/// Refuses an `out` that holds an earlier benchmark's runs: a new run would overwrite their
+/// transcripts while their records stay, and the reports would mix the two.
+fn fresh_out(out: &std::path::Path) -> anyhow::Result<()> {
+    let file = out.join("results.jsonl");
+    if std::fs::read_to_string(&file).is_ok_and(|t| !t.trim().is_empty()) {
+        bail!("{} already holds an earlier benchmark's runs; give another --out", file.display());
+    }
+    Ok(())
+}
+
 /// Keeps the benchmark's agents away from the person's own nexo: settings, sessions and caches live
 /// under `<out>/.nexo`, the curator is the built-in one, and the key reaches the provider through an
 /// environment variable of this process only.
@@ -295,6 +307,16 @@ fn isolate(out: &std::path::Path, key: Option<&str>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_out_folder_with_earlier_results_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(fresh_out(dir.path()).is_ok());
+        std::fs::write(dir.path().join("results.jsonl"), "").unwrap();
+        assert!(fresh_out(dir.path()).is_ok(), "an empty file holds no runs");
+        std::fs::write(dir.path().join("results.jsonl"), "{}\n").unwrap();
+        assert!(fresh_out(dir.path()).unwrap_err().to_string().contains("results.jsonl"));
+    }
 
     #[test]
     fn llmb_task_names_are_split_off() {

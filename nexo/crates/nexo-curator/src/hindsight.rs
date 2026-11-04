@@ -52,11 +52,13 @@ pub fn set_of(mut v: Vec<Sym>) -> Set {
 
 static WORD: LazyLock<Re> = LazyLock::new(|| Re::new(r"[A-Za-z_$][\w$]*(?:[./-][\w$]+)*|\d+(?:\.\d+)+|\d{4,}", 0));
 
-const FILE_EXT: [&str; 56] = [
+const FILE_EXT: [&str; 92] = [
     "py", "js", "mjs", "ts", "tsx", "jsx", "md", "json", "jsonl", "toml", "yaml", "yml", "txt", "cfg", "ini", "sh",
     "rs", "go", "java", "c", "h", "cc", "cpp", "hpp", "cs", "css", "scss", "html", "sql", "lock", "log", "csv", "xml",
     "env", "db", "rb", "php", "swift", "kt", "conf", "docx", "pdf", "lua", "vue", "svelte", "ipynb", "proto", "tf",
-    "gradle", "mod", "sum", "zig", "ex", "exs", "dart", "",
+    "gradle", "mod", "sum", "zig", "ex", "exs", "dart", "", "tsv", "xls", "xlsx", "ods", "parquet", "feather", "arrow",
+    "avro", "pkl", "pickle", "npy", "npz", "h5", "hdf5", "sqlite", "rds", "rmd", "dta", "pptx", "odt", "rst", "tex",
+    "astro", "mdx", "svg", "png", "jpg", "jpeg", "gif", "webp", "graphql", "gql", "less", "sass", "erb", "hbs",
 ];
 
 const TLD: [&str; 28] = [
@@ -323,3 +325,18 @@ impl Tracer {
 }
 
 static NULL_TEXT: Value = Value::Null;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_and_web_file_names_are_names() {
+        let mut int = Interner::default();
+        let text = "load sales.xlsx, fix schema.graphql, index.astro, logo.svg and model.parquet";
+        let got: Vec<String> = words(text, &mut int).into_iter().map(|k| int.get(k).to_string()).collect();
+        for name in ["sales.xlsx", "schema.graphql", "index.astro", "logo.svg", "model.parquet"] {
+            assert!(got.iter().any(|w| w == name), "{name}: {got:?}");
+        }
+    }
+}

@@ -18,25 +18,71 @@ pub enum Kind {
 const PATH_KEYS: [&str; 7] = ["file_path", "path", "filepath", "filename", "target_file", "file", "notebook_path"];
 const CMD_KEYS: [&str; 3] = ["command", "cmd", "script"];
 
-static KIND_PATTERNS: LazyLock<Vec<(Kind, Re)>> = LazyLock::new(|| {
-    vec![
-        (Kind::Write, Re::new(r"(edit|write|create|patch|replace|insert|apply|multiedit|str_replace)", I)),
-        (Kind::Read, Re::new(r"(read|view|open|cat|get_file|fetch_file|recall)", I)),
-        (Kind::Search, Re::new(r"(grep|glob|search|find|list|ls)", I)),
-        (Kind::Exec, Re::new(r"(bash|shell|exec|run|terminal|command)", I)),
-    ]
-});
+/// The words of a tool name that give its kind, checked in this order. A word counts only as a whole word of
+/// the name (split at `_`, `-`, `.`, `:` and case changes), so `get_thread` is not a read nor
+/// `list_notifications` a print of a file.
+const KIND_WORDS: [(Kind, &[&str]); 4] = [
+    (Kind::Write, &["edit", "multiedit", "write", "create", "patch", "replace", "insert", "apply"]),
+    (Kind::Read, &["read", "view", "open", "cat", "recall"]),
+    (Kind::Search, &["grep", "glob", "search", "find", "list", "ls"]),
+    (Kind::Exec, &["bash", "shell", "exec", "execute", "run", "terminal", "command"]),
+];
+/// What a kind word may be joined to in one word of a name (`readfile`, `listdir`, `runcommand`).
+const OBJECT_WORDS: [&str; 11] =
+    ["file", "files", "dir", "dirs", "directory", "path", "paths", "command", "cmd", "notebook", "s"];
+/// Subcommands of an editor tool that only show a file.
+const VIEW_COMMANDS: [&str; 3] = ["view", "read", "show"];
+
+/// The lower-case words of a tool name.
+fn name_words(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for c in name.chars() {
+        if !c.is_alphanumeric() {
+            out.extend((!cur.is_empty()).then(|| std::mem::take(&mut cur)));
+            prev_lower = false;
+            continue;
+        }
+        if c.is_uppercase() && prev_lower {
+            out.push(std::mem::take(&mut cur));
+        }
+        prev_lower = c.is_lowercase() || c.is_ascii_digit();
+        cur.extend(c.to_lowercase());
+    }
+    out.extend((!cur.is_empty()).then_some(cur));
+    out
+}
+
+/// The kind a tool name gives, or `Other`.
+fn name_kind(name: &str) -> Kind {
+    let words = name_words(name);
+    let has =
+        |k: &str| words.iter().any(|w| w == k || w.strip_prefix(k).is_some_and(|rest| OBJECT_WORDS.contains(&rest)));
+    // `get_file`, `fetch_file`: a read by its object
+    let get_file = words.windows(2).any(|p| matches!(p[0].as_str(), "get" | "fetch") && p[1] == "file");
+    for (kind, ws) in KIND_WORDS {
+        if ws.iter().any(|w| has(w)) || (kind == Kind::Read && get_file) {
+            return kind;
+        }
+    }
+    Kind::Other
+}
 
 /// (kind, path, command) of a tool call.
 pub fn classify(name: &str, args: Option<&Value>) -> (Kind, Option<String>, Option<String>) {
     let args = args.and_then(Value::as_object);
-    let kind = KIND_PATTERNS.iter().find(|(_, p)| p.is_match(name)).map_or(Kind::Other, |(k, _)| *k);
+    let kind = name_kind(name);
     let get = |keys: &[&str]| -> Option<String> {
         let a = args?;
         keys.iter().find_map(|k| a.get(*k).and_then(Value::as_str).map(str::to_string))
     };
     let path = get(&PATH_KEYS);
     let command = get(&CMD_KEYS);
+    // an editor tool asked to show a file (`{"command": "view", "path": …}`) reads it
+    if kind == Kind::Write && command.as_deref().is_some_and(|c| VIEW_COMMANDS.contains(&c)) {
+        return (Kind::Read, path, command);
+    }
     let kind = if kind == Kind::Other && command.as_deref().is_some_and(|c| !c.is_empty()) { Kind::Exec } else { kind };
     (kind, path, command)
 }
@@ -215,13 +261,28 @@ static HEREDOC_WRITE: LazyLock<Re> = LazyLock::new(|| {
         S | M,
     )
 });
-// Where the command line of a here-document sends it whole (`>>` appends and `tee -a` too: not a whole write).
+// Where the simple command fed by a here-document sends it whole: `cat` with its output sent to a file (`>>`
+// appends: not a whole write), or `tee` (`-a`, `--append` append).
 static HEREDOC_TARGET: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
-        r#"(?:^|[;&|(]|\s)(?:cat(?:\s+-)?\s*(?:[^>\n]*?(?<![>&\d])>(?!>)|>(?!>))|tee(?!\s+-a)(?:\s+--?\w+)*)\s*['"]?(?P<path>[^\s'";|&<>()]+)"#,
+        r#"^\s*(?:cat(?:\s+-)?\s*(?:[^>]*?(?<![>&\d])>(?!>)|>(?!>))|tee(?P<flags>(?:\s+-[-\w]*)*))\s*['"]?(?P<path>[^\s'";|&<>()]+)"#,
         0,
     )
 });
+
+/// The file a simple command fed by a here-document writes whole with it, if any. `next` is the command its
+/// output is piped to: a bare `cat` piped to `tee f` writes `f`; anything else reads the text and writes its
+/// own output.
+fn heredoc_target(cmd: &str, next: Option<&str>) -> Option<String> {
+    let first = cmd.split_whitespace().next()?;
+    let cmd = if first == "cat" && cmd.split_whitespace().count() == 1 && next.is_some() { next? } else { cmd };
+    let t = HEREDOC_TARGET.search(cmd)?;
+    let flags = group(cmd, &t, HEREDOC_TARGET.group("flags")).unwrap_or("");
+    if flags.split_whitespace().any(|f| f == "--append" || (!f.starts_with("--") && f.contains('a'))) {
+        return None;
+    }
+    group(cmd, &t, HEREDOC_TARGET.group("path")).map(str::to_string)
+}
 
 /// The files a shell command writes whole through a here-document (`cat > f <<'EOF' … EOF`), with the text
 /// written. Device paths are left out.
@@ -230,9 +291,13 @@ pub fn heredoc_writes(command: &str) -> Vec<(String, String)> {
     let r = &*HEREDOC_WRITE;
     let (before, dash, after, body) = (r.group("before"), r.group("dash"), r.group("after"), r.group("body"));
     for m in r.captures_all(command) {
-        let line = format!("{} {}", group(command, &m, before).unwrap_or(""), group(command, &m, after).unwrap_or(""));
-        let Some(t) = HEREDOC_TARGET.search(&line) else { continue };
-        let Some(path) = group(&line, &t, HEREDOC_TARGET.group("path")) else { continue };
+        // the simple command the here-document feeds: the end of the line before it and the start after it
+        let head = simple_commands(group(command, &m, before).unwrap_or("")).pop().map(|c| c.0).unwrap_or_default();
+        let tail = simple_commands(group(command, &m, after).unwrap_or(""));
+        let next = tail.get(1).filter(|c| c.1).map(|c| c.0.as_str());
+        let cmd = format!("{} {}", head, tail.first().map_or("", |c| c.0.as_str()));
+        let Some(path) = heredoc_target(&cmd, next) else { continue };
+        let path = path.as_str();
         if path.starts_with("/dev/") || path.starts_with('$') {
             continue;
         }
@@ -312,6 +377,14 @@ mod tests {
         assert!(heredoc_writes("tee -a log.txt <<EOF\nmore\nEOF").is_empty());
         assert!(heredoc_writes("node - <<'EOF' > out.txt\nconsole.log(1)\nEOF").is_empty());
         assert!(heredoc_writes("cat > /dev/null <<EOF\nx\nEOF").is_empty());
+        // a program fed by the here-document writes its own output, wherever it goes
+        assert!(heredoc_writes("node - <<'EOF' 2>&1 | tee run.log\nconsole.log(42)\nEOF").is_empty());
+        assert!(heredoc_writes("cat <<'EOF' | node > out.csv\nconsole.log(1)\nEOF").is_empty());
+        assert!(heredoc_writes("tee --append log.txt <<EOF\nmore\nEOF").is_empty());
+        assert!(heredoc_writes("tee -i -a log.txt <<EOF\nmore\nEOF").is_empty());
+        // a bare cat piped to tee, and a tee with other flags, write the text whole
+        assert_eq!(heredoc_writes("cat <<EOF | tee c.txt\nhi\nEOF"), vec![("c.txt".to_string(), "hi\n".to_string())]);
+        assert_eq!(heredoc_writes("tee -i d.txt <<EOF >/dev/null\nhi\nEOF")[0].0, "d.txt");
         // the last of two writes of one file is what it holds
         let two = "cat > a.txt <<EOF\none\nEOF\ncat > a.txt <<EOF\ntwo\nEOF";
         assert_eq!(heredoc_writes(two), vec![("a.txt".to_string(), "two\n".to_string())]);
@@ -321,6 +394,49 @@ mod tests {
     fn kinds() {
         assert_eq!(classify("Read", Some(&json!({"file_path": "a.rs"}))).0, Kind::Read);
         assert_eq!(classify("mystery", Some(&json!({"command": "ls"}))).0, Kind::Exec);
+    }
+
+    #[test]
+    fn an_editor_view_is_a_read() {
+        let view = json!({"command": "view", "path": "a.rs", "view_range": [1, 20]});
+        assert_eq!(classify("str_replace_based_edit_tool", Some(&view)).0, Kind::Read);
+        assert!(partial_read("str_replace_editor", Some(&view)));
+        let edit = json!({"command": "str_replace", "path": "a.rs", "old_str": "a", "new_str": "b"});
+        assert_eq!(classify("str_replace_based_edit_tool", Some(&edit)).0, Kind::Write);
+    }
+
+    #[test]
+    fn a_kind_word_counts_only_as_a_whole_word_of_the_name() {
+        for (name, kind) in [
+            ("Read", Kind::Read),
+            ("read_file", Kind::Read),
+            ("readFile", Kind::Read),
+            ("readfile", Kind::Read),
+            ("get_file_contents", Kind::Read),
+            ("recall", Kind::Read),
+            ("Edit", Kind::Write),
+            ("MultiEdit", Kind::Write),
+            ("multiedit", Kind::Write),
+            ("apply_patch", Kind::Write),
+            ("write_file", Kind::Write),
+            ("Grep", Kind::Search),
+            ("LS", Kind::Search),
+            ("list_dir", Kind::Search),
+            ("listdir", Kind::Search),
+            ("codebase_search", Kind::Search),
+            ("Bash", Kind::Exec),
+            ("run_command", Kind::Exec),
+            ("run_terminal_cmd", Kind::Exec),
+            ("mcp__chat__get_thread", Kind::Other),
+            ("slack_get_thread_replies", Kind::Other),
+            ("list_notifications", Kind::Search),
+            ("get_category", Kind::Other),
+            ("get_spreadsheet", Kind::Other),
+            ("get_details", Kind::Other),
+            ("fetch_urls", Kind::Other),
+        ] {
+            assert_eq!(classify(name, None).0, kind, "{name}");
+        }
     }
 
     #[test]

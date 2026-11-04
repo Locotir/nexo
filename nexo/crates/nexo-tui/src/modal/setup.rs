@@ -145,8 +145,10 @@ impl Setup {
             .iter()
             .map(|(name, c)| {
                 let running = self.local.iter().find(|(p, _)| p == name).map(|(_, w)| w.clone());
+                // a key kept with `nexo auth login` counts too; a command is not run just to list
+                let stored = || nexo_core::auth::get(c.auth.as_deref().unwrap_or(name)).is_some();
                 let key = match &c.api_key_env {
-                    _ if c.api_key_cmd.is_some() => "key ✓".to_string(),
+                    _ if c.api_key_cmd.is_some() || stored() => "key ✓".to_string(),
                     Some(v) if std::env::var(v).is_ok_and(|k| !k.trim().is_empty()) => "key ✓".to_string(),
                     Some(v) => format!("needs {v}"),
                     None => String::new(),
@@ -491,6 +493,10 @@ impl Setup {
             }
             Step::Key => {
                 if let Some(var) = text.strip_prefix('$') {
+                    if !std::env::var(var).is_ok_and(|k| !k.trim().is_empty()) {
+                        self.error = Some(format!("${var} is not set in this shell"));
+                        return SetupOut::Nothing;
+                    }
                     self.cfg.api_key_env = Some(var.to_string());
                     self.cfg.api_key_cmd = None;
                     self.key = None;
@@ -818,6 +824,30 @@ mod tests {
             s.paste("  key-abc\x1b[2J\r\ndef\x07\r\n");
             assert_eq!(s.field, "key-abcdef", "{step:?}");
         }
+    }
+
+    #[test]
+    fn a_key_kept_with_auth_login_counts_as_found() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("auth.json");
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("deepseek".to_string(), nexo_core::auth::Credential::Api { key: "stored".into() });
+        nexo_core::auth::write_to(&f, &map).unwrap();
+        std::env::set_var("NEXO_AUTH_FILE", &f);
+        let s = setup();
+        std::env::remove_var("NEXO_AUTH_FILE");
+        let row = s.list.items.iter().find(|i| i.value == "new:deepseek").unwrap();
+        assert!(row.hint.ends_with("key ✓"), "{}", row.hint);
+    }
+
+    #[test]
+    fn an_unset_variable_at_the_key_step_is_named_not_probed() {
+        let mut s = setup();
+        s.step = Step::Key;
+        typing(&mut s, "$NEXO_TEST_NO_SUCH_KEY");
+        assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing);
+        assert_eq!(s.error.as_deref(), Some("$NEXO_TEST_NO_SUCH_KEY is not set in this shell"));
+        assert_eq!(s.step, Step::Key);
     }
 
     #[test]

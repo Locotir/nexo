@@ -114,14 +114,24 @@ fn n(x: u64) -> String {
     out
 }
 
-/// Prompt-token savings of arm `a` against arm `b` over the (task, repeat) pairs both ran:
-/// (percent saved, tokens of a, tokens of b, pairs).
+/// A run the budget stopped: its numbers are too low to compare.
+fn cut(r: &Record) -> bool {
+    r.stop == Some(crate::client::Stop::Budget)
+}
+
+/// Prompt-token savings of arm `a` against arm `b` over the tasks both ran, each task's mean over
+/// its whole runs (runs the budget cut are left out): (percent saved, tokens of a, tokens of b, tasks).
 pub fn savings(records: &[Record], a: &str, b: &str) -> Option<(f64, u64, u64, usize)> {
-    let of = |arm: &str| -> BTreeMap<(String, u32), u64> {
-        records.iter().filter(|r| r.arm == arm).map(|r| ((r.task.clone(), r.rep), prompt_tokens(r))).collect()
+    let of = |arm: &str| -> BTreeMap<&str, u64> {
+        let mut sums: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+        for r in records.iter().filter(|r| r.arm == arm && !cut(r)) {
+            let e = sums.entry(r.task.as_str()).or_default();
+            *e = (e.0 + prompt_tokens(r), e.1 + 1);
+        }
+        sums.into_iter().map(|(t, (sum, k))| (t, (sum as f64 / k as f64).round() as u64)).collect()
     };
     let (ta, tb) = (of(a), of(b));
-    let common: Vec<&(String, u32)> = ta.keys().filter(|k| tb.contains_key(*k)).collect();
+    let common: Vec<&&str> = ta.keys().filter(|k| tb.contains_key(*k)).collect();
     let sa: u64 = common.iter().map(|k| ta[*k]).sum();
     let sb: u64 = common.iter().map(|k| tb[*k]).sum();
     (sb > 0).then(|| (100.0 * (1.0 - sa as f64 / sb as f64), sa, sb, common.len()))
@@ -135,8 +145,11 @@ pub fn conclusions(records: &[Record]) -> Vec<String> {
         out.push("No runs to compare.".into());
         return out;
     }
-    let all: Vec<(String, String, Totals)> =
-        arms.iter().map(|(a, p)| (a.clone(), p.clone(), totals(records.iter().filter(|r| &r.arm == a)))).collect();
+    let unknown = records.iter().any(|r| r.estimated);
+    let all: Vec<(String, String, Totals)> = arms
+        .iter()
+        .map(|(a, p)| (a.clone(), p.clone(), totals(records.iter().filter(|r| &r.arm == a && !cut(r)))))
+        .collect();
     let best = all
         .iter()
         .max_by(|x, y| x.2.mean().total_cmp(&y.2.mean()).then(y.2.cost.total_cmp(&x.2.cost)))
@@ -148,7 +161,7 @@ pub fn conclusions(records: &[Record]) -> Vec<String> {
         best.2.mean(),
         best.2.runs
     ));
-    for (a, _, t) in &all {
+    for (a, _, t) in all.iter().filter(|_| !unknown) {
         match t.cost_per_point() {
             Some(c) => out.push(format!(
                 "<b>{}</b> costs <b>${:.5}</b> per point (total cost <b>${:.4}</b>).",
@@ -165,19 +178,27 @@ pub fn conclusions(records: &[Record]) -> Vec<String> {
             let Some(o) = by_policy(other) else { continue };
             match savings(records, &cur, &o) {
                 Some((pct, sa, sb, k)) if pct >= 0.0 => out.push(format!(
-                    "The curator (<b>{}</b>) saves <b>{:.1}%</b> input tokens against <b>{}</b>: <b>{}</b> versus <b>{}</b>, over <b>{k}</b> common runs.",
+                    "The curator (<b>{}</b>) saves <b>{:.1}%</b> input tokens against <b>{}</b>: <b>{}</b> versus <b>{}</b>, the mean run of <b>{k}</b> common tasks.",
                     esc(&cur), pct, esc(&o), n(sa), n(sb)
                 )),
                 Some((pct, sa, sb, k)) => out.push(format!(
-                    "The curator (<b>{}</b>) uses <b>{:.1}%</b> more input tokens than <b>{}</b>: <b>{}</b> versus <b>{}</b>, over <b>{k}</b> common runs.",
+                    "The curator (<b>{}</b>) uses <b>{:.1}%</b> more input tokens than <b>{}</b>: <b>{}</b> versus <b>{}</b>, the mean run of <b>{k}</b> common tasks.",
                     esc(&cur), -pct, esc(&o), n(sa), n(sb)
                 )),
                 None => out.push(format!("No common runs between <b>{}</b> and <b>{}</b>.", esc(&cur), esc(&o))),
             }
         }
     }
-    if records.iter().any(|r| r.estimated) {
-        out.push("Note: costs are <b>estimated</b> (prices of an unknown model).".into());
+    let k = records.iter().filter(|r| cut(r)).count();
+    if k > 0 {
+        out.push(format!(
+            "<b>{k}</b> run{} cut by the budget {} left out of these conclusions.",
+            if k == 1 { "" } else { "s" },
+            if k == 1 { "is" } else { "are" }
+        ));
+    }
+    if unknown {
+        out.push("Note: costs are unknown (no prices for this model; <code>--price</code> gives them).".into());
     }
     out
 }
@@ -234,6 +255,11 @@ svg text.v{font-weight:bold}
 .charts figure{flex:1 1 320px}
 "#;
 
+/// Whether `r` is a run of `arm` on `task`, repeat `rep`.
+fn same(r: &Record, arm: &str, task: &str, rep: u32) -> bool {
+    r.arm == arm && r.task == task && r.rep == rep
+}
+
 /// The page for `records`.
 pub fn render(records: &[Record]) -> String {
     let arms = arms(records);
@@ -248,14 +274,17 @@ pub fn render(records: &[Record]) -> String {
     s.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>nexo bench</title><style>");
     s.push_str(STYLE);
     s.push_str("</style></head><body><h1>nexo bench: report</h1>");
+    // no prices known: every cost is 0, so none is shown
+    let unknown = records.iter().any(|r| r.estimated);
+    let usd = |x: f64, places: usize| if unknown { "unknown".to_string() } else { format!("{x:.places$}") };
     let spent: f64 = records.iter().map(|r| r.cost).sum();
     let _ = write!(
         s,
-        "<p class=\"m\"><b>{}</b> runs. <b>{}</b> arms. <b>{}</b> families. Total cost <b>${:.4}</b>.</p>",
+        "<p class=\"m\"><b>{}</b> runs. <b>{}</b> arms. <b>{}</b> families. Total cost <b>{}</b>.</p>",
         records.len(),
         arms.len(),
         families.len(),
-        spent
+        if unknown { "unknown".to_string() } else { format!("${spent:.4}") }
     );
 
     s.push_str("<h2>Conclusions</h2><ul class=\"c\">");
@@ -285,15 +314,15 @@ pub fn render(records: &[Record]) -> String {
             }
             let _ = write!(
                 s,
-                "<tr><td><b>{}</b></td><td>{}</td><td>{}</td><td><b>{:.1}%</b></td><td>{}</td><td>{}</td><td><b>{:.4}</b></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0}</td><td>{}</td></tr>",
+                "<tr><td><b>{}</b></td><td>{}</td><td>{}</td><td><b>{:.1}%</b></td><td>{}</td><td>{}</td><td><b>{}</b></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0}</td><td>{}</td></tr>",
                 esc(a),
                 esc(p),
                 t.runs,
                 t.mean(),
                 t.ok,
                 t.steps,
-                t.cost,
-                t.cost_per_point().map_or("-".into(), |c| format!("{c:.5}")),
+                usd(t.cost, 4),
+                t.cost_per_point().map_or("-".into(), |c| usd(c, 5)),
                 n(t.input),
                 n(t.cache),
                 n(t.output),
@@ -310,7 +339,9 @@ pub fn render(records: &[Record]) -> String {
             s.push_str("<div class=\"charts\">");
             s.push_str(&bars("Mean score", &chart_score));
             s.push_str(&bars("Tokens per run", &chart_tokens));
-            s.push_str(&bars("Total cost", &chart_cost));
+            if !unknown {
+                s.push_str(&bars("Total cost", &chart_cost));
+            }
             s.push_str("</div>");
         }
     }
@@ -320,23 +351,29 @@ pub fn render(records: &[Record]) -> String {
         let _ = write!(s, "<th>{0} score</th><th>{0} $</th><th>{0} tokens</th>", esc(a));
     }
     s.push_str("</tr>");
-    let mut keys: Vec<(String, u32)> = Vec::new();
+    // merged files may hold several runs of one (task, arm, repeat): the k-th of each arm share a row
+    let nth = |r: &Record| {
+        records.iter().take_while(|x| !std::ptr::eq(*x, r)).filter(|x| same(x, &r.arm, &r.task, r.rep)).count()
+    };
+    let mut keys: Vec<(String, u32, usize)> = Vec::new();
     for r in records {
-        if !keys.contains(&(r.task.clone(), r.rep)) {
-            keys.push((r.task.clone(), r.rep));
+        let key = (r.task.clone(), r.rep, nth(r));
+        if !keys.contains(&key) {
+            keys.push(key);
         }
     }
-    for (task, rep) in &keys {
-        let _ = write!(s, "<tr><td>{}</td><td>{rep}</td>", esc(task));
+    for (task, rep, k) in &keys {
+        let run = if *k == 0 { String::new() } else { format!(" (run {})", k + 1) };
+        let _ = write!(s, "<tr><td>{}</td><td>{rep}{run}</td>", esc(task));
         for (a, _) in &arms {
-            match records.iter().find(|r| &r.arm == a && &r.task == task && r.rep == *rep) {
+            match records.iter().filter(|r| same(r, a, task, *rep)).nth(*k) {
                 Some(r) => {
                     let _ = write!(
                         s,
-                        "<td><b>{:.0}%</b>{}</td><td>{:.4}</td><td>{}</td>",
+                        "<td><b>{:.0}%</b>{}</td><td>{}</td><td>{}</td>",
                         r.score * 100.0,
                         if r.finished { "" } else { " (stopped)" },
-                        r.cost,
+                        usd(r.cost, 4),
                         n(prompt_tokens(r))
                     );
                 }
@@ -411,6 +448,51 @@ mod tests {
         // $0.02 for 125 points
         assert!(html.contains("<b>$0.00016</b> per point"), "{html}");
         assert!(html.contains("Family repoqa") && html.contains("Family canonstep") && html.contains("<svg"));
+    }
+
+    #[test]
+    fn unknown_prices_show_no_dollar_figures() {
+        let mut records = vec![
+            rec("repoqa/a", "plain", "plain", 0.5, 0.0, 10_000),
+            rec("repoqa/a", "curator", "curator", 1.0, 0.0, 4_000),
+        ];
+        records.iter_mut().for_each(|r| r.estimated = true);
+        let html = render(&records);
+        assert!(!html.contains("$0.0") && !html.contains("0.0000<") && !html.contains("per point"), "{html}");
+        assert!(!html.contains("Total cost</text>") && html.contains("costs are unknown"), "{html}");
+        assert!(html.contains("Total cost <b>unknown</b>"), "{html}");
+    }
+
+    #[test]
+    fn runs_cut_by_the_budget_stay_out_of_the_conclusions() {
+        let mut cut = rec("repoqa/b", "curator", "curator", 0.0, 0.001, 500);
+        cut.stop = Some(crate::client::Stop::Budget);
+        let records = vec![
+            rec("repoqa/a", "plain", "plain", 0.5, 0.02, 10_000),
+            rec("repoqa/a", "curator", "curator", 0.5, 0.01, 4_000),
+            rec("repoqa/b", "plain", "plain", 0.5, 0.02, 10_000),
+            cut,
+        ];
+        let c = conclusions(&records).join("\n");
+        assert!(c.contains("saves <b>60.0%</b>"), "{c}");
+        assert!(c.contains("mean score <b>50.0%</b> over <b>"), "{c}");
+        assert!(c.contains("<b>1</b> run cut by the budget"), "{c}");
+    }
+
+    #[test]
+    fn merged_runs_of_the_same_task_and_repeat_are_all_counted() {
+        let records = vec![
+            rec("repoqa/a", "plain", "plain", 0.5, 0.02, 10_000),
+            rec("repoqa/a", "curator", "curator", 0.5, 0.01, 4_000),
+            rec("repoqa/a", "plain", "plain", 0.5, 0.02, 20_000),
+            rec("repoqa/a", "curator", "curator", 0.5, 0.01, 16_000),
+        ];
+        // means: 10,000 against 15,000
+        let (pct, sa, sb, _) = savings(&records, "curator", "plain").unwrap();
+        assert_eq!((sa, sb), (10_000, 15_000));
+        assert!((pct - 33.333).abs() < 0.01);
+        let html = render(&records);
+        assert!(html.contains("16,000") && html.contains("20,000"), "{html}");
     }
 
     #[test]

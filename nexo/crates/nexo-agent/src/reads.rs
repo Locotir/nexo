@@ -100,18 +100,28 @@ impl Reads {
         offset: Option<u64>,
         limit: u64,
         call_id: &str,
+        printed: usize,
     ) -> Option<String> {
         let start = offset.unwrap_or(1).max(1) as usize;
         let end = start + limit.max(1) as usize - 1;
-        self.after_lines(path, shown, Span::From(start, Some(end)), call_id)
+        self.after_lines(path, shown, Span::From(start, Some(end)), call_id, printed)
     }
 
-    /// After a call that printed `span` of `path`: the note the model gets instead of the
-    /// output when it has those lines already.
-    pub fn after_lines(&mut self, path: &Path, shown: &str, span: Span, call_id: &str) -> Option<String> {
+    /// After a call that printed `span` of `path`, in an output of `printed` characters: the note
+    /// the model gets instead of the output when it has those lines already. An output shorter than
+    /// the lines it was to hold was cut by the tool, and does not count as holding them.
+    pub fn after_lines(
+        &mut self,
+        path: &Path,
+        shown: &str,
+        span: Span,
+        call_id: &str,
+        printed: usize,
+    ) -> Option<String> {
         let bytes = std::fs::read(path).ok()?;
         let hash = digest(&bytes);
-        let total = String::from_utf8_lossy(&bytes).lines().count();
+        let text = String::from_utf8_lossy(&bytes);
+        let total = text.lines().count();
         let (start, end) = match span {
             Span::From(a, b) => (a.max(1), b.unwrap_or(total).min(total)),
             Span::Last(n) => (total.saturating_sub(n) + 1, total),
@@ -155,6 +165,11 @@ impl Reads {
             ));
         }
         seen.noted = false;
+        let need: usize = text.lines().skip(start - 1).take(end + 1 - start).map(|l| l.chars().count()).sum::<usize>()
+            + (end - start);
+        if printed < need {
+            return None;
+        }
         seen.pieces.retain(|p| !(p.start == start && p.end == end));
         seen.pieces.push(Piece { start, end, anchor: call_id.to_string() });
         None
@@ -239,12 +254,12 @@ mod tests {
         let p = d.path().join("a.txt");
         std::fs::write(&p, "one\ntwo\nthree\n").unwrap();
         let mut r = Reads::default();
-        assert!(r.after_read(&p, "a.txt", None, 2000, "c1").is_none());
+        assert!(r.after_read(&p, "a.txt", None, 2000, "c1", usize::MAX).is_none());
         r.note_view(&[result("c1", "     1│ one")]);
-        let note = r.after_read(&p, "a.txt", Some(2), 1, "c2").unwrap();
+        let note = r.after_read(&p, "a.txt", Some(2), 1, "c2", usize::MAX).unwrap();
         assert!(note.contains("not repeated"), "{note}");
         // asked again right after the note: the model wants the lines
-        assert!(r.after_read(&p, "a.txt", None, 2000, "c3").is_none());
+        assert!(r.after_read(&p, "a.txt", None, 2000, "c3", usize::MAX).is_none());
     }
 
     #[test]
@@ -253,13 +268,13 @@ mod tests {
         let p = d.path().join("a.txt");
         std::fs::write(&p, "one\ntwo\n").unwrap();
         let mut r = Reads::default();
-        r.after_read(&p, "a.txt", None, 2000, "c1");
+        r.after_read(&p, "a.txt", None, 2000, "c1", usize::MAX);
         // the curator left the result out
         r.note_view(&[result("c1", "[curator] read output omitted as no longer needed")]);
-        assert!(r.after_read(&p, "a.txt", None, 2000, "c2").is_none());
+        assert!(r.after_read(&p, "a.txt", None, 2000, "c2", usize::MAX).is_none());
         r.note_view(&[result("c2", "     1│ one")]);
         std::fs::write(&p, "one\nTWO\n").unwrap();
-        assert!(r.after_read(&p, "a.txt", None, 2000, "c3").is_none());
+        assert!(r.after_read(&p, "a.txt", None, 2000, "c3", usize::MAX).is_none());
     }
 
     #[test]
@@ -268,9 +283,9 @@ mod tests {
         let p = d.path().join("a.txt");
         std::fs::write(&p, "1\n2\n3\n4\n").unwrap();
         let mut r = Reads::default();
-        r.after_read(&p, "a.txt", Some(1), 2, "c1");
+        r.after_read(&p, "a.txt", Some(1), 2, "c1", usize::MAX);
         r.note_view(&[result("c1", "x")]);
-        assert!(r.after_read(&p, "a.txt", None, 2000, "c2").is_none());
+        assert!(r.after_read(&p, "a.txt", None, 2000, "c2", usize::MAX).is_none());
     }
 
     #[test]
@@ -282,7 +297,7 @@ mod tests {
         let header = attached_header("a.txt");
         r.attached(p.clone(), b"one\n", header.clone());
         r.note_view(&[Message::user(format!("look\n\n{header}\n```txt\none\n```"))]);
-        let note = r.after_read(&p, "a.txt", None, 2000, "c1").unwrap();
+        let note = r.after_read(&p, "a.txt", None, 2000, "c1", usize::MAX).unwrap();
         assert!(note.contains("attached"), "{note}");
     }
 
@@ -292,19 +307,35 @@ mod tests {
         let p = d.path().join("a.txt");
         std::fs::write(&p, (1..=30).map(|i| format!("{i}\n")).collect::<String>()).unwrap();
         let mut r = Reads::default();
-        assert!(r.after_lines(&p, "a.txt", Span::From(1, Some(12)), "c1").is_none());
-        assert!(r.after_lines(&p, "a.txt", Span::From(10, Some(30)), "c2").is_none());
+        assert!(r.after_lines(&p, "a.txt", Span::From(1, Some(12)), "c1", usize::MAX).is_none());
+        assert!(r.after_lines(&p, "a.txt", Span::From(10, Some(30)), "c2", usize::MAX).is_none());
         r.note_view(&[result("c1", "x"), result("c2", "y")]);
-        let note = r.after_lines(&p, "a.txt", Span::From(5, Some(20)), "c3").unwrap();
+        let note = r.after_lines(&p, "a.txt", Span::From(5, Some(20)), "c3", usize::MAX).unwrap();
         assert!(note.contains("lines 5-20") && note.contains("1-12, 10-30"), "{note}");
         // the last lines, already seen
         r.note_view(&[result("c1", "x"), result("c2", "y")]);
-        assert!(r.after_lines(&p, "a.txt", Span::Last(5), "c4").is_none(), "one note, then the lines");
+        assert!(r.after_lines(&p, "a.txt", Span::Last(5), "c4", usize::MAX).is_none(), "one note, then the lines");
         r.note_view(&[result("c1", "x"), result("c2", "y"), result("c4", "z")]);
-        assert!(r.after_lines(&p, "a.txt", Span::Last(5), "c5").is_some());
+        assert!(r.after_lines(&p, "a.txt", Span::Last(5), "c5", usize::MAX).is_some());
         // one of the two parts out of view: the lines come in full
         r.note_view(&[result("c2", "y")]);
-        assert!(r.after_lines(&p, "a.txt", Span::From(5, Some(20)), "c6").is_none());
+        assert!(r.after_lines(&p, "a.txt", Span::From(5, Some(20)), "c6", usize::MAX).is_none());
+    }
+
+    #[test]
+    fn an_output_cut_short_does_not_count_as_holding_the_lines() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.log");
+        let body: String = (1..=300).map(|i| format!("line {i} {}\n", "x".repeat(100))).collect();
+        std::fs::write(&p, &body).unwrap();
+        let mut r = Reads::default();
+        // the tool kept the head and the tail of the output only
+        assert!(r.after_lines(&p, "a.log", Span::From(1, None), "c1", 3_000).is_none());
+        r.note_view(&[result("c1", "head … [characters omitted] … tail")]);
+        assert!(r.after_lines(&p, "a.log", Span::From(150, Some(160)), "c2", 2_000).is_none(), "lines never sent");
+        // a whole output does
+        r.note_view(&[result("c2", "lines 150-160")]);
+        assert!(r.after_lines(&p, "a.log", Span::From(152, Some(155)), "c3", 500).is_some());
     }
 
     #[test]

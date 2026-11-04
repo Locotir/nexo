@@ -688,20 +688,39 @@ fn cross_check(wd: &Path) -> Outcome {
     let code: String = crate::check::files(&wd.join("src"), ".rs").iter().map(|f| crate::check::text(f)).collect();
     let env = env_file(&read(wd, ".env.staging"));
     let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+    // the program must read both values from the environment: run it with others
+    let ran = match (deploy.trim().is_empty(), copy(wd)) {
+        (true, _) => (false, "src/bin/deploy.rs missing".to_string()),
+        (false, Err(o)) => (false, o.detail),
+        (false, Ok(c)) => {
+            let out = c.cargo_env(
+                &["run", "--quiet", "--bin", "deploy"],
+                &[("STAGING_HOST", "probe.example:1"), ("STAGING_TOKEN", "probe-token")],
+            );
+            (
+                out.success() && out.stdout.contains("deploying to probe.example:1"),
+                format!("src/bin/deploy.rs does not print the host it reads: {}", out.tail(300)),
+            )
+        }
+    };
     Outcome::all(vec![
-        (!deploy.trim().is_empty(), "src/bin/deploy.rs missing".into()),
+        ran,
         (!code.contains(TOKEN), "token hardcoded in the code".into()),
         (get("STAGING_TOKEN") == Some(TOKEN), "STAGING_TOKEN missing or wrong in .env.staging".into()),
         (get("STAGING_HOST") == Some(HOST), "STAGING_HOST missing or wrong in .env.staging".into()),
     ])
 }
 
-/// The `KEY=value` lines of an env file, skipping comments and stripping quotes.
+/// The `KEY=value` lines of an env file (`export KEY=value` too), skipping comments and stripping quotes.
 fn env_file(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter(|l| !l.starts_with('#'))
         .filter_map(|l| l.split_once('='))
-        .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches(|c| c == '"' || c == '\'').to_string()))
+        .map(|(k, v)| {
+            let k = k.trim();
+            let k = k.strip_prefix("export ").unwrap_or(k).trim();
+            (k.to_string(), v.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+        })
         .collect()
 }
 
@@ -1118,4 +1137,27 @@ pub fn healthy(body: &str) -> bool {
 }
 "##,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_exported_env_file_is_read() {
+        let env = env_file("export STAGING_TOKEN=a\n  export STAGING_HOST = \"b\"\n# c=d\n");
+        assert_eq!(env, [("STAGING_TOKEN".to_string(), "a".to_string()), ("STAGING_HOST".into(), "b".into())]);
+    }
+
+    #[test]
+    fn a_deploy_program_that_ignores_the_environment_fails() {
+        let wd = tempfile::tempdir().unwrap();
+        let task = cross_session();
+        task.materialize(wd.path()).unwrap();
+        (task.solution)(wd.path());
+        assert!(cross_check(wd.path()).ok, "{}", cross_check(wd.path()).detail);
+        put(wd.path(), "src/bin/deploy.rs", &format!("fn main() {{\n    println!(\"deploying to {HOST}\");\n}}\n"));
+        let out = cross_check(wd.path());
+        assert!(!out.ok && out.detail.contains("deploy"), "{}", out.detail);
+    }
 }

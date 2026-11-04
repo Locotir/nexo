@@ -432,6 +432,11 @@ pub struct Engine {
     last_note: Option<usize>,
     /// The messages whose last tool result carries the nudge (kept there, so the history stays as sent).
     nudged: FxHashSet<usize>,
+    /// The oldest message a note put back to how it was sent before the request was nudged: the view changed
+    /// from there, outside `decide`, which counts it.
+    unnudged: Option<usize>,
+    /// The messages of the view last decided, in order: what the provider cached.
+    sent_vis: Arc<Vec<usize>>,
     asked: FxHashSet<Sym>,
     kept_tokens: i64,
     frozen: FxHashMap<usize, String>,
@@ -823,6 +828,8 @@ impl Engine {
             since_nudge: usize::MAX,
             last_note: None,
             nudged: FxHashSet::default(),
+            unnudged: None,
+            sent_vis: Arc::default(),
             asked: FxHashSet::default(),
             kept_tokens: 0,
             frozen: FxHashMap::default(),
@@ -940,6 +947,7 @@ impl Engine {
                 // the request for notes was answered: the result that carried it goes back to how it was sent
                 for old in std::mem::take(&mut self.nudged) {
                     self.built.remove(&old);
+                    self.unnudged = Some(self.unnudged.map_or(old, |o| o.min(old)));
                 }
             }
             self.since_nudge = self.since_nudge.saturating_add(1);
@@ -1863,8 +1871,18 @@ impl Engine {
     pub fn decide(&mut self) {
         self.own.clock += 1;
         self.index_calls();
+        // what the view sent before: a message of it that a step below changes without weighing the cache
+        // (it changes what the view sends, not what is weighed) still counts in `miss`
+        let sent = self.sent_vis.clone();
+        let was_sent = |mi: usize| sent.contains(&mi);
+        let mut quiet: Vec<(&'static str, usize)> = Vec::new();
+        if let Some(mi) = self.unnudged.take().filter(|&mi| was_sent(mi)) {
+            quiet.push(("miss_note", mi));
+        }
         if self.p.loops != 0 {
-            self.fold_loops();
+            if let Some(mi) = self.fold_loops().filter(|&mi| was_sent(mi)) {
+                quiet.push(("miss_loops", mi));
+            }
         }
         let nt = self.goal.turns.len();
         // the oldest message closing steps changed in this request: the cache misses from there on
@@ -1893,7 +1911,9 @@ impl Engine {
                 self.noted_close(now);
             }
             if self.p.live != 0 {
-                self.live_drop(now);
+                if let Some(mi) = self.live_drop(now) {
+                    quiet.push(("miss_live", mi));
+                }
             }
             // what the latest request asks is weighed against every step, those of the request just closed too
             let need = self.asks(nt - 1);
@@ -1917,6 +1937,17 @@ impl Engine {
                     self.bump("cards", 1);
                 }
                 self.bump("switches", 1);
+                // the view sends the messages of another topic: the cache misses from the first that differs
+                let vis = self.visible();
+                // (the message before it joins it when they are of the same role)
+                if let Some(p) = (0..sent.len()).find(|&p| vis.get(p) != Some(&sent[p])) {
+                    let role = |m: usize| self.tr.msgs[m].get("role").and_then(Value::as_str);
+                    let joined = p > 0 && vis.get(p).is_some_and(|&m| role(m) == role(vis[p - 1]));
+                    quiet.push((
+                        "miss_switch",
+                        if joined { vis[p - 1] } else { vis.get(p).map_or(sent[p], |&m| m.min(sent[p])) },
+                    ));
+                }
             }
         }
         let t = self.tr.msgs.len();
@@ -1959,8 +1990,9 @@ impl Engine {
                     sizes = self.sizes_now();
                 }
             }
+            // `leave` writes the anchor again: the first message changes with it
             if target != 0.0 && sizes.iter().sum::<i64>() as f64 > target && self.leave(&sizes, target) {
-                first = Some(1);
+                first = Some(0);
             }
             self.bump("cap_rewrites", first.is_some() as i64);
             self.miss("miss_cap", first, &sizes, t);
@@ -1970,13 +2002,18 @@ impl Engine {
                 first = Some(first.map_or(e, |f| f.min(e)));
             }
         }
-        if self.settle(t) {
+        // what settles and what fits is weighed as a view rewritten from message 1 on (`first`); the cache
+        // misses from the oldest result settled, and from the anchor that `leave` writes again
+        let mut missed = first;
+        if let Some(mi) = self.settle(t) {
             first.get_or_insert(1);
-            self.miss("miss_settle", Some(1), &sizes, t);
+            self.miss("miss_settle", Some(mi), &sizes, t);
+            missed = Some(missed.map_or(mi, |f| f.min(mi)));
         }
         if self.fit() {
             first.get_or_insert(1);
-            self.miss("miss_fit", Some(1), &sizes, t);
+            self.miss("miss_fit", Some(0), &sizes, t);
+            missed = Some(0);
         }
         if first.is_some() || due {
             self.checked = self.sizes_now().iter().sum();
@@ -1985,18 +2022,25 @@ impl Engine {
         self.miss("miss_close", closed, &sizes, t);
         if let Some(c) = closed {
             first = Some(first.map_or(c, |f| f.min(c)));
+            missed = Some(missed.map_or(c, |f| f.min(c)));
         }
         if let Some(mi) = self.nudge(t, first.is_some()) {
             self.miss("miss_nudge", Some(mi), &sizes, t);
             first = Some(first.map_or(mi, |f| f.min(mi)));
+            missed = Some(missed.map_or(mi, |f| f.min(mi)));
         }
         self.recite(t);
         // a view changed from message 1 on is read again nearly whole: the anchor can change with it
         if self.refresh_rules(first.is_some_and(|f| f <= 1)) {
             self.miss("miss_anchor", Some(0), &sizes, t);
-            first = Some(0);
+            missed = Some(0);
         }
-        self.miss("miss", first, &sizes, t);
+        for (k, mi) in quiet {
+            self.miss(k, Some(mi), &sizes, t);
+            missed = Some(missed.map_or(mi, |f| f.min(mi)));
+        }
+        self.miss("miss", missed, &sizes, t);
+        self.sent_vis = self.visible();
     }
 
     /// Counts under `k` the tokens of the view from message `from` on: what the provider's cache misses
@@ -2444,9 +2488,9 @@ impl Engine {
     /// person's requests do not hold, in text or in a call) goes idle; one drawn on is in use. The idle
     /// ones that pay for leaving now (the rent rule of `rent_close`) leave whole, each in its place, the
     /// call that asked for it kept. The agent works from what it reads: what it never took up in the calls
-    /// and text that followed was not what it needed, and if it is, it can run the call again. Whether
-    /// any left.
-    fn live_drop(&mut self, now: usize) -> bool {
+    /// and text that followed was not what it needed, and if it is, it can run the call again. The oldest
+    /// message an output left from, if any left.
+    fn live_drop(&mut self, now: usize) -> Option<usize> {
         let (n, nt) = (self.tr.msgs.len(), self.goal.turns.len());
         // with `named`, the outputs of a file the latest request names stay: the request is about that file
         let mut kept = if self.p.named != 0 { self.named_results() } else { FxHashSet::default() };
@@ -2496,7 +2540,7 @@ impl Engine {
             }
         }
         if idle.is_empty() {
-            return false;
+            return None;
         }
         idle.reverse();
         let sizes = self.sizes_now();
@@ -2516,7 +2560,7 @@ impl Engine {
                 (best, cut) = (gain, Some(k));
             }
         }
-        let Some(cut) = cut else { return false };
+        let cut = cut?;
         for &(_, i, _) in &idle[cut..] {
             let all = 0..self.fz.chunks[i].len();
             if self.p.lead != 0 {
@@ -2531,7 +2575,8 @@ impl Engine {
             self.bump("live_dropped", 1);
         }
         self.vis = None;
-        true
+        // the outputs are in the order of their messages
+        Some(idle[cut].0)
     }
 
     /// The lines of output `i` that hold a lead: a name no other output holds (nothing printed it again,
@@ -2875,12 +2920,10 @@ impl Engine {
     /// Read, noted, let go: once a new request has begun, a tool result of an earlier request that a later
     /// note followed leaves the view whole. The note holds what the agent took from it; a result no note
     /// followed stays, since without one the agent reads it again. All leave in the same rewrite, so the
-    /// cache breaks once per request rather than once per result.
-    fn settle(&mut self, t: usize) -> bool {
+    /// cache breaks once per request rather than once per result. The oldest message one left from, if any.
+    fn settle(&mut self, t: usize) -> Option<usize> {
         let n = self.goal.turns.len();
-        let Some(noted) = self.last_note.filter(|_| self.p.settle > 0 && n >= 2) else {
-            return false;
-        };
+        let noted = self.last_note.filter(|_| self.p.settle > 0 && n >= 2)?;
         let end = noted.min(self.goal.turns[n - 1].start).min(t);
         self.fz.context(&self.tr, t);
         let mut settled = Vec::new();
@@ -2893,15 +2936,15 @@ impl Engine {
                     && u.tokens >= SMALL_RESULT
                     && self.dropped.get(&i).map_or(0, |d| d.len()) < all
                 {
-                    settled.push((i, all));
+                    settled.push((mi, i, all));
                 }
             }
         }
-        for &(i, all) in &settled {
+        for &(_, i, all) in &settled {
             self.drop_as(i, 0..all, "settle");
         }
         self.bump("settled", settled.len() as i64);
-        !settled.is_empty()
+        settled.first().map(|s| s.0)
     }
 
     /// Asks the agent for its findings and its plan (a `note` call, or the lines in its reply), at the end
@@ -3024,10 +3067,11 @@ impl Engine {
     }
 
     /// Takes in the steps that came since the last look (`Params.loops`): a step that repeats the one before
-    /// it extends the run; the latest of a run before it leaves, unless it is the first, and the line moves.
-    fn fold_loops(&mut self) {
+    /// it extends the run; the latest of a run before it leaves, unless it is the first, and the line moves. The
+    /// oldest message it changed, if any.
+    fn fold_loops(&mut self) -> Option<usize> {
         let n = self.tr.msgs.len();
-        let mut changed = Vec::new();
+        let (mut changed, mut left) = (Vec::new(), None);
         let mut mi = self.loops_seen.max(2);
         while mi + 1 < n {
             let same = match self.step_sig(mi) {
@@ -3048,6 +3092,7 @@ impl Engine {
             let (first, times) = match self.run {
                 Some((first, last, times)) if last + 2 == mi => {
                     if last != first {
+                        left = Some(left.map_or(last, |l: usize| l.min(last)));
                         self.looped.extend([last, last + 1]);
                         self.tag_msgs([last, last + 1], true, "loops");
                     }
@@ -3066,6 +3111,7 @@ impl Engine {
             mi += 2;
         }
         self.loops_seen = mi;
+        let oldest = changed.iter().copied().chain(left).min();
         if !changed.is_empty() {
             for c in changed {
                 self.built.remove(&c);
@@ -3073,6 +3119,7 @@ impl Engine {
             self.vis = None;
             self.stats.insert("looped_steps", self.looped.len() as i64 / 2);
         }
+        oldest
     }
 
     /// Tokens of the outputs after the agent's latest text or note: what it has read and not yet written about.
@@ -4814,6 +4861,52 @@ mod tests {
         e.sync(&msgs);
         assert_eq!(e.nudge(e.tr.msgs.len(), true), Some(2));
         assert_eq!(e.nudged.iter().copied().collect::<Vec<_>>(), vec![6]);
+    }
+
+    #[test]
+    fn a_note_that_puts_the_requests_for_notes_back_counts_the_miss() {
+        let mut e = Engine::new(params("nudge=0;settle=50;eoq=0;check=100000000;every=100000").unwrap());
+        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
+        for (k, (a, b)) in [(1, 60), (61, 120)].into_iter().enumerate() {
+            msgs.extend(step(k + 1, &format!("cat part{}.txt", k + 1), &listing(a, b)));
+            e.sync(&msgs);
+            e.decide();
+        }
+        assert!(e.nudged.contains(&2), "{:?}", e.nudged);
+        let before = e.view();
+        msgs.push(json!({"role": "assistant", "content": "Finding: slot 50 holds the longest name."}));
+        msgs.push(json!({"role": "user", "content": "Thanks."}));
+        e.sync(&msgs);
+        e.decide();
+        let after = e.view();
+        // message 2 goes back to how it was sent before its request for notes: the cache misses from it
+        assert_ne!(before[2], after[2]);
+        let behind: i64 = after[2..].iter().map(crate::json::est).sum();
+        assert!(e.stats.get("miss_note").is_some_and(|&m| m * 10 >= behind * 9), "{behind} {:?}", e.stats);
+        assert!(e.stats["miss"] >= e.stats["miss_note"], "{:?}", e.stats);
+    }
+
+    #[test]
+    fn what_leaves_for_the_window_counts_the_miss_from_the_anchor() {
+        let mut e = Engine::new(params("nudge=0;eoq=0;close=0;live=0;check=100000000;every=100000").unwrap());
+        // the request holds a long paste: the anchor is a large part of the view
+        let ask = format!("Say what slot 50 holds in this listing:\n{}", listing(1000, 1150));
+        let mut msgs = vec![json!({"role": "user", "content": ask})];
+        for k in 0..6 {
+            msgs.extend(step(k + 1, &format!("cat part{k}.txt"), &listing(60 * k + 1, 60 * k + 60)));
+        }
+        e.sync(&msgs);
+        e.decide();
+        let total = e.tokens();
+        e.set_budget(total / 2);
+        msgs.extend(step(7, "cat part7.txt", &listing(361, 380)));
+        e.sync(&msgs);
+        // `leave` writes the anchor again: the view as weighed before the window is fit misses whole
+        let weighed: i64 = e.sizes_now().iter().sum();
+        e.decide();
+        assert!(e.stats.get("left_messages").is_some_and(|&n| n > 0), "{:?}", e.stats);
+        assert_eq!(e.stats["miss_fit"], weighed, "{:?}", e.stats);
+        assert!(e.stats["miss"] >= weighed, "{:?}", e.stats);
     }
 
     #[test]

@@ -200,7 +200,8 @@ fn write_score(bench: &Bench, transcript: &str, value: &Value) {
     let _ = std::fs::write(path, serde_json::to_string_pretty(value).unwrap_or_default());
 }
 
-/// Runs `job` once with `arm`. Err when it cannot run here (nothing was spent).
+/// Runs `job` once with `arm`. Err when it cannot run or grade here (what it spent is in
+/// `bench.spent` all the same).
 pub async fn run(bench: &Bench, ctx: &Ctx, job: &Job, arm: &Arm, rep: u32, budget_left: f64) -> Result<Record, String> {
     match job {
         Job::RepoQa(inst) => run_repoqa(bench, ctx, inst, &job.name(), arm, rep, budget_left).await,
@@ -243,9 +244,10 @@ async fn run_repoqa(
         max_steps: bench.max_steps,
         followup: None,
     };
+    // a bad oracle stops the run before it spends anything
+    let oracle = inst.oracle()?;
     let driven = run::drive(bench, &plan, arm, rep, budget_left).await?;
     drop(dir);
-    let oracle = inst.oracle()?;
     let text = driven.answers.last().cloned().unwrap_or_default();
     let parsed = answer::parse_answer(&text, &oracle.scoreable_fields);
     let scored = oracle.score(parsed.as_ref().ok().map(|(m, _)| m));
@@ -293,6 +295,7 @@ async fn run_canonstep(
         max_steps: bench.max_steps.saturating_mul(a.steps.len() as u32),
         followup: None,
     };
+    let oracle = inst.oracle()?;
     let driven = run::drive(bench, &plan, arm, rep, budget_left).await?;
     let modified: Vec<&String> = a
         .material
@@ -314,7 +317,6 @@ async fn run_canonstep(
             None => unread.push(step.id.clone()),
         }
     }
-    let oracle = inst.oracle()?;
     let snap = canonstep::score_snapshot(a, &stated, &oracle.expected);
     let mut detail = format!(
         "{}/{} objectives, {:.1}% of components ({} answers unread)",

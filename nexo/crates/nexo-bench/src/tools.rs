@@ -72,7 +72,8 @@ impl Bench {
     /// tool is checked (glob's `pattern`, grep's `glob`); grep's `pattern` is a regex, not a path.
     fn escapes(&self, args: &Value, cwd: &Path) -> Option<String> {
         if let Some(p) = args.get("path").and_then(Value::as_str) {
-            if !inside(&self.wd, &cwd.join(p)) {
+            // read exactly as the tools read it: trimmed, `~` expanded
+            if !inside(&self.wd, &nexo_tools::util::resolve(cwd, p)) {
                 return Some(p.to_string());
             }
         }
@@ -113,10 +114,18 @@ impl Tool for Bench {
                 ));
             }
         }
-        if let Some(seal) = &self.seal {
-            if let Some(cmd) = args.get("command").and_then(Value::as_str).filter(|_| self.inner.name() == "bash") {
-                args["command"] = Value::String(seal.wrap(cmd));
-            }
+        if let Some(cmd) = args.get("command").and_then(Value::as_str).filter(|_| self.inner.name() == "bash") {
+            // the key stays with the provider: a command never sees it in its environment
+            let unset = if nexo_core::shell::shell().kind == "powershell" {
+                format!("Remove-Item Env:{} -ErrorAction SilentlyContinue; ", crate::run::KEY_ENV)
+            } else {
+                format!("unset {}; ", crate::run::KEY_ENV)
+            };
+            let cmd = format!("{unset}{cmd}");
+            args["command"] = Value::String(match &self.seal {
+                Some(seal) => seal.wrap(&cmd),
+                None => cmd,
+            });
         }
         let mut out = self.inner.run(args, ctx).await;
         out.content = cap(&out.content);
@@ -207,5 +216,38 @@ mod tests {
         assert!(glob.run(serde_json::json!({"pattern": "/etc/*"}), &ctx).await.content.contains("sealed box"));
         let read = set.get("read").unwrap();
         assert!(read.run(serde_json::json!({"path": "../x"}), &ctx).await.content.contains("sealed box"));
+    }
+
+    #[tokio::test]
+    async fn home_and_padded_paths_are_read_as_the_tools_read_them() {
+        let wd = tempfile::tempdir().unwrap();
+        let root = wd.path().canonicalize().unwrap();
+        let set = toolset_with(&root, None, Some(&["read", "ls"]), true);
+        let ctx = ToolContext::new(root.clone());
+        let read = set.get("read").unwrap();
+        for p in ["~/x", "~", " /etc/hostname", "\t../x"] {
+            let out = read.run(serde_json::json!({ "path": p }), &ctx).await;
+            assert!(out.content.contains("sealed box"), "{p}: {}", out.content);
+        }
+        let ls = set.get("ls").unwrap();
+        assert!(ls.run(serde_json::json!({"path": " / "}), &ctx).await.content.contains("sealed box"));
+    }
+
+    #[tokio::test]
+    async fn commands_never_see_the_bench_key() {
+        if nexo_core::shell::shell().kind == "powershell" {
+            return;
+        }
+        let wd = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::run::KEY_ENV, "bench-key-marker");
+        let set = toolset(wd.path(), None);
+        let bash = set.get("bash").unwrap();
+        let out = bash
+            .run(
+                serde_json::json!({"command": "echo \"[$NEXO_BENCH_KEY]\"; env"}),
+                &ToolContext::new(wd.path().to_path_buf()),
+            )
+            .await;
+        assert!(out.content.contains("[]") && !out.content.contains("bench-key-marker"), "{}", out.content);
     }
 }

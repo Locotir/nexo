@@ -50,7 +50,9 @@ static MARK_ES: LazyLock<FxHashSet<&'static str>> = LazyLock::new(|| {
 static MARK_OTHER: LazyLock<FxHashSet<&'static str>> = LazyLock::new(|| {
     set("le les et est il des du je nous vous pas avec pour sur dans ce qui une au aux ne elle mais sont que la \
          c'est l'on di che è non per gli della sono questo anche ma ho nel alla uno ci un una \
-         o os não do da em você é um com para isso ao ele eu das dos")
+         o os não do da em você é um com para isso ao ele eu das dos \
+         els amb és aquest aquesta això però perquè també molt bé \
+         unha cun coa isto iso moi tamén polo pola")
 });
 
 /// Phrases, longest first; each is a filler only where its rule says so.
@@ -331,6 +333,8 @@ mod tests {
             "il a dit que la fonction est cassée dans le code",
             "il codice è una bella soluzione per il problema",
             "o código não está a funcionar com a base de dados",
+            "els fitxers de configuració no es carreguen bé amb la versió nova",
+            "o ficheiro de configuración non se carga ben coa versión nova, e isto é un problema",
         ] {
             assert_eq!(compress(s), s);
         }

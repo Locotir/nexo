@@ -283,7 +283,7 @@ struct GroupGuard {
 
 impl Drop for GroupGuard {
     fn drop(&mut self) {
-        #[cfg(unix)]
+        // on Windows this is `taskkill /T`: `kill_on_drop` alone would leave the tree running
         kill_group(self.pid.take());
     }
 }

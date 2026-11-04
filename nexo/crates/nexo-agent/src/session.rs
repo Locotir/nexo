@@ -79,6 +79,8 @@ pub struct Session {
     goal: Option<String>,
     /// Whether this session holds the lock next to its file (taken at the first write).
     locked: bool,
+    /// When the lock was last touched by this session.
+    touched: std::time::Instant,
 }
 
 impl Drop for Session {
@@ -176,11 +178,42 @@ fn write_line(f: &mut File, line: &Line) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A lock older than this is taken over whoever left it.
+/// Where the system cannot tell whether a lock's process runs, a lock untouched for this long is
+/// taken over whoever left it. Its owner touches it as it writes (see [`LOCK_TOUCH`]).
 const STALE_LOCK: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// How often a writer touches its lock, at most, so that only an idle lock grows old.
+const LOCK_TOUCH: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The pid written in a lock, if it can be read.
+fn lock_pid(lock: &Path) -> Option<u32> {
+    std::fs::read_to_string(lock).ok().and_then(|t| t.trim().parse().ok())
+}
+
+/// Who holds the lock at `lock` (`Some(pid)`, the pid unknown when unreadable), or None when it is
+/// free or stale: its process is gone (where the system says so) or, where it cannot say, the lock
+/// is older than [`STALE_LOCK`].
+fn holder(lock: &Path) -> Option<Option<u32>> {
+    let md = std::fs::metadata(lock).ok()?;
+    let pid = lock_pid(lock);
+    let old = md.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STALE_LOCK);
+    let stale = match pid.and_then(alive) {
+        Some(live) => !live,
+        None => old,
+    };
+    (!stale).then_some(pid)
+}
+
+fn in_use(lock: &Path, pid: Option<u32>) -> anyhow::Error {
+    anyhow::anyhow!(
+        "session {} is in use by another nexo (pid {}); if none runs, delete {}",
+        lock.file_stem().and_then(|s| Path::new(s).file_stem()).unwrap_or_default().to_string_lossy(),
+        pid.map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()),
+        lock.display()
+    )
+}
 
 /// Takes the advisory lock next to a session file (`<id>.jsonl.lock`, created exclusively, holding
-/// the writer's pid). A lock whose process is gone, or older than a day, is taken over.
+/// the writer's pid). A stale lock (see [`holder`]) is taken over.
 fn take_lock(lock: &Path) -> anyhow::Result<()> {
     for _ in 0..2 {
         match private_file().write(true).create_new(true).open(lock) {
@@ -189,22 +222,11 @@ fn take_lock(lock: &Path) -> anyhow::Result<()> {
                 return Ok(());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let pid: Option<u32> = std::fs::read_to_string(lock).ok().and_then(|t| t.trim().parse().ok());
-                if pid == Some(std::process::id()) {
+                if lock_pid(lock) == Some(std::process::id()) {
                     return Ok(()); // this process holds it already
                 }
-                let old = std::fs::metadata(lock)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.elapsed().ok())
-                    .is_some_and(|age| age > STALE_LOCK);
-                if !(old || pid.is_some_and(|p| !alive(p))) {
-                    anyhow::bail!(
-                        "session {} is in use by another nexo (pid {}); if none runs, delete {}",
-                        lock.file_stem().and_then(|s| Path::new(s).file_stem()).unwrap_or_default().to_string_lossy(),
-                        pid.map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()),
-                        lock.display()
-                    );
+                if let Some(pid) = holder(lock) {
+                    return Err(in_use(lock, pid));
                 }
                 let _ = std::fs::remove_file(lock);
             }
@@ -214,10 +236,10 @@ fn take_lock(lock: &Path) -> anyhow::Result<()> {
     anyhow::bail!("cannot take the lock {}", lock.display())
 }
 
-/// Whether process `pid` runs, where the system says so cheaply (Linux); elsewhere the age decides.
-fn alive(pid: u32) -> bool {
+/// Whether process `pid` runs, where the system says so cheaply (Linux); None elsewhere.
+fn alive(pid: u32) -> Option<bool> {
     let proc = Path::new("/proc");
-    !cfg!(target_os = "linux") || !proc.join("self").exists() || proc.join(pid.to_string()).exists()
+    (cfg!(target_os = "linux") && proc.join("self").exists()).then(|| proc.join(pid.to_string()).exists())
 }
 
 /// Moves session `id` to the trash and says where it went. Nothing is erased: `restore` brings it back.
@@ -230,6 +252,11 @@ pub fn trash_in(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
     let from = dir.join(format!("{id}.jsonl"));
     if !from.is_file() {
         anyhow::bail!("no session {id}");
+    }
+    // another nexo still writing to it would bring it back at its next rewrite
+    let lock = lock_path(&from);
+    if let Some(pid) = holder(&lock).filter(|p| *p != Some(std::process::id())) {
+        return Err(in_use(&lock, pid));
     }
     let bin = trash_dir_in(dir);
     std::fs::create_dir_all(&bin)?;
@@ -293,7 +320,9 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
     let Line::Meta(mut m) = serde_json::from_str(&first).ok()? else { return None };
     let mut n = 0;
     let mut title = None;
-    for l in r.lines().map_while(Result::ok) {
+    // each line on its own, as `open_path` reads them: a UTF-8 sequence cut by a crash spoils one line
+    for l in r.split(b'\n').map_while(Result::ok) {
+        let l = String::from_utf8_lossy(&l);
         match serde_json::from_str::<Line>(&l) {
             Ok(Line::Message { .. }) => n += 1,
             Ok(Line::Reset) => n = 0,
@@ -368,6 +397,7 @@ impl Session {
             file: Some(file),
             goal: None,
             locked: true,
+            touched: std::time::Instant::now(),
         })
     }
 
@@ -395,6 +425,7 @@ impl Session {
             file: None,
             goal: None,
             locked: false,
+            touched: std::time::Instant::now(),
         }
     }
 
@@ -457,6 +488,7 @@ impl Session {
             file: Some(file),
             goal,
             locked: false,
+            touched: std::time::Instant::now(),
         })
     }
 
@@ -492,7 +524,13 @@ impl Session {
         if let Some(f) = &mut self.file {
             if !self.locked {
                 take_lock(&lock_path(&self.path))?;
-                self.locked = true;
+                (self.locked, self.touched) = (true, std::time::Instant::now());
+            } else if self.touched.elapsed() > LOCK_TOUCH {
+                // a lock in use stays young: only an idle one can be taken over by its age
+                self.touched = std::time::Instant::now();
+                if let Ok(l) = File::options().write(true).open(lock_path(&self.path)) {
+                    let _ = l.set_modified(std::time::SystemTime::now());
+                }
             }
             write_line(f, line)?;
         }
@@ -562,14 +600,20 @@ impl Session {
     /// make) and rewrites the file to hold only them: written to a temporary
     /// file next to it and renamed over it, so a crash leaves either the old
     /// file or the new one, never half of each. Usage and cost stay: they
-    /// were spent.
+    /// were spent. When the file cannot be rewritten, memory is left as it was, matching the file.
     pub fn rewind(&mut self, keep: usize) -> anyhow::Result<()> {
         let keep = keep.min(self.messages.len());
+        let (messages, outputs) = (self.messages.clone(), self.outputs.clone());
         self.messages.truncate(keep);
         let ids: std::collections::BTreeSet<String> =
             self.messages.iter().flat_map(|m| m.tool_calls().map(|(id, _, _)| id.to_string())).collect();
         self.outputs.retain(|id, _| ids.contains(id));
-        self.rewrite()
+        let done = self.rewrite();
+        if done.is_err() {
+            (self.messages, self.outputs) = (messages, outputs);
+            self.meta.messages = self.messages.len();
+        }
+        done
     }
 
     /// Writes the whole file again from memory: to a temporary file next to it, renamed over it.
@@ -585,7 +629,8 @@ impl Session {
         }
         // one temporary name per process: two writers never share it
         let tmp = self.path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
-        {
+        // a write that fails leaves no partial copy (it holds tool outputs) behind
+        let made = (|| -> anyhow::Result<()> {
             let mut f = private_file().write(true).create(true).truncate(true).open(&tmp)?;
             writeln!(f, "{}", serde_json::to_string(&Line::Meta(self.meta.clone()))?)?;
             if !self.meta.title.is_empty() {
@@ -620,6 +665,11 @@ impl Session {
                 writeln!(f, "{}", serde_json::to_string(&Line::Goal { text: self.goal.clone() })?)?;
             }
             f.sync_all()?;
+            Ok(())
+        })();
+        if let Err(e) = made {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
         // Windows refuses to replace a file that is open: the handle closes first
         self.file = None;
@@ -659,7 +709,9 @@ impl Session {
         if f.meta.title.is_empty() && !self.meta.title.is_empty() {
             f.set_title(&format!("{} (fork)", self.meta.title))?;
         }
-        f.goal = self.goal.clone();
+        if self.goal.is_some() {
+            f.record_goal(self.goal.as_deref())?; // on disk too, so a resumed fork keeps it
+        }
         Ok(f)
     }
 
@@ -1051,7 +1103,8 @@ mod tests {
         let mut s = Session::open_path(&p).unwrap();
         let e = s.append(&Message::user("x")).unwrap_err().to_string();
         assert!(e.contains("in use"), "{e}");
-        // the same lock left a day and more ago is taken over
+        // a lock whose pid cannot be read and that was left a day and more ago is taken over
+        std::fs::write(&lock, "").unwrap();
         let f = File::options().write(true).open(&lock).unwrap();
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600)).unwrap();
         drop(f);
@@ -1088,5 +1141,89 @@ mod tests {
         let other_form = d.path().join("work").join("..").join("work");
         assert_eq!(latest_for_in(&dir, &other_form).map(|m| m.id), Some(id));
         assert!(Session::open("../x").is_err_and(|e| e.to_string().contains("not a session id")));
+    }
+
+    #[test]
+    fn a_live_writer_keeps_its_lock_however_old() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        let p = s.path().to_path_buf();
+        let lock = lock_path(&p);
+        drop(s);
+        // pid 1 always runs; its lock is two days old
+        std::fs::write(&lock, "1").unwrap();
+        let f = File::options().write(true).open(&lock).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600)).unwrap();
+        drop(f);
+        let mut s = Session::open_path(&p).unwrap();
+        let r = s.append(&Message::user("x"));
+        if cfg!(target_os = "linux") {
+            assert!(r.unwrap_err().to_string().contains("in use"));
+        } else {
+            r.unwrap(); // no liveness check here: the age decides
+        }
+    }
+
+    #[test]
+    fn a_failed_rewind_changes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        for t in ["one", "two", "three"] {
+            s.append(&Message::user(t)).unwrap();
+        }
+        // the temporary file cannot be made: a folder holds its name
+        let tmp = s.path().with_extension(format!("jsonl.{}.tmp", std::process::id()));
+        std::fs::create_dir(&tmp).unwrap();
+        assert!(s.rewind(1).is_err());
+        assert_eq!(s.messages().len(), 3, "memory still matches the file");
+        std::fs::remove_dir(&tmp).unwrap();
+        s.rewind(2).unwrap();
+        let g = Session::open_path(s.path()).unwrap();
+        assert_eq!(g.messages().iter().map(|m| m.text()).collect::<Vec<_>>(), ["one", "two"]);
+    }
+
+    #[test]
+    fn a_fork_keeps_the_goal_on_disk() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("one")).unwrap();
+        s.record_goal(Some("ship it")).unwrap();
+        let f = s.fork(1).unwrap();
+        assert_eq!(f.goal(), Some("ship it"));
+        let g = Session::open_path(f.path()).unwrap();
+        assert_eq!(g.goal(), Some("ship it"));
+    }
+
+    #[test]
+    fn the_list_counts_past_a_line_cut_inside_a_utf8_sequence() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("one")).unwrap();
+        let p = s.path().to_path_buf();
+        drop(s);
+        let mut f = OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(b"{\"type\":\"title\",\"title\":\"h\xc3\n").unwrap();
+        drop(f);
+        let mut s = Session::open_path(&p).unwrap();
+        s.append(&Message::user("two")).unwrap();
+        s.set_title("later").unwrap();
+        drop(s);
+        let m = &list_in(d.path())[0];
+        assert_eq!((m.messages, m.title.as_str()), (2, "later"));
+    }
+
+    #[test]
+    fn a_session_in_use_elsewhere_is_not_trashed() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("one")).unwrap();
+        let id = s.id().to_string();
+        let lock = lock_path(s.path());
+        drop(s);
+        std::fs::write(&lock, "1").unwrap(); // pid 1 always runs
+        let e = trash_in(d.path(), &id).unwrap_err().to_string();
+        assert!(e.contains("in use"), "{e}");
+        std::fs::remove_file(&lock).unwrap();
+        trash_in(d.path(), &id).unwrap();
     }
 }

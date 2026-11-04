@@ -298,7 +298,7 @@ impl Feed for MessagesParser {
                     if !self.prog.finished {
                         self.prog.finished = true;
                         out.push(StreamEvent::Finish(match r {
-                            "max_tokens" => FinishReason::Length,
+                            "max_tokens" | "model_context_window_exceeded" => FinishReason::Length,
                             "tool_use" => FinishReason::ToolUse,
                             "refusal" => FinishReason::ContentFilter,
                             _ if self.prog.saw_tool => FinishReason::ToolUse,
@@ -468,6 +468,14 @@ mod tests {
         evs.extend(p.finish());
         assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. } | StreamEvent::Finish(_))), "{evs:?}");
         assert!(matches!(evs.last(), Some(StreamEvent::Error(e)) if e.message.contains("truncated")), "{evs:?}");
+    }
+
+    #[test]
+    fn a_context_window_stop_is_a_length_finish() {
+        let mut p = MessagesParser::default();
+        let mut evs: Vec<StreamEvent> = CALL_OPEN.iter().flat_map(|d| p.feed(d)).collect();
+        evs.extend(p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"},"usage":{"output_tokens":3}}"#));
+        assert!(evs.contains(&StreamEvent::Finish(FinishReason::Length)), "{evs:?}");
     }
 
     #[test]

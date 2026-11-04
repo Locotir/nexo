@@ -141,18 +141,32 @@ pub async fn build(task: &str, history: &[Message], cwd: &Path, cfg: &BriefConfi
     }
     let ledger = Ledger::of(history, cwd, cfg.check_disk, task);
     let (head, facts) = ledger.render(cfg.tokens * 2 / 5);
-    let left = cfg.tokens.saturating_sub(tokens(&head) + 60);
-    let (mut spans, engine) = match cfg.engine {
-        Engine::Lexical => (lexical(task, history, left), "lexical"),
-        Engine::Auto | Engine::Curator => (curator(task, history, left), "curator"),
+    let mut left = cfg.tokens.saturating_sub(tokens(&render(&head, &[])) + 10);
+    let mut tries = 0;
+    let (spans, engine, text) = loop {
+        let (mut spans, engine) = match cfg.engine {
+            Engine::Lexical => (lexical(task, history, left), "lexical"),
+            Engine::Auto | Engine::Curator => (curator(task, history, left), "curator"),
+        };
+        for s in &mut spans {
+            annotate(s, cwd, cfg.check_disk);
+        }
+        let mut text = render(&head, &spans);
+        let over = tokens(&text).saturating_sub(cfg.tokens);
+        tries += 1;
+        if over == 0 || spans.is_empty() || tries == 3 {
+            // still over after a few tries: the last excerpts go
+            while tokens(&text) > cfg.tokens && spans.pop().is_some() {
+                text = render(&head, &spans);
+            }
+            break (spans, engine, text);
+        }
+        // the excerpts' labels cost tokens the selection does not count: it gets fewer
+        left = left.saturating_sub(over);
     };
     if spans.is_empty() && facts == 0 {
         return None;
     }
-    for s in &mut spans {
-        annotate(s, cwd, cfg.check_disk);
-    }
-    let text = render(&head, &spans);
     Some(Brief { tokens: tokens(&text), text, spans: spans.len(), facts, engine })
 }
 
@@ -369,7 +383,16 @@ fn result_text(content: &[Part]) -> String {
     out
 }
 
+/// The units of `history`. A call whose result failed is marked `error` too.
 fn units(history: &[Message]) -> Vec<Unit> {
+    let failed: BTreeSet<&str> = history
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|p| match p {
+            Part::ToolResult { call_id, is_error: true, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut calls: BTreeMap<&str, (&str, &Value)> = BTreeMap::new();
     let mut out = vec![];
     for (mi, m) in history.iter().enumerate() {
@@ -407,7 +430,7 @@ fn units(history: &[Message]) -> Vec<Unit> {
                         path: str_arg(args, &["path", "file_path"]).map(str::to_string),
                         command: str_arg(args, &["command", "cmd"]).map(str::to_string),
                         text,
-                        error: false,
+                        error: failed.contains(id.as_str()),
                     });
                 }
                 Part::ToolResult { call_id, name, content, is_error } => {
@@ -530,10 +553,10 @@ pub fn lexical(task: &str, history: &[Message], budget: usize) -> Vec<Span> {
         *slot = turn;
     }
     let last_turn = turn;
-    // writes per path, for stale reads
+    // writes per path, for stale reads: those whose result did not fail
     let mut writes: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for u in &us {
-        if u.kind == Kind::Call && writes_file(&u.tool) {
+        if u.kind == Kind::Call && !u.error && writes_file(&u.tool) {
             if let Some(p) = &u.path {
                 writes.entry(p.as_str()).or_default().push(u.msg);
             }
@@ -616,7 +639,7 @@ pub fn lexical(task: &str, history: &[Message], budget: usize) -> Vec<Span> {
         if text.trim().is_empty() {
             continue;
         }
-        let factor = (0.35 + 0.65 * rel[turn_of[u.msg]]) * if u.error { 1.15 } else { 1.0 };
+        let factor = (0.35 + 0.65 * rel[turn_of[u.msg]]) * if u.error && u.kind != Kind::Call { 1.15 } else { 1.0 };
         cands.push(Cand { unit: r.unit, msg: u.msg, start: r.start, hold, factor, tokens: tokens(&text), text });
     }
     // greedy weighted coverage
@@ -706,13 +729,16 @@ fn wire(history: &[Message]) -> Vec<Value> {
 }
 
 /// The curator's selection, as excerpts.
+/// The selection counts a token per four characters, the briefing per four bytes: text of several bytes
+/// a letter (Cyrillic, CJK) is fitted to `budget` again, the least scored excerpts going first.
 fn curator(task: &str, history: &[Message], budget: usize) -> Vec<Span> {
-    let budget = i64::try_from(budget).unwrap_or(i64::MAX);
-    curated::select(task, &wire(history), budget)
-        .spans
-        .into_iter()
-        .map(|s| Span { msg: s.msg, label: s.label, tokens: tokens(&s.text), text: s.text })
-        .collect()
+    let mut spans = curated::select(task, &wire(history), i64::try_from(budget).unwrap_or(i64::MAX)).spans;
+    let mut total: usize = spans.iter().map(|s| tokens(&s.text)).sum();
+    while total > budget {
+        let Some(k) = (0..spans.len()).min_by(|&a, &b| spans[a].score.total_cmp(&spans[b].score)) else { break };
+        total -= tokens(&spans.remove(k).text);
+    }
+    spans.into_iter().map(|s| Span { msg: s.msg, label: s.label, tokens: tokens(&s.text), text: s.text }).collect()
 }
 
 // ------------------------------------------------------------ against the disk
@@ -874,7 +900,8 @@ impl Ledger {
                         f.current = if check { current(&u.text, &resolve(cwd, p)) } else { None };
                     }
                 }
-                (Kind::Call, t) if writes_file(t) => {
+                // a write counts unless its result failed (one still running counts)
+                (Kind::Call, t) if writes_file(t) && !u.error => {
                     if t == "write" {
                         f.written = true;
                     } else {
@@ -1177,6 +1204,44 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_edit_does_not_make_a_read_stale() {
+        let d = tempfile::tempdir().unwrap();
+        let (_, _, mut h) = session(d.path());
+        h.truncate(3);
+        let edit = |ok: bool| {
+            vec![
+                Message::new(
+                    Role::Assistant,
+                    vec![Part::tool_call(
+                        "e1",
+                        "edit",
+                        json!({"path": "src/parser.rs", "old_string": "fn parse_line_7", "new_string": "fn parse_line_seven_new"}),
+                    )],
+                ),
+                Message::tool_results(vec![Part::tool_result(
+                    "e1",
+                    if ok { "edited src/parser.rs" } else { "edit: `old_string` not found in src/parser.rs" },
+                    !ok,
+                )]),
+            ]
+        };
+        let task = "Fix parse_line_7 in src/parser.rs";
+        let mut failed = h.clone();
+        failed.extend(edit(false));
+        let mut done = h;
+        done.extend(edit(true));
+        let has_read = |spans: &[Span]| spans.iter().any(|s| s.text.contains("fn parse_line_7("));
+        assert!(has_read(&lexical(task, &failed, 2000)));
+        assert!(!has_read(&lexical(task, &done, 2000)));
+        assert!(has_read(&curator(task, &failed, 2000)));
+        assert!(!has_read(&curator(task, &done, 2000)));
+        let l = Ledger::of(&failed, d.path(), true, task);
+        assert!(l.files.iter().any(|f| f == "- src/parser.rs: read lines 1-60 (current)"), "{:?}", l.files);
+        let l = Ledger::of(&done, d.path(), true, task);
+        assert!(l.files.iter().any(|f| f.contains("(changed after)") && f.contains("edited 1x")), "{:?}", l.files);
+    }
+
+    #[test]
     fn the_ledger_holds_files_failures_constraints_and_the_plan() {
         let d = tempfile::tempdir().unwrap();
         let (_, config, h) = session(d.path());
@@ -1215,7 +1280,7 @@ mod tests {
         let cfg = BriefConfig { tokens: 800, engine: Engine::Lexical, ..BriefConfig::default() };
         let b = build("Fix parse_line_7 in src/parser.rs", &h, d.path(), &cfg).await.unwrap();
         assert_eq!(b.engine, "lexical");
-        assert!(b.tokens <= 800 + 80, "{}", b.tokens);
+        assert!(b.tokens <= 800, "{}", b.tokens);
         assert!(b.text.starts_with("<briefing>") && b.text.ends_with("</briefing>"));
         assert!(b.text.contains("--- read src/parser.rs lines "), "{}", b.text);
         assert!(b.text.contains("(current) ---"), "{}", b.text);
@@ -1226,6 +1291,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_brief_keeps_its_budget_with_many_labels_and_text_of_several_bytes_a_letter() {
+        let d = tempfile::tempdir().unwrap();
+        let mut h = vec![Message::user("Исправь разбор_строки во всех модулях: проверка_значения падает.")];
+        for i in 0..24 {
+            let lines: Vec<String> = (0..30)
+                .map(|k| format!("функция разбор_строки_{k} проверка_значения модуль {i} строка {k} без изменений"))
+                .collect();
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let path = format!("src/очень_длинный_модуль_номер_{i}/подмодуль_разбора/файл_разбора_строки_{i}.rs");
+            h.extend(read(&format!("r{i}"), &path, 1, &lines));
+        }
+        let task = "Исправь разбор_строки_7 и проверка_значения";
+        for engine in [Engine::Lexical, Engine::Curator] {
+            for budget in [600, 1500, 3000] {
+                let cfg = BriefConfig { tokens: budget, engine, check_disk: false };
+                let b = build(task, &h, d.path(), &cfg).await.unwrap();
+                assert!(b.spans > 0, "{}", b.text);
+                assert!(b.tokens <= budget, "{engine:?} {budget}: {} tokens", b.tokens);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_brief_comes_from_the_curator_by_default() {
         let d = tempfile::tempdir().unwrap();
         let (_, _, h) = session(d.path());
@@ -1233,7 +1321,7 @@ mod tests {
             let cfg = BriefConfig { tokens: 1500, engine, ..BriefConfig::default() };
             let b = build("Fix parse_line_7 in src/parser.rs", &h, d.path(), &cfg).await.unwrap();
             assert_eq!(b.engine, "curator", "{}", b.text);
-            assert!(b.tokens <= 1500 + 80, "{}", b.tokens);
+            assert!(b.tokens <= 1500, "{}", b.tokens);
             assert!(b.text.contains("parse_line_7"), "{}", b.text);
             assert!(!b.text.contains("retry_limit_"), "{}", b.text);
         }

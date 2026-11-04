@@ -208,6 +208,10 @@ fn params(spec: &str) -> Result<Params, String> {
     let birth: Vec<String> = {
         let mut v: Vec<String> = Vec::new();
         for p in s("birth")?.replace(',', "+").split('+').map(str::trim).filter(|p| !p.is_empty()) {
+            // a stage the curator does not know would take the place of the default and run nothing
+            if !["squeeze", "telegraph", "telegraph-agent"].contains(&p) {
+                return Err(format!("birth has no stage {p:?}"));
+            }
             if !v.iter().any(|x| x == p) {
                 v.push(p.to_string());
             }
@@ -492,7 +496,13 @@ fn page(view: &mut [Value], over: i64) -> bool {
             break;
         }
         let Some(Value::String(s)) = at(&mut view[i], &path) else { break };
-        let keep = (n as i64 - left * 4 - 400).max(n as i64 / 8).max(800) as usize;
+        // what is kept steps down by eighths of the text, not with the overflow: the overflow changes with
+        // every request, and a text cut otherwise each time is read again without the cache each time
+        let (need, mut keep) = (n as i64 - left * 4 - 400, n as i64);
+        while keep > need && keep > n as i64 / 8 {
+            keep = keep * 7 / 8;
+        }
+        let keep = keep.max(n as i64 / 8).max(800) as usize;
         // lines keep their own endings (CRLF stays CRLF)
         let nl = if s.contains("\r\n") { "\r\n" } else { "\n" };
         let lines: Vec<&str> = s.split_inclusive('\n').collect();
@@ -510,7 +520,8 @@ fn page(view: &mut [Value], over: i64) -> bool {
                 tail -= 1;
             }
         }
-        let paged = if head < tail && total > 2 {
+        // the line form only when it keeps a line: a first line past what is kept goes by characters
+        let paged = if head < tail && total > 2 && (head > 0 || tail < total) {
             format!(
                 "{}{MARK} lines {}-{} of {} left out here: the whole text does not fit the model's window. Ask for them by line number if they are needed.{nl}{}",
                 lines[..head].concat(),
@@ -631,9 +642,84 @@ mod tests {
         assert_eq!(refused("rule=lru"), "rule is not supported by the built-in curator");
         assert_eq!(refused("recall=0.5"), "recall is not supported by the built-in curator");
         assert_eq!(refused("cap=9000;floor=0"), "cap needs a floor above 0");
+        assert_eq!(refused("birth=squeez"), "birth has no stage \"squeez\"");
+        assert_eq!(refused("birth=squeeze+telegraf"), "birth has no stage \"telegraf\"");
+        assert!(params("birth=").is_ok_and(|p| p.birth.is_empty()), "an empty birth runs no stage");
         // the values these settings take still run, written as they were
         assert!(params(" rule=rent ; recall=0;trust=1.0;margin=1_000;; ").is_ok());
         assert!(params("cap=0;floor=0;eoq=0").is_ok(), "no cap needs no floor");
+    }
+
+    /// Replays every fixture: a view that sends a message of the previous view otherwise (or no longer)
+    /// counts the tokens from that message on under `miss`. The latest message sent is left aside: an
+    /// output sent once as a copy of an earlier one is sent as a pointer from the next request on, and
+    /// that rewrite, of the latest message alone, is not counted.
+    #[test]
+    fn every_rewrite_of_a_sent_message_counts_its_miss() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+        let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| Some(e.ok()?.path())).collect();
+        names.sort();
+        let mut bad = Vec::new();
+        for path in names {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut cur = Curator::new("").unwrap();
+            let (mut msgs, mut prev, mut missed): (Vec<Value>, Vec<Value>, i64) = (Vec::new(), Vec::new(), 0);
+            for (n, line) in text.lines().enumerate() {
+                let rec: Value = serde_json::from_str(line).unwrap();
+                let req = &rec["req"];
+                let Some(new) = req.get("new") else {
+                    cur.answer(req, 0.0);
+                    (msgs, prev, missed) = (Vec::new(), Vec::new(), 0);
+                    continue;
+                };
+                let base = req["base"].as_u64().unwrap() as usize;
+                // an edited history is a change of the host's, not of the view
+                let edited = base < msgs.len();
+                msgs.truncate(base);
+                msgs.extend(new.as_array().unwrap().iter().cloned());
+                let send = json!({"op": "view", "system_tokens": req.get("system_tokens").cloned().unwrap_or(Value::Null), "messages": msgs});
+                let got = cur.answer(&send, 0.0);
+                let Some(Value::Array(view)) = got.get("view") else { continue };
+                let now = got["stats"].get("miss").and_then(Value::as_i64).unwrap_or(0);
+                if !edited {
+                    if let Some(p) = (0..prev.len().saturating_sub(1)).find(|&p| view.get(p) != Some(&prev[p])) {
+                        let behind: i64 = view[p..].iter().map(json::est).sum();
+                        if ((now - missed) as f64) < 0.9 * behind as f64 - 50.0 {
+                            bad.push(format!(
+                                "{} line {n}: changed at {p}, {} missed of {behind}",
+                                path.display(),
+                                now - missed
+                            ));
+                        }
+                    }
+                }
+                (prev, missed) = (view.clone(), now);
+            }
+        }
+        assert!(bad.is_empty(), "{} uncounted:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    #[test]
+    fn a_text_paged_again_keeps_its_cut_while_the_overflow_grows_a_little() {
+        let long: String = (0..4000).map(|k| format!("line {k} of the pasted log\n")).collect();
+        let paged = |over: i64| {
+            let mut view = vec![json!({"role": "user", "content": long.clone()})];
+            assert!(page(&mut view, over));
+            view
+        };
+        // the next request adds a few hundred tokens past the window: the paged text is sent as before
+        assert_eq!(paged(10_000), paged(10_300));
+        assert_eq!(paged(10_000), paged(10_050));
+    }
+
+    #[test]
+    fn a_first_line_longer_than_what_is_kept_is_paged_by_characters() {
+        let long = format!("{}\nsecond line\nthird line", "x".repeat(200_000));
+        let mut view = vec![json!({"role": "user", "content": long})];
+        assert!(page(&mut view, 20_000));
+        let text = view[0]["content"].as_str().unwrap();
+        assert!(text.contains("characters") && text.contains("third line"), "{text}");
+        assert!(text.len() > 100_000, "{}", text.len());
     }
 
     #[test]

@@ -10,8 +10,8 @@
 //!   (the person), a front matter with `name`, `description`, `tools`, `model` and
 //!   `rounds`, and a body that is the sub-agent's instructions.
 //!
-//! With `background: true` the sub-agent runs as a job: the main agent goes on,
-//! and the report is the job's output.
+//! With `background: true` a sub-agent that changes nothing runs as a job: the main agent goes on,
+//! and the report is the job's output. One that can change files runs in the foreground.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -468,7 +468,8 @@ impl Tool for SubAgent {
             description: format!(
                 "Hand a self-contained piece of work to a sub-agent that works on its own and answers with a \
                  short report; only the report enters the conversation. Several task calls in one message run at \
-                 the same time. With `background: true` it runs as a job while you go on: you are told when it \
+                 the same time. With `background: true` a sub-agent that changes nothing runs as a job while you go on (one \
+                 that can change files runs in the foreground): you are told when it \
                  ends and read its report with the `jobs` tool. Kinds ({DEFAULT} when not given): {}.",
                 kinds.join("; ")
             ),
@@ -537,14 +538,18 @@ impl Tool for SubAgent {
             profile,
             host,
         };
-        let background = matches!(args.get("background"), Some(Value::Bool(true)))
+        let asked = matches!(args.get("background"), Some(Value::Bool(true)))
             || args.get("background").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("true"));
-        if !background {
+        // one that can change files keeps its write slot to the end: in the background it would edit
+        // beside the main agent and other sub-agents
+        let writes = self.can_write(&run.profile);
+        if !asked || writes {
             if let Some(b) = &briefing {
                 ctx.report(b.line());
             }
+            let note = if asked { "(ran in the foreground: it can change files)\n\n" } else { "" };
             return match run.go(prompt, briefing.as_ref(), ctx, &|l| ctx.report(l)).await {
-                Ok(report) => ToolOutput::ok(report),
+                Ok(report) => ToolOutput::ok(format!("{note}{report}")),
                 Err(e) if ctx.cancel.is_cancelled() => ToolOutput::error(format!("interrupted by the person ({e})")),
                 Err(e) => ToolOutput::error(e),
             };

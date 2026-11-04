@@ -17,7 +17,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--model NAME` | the model | required |
 | `--key KEY` | the API key (leave out for a local server; `-` reads it from stdin, out of the process list) | none |
 | `--protocol P` | `anthropic`, `openai-chat`, `openai-responses`, `gemini` | guessed from the address |
-| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `more`, `hard`), comma separated or repeated | `all` |
+| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `more`, `hard`, `padded`), comma separated or repeated | `all` |
 | `--arms LIST` | arms, comma separated or repeated (see below) | `plain,compact,curator` |
 | `--repeats N` | times each task runs with each arm | 1 |
 | `--max-steps N` | most steps (model requests that offer tools) per task | 100 |
@@ -25,7 +25,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--price MISS,HIT,OUT` | the model's prices in dollars per million tokens: input on a cache miss, on a cache hit, output | nexo's own (DeepSeek chat and reasoner, and the models its provider presets price) |
 | `--max-tokens N` | largest reply, in tokens | nexo's default |
 | `--temperature T` | sampling temperature of every request | the provider's own |
-| `--out DIR` | where the results go | `./bench-out` |
+| `--out DIR` | where the results go (refused when it holds an earlier `results.jsonl`) | `./bench-out` |
 | `--skip-preflight` | do not send the preflight request | off |
 
 Before any task, the preflight sends one tiny request asking the model to call the `ls` tool. It stops
@@ -54,7 +54,8 @@ An arm is `[NAME@]POLICY[:k=v;k=v...]`:
 - `NAME` names the arm in file names and tables (default: the policy). Two arms need different names:
   `--arms curator,tight@curator:eoq=4000`.
 
-Every other repeat runs the arms in reverse order, so no arm always goes first.
+The arms run in a seeded shuffle for every task and repeat, so no arm always goes first and the provider
+cache is shared evenly.
 
 ### What each arm does
 
@@ -89,7 +90,7 @@ applies equally to plain, compact and curator.
 |---|---|
 | header | model, commit, max steps, max tokens, repeats, budget, spent |
 | Arms | one row per arm: settings, runs, **score** (mean), steps, requests, input, cache read, output, cost $, wall s, tool errors (sums), final view and max view (means), compactions, rewrites (sums) |
-| Paired with the first arm | per other arm, over the tasks both ran: Δ score (points), Δ cost, Δ steps, each with a **95% paired bootstrap interval** (10000 resamples, fixed seed); left out under 2 tasks |
+| Paired with the first arm | per other arm, over the tasks both ran: Δ score (points), Δ cost, Δ steps, Δ recall calls, Δ re-reads, Δ dup lines (points), Δ wall s, each with a **95% paired bootstrap interval** (10000 resamples, fixed seed) once there are at least 5 tasks and 3 runs per task and arm (else "not enough runs"); left out when the arms share no task |
 | Runs | one row per run, same columns |
 
 What the columns mean:
@@ -134,6 +135,8 @@ only make sense together.
 | `three-sessions` | more | three sessions; later ones need a number and a naming rule from the first |
 | `selective-revert` | more | the first of three edits is cancelled; the old code exists only in the history |
 | `stale-doc` | more | a correction to a file is given once, early; later the file is to be followed |
+| `padded-revert-code` | padded | `selective-revert` across three files, with over 8,000 tokens of pasted material in between |
+| `padded-revert-data` | padded | the same in a data project: undo the first of three edits to a SQL transform and a CSV |
 | `realm` | hard | reverse engineering a game binary whose rule is spread over data, binary and save |
 
 Multi-session tasks restart the agent between sessions and resume the saved session, as `nexo --resume`

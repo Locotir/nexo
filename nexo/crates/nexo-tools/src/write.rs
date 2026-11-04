@@ -4,9 +4,17 @@ use async_trait::async_trait;
 use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
-use crate::util::{display_path, is_binary, outside_note, resolve, str_arg, write_atomic};
+use crate::util::{display_path, is_binary, outside_note, resolve, str_arg, write_atomic, MAX_FILE_BYTES};
 
 pub struct Write;
+
+/// The first 8 KiB of a file, what `is_binary` looks at.
+async fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::with_capacity(8192);
+    tokio::fs::File::open(path).await?.take(8192).read_to_end(&mut buf).await?;
+    Ok(buf)
+}
 
 #[async_trait]
 impl Tool for Write {
@@ -55,10 +63,14 @@ impl Tool for Write {
         if path.is_dir() {
             return ToolOutput::error(format!("write: {shown} is a directory"));
         }
-        let old = match tokio::fs::read(&path).await {
+        // a file too large to load: only its head is read, for the binary check, and the diff starts empty
+        let huge = tokio::fs::metadata(&path).await.map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false);
+        let read = if huge { read_head(&path).await } else { tokio::fs::read(&path).await };
+        let old = match read {
             Ok(b) if is_binary(&b) => {
                 return ToolOutput::error(format!("write: {shown} is a binary file; not overwriting it"))
             }
+            Ok(_) if huge => Some(String::new()),
             Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
             Err(_) => None,
         };
@@ -85,6 +97,22 @@ impl Tool for Write {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_huge_old_file_is_not_loaded_for_the_diff() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let mut text = "line\n".repeat(2000).into_bytes();
+        text.resize(crate::util::MAX_FILE_BYTES as usize + 1, b'x');
+        std::fs::write(d.path().join("big.log"), &text).unwrap();
+        let out = Write.run(json!({"path": "big.log", "content": "new\n"}), &c).await;
+        assert!(out.content.starts_with("replaced big.log"), "{}", out.content);
+        match out.display {
+            ToolDisplay::Diff { old, .. } => assert!(old.len() < 1024, "old text loaded: {} bytes", old.len()),
+            _ => panic!(),
+        }
+        assert_eq!(std::fs::read_to_string(d.path().join("big.log")).unwrap(), "new\n");
+    }
 
     #[tokio::test]
     async fn creates_parents_and_reports_a_diff_against_the_old_content() {

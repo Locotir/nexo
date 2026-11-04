@@ -36,7 +36,7 @@ runs all of them; the last column names the test function.
 | Sub-agents (`task`, kind `explore`: read-only, inside the project) | ✅ | `a_task_runs_a_read_only_sub_agent_whose_report_is_the_result` |
 | Sub-agent kind `general` (writes and runs commands, asks the same permission as the main agent, its spending counted) | ✅ | `a_general_sub_agent_asks_for_its_writes_and_its_spending_is_counted` |
 | Sub-agent briefing: the parent's facts (request, rules, files with `current`, failing commands, plan) and the excerpts that bear on the task, picked by the curator's selection, run inside nexo, or by a plainer lexical selection, within `[agent] subagent_brief` tokens; the report comes back without the copied lines and capped; `briefed: … · engine` shown; `nexo brief` | ✅ | `a_sub_agent_starts_with_a_briefing_of_what_the_session_read`, `lexical_picks_the_passages_of_the_task_within_its_budget`, `lexical_leaves_out_reads_a_later_write_made_stale`, `the_ledger_holds_files_failures_constraints_and_the_plan`, `a_lexical_brief_keeps_its_budget`, `a_brief_comes_from_the_curator_by_default`, `the_selection_matches_the_reference` (same spans as the earlier reference implementation on the recorded fixtures), `the_report_drops_what_the_briefing_holds_and_is_capped`, `words_split_identifiers_and_keep_names`; replayed on a recorded session of 26 sub-agents |
-| Custom sub-agents from `~/.nexo/agents/*.md` and `.nexo/agents/*.md` (front matter: tools, model, rounds) | ✅ | `a_custom_agent_reads_its_front_matter`, `custom_agents_load_from_the_project_and_replace_by_name` |
+| Custom sub-agents from `~/.nexo/agents/*.md` and `.nexo/agents/*.md` (a project's own once trusted; front matter: tools, model, rounds) | ✅ | `a_custom_agent_reads_its_front_matter`, `custom_agents_load_from_the_project_and_replace_by_name` |
 | Background work: `bash` with `background: true` and `task` with `background: true` run as jobs while the turn goes on | ✅ | `a_background_command_runs_on_and_is_read_and_killed`, `a_background_command_lets_the_turn_end_and_its_end_reaches_the_model` |
 | `jobs` tool (list, output with wait, kill), the end of a job told to the model once, `/jobs` and `/jobs kill [id]` | ✅ | `a_job_is_read_once_waited_for_and_told_once`, `killing_cancels_and_the_end_of_the_session_stops_everything`, `long_output_keeps_the_end`, `parses_names_aliases_and_arguments` |
 | Language servers: `diagnostics` after an edit (rust-analyzer, pyright, pylsp, typescript-language-server, gopls, clangd) | ✅ | `servers_by_extension_and_the_report`, and against the real servers: `pyright_finds_the_errors_and_sees_the_fix`, `rust_analyzer_finds_a_type_error` |
@@ -71,7 +71,7 @@ runs all of them; the last column names the test function.
 
 | Feature | Status | Checked by |
 |---|---|---|
-| Four wire protocols, 19 presets | ✅ | `openai_chat_fixture`, `openai_responses_fixture`, `anthropic_fixture`, `gemini_fixture`, `presets_are_complete_and_distinct` |
+| Four wire protocols, 21 presets (19 plus copilot and codex) | ✅ | `openai_chat_fixture`, `openai_responses_fixture`, `anthropic_fixture`, `gemini_fixture`, `presets_are_complete_and_distinct` |
 | Guided `/model` setup, checked against the server | ✅ | `ollama_is_found_with_its_models_and_its_window`, `the_whole_setup_of_a_keyed_provider`, `the_model_setup_checks_saves_switches_and_sets_the_effort` |
 | Reasoning level per model (`/effort`) | ✅ | `levels_follow_the_protocol_and_the_vendor`, `the_model_setup_checks_saves_switches_and_sets_the_effort` |
 | Prices, context window, cost per turn and session | ✅ | `limits_are_reported_and_prices_can_be_set`, `prices_the_four_counts` |
@@ -119,7 +119,7 @@ runs all of them; the last column names the test function.
 
 | Way | Where |
 |---|---|
-| Commands of one's own | `.nexo/commands/*.md`, `~/.nexo/commands/*.md` |
+| Commands of one's own | `~/.nexo/commands/*.md`, `.nexo/commands/*.md` (a project's own once trusted) |
 | Hooks | `[[hooks]]` in the configuration (a project's own once trusted: `nexo config trust`) |
 | More tools | MCP servers, `[mcp.<name>]` in the configuration (a project's own once trusted) |
 | Another vendor | a `[providers.<name>]` block, or `/model` |

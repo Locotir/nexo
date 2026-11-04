@@ -73,6 +73,8 @@ pub fn tail(s: &str, n: usize) -> String {
 
 /// Runs `cmd`, feeding it `stdin`, and kills it after `timeout`.
 pub fn run(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -> Output {
+    // a checker runs the agent's code: it never sees the bench key
+    cmd.env_remove(crate::run::KEY_ENV);
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -147,7 +149,13 @@ impl Copy {
 
     /// Runs `cargo ARGS` offline in the copy (the flag goes right after the subcommand, before any `--`).
     pub fn cargo(&self, args: &[&str]) -> Output {
+        self.cargo_env(args, &[])
+    }
+
+    /// `cargo ARGS` as [`Copy::cargo`] runs it, with the variables `env` set.
+    pub fn cargo_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut cmd = Command::new("cargo");
+        cmd.envs(env.iter().copied());
         cmd.args(&args[..1]).arg("--offline").args(&args[1..]).current_dir(&self.root).env("CARGO_TERM_COLOR", "never");
         cmd.env("CARGO_TARGET_DIR", self.root.join("target"));
         run(&mut cmd, None, CARGO_TIMEOUT)
@@ -307,5 +315,13 @@ mod tests {
         let out = run(&mut cmd, None, Duration::from_secs(60));
         assert!(out.success(), "{}", out.tail(200));
         assert!(out.stdout.starts_with("cargo"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_checked_program_never_sees_the_bench_key() {
+        std::env::set_var(crate::run::KEY_ENV, "bench-key-marker");
+        let out = run(Command::new("sh").args(["-c", "env"]), None, Duration::from_secs(60));
+        assert!(out.success() && !out.stdout.contains("bench-key-marker"), "{}", out.tail(200));
     }
 }

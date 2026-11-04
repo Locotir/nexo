@@ -15,18 +15,28 @@ pub struct Shell {
     pub kind: &'static str,
 }
 
+/// Put before a PowerShell command: piped, PowerShell and the programs it runs write in the console's
+/// code page (850, 437, ...), while nexo reads UTF-8, so `José` would come back as `Jos\u{fffd}`.
+/// `try` keeps it quiet where there is no console to set.
+pub const UTF8_OUTPUT: &str = "try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch {}; \
+                               $OutputEncoding = [Text.UTF8Encoding]::new($false); ";
+
 impl Shell {
     /// A `std` command that runs `command` in this shell.
     pub fn command(&self, command: &str) -> std::process::Command {
         let mut c = std::process::Command::new(&self.program);
-        c.args(&self.args).arg(command);
+        c.args(self.args_for(command));
         c
     }
 
     /// The arguments for `command` (for a `tokio::process::Command` on `program`).
     pub fn args_for(&self, command: &str) -> Vec<String> {
         let mut a = self.args.clone();
-        a.push(command.to_string());
+        if self.kind == "powershell" {
+            a.push(format!("{UTF8_OUTPUT}{command}"));
+        } else {
+            a.push(command.to_string());
+        }
         a
     }
 }
@@ -179,7 +189,12 @@ mod tests {
         assert_eq!(usual.kind, "bash");
         let pwsh = pick(true, |n| (n == "pwsh").then(|| PathBuf::from("C:\\pwsh\\pwsh.exe")), none);
         assert_eq!(pwsh.program, PathBuf::from("C:\\pwsh\\pwsh.exe"));
-        assert_eq!(pwsh.args_for("Get-Date").last().unwrap(), "Get-Date");
+        // PowerShell writes to a pipe in the console's code page unless told to write UTF-8
+        let last = pwsh.args_for("Get-Date").pop().unwrap();
+        assert!(last.starts_with(UTF8_OUTPUT) && last.ends_with("Get-Date"), "{last}");
+        let cmd = pwsh.command("Get-Date");
+        assert_eq!(cmd.get_args().last().unwrap().to_string_lossy(), last);
+        assert_eq!(git.args_for("ls").last().unwrap(), "ls", "bash is left alone");
     }
 
     #[test]

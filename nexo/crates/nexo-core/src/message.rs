@@ -339,15 +339,80 @@ mod string_or_parts {
     }
 }
 
+/// The tokens an image counts for in [`estimate_tokens`], whatever its bytes (the curator's figure).
+pub const MEDIA_TOKENS: u64 = 1500;
+
 /// A cheap token estimate (about four characters per token), the same the
 /// curator uses, so the agent and the curator agree on sizes.
 pub fn estimate_tokens(messages: &[Message]) -> u64 {
-    messages.iter().map(|m| serde_json::to_string(m).map(|s| s.len() as u64 / 4).unwrap_or(0)).sum()
+    messages.iter().map(message_tokens).sum()
+}
+
+/// [`estimate_tokens`] of one message: the characters of its JSON over 4, with each image at
+/// [`MEDIA_TOKENS`] and the opaque data of reasoning (signatures, encrypted or withheld blocks) left out.
+pub fn message_tokens(m: &Message) -> u64 {
+    let mut media = 0;
+    let light;
+    let m = if m.content.iter().any(heavy) {
+        light = Message { role: m.role, content: m.content.iter().map(|p| lighten(p, &mut media)).collect() };
+        &light
+    } else {
+        m
+    };
+    serde_json::to_string(m).map(|s| s.chars().count() as u64 / 4).unwrap_or(0) + MEDIA_TOKENS * media
+}
+
+fn heavy(p: &Part) -> bool {
+    match p {
+        Part::Image { .. } | Part::RedactedReasoning { .. } => true,
+        Part::Reasoning { signature, encrypted, .. } => signature.is_some() || encrypted.is_some(),
+        Part::ToolResult { content, .. } => content.iter().any(heavy),
+        _ => false,
+    }
+}
+
+/// `p` without its opaque data; images are counted in `media` and left out.
+fn lighten(p: &Part, media: &mut u64) -> Part {
+    match p {
+        Part::Image { .. } => {
+            *media += 1;
+            Part::text("")
+        }
+        Part::RedactedReasoning { model, .. } => Part::RedactedReasoning { data: String::new(), model: model.clone() },
+        Part::Reasoning { text, model, .. } => {
+            Part::Reasoning { text: text.clone(), signature: None, encrypted: None, model: model.clone() }
+        }
+        Part::ToolResult { call_id, name, content, is_error } => Part::ToolResult {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            content: content.iter().map(|c| lighten(c, media)).collect(),
+            is_error: *is_error,
+        },
+        other => other.clone(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_estimate_counts_characters_and_gives_media_a_nominal_size() {
+        let text = |s: &str| estimate_tokens(&[Message::user(s.to_string())]);
+        assert_eq!(text(&"é".repeat(400)), text(&"e".repeat(400)), "characters, not bytes");
+        let image = |n: usize| {
+            let source = ImageSource::Base64 { media_type: "image/png".into(), data: "A".repeat(n) };
+            estimate_tokens(&[Message::new(Role::User, vec![Part::Image { source }])])
+        };
+        assert_eq!(image(10), image(4_000_000), "the picture's bytes are not counted");
+        assert!(image(10) >= MEDIA_TOKENS);
+        let reasoning = |sig: usize| {
+            let p =
+                Part::Reasoning { text: "hm".into(), signature: Some("s".repeat(sig)), encrypted: None, model: None };
+            estimate_tokens(&[Message::new(Role::Assistant, vec![p])])
+        };
+        assert_eq!(reasoning(1), reasoning(100_000), "opaque signatures are not counted");
+    }
 
     #[test]
     fn round_trips_the_messages_api_shape() {

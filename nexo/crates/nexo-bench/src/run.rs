@@ -32,7 +32,7 @@ pub struct Bench {
     pub provider: ProviderConfig,
     pub model: String,
     pub price: Pricing,
-    /// The prices are the DeepSeek ones standing in for an unknown model.
+    /// No prices are known for the model: every cost is 0 and the reports say "unknown".
     pub estimated: bool,
     pub max_steps: u32,
     pub max_tokens: Option<u32>,
@@ -42,6 +42,8 @@ pub struct Bench {
     /// Folders a sealed task's commands must not see.
     pub hide: Vec<PathBuf>,
     pub client: Arc<dyn ModelClient>,
+    /// The money every run has spent so far, a run that ends in an error included.
+    pub spent: Arc<Mutex<f64>>,
 }
 
 /// One line of `results.jsonl`. Fields missing from older files read as their defaults.
@@ -186,6 +188,7 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
         price: bench.price,
         limits: Limits { max_steps: plan.max_steps, max_cost: budget_left },
         tally: tally.clone(),
+        spent: bench.spent.clone(),
         transcript: Arc::new(Mutex::new(file)),
         secrets: std::env::var(KEY_ENV).into_iter().collect(),
     });
@@ -277,7 +280,7 @@ pub fn record(
 }
 
 /// Runs `task` once with `arm`; `budget_left` is the money the run may still spend. Err when this
-/// machine cannot run the task (nothing was spent).
+/// machine cannot run or grade the task (what it spent is in `bench.spent` all the same).
 pub async fn run(bench: &Bench, task: &Task, arm: &Arm, rep: u32, budget_left: f64) -> Result<Record, String> {
     (task.ready)()?;
     let dir = tempfile::Builder::new().prefix("nexo-bench-").tempdir().map_err(|e| e.to_string())?;
@@ -477,6 +480,7 @@ mod tests {
             out: PathBuf::new(),
             hide: vec![],
             client: Arc::new(nexo_providers::Client::new(nexo_providers::registry())),
+            spent: Arc::default(),
         };
         let c = config(&bench, &Arm::parse("tight@curator:eoq=4000").unwrap());
         assert_eq!(c.provider.as_deref(), Some(PROVIDER));

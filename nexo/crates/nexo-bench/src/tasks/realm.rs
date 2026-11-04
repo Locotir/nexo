@@ -463,8 +463,91 @@ fn forbidden(src: &str) -> Vec<&'static str> {
         "extern",
         "#[link",
     ];
-    let code: String = src.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
-    BANNED.into_iter().filter(|b| code.contains(b)).collect()
+    let code = bare_code(src);
+    let ident = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    BANNED
+        .into_iter()
+        .filter(|b| {
+            code.match_indices(b).any(|(i, _)| {
+                let before = code[..i].chars().next_back();
+                let after = code[i + b.len()..].chars().next();
+                // a word matches only as a whole token: `DataFile` and `external` are not `File` and `extern`
+                !(ident(b.chars().next()) && ident(before)) && !(ident(b.chars().last()) && ident(after))
+            })
+        })
+        .collect()
+}
+
+/// `src` with its comments removed and the text of its string and char literals blanked.
+fn bare_code(src: &str) -> String {
+    let c: Vec<char> = src.chars().collect();
+    let at = |i: usize| c.get(i).copied();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < c.len() {
+        match (c[i], at(i + 1)) {
+            ('/', Some('/')) => {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+            }
+            ('/', Some('*')) => {
+                let mut depth = 0;
+                while i < c.len() {
+                    match (c[i], at(i + 1)) {
+                        ('/', Some('*')) => (depth, i) = (depth + 1, i + 2),
+                        ('*', Some('/')) => (depth, i) = (depth - 1, i + 2),
+                        _ => i += 1,
+                    }
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                out.push(' ');
+            }
+            ('"', _) => {
+                i += 1;
+                while i < c.len() && c[i] != '"' {
+                    i += if c[i] == '\\' { 2 } else { 1 };
+                }
+                i += 1;
+                out.push_str("\"\"");
+            }
+            ('r', Some('"' | '#')) => {
+                let hashes = c[i + 1..].iter().take_while(|&&h| h == '#').count();
+                if at(i + 1 + hashes) != Some('"') {
+                    out.push('r');
+                    i += 1;
+                    continue;
+                }
+                i += hashes + 2;
+                while i < c.len()
+                    && !(c[i] == '"' && c[i + 1..].iter().take(hashes).filter(|&&h| h == '#').count() == hashes)
+                {
+                    i += 1;
+                }
+                i += hashes + 1;
+                out.push_str("\"\"");
+            }
+            ('\'', Some('\\')) => {
+                i += 3;
+                while i < c.len() && c[i] != '\'' {
+                    i += 1;
+                }
+                i += 1;
+                out.push_str("' '");
+            }
+            ('\'', Some(_)) if at(i + 2) == Some('\'') => {
+                i += 3;
+                out.push_str("' '");
+            }
+            (ch, _) => {
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// The first C compiler found on PATH.
@@ -548,11 +631,16 @@ fn replies(wd: &Path, w: &World, cases: &[Case]) -> Result<Vec<String>, String> 
     if out.code == Some(3) {
         return Err(format!("coins.rs does not compile: {}", out.tail(600)));
     }
-    let got: Vec<String> = out.stdout.lines().map(String::from).collect();
+    let got = answers(&out.stdout);
     if got.len() < cases.len() {
         return Err(format!("the harness stopped after {} of {} cases: {}", got.len(), cases.len(), out.tail(400)));
     }
     Ok(got)
+}
+
+/// The harness's replies in `stdout`, one per case, without what the answer printed itself.
+fn answers(stdout: &str) -> Vec<String> {
+    stdout.lines().filter(|l| l.starts_with("{\"coins\"") || l.starts_with("{\"error\"")).map(String::from).collect()
 }
 
 fn check(wd: &Path) -> Outcome {
@@ -690,6 +778,22 @@ mod tests {
         assert_eq!(forbidden("use std::process::Command;"), ["std::process", "process::", "Command"]);
         assert!(forbidden("// std::fs is not used\nfn loot() {}").is_empty());
         assert_eq!(forbidden("const G: &str = include_str!(\"realm\");"), ["include_str"]);
+        assert_eq!(forbidden("let x = 1; std::fs::read(\"a\");"), ["std::fs", "fs::"]);
+        assert_eq!(forbidden("let s = \"//\"; std::fs::read(\"a\");"), ["std::fs", "fs::"]);
+        assert_eq!(forbidden("let c = '\"'; let r = r#\"x\"#; let t: File;"), ["File"]);
+    }
+
+    #[test]
+    fn harmless_names_comments_and_strings_are_not_forbidden() {
+        let src = "/* no std::fs here */\nenum DataFile { A }\nfn f<'a>(external_bonus: &'a str) -> &'a str {\n    \
+                   let _ = \"Command\"; let _ = r#\"unsafe\"#; let _ = '\\''; external_bonus\n}\n";
+        assert!(forbidden(src).is_empty(), "{:?}", forbidden(src));
+    }
+
+    #[test]
+    fn lines_the_answer_prints_itself_are_not_replies() {
+        let out = "greed=3\n{\"coins\":5}\ndebug\n{\"error\":\"x\"}\n";
+        assert_eq!(answers(out), ["{\"coins\":5}", "{\"error\":\"x\"}"]);
     }
 
     #[test]

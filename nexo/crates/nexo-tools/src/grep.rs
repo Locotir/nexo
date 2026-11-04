@@ -43,7 +43,7 @@ impl Tool for Grep {
                 "properties": {
                     "pattern": {"type": "string", "description": "The regular expression, e.g. `fn \\w+\\(`."},
                     "path": {"type": "string", "description": "A directory or a file. Default: the working directory."},
-                    "glob": {"type": "string", "description": "Only files whose name matches, e.g. `*.rs`."},
+                    "glob": {"type": "string", "description": "Only files whose name matches, e.g. `*.rs`; with a `/` or `**` the path under `path` is matched, e.g. `src/**/*.ts`."},
                     "case_insensitive": {"type": "boolean", "description": "Ignore case. Default false."},
                     "context": {"type": "integer", "minimum": 0, "description": "Lines shown before and after each match. Default 0."},
                     "files_only": {"type": "boolean", "description": "List the matching files instead of the lines."},
@@ -79,8 +79,11 @@ impl Tool for Grep {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(format!("grep: bad pattern `{pattern}`: {e}")),
         };
-        let name_filter = match str_arg(&args, "glob") {
-            Some(g) => match GlobBuilder::new(g).literal_separator(false).build() {
+        // as in `glob`: a pattern with a directory part matches the path under `path`, else the name
+        let glob_arg = str_arg(&args, "glob");
+        let by_name = glob_arg.map(|g| !g.contains('/') && !g.contains("**")).unwrap_or(true);
+        let name_filter = match glob_arg {
+            Some(g) => match GlobBuilder::new(g).literal_separator(!by_name).build() {
                 Ok(g) => Some(g.compile_matcher()),
                 Err(e) => return ToolOutput::error(format!("grep: bad glob `{g}`: {e}")),
             },
@@ -91,12 +94,22 @@ impl Tool for Grep {
         if !root.exists() {
             return ToolOutput::error(format!("grep: {shown_root} does not exist"));
         }
+        if root.is_file() {
+            if let Ok(m) = std::fs::metadata(&root) {
+                if m.len() > MAX_FILE_BYTES {
+                    return ToolOutput::error(format!(
+                        "grep: {shown_root} is too large to search here ({} MiB); use `bash` with grep",
+                        m.len() >> 20
+                    ));
+                }
+            }
+        }
         let context = int_arg(&args, "context").unwrap_or(0) as usize;
         let files_only = bool_arg(&args, "files_only");
         let max = int_arg(&args, "max_results").unwrap_or(DEFAULT_MAX_RESULTS).max(1) as usize;
         let cwd = ctx.cwd.clone();
         let root2 = root.clone();
-        let (items, total, cut, kept_out) = tokio::task::spawn_blocking(move || {
+        let (items, total, cut, kept_out, hit_files, too_big, unreadable) = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + TIME_CAP;
             let mut cut = false;
             // files that hold keys are searched only when named as `path` (the permission asks then)
@@ -118,11 +131,14 @@ impl Tool for Grep {
                         kept_out += 1;
                         continue;
                     }
-                    if name_filter
-                        .as_ref()
-                        .map(|g| p.file_name().map(|n| g.is_match(std::path::Path::new(n))).unwrap_or(false))
-                        .unwrap_or(true)
-                    {
+                    let hit = |g: &globset::GlobMatcher| {
+                        if by_name {
+                            p.file_name().map(|n| g.is_match(std::path::Path::new(n))).unwrap_or(false)
+                        } else {
+                            g.is_match(p.strip_prefix(&root2).unwrap_or(&p))
+                        }
+                    };
+                    if name_filter.as_ref().map(hit).unwrap_or(true) {
                         v.push(p);
                     }
                 }
@@ -131,15 +147,29 @@ impl Tool for Grep {
             };
             let mut items: Vec<String> = Vec::new();
             let mut total = 0usize;
+            let mut hit_files = 0usize;
+            let mut too_big = 0usize;
+            let mut unreadable = 0usize;
             for f in files {
                 if Instant::now() > deadline {
                     cut = true;
                     break;
                 }
-                if std::fs::metadata(&f).map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(true) {
-                    continue;
+                match std::fs::metadata(&f) {
+                    Ok(m) if m.len() > MAX_FILE_BYTES => {
+                        too_big += 1;
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        unreadable += 1;
+                        continue;
+                    }
                 }
-                let Ok(bytes) = std::fs::read(&f) else { continue };
+                let Ok(bytes) = std::fs::read(&f) else {
+                    unreadable += 1;
+                    continue;
+                };
                 if is_binary(&bytes) {
                     continue;
                 }
@@ -154,7 +184,10 @@ impl Tool for Grep {
                     total += 1;
                     if files_only {
                         if !file_hit {
-                            items.push(shown.clone());
+                            hit_files += 1;
+                            if items.len() < max {
+                                items.push(shown.clone());
+                            }
                             file_hit = true;
                         }
                         continue;
@@ -177,7 +210,7 @@ impl Tool for Grep {
                     }
                 }
             }
-            (items, total, cut, kept_out)
+            (items, total, cut, kept_out, hit_files, too_big, unreadable)
         })
         .await
         .unwrap_or_default();
@@ -191,15 +224,30 @@ impl Tool for Grep {
                 if total - max == 1 { "match" } else { "matches" }
             )
         } else if files_only {
-            format!(
+            let mut s = format!(
                 "{} in {}\n{}",
                 nexo_core::count(total, "match"),
-                nexo_core::count(items.len(), "file"),
+                nexo_core::count(hit_files, "file"),
                 items.join("\n")
-            )
+            );
+            if hit_files > items.len() {
+                let more = hit_files - items.len();
+                s.push_str(&format!("\n… {more} more {}", if more == 1 { "file" } else { "files" }));
+            }
+            s
         } else {
             items.join("\n")
         };
+        if too_big > 0 {
+            content.push_str(&format!(
+                "\n[{} over {} MiB not searched; use `bash` with grep for those]",
+                nexo_core::count(too_big, "file"),
+                MAX_FILE_BYTES >> 20
+            ));
+        }
+        if unreadable > 0 {
+            content.push_str(&format!("\n[{} could not be read]", nexo_core::count(unreadable, "file")));
+        }
         if kept_out > 0 {
             content.push_str(&format!(
                 "\n[{} that may hold keys (.env, private keys, credentials) not searched; name one as `path` to search it]",
@@ -271,8 +319,31 @@ mod tests {
         let big = std::fs::File::create(_d.path().join("huge.log")).unwrap();
         big.set_len(MAX_FILE_BYTES + 1).unwrap(); // sparse
         let out = Grep.run(json!({"pattern": "alpha", "path": "huge.log"}), &c).await;
-        assert!(out.content.contains("no match"), "a huge file is skipped: {}", out.content);
+        assert!(out.is_error && out.content.contains("too large"), "a huge file named is refused: {}", out.content);
+        let out = Grep.run(json!({"pattern": "alpha"}), &c).await;
+        assert!(out.content.contains("[1 file over 8 MiB not searched"), "{}", out.content);
         assert!(Grep.run(json!({"pattern": "a", "path": "nope"}), &c).await.is_error);
         assert_eq!(Grep.summary(&json!({"pattern": "fn", "path": "src"})), "grep /fn/ in src");
+    }
+
+    #[tokio::test]
+    async fn a_glob_with_a_directory_part_matches_the_path() {
+        let (_d, c) = fixture();
+        let out = Grep.run(json!({"pattern": "beta", "glob": "src/**/*.rs"}), &c).await;
+        assert_eq!(out.content, "src/a.rs:3: fn beta() {}");
+        let out = Grep.run(json!({"pattern": "beta", "glob": "**/*.rs"}), &c).await;
+        assert_eq!(out.content, "src/a.rs:3: fn beta() {}");
+        let out = Grep.run(json!({"pattern": "beta", "glob": "lib/**/*.rs"}), &c).await;
+        assert!(out.content.contains("no match"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn files_only_lists_at_most_max_results_files() {
+        let (d, c) = fixture();
+        for i in 0..5 {
+            std::fs::write(d.path().join(format!("f{i}.txt")), "hit\n").unwrap();
+        }
+        let out = Grep.run(json!({"pattern": "hit", "files_only": true, "max_results": 2}), &c).await;
+        assert_eq!(out.content, "5 matches in 5 files\nf0.txt\nf1.txt\n… 3 more files", "{}", out.content);
     }
 }

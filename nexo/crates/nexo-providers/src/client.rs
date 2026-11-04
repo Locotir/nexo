@@ -148,22 +148,26 @@ impl Client {
                         | StreamEvent::ReasoningDelta(_)
                         | StreamEvent::ToolCallStart { .. } => content = true,
                         StreamEvent::Error(e) if !content && e.is_retryable() && attempt < retries => {
-                            attempt += 1;
-                            let wait = this.backoff(attempt, e);
-                            tracing::warn!(attempt, ?wait, "{e}; retrying");
-                            tokio::time::sleep(wait).await;
-                            match protocol.stream(&cfg, key.as_deref(), &req).await {
-                                Ok(s) => {
-                                    inner = s;
-                                    continue 'attempts;
-                                }
-                                Err(e) => {
-                                    for h in held.drain(..) {
-                                        let _ = tx.send(h);
+                            let mut last = e.clone();
+                            loop {
+                                attempt += 1;
+                                let wait = this.backoff(attempt, &last);
+                                tracing::warn!(attempt, ?wait, "{last}; retrying");
+                                tokio::time::sleep(wait).await;
+                                match protocol.stream(&cfg, key.as_deref(), &req).await {
+                                    Ok(s) => {
+                                        inner = s;
+                                        continue 'attempts;
                                     }
-                                    let _ = tx.send(StreamEvent::Error(this.explain(&cfg, key.is_some(), e)));
-                                    let _ = tx.send(StreamEvent::Done);
-                                    return;
+                                    Err(e) if e.is_retryable() && attempt < retries => last = e,
+                                    Err(e) => {
+                                        for h in held.drain(..) {
+                                            let _ = tx.send(h);
+                                        }
+                                        let _ = tx.send(StreamEvent::Error(this.explain(&cfg, key.is_some(), e)));
+                                        let _ = tx.send(StreamEvent::Done);
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -227,7 +231,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// A protocol that answers each re-issued request with the next scripted stream.
-    struct Scripted(Mutex<Vec<Vec<StreamEvent>>>);
+    struct Scripted(Mutex<Vec<Result<Vec<StreamEvent>, ProviderError>>>);
 
     #[async_trait]
     impl Protocol for Scripted {
@@ -241,7 +245,7 @@ mod tests {
             _key: Option<&str>,
             _req: &ModelRequest,
         ) -> Result<EventStream, ProviderError> {
-            let evs = self.0.lock().unwrap().remove(0);
+            let evs = self.0.lock().unwrap().remove(0)?;
             Ok(Box::pin(futures::stream::iter(evs)))
         }
     }
@@ -264,16 +268,39 @@ mod tests {
             StreamEvent::Usage(Usage { input: 1, output: 1, ..Default::default() }),
             StreamEvent::Done,
         ];
-        let protocol: Arc<dyn Protocol> = Arc::new(Scripted(Mutex::new(vec![good.clone()])));
+        let evs = run(failed, vec![Ok(good.clone())], 2).await;
+        assert_eq!(evs, good, "only the second attempt reaches the caller");
+    }
+
+    async fn run(
+        first: Vec<StreamEvent>,
+        next: Vec<Result<Vec<StreamEvent>, ProviderError>>,
+        retries: u32,
+    ) -> Vec<StreamEvent> {
+        let protocol: Arc<dyn Protocol> = Arc::new(Scripted(Mutex::new(next)));
         let client = Client::new(Registry::new());
         let call = Call {
             protocol,
             cfg: ProviderConfig::new("scripted", "http://127.0.0.1:9", None),
             key: None,
             req: ModelRequest::new("m", "", vec![Message::user("hi")]),
-            retries: 2,
+            retries,
         };
-        let evs: Vec<StreamEvent> = client.forward(Box::pin(futures::stream::iter(failed)), call, 0).collect().await;
-        assert_eq!(evs, good, "only the second attempt reaches the caller");
+        client.forward(Box::pin(futures::stream::iter(first)), call, 0).collect().await
+    }
+
+    #[tokio::test]
+    async fn a_retry_whose_request_fails_again_keeps_retrying() {
+        let mut overloaded = ProviderError::new(ErrorKind::Overloaded, "Overloaded").with_status(529);
+        overloaded.retry_after = Some(Duration::ZERO);
+        let failed = vec![StreamEvent::Error(overloaded.clone()), StreamEvent::Done];
+        let good = vec![StreamEvent::TextDelta("hi".into()), StreamEvent::Done];
+        let evs = run(failed, vec![Err(overloaded.clone()), Ok(good.clone())], 3).await;
+        assert_eq!(evs, good);
+        // with no retries left the request error reaches the caller
+        let failed = vec![StreamEvent::Error(overloaded.clone()), StreamEvent::Done];
+        let evs = run(failed, vec![Err(overloaded), Ok(good)], 1).await;
+        assert!(matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::Overloaded), "{evs:?}");
+        assert_eq!(evs.len(), 2);
     }
 }

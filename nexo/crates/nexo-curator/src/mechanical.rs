@@ -104,6 +104,7 @@ fn same_blocks(lines: &[String], i: usize, period: usize, r: usize) -> bool {
 /// drawn again in place) keeps only its last frame. As on a terminal, new text writes over the old one
 /// character by character: what a shorter frame does not cover stays, unless a sequence erased it.
 fn clean(text: &str) -> Cow<'_, str> {
+    const EDGE: usize = 500;
     if !text.contains(['\r', '\x1b', '\x08']) {
         return Cow::Borrowed(text);
     }
@@ -139,16 +140,18 @@ fn clean(text: &str) -> Cow<'_, str> {
                         }
                         arg.push(d);
                     }
-                    let n = arg.split(';').next().and_then(|x| x.parse::<usize>().ok());
+                    // a move stops at a screen edge, as on a terminal: never past `EDGE` rows or columns
+                    // (or past the text already there), whatever the number asks
+                    let n = arg.split(';').next().and_then(|x| x.parse::<usize>().ok()).map(|n| n.min(EDGE));
                     match end {
                         Some('A') => row = row.saturating_sub(n.unwrap_or(1).max(1)),
                         Some('B') => {
-                            row += n.unwrap_or(1).max(1);
+                            row = (row + n.unwrap_or(1).max(1)).min(row.max(rows.len() - 1).max(EDGE));
                             while rows.len() <= row {
                                 rows.push(Vec::new());
                             }
                         }
-                        Some('C') => col += n.unwrap_or(1).max(1),
+                        Some('C') => col = (col + n.unwrap_or(1).max(1)).min(col.max(rows[row].len()).max(EDGE)),
                         Some('D') => col = col.saturating_sub(n.unwrap_or(1).max(1)),
                         Some('G') => col = n.unwrap_or(1).max(1) - 1,
                         Some('K') => {
@@ -834,5 +837,19 @@ mod tests {
         assert_eq!(clean("a\x1b[31\nkept line\n"), "a\nkept line\n");
         assert_eq!(clean("\x1b]0;title cut\nkept line\n"), "\nkept line\n");
         assert_eq!(clean("end\x1b"), "end");
+    }
+
+    #[test]
+    fn a_huge_cursor_move_stops_at_a_screen_edge() {
+        // a move past any screen neither panics nor fills memory
+        let right = clean("a\x1b[18446744073709551615Cx");
+        assert!(right.len() < 2000 && right.starts_with('a') && right.ends_with('x'));
+        let down = clean("a\x1b[4000000B\x1b[4000000Bx");
+        assert!(down.lines().count() < 2000 && down.ends_with('x'));
+        let column = clean("\x1b[4000000Gx");
+        assert!(column.len() < 2000 && column.ends_with('x'));
+        // the usual moves still work
+        assert_eq!(clean("ab\x1b[3Cc"), "ab   c");
+        assert_eq!(clean("a\x1b[2Bb"), "a\n\n b");
     }
 }

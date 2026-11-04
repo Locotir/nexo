@@ -144,8 +144,12 @@ impl ProviderConfig {
 
     pub fn pricing_for(&self, model: &str) -> Option<Pricing> {
         self.pricing.get(model).copied().or_else(|| {
-            // `deepseek-chat*` matches `deepseek-chat`
-            self.pricing.iter().find(|(k, _)| k.ends_with('*') && model.starts_with(&k[..k.len() - 1])).map(|(_, p)| *p)
+            // `deepseek-chat*` matches `deepseek-chat`; the longest matching prefix wins
+            self.pricing
+                .iter()
+                .filter(|(k, _)| k.ends_with('*') && model.starts_with(&k[..k.len() - 1]))
+                .max_by_key(|(k, _)| k.len())
+                .map(|(_, p)| *p)
         })
     }
 }
@@ -355,23 +359,25 @@ impl Config {
     /// is listed in `trust_file`.
     pub fn load_files(user: &Path, project: Option<&Path>, trust_file: &Path) -> Result<Config, ConfigError> {
         let mut unread = Vec::new();
-        let mut read = |f: &Path| -> Result<Option<Config>, ConfigError> {
+        let mut read = |f: &Path| -> Result<Option<(Config, toml::Table)>, ConfigError> {
             if !f.is_file() {
                 return Ok(None);
             }
             let text = std::fs::read_to_string(f).map_err(|e| ConfigError::Io(f.to_path_buf(), e.to_string()))?;
-            let cfg = Config::parse(&text).map_err(|e| ConfigError::Parse(f.to_path_buf(), e.to_string()))?;
+            let parse = |e: toml::de::Error| ConfigError::Parse(f.to_path_buf(), e.to_string());
+            let cfg = Config::parse(&text).map_err(parse)?;
+            let said: toml::Table = toml::from_str(&text).map_err(parse)?;
             if let Some(n) = unread_keys(&text, &cfg) {
                 unread.push(format!("{}: {n}", f.display()));
             }
-            Ok(Some(cfg))
+            Ok(Some((cfg, said)))
         };
         let mut cfg = Config::default();
-        if let Some(part) = read(user)? {
-            cfg.merge(part);
+        if let Some((part, said)) = read(user)? {
+            cfg.merge(part, &said);
         }
         if let Some(f) = project {
-            if let Some(mut part) = read(f)? {
+            if let Some((mut part, said)) = read(f)? {
                 let root = project_root(f);
                 if !is_trusted(&root, trust_file) {
                     let left_out = part.strip_untrusted(&cfg);
@@ -385,7 +391,7 @@ impl Config {
                         ));
                     }
                 }
-                cfg.merge(part);
+                cfg.merge(part, &said);
             }
         }
         cfg.notices.extend(unread);
@@ -393,11 +399,31 @@ impl Config {
     }
 
     /// Takes out of a project's file what could run a command or send a key, a file or the
-    /// conversation somewhere else: a provider's address, key sources and headers (the user's own
-    /// stay), MCP servers, hooks, allow rules, the `auto` and `accept-edits` modes, the status
-    /// command, the system prompt file and the web backend's address and key. Returns their names.
+    /// conversation somewhere else, or lift a spend limit: a provider's address, key sources, headers,
+    /// protocol, `extra` settings and prices (the user's own stay), a default provider the user's file
+    /// does not define, MCP servers, hooks, allow rules, the `auto` and `accept-edits` modes, the
+    /// status command, the system prompt file, the web backend's address and key, and a `max_cost` or
+    /// `max_cost_day` above the user's. Returns their names.
     pub fn strip_untrusted(&mut self, user: &Config) -> Vec<String> {
         let mut out = Vec::new();
+        if let Some(n) = self.provider.take() {
+            if user.providers.contains_key(&n) {
+                self.provider = Some(n);
+            } else {
+                out.push(format!("provider = \"{n}\""));
+            }
+        }
+        for (field, mine, own) in [
+            ("max_cost", &mut self.agent.max_cost, user.agent.max_cost),
+            ("max_cost_day", &mut self.agent.max_cost_day, user.agent.max_cost_day),
+        ] {
+            if let (Some(m), Some(o)) = (*mine, own) {
+                if m > o {
+                    out.push(format!("agent.{field}"));
+                    *mine = own;
+                }
+            }
+        }
         for (name, p) in self.providers.iter_mut() {
             let own = user.providers.get(name).cloned().unwrap_or_default();
             let mut take = |set: bool, field: &str| {
@@ -412,6 +438,14 @@ impl Config {
             take(p.auth.is_some() && p.auth != own.auth, "auth");
             take(p.login.is_some() && p.login != own.login, "login");
             take(!p.headers.is_empty() && p.headers != own.headers, "headers");
+            take(!p.protocol.is_empty() && p.protocol != own.protocol, "protocol");
+            let n = p.extra.len();
+            p.extra.retain(|k, v| own.extra.get(k) == Some(v));
+            take(p.extra.len() != n, "extra");
+            let n = p.pricing.len();
+            p.pricing.retain(|k, v| own.pricing.get(k) == Some(v));
+            take(p.pricing.len() != n, "pricing");
+            p.protocol = own.protocol;
             p.base_url = own.base_url;
             p.api_key_env = own.api_key_env;
             p.api_key_cmd = own.api_key_cmd;
@@ -429,13 +463,16 @@ impl Config {
         if !std::mem::take(&mut self.permissions.allow).is_empty() {
             out.push("permissions.allow".into());
         }
-        if matches!(self.permissions.mode, PermissionMode::Auto | PermissionMode::AcceptEdits) {
+        if matches!(self.permissions.mode, PermissionMode::Auto | PermissionMode::AcceptEdits)
+            && self.permissions.mode != user.permissions.mode
+        {
             out.push(format!("permissions.mode = \"{}\"", self.permissions.mode.as_str()));
-            self.permissions.mode = PermissionMode::default();
+            self.permissions.mode = user.permissions.mode;
         }
-        if !std::mem::take(&mut self.ui.status_command).is_empty() {
+        if !self.ui.status_command.is_empty() && self.ui.status_command != user.ui.status_command {
             out.push("ui.status_command".into());
         }
+        self.ui.status_command = user.ui.status_command.clone();
         if self.agent.system_prompt_file.take().is_some() {
             out.push("agent.system_prompt_file".into());
         }
@@ -457,33 +494,35 @@ impl Config {
         }
     }
 
-    /// `other` wins where it says something.
-    pub fn merge(&mut self, other: Config) {
-        let d = Config::default();
-        if other.provider.is_some() {
-            self.provider = other.provider;
-        }
-        if other.model.is_some() {
-            self.model = other.model;
-        }
-        // a provider counts field by field too: a project that sets only `default_model` keeps the
-        // user's protocol, address and key source
-        for (k, v) in other.providers {
-            merge_fields(self.providers.entry(k).or_default(), v);
-        }
-        for (k, v) in other.mcp {
-            self.mcp.insert(k, v);
-        }
-        // a section counts field by field: a project's `[context] reader_at` keeps the user's `curator_spec`
-        merge_fields(&mut self.agent, other.agent);
-        if other.permissions.mode != d.permissions.mode {
-            self.permissions.mode = other.permissions.mode;
+    /// `other` wins for every key its file says (`said`, the file's own table), even one set to its
+    /// default value. Sections and maps count key by key: a project's `[context] reader_at` keeps the
+    /// user's `curator_spec`, a project's price for one model keeps the user's other prices, a provider
+    /// that sets only `default_model` keeps the user's protocol, address and key source. An MCP server
+    /// counts whole; rules and hooks add up.
+    pub fn merge(&mut self, other: Config, said: &toml::Table) {
+        let table = |c: &Config| match toml::Value::try_from(c) {
+            Ok(toml::Value::Table(t)) => Some(t),
+            _ => None,
+        };
+        if let (Some(mut base), Some(over)) = (table(self), table(&other)) {
+            if let (Some(toml::Value::Table(names)), Some(toml::Value::Table(b))) =
+                (said.get("mcp"), base.get_mut("mcp"))
+            {
+                for n in names.keys() {
+                    b.remove(n);
+                }
+            }
+            overlay(&mut base, &over, said);
+            if let Ok(mut merged) = toml::Value::Table(base).try_into::<Config>() {
+                merged.permissions.allow = std::mem::take(&mut self.permissions.allow);
+                merged.permissions.deny = std::mem::take(&mut self.permissions.deny);
+                merged.hooks = std::mem::take(&mut self.hooks);
+                merged.notices = std::mem::take(&mut self.notices);
+                *self = merged;
+            }
         }
         self.permissions.allow.extend(other.permissions.allow);
         self.permissions.deny.extend(other.permissions.deny);
-        merge_fields(&mut self.context, other.context);
-        merge_fields(&mut self.ui, other.ui);
-        merge_fields(&mut self.web, other.web);
         self.hooks.extend(other.hooks);
         self.notices.extend(other.notices);
     }
@@ -521,31 +560,18 @@ impl Config {
     }
 }
 
-/// Copies onto `base` each field of `other` that differs from the default.
-fn merge_fields<T>(base: &mut T, other: T)
-where
-    T: Serialize + serde::de::DeserializeOwned + Default + PartialEq,
-{
-    let d = T::default();
-    if other == d {
-        return;
-    }
-    let table = |v: &T| match toml::Value::try_from(v) {
-        Ok(toml::Value::Table(t)) => Some(t),
-        _ => None,
-    };
-    let merged = match (table(base), table(&other), table(&d)) {
-        (Some(mut b), Some(o), Some(dt)) => {
-            for (k, v) in o {
-                if dt.get(&k) != Some(&v) {
-                    b.insert(k, v);
-                }
+/// Copies onto `base` the value `over` has for each key `said` holds, table into table.
+/// A key `over` lacks (unknown to nexo, or left out of an untrusted project) changes nothing.
+fn overlay(base: &mut toml::Table, over: &toml::Table, said: &toml::Table) {
+    for (k, s) in said {
+        let Some(o) = over.get(k) else { continue };
+        match (s, o, base.get_mut(k)) {
+            (toml::Value::Table(s), toml::Value::Table(o), Some(toml::Value::Table(b))) => overlay(b, o, s),
+            _ => {
+                base.insert(k.clone(), o.clone());
             }
-            toml::Value::Table(b).try_into().ok()
         }
-        _ => None,
-    };
-    *base = merged.unwrap_or(other);
+    }
 }
 
 /// The keys of a config file that nexo does not read (a typo, a section that does not exist, a
@@ -680,12 +706,15 @@ cache_read = 0.028
         assert_eq!(cfg.agent.max_turns, 200, "defaults fill what is not said");
     }
 
+    /// `text` parsed, merged onto `cfg` as a file would be.
+    fn merge_text(cfg: &mut Config, text: &str) {
+        cfg.merge(Config::parse(text).unwrap(), &toml::from_str(text).unwrap());
+    }
+
     #[test]
     fn project_settings_win_and_rules_add_up() {
         let mut user = Config::parse("model = 'a'\n[permissions]\nallow = ['read']\n").unwrap();
-        let proj =
-            Config::parse("model = 'b'\n[permissions]\nmode = 'accept-edits'\nallow = ['bash(git *)']\n").unwrap();
-        user.merge(proj);
+        merge_text(&mut user, "model = 'b'\n[permissions]\nmode = 'accept-edits'\nallow = ['bash(git *)']\n");
         assert_eq!(user.model.as_deref(), Some("b"));
         assert_eq!(user.permissions.mode, PermissionMode::AcceptEdits);
         assert_eq!(user.permissions.allow, vec!["read", "bash(git *)"]);
@@ -771,6 +800,59 @@ cache_read = 0.028
     }
 
     #[test]
+    fn a_project_value_equal_to_the_default_still_wins_and_maps_merge_by_key() {
+        let user = "[permissions]\nmode = 'auto'\n[agent]\nsubagents = false\n[ui]\nanimations = false\n\
+             [providers.deepseek]\nprotocol = 'openai-chat'\n[providers.deepseek.pricing.a]\ninput = 1.0\n\
+             [providers.deepseek.pricing.b]\ninput = 3.0\n[mcp.s]\ncommand = 'a'\nargs = ['x']\n";
+        let proj = "[permissions]\nmode = 'ask'\n[agent]\nsubagents = true\n[ui]\nanimations = true\n\
+             [providers.deepseek.pricing.a]\ninput = 5.0\n[mcp.s]\ncommand = 'b'\n";
+        let c = load_pair(user, proj, true);
+        assert_eq!(c.permissions.mode, PermissionMode::Ask);
+        assert!(c.agent.subagents && c.ui.animations);
+        let p = &c.providers["deepseek"];
+        assert_eq!((p.pricing["a"].input, p.pricing["b"].input), (5.0, 3.0), "the user's other price stays");
+        assert_eq!(p.protocol, "openai-chat");
+        assert_eq!(c.mcp["s"], McpServerConfig { command: "b".into(), ..Default::default() }, "a server is whole");
+    }
+
+    #[test]
+    fn an_untrusted_project_cannot_swap_the_protocol_or_lift_spend_limits() {
+        let user = "provider = 'deepseek'\n[agent]\nmax_cost = 1.0\n[providers.deepseek]\nprotocol = 'openai-chat'\n\
+             base_url = 'https://api.deepseek.com'\nmodels = ['m']\n[providers.deepseek.pricing.m]\ninput = 1.0\n";
+        let proj = "provider = 'x'\n[agent]\nmax_cost = 10000.0\nmax_cost_day = 5.0\n\
+             [providers.x]\nprotocol = 'mock'\nmodels = ['m']\nextra = { script = '.nexo/s.json' }\n\
+             [providers.deepseek]\nprotocol = 'mock'\nextra = { script = 's.json' }\n\
+             [providers.deepseek.pricing.m]\ninput = 0.0\n";
+        let c = load_pair(user, proj, false);
+        assert_eq!(c.provider.as_deref(), Some("deepseek"));
+        assert_eq!(c.pick().unwrap().0, "deepseek");
+        assert!(c.providers["x"].protocol.is_empty() && c.providers["x"].extra.is_empty());
+        let d = &c.providers["deepseek"];
+        assert_eq!(d.protocol, "openai-chat");
+        assert!(d.extra.is_empty());
+        assert_eq!(d.pricing["m"].input, 1.0);
+        assert_eq!(c.agent.max_cost, Some(1.0));
+        assert_eq!(c.agent.max_cost_day, Some(5.0), "a limit the user has not set only makes it stricter");
+        let n = &c.notices[0];
+        for k in ["provider = \"x\"", "providers.x.protocol", "providers.deepseek.extra", "pricing", "agent.max_cost"] {
+            assert!(n.contains(k), "{k} in {n}");
+        }
+        let t = load_pair(user, proj, true);
+        assert_eq!(t.provider.as_deref(), Some("x"));
+        assert_eq!(t.agent.max_cost, Some(10000.0));
+        assert_eq!(t.providers["deepseek"].pricing["m"].input, 0.0);
+    }
+
+    #[test]
+    fn the_longest_wildcard_price_wins() {
+        let mut p = ProviderConfig::default();
+        p.pricing.insert("gpt-4*".into(), Pricing { input: 1.0, ..Default::default() });
+        p.pricing.insert("gpt-4o*".into(), Pricing { input: 2.0, ..Default::default() });
+        assert_eq!(p.pricing_for("gpt-4o-mini").unwrap().input, 2.0);
+        assert_eq!(p.pricing_for("gpt-4-turbo").unwrap().input, 1.0);
+    }
+
+    #[test]
     fn load_keeps_user_hooks() {
         let c = load_pair(USER, "", false);
         assert_eq!(c.hooks, vec![HookConfig { event: "pre_tool".into(), matcher: None, command: "true".into() }]);
@@ -785,9 +867,7 @@ cache_read = 0.028
         assert_eq!(c.context.reader_at, 2000);
         let mut user =
             Config::parse("[agent]\nmax_cost = 2.5\n[ui]\ntheme = 'nord'\n[permissions]\nmode = 'plan'\n").unwrap();
-        user.merge(
-            Config::parse("[agent]\nmax_turns = 9\n[ui]\nvim = true\n[permissions]\nallow = ['read']\n").unwrap(),
-        );
+        merge_text(&mut user, "[agent]\nmax_turns = 9\n[ui]\nvim = true\n[permissions]\nallow = ['read']\n");
         assert_eq!((user.agent.max_cost, user.agent.max_turns), (Some(2.5), 9));
         assert_eq!((user.ui.theme.as_str(), user.ui.vim), ("nord", true));
         assert_eq!(user.permissions.mode, PermissionMode::Plan, "rules alone keep the mode");

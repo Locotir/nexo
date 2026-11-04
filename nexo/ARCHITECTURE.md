@@ -46,9 +46,9 @@ Conventions, all crates:
 ```rust
 pub fn registry() -> Registry;                       // the protocols by id
 impl Registry { pub fn get(&self, id: &str) -> Option<Arc<dyn Protocol>>; pub fn ids(&self) -> Vec<&'static str>; pub fn register(&mut self, p: Arc<dyn Protocol>); }
-pub fn presets() -> BTreeMap<String, ProviderConfig>; // openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter, together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, ollama, lmstudio, vllm, llamacpp (with models, pricing, context windows where known)
+pub fn presets() -> BTreeMap<String, ProviderConfig>; // openai, anthropic, gemini, deepseek, xai, groq, mistral, openrouter, together, fireworks, cerebras, moonshot, qwen, zhipu, minimax, ollama, lmstudio, vllm, llamacpp, copilot, codex (with models, pricing, context windows where known)
 pub struct Client;                                     // retry/backoff around a Protocol
-pub mod catalogue;                                     // the models.dev dataset: `lookup(preset, model) -> (pricing, context, output)`, `cached()`, `refresh()`, `refresh_if_stale(done)` (7-day cache at `~/.cache/nexo/models.json`, never blocks a request)
+pub mod catalogue;                                     // the models.dev dataset: `lookup(preset, model) -> (pricing, context, output)`, `cached()`, `refresh()`, `refresh_if_stale(done)` (7-day cache at `~/.nexo/cache/models.json`, never blocks a request)
 pub mod hints;                                         // what an error message says about the model: `context_window(msg)`, `max_output(msg)`, `unknown_model(err)`, `closest(wanted, names, n)`, `wait_hint(err)`
 impl Client { pub fn new(registry: Registry) -> Client; pub async fn stream(&self, cfg: &ProviderConfig, req: &ModelRequest, retries: u32) -> Result<EventStream, ProviderError>; pub async fn list_models(&self, cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError>; pub fn registry(&self) -> &Registry; }
 pub mod sse;                                           // `parse(bytes stream) -> Stream<SseEvent{event, data}>`
@@ -66,7 +66,7 @@ simple JSON form (`{"text": "…"}`, `{"reasoning": "…"}`, `{"tool": {"id","na
 ### nexo-tools
 
 ```rust
-pub fn builtin_with(web: &WebConfig) -> ToolSet;       // read, write, edit, bash, glob, grep, ls, todo, note, web_search, web_fetch (one set per session)
+pub fn builtin_with(web: &WebConfig) -> ToolSet;       // read, write, edit, bash, jobs, glob, grep, ls, note, recall, todo, diagnostics, web_search, web_fetch (one set per session)
 pub mod mcp { pub struct McpClient; impl McpClient { pub async fn connect(name: &str, cfg: &McpServerConfig) -> anyhow::Result<McpClient>; pub fn tools(&self) -> Vec<Arc<dyn Tool>>; pub async fn close(self); } }
 ```
 
@@ -167,7 +167,7 @@ as `bash(git *)`, `bash(cargo test*)`), the path for file tools
 (`edit(src/**)`, `read(/etc/*)`), the tool name for MCP tools
 (`mcp__server__*`). `deny` beats `allow` beats the mode.
 
-Session file: `~/.local/share/nexo/sessions/<id>.jsonl`, one JSON object per
+Session file: `~/.nexo/sessions/<id>.jsonl`, one JSON object per
 line: `{"type":"meta",...}` first, then `{"type":"message","index":n,"ts":...,"message":{...}}`,
 `{"type":"tool_output","call_id":...,"output":{...}}`, `{"type":"usage",...}`,
 `{"type":"title","title":...}`. The id is `YYYYMMDD-HHMMSS-<4 hex>`.
@@ -197,7 +197,7 @@ a rate limit's `retry-after` is shown in the notice. Each correction emits
 `ModelLimits` with `source: "error"`.
 
 The person's prompt: `prompt::system_prompt` takes its base text from
-`agent.system_prompt_file`, else from `~/.config/nexo/prompt.md` when it
+`agent.system_prompt_file`, else from `~/.nexo/prompt.md` when it
 exists, else the built-in text; the tool guidance, directory, date, project
 instructions and `system_prompt_extra` are appended unless the file starts
 with the line `<!-- nexo: raw -->` (then it is sent as is). The prompt is
@@ -348,7 +348,7 @@ Slash commands: `/help`, `/model [name]` (picker without a name),
 with values: `SetPricing`, prices per million tokens), `/permissions [mode]`,
 `/yolo` (auto mode), `/prompt` (the system prompt as sent, shown as a card),
 `/prompt edit` (the TUI steps aside, `$VISUAL`/`$EDITOR`/`nano`/`vi` opens
-`~/.config/nexo/prompt.md`, created from the current prompt when missing,
+`~/.nexo/prompt.md`, created from the current prompt when missing,
 and the TUI returns), `/goal <text>` (`SetGoal`; alone it shows the goal,
 `off` clears it), `/compact`, `/clear`, `/resume` (picker; resumes in
 place), `/rewind`, `/export [path]`, `/rename <name>` (the title the pickers show), `/diff`, `/cost`, `/context` (what the

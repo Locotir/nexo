@@ -88,21 +88,86 @@ pub fn get(name: &str) -> Option<Credential> {
 }
 
 pub fn set(name: &str, cred: Credential) -> std::io::Result<()> {
-    let f = file();
-    let mut map = read_from(&f);
-    map.insert(name.to_string(), cred);
-    write_to(&f, &map)
+    set_in(&file(), name, cred)
+}
+
+/// Sets the entry `name` of the store at `f`. Only that entry changes: the others, those of a kind this
+/// build does not know included, are written back as they were.
+pub fn set_in(f: &Path, name: &str, cred: Credential) -> std::io::Result<()> {
+    let _lock = Lock::take(f)?;
+    let mut map = read_raw(f)?;
+    map.insert(name.to_string(), serde_json::to_value(cred).map_err(std::io::Error::other)?);
+    write_to(f, &map)
 }
 
 /// Removes an entry; true when there was one.
 pub fn remove(name: &str) -> std::io::Result<bool> {
-    let f = file();
-    let mut map = read_from(&f);
+    remove_in(&file(), name)
+}
+
+pub fn remove_in(f: &Path, name: &str) -> std::io::Result<bool> {
+    let _lock = Lock::take(f)?;
+    let mut map = read_raw(f)?;
     let had = map.remove(name).is_some();
     if had {
-        write_to(&f, &map)?;
+        write_to(f, &map)?;
     }
     Ok(had)
+}
+
+/// The store as it is on disk, entry by entry. An absent or empty file is an empty store; a file that
+/// does not parse is an error, so nothing is written over the entries it holds.
+fn read_raw(path: &Path) -> std::io::Result<BTreeMap<String, serde_json::Value>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(e),
+    };
+    if text.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    serde_json::from_str(&text).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} cannot be read ({e}); fix or remove it, nothing was written to it", path.display()),
+        )
+    })
+}
+
+/// `<store>.lock`, held while one writer reads, changes and writes the store, so two sessions refreshing
+/// their tokens at once do not drop each other's. A lock older than [`Lock::STALE`] was left by a
+/// process that died and is taken over.
+struct Lock(PathBuf);
+
+impl Lock {
+    const STALE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    fn take(store: &Path) -> std::io::Result<Lock> {
+        let path = store.with_extension("json.lock");
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Lock(path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+                    if age.is_some_and(|a| a > Lock::STALE) {
+                        let _ = std::fs::remove_file(&path);
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 pub fn read_from(path: &Path) -> BTreeMap<String, Credential> {
@@ -113,7 +178,7 @@ pub fn read_from(path: &Path) -> BTreeMap<String, Credential> {
 }
 
 /// Writes the whole store, through a file only you can read, renamed into place.
-pub fn write_to(path: &Path, map: &BTreeMap<String, Credential>) -> std::io::Result<()> {
+pub fn write_to<T: Serialize>(path: &Path, map: &BTreeMap<String, T>) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -181,5 +246,47 @@ mod tests {
         assert!(map["b"].expiring(50, 60));
         assert!(!map["b"].expiring(10, 60));
         assert!(!map["a"].expiring(u64::MAX / 2, 0));
+    }
+
+    #[test]
+    fn set_and_remove_keep_what_they_cannot_read_and_never_write_over_a_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("auth.json");
+        std::fs::write(&f, r#"{"z": {"type": "wellknown", "x": 1}, "a": {"type": "api", "key": "k"}}"#).unwrap();
+        set_in(&f, "b", Credential::Api { key: "k2".into() }).unwrap();
+        assert!(remove_in(&f, "a").unwrap());
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(raw["z"]["type"], "wellknown", "an entry of a kind this build does not know stays");
+        assert_eq!(raw["b"]["key"], "k2");
+        assert!(raw.get("a").is_none());
+        // a hand edit left a trailing comma: nothing is written over it
+        let broken = "{\"a\": {\"type\": \"api\", \"key\": \"k\"},}";
+        std::fs::write(&f, broken).unwrap();
+        assert!(set_in(&f, "b", Credential::Api { key: "k3".into() }).is_err());
+        assert!(remove_in(&f, "a").is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), broken);
+    }
+
+    #[test]
+    fn writers_at_the_same_time_lose_no_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("auth.json");
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    for j in 0..10 {
+                        set_in(&f, &format!("p{i}"), Credential::Api { key: format!("k{j}") }).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let map = read_from(&f);
+        assert_eq!(map.len(), 8, "{map:?}");
+        assert!(map.values().all(|c| c.secret() == "k9"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no lock or temporary file stays");
     }
 }

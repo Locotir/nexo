@@ -290,6 +290,8 @@ const HEAD_WORDS: &[&str] = &[
     "you", "you'll", "please", "pls", "and", "but", "so", "then", "also", "should", "must", "will", "to", "just", "we",
     "we'll", "por", "favor", "y", "e", "o", "or", "pero", "que", "tambien", "también", "ahora", "now",
 ];
+/// Lead cues that are also a plain third person present ("usa", "escribe"): see [`is_rule`].
+const AMBIGUOUS_LEADS: &[&str] = &["usa", "utiliza", "escribe"];
 /// Words after which "do not" is an order: "and don't push", "you don't push" (not "we don't have CI").
 const NEG_HEADS: &[&str] = &[
     "you", "please", "pls", "and", "but", "so", "then", "also", "just", "now", "or", "ok", "okay", "y", "o", "pero",
@@ -406,7 +408,15 @@ pub fn is_rule(line: &str) -> bool {
         if c.name("strong").is_some() {
             return true;
         }
-        if c.name("lead").is_some() && (clause_head || HEAD_WORDS.contains(&prev)) {
+        // a Spanish imperative that reads the same as the third person ("usa", "escribe") is an order only at
+        // the head of a clause or after a polite opener: after "y" or "que" it describes ("el build lee x y
+        // escribe y")
+        let heads: &[&str] = if c.name("lead").is_some_and(|l| AMBIGUOUS_LEADS.contains(&fold(l.as_str()).as_str())) {
+            CLAUSE_OPENERS
+        } else {
+            HEAD_WORDS
+        };
+        if c.name("lead").is_some() && (clause_head || heads.contains(&prev)) {
             return true;
         }
         if c.name("neg").is_some() {
@@ -478,11 +488,15 @@ pub fn rules_in(text: &str) -> Vec<String> {
             }
             continue;
         }
+        if code {
+            continue;
+        }
         if let Some(c) = TAG_OPEN.captures(t) {
             let tag = &c[1];
             // a host's tag is a compound name (`system-reminder`, `user_instructions`); a plain one (`<p>`,
-            // `<br>`) is the person's own markup and opens no block that would hide the rest of the message
-            if tag.contains(['-', '_']) && !t.contains(&format!("</{tag}>")) {
+            // `<br>`) is the person's own markup and opens no block that would hide the rest of the message,
+            // nor does a self-closing one (`<router-view />`)
+            if tag.contains(['-', '_']) && !c[0].ends_with("/>") && !t.contains(&format!("</{tag}>")) {
                 block = Some(tag.to_string());
             }
             continue;
@@ -492,7 +506,7 @@ pub fn rules_in(text: &str) -> Vec<String> {
         }
         let all = sentences(line);
         let task = all.iter().any(|s| opens_as_task(s));
-        if code || !(task || is_rule(line)) {
+        if !(task || is_rule(line)) {
             continue;
         }
         let parts: Vec<&str> = all.iter().copied().filter(|s| is_rule(s)).collect();
@@ -850,5 +864,18 @@ mod tests {
         assert_eq!(rules_in(text), vec!["Warning: never push on Fridays.".to_string()]);
         // the person's own markup opens no block: the line after it still counts
         assert_eq!(rules_in("<p>\nNever use tabs."), vec!["Never use tabs.".to_string()]);
+        // nor does a self-closing component, in a code block or out of it
+        let text = "In App.vue I have:\n```vue\n<router-view />\n```\n<el-button />\nNever use the options API.";
+        assert_eq!(rules_in(text), vec!["Never use the options API.".to_string()]);
+    }
+
+    #[test]
+    fn a_spanish_verb_after_y_or_que_describes() {
+        for l in ["El build lee config.toml y escribe el resultado en dist/", "El servidor que usa nginx va lento"] {
+            assert!(!is_rule(l), "{l}");
+        }
+        for l in ["Usa tabs", "Por favor, usa tabs", "por favor usa tabs", "Ahora escribe los tests en inglés"] {
+            assert!(is_rule(l), "{l}");
+        }
     }
 }

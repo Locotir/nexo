@@ -339,6 +339,20 @@ fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Whether `sql` (squashed) selects `channel` and groups by region, month and channel, in any order.
+fn channel_kept(sql: &str) -> bool {
+    let up = sql.to_uppercase();
+    let list = |from: &str, to: &[&str]| -> Vec<String> {
+        let Some(start) = up.find(from).map(|i| i + from.len()) else { return vec![] };
+        let end = to.iter().filter_map(|t| up[start..].find(t)).min().map_or(up.len(), |e| start + e);
+        up[start..end].split(',').map(|s| s.trim().to_string()).collect()
+    };
+    let select = list("SELECT ", &[" FROM "]);
+    let mut group = list("GROUP BY ", &[" ORDER BY", " HAVING", " LIMIT", ";"]);
+    group.sort();
+    select.iter().any(|s| s == "CHANNEL") && group == ["CHANNEL", "MONTH", "REGION"]
+}
+
 fn data_parts(wd: &Path) -> Vec<Part> {
     let sql = squash(&read(wd, "sql/transform.sql"));
     let csv = read(wd, "data/orders.csv");
@@ -349,10 +363,7 @@ fn data_parts(wd: &Path) -> Vec<Part> {
     vec![
         (sql.contains("SUM(qty * price) AS revenue"), "revenue is not the original SUM(qty * price) again".into()),
         (!sql.contains("discount"), "transform.sql still mentions discount".into()),
-        (
-            sql.contains("channel,") && sql.contains("GROUP BY region, month, channel"),
-            "channel left transform.sql (the second change was undone too)".into(),
-        ),
+        (channel_kept(&sql), "channel left transform.sql (the second change was undone too)".into()),
         (
             head == "id,customer,region,qty,price,discount,ordered_at,channel"
                 && rows.len() == 24
@@ -538,4 +549,25 @@ pub async fn run_chat(bench: &Bench, task: &ChatTask, arm: &Arm, rep: u32, budge
     let driven = run::drive(bench, &plan, arm, rep, budget_left).await?;
     let out = (task.check)(&driven.answers);
     Ok(run::record(bench, arm, rep, task.id, &driven, out.score, out.ok, out.detail))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_may_sit_anywhere_in_the_select_and_group_by() {
+        let old = |s: &str| s.contains("channel,") && s.contains("GROUP BY region, month, channel");
+        let last = "SELECT region, strftime('%Y-%m', ordered_at) AS month, SUM(qty * price) AS revenue, channel \
+                    FROM orders GROUP BY region, channel, month ORDER BY month, region;";
+        assert!(!old(last) && channel_kept(last));
+        let usual = squash(
+            &TRANSFORM
+                .replace("  region,\n", "  region,\n  channel,\n")
+                .replace("GROUP BY region, month", "GROUP BY region, month, channel"),
+        );
+        assert!(channel_kept(&usual));
+        assert!(!channel_kept(&squash(TRANSFORM)));
+        assert!(!channel_kept("SELECT region, month, channel FROM orders GROUP BY region, month;"));
+    }
 }

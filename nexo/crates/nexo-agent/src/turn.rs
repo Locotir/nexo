@@ -1314,7 +1314,9 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         if c.error.is_none() && !interrupted {
             // a reply that wrote its calls as text, in the model's own markup, makes them as calls
             let specs = state.lock().await.tools.specs();
-            if let Some(m) = leak::recover(&msg, &specs, &format!("text_call_{turn_no}_{rounds}")) {
+            // ids unique in the session: turns count from 0 again after a resume or a fork
+            let prefix = format!("text_call_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+            if let Some(m) = leak::recover(&msg, &specs, &prefix) {
                 let n = m.tool_calls().count();
                 notice(&events, Level::Info, format!("the model wrote {n} tool call(s) as text; they run as calls"));
                 msg = m;
@@ -1983,11 +1985,12 @@ async fn run_one(
                     ("read", Some((path, p))) if !out.is_error => {
                         let offset = args.get("offset").and_then(Value::as_u64);
                         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(READ_LIMIT);
-                        st.reads.after_read(path, p, offset, limit, id)
+                        st.reads.after_read(path, p, offset, limit, id, out.content.chars().count())
                     }
                     ("bash", Some((path, p))) if !out.is_error => {
                         let span = args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print);
-                        span.and_then(|(_, span)| st.reads.after_lines(path, p, span, id))
+                        let printed = out.content.chars().count();
+                        span.and_then(|(_, span)| st.reads.after_lines(path, p, span, id, printed))
                     }
                     _ => None,
                 }
@@ -2114,6 +2117,14 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
     };
     match done {
         Ok(done) => {
+            // the checkpoints count positions of the old history: those in the kept tail move with
+            // it, and those of the summarised part go to 0, where no rewind puts them back (the
+            // summary reports their writes as done)
+            let from = keep_from.min(before);
+            let shift = work.len().saturating_sub(before - from);
+            for c in &mut st.checkpoints {
+                c.0 = if c.0 >= from { c.0 - from + shift } else { 0 };
+            }
             st.history.replace(work);
             add_usage(st, &events, &done.model, done.usage);
             st.last_prompt = None;

@@ -66,6 +66,8 @@ pub struct Recorder {
     pub price: Pricing,
     pub limits: Limits,
     pub tally: Arc<Mutex<Tally>>,
+    /// The money of every run of the benchmark, counted as each reply is priced.
+    pub spent: Arc<Mutex<f64>>,
     /// One JSON line per request.
     pub transcript: Arc<Mutex<File>>,
     /// Text never written to the transcript (the API key).
@@ -147,6 +149,7 @@ impl ModelClient for Recorder {
             est: estimate(req),
             entry,
             tally: self.tally.clone(),
+            spent: self.spent.clone(),
             price: self.price,
             transcript: self.transcript.clone(),
             secrets: self.secrets.clone(),
@@ -168,6 +171,7 @@ struct Record {
     est: u64,
     entry: Value,
     tally: Arc<Mutex<Tally>>,
+    spent: Arc<Mutex<f64>>,
     price: Pricing,
     transcript: Arc<Mutex<File>>,
     secrets: Vec<String>,
@@ -198,6 +202,7 @@ impl Record {
                 t.views.push(view);
             }
         }
+        *self.spent.lock().unwrap() += cost;
         self.write(json!({
             "reply": col.message(),
             "finish": col.finish,
@@ -271,6 +276,7 @@ mod tests {
             price: crate::cost::DEEPSEEK,
             limits: Limits { max_steps, max_cost },
             tally: Arc::default(),
+            spent: Arc::default(),
             transcript: Arc::new(Mutex::new(f.reopen().unwrap())),
             secrets: vec![],
         };
@@ -294,6 +300,8 @@ mod tests {
         let t = r.tally.lock().unwrap().clone();
         assert_eq!((t.requests, t.steps, t.usage.input), (2, 2, 2_000_000));
         assert!((t.cost - 0.56).abs() < 1e-9);
+        // the benchmark's total counts it too, whatever the run does next
+        assert!((*r.spent.lock().unwrap() - 0.56).abs() < 1e-9);
         let text = std::fs::read_to_string(f.path()).unwrap();
         let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!(lines.len(), 2);

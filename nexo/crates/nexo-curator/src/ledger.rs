@@ -54,7 +54,7 @@ static ASM_OPERAND: LazyLock<Re> = LazyLock::new(|| {
         0,
     )
 });
-static ALPHA: LazyLock<Re> = LazyLock::new(|| Re::new(r"[A-Za-z]{3,}", 0));
+static ALPHA: LazyLock<Re> = LazyLock::new(|| Re::new(r"[^\W\d_]{3,}", 0));
 // A row of a hexdump in words (`xxd -g 4`, `od -x`, gdb's `x/8xw`): three or more groups of exactly eight hex digits.
 static HEX_WORD: LazyLock<Re> = LazyLock::new(|| Re::new(r"(?<![\w.])[0-9a-fA-F]{8}(?![\w.])", 0));
 // What a binary says about itself, none of which the agent types back: a section name on its own (`.eh_frame`,
@@ -440,6 +440,18 @@ mod noise_tests {
             assert!(noise(s), "{s}");
         }
         for s in ["GLIBC_2.7", "__printf_chk", "Makefile", "README", "main.rs", "Cargo", "nexo", "hero.sav"] {
+            assert!(!noise(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn prose_in_any_script_is_words_not_data() {
+        for s in [
+            "Функция parse_config падает при пустом вводе",
+            "Η συνάρτηση parse_config αποτυγχάνει με κενή είσοδο",
+            "parse_config 함수가 빈 입력에서 실패합니다 지금",
+            "空の入力で parse_config が失敗します",
+        ] {
             assert!(!noise(s), "{s}");
         }
     }
