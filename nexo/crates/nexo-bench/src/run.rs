@@ -103,6 +103,11 @@ pub struct Record {
     pub parts: Vec<Part>,
     /// Recall calls, re-reads and duplicate lines read from the transcript.
     pub counters: crate::counters::Counters,
+    /// The agent's tool calls reached absolute paths outside the run's folders: the run could have
+    /// read the answer elsewhere, so it is left out of every mean and delta.
+    pub contaminated: bool,
+    /// Those paths, the first few.
+    pub outside: Vec<String>,
 }
 
 /// One graded part of a run: right, wrong, or never answered (`ok` None).
@@ -171,6 +176,8 @@ pub struct Driven {
     pub answers: Vec<String>,
     /// Every reply of each turn: the turn's own, then one per follow-up question.
     pub replies: Vec<Vec<String>>,
+    /// The working directory of the run.
+    pub wd: PathBuf,
 }
 
 /// The transcript file name of a run.
@@ -222,7 +229,7 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
     }
     let wall_s = started.elapsed().as_secs_f64();
     let tally = tally.lock().unwrap().clone();
-    Ok(Driven { tally, stats, wall_s, transcript: name, answers, replies })
+    Ok(Driven { tally, stats, wall_s, transcript: name, answers, replies, wd: plan.wd.clone() })
 }
 
 /// The record of a driven run graded `score` (0..1).
@@ -238,6 +245,7 @@ pub fn record(
     detail: String,
 ) -> Record {
     let t = &d.tally;
+    let outside = crate::contam::Scope::new(&d.wd).file(&bench.out.join(&d.transcript));
     Record {
         task: task.to_string(),
         arm: arm.name.clone(),
@@ -276,6 +284,8 @@ pub fn record(
         transcript: d.transcript.clone(),
         parts: Vec::new(),
         counters: crate::counters::from_file(&bench.out.join(&d.transcript)),
+        contaminated: !outside.is_empty(),
+        outside,
     }
 }
 
@@ -297,7 +307,7 @@ pub async fn run(bench: &Bench, task: &Task, arm: &Arm, rep: u32, budget_left: f
         wd: wd.clone(),
         seal,
         tools: None,
-        confine: false,
+        confine: true,
         system_prompt: None,
         turns: task.turns.clone(),
         max_steps: bench.max_steps,
@@ -460,6 +470,8 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
         transcript: String::new(),
         parts: Vec::new(),
         counters: Default::default(),
+        contaminated: false,
+        outside: Vec::new(),
     }
 }
 

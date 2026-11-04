@@ -108,6 +108,8 @@ pub struct Paired {
     pub excluded: Vec<String>,
     /// Runs of the two arms that hit the step cap: kept (a real result), counted apart.
     pub capped: usize,
+    /// Runs of the two arms that reached outside their folders: left out of every mean above.
+    pub contaminated: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -150,11 +152,17 @@ pub fn bootstrap(xs: &[f64], n: usize, seed: u64) -> Option<(f64, f64)> {
 /// do not enter (they are cut short, so their steps and cost are too low); they are listed in
 /// `excluded`.
 pub fn paired(records: &[crate::run::Record], baseline: &str, arm: &str) -> Option<Paired> {
-    let kept: Vec<&crate::run::Record> = records.iter().filter(|r| r.stop != Some(Stop::Budget)).collect();
+    let kept: Vec<&crate::run::Record> =
+        records.iter().filter(|r| r.stop != Some(Stop::Budget) && !r.contaminated).collect();
     let mine = |r: &&crate::run::Record| r.arm == arm || r.arm == baseline;
     let excluded: Vec<String> = records
         .iter()
         .filter(|r| r.stop == Some(Stop::Budget) && mine(r))
+        .map(|r| format!("{} {} #{}", r.task, r.arm, r.rep))
+        .collect();
+    let contaminated: Vec<String> = records
+        .iter()
+        .filter(|r| r.contaminated && mine(r))
         .map(|r| format!("{} {} #{}", r.task, r.arm, r.rep))
         .collect();
     let capped = kept.iter().filter(|r| r.stop == Some(Stop::MaxSteps) && mine(r)).count();
@@ -196,6 +204,7 @@ pub fn paired(records: &[crate::run::Record], baseline: &str, arm: &str) -> Opti
         reps_min,
         excluded,
         capped,
+        contaminated,
     })
 }
 

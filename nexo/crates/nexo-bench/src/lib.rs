@@ -5,6 +5,7 @@
 pub mod arm;
 pub mod check;
 pub mod client;
+pub mod contam;
 pub mod cost;
 pub mod counters;
 pub mod env;

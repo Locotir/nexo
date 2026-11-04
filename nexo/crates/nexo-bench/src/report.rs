@@ -162,6 +162,8 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
     for why in &h.skipped {
         s.push_str(&format!("\nSkipped: {why}\n"));
     }
+    let dirty = records.iter().filter(|r| r.contaminated).count();
+    let clean: Vec<Record> = records.iter().filter(|r| !r.contaminated).cloned().collect();
     let mut arms: Vec<&str> = Vec::new();
     for r in records {
         if !arms.contains(&r.arm.as_str()) {
@@ -171,11 +173,16 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
     if arms.is_empty() {
         return s;
     }
-    s.push_str("\n## Arms\n\nScore and views are means over runs; the other counts are totals.\n\n");
-    s.push_str(&header(&["arm", "settings", "runs"]));
+    s.push_str("\n## Arms\n\nScore and views are means over runs; the other counts are totals. Runs that reached outside their folders (contaminated) are left out of the numbers and counted apart.\n\n");
+    s.push_str(&header(&["arm", "settings", "runs", "contaminated"]));
     for arm in &arms {
-        let rows: Vec<&Record> = records.iter().filter(|r| r.arm == *arm).collect();
-        s.push_str(&row(&[arm.to_string(), settings(rows[0]), rows.len().to_string()], &numbers(&rows)));
+        let all: Vec<&Record> = records.iter().filter(|r| r.arm == *arm).collect();
+        let rows: Vec<&Record> = all.iter().copied().filter(|r| !r.contaminated).collect();
+        let bad = all.len() - rows.len();
+        s.push_str(&row(
+            &[arm.to_string(), settings(all[0]), rows.len().to_string(), bad.to_string()],
+            &numbers(&rows),
+        ));
     }
     let base = arms[0];
     let pairs: Vec<_> = arms[1..].iter().filter_map(|a| paired(records, base, a)).collect();
@@ -210,6 +217,12 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
             left_out.dedup();
             s.push_str(&format!("\nLeft out (stopped by the budget): {}.\n", left_out.join(", ")));
         }
+        let mut dirty_runs: Vec<&str> = pairs.iter().flat_map(|p| p.contaminated.iter().map(String::as_str)).collect();
+        dirty_runs.sort();
+        dirty_runs.dedup();
+        if !dirty_runs.is_empty() {
+            s.push_str(&format!("\nLeft out (contaminated): {}.\n", dirty_runs.join(", ")));
+        }
         for p in pairs.iter().filter(|p| p.capped > 0) {
             s.push_str(&format!(
                 "\n{}: {} run(s) of {} and {base} hit the step cap; kept, counted apart.\n",
@@ -217,8 +230,17 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
             ));
         }
     }
-    s.push_str(&steps_table(records, &arms));
-    s.push_str(&parts(records, &arms));
+    s.push_str(&steps_table(&clean, &arms));
+    s.push_str(&parts(&clean, &arms));
+    if dirty > 0 {
+        s.push_str(&format!(
+            "\n## Contaminated runs\n\n{dirty} run(s) used absolute paths outside their working directory, so they may have read the answer elsewhere; they are left out of the means and deltas above.\n\n| task | arm | paths |\n|---|---|---|\n"
+        ));
+        for r in records.iter().filter(|r| r.contaminated) {
+            let paths: Vec<String> = r.outside.iter().map(|p| format!("`{p}`")).collect();
+            s.push_str(&format!("| {} #{} | {} | {} |\n", r.task, r.rep, r.arm, paths.join(", ")));
+        }
+    }
     s.push_str("\n## Runs\n\n");
     s.push_str(&header(&["task", "arm"]));
     for r in records {
@@ -228,6 +250,9 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
         }
         if !r.finished {
             task.push_str(" (stopped)");
+        }
+        if r.contaminated {
+            task.push_str(" (contaminated)");
         }
         s.push_str(&row(&[task, r.arm.clone()], &numbers(&[r])));
     }
@@ -457,8 +482,8 @@ mod tests {
         let s = summary(&head(1), &recs);
         assert!(s.contains("| `deepseek-chat` | `abc1234` | 100 | default | default | 1 | $5 | **$1.7500** |"), "{s}");
         assert!(!s.contains("## Parts"), "no task has parts: {s}");
-        assert!(s.contains("| plain | plain | 2 | 75.00% | 20 | 22 | 2000 | 10000 | 0 | 600 | 0.7500 | 25.0 | 4 | 6000 | 6000 | 0 | 0 |"), "{s}");
-        assert!(s.contains("| compact | compact at 100000 | 1 | 20.75% |"), "{s}");
+        assert!(s.contains("| plain | plain | 2 | 0 | 75.00% | 20 | 22 | 2000 | 10000 | 0 | 600 | 0.7500 | 25.0 | 4 | 6000 | 6000 | 0 | 0 |"), "{s}");
+        assert!(s.contains("| compact | compact at 100000 | 1 | 0 | 20.75% |"), "{s}");
         assert!(
             s.contains(
                 "| a | compact | 20.75% | 10 | 11 | 1000 | 5000 | 0 | 300 | 1.0000 | 12.5 | 2 | 6000 | 6000 | 2 | 2 |"
@@ -623,5 +648,19 @@ mod tests {
         let s = summary(&head(1), &recs);
         assert!(s.contains("Δ wall s |"), "{s}");
         assert!(s.contains("| +17.5 (not enough runs) |\n"), "{s}");
+    }
+
+    #[test]
+    fn contaminated_runs_are_left_out_of_means_and_deltas_and_listed() {
+        let mut dirty = record("a", "cur", 1.0, 0.5);
+        dirty.contaminated = true;
+        dirty.outside = vec!["/home/x/inventory.rs".into()];
+        let recs = [record("a", "plain", 0.0, 0.5), record("a", "cur", 0.5, 0.5), dirty];
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("| cur | cur | 1 | 1 | 50.00% |"), "{s}");
+        assert!(s.contains("Left out (contaminated): a cur #0."), "{s}");
+        assert!(s.contains("| +50.0 "), "{s}");
+        assert!(s.contains("## Contaminated runs") && s.contains("`/home/x/inventory.rs`"), "{s}");
+        assert!(s.contains("a (contaminated)"), "{s}");
     }
 }
