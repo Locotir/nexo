@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use nexo_agent::{AgentSetup, ModelClient};
 use nexo_core::agent::{channels, AgentCommand, AgentEvent};
@@ -178,6 +178,8 @@ pub struct Driven {
     pub replies: Vec<Vec<String>>,
     /// The working directory of the run.
     pub wd: PathBuf,
+    /// When the run started: temporary files made after it are the run's own.
+    pub since: SystemTime,
 }
 
 /// The transcript file name of a run.
@@ -201,6 +203,7 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
     });
     let mut config = config(bench, arm);
     config.agent.system_prompt_file = plan.system_prompt.clone();
+    let since = SystemTime::now();
     let started = Instant::now();
     let mut stats = LoopStats::default();
     let mut answers = Vec::new();
@@ -229,7 +232,7 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
     }
     let wall_s = started.elapsed().as_secs_f64();
     let tally = tally.lock().unwrap().clone();
-    Ok(Driven { tally, stats, wall_s, transcript: name, answers, replies, wd: plan.wd.clone() })
+    Ok(Driven { tally, stats, wall_s, transcript: name, answers, replies, wd: plan.wd.clone(), since })
 }
 
 /// The record of a driven run graded `score` (0..1).
@@ -245,7 +248,7 @@ pub fn record(
     detail: String,
 ) -> Record {
     let t = &d.tally;
-    let outside = crate::contam::Scope::new(&d.wd).file(&bench.out.join(&d.transcript));
+    let outside = crate::contam::Scope::new(&d.wd).made_since(d.since).file(&bench.out.join(&d.transcript));
     Record {
         task: task.to_string(),
         arm: arm.name.clone(),

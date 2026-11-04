@@ -7,6 +7,7 @@
 //! it is a regex or a quoted string, because a missed read is worse than a false alarm.
 
 use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
 
 use regex::Regex;
 use serde_json::Value;
@@ -24,6 +25,8 @@ const PATH_KEYS: [&str; 5] = ["path", "file_path", "cwd", "dir", "glob"];
 pub struct Scope {
     wd: PathBuf,
     roots: Vec<PathBuf>,
+    /// Files in the temporary folder made at or after this time belong to the run.
+    since: Option<SystemTime>,
 }
 
 impl Scope {
@@ -49,13 +52,35 @@ impl Scope {
         let wd = normalize(wd);
         let mut roots: Vec<PathBuf> = roots.iter().map(|r| normalize(r)).collect();
         roots.push(wd.clone());
-        Scope { wd, roots }
+        Scope { wd, roots, since: None }
     }
 
     fn allows(&self, p: &Path) -> bool {
         let p = normalize(p);
         // a root ending in a name prefix (`nexo-bench-home-`) allows the folders that start so
-        self.roots.iter().any(|r| p.starts_with(r)) || self.prefixed(&p)
+        self.roots.iter().any(|r| p.starts_with(r)) || self.prefixed(&p) || self.own_temp(&p)
+    }
+
+    /// Temporary files count as the run's own when they were made after it started, so a
+    /// scratch file the agent wrote to `/tmp` and read back is not a reach outside.
+    pub fn made_since(mut self, t: SystemTime) -> Scope {
+        self.since = Some(t);
+        self
+    }
+
+    fn own_temp(&self, p: &Path) -> bool {
+        let Some(since) = self.since else {
+            return false;
+        };
+        // agents write `/tmp/x` literally, whatever TMPDIR says
+        let tmps = [normalize(&std::env::temp_dir()), PathBuf::from("/tmp")];
+        if !tmps.iter().any(|t| p != t && p.starts_with(t)) {
+            return false;
+        }
+        std::fs::metadata(p)
+            .and_then(|m| m.created().or_else(|_| m.modified()))
+            .map(|made| made >= since)
+            .unwrap_or(false)
     }
 
     fn prefixed(&self, p: &Path) -> bool {
@@ -77,6 +102,7 @@ impl Scope {
         let words = Regex::new(r#"(?:^|[\s"'=:(,;<>|&{\[`])(/[^\s"'`;|&<>(){}\[\],]*)"#).expect("a valid pattern");
         words
             .captures_iter(cmd)
+            .filter(|c| !division(cmd, c.get(1).expect("group 1")))
             .map(|c| c[1].to_string())
             // `//host/..` is a URL, not a file
             .filter(|p| !p.starts_with("//") && !self.allows(Path::new(p)))
@@ -142,6 +168,22 @@ impl Scope {
     }
 }
 
+/// Whether a bare `/` at `m` divides two operands (`x / 100.0`, `(a) / b`), as in code a command
+/// writes, rather than naming the root folder (`ls /`, `find / -name`, `du / 2>&1`).
+fn division(cmd: &str, m: regex::Match) -> bool {
+    if m.as_str() != "/" {
+        return false;
+    }
+    let before = cmd[..m.start()].trim_end();
+    let after = cmd[m.end()..].trim_start();
+    let left = before.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ')' || c == ']');
+    let operand: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
+    let rest = &after[operand.len()..];
+    let right = after.starts_with('(')
+        || (!operand.is_empty() && !operand.starts_with('-') && !rest.starts_with('>') && !rest.starts_with('&'));
+    left && right
+}
+
 /// `p` with `.` and `..` resolved by name, without touching the disk.
 fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
@@ -194,6 +236,32 @@ mod tests {
         assert_eq!(s.args("read", &json!({"path": "~/notes"})), ["~/notes"]);
         assert_eq!(s.args("glob", &json!({"pattern": "/home/**/*.rs"})), ["/home/**/*.rs"]);
         assert!(s.args("glob", &json!({"pattern": "src/**/*.rs"})).is_empty());
+    }
+
+    #[test]
+    fn a_division_in_written_code_is_not_the_root() {
+        let s = scope();
+        assert!(s.command("cat > a.rs <<'EOF'\nSome(units / daily_use)\n(x * 100.0).round() / 100.0\nEOF").is_empty());
+        assert!(s.command("echo $((a / (b + 1)))").is_empty());
+        for cmd in ["ls /", "find / -name x.rs", "du -sh / 2>&1", "grep -r foo / | head", "cd / && ls"] {
+            assert_eq!(s.command(cmd), ["/"], "{cmd}");
+        }
+    }
+
+    #[test]
+    fn temporary_files_made_during_the_run_are_its_own() {
+        let f = tempfile::Builder::new().prefix("contam-own-").tempfile().unwrap();
+        let p = f.path().display().to_string();
+        let cmd = format!("cat {p}");
+        let wd = Path::new("/nonexistent/nexo-bench-AbC");
+        let later = SystemTime::now() + std::time::Duration::from_secs(3600);
+        assert_eq!(Scope::with_roots(wd, vec![]).made_since(later).command(&cmd), std::slice::from_ref(&p));
+        assert!(Scope::with_roots(wd, vec![]).made_since(SystemTime::UNIX_EPOCH).command(&cmd).is_empty());
+        // the temporary folder itself, and files already gone, stay outside
+        let tmp = std::env::temp_dir().display().to_string();
+        let gone = format!("{tmp}/contam-gone-none");
+        let s = Scope::with_roots(wd, vec![]).made_since(SystemTime::UNIX_EPOCH);
+        assert_eq!(s.command(&format!("ls {tmp} {gone}")), [tmp, gone]);
     }
 
     #[test]
