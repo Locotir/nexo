@@ -34,7 +34,7 @@ pub struct Header {
 }
 
 /// The columns after the arm or the run, in both tables.
-const COLUMNS: [&str; 17] = [
+const COLUMNS: [&str; 18] = [
     "score",
     "steps",
     "requests",
@@ -51,6 +51,7 @@ const COLUMNS: [&str; 17] = [
     "rewrites",
     "recall calls",
     "re-reads",
+    "needless",
     "dup lines %",
 ];
 
@@ -397,6 +398,7 @@ fn numbers(rows: &[&Record]) -> Vec<String> {
         format!("{}", sum(|r| r.rewrites as f64)),
         format!("{}", sum(|r| r.counters.recall_calls as f64)),
         format!("{}", sum(|r| r.counters.re_reads as f64)),
+        format!("{}", sum(|r| r.counters.needless.len() as f64)),
         dup_percent(rows),
     ]
 }
@@ -505,12 +507,24 @@ mod tests {
     #[test]
     fn counters_show_in_the_arms_runs_and_paired_tables() {
         let mut recs = vec![record("a", "plain", 1.0, 0.5), record("a", "cur", 1.0, 0.5)];
-        recs[0].counters = crate::counters::Counters { recall_calls: 0, re_reads: 4, dup_lines: 20, result_lines: 100 };
-        recs[1].counters = crate::counters::Counters { recall_calls: 3, re_reads: 1, dup_lines: 5, result_lines: 100 };
+        recs[0].counters = crate::counters::Counters {
+            recall_calls: 0,
+            re_reads: 4,
+            dup_lines: 20,
+            result_lines: 100,
+            ..Default::default()
+        };
+        recs[1].counters = crate::counters::Counters {
+            recall_calls: 3,
+            re_reads: 1,
+            dup_lines: 5,
+            result_lines: 100,
+            ..Default::default()
+        };
         let s = summary(&head(1), &recs);
-        assert!(s.contains("| recall calls | re-reads | dup lines % |"), "{s}");
-        assert!(s.contains("| 0 | 4 | 20.0 |\n"), "{s}");
-        assert!(s.contains("| 3 | 1 | 5.0 |\n"), "{s}");
+        assert!(s.contains("| recall calls | re-reads | needless | dup lines % |"), "{s}");
+        assert!(s.contains("| 0 | 4 | 0 | 20.0 |\n"), "{s}");
+        assert!(s.contains("| 3 | 1 | 0 | 5.0 |\n"), "{s}");
         assert!(s.contains("| +3.0 (not enough runs) | -3.0 (not enough runs) | -15.0 (not enough runs) |"), "{s}");
     }
 
