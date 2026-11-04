@@ -86,6 +86,9 @@ pub struct Session {
     /// The pid of the nexo that took the lock over, once one has: nothing more is saved by this
     /// session, even after that nexo lets the lock go (its history and this one have parted).
     lost: Option<String>,
+    /// The length of the file after this session's own last write: a longer file, or another one,
+    /// holds lines of somebody else.
+    size: u64,
 }
 
 impl Drop for Session {
@@ -581,6 +584,7 @@ impl Session {
         };
         take_lock(&lock_path(&path))?;
         write_line(&mut file, &Line::Meta(meta.clone()))?;
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(Session {
             meta,
             path,
@@ -594,6 +598,7 @@ impl Session {
             touched: std::time::Instant::now(),
             open_tail: false,
             lost: None,
+            size,
         })
     }
 
@@ -624,6 +629,7 @@ impl Session {
             touched: std::time::Instant::now(),
             open_tail: false,
             lost: None,
+            size: 0,
         }
     }
 
@@ -685,6 +691,7 @@ impl Session {
             // a process killed mid-write leaves a last line without its end
             open_tail: bytes.last().is_some_and(|b| *b != b'\n'),
             lost: None,
+            size: bytes.len() as u64,
         })
     }
 
@@ -716,8 +723,16 @@ impl Session {
                         }
                     }
                 }
-                // deleted by hand while in use: taken again
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => take_lock(&lock)?,
+                // gone: deleted by hand (taken again), or let go by a nexo that took it over, wrote and
+                // ended (lost for good: its lines are in the file, and this memory lacks them)
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if self.file_changed() {
+                        self.lost = Some("unknown".into());
+                        self.locked = false;
+                        return self.claim();
+                    }
+                    take_lock(&lock)?
+                }
                 Ok(t) => {
                     // lost for good: the lock is not this one's to take again, even once let go
                     self.lost = Some(t.split_whitespace().next().unwrap_or("unknown").to_string());
@@ -733,8 +748,35 @@ impl Session {
                 f.write_all(b"\n")?;
             }
             self.open_tail = false;
+            self.mark();
         }
         Ok(())
+    }
+
+    /// The file is no longer the one this session wrote, as far as it left it: longer, or replaced.
+    fn file_changed(&self) -> bool {
+        let Ok(now) = std::fs::metadata(&self.path) else { return false };
+        if now.len() != self.size {
+            return true;
+        }
+        #[cfg(unix)]
+        if let Some(mine) = self.file.as_ref().and_then(|f| f.metadata().ok()) {
+            use std::os::unix::fs::MetadataExt;
+            return (now.dev(), now.ino()) != (mine.dev(), mine.ino());
+        }
+        false
+    }
+
+    /// Remembers the length of the file as this session left it.
+    fn mark(&mut self) {
+        if let Some(m) = self.file.as_ref().and_then(|f| f.metadata().ok()) {
+            self.size = m.len();
+        }
+    }
+
+    /// Whether another nexo took this session over: it writes nothing more here, and /resume opens it again.
+    pub fn is_lost(&self) -> bool {
+        self.lost.is_some()
     }
 
     pub fn id(&self) -> &str {
@@ -780,6 +822,7 @@ impl Session {
         if let Some(f) = &mut self.file {
             write_line(f, line)?;
         }
+        self.mark();
         self.meta.updated = now();
         Ok(())
     }
@@ -926,6 +969,7 @@ impl Session {
         match renamed {
             Ok(()) => {
                 self.file = Some(reopened.map_err(NotReopened)?);
+                self.mark();
                 Ok(())
             }
             Err(e) => {
@@ -1660,6 +1704,33 @@ mod tests {
         }
         // this process's own stamp names its host and namespace
         assert!(stamp().ends_with(&format!(" {host} {ns}")), "{}", stamp());
+    }
+
+    #[test]
+    fn a_taker_that_ended_before_the_next_write_is_noticed_in_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("one")).unwrap();
+        let lock = lock_path(s.path());
+        let p = s.path().to_path_buf();
+        // another nexo took the idle lock over, wrote, and ended, removing its lock
+        let mut f = OpenOptions::new().append(true).open(&p).unwrap();
+        write_line(&mut f, &Line::Message { index: 1, ts: now(), message: Message::user("theirs") }).unwrap();
+        std::fs::remove_file(&lock).unwrap();
+        let e = s.append(&Message::user("mine")).unwrap_err().to_string();
+        assert!(e.contains("taken over"), "{e}");
+        assert!(!lock.exists(), "no lock taken again");
+        drop(s);
+        let on_disk: Vec<String> = Session::open_path(&p).unwrap().messages().iter().map(|m| m.text()).collect();
+        assert_eq!(on_disk, ["one", "theirs"]);
+        // and one that replaced the file
+        let mut s = Session::open_path(&p).unwrap();
+        s.claim().unwrap();
+        let other = d.path().join("other");
+        std::fs::copy(&p, &other).unwrap();
+        std::fs::rename(&other, &p).unwrap();
+        std::fs::remove_file(&lock).unwrap();
+        assert!(s.append(&Message::user("mine")).unwrap_err().to_string().contains("taken over"));
     }
 
     #[test]

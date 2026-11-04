@@ -412,6 +412,10 @@ pub async fn prepare_in(
     Ok((apply(cfg, &cred), Some(cred.secret().to_string())))
 }
 
+/// The whole renewal request, inside the task that holds the store's lock: whatever the server does, the
+/// lock is let go within it, well before the others give up waiting for it (`Lock::WAIT`, 60s).
+const RENEWAL_LIMIT: Duration = if cfg!(test) { Duration::from_secs(1) } else { Duration::from_secs(40) };
+
 /// Renews the entry `name` holding the store's lock from the read to the write, so two sessions never
 /// spend the same refresh token: after the lock is taken the entry is read again, and one another
 /// process renewed meanwhile is used as it is. None when the entry is gone.
@@ -433,7 +437,9 @@ async fn renew_locked(
     // in a task of their own, holding the lock, even when this request stops waiting or is dropped
     let (at, owned) = (at.clone(), name.to_string());
     let task = tokio::spawn(async move {
-        let renewed = refresh_at(&at, &cred).await?;
+        let renewed = tokio::time::timeout(RENEWAL_LIMIT, refresh_at(&at, &cred)).await.map_err(|_| {
+            fail(format!("the server did not answer the renewal of {owned} in {}s", RENEWAL_LIMIT.as_secs()))
+        })??;
         // a store that cannot be written still leaves this request working
         if let Err(e) = lock.set(&owned, renewed.clone()) {
             tracing::warn!("could not save the renewed login for {owned}: {e}");
@@ -664,6 +670,35 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(saved["codex"].secret(), "at2", "the rotated tokens are kept");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_renewal_lets_the_store_lock_go() {
+        let s = MockServer::start();
+        s.mock(|w, t| {
+            w.method(POST).path("/oauth/token");
+            t.status(200)
+                .delay(Duration::from_secs(6))
+                .json_body(json!({"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}));
+        });
+        let dir = std::env::temp_dir().join(format!("nexo-login-stall-test-{}", std::process::id()));
+        let store = dir.join("auth.json");
+        let mut md = BTreeMap::new();
+        md.insert("flow".to_string(), "codex".to_string());
+        let old =
+            Credential::Oauth { access: "at1".into(), refresh: "rt1".into(), expires: auth::now() + 5, metadata: md };
+        auth::set_in(&store, "codex", old).unwrap();
+        let mut cfg = ProviderConfig::new("openai-responses", CODEX_BASE_URL, None);
+        cfg.auth = Some("codex".into());
+        let e = at(&s);
+        let _ = tokio::time::timeout(Duration::from_millis(100), prepare_in(&store, &e, &cfg)).await;
+        // another writer is not kept waiting for the stalled request
+        let st = store.clone();
+        let started = std::time::Instant::now();
+        let wrote = tokio::task::spawn_blocking(move || auth::remove_in(&st, "other")).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(wrote.is_ok(), "{wrote:?}");
+        assert!(started.elapsed() < Duration::from_secs(4), "the lock was held {:?}", started.elapsed());
     }
 
     #[tokio::test]

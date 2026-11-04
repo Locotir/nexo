@@ -212,7 +212,13 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         stopped: stopped.clone(),
         spent: Some(spent),
     };
-    let meta = Meta { budget: opts.budget, spent, stopped: stopped.clone(), skipped: header.skipped.clone() };
+    let meta = Meta {
+        results: Some(RESULTS.into()),
+        budget: opts.budget,
+        spent,
+        stopped: stopped.clone(),
+        skipped: header.skipped.clone(),
+    };
     std::fs::write(out.join(Meta::FILE), serde_json::to_string(&meta)?)?;
     let summary = report::summary(&header, &records);
     std::fs::write(out.join("summary.md"), &summary)?;
@@ -300,10 +306,15 @@ pub fn report(out: &std::path::Path, inputs: &[PathBuf], summary: Option<&std::p
     Ok(0)
 }
 
+/// The results file of a benchmark, in its `out` folder.
+const RESULTS: &str = "results.jsonl";
+
 /// What a benchmark knew that its records do not, kept in `bench.json` next to `results.jsonl` so
 /// `nexo bench report` rebuilds the same header.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Meta {
+    /// The results file these figures describe; a report of any other file does not use them.
+    results: Option<String>,
     budget: Option<f64>,
     /// Every priced reply, runs skipped after an error included.
     spent: f64,
@@ -316,17 +327,23 @@ impl Meta {
 
     /// The meta of the results at `p` (a results.jsonl or its folder), if it has one.
     fn read(p: &std::path::Path) -> Option<Meta> {
-        let dir = if p.is_dir() { p } else { p.parent()? };
-        serde_json::from_str(&std::fs::read_to_string(dir.join(Meta::FILE)).ok()?).ok()
+        let (dir, name) = if p.is_dir() { (p, RESULTS) } else { (p.parent()?, p.file_name()?.to_str()?) };
+        let meta: Meta = serde_json::from_str(&std::fs::read_to_string(dir.join(Meta::FILE)).ok()?).ok()?;
+        (meta.results.as_deref() == Some(name)).then_some(meta)
     }
 }
 
 /// Refuses an `out` that holds an earlier benchmark's runs: a new run would overwrite their
 /// transcripts while their records stay, and the reports would mix the two.
 fn fresh_out(out: &std::path::Path) -> anyhow::Result<()> {
-    let file = out.join("results.jsonl");
+    let file = out.join(RESULTS);
     if std::fs::read_to_string(&file).is_ok_and(|t| !t.trim().is_empty()) {
         bail!("{} already holds an earlier benchmark's runs; give another --out", file.display());
+    }
+    // a leftover of a run that wrote no records describes nothing of the run starting now
+    match std::fs::remove_file(out.join(Meta::FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
     }
     Ok(())
 }
@@ -378,6 +395,7 @@ mod tests {
         let rec = run::Record { task: "t".into(), arm: "a".into(), cost: 1.75, ..Default::default() };
         run::append(dir.path(), &rec).unwrap();
         let meta = Meta {
+            results: Some(RESULTS.into()),
             budget: Some(2.0),
             spent: 2.0,
             stopped: Some("the budget of $2 is spent".into()),
@@ -394,6 +412,26 @@ mod tests {
         );
         let html = std::fs::read_to_string(dir.path().join("report.html")).unwrap();
         assert!(html.contains("$2.0000") && html.contains("$0.2500"), "the page shows the same spent");
+    }
+
+    #[test]
+    fn a_filtered_or_stale_file_does_not_take_the_folders_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = run::Record { task: "t".into(), arm: "a".into(), cost: 1.0, ..Default::default() };
+        run::append(dir.path(), &rec).unwrap();
+        let meta = Meta { results: Some(RESULTS.into()), spent: 9.0, skipped: vec!["x".into()], ..Default::default() };
+        std::fs::write(dir.path().join(Meta::FILE), serde_json::to_string(&meta).unwrap()).unwrap();
+        let filtered = dir.path().join("cur.jsonl");
+        std::fs::copy(dir.path().join(RESULTS), &filtered).unwrap();
+        assert!(Meta::read(dir.path()).is_some() && Meta::read(&dir.path().join(RESULTS)).is_some());
+        assert!(Meta::read(&filtered).is_none(), "a copy or a filter of the results is not the run");
+        let file = dir.path().join("s.md");
+        report(dir.path(), &[filtered], Some(&file)).unwrap();
+        let s = std::fs::read_to_string(&file).unwrap();
+        assert!(!s.contains("skipped") && !s.contains("$9"), "{s}");
+        std::fs::write(dir.path().join(RESULTS), "").unwrap();
+        fresh_out(dir.path()).unwrap();
+        assert!(Meta::read(dir.path()).is_none(), "a new run drops the last one's bench.json");
     }
 
     #[test]

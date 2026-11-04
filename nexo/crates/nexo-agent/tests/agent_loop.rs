@@ -1001,6 +1001,36 @@ async fn a_session_another_nexo_holds_is_not_resumed() {
 }
 
 #[tokio::test]
+async fn a_session_taken_over_is_opened_again_by_resume() {
+    let d = tempfile::tempdir().unwrap();
+    let mut r = start(
+        Scripted::new(vec![Reply::Events(text("a")), Reply::Events(text("b"))]),
+        config(PermissionMode::Ask),
+        None,
+        d.path(),
+    )
+    .await;
+    let a = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "in a".into(), attachments: vec![] });
+    r.turn().await;
+    let lock = nexo_agent::session::dir().join(format!("{a}.jsonl.lock"));
+    // another nexo takes it over: the next write finds the lock is not this one's
+    std::fs::write(&lock, "1").unwrap();
+    r.send(AgentCommand::Submit { text: "lost".into(), attachments: vec![] });
+    r.turn().await;
+    // it ends and lets go; the person opens the session again
+    std::fs::remove_file(&lock).unwrap();
+    r.send(AgentCommand::Resume { id: a.clone() });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. } | AgentEvent::SessionChanged { .. })).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::SessionChanged { .. })), "{evs:?}");
+    assert!(lock.is_file(), "the session holds its lock again");
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn resuming_the_session_in_use_keeps_its_lock() {
     let d = tempfile::tempdir().unwrap();
     let mut r = start(Scripted::new(vec![Reply::Events(text("a"))]), config(PermissionMode::Ask), None, d.path()).await;

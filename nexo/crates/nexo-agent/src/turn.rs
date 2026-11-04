@@ -739,8 +739,8 @@ async fn goal_follow_up(state: &Shared) -> Option<String> {
 
 async fn resume_session(state: &Shared, id: &str) {
     let mut st = state.lock().await;
-    if id == st.session.id() {
-        // a second copy would drop the lock this one holds when it replaced it
+    if id == st.session.id() && !st.session.is_lost() {
+        // a second copy would drop the lock this one holds when it replaced it (a lost session holds none)
         notice(&st.events, Level::Info, format!("session {id} is the one in use"));
         return;
     }

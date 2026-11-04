@@ -192,7 +192,7 @@ impl Record {
 
     fn finish(self, col: &Collector) {
         let cost = self.price.cost(&col.usage);
-        let prompt = col.usage.total_input();
+        let prompt = col.call.total_input();
         let view = if prompt > 0 { prompt } else { self.est };
         {
             let mut t = self.tally.lock().unwrap();
@@ -371,6 +371,36 @@ mod tests {
         assert_eq!(lines[2]["compaction"], true);
         assert_eq!(lines[2]["step"], false);
         assert!(lines[0]["view_est_tokens"].as_u64().unwrap() > 0);
+    }
+
+    struct Retried;
+
+    #[async_trait]
+    impl ModelClient for Retried {
+        async fn stream(&self, _: &ProviderConfig, _: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+            let u = Usage { input: 40_000, ..Default::default() };
+            let evs = vec![
+                StreamEvent::RetriedUsage(u),
+                StreamEvent::TextDelta("done".into()),
+                StreamEvent::Usage(u),
+                StreamEvent::Finish(nexo_core::FinishReason::Stop),
+                StreamEvent::Done,
+            ];
+            Ok(Box::pin(futures::stream::iter(evs)))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retried_attempt_is_spent_but_does_not_enlarge_the_view() {
+        let (mut r, f) = recorder(10, 100.0);
+        r.inner = Arc::new(Retried);
+        let _: Vec<_> = r.stream(&ProviderConfig::default(), &request(), 0).await.unwrap().collect().await;
+        let t = r.tally.lock().unwrap().clone();
+        assert_eq!(t.usage.input, 80_000, "both attempts were billed");
+        assert_eq!(t.views, vec![40_000], "the request is the answering attempt alone");
+        let line: Value =
+            serde_json::from_str(std::fs::read_to_string(f.path()).unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!(line["view_tokens"], 40_000);
     }
 
     #[test]

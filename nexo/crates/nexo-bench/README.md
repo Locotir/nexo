@@ -35,7 +35,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 `nexo bench report [RESULTS...] [--out DIR] [--summary FILE]` writes `report.html` in `--out` (default
 `./bench-out`) from one or more `results.jsonl` (files or folders holding one; default: `--out`).
 `--summary FILE` also writes the Markdown summary there, with the counters read again from the
-transcripts. When every input has its `bench.json`, both files show the run's own spent figure (skipped
+transcripts. When every input is a `results.jsonl` with its `bench.json` (a copy or a filtered file has none: the folder's figures describe the whole run), both files show the run's own spent figure (skipped
 runs included), and the summary its budget (one input), "Stopped early" line and skipped tasks; else
 they only know the recorded runs.
 
@@ -104,7 +104,7 @@ applies equally to plain, compact and curator.
   (characters / 4). **It never holds the address, the headers or the key**; the key is also scrubbed
   from every line as a safeguard.
 - `bench.json`: what the records do not hold (budget, spent with the skipped runs, why it stopped
-  early, the skipped tasks), for `nexo bench report`.
+  early, the skipped tasks), for `nexo bench report`. It names the results file it describes, and a new run removes the old one.
 - `summary.md` (also printed at the end):
 
 | section | contents |
