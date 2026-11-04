@@ -49,9 +49,9 @@ nexo keeps the whole history on disk and gives the model a **curated view** of i
 | **One 100-step session in nexo** (deepseek-chat, one run per arm) | **−36% cost**, **−59% wall time**, **−48% tokens** to the same point; both arms stopped at step 100 without solving the task (score 1% each) |
 | Offline replay of the 7 recorded whole-history sessions in `nexo/crates/nexo-curator/tests/fixtures/` | **−26%** tokens sent in total (8.52M to 6.30M, estimated at 4 characters per token); per session from −49% to +7% |
 
-What the model is sent, request by request, in that 100-step session:
+What the model is sent, request by request, replaying a recorded 81-request session from the repository through today's curator:
 
-![Tokens per request: the whole history grows to 97k, the curated view is 19k at request 100](docs/img/tokens-per-step.svg)
+![Tokens per request: the whole history grows to 60k, the curated view is 30k at request 81](docs/img/tokens-per-step.svg)
 
 Every figure, its data and its limits (mostly one model, one author's tasks):
 [`docs/results.md`](docs/results.md). It also reports earlier simulations and live runs made with an

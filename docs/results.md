@@ -271,11 +271,15 @@ one run per arm, `--max-steps 100`, the nexo curator as shipped:
 Neither arm solves the puzzle in 100 steps (the earlier 1000-step runs put the compact arm at 20.75%);
 at the same point of the work the curator spends a third less and runs in less than half the time.
 
-Replaying the curator offline on the plain run's recorded requests (`examples/replay.rs`, see
-[`usage.md`](usage.md); that transcript is not in the repository) shows what it would have sent at each of the 100 requests:
+Replaying today's curator offline on a recorded whole-history session that is in the repository
+(`nexo/crates/nexo-curator/tests/fixtures/bench-marathon4-full.jsonl`, 81 requests; `examples/replay.rs`, see
+[`usage.md`](usage.md)) shows what it would have sent at each request:
 
 ![tokens per request](img/tokens-per-step.svg)
 
-Whole session: 4.48M tokens plain, 2.28M curated (**51% kept**). The dips are rewrites (requests 26,
-74, 94 and 99). The replay cannot show how the model reacts to the notes and nudges; only a live run
-does.
+Whole session: 2.97M tokens plain, 1.51M curated (**51% kept**); at the last request 60k against 30k.
+The dips are rewrites (requests 18, 40, 47 and 73). In 5 of the 80 replies the model used a word that
+was no longer in the view (it stays on disk and can be read back). On the 100-step
+`bench-realm100-full` recording the curator finds no cut worth breaking the prompt cache for and sends
+it whole (+1.5%, table above). The replay cannot show how the model reacts to the notes and nudges;
+only a live run does.
