@@ -121,7 +121,9 @@ one message. Two kinds come built in:
 | `explore` (default) | read, grep, glob, ls, web search; nothing outside the project | "where is X handled?", "what calls Y?" |
 | `general` | every tool but `task`; writes and commands ask the same permission as the main agent | a self-contained change or check |
 
-Several `task` calls run at once. A sub-agent's spending is added to the session's. Your own kinds go in
+Several `task` calls in one message run at once, also `general` ones that change files: a file one of
+them is changing is closed to the others until it ends, and the one turned away says so in its report
+(`[agent] parallel_tasks = false` runs those that can change files one after another). A sub-agent's spending is added to the session's. Your own kinds go in
 `~/.nexo/agents/<name>.md` or `.nexo/agents/<name>.md` (the project's wins over a built-in of the
 same name, and is read once the project is trusted):
 

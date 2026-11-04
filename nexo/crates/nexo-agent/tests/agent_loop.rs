@@ -2479,6 +2479,7 @@ async fn sub_agents_that_can_write_run_one_after_the_other() {
         Reply::Events(text("done")),
     ]);
     let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.parallel_tasks = false;
     cfg.permissions.allow.push("write".into());
     let set = tools().with(Arc::new(SlowWrite));
     let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
@@ -2579,5 +2580,98 @@ async fn a_sub_agent_goes_to_the_provider_and_model_asked_for_and_is_priced_ther
     let main = 2.0 * (10.0 * 1.0 + 5.0 * 2.0) + (1000.0 * 1.0 + 100.0 * 2.0 + 2000.0 * 0.1);
     let sub = 1000.0 * 10.0 + 100.0 * 20.0 + 2000.0 * 1.0;
     assert!((cost - (main + sub) / 1e6).abs() < 1e-12, "{cost}");
+    r.stop().await;
+}
+
+/// Two sub-agents that change files, asked for in one message.
+fn two_writers() -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::ToolCallStart { id: "t1".into(), name: "task".into() },
+        StreamEvent::ToolCallEnd {
+            id: "t1".into(),
+            name: "task".into(),
+            args: json!({"agent": "general", "description": "first change", "prompt": "first"}),
+        },
+        StreamEvent::ToolCallStart { id: "t2".into(), name: "task".into() },
+        StreamEvent::ToolCallEnd {
+            id: "t2".into(),
+            name: "task".into(),
+            args: json!({"agent": "general", "description": "second change", "prompt": "second"}),
+        },
+        StreamEvent::Finish(FinishReason::ToolUse),
+        StreamEvent::Done,
+    ]
+}
+
+/// What each sub-agent's tool round got back, from its second request.
+fn sub_results(client: &Scripted) -> Vec<String> {
+    client
+        .requests()
+        .iter()
+        .filter(|r| r.messages.len() == 3 && !r.messages[0].text().contains("two changes"))
+        .map(|r| {
+            r.messages[2]
+                .content
+                .iter()
+                .filter_map(|p| match p {
+                    Part::ToolResult { content, .. } => content.first().and_then(Part::as_text).map(str::to_string),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn sub_agents_that_can_write_run_at_the_same_time_on_their_own_files() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(two_writers()),
+        // both start before either write is done: the writes take a moment
+        Reply::Events(call("s1", "write", json!({"path": "x.txt"}))),
+        Reply::Events(call("s2", "write", json!({"path": "y.txt"}))),
+        Reply::Events(text("a report")),
+        Reply::Events(text("a report")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.permissions.allow.push("write".into());
+    let set = tools().with(Arc::new(SlowWrite));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "two changes".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    // the second sub-agent asks for its first step while the first one is still writing
+    assert_eq!((reqs[1].messages.len(), reqs[2].messages.len()), (1, 1), "{:?}", reqs[2].messages);
+    assert_eq!(sub_results(&client), vec!["written", "written"]);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_file_one_sub_agent_is_changing_is_closed_to_another_at_the_same_time() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(two_writers()),
+        Reply::Events(call("s1", "write", json!({"path": "x.txt"}))),
+        Reply::Events(call("s2", "write", json!({"path": "./sub/../x.txt"}))),
+        Reply::Events(text("a report")),
+        Reply::Events(text("a report")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.permissions.allow.push("write".into());
+    let set = tools().with(Arc::new(SlowWrite));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "two changes".into(), attachments: vec![] });
+    r.turn().await;
+    let mut got = sub_results(&client);
+    got.sort();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(got[0].contains("is being changed by another sub-agent running at the same time"), "{got:?}");
+    assert!(got[0].contains("first change") || got[0].contains("second change"), "{got:?}");
+    assert_eq!(got[1], "written");
     r.stop().await;
 }

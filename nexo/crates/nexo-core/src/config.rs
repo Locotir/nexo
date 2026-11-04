@@ -171,6 +171,10 @@ pub struct AgentConfig {
     pub retries: u32,
     /// Gives the model the `task` tool: a read-only sub-agent for wide searches.
     pub subagents: bool,
+    /// Several `task` calls of one message run at the same time, also sub-agents that change files; a
+    /// file one of them is changing is closed to the others until it ends. Off: those that can change
+    /// files run one after another.
+    pub parallel_tasks: bool,
     /// The most a session may spend, in dollars (none: no limit).
     pub max_cost: Option<f64>,
     /// The most every session together may spend in a day, in dollars (none: no limit).
@@ -207,6 +211,7 @@ impl Default for AgentConfig {
             system_prompt_extra: None,
             retries: 4,
             subagents: true,
+            parallel_tasks: true,
             max_cost: None,
             max_cost_day: None,
             subagent_brief: 3000,

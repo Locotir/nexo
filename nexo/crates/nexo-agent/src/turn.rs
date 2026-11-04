@@ -187,7 +187,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         let profiles = crate::subagent::load(&cwd);
         let sub = crate::subagent::SubAgent::new(client.clone(), target.clone(), &tools, profiles, host.clone())
             .with_brief(crate::brief::BriefConfig::from_agent(&config.agent))
-            .with_providers(config.providers.clone());
+            .with_providers(config.providers.clone())
+            .with_parallel(config.agent.parallel_tasks);
         tools.add(Arc::new(sub));
     }
     // after the sub-agents: questions are the main agent's alone

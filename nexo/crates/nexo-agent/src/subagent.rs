@@ -203,6 +203,38 @@ pub trait Host: Send + Sync {
 /// Set once the agent's state exists (the tool is made before it).
 pub type HostCell = Arc<OnceLock<Arc<dyn Host>>>;
 
+/// The files sub-agents running at the same time are changing: path, then (the call that holds it, its
+/// label). A file one of them changes is closed to the others until that one ends.
+type Claims = Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, (String, String)>>>;
+
+/// Gives back the files a sub-agent held when it ends, also when it is stopped half way.
+struct Release {
+    claims: Claims,
+    owner: String,
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.claims.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (o, _)| *o != self.owner);
+    }
+}
+
+/// The path as written, made absolute and without `.` and `..`, so two spellings of one file meet.
+fn plain_path(p: &str, cwd: &Path) -> PathBuf {
+    let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) };
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 pub struct SubAgent {
     client: Arc<dyn ModelClient>,
     target: Target,
@@ -213,6 +245,9 @@ pub struct SubAgent {
     brief: BriefConfig,
     /// The providers set up, by name: a sub-agent may be sent to another one.
     providers: std::collections::BTreeMap<String, ProviderConfig>,
+    /// Sub-agents that can change files run beside each other too (see [`Claims`]).
+    parallel: bool,
+    claims: Claims,
 }
 
 impl SubAgent {
@@ -240,6 +275,8 @@ impl SubAgent {
             host,
             brief: BriefConfig { tokens: 0, ..Default::default() },
             providers: Default::default(),
+            parallel: false,
+            claims: Default::default(),
         }
     }
 
@@ -252,6 +289,12 @@ impl SubAgent {
     /// The providers a sub-agent may be sent to, besides the main agent's.
     pub fn with_providers(mut self, providers: std::collections::BTreeMap<String, ProviderConfig>) -> SubAgent {
         self.providers = providers;
+        self
+    }
+
+    /// Lets the sub-agents of one message that can change files run at the same time.
+    pub fn with_parallel(mut self, on: bool) -> SubAgent {
+        self.parallel = on;
         self
     }
 
@@ -361,6 +404,9 @@ struct Run {
     tools: ToolSet,
     profile: Profile,
     host: Option<Arc<dyn Host>>,
+    /// The files of the sub-agents at work, and this one's label in them.
+    claims: Claims,
+    label: String,
 }
 
 impl Run {
@@ -482,6 +528,25 @@ impl Run {
                 return ToolOutput::error(format!("`{p}` is outside the project"));
             }
         }
+        // a file another sub-agent at work is changing stays its own: two at once would lose a change
+        if t.kind() == ToolKind::Write {
+            if let Some(p) = args.get("path").and_then(Value::as_str) {
+                let key = plain_path(p, &ctx.cwd);
+                let mut held = self.claims.lock().unwrap_or_else(|e| e.into_inner());
+                match held.get(&key) {
+                    Some((owner, label)) if *owner != ctx.call_id => {
+                        return ToolOutput::error(format!(
+                            "`{p}` is being changed by another sub-agent running at the same time ({label}); \
+                             leave it to that one and say so in your report"
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        held.insert(key, (ctx.call_id.clone(), self.label.clone()));
+                    }
+                }
+            }
+        }
         // the main agent's rules hold for every sub-agent: its deny rules, and its asks (keys, writes)
         let call_id = format!("{}.{id}", ctx.call_id);
         let verdict = match &self.host {
@@ -513,6 +578,13 @@ impl Tool for SubAgent {
         let kinds: Vec<String> =
             self.profiles.iter().map(|p| format!("`{}`: {}", p.name, p.description.trim_end_matches('.'))).collect();
         let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
+        let together = if self.parallel {
+            "Several task calls in one message run at the same time, also ones that change files: give \
+             each its own files, as a file one of them is changing is closed to the others until it ends."
+        } else {
+            "Several task calls in one message run at the same time when none of them can change files; \
+             ones that can run one after another."
+        };
         let (main_provider, _, main_model) = self.target.get();
         let mut params = json!({
             "type": "object",
@@ -535,10 +607,10 @@ impl Tool for SubAgent {
             name: "task".into(),
             description: format!(
                 "Hand a self-contained piece of work to a sub-agent that works on its own and answers with a \
-                 short report; only the report enters the conversation. Several task calls in one message run at \
-                 the same time. With `background: true` a sub-agent that changes nothing runs as a job while you go on (one \
+                 short report; only the report enters the conversation. {} With `background: true` a sub-agent that changes nothing runs as a job while you go on (one \
                  that can change files runs in the foreground): you are told when it \
                  ends and read its report with the `jobs` tool. Kinds ({DEFAULT} when not given): {}.",
+                together,
                 kinds.join("; ")
             ),
             parameters: params,
@@ -550,11 +622,13 @@ impl Tool for SubAgent {
     }
 
     /// A sub-agent that can change files runs on its own, as a write: two at once could edit the same
-    /// file and lose a change. Read-only ones still run side by side.
+    /// file and lose a change. Read-only ones still run side by side, and with `parallel` every kind
+    /// does, each file held by the first one that changes it.
     fn call_kind(&self, args: &Value) -> ToolKind {
         let name = args.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).unwrap_or(DEFAULT);
         match self.profiles.iter().find(|p| p.name == name) {
-            Some(p) if !self.can_write(p) => ToolKind::Search,
+            // with `parallel` they run beside each other too: the claims keep their files apart
+            Some(p) if !self.can_write(p) || self.parallel => ToolKind::Search,
             // an unknown kind is refused at once: nothing to keep apart
             None => ToolKind::Search,
             Some(_) => ToolKind::Write,
@@ -618,6 +692,18 @@ impl Tool for SubAgent {
             tools: self.tools_for(&profile),
             profile,
             host,
+            claims: self.claims.clone(),
+            label: args
+                .get("description")
+                .or_else(|| args.get("prompt"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(60)
+                .collect(),
         };
         let asked = matches!(args.get("background"), Some(Value::Bool(true)))
             || args.get("background").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("true"));
@@ -629,6 +715,8 @@ impl Tool for SubAgent {
                 ctx.report(b.line());
             }
             let note = if asked { "(ran in the foreground: it can change files)\n\n" } else { "" };
+            // whatever it held is free again when it ends, also when it is stopped
+            let _release = Release { claims: self.claims.clone(), owner: ctx.call_id.clone() };
             return match run.go(prompt, briefing.as_ref(), ctx, &|l| ctx.report(l)).await {
                 Ok(report) => ToolOutput::ok(format!("{note}{report}")),
                 Err(e) if ctx.cancel.is_cancelled() => ToolOutput::error(format!("interrupted by the person ({e})")),

@@ -613,6 +613,7 @@ max_tokens = 16384
 # loop_guard = 3                    # stop when the same tool rounds come back 3 times with the same outputs (0: never)
 # stale_guard = 6                   # stop after 6 tool rounds in a row that wrote nothing and brought no new output line (0: never)
 # guard_answer = true               # when a guard stops, one last call without tools asks for the answer
+# parallel_tasks = true             # several sub-agents of one message run at once, also ones that change files
 # reasoning = "medium"              # off | low | medium | high | a token budget
 # max_cost = 1.0                    # stop a session at this many dollars
 # max_cost_day = 5.0                # and every session together at this many a day
