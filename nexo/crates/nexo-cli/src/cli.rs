@@ -191,6 +191,9 @@ pub struct BenchArgs {
     /// Sampling temperature of every request (default: the provider's own).
     #[arg(long)]
     pub temperature: Option<f32>,
+    /// The model's context window in tokens (default: what nexo knows of it), e.g. 8000 for a small model.
+    #[arg(long)]
+    pub window: Option<u32>,
     /// Where results.jsonl, the transcripts and summary.md go.
     #[arg(long, value_name = "DIR", default_value = "./bench-out")]
     pub out: PathBuf,
@@ -243,6 +246,7 @@ impl BenchArgs {
             budget: self.budget,
             price: self.price,
             max_tokens: self.max_tokens,
+            window: self.window,
             temperature: self.temperature,
             out: self.out.clone(),
             skip_preflight: self.skip_preflight,

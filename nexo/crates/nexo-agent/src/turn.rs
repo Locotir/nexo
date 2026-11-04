@@ -158,6 +158,11 @@ struct State {
     /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
     /// length of the history then: what the `compact` policy measures the next request from.
     last_prompt: Option<(u64, usize)>,
+    /// The estimate (4 characters a token) of the prompt of the last request, and the provider's
+    /// tokens per estimated token learned so far: code, logs and other scripts hold more tokens than
+    /// 4 characters each, so the view is fitted to the window in the provider's own count.
+    est_sent: u64,
+    tok_ratio: Option<f64>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -286,6 +291,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         jobs: jobs.clone(),
         plan,
         last_prompt: None,
+        est_sent: 0,
+        tok_ratio: None,
     }));
     let _ = host.set(Arc::new(StateHost { state: Arc::downgrade(&state), events: events.clone() }));
     {
@@ -1142,6 +1149,30 @@ async fn prepare(
     Ok((req, cfg, st.client.clone(), st.config.agent.retries))
 }
 
+/// The window the view is kept under, in estimated tokens (4 characters a token): `room` provider
+/// tokens divided by the ratio learned, with 5% to spare; before any count, 15% to spare.
+fn view_window(room: u32, ratio: Option<f64>) -> u64 {
+    match ratio {
+        Some(r) => (f64::from(room) * 0.95 / r) as u64,
+        None => u64::from(room) * 17 / 20,
+    }
+}
+
+/// The ratio of provider tokens to estimated tokens after a request of `est` estimated tokens the
+/// provider counted as `real`: the largest of the last ones weighs most, so a request of code after
+/// one of prose does not pass the window; small requests, whose count is mostly framing, teach nothing.
+fn learn_ratio(prev: Option<f64>, est: u64, real: u64) -> Option<f64> {
+    if est < 500 || real == 0 {
+        return prev;
+    }
+    let r = (real as f64 / est as f64).clamp(0.5, 3.0);
+    Some(match prev {
+        None => r,
+        Some(p) if r > p => r,
+        Some(p) => p * 0.8 + r * 0.2,
+    })
+}
+
 /// Where the `compact` policy compacts: `at` tokens of request, or less when the model's window
 /// (`window`, less the reply's `reply` tokens) would be passed first.
 fn compact_threshold(at: u64, window: Option<u32>, reply: u32) -> u64 {
@@ -1172,11 +1203,11 @@ async fn view_now(st: &mut State) -> View {
         (st.system.len() as u64 + serde_json::to_string(&specs).map(|s| s.len() as u64).unwrap_or(0)) / 4;
     let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
     st.policy.tools(&names);
-    // the view never passes the model's window: what it takes less the reply, with room for the
-    // estimate (4 characters a token) running short of the provider's count
+    // the view never passes the model's window: what it takes less the reply, in estimated tokens
+    // through the ratio learned from the provider's counts
     let reply = st.limits.max_tokens(st.config.agent.max_tokens);
     if let Some(w) = st.limits.context_window.filter(|w| *w > reply) {
-        st.policy.window(u64::from(w - reply) * 17 / 20);
+        st.policy.window(view_window(w - reply, st.tok_ratio));
     }
     st.policy.history_version(st.history.version());
     let mut view = match st.policy.view(system_tokens, &st.history).await {
@@ -1204,6 +1235,7 @@ async fn view_now(st: &mut State) -> View {
     };
     let history_tokens = st.history.tokens();
     st.last_view = (history_tokens, view.tokens);
+    st.est_sent = system_tokens + view.tokens;
     let (label, detail) = crate::context::describe(st.policy.as_ref(), history_tokens, view.tokens);
     emit(
         &st.events,
@@ -1390,6 +1422,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
                 let model = st.target.model();
                 add_usage(&mut st, &events, &model, usage, call);
                 st.policy.usage(call.cache_read, call.total_input());
+                st.tok_ratio = learn_ratio(st.tok_ratio, st.est_sent, call.total_input());
             }
             if !msg.content.is_empty() && call.total_input() > 0 {
                 let len = st.history.len();
@@ -2220,6 +2253,8 @@ async fn set_model(state: &Shared, provider: Option<String>, model: String) {
         None => notice(&st.events, Level::Error, format!("unknown provider `{provider}` (see `nexo providers`)")),
         Some(cfg) => {
             st.limits = limits::resolve(&provider, &cfg, &model, None);
+            // another model may count with another tokenizer
+            st.tok_ratio = None;
             st.target.set(&provider, cfg, &model);
             let _ = st.session.record_model(&provider, &model);
             emit(&st.events, AgentEvent::ModelChanged { provider: provider.clone(), model: model.clone() });
@@ -2664,6 +2699,25 @@ fn run_shell(cwd: PathBuf, command: String, events: EventTx) {
 #[cfg(test)]
 mod goal_tests {
     use super::*;
+
+    #[test]
+    fn the_view_window_follows_the_providers_count() {
+        // before any count: 15% to spare
+        assert_eq!(view_window(10_000, None), 8_500);
+        // code counted 1.4 tokens an estimated token: the view gets 0.95/1.4 of the room
+        let r = learn_ratio(None, 12_827, 18_158);
+        assert!((r.unwrap() - 1.4156).abs() < 0.001);
+        assert_eq!(view_window(10_000, r), 6_710);
+        // a larger ratio is taken at once, a smaller one slowly
+        let up = learn_ratio(Some(1.2), 10_000, 15_000).unwrap();
+        assert!((up - 1.5).abs() < 1e-9);
+        let down = learn_ratio(Some(1.5), 10_000, 10_000).unwrap();
+        assert!((down - 1.4).abs() < 1e-9);
+        // tiny requests and missing counts teach nothing; wild counts are bounded
+        assert_eq!(learn_ratio(Some(1.3), 200, 900), Some(1.3));
+        assert_eq!(learn_ratio(None, 10_000, 0), None);
+        assert_eq!(learn_ratio(None, 1_000, 90_000), Some(3.0));
+    }
 
     #[test]
     fn goal_done_reads_the_last_line() {

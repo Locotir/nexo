@@ -46,6 +46,8 @@ pub struct Options {
     /// The model's prices; None: nexo's own for the model, if it has any.
     pub price: Option<Pricing>,
     pub max_tokens: Option<u32>,
+    /// The model's context window in tokens, as a small model has; None: what nexo knows of it.
+    pub window: Option<u32>,
     /// Sampling temperature of every request; None: the provider's own.
     pub temperature: Option<f32>,
     pub out: PathBuf,
@@ -119,7 +121,10 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     isolate(&out, opts.key.as_deref())?;
 
     let protocol = opts.protocol.clone().unwrap_or_else(|| protocol_of(&opts.upstream).into());
-    let provider = ProviderConfig::new(&protocol, &opts.upstream, opts.key.as_ref().map(|_| run::KEY_ENV));
+    let mut provider = ProviderConfig::new(&protocol, &opts.upstream, opts.key.as_ref().map(|_| run::KEY_ENV));
+    if let Some(w) = opts.window {
+        provider.context_window.insert(opts.model.clone(), w);
+    }
     let client: Arc<dyn nexo_agent::ModelClient> = Arc::new(nexo_providers::Client::new(nexo_providers::registry()));
     if !opts.skip_preflight {
         let n = opts.max_tokens.unwrap_or(4096);
@@ -477,6 +482,7 @@ mod tests {
             budget,
             price,
             max_tokens: None,
+            window: None,
             temperature: None,
             out,
             skip_preflight: false,
