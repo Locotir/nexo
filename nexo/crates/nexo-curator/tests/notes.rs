@@ -333,6 +333,12 @@ fn repeats_fold_in_a_command_output_and_stay_in_a_file() {
     let mut s = Session::new("");
     s.push(call(0, "", "read", json!({"path": "src/loop.asm"}), &text));
     assert_eq!(s.last_result(), text, "what a tool returns of a file stays as it came");
+    // so does a page a tool fetched by its URL, whatever the tool is called
+    for name in ["web_fetch", "browse", "mcp__docs__get"] {
+        let mut s = Session::new("");
+        s.push(call(0, "", name, json!({"url": "https://example.com/isa.html"}), &text));
+        assert_eq!(s.last_result(), text, "{name}: a fetched page stays as it came");
+    }
     let mut s = Session::new("");
     s.push(call(0, "", "bash", json!({"command": "objdump -d loop.o"}), &text));
     let r = s.last_result();

@@ -265,11 +265,14 @@ fn the_long_session_ends_with_the_reference_stats() {
     // The ledger folds only forms that follow each other, so lines that differ stay apart (59, was 46), and the
     // closing line sits on a message the view still sends: the cache misses 39518. The view is the same when the
     // count takes in what it left out: the anchor that leaving writes again (78 more for the cap), the outputs
-    // the open request let go (1068) and the topic switch (1375, the anchor block changed with it): 40664.
+    // the open request let go (1068) and the topic switch (1375, the anchor block changed with it): 40664. It
+    // also counts the outputs sent whole as the latest message that go as a pointer one request later
+    // (`miss_fresh`, 17298): 57962. An output of the open request is priced at what it still sends, not its
+    // full size: 1 leaves, not 3, and the cache misses 57478.
     let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
         "dropped_chunks": 125, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 59,
-        "cap_rewrites": 1, "miss_cap": 22641, "miss": 40664, "closed_steps": 47, "miss_close": 15746, "recalled_steps": 5,
-        "live_dropped": 3, "miss_live": 1068, "cards": 1, "switches": 1, "miss_anchor": 1375, "miss_switch": 1375});
+        "cap_rewrites": 1, "miss_cap": 22641, "miss": 57478, "miss_fresh": 17298, "closed_steps": 47, "miss_close": 15746, "recalled_steps": 5,
+        "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1, "miss_anchor": 1375, "miss_switch": 1375});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }

@@ -23,17 +23,45 @@ use crate::tools::{classify, edit_size, full_write, heredoc_writes, partial_read
 
 static TEST_COMMAND: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
-        r"\b(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|rspec|ctest|phpunit)\b|\b(?:cargo|go|npm|pnpm|yarn|bun|deno|dotnet|mix|gradle|mvn|swift|zig)\s+(?:run\s+)?test\b|\bmake\s+(?:test|check)\b",
+        r"\b(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|rspec|ctest|phpunit|nextest)\b|\b(?:cargo|go|npm|pnpm|yarn|bun|deno|dotnet|mix|gradlew?|mvnw?|swift|zig|sbt|lein|bazel|stack|cabal|flutter|dart|rails|rake|artisan|playwright|manage\.py)\s+(?:run\s+)?(?:test|spec)\b|\bnode\s+--test\b|\bmake\s+(?:test|check)\b",
         0,
     )
 });
-static FAILURE_LINE: LazyLock<Re> =
-    LazyLock::new(|| Re::new(r#"FAIL|ERROR|Error|Traceback|File "|panicked|failed|assert|✗|●|\.\w+:\d+"#, 0));
-static FAILED_TEST: LazyLock<Re> = LazyLock::new(|| {
-    Re::new(r"(?:::|\b(?:FAIL|FAILED|ERROR):?\s+|---\s+FAIL:\s+|,\s+in\s+)(test_\w+|Test[A-Z_]\w*)", 0)
+/// A failing test run, in the output shapes the runners of most ecosystems share: a line that starts with a
+/// failure word (`--- FAIL:`, `FAIL`, `FAILED`, `FAILURES!`, `Failed!`, `BUILD FAILURE`, `not ok 2`, `✕`), a
+/// count of one or more failures (`1 failed`, `2 failing`, `1 failure`, `1 tests failed`, `Failures: 1`,
+/// `errors=1`, `# fail 1`) or a non-zero exit status. A run piped through `tail` exits 0 whatever its tests did.
+static TEST_FAILED: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(
+        r"^\s*(?:--- FAIL:|FAIL\b|FAILED\b|FAILURES?!|Failed!|(?:\[\w+\]\s+)?BUILD FAIL|not ok \d|[✕✗]\s)|\b[1-9]\d* (?:tests? )?(?:failed|failing|failures?|errors?)\b(?![ \t]*[:=]?[ \t]*\d)|(?i:\b(?:failures?|failed|errors?|fail)[ \t]*[:=]?[ \t]*[1-9]\d*\b)|\bexit (?:status|code) [1-9]\d*\b",
+        py::M,
+    )
 });
-static FAILURE_COUNT: LazyLock<Re> =
-    LazyLock::new(|| Re::new(r"\b(?:failures|errors)=(\d+)|\b(\d+) (?:failed|errors?)\b", 0));
+static FAILURE_LINE: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(r#"FAIL|ERROR|Error|Traceback|File "|panicked|fail|assert|✗|✕|●|^\s*not ok\b|\.\w+:\d+"#, py::M)
+});
+/// The name of a failing test, in the shapes runners print it: after `::`, `FAIL:`, `--- FAIL:` or `, in`
+/// (`test_x`, `TestX`), `test a::b ... FAILED` (its last part), `Class > name() FAILED`, a `●`/`✕` line,
+/// `rspec <file>:<line>` and `not ok N - name`. Each alternative has one group; `failed_tests` takes the one
+/// that took part.
+static FAILED_TEST: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(
+        r"^\s*test\s+(?:[\w$]+::)*([\w$]+)\s+\.\.\.\s+FAILED|^\s*[\w.$]+\s+>\s+([\w$]+)(?:\(\))?\s+FAILED|^\s*[●✕✗]\s+(?!Console\b|Test suite failed)(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?\s*$|^\s*rspec\s+(\S+:\d+)|^\s*not ok \d+ - (.+?)\s*$|(?:::|\b(?:FAIL|FAILED|ERROR):?\s+|---\s+FAIL:\s+|,\s+in\s+)(test_\w+|Test[A-Z_]\w*)",
+        py::M,
+    )
+});
+static FAILURE_COUNT: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(r"\b(?:failures|errors)=(\d+)|\b(\d+) (?:tests? )?(?:failed|failing|failures?|errors?)\b", 0)
+});
+
+/// The failing tests a run's failure lines name (`FAILED_TEST`).
+fn failed_tests(f: &str) -> Vec<&str> {
+    FAILED_TEST
+        .captures_all(f)
+        .iter()
+        .filter_map(|c| c.iter().skip(1).flatten().next().map(|&(a, b)| &f[a..b]))
+        .collect()
+}
 static TEST_NAME: LazyLock<Re> = LazyLock::new(|| Re::new(r"(?:^|[/_.])(?:tests?|spec)(?=[/_.]|$)", 0));
 // A line the agent marked as a finding, as its plan or as a rule it was given, in its own text; as a
 // list item or bold too.
@@ -425,6 +453,9 @@ pub struct Engine {
     wrote: IndexMap<String, Wrote>,
     /// call id -> the whole writes its write replaced, until its result says whether it wrote the file
     replaced: FxHashMap<String, Vec<Wrote>>,
+    /// call id -> what a write tool's call changes (each file, its message, the size of a partial edit), until
+    /// its result says whether it changed anything: a failed edit leaves the file as it was
+    pending_writes: FxHashMap<String, Vec<(String, usize, Option<usize>)>>,
     /// Agent steps since the last one with a note line, and since the last nudge.
     since_note: usize,
     since_nudge: usize,
@@ -718,13 +749,42 @@ fn add_blocks(m: &mut Value, more: impl IntoIterator<Item = Value>) {
 /// framework file ("_app.tsx", "__init__.py", "_variables.scss"), not a scratch one.
 fn scratch(path: &str) -> bool {
     let name = basename(path).to_ascii_lowercase();
+    let path = slashes(path).to_ascii_lowercase();
     ["tmp", "_tmp", "_try", "_scratch", "scratch"].iter().any(|m| name.starts_with(m))
         || path.starts_with("/tmp/")
         || path.starts_with("/var/tmp/")
+        || ["%temp%/", "%tmp%/", "$env:temp/", "$env:tmp/"].iter().any(|t| path.starts_with(t))
+        || path.contains("/appdata/local/temp/")
+        || path.contains(":/windows/temp/")
 }
 
-/// The key of a file in the tracked files: its path as written, with "//" as "/" and without a leading "./".
+/// A Windows path (`C:\proj\a.rs`, `\\host\share\a.rs`, or one with `\` and no `/`, as `src\a.rs`) with `/`
+/// for `\`, so the path helpers read it as they read any other; a path with `/` in it as it is.
+fn slashes(path: &str) -> std::borrow::Cow<'_, str> {
+    let b = path.as_bytes();
+    let drive = b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if path.contains('\\') && (drive || !path.contains('/')) {
+        std::borrow::Cow::Owned(path.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(path)
+    }
+}
+
+/// Whether a word with `\` in it is a Windows path (`\proj\a.rs`, `src\a.rs`, `..\a.rs`) rather than a
+/// pattern with escapes (`a\|b`, `\d+\.rs`, `foo\.txt`): parts of plain name characters, none of which past
+/// the first starts with a dot unless it is `.` or `..`.
+fn windows_path(w: &str) -> bool {
+    w.strip_prefix("\\\\").unwrap_or(w).split('\\').enumerate().all(|(k, s)| {
+        (k == 0 || !s.is_empty())
+            && s.chars().all(|c| c.is_alphanumeric() || "._-~@".contains(c))
+            && (k == 0 || !s.starts_with('.') || s.chars().all(|c| c == '.'))
+    })
+}
+
+/// The key of a file in the tracked files: its path as written (a Windows one with `/`), with "//" as "/" and
+/// without a leading "./".
 fn file_key(path: &str) -> String {
+    let path = slashes(path);
     let mut key = String::with_capacity(path.len());
     for c in path.chars() {
         if c != '/' || !key.ends_with('/') {
@@ -764,15 +824,16 @@ fn forget(pool: &mut Vec<(usize, String, Set, f64)>, old: &Wrote) {
 /// Whether two paths name the same file: equal, or one is the other with more directories in front
 /// (`src/a.rs` and `/work/src/a.rs`).
 fn same_file(a: &str, b: &str) -> bool {
-    let a = a.strip_prefix("./").unwrap_or(a);
-    let b = b.strip_prefix("./").unwrap_or(b);
+    let (a, b) = (slashes(a), slashes(b));
+    let a = a.strip_prefix("./").unwrap_or(&a);
+    let b = b.strip_prefix("./").unwrap_or(&b);
     let under = |long: &str, short: &str| long.strip_suffix(short).is_some_and(|h| h.ends_with('/'));
     a == b || under(a, b) || under(b, a)
 }
 
-/// The last component of a POSIX path ("" for one that ends in "/").
+/// The last component of a path, POSIX or Windows ("" for one that ends in a separator).
 fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or("")
+    path.rsplit(['/', '\\']).next().unwrap_or("")
 }
 
 impl Engine {
@@ -824,6 +885,7 @@ impl Engine {
             written: FxHashMap::default(),
             wrote: IndexMap::new(),
             replaced: FxHashMap::default(),
+            pending_writes: FxHashMap::default(),
             since_note: 0,
             since_nudge: usize::MAX,
             last_note: None,
@@ -904,14 +966,15 @@ impl Engine {
     fn add(&mut self, m: &Value) {
         let raw = strip_cc(m);
         // the kind of the call each result answers: the calls are in the message before it; a command
-        // that only prints files returns the material, as a read does
+        // that only prints files returns the material, as a read does, and so does a tool given a URL (a page)
         let kinds: FxHashMap<String, Kind> = blocks(self.last_raw.get("content"))
             .iter()
             .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
             .map(|b| {
                 let (kind, _, command) = classify(get_str(b, "name"), b.get("input"));
                 let prints = kind == Kind::Exec && command.as_deref().is_some_and(prints_files);
-                (get_str(b, "id").to_string(), if prints { Kind::Read } else { kind })
+                let page = kind == Kind::Other && b.get("input").and_then(|x| x.get("url")).is_some();
+                (get_str(b, "id").to_string(), if prints || page { Kind::Read } else { kind })
             })
             .collect();
         let name = self.recall_tool.then(|| self.tr.msgs.len() + 1);
@@ -979,6 +1042,18 @@ impl Engine {
                             forget(&mut self.pool, w);
                         }
                     }
+                    // what the call changes counts once its result says it did
+                    let held = self.pending_writes.remove(&id).unwrap_or_default();
+                    if !self.fz.info.get(&i).is_some_and(|x| x.error) {
+                        for (path, mi, size) in held {
+                            match size {
+                                Some(size) => edited(&mut self.wrote, &path, mi, size),
+                                None => {
+                                    self.written.insert(file_key(&path), mi);
+                                }
+                            }
+                        }
+                    }
                 } else if u.kind == UKind::Call {
                     let info = self.fz.info.get(&i);
                     let kind = info.map_or(Kind::Other, |x| x.kind);
@@ -991,7 +1066,8 @@ impl Engine {
                                 Some(text) => whole.push((path, text.to_string())),
                                 None => {
                                     let size = edit_size(b.get("input"));
-                                    edited(&mut self.wrote, &path, u.msg, size);
+                                    let call = key_of(b.get("id"));
+                                    self.pending_writes.entry(call).or_default().push((path, u.msg, Some(size)));
                                 }
                             }
                         }
@@ -1009,8 +1085,11 @@ impl Engine {
                     for w in written {
                         if kind == Kind::Exec {
                             edited(&mut self.wrote, &w, u.msg, 0);
+                            self.written.insert(file_key(&w), u.msg);
+                        } else {
+                            let call = key_of(self.tr.block(i).get("id"));
+                            self.pending_writes.entry(call).or_default().push((w, u.msg, None));
                         }
-                        self.written.insert(file_key(&w), u.msg);
                     }
                     if kind == Kind::Exec {
                         // a file written whole by a here-document is as much a write as one by a write tool
@@ -1434,7 +1513,8 @@ impl Engine {
     /// starts the engine over, with the rules of the session carried over.
     pub fn sync(&mut self, msgs: &[Value]) {
         let n = self.tr.msgs.len();
-        if n > 0 && (msgs.len() < n || !py_eq(&strip_cc(&msgs[n - 1]), &self.last_raw)) {
+        let rewritten = n > 0 && (msgs.len() < n || !py_eq(&strip_cc(&msgs[n - 1]), &self.last_raw));
+        if rewritten {
             let rules = std::mem::take(&mut self.rules).carried();
             // what the host set (window, tools) is not part of the history: it survives the restart
             let (budget, note_tool, recall_tool) = (self.budget, self.note_tool, self.recall_tool);
@@ -1444,10 +1524,13 @@ impl Engine {
             self.note_tool = note_tool;
             self.recall_tool = recall_tool;
         }
+        // a rewritten history is read anew: the rules found in it are the carried ones, where they were
+        self.rules.replay = rewritten;
         let n = self.tr.msgs.len();
         for m in &msgs[n..] {
             self.add(m);
         }
+        self.rules.replay = false;
     }
 
     fn visible(&mut self) -> Arc<Vec<usize>> {
@@ -1878,6 +1961,12 @@ impl Engine {
         let mut quiet: Vec<(&'static str, usize)> = Vec::new();
         if let Some(mi) = self.unnudged.take().filter(|&mi| was_sent(mi)) {
             quiet.push(("miss_note", mi));
+        }
+        // the output that went whole as the latest message (`Params.fresh`) points up from now on
+        if let Some(&mi) = sent.last().filter(|&&mi| self.p.fresh != 0 && self.dups.contains_key(&mi)) {
+            if mi + 1 < self.tr.msgs.len() && self.dups_on(mi).iter().any(Option::is_some) {
+                quiet.push(("miss_fresh", mi));
+            }
         }
         if self.p.loops != 0 {
             if let Some(mi) = self.fold_loops().filter(|&mi| was_sent(mi)) {
@@ -2543,11 +2632,21 @@ impl Engine {
             return None;
         }
         idle.reverse();
+        // an output is priced at what it sends now: its chunks not dropped yet, less the lines that copies
+        // the view keeps point to (were it to leave, those copies would send them)
+        let going: FxHashSet<usize> = idle.iter().map(|&(mi, _, _)| mi).collect();
+        let pointed = self.pointed(|m| !going.contains(&m));
+        for e in idle.iter_mut() {
+            e.2 = self.sends_now(e.1, pointed.get(&e.1));
+        }
         let sizes = self.sizes_now();
         let mut after = vec![0i64; sizes.len() + 1];
         for mi in (0..sizes.len()).rev() {
             after[mi] = after[mi + 1] + sizes[mi];
         }
+        // the cut is priced on the whole view behind it, the messages the previous request did not cache
+        // too. Priced only on what it cached, as `rent` does, was measured on the 20 recorded sessions:
+        // 1.2 % more input cost and 2 more forgotten words of 112.
         let r = self.p.ratio;
         let (mut best, mut cut, mut paid, mut saved) = (0.0f64, None, 0.0f64, 0i64);
         for k in (0..idle.len()).rev() {
@@ -2577,6 +2676,17 @@ impl Engine {
         self.vis = None;
         // the outputs are in the order of their messages
         Some(idle[cut].0)
+    }
+
+    /// The tokens output `i` sends now: its chunks not dropped yet, less the share of its lines that
+    /// copies kept in the view point to (`pointed`, from `Engine::pointed`).
+    fn sends_now(&self, i: usize, pointed: Option<&Vec<bool>>) -> i64 {
+        let (chunks, have) = (&self.fz.chunks[i], self.dropped.get(&i));
+        let left: i64 =
+            (0..chunks.len()).filter(|j| !have.is_some_and(|h| h.contains(j))).map(|j| chunks[j].tokens).sum();
+        let held = pointed
+            .map_or(0, |p| self.tr.units[i].tokens * p.iter().filter(|x| **x).count() as i64 / (p.len() as i64).max(1));
+        (left - held).max(0)
     }
 
     /// The lines of output `i` that hold a lead: a name no other output holds (nothing printed it again,
@@ -2700,6 +2810,9 @@ impl Engine {
         // made for: their line goes on the message before them that stays (`line_at`), never ahead of the
         // request, so the price is never below what the cut costs. Priced from that message instead, more
         // leaves sooner and more of what the replies use is lost (fixtures: 127 words forgotten, not 120).
+        // The price also counts the messages after the previous request, which no cut makes dearer: priced
+        // without them, as `rent` does, input cost falls 3.0 % on the 20 recorded sessions but 2 more of
+        // 112 forgotten words are lost, so they stay as a margin.
         let (mut best, mut cut, mut paid, mut saved, mut first) = (0.0f64, None, 0.0f64, 0i64, sizes.len());
         for n in (0..cands.len()).rev() {
             paid += cands[n].1;
@@ -3657,8 +3770,10 @@ impl Engine {
                         || (kind == UKind::Call && get_str(self.tr.block(i), "name") == NOTE_TOOL);
                     let w = match kind {
                         _ if said => SAID,
-                        UKind::Result if info.is_some_and(|x| x.kind == Kind::Read && !x.error) => ON_DISK,
-                        UKind::Call if info.is_some_and(|x| x.kind == Kind::Write) => ON_DISK,
+                        UKind::Result if info.is_some_and(|x| x.kind == Kind::Read && !x.error && x.path.is_some()) => {
+                            ON_DISK
+                        }
+                        UKind::Call if info.is_some_and(|x| x.kind == Kind::Write && x.path.is_some()) => ON_DISK,
                         _ => 1.0,
                     };
                     // what was said keeps its rows of numbers whole: they are the values it stated
@@ -4037,12 +4152,12 @@ impl Engine {
                         let cmd = test_run(cmd);
                         let cmd = cmd.as_str();
                         let text = self.tr.unit_text(i);
-                        if error || ERROR_MARKS.is_match(&text) {
+                        if error || ERROR_MARKS.is_match(&text) || TEST_FAILED.is_match(&text) {
                             let ls: Vec<&str> =
                                 py::splitlines(&text).into_iter().filter(|x| FAILURE_LINE.is_match(x)).collect();
                             let f = ls.join("\n");
                             // a test failing again no longer passes
-                            let again = FAILED_TEST.findall(&f);
+                            let again = failed_tests(&f);
                             tests.retain(|t| !again.contains(&t.as_str()));
                             failures.push((cmd.to_string(), f));
                         } else {
@@ -4061,7 +4176,7 @@ impl Engine {
                             }
                             let mut named_here: Vec<String> = Vec::new();
                             for f in &done {
-                                for t in FAILED_TEST.findall(f) {
+                                for t in failed_tests(f) {
                                     if !named_here.iter().any(|x| x == t) {
                                         named_here.push(t.to_string());
                                     }
@@ -4086,7 +4201,7 @@ impl Engine {
         }
         let mut open: Vec<String> = Vec::new();
         if let Some((_, f)) = failures.last() {
-            for t in FAILED_TEST.findall(f) {
+            for t in failed_tests(f) {
                 open.push(t.to_string());
             }
         }
@@ -4305,7 +4420,7 @@ fn test_run(command: &str) -> String {
 }
 
 fn named_in(path: &str, failures: &[String]) -> bool {
-    let base = path.rsplit('/').next().unwrap_or("");
+    let base = basename(path);
     let stem = base.split('.').next().unwrap_or("");
     if stem.is_empty() || TEST_NAME.is_match(stem) {
         return false;
@@ -4330,10 +4445,17 @@ fn name_parts(text: &str) -> Vec<String> {
 fn files_in(call: &str) -> Vec<Vec<String>> {
     let mut out = Vec::new();
     for w in call.split(|c: char| c.is_whitespace() || ";|&<>'\"`(),=".contains(c)) {
-        if w.starts_with('-') || w.contains(['*', '?', '$', '\\', ':']) {
+        // a drive in front (`C:\`, `C:/`) is no part of the name
+        let b = w.as_bytes();
+        let w = if b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/') {
+            &w[2..]
+        } else {
+            w
+        };
+        if w.starts_with('-') || (w.contains('\\') && !windows_path(w)) || w.contains(['*', '?', '$', ':']) {
             continue;
         }
-        let base = w.rsplit('/').next().unwrap_or("");
+        let base = basename(w);
         let stem = match base.rsplit_once('.') {
             Some((s, ext))
                 if !s.is_empty() && (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
@@ -4530,6 +4652,107 @@ mod tests {
         let said = fixes_of(&[("cargo test", FAILING_RUN), ("cargo test", PASSING_RUN), ("cargo test", FAILING_RUN)]);
         assert!(!said.contains("now pass"), "{said}");
         assert!(said.contains("tests failing in the last run in them: test_round"), "{said}");
+    }
+
+    /// Failing runs of several ecosystems, each piped so that the command exits 0 (no `is_error`), with the
+    /// test the run names (empty: the output names none in a shape the curator reads).
+    const FAILING_RUNS: [(&str, &str, &str); 12] = [
+        ("go test ./... 2>&1 | tail -20", "--- FAIL: TestAdd (0.00s)\n    calc_test.go:9: got 3, want 4\nFAIL\nexit status 1\nFAIL\texample/calc\t0.002s", "TestAdd"),
+        ("npx mocha | tail -5", "  2 passing (8ms)\n  1 failing\n\n  1) Cart\n       adds item:\n     expected 3 to equal 4", ""),
+        ("bundle exec rspec | tail -8", "Finished in 0.01 seconds\n3 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/cart_spec.rb:12 # Cart adds item", "./spec/cart_spec.rb:12"),
+        ("npx jest 2>&1 | tail -9", "FAIL src/cart.test.js\n  ● Cart › adds item\n\n    expect(received).toBe(expected)\n\nTests:       1 failed, 2 passed, 3 total", "Cart › adds item"),
+        ("cargo test 2>&1 | tail -6", "test parser::parses_empty ... FAILED\n\nfailures:\n    parser::parses_empty\n\ntest result: FAILED. 4 passed; 1 failed", "parses_empty"),
+        ("./gradlew test | tail -4", "CalcTest > testAdd() FAILED\n    org.opentest4j.AssertionFailedError at CalcTest.java:9\n3 tests completed, 1 failed", "testAdd"),
+        ("mvn test | tail -4", "Tests run: 3, Failures: 1, Errors: 0, Skipped: 0\n[INFO] BUILD FAILURE", ""),
+        ("vendor/bin/phpunit | tail -3", "FAILURES!\nTests: 3, Assertions: 3, Failures: 1.", ""),
+        ("dotnet test | tail -2", "Failed!  - Failed:     1, Passed:     2, Skipped:     0, Total:     3", ""),
+        ("mix test | tail -2", "Finished in 0.03 seconds\n3 tests, 1 failure", ""),
+        ("ctest | tail -2", "67% tests passed, 1 tests failed out of 3", ""),
+        ("node --test | tail -3", "not ok 2 - adds item\n# pass 2\n# fail 1", "adds item"),
+    ];
+    /// The passing output of each of those commands, in the same order.
+    const PASSING_RUNS: [&str; 12] = [
+        "ok  \texample/calc\t0.002s",
+        "  3 passing (8ms)",
+        "Finished in 0.01 seconds\n3 examples, 0 failures",
+        "PASS src/cart.test.js\nTests:       3 passed, 3 total",
+        "test result: ok. 5 passed; 0 failed",
+        "BUILD SUCCESSFUL in 2s",
+        "Tests run: 3, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS",
+        "OK (3 tests, 3 assertions)",
+        "Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3",
+        "3 tests, 0 failures",
+        "100% tests passed, 0 tests failed out of 3",
+        "# pass 3\n# fail 0",
+    ];
+
+    #[test]
+    fn failing_runs_of_any_ecosystem_are_not_read_as_passing() {
+        for ((cmd, out, name), pass) in FAILING_RUNS.iter().zip(PASSING_RUNS) {
+            // a failing run, an edit, the same failure again: nothing passes
+            let said = fixes_of(&[(cmd, out), (cmd, out)]);
+            assert!(!said.contains("now pass"), "{cmd}: {said}");
+            assert!(!said.contains("made the failing tests pass"), "{cmd}: {said}");
+            // a passing run after it does mark it fixed, with the test it named
+            let said = fixes_of(&[(cmd, out), (cmd, pass)]);
+            assert!(said.contains("the changes that made the failing tests pass: src/calc.rs"), "{cmd}: {said}");
+            if !name.is_empty() {
+                assert!(said.contains(&format!("the tests that failed and now pass: {name}")), "{cmd}: {said}");
+                let open = fixes_of(&[(cmd, out)]);
+                assert!(open.contains(&format!("tests failing in the last run in them: {name}")), "{cmd}: {open}");
+            }
+        }
+        // a count the run's own script prints next to another number is a label, not a failure
+        let said = fixes_of(&[("pytest", FAILING_RUN), ("pytest; ./check", "3 passed\nrows 20 failures 0\nerrors: 0")]);
+        assert!(said.contains("the tests that failed and now pass: test_round"), "{said}");
+    }
+
+    #[test]
+    fn test_commands_of_common_runners_are_test_runs() {
+        for cmd in [
+            "./gradlew test",
+            "gradle test",
+            "python manage.py test",
+            "bin/rails test",
+            "bundle exec rake spec",
+            "flutter test",
+            "php artisan test",
+            "npx playwright test",
+            "cargo nextest run",
+            "node --test",
+            "sbt test",
+            "bazel test //...",
+        ] {
+            assert!(TEST_COMMAND.is_match(cmd), "{cmd}");
+        }
+        for cmd in ["cat test.txt", "ls tests", "git commit -m 'test'", "echo test"] {
+            assert!(!TEST_COMMAND.is_match(cmd), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn only_a_read_of_a_path_weighs_as_on_disk_in_the_ledger() {
+        let mut msgs = vec![json!({"role": "user", "content": "Map where each module of the realm is configured."})];
+        for k in 0..40 {
+            let out = format!("the module_{k} service reads its limits from the shared table and retries them");
+            // a file read, and a read of a thread (a tool with no path): only the file is one read away
+            let input = if k % 2 == 0 {
+                json!({"path": format!("config/{}.toml", word(k))})
+            } else {
+                json!({"thread": word(k)})
+            };
+            let name = if k % 2 == 0 { "read_file" } else { "read_thread" };
+            msgs.extend(tool(k + 1, name, input, &out, false));
+            msgs.push(json!({"role": "user", "content": "Go on."}));
+        }
+        let mut e = Engine::new(params("ledger=6000;cap=3000;eoq=0;nudge=0").unwrap());
+        e.sync(&msgs);
+        e.view();
+        assert!(e.start > 0 && !e.pool.is_empty());
+        let weight = |k: usize| e.pool.iter().find(|x| x.1.contains(&format!("module_{k} "))).map(|x| x.3);
+        let (file, thread) = ((0..40).step_by(2).find_map(weight), (1..40).step_by(2).find_map(weight));
+        assert_eq!(file, Some(ON_DISK));
+        assert_eq!(thread, Some(1.0));
     }
 
     #[test]
@@ -5697,6 +5920,24 @@ mod tests {
     }
 
     #[test]
+    fn live_prices_an_output_at_what_it_sends_now() {
+        let mut e = reads("nudge=0;eoq=0;threshold=0", &[(1, 200)]);
+        let i = result_in(&e, 2);
+        let n = e.fz.chunks[i].len();
+        assert!(n > 2, "{n} chunks");
+        let whole: i64 = e.fz.chunks[i].iter().map(|c| c.tokens).sum();
+        assert_eq!(e.sends_now(i, None), whole);
+        // all but the last chunk already left: only that one is still paid for on every call
+        e.drop_as(i, 0..n - 1, "evict");
+        assert_eq!(e.sends_now(i, None), e.fz.chunks[i][n - 1].tokens);
+        // one line in a hundred is sent by a copy that stays: leaving would not save it
+        let one: Vec<bool> = (0..100).map(|k| k == 0).collect();
+        let (last, tokens) = (e.fz.chunks[i][n - 1].tokens, e.tr.units[i].tokens);
+        assert!(last > tokens / 100, "{last} {tokens}");
+        assert_eq!(e.sends_now(i, Some(&one)), last - tokens / 100);
+    }
+
+    #[test]
     fn live_with_named_an_output_of_the_file_the_request_names_stays() {
         let spec = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1;named=1";
         // the request names listing.txt: its reads are the material the answer needs, used or not yet
@@ -6150,6 +6391,53 @@ mod tests {
         // a chat without tools has nothing to mark
         let chat = e(&[json!({"role": "user", "content": "Hi"}), json!({"role": "assistant", "content": "Hello"})]);
         assert!(chat.edits.is_empty() && chat.stale_reads(&[0, 1]).is_empty());
+    }
+
+    #[test]
+    fn a_failed_partial_edit_leaves_the_written_file_and_its_pin_as_they_were() {
+        let body = source(0, 30);
+        for failed in [true, false] {
+            let mut msgs = vec![json!({"role": "user", "content": "Set up config.json and read src/main.rs."})];
+            msgs.extend(tool(1, "read_file", json!({"path": "src/main.rs"}), &source(400, 30), false));
+            msgs.extend(tool(2, "write_file", json!({"path": "config.json", "content": body}), "ok", false));
+            // an edit as big as the whole file, and a small one, of each file
+            let big = json!({"path": "config.json", "old_str": body, "new_str": "x"});
+            msgs.extend(tool(3, "edit_file", big, if failed { "no match" } else { "ok" }, failed));
+            let small = json!({"path": "src/main.rs", "old_str": "v1", "new_str": "w1"});
+            msgs.extend(tool(4, "edit_file", small, if failed { "no match" } else { "ok" }, failed));
+            let mut e = Engine::new(params("pin=4000").unwrap());
+            e.sync(&msgs);
+            assert_eq!(e.wrote.contains_key("config.json"), failed, "failed={failed}");
+            assert_eq!(e.written.contains_key("src/main.rs"), !failed, "failed={failed}");
+            assert!(e.written.contains_key("config.json"), "failed={failed}");
+        }
+    }
+
+    #[test]
+    fn windows_paths_are_paths() {
+        assert!(same_file(r"C:\proj\src\pricing.rs", r"src\pricing.rs"));
+        assert!(same_file(r"C:\proj\src\pricing.rs", "src/pricing.rs"));
+        assert!(same_file(r".\src\pricing.rs", "src/pricing.rs"));
+        assert!(!same_file(r"C:\proj\src\pricing.rs", r"lib\pricing.rs"));
+        assert_eq!(basename(r"C:\proj\src\pricing.rs"), "pricing.rs");
+        assert_eq!(file_key(r".\src\\b\index.ts"), "src/b/index.ts");
+        for name in
+            [r"src\_try.rs", r"C:\Users\me\AppData\Local\Temp\out.json", r"%TEMP%\run\x.csv", r"C:\Windows\Temp\a.txt"]
+        {
+            assert!(scratch(name), "{name}");
+        }
+        assert!(!scratch(r"C:\proj\src\main.rs"));
+        let parts = |v: &[&[&str]]| -> Vec<Vec<String>> {
+            v.iter().map(|p| p.iter().map(|s| s.to_string()).collect()).collect()
+        };
+        assert_eq!(files_in(r"Read C:\proj\src\calc_util.rs"), parts(&[&["calc", "util"]]));
+        assert_eq!(files_in(r"type src\calc.rs ..\lib\db.rs"), parts(&[&["calc"], &["db"]]));
+        assert_eq!(files_in(r"Read C:/proj/src/calc.rs"), parts(&[&["calc"]]));
+        // a pattern with escapes is no path
+        assert!(files_in(r"grep -n 'foo\.txt' a\|b \d+\.rs").is_empty());
+        // a changed file named in a failure, by its stem, on Windows too
+        let failures = vec!["FAILED tests/test_calc.py::test_add".to_string()];
+        assert!(named_in(r"C:\proj\src\calc.py", &failures));
     }
 
     #[test]

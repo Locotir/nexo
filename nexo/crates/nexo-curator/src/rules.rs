@@ -536,20 +536,23 @@ pub struct Rules {
     pub list: Vec<Rule>,
     /// The person's turns so far.
     pub turn: usize,
+    /// Set while a rewritten history is read anew: the rules found in it are the carried ones, in place.
+    pub replay: bool,
 }
 
 impl Rules {
     /// Adds a rule; one with the same wording is kept once (the first, in the message that has it now).
-    /// Given again after other rules (a new message, not a rewritten history read anew), it moves to the
-    /// end with its new turn: it is the latest word over whatever changed it in between.
+    /// Given again after other rules in a new message, it moves to the end with its new turn: it is the
+    /// latest word over whatever changed it in between. Found again while a rewritten history is read
+    /// anew (`replay`), a carried rule is only tied to its message, in place.
     pub fn add(&mut self, msg: usize, text: String, restated: bool) {
         let k = key(&text);
         if let Some(i) = self.list.iter().position(|r| r.key == k) {
             let last = i + 1 == self.list.len();
-            let r = &mut self.list[i];
-            if r.msg.is_none() {
-                r.msg = Some(msg);
-            } else if !last && r.msg != Some(msg) {
+            let was = self.list[i].msg;
+            if last || was == Some(msg) || (was.is_none() && self.replay) {
+                self.list[i].msg.get_or_insert(msg);
+            } else {
                 let mut r = self.list.remove(i);
                 (r.turn, r.msg) = (self.turn.max(1), Some(msg));
                 self.list.push(r);
@@ -564,7 +567,7 @@ impl Rules {
     pub fn carried(self) -> Rules {
         let turn = self.list.iter().map(|r| r.turn).max().unwrap_or(0);
         let list = self.list.into_iter().map(|r| Rule { msg: None, ..r }).collect();
-        Rules { list, turn }
+        Rules { list, turn, replay: false }
     }
 
     /// The block of the rules ``shown`` takes, or "" when it takes none.
@@ -764,6 +767,27 @@ mod tests {
     }
 
     #[test]
+    fn a_carried_rule_given_again_in_a_new_message_moves_past_what_withdrew_it() {
+        let mut rs = Rules { turn: 2, ..Default::default() };
+        rs.add(3, "Never push to main.".into(), false);
+        rs.add(5, "You may push to main from now on.".into(), false);
+        let mut c = rs.clone().carried();
+        // the rewritten history is read anew: both are found where they were
+        c.replay = true;
+        c.add(1, "Never push to main.".into(), false);
+        c.add(2, "You may push to main from now on.".into(), false);
+        assert_eq!(c.list[0].text, "Never push to main.");
+        // the history the harness rewrote dropped the first; the person gives it again
+        let mut c = rs.carried();
+        c.replay = true;
+        c.add(2, "You may push to main from now on.".into(), false);
+        c.replay = false;
+        c.turn = 5;
+        c.add(9, "Never push to main.".into(), false);
+        assert_eq!((c.list[1].text.as_str(), c.list[1].turn, c.list[1].msg), ("Never push to main.", 5, Some(9)));
+    }
+
+    #[test]
     fn a_fault_report_is_not_a_rule_without_a_firm_cue_or_an_order() {
         for l in [
             "The parser returns None instead of an error",
@@ -847,6 +871,7 @@ mod tests {
         // carried over a rewrite and found again in a summary: it keeps its place
         let mut c = rs.carried();
         c.turn = 9;
+        c.replay = true;
         c.add(1, "you can use unwrap now".into(), false);
         assert_eq!((c.list[0].turn, c.list[1].turn, c.list[0].msg), (5, 8, Some(1)), "{:?}", c.list);
     }

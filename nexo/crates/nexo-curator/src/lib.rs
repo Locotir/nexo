@@ -651,9 +651,8 @@ mod tests {
     }
 
     /// Replays every fixture: a view that sends a message of the previous view otherwise (or no longer)
-    /// counts the tokens from that message on under `miss`. The latest message sent is left aside: an
-    /// output sent once as a copy of an earlier one is sent as a pointer from the next request on, and
-    /// that rewrite, of the latest message alone, is not counted.
+    /// counts the tokens from that message on under `miss`, the latest message sent too: an output sent
+    /// whole as the latest one goes as a pointer from the next request on (`miss_fresh`).
     #[test]
     fn every_rewrite_of_a_sent_message_counts_its_miss() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -682,7 +681,7 @@ mod tests {
                 let Some(Value::Array(view)) = got.get("view") else { continue };
                 let now = got["stats"].get("miss").and_then(Value::as_i64).unwrap_or(0);
                 if !edited {
-                    if let Some(p) = (0..prev.len().saturating_sub(1)).find(|&p| view.get(p) != Some(&prev[p])) {
+                    if let Some(p) = (0..prev.len()).find(|&p| view.get(p) != Some(&prev[p])) {
                         let behind: i64 = view[p..].iter().map(json::est).sum();
                         if ((now - missed) as f64) < 0.9 * behind as f64 - 50.0 {
                             bad.push(format!(
