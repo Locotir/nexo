@@ -504,6 +504,7 @@ async fn interactive(
         theme: config.ui.theme.clone(),
         mouse: config.ui.mouse,
         show_reasoning: config.ui.show_reasoning,
+        timestamps: config.ui.timestamps,
         fold_after: config.ui.fold_after,
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,

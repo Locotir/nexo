@@ -119,11 +119,11 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), every.len());
-        assert_eq!(every.len(), 16);
+        assert_eq!(every.len(), 17);
         assert_eq!(select(&["realm"]).unwrap().len(), 1);
         assert_eq!(select(&["core,realm"]).unwrap().len(), 7);
-        assert_eq!(select::<&str>(&[]).unwrap().len(), 16);
-        assert_eq!(select(&["heavy"]).unwrap().len(), 2);
+        assert_eq!(select::<&str>(&[]).unwrap().len(), 17);
+        assert_eq!(select(&["heavy"]).unwrap().len(), 3);
         assert!(select(&["nope"]).is_err());
     }
 

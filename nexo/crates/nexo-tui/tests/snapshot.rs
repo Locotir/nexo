@@ -25,6 +25,7 @@ fn app() -> App {
         theme: "dark".into(),
         mouse: true,
         show_reasoning: true,
+        timestamps: false,
         fold_after: 4,
         keys: Default::default(),
         notify_after: 15,

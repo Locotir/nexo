@@ -78,6 +78,7 @@ mod tests {
             theme: "dark".into(),
             mouse: true,
             show_reasoning: true,
+            timestamps: false,
             fold_after: 3,
             notify_after: 15,
             animations: false,

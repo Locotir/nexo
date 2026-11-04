@@ -151,6 +151,8 @@ pub struct App {
     pub status: Option<(String, Instant)>,
     pub transcript_area: Rect,
     pub show_reasoning: bool,
+    /// A dim `HH:MM` on each message and reply (`/timestamps`).
+    pub timestamps: bool,
     /// Code and files shown for what they mean (Markdown rendered, JSON indented, tables).
     pub interpreted: bool,
     pub fold_after: usize,
@@ -364,6 +366,7 @@ impl App {
             status: None,
             transcript_area: Rect::default(),
             show_reasoning: opts.show_reasoning,
+            timestamps: opts.timestamps,
             interpreted: false,
             fold_after: opts.fold_after.max(1),
             keymap: crate::keymap::Keymap::from_config(&opts.keys).0,
@@ -622,6 +625,7 @@ impl App {
             spinner: self.spinner,
             intro_ms: (self.opts.animations && since < crate::render::blocks::INTRO_MS).then_some(since),
             interpreted: self.interpreted,
+            timestamps: self.timestamps,
         }
     }
 
@@ -1356,13 +1360,14 @@ impl App {
                 self.streamed_chars += text.len();
                 self.close_reasoning();
                 match self.blocks.last_mut() {
-                    Some(Block::Assistant { text: t, streaming: true }) => {
+                    Some(Block::Assistant { text: t, streaming: true, .. }) => {
                         t.push_str(&text);
                         let i = self.blocks.len() - 1;
                         self.invalidate(i);
                     }
                     _ => {
-                        self.push(Block::Assistant { text, streaming: true });
+                        let (at, started) = (Some(self.stamp_now()), Some(self.now()));
+                        self.push(Block::Assistant { text, streaming: true, at, started, took_ms: None });
                     }
                 }
             }
@@ -1458,7 +1463,8 @@ impl App {
                 if !streamed_text {
                     let text = message.text();
                     if !text.trim().is_empty() {
-                        self.push(Block::Assistant { text, streaming: false });
+                        let at = Some(self.stamp_now());
+                        self.push(Block::Assistant { text, streaming: false, at, started: None, took_ms: None });
                     }
                 }
             }
@@ -1791,7 +1797,7 @@ impl App {
                     let at = match self.pending_stamps.iter().position(|t| *t == text) {
                         Some(i) => {
                             self.pending_stamps.remove(i);
-                            Some(clock())
+                            Some(self.stamp_now())
                         }
                         None => None,
                     };
@@ -1803,7 +1809,13 @@ impl App {
                     match p {
                         Part::Text { text } => {
                             if !text.trim().is_empty() {
-                                self.push(Block::Assistant { text, streaming: false });
+                                self.push(Block::Assistant {
+                                    text,
+                                    streaming: false,
+                                    at: None,
+                                    started: None,
+                                    took_ms: None,
+                                });
                             }
                         }
                         Part::Reasoning { text, .. } => {
@@ -2336,10 +2348,12 @@ impl App {
 
     fn close_streaming(&mut self) {
         self.close_reasoning();
+        let now = self.now();
         for i in 0..self.blocks.len() {
-            if let Block::Assistant { streaming, .. } = &mut self.blocks[i] {
+            if let Block::Assistant { streaming, started, took_ms, .. } = &mut self.blocks[i] {
                 if *streaming {
                     *streaming = false;
+                    *took_ms = started.map(|s| now.saturating_duration_since(s).as_millis() as u64);
                     self.cache[i] = None;
                 }
             }
@@ -2488,6 +2502,11 @@ impl App {
                 Err(e) => self.notice(Level::Warn, format!("/pricing: {e}")),
             },
             Command::Mouse => self.toggle_mouse(),
+            Command::Timestamps => {
+                self.timestamps = !self.timestamps;
+                self.invalidate_all();
+                self.flash(if self.timestamps { "timestamps on" } else { "timestamps off" });
+            }
             Command::ContextLive => self.toggle_live(self.term_width),
             Command::Goal(GoalArg::Set(text)) => self.send(AgentCommand::SetGoal { text: Some(text) }),
             Command::Goal(GoalArg::Clear) => self.send(AgentCommand::SetGoal { text: None }),
@@ -3221,7 +3240,7 @@ fn mode_hint(m: PermissionMode) -> &'static str {
 }
 
 /// `HH:MM` now, local time when the offset is known.
-fn clock() -> String {
+pub(crate) fn clock() -> String {
     let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
     format!("{:02}:{:02}", now.hour(), now.minute())
 }
@@ -3455,6 +3474,7 @@ mod tests {
             theme: "dark".into(),
             mouse: true,
             show_reasoning: true,
+            timestamps: false,
             fold_after: 3,
             keys: Default::default(),
             notify_after: 15,
@@ -3499,7 +3519,7 @@ mod tests {
     fn any_long_block_folds_to_its_first_line_and_opens_again() {
         let (mut a, _rx) = app();
         let text = (1..=6).map(|i| format!("paragraph {i}")).collect::<Vec<_>>().join("\n\n");
-        let i = a.push(Block::Assistant { text, streaming: false });
+        let i = a.push(Block::Assistant { text, streaming: false, at: None, started: None, took_ms: None });
         a.layout(60);
         let open = a.lines(i, 60).len();
         assert!(open > 2);
@@ -3519,7 +3539,7 @@ mod tests {
     fn a_new_block_fades_in_and_an_opened_one_grows() {
         let (mut a, _rx) = app();
         let text = (1..=8).map(|i| format!("p{i}")).collect::<Vec<_>>().join("\n\n");
-        let i = a.push(Block::Assistant { text, streaming: false });
+        let i = a.push(Block::Assistant { text, streaming: false, at: None, started: None, took_ms: None });
         assert!(a.fade(i) < 1.0, "a fresh block starts faint");
         a.layout(60);
         a.toggle_block(i);
@@ -3556,7 +3576,7 @@ mod tests {
         });
         a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
         assert!(matches!(a.blocks[0], Block::Reasoning { streaming: false, .. }));
-        assert!(matches!(&a.blocks[1], Block::Assistant { text, streaming: false } if text == "Hello"));
+        assert!(matches!(&a.blocks[1], Block::Assistant { text, streaming: false, .. } if text == "Hello"));
         assert!(matches!(a.blocks[2], Block::Tool { status: ToolStatus::Done, .. }));
         assert!(matches!(a.blocks[3], Block::Usage { .. }));
         assert!(!a.busy);
@@ -4233,7 +4253,7 @@ mod tests {
     fn the_steps_of_a_turn_sit_under_the_reply_and_one_line_steps_read_as_a_list() {
         let (mut a, _rx) = bare();
         a.push(Block::User { text: "go".into(), at: None });
-        a.push(Block::Assistant { text: "On it.".into(), streaming: false });
+        a.push(Block::Assistant { text: "On it.".into(), streaming: false, at: None, started: None, took_ms: None });
         a.push(card("a", 2));
         a.push(card("b", 2));
         if let Block::Tool { folded, .. } = &mut a.blocks[3] {
@@ -4888,7 +4908,13 @@ mod tests {
     #[test]
     fn the_scrollback_text_holds_every_block_wrapped_with_the_screen_gaps() {
         let (mut a, _rx) = app();
-        a.push(Block::Assistant { text: "first answer".into(), streaming: false });
+        a.push(Block::Assistant {
+            text: "first answer".into(),
+            streaming: false,
+            at: None,
+            started: None,
+            took_ms: None,
+        });
         a.push(Block::User { text: "a question that is long enough to wrap around".into(), at: None });
         long_answer(&mut a, 0);
         let text = crate::inline::scrollback_text(&mut a, 30);
@@ -4899,7 +4925,7 @@ mod tests {
 
     fn long_answer(a: &mut App, from: usize) {
         let text: Vec<String> = (from..from + 60).map(|i| format!("line {i}")).collect();
-        a.push(Block::Assistant { text: text.join("\n\n"), streaming: false });
+        a.push(Block::Assistant { text: text.join("\n\n"), streaming: false, at: None, started: None, took_ms: None });
     }
 
     #[test]

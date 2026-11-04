@@ -39,6 +39,12 @@ pub enum Block {
     Assistant {
         text: String,
         streaming: bool,
+        /// `HH:MM` when the reply began in this interface (None on a replay).
+        at: Option<String>,
+        /// When it began, to time it.
+        started: Option<Instant>,
+        /// How long the reply took, once finished.
+        took_ms: Option<u64>,
     },
     Reasoning {
         text: String,
@@ -103,6 +109,8 @@ pub struct RenderOpts {
     pub intro_ms: Option<u64>,
     /// Code and files shown for what they mean: Markdown rendered, JSON indented, tables.
     pub interpreted: bool,
+    /// The `HH:MM` (and a reply's duration) at the right of a head line, when the block has them.
+    pub timestamps: bool,
 }
 
 impl Block {
@@ -152,13 +160,8 @@ impl Block {
             Block::User { text, at } => {
                 let bar = Span::styled("▌ ", theme.style(theme.user));
                 let mut lines = wrap_plain(text, w, Style::default(), &[bar]);
-                if let (Some(at), Some(first)) = (at, lines.first_mut()) {
-                    let used: usize = first.spans.iter().map(|s| width(&s.content)).sum();
-                    let need = width(at) + 2;
-                    if used + need <= w {
-                        first.spans.push(Span::raw(" ".repeat(w - used - width(at))));
-                        first.spans.push(Span::styled(at.clone(), theme.dim2()));
-                    }
+                if let (true, Some(at), Some(first)) = (o.timestamps, at, lines.first_mut()) {
+                    stamp_right(first, w, at, theme);
                 }
                 // the whole message on a band of the person's colour, edge to edge
                 let band = theme.user_band();
@@ -170,7 +173,7 @@ impl Block {
                 }
                 lines
             }
-            Block::Assistant { text, streaming } => {
+            Block::Assistant { text, streaming, at, took_ms, .. } => {
                 let mut lines = markdown::render_as(text, w.saturating_sub(2), theme, o.interpreted);
                 if lines.is_empty() {
                     lines.push(Line::default());
@@ -187,6 +190,13 @@ impl Block {
                     let marker =
                         if i == 0 { Span::styled("◆ ", theme.style(theme.assistant)) } else { Span::raw("  ") };
                     l.spans.insert(0, marker);
+                }
+                if let (true, Some(at), Some(first)) = (o.timestamps, at, lines.first_mut()) {
+                    let label = match took_ms {
+                        Some(ms) => format!("{at} · {}", fmt_ms(*ms)),
+                        None => at.clone(),
+                    };
+                    stamp_right(first, w, &label, theme);
                 }
                 lines
             }
@@ -856,6 +866,16 @@ fn tail(text: &str, n: usize) -> String {
     lines[start..].join("\n")
 }
 
+/// Right-aligns a dim `label` on the head `line` of a block `w` wide; dropped when it would touch the text.
+fn stamp_right(line: &mut Line<'static>, w: usize, label: &str, theme: &Theme) {
+    let used: usize = line.spans.iter().map(|s| width(&s.content)).sum();
+    let need = width(label) + 2;
+    if used + need <= w {
+        line.spans.push(Span::raw(" ".repeat(w - used - width(label))));
+        line.spans.push(Span::styled(label.to_string(), theme.dim2()));
+    }
+}
+
 pub fn fmt_ms(ms: u64) -> String {
     if ms < 1000 {
         format!("{ms}ms")
@@ -969,7 +989,14 @@ mod tests {
     }
 
     fn opts() -> RenderOpts {
-        RenderOpts { show_reasoning: true, fold_after: 3, spinner: 0, intro_ms: None, interpreted: false }
+        RenderOpts {
+            show_reasoning: true,
+            fold_after: 3,
+            spinner: 0,
+            intro_ms: None,
+            interpreted: false,
+            timestamps: true,
+        }
     }
 
     #[test]
@@ -1132,14 +1159,14 @@ mod tests {
     #[test]
     fn the_caret_blinks_and_the_mark_lights_up() {
         let theme = Theme::nexo();
-        let live = Block::Assistant { text: "Hello".into(), streaming: true };
+        let live = Block::Assistant { text: "Hello".into(), streaming: true, at: None, started: None, took_ms: None };
         let on = live.render(40, &theme, RenderOpts { spinner: 0, ..opts() });
         let last = on.last().unwrap().spans.last().unwrap().clone();
         assert_eq!(last.content, "▍");
         assert_eq!(last.style.fg, Some(theme.accent), "lit");
         let off = live.render(40, &theme, RenderOpts { spinner: 6, ..opts() });
         assert_eq!(off.last().unwrap().spans.last().unwrap().style.fg, Some(theme.dim2), "and dark half the time");
-        let done = Block::Assistant { text: "Hello".into(), streaming: false };
+        let done = Block::Assistant { text: "Hello".into(), streaming: false, at: None, started: None, took_ms: None };
         assert!(!texts(&done.render(40, &theme, opts()))[0].contains('▍'), "no caret once the reply is done");
         // the first node is born as a dot, the last one is not there yet, the centre waits as a seed
         assert_eq!(intro_cell(&theme, '●', theme.accent2, 0, 0, 0), ('·', theme.fg));
@@ -1259,6 +1286,18 @@ mod tests {
         assert_eq!(t, vec!["▌ hello        12:34"]);
         let u = Block::User { text: "a line that fills everything".into(), at: Some("12:34".into()) };
         assert!(!texts(&u.render(30, &Theme::dark(), opts()))[0].contains("12:34"), "no room, no stamp");
+        let off = RenderOpts { timestamps: false, ..opts() };
+        let u = Block::User { text: "hello".into(), at: Some("12:34".into()) };
+        assert_eq!(texts(&u.render(20, &Theme::dark(), off)), vec!["▌ hello"], "off: no stamp");
+        let r = Block::Assistant {
+            text: "hi".into(),
+            streaming: false,
+            at: Some("14:32".into()),
+            started: None,
+            took_ms: Some(64_000),
+        };
+        assert_eq!(texts(&r.render(30, &Theme::dark(), opts())), vec!["◆ hi             14:32 · 1m04s"]);
+        assert_eq!(texts(&r.render(30, &Theme::dark(), off)), vec!["◆ hi"]);
         assert_eq!(fmt_k(1234), "1.2k");
         assert_eq!(fmt_k(2_500_000), "2.50M");
         assert_eq!(fmt_k(3_100_000_000), "3.10B");

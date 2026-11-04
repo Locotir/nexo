@@ -21,6 +21,7 @@ fn app() -> App {
         theme: "dark".into(),
         mouse: true,
         show_reasoning: true,
+        timestamps: false,
         fold_after: 4,
         keys: Default::default(),
         notify_after: 15,
@@ -38,7 +39,7 @@ fn app() -> App {
 
 fn turn(a: &mut App, q: &str, r: &str) {
     a.push(Block::User { text: q.into(), at: None });
-    a.push(Block::Assistant { text: r.into(), streaming: false });
+    a.push(Block::Assistant { text: r.into(), streaming: false, at: None, started: None, took_ms: None });
 }
 
 fn text(lines: &[ratatui::text::Line]) -> String {
@@ -58,7 +59,7 @@ fn a_running_turn_stays_live_from_its_request_on() {
     let mut a = app();
     turn(&mut a, "first", "answer one");
     a.push(Block::User { text: "second".into(), at: None });
-    a.push(Block::Assistant { text: "partial".into(), streaming: true });
+    a.push(Block::Assistant { text: "partial".into(), streaming: true, at: None, started: None, took_ms: None });
     a.busy = true;
     assert_eq!(settled_count(&a), 3, "the banner and the first turn");
 }

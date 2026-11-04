@@ -65,6 +65,8 @@ pub struct TuiOptions {
     pub theme: String,
     pub mouse: bool,
     pub show_reasoning: bool,
+    /// A dim `HH:MM` on each message and reply (`[ui] timestamps`).
+    pub timestamps: bool,
     pub fold_after: usize,
     /// `[ui.keys]`: action name -> key, over the default keys.
     pub keys: std::collections::BTreeMap<String, String>,
@@ -92,6 +94,7 @@ impl Default for TuiOptions {
             theme: "dark".into(),
             mouse: true,
             show_reasoning: true,
+            timestamps: true,
             fold_after: 12,
             keys: Default::default(),
             animations: true,

@@ -1,3 +1,4 @@
+| Timestamps: a dim `HH:MM` at the right of each message you send and each reply, and a reply's duration once it ends (`14:32 · 1m04s`); `[ui] timestamps = false` or `/timestamps` hides them; a resumed session shows none (no time is saved) | ✅ | `on_a_message_and_a_reply_carry_the_time_and_the_reply_its_duration`, `off_nothing_is_drawn`, `the_toggle_shows_and_hides_it_at_once`, `a_replayed_session_shows_nothing_and_a_narrow_line_drops_it` |
 # What nexo does, and what checks it
 
 Every feature a terminal coding agent is expected to have (the ones the widely used terminal

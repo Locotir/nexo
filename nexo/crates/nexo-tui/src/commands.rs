@@ -44,6 +44,7 @@ pub const COMMANDS: &[Spec] = &[
         "what is known of the model; with values: its prices per million tokens",
     ),
     spec("mouse", &[], "", "mouse capture on or off (off: the terminal's own selection works)"),
+    spec("timestamps", &[], "", "the HH:MM on each message and reply, and a reply's duration, on or off"),
     spec("goal", &["g"], "[text|off]", "keep working towards a goal across turns; `off` clears it"),
     spec("compact", &[], "", "replace the history with a summary"),
     spec("clear", &["new"], "", "start a new session here"),
@@ -104,6 +105,7 @@ pub enum Command {
     PromptEdit,
     Pricing(Option<String>),
     Mouse,
+    Timestamps,
     /// `/goal text` sets, `/goal` shows, `/goal off` clears.
     Goal(GoalArg),
     Compact,
@@ -191,6 +193,7 @@ pub fn parse(line: &str) -> Option<Command> {
         },
         "pricing" => Command::Pricing(arg),
         "mouse" => Command::Mouse,
+        "timestamps" => Command::Timestamps,
         "goal" => Command::Goal(match arg.as_deref() {
             None => GoalArg::Show,
             Some("off") | Some("clear") | Some("none") | Some("done") => GoalArg::Clear,
@@ -304,7 +307,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     ),
     ("model", &["model", "provider", "effort", "pricing", "prompt", "budget"]),
     ("context and tools", &["context", "context-live", "cost", "tools", "jobs", "diff", "init", "status"]),
-    ("settings", &["permissions", "yolo", "theme", "mouse", "vim", "keys"]),
+    ("settings", &["permissions", "yolo", "theme", "mouse", "timestamps", "vim", "keys"]),
     ("nexo", &["help", "copy", "quit"]),
 ];
 
@@ -427,6 +430,7 @@ mod tests {
         assert_eq!(parse("/pricing in=1 out=2"), Some(Command::Pricing(Some("in=1 out=2".into()))));
         assert_eq!(parse("/prices"), Some(Command::Pricing(None)));
         assert_eq!(parse("/mouse"), Some(Command::Mouse));
+        assert_eq!(parse("/timestamps"), Some(Command::Timestamps));
         assert_eq!(parse("/goal"), Some(Command::Goal(GoalArg::Show)));
         assert_eq!(parse("/goal make the tests pass"), Some(Command::Goal(GoalArg::Set("make the tests pass".into()))));
         assert_eq!(parse("/goal off"), Some(Command::Goal(GoalArg::Clear)));

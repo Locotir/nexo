@@ -10,6 +10,8 @@ use crate::toast::Kind;
 pub struct Fx {
     /// Tests set this; otherwise the wall clock.
     pub clock: Option<Instant>,
+    /// Tests set the `HH:MM` that new messages are stamped with; otherwise the local time.
+    pub wall: Option<String>,
     pub cost: Counter,
     pub tok: Counter,
     /// When the last turn ended: the rule glows and the figures pulse once.
@@ -20,6 +22,11 @@ impl App {
     /// The time every effect is drawn at.
     pub fn now(&self) -> Instant {
         self.fx.clock.unwrap_or_else(Instant::now)
+    }
+
+    /// The `HH:MM` a message created now is stamped with.
+    pub fn stamp_now(&self) -> String {
+        self.fx.wall.clone().unwrap_or_else(crate::app::clock)
     }
 
     /// A small confirmation at the top right.

@@ -298,6 +298,8 @@ pub struct UiConfig {
     /// the session on stdin (model, cwd, branch, tokens, context %, cost, session id) and its first
     /// line of stdout, ANSI colours included, becomes the bar. Empty: the pieces of `status_line`.
     pub status_command: String,
+    /// A dim `HH:MM` at the right of each message and reply, and a reply's duration (`/timestamps` toggles it).
+    pub timestamps: bool,
 }
 
 impl Default for UiConfig {
@@ -314,6 +316,7 @@ impl Default for UiConfig {
             status_line: Vec::new(),
             screen: "full".into(),
             status_command: String::new(),
+            timestamps: true,
         }
     }
 }

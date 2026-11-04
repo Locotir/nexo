@@ -75,7 +75,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 
@@ -87,6 +87,8 @@ rings the terminal's bell when it ends, with a desktop notification where the te
 The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`.
 Scrolling eases out, new blocks fade in, dialogs and the palette pop open and a glow runs along the line
 under a working agent; `[ui] animations = false` turns all motion off (everything lands at once).
+Messages and replies carry a dim `HH:MM` at the right of their first line, and a reply its duration once it ends;
+`[ui] timestamps = false` turns it off, `/timestamps` toggles it for the session.
 
 **Spend limits.** `[agent] max_cost = 1.0` stops a session at a dollar; `max_cost_day = 5.0` stops every
 session together for the day (what was spent each day is in `~/.nexo/spend.json`). Past 80% nexo

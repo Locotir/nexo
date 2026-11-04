@@ -12,7 +12,7 @@ use crate::rng::Rng;
 
 /// The long-haul and marathon tasks, and the marathon with twenty times the examples.
 pub fn tasks() -> Vec<Task> {
-    vec![long_haul(), marathon(), marathon_heavy(), marathon_noisy()]
+    vec![long_haul(), marathon(), marathon_heavy(), marathon_noisy(), marathon_pasted()]
 }
 
 const LIB: &str = r##"//! Stock, prices, units, orders, reports and planning of the warehouse.
@@ -1308,6 +1308,61 @@ fn marathon_noisy() -> Task {
     }
 }
 
+// ------------------------------------------------------------------ the pasted marathon: the junk in the requests
+
+/// The noisy marathon with its junk pasted into the requests instead of left in files: the twelve CI
+/// logs in the second request and each specification in its own. What a person pastes stays in every
+/// request that follows, whatever the agent reads, so the history passes 200k tokens in every run.
+fn pasted_turns() -> Vec<(u32, String)> {
+    let specs = specs_scaled(20);
+    let logs: String = (1..=12).map(|n| format!("--- run-{n:02}.log ---\n{}", ci_log(n))).collect();
+    noisy_turns()
+        .into_iter()
+        .map(|(s, t)| {
+            if t.contains("CI logs are in ci/") {
+                return (
+                    s,
+                    format!(
+                        "Next: here are last night's CI logs, all twelve runs, pasted. Most runs show errors that a \
+                         retry fixed; exactly one run really failed. Find it: I will need its run number and its \
+                         job id at the end. Leave build.rs as it is, it belongs to another team.\n\n```text\n{logs}```"
+                    ),
+                );
+            }
+            match specs.iter().find(|(p, _)| t.contains(p.as_str())) {
+                Some((p, body)) => (
+                    s,
+                    format!(
+                        "{}\n\nThe specification, pasted from the wiki:\n\n```markdown\n{body}```",
+                        t.replace(p.as_str(), "the specification below")
+                    ),
+                ),
+                None => (s, t),
+            }
+        })
+        .collect()
+}
+
+fn marathon_pasted() -> Task {
+    let mut files = crate_files();
+    files.push(("build.rs".into(), codegen_build()));
+    Task {
+        id: "marathon-pasted",
+        trap: "the noisy marathon with the junk pasted into the requests: twelve CI logs and five long \
+               specifications stay in every later request whatever the agent reads, so the history passes 200k \
+               tokens in every run and a summary at 200k must happen",
+        group: "heavy",
+        files,
+        turns: pasted_turns(),
+        check: noisy_check,
+        solution: noisy_solution,
+        setup: None,
+        sealed: false,
+        mask: &[],
+        ready: always,
+    }
+}
+
 fn noisy_check(wd: &Path) -> Outcome {
     let out = marathon_check(wd);
     if !out.ok {
@@ -1625,6 +1680,17 @@ mod heavy {
         assert!(got.ok, "{}", got.detail);
         let t = Copy::of(wd.path()).unwrap().cargo(&["build"]);
         assert!(t.stdout.contains("codegen:") || t.stderr.contains("codegen:"));
+    }
+
+    #[test]
+    fn the_pasted_marathon_sends_more_than_200k_tokens_of_requests() {
+        let t = pasted_turns();
+        let bytes: usize = t.iter().map(|(_, s)| s.len()).sum();
+        eprintln!("pasted request bytes: {bytes}");
+        assert!(bytes > 800_000, "{bytes}");
+        assert_eq!(t.len(), 10);
+        assert!(t.iter().all(|(_, s)| !s.contains("docs/spec/")));
+        assert!(t[1].1.contains(&ci_job(CI_RUN)));
     }
 
     #[test]
