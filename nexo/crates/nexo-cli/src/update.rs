@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub const REPO: &str = "https://github.com/Locotir/nexo";
-const API: &str = "https://api.github.com/repos/Locotir/nexo/compare";
+const API: &str = "https://api.github.com/repos/Locotir/nexo";
 
 /// The commit this binary was built from (`unknown` outside a git checkout).
 pub fn commit() -> &'static str {
@@ -16,29 +16,42 @@ pub fn commit() -> &'static str {
 fn notice(behind: u32) -> Option<String> {
     (behind > 0).then(|| {
         let s = if behind == 1 { "" } else { "s" };
-        format!("nexo update available: {behind} new commit{s} on main: run `nexo update`.")
+        format!("New nexo update: {behind} new commit{s} on main. Run `nexo update`, then restart nexo.")
     })
 }
 
-/// How many commits `main` is ahead of `commit`; `None` when GitHub does not know the commit (a local
-/// build of changes never pushed) or cannot be reached.
+/// How many commits `main` is ahead of `commit`. When GitHub does not know the commit (a build of
+/// changes pushed elsewhere, or not yet), the commits on `main` made after it count instead. `None`
+/// when GitHub cannot be reached.
 async fn ask(commit: &str) -> Option<u32> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
         .build()
         .ok()?;
-    let r = client
-        .get(format!("{API}/{commit}...main"))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .ok()?;
+    let get = |url: String| client.get(url).header("Accept", "application/vnd.github+json").send();
+    let r = get(format!("{API}/compare/{commit}...main")).await.ok()?;
+    if r.status().is_success() {
+        let v: serde_json::Value = r.json().await.ok()?;
+        return v.get("ahead_by")?.as_u64().map(|n| n as u32);
+    }
+    let when = nexo_bench::run::COMMIT_TIME;
+    if r.status() != reqwest::StatusCode::NOT_FOUND || when == "unknown" {
+        return None;
+    }
+    let r = get(format!("{API}/commits?sha=main&per_page=100&since={when}")).await.ok()?;
     if !r.status().is_success() {
         return None;
     }
     let v: serde_json::Value = r.json().await.ok()?;
-    v.get("ahead_by")?.as_u64().map(|n| n as u32)
+    Some(newer(&v, when))
+}
+
+/// The commits in a GitHub commit list made strictly after `when` (`since` also returns equal ones).
+fn newer(list: &serde_json::Value, when: &str) -> u32 {
+    let dates = list.as_array().into_iter().flatten().filter_map(|c| c.pointer("/commit/committer/date")?.as_str());
+    // both are `YYYY-MM-DDTHH:MM:SSZ`, so text order is time order
+    dates.filter(|d| *d > when).count() as u32
 }
 
 /// Whether the check is turned off (`[ui] update_check = false`, `NEXO_NO_UPDATE_CHECK`) or cannot
@@ -50,7 +63,10 @@ pub fn off(config: &nexo_core::Config) -> bool {
 /// The notice for the interface: none when up to date.
 pub async fn check() -> Result<Option<String>, String> {
     let c = commit();
-    let behind = ask(c).await.ok_or_else(|| format!("GitHub does not know commit {c}, or cannot be reached"))?;
+    if c == "unknown" {
+        return Err("this build does not know its commit: run `nexo update` to rebuild from GitHub".into());
+    }
+    let behind = ask(c).await.ok_or_else(|| format!("cannot ask GitHub about commit {c}"))?;
     Ok(notice(behind))
 }
 
@@ -104,5 +120,18 @@ mod tests {
         assert_eq!(notice(0), None);
         assert!(notice(1).unwrap().contains("1 new commit on main"));
         assert!(notice(4).unwrap().contains("4 new commits"));
+        assert!(notice(4).unwrap().contains("restart nexo"));
+    }
+
+    #[test]
+    fn a_build_github_does_not_know_counts_the_commits_made_after_it() {
+        let list = serde_json::json!([
+            {"commit": {"committer": {"date": "2026-11-04T20:27:00Z"}}},
+            {"commit": {"committer": {"date": "2026-11-04T18:05:00Z"}}},
+            {"commit": {"committer": {"date": "2026-11-04T19:00:00Z"}}},
+        ]);
+        assert_eq!(newer(&list, "2026-11-04T18:05:00Z"), 2);
+        assert_eq!(newer(&list, "2026-11-04T21:00:00Z"), 0);
+        assert_eq!(newer(&serde_json::json!({"message": "x"}), "2026-11-04T18:05:00Z"), 0);
     }
 }

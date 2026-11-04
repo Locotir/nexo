@@ -26,6 +26,8 @@ pub const KEY_ENV: &str = "NEXO_BENCH_KEY";
 
 /// The nexo commit this bench was built from.
 pub const COMMIT: &str = env!("NEXO_COMMIT");
+/// When [`COMMIT`] was made, UTC (`2026-11-04T18:05:00Z`), or `unknown`.
+pub const COMMIT_TIME: &str = env!("NEXO_COMMIT_TIME");
 
 /// What every run of a benchmark shares.
 pub struct Bench {
