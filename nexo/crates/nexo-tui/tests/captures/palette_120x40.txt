@@ -34,7 +34,7 @@
  /undelete       [id]                     bring back a deleted session (the last one by default)
  /rename         <name>                   give this session a name
                                            1/39                                           31 more ↓
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69% 6.2k/9.0k │  81% cached · 1 call            Σ 6.5k billed · $0.0031

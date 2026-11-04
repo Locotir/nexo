@@ -1342,7 +1342,10 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
                     notice(
                         &events,
                         Level::Error,
-                        format!("the request does not fit the model's window and could not be compacted: {e}"),
+                        format!(
+                            "the request does not fit the model's window and could not be compacted: {}",
+                            e.human()
+                        ),
                     );
                     return TurnEnd::Error;
                 }
@@ -2344,7 +2347,7 @@ fn jobs_text(jobs: &Jobs) -> String {
         lines.push(format!(
             "  {:>3}  {:<14} {:>10}  {}",
             j.id,
-            j.status.word(),
+            j.status.plain(),
             nexo_core::jobs::duration(j.elapsed_ms),
             first
         ));
@@ -2354,14 +2357,14 @@ fn jobs_text(jobs: &Jobs) -> String {
 }
 
 fn tools_text(tools: &ToolSet) -> String {
-    let mut by_kind: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut by_kind: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
     for spec in tools.specs() {
-        let kind = tools.get(&spec.name).map(|t| format!("{:?}", t.kind()).to_ascii_lowercase()).unwrap_or_default();
+        let kind = tools.get(&spec.name).map(|t| t.kind().label()).unwrap_or("Other");
         by_kind.entry(kind).or_default().push(spec.name.clone());
     }
     let mut lines = vec![format!("{} tools", tools.specs().len())];
     for (k, names) in by_kind {
-        lines.push(format!("{k:<9} {}", names.join(", ")));
+        lines.push(format!("{k:<13} {}", names.join(", ")));
     }
     lines.join("\n")
 }
@@ -2619,8 +2622,8 @@ fn remember(st: &mut State, provider: &str, cfg: &mut ProviderConfig, model: &st
 /// The error as shown, with the wait a rate limit asked for.
 fn explain(e: &ProviderError) -> String {
     match hints::wait_hint(e) {
-        Some(h) => format!("{e} ({h})"),
-        None => e.to_string(),
+        Some(h) => format!("{} ({h})", e.human()),
+        None => e.human(),
     }
 }
 

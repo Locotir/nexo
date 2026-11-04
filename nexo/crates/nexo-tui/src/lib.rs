@@ -30,6 +30,7 @@ pub mod overlay;
 pub mod palette;
 pub mod palette_key;
 pub mod render;
+pub mod replay;
 pub mod scrollbar;
 pub mod select;
 pub mod status_cmd;

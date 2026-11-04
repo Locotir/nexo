@@ -18,7 +18,7 @@
  crates/nexo-bench/src/tasks/realm.rs
  crates/nexo-bench/src/tasks/realm_game.rs
  crates/nexo-bench/src/tasks/small.rs
-────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────
 › @ta
  ↑↓ choose · Tab or Enter insert · PgUp/PgDn page · Esc close
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

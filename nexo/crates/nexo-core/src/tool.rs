@@ -25,6 +25,20 @@ pub enum ToolKind {
     Other,
 }
 
+impl ToolKind {
+    /// The heading the person reads for this kind of tool.
+    pub fn label(self) -> &'static str {
+        match self {
+            ToolKind::Read => "Read files",
+            ToolKind::Search => "Search",
+            ToolKind::Write => "Edit",
+            ToolKind::Exec => "Run commands",
+            ToolKind::Network => "Web",
+            ToolKind::Other => "Other",
+        }
+    }
+}
+
 /// Progress a long tool reports while it runs (a line of output).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolProgress {

@@ -34,6 +34,9 @@ pub struct Toast {
     pub kind: Kind,
     pub text: String,
     pub at: Instant,
+    /// When it first appeared (a repeat restarts `at`, not the slide-in) and its place in line.
+    pub born: Instant,
+    pub seq: u64,
     /// How many times the same text arrived while it was up (shown as `x2`).
     pub count: u32,
 }
@@ -41,6 +44,9 @@ pub struct Toast {
 #[derive(Debug, Default, Clone)]
 pub struct Toasts {
     items: VecDeque<Toast>,
+    /// Toasts that just left (their place in line, and when): the ones after them slide up.
+    gone: Vec<(u64, Instant)>,
+    next: u64,
 }
 
 impl Toasts {
@@ -51,15 +57,26 @@ impl Toasts {
             t.at = now;
             return;
         }
-        self.items.push_back(Toast { kind, text, at: now, count: 1 });
+        self.items.push_back(Toast { kind, text, at: now, born: now, seq: self.next, count: 1 });
+        self.next += 1;
         while self.items.len() > MAX {
-            self.items.pop_front();
+            if let Some(old) = self.items.pop_front() {
+                self.gone.push((old.seq, now));
+            }
         }
     }
 
     /// Drops the toasts whose time is up.
     pub fn prune(&mut self, now: Instant) {
-        self.items.retain(|t| (now.saturating_duration_since(t.at).as_millis() as u64) < LIFE_MS);
+        let gone = &mut self.gone;
+        self.items.retain(|t| {
+            let live = (now.saturating_duration_since(t.at).as_millis() as u64) < LIFE_MS;
+            if !live {
+                gone.push((t.seq, t.at + std::time::Duration::from_millis(LIFE_MS)));
+            }
+            live
+        });
+        gone.retain(|(_, at)| (now.saturating_duration_since(*at).as_millis() as u64) < SLIDE_MS);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -72,7 +89,8 @@ impl Toasts {
 
     /// Whether anything still slides, stays or fades (the screen is drawn every frame).
     pub fn alive(&self, now: Instant) -> bool {
-        self.items.iter().any(|t| (now.saturating_duration_since(t.at).as_millis() as u64) < LIFE_MS)
+        self.gone.iter().any(|(_, at)| (now.saturating_duration_since(*at).as_millis() as u64) < SLIDE_MS)
+            || self.items.iter().any(|t| (now.saturating_duration_since(t.at).as_millis() as u64) < LIFE_MS)
     }
 
     pub fn texts(&self) -> Vec<&str> {
@@ -92,6 +110,19 @@ impl Toasts {
             t.text.clone()
         }
     }
+}
+
+/// Rows the toast `seq` still has to climb because older ones left: 1 right after one goes, 0 once it slid.
+fn lift(toasts: &Toasts, seq: u64, now: Instant, animate: bool) -> f64 {
+    if !animate {
+        return 0.0;
+    }
+    toasts
+        .gone
+        .iter()
+        .filter(|(s, _)| *s < seq)
+        .map(|(_, at)| 1.0 - slide(now.saturating_duration_since(*at).as_millis() as u64, true))
+        .sum()
 }
 
 /// 0..1: how far a toast of age `ms` has slid in (1 with the motion off).
@@ -125,20 +156,27 @@ pub fn draw(f: &mut Frame, toasts: &Toasts, theme: &Theme, area: Rect, now: Inst
             continue;
         }
         let (icon, colour) = match t.kind {
-            Kind::Info => ("i", theme.info),
-            Kind::Success => ("ok", theme.success),
-            Kind::Error => ("!", theme.error),
+            // one cell each, and three shapes: the kind reads without colour too
+            Kind::Info => ("·", theme.info),
+            Kind::Success => ("✓", theme.success),
+            Kind::Error => ("✗", theme.error),
         };
         let room = area.width.saturating_sub(2) as usize;
-        let text = Toasts::label(t);
+        let text = crate::render::markdown::strip_md(&Toasts::label(t));
         let body = truncate(&text, room.saturating_sub(5).max(1));
         let label = format!(" {icon} {body} ");
         let w = (UnicodeWidthStr::width(label.as_str()) as u16).min(area.width);
-        let off = ((1.0 - slide(ms, animate)) * w as f64).round() as u16;
+        let born = now.saturating_duration_since(t.born).as_millis() as u64;
+        let off = ((1.0 - slide(born, animate)) * w as f64).round() as u16;
         let x = area.x + area.width - w + off;
-        let y = area.y + row as u16;
+        // survivors climb into the place of one that left instead of snapping up
+        let climb = if narrow { 0.0 } else { lift(toasts, t.seq, now, animate) };
+        let y = area.y + ((row as f64 + climb).round() as u16).min(area.height - 1);
         let k = opacity(ms, animate);
         let bg = theme.modal_bg;
+        // a repeat pulses the colour instead of sliding in again
+        let pulse = if t.count > 1 && animate { crate::motion::hump(Some(t.at), now, 300) } else { 0.0 };
+        let colour = fade(theme, colour, theme.fg, pulse * 0.6);
         let style = Style::default().fg(fade(theme, bg, colour, k)).bg(bg).add_modifier(if theme.mono {
             Modifier::REVERSED
         } else {
@@ -210,5 +248,56 @@ mod stack_tests {
         assert_eq!(labels, ["copied x2", "copied"]);
         // the repeat restarts the clock
         assert!(s.alive(t0 + std::time::Duration::from_millis(LIFE_MS + 200)));
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn at(t0: Instant, ms: u64) -> Instant {
+        t0 + Duration::from_millis(ms)
+    }
+
+    fn rows(t: &Toasts, theme: &Theme, now: Instant) -> Vec<(u16, String)> {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 6)).unwrap();
+        term.draw(|f| draw(f, t, theme, Rect::new(0, 0, 60, 6), now, true)).unwrap();
+        let b = term.backend().buffer();
+        (0..6u16)
+            .map(|y| (y, (0..60u16).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()))
+            .filter(|(_, s)| s.trim() != "")
+            .collect()
+    }
+
+    #[test]
+    fn survivors_climb_into_the_place_of_a_toast_that_left() {
+        let th = Theme::dark();
+        let t0 = Instant::now();
+        let mut s = Toasts::default();
+        s.push(Kind::Info, "first", at(t0, 0));
+        s.push(Kind::Info, "second", at(t0, 1000));
+        let before = rows(&s, &th, at(t0, 2000));
+        assert_eq!(before.iter().position(|(_, r)| r.contains("second")), Some(1));
+        let now = at(t0, LIFE_MS + 10);
+        s.prune(now);
+        assert!(s.alive(now), "still moving");
+        let mid = rows(&s, &th, now);
+        assert_eq!(mid[0].0, 1, "it has not snapped up yet");
+        let end = at(t0, LIFE_MS + SLIDE_MS + 10);
+        s.prune(end);
+        assert_eq!(rows(&s, &th, end)[0].0, 0);
+    }
+
+    #[test]
+    fn a_repeat_pulses_in_place_without_sliding_in_again() {
+        let th = Theme::dark();
+        let t0 = Instant::now();
+        let mut s = Toasts::default();
+        s.push(Kind::Success, "copied", at(t0, 0));
+        s.push(Kind::Success, "copied", at(t0, 2000));
+        let start = rows(&s, &th, at(t0, 2000));
+        assert!(start[0].1.ends_with("copied x2 ") || start[0].1.contains("copied x2"), "{start:?}");
+        assert!(start[0].1.trim_end().ends_with("x2"), "already home, not sliding from the right");
     }
 }

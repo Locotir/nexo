@@ -70,6 +70,30 @@ impl ProviderError {
     pub fn is_retryable(&self) -> bool {
         matches!(self.kind, ErrorKind::RateLimit | ErrorKind::Overloaded | ErrorKind::Server | ErrorKind::Network)
     }
+
+    /// What the person reads: a plain sentence for the kind, with the server's own message when it
+    /// gave one (the `message` of a JSON body), never the enum name or the raw body.
+    pub fn human(&self) -> String {
+        let said = server_message(&self.message);
+        let code = self.status.map(|s| format!(" ({s})")).unwrap_or_default();
+        let base = match self.kind {
+            ErrorKind::Auth if self.status.is_some() => format!("Key rejected{code}"),
+            ErrorKind::Auth => "Key missing or rejected".to_string(),
+            ErrorKind::RateLimit => "Rate limited".to_string(),
+            ErrorKind::Overloaded => "The provider is overloaded".to_string(),
+            ErrorKind::ContextLength => "The request is longer than the model's window".to_string(),
+            ErrorKind::BadRequest => format!("The provider refused the request{code}"),
+            ErrorKind::Network => "Could not reach the provider".to_string(),
+            ErrorKind::Parse => "The provider's answer could not be read".to_string(),
+            ErrorKind::Server => format!("The provider failed{code}"),
+            ErrorKind::Cancelled => return "Cancelled".to_string(),
+            ErrorKind::Other => return said.unwrap_or_else(|| self.message.clone()),
+        };
+        match said {
+            Some(m) if !m.is_empty() => format!("{base}: {m}"),
+            _ => base,
+        }
+    }
 }
 
 /// Whether an error says the request is longer than the model's window,
@@ -98,6 +122,25 @@ pub fn is_context_error(status: Option<u16>, code: &str, message: &str) -> bool 
     ]
     .iter()
     .any(|k| m.contains(k))
+}
+
+/// The `message` of a JSON error body (`{"error":{"message":..}}`, `{"message":..}`, `{"error":".."}`),
+/// or the text itself when it is not JSON; None when it is empty or only `HTTP 500`.
+fn server_message(body: &str) -> Option<String> {
+    let t = body.trim();
+    let found = match serde_json::from_str::<serde_json::Value>(t) {
+        Ok(v) => {
+            let e = v.get("error").unwrap_or(&v);
+            e.get("message")
+                .or_else(|| v.get("message"))
+                .and_then(|m| m.as_str())
+                .or_else(|| e.as_str())
+                .map(str::to_string)
+        }
+        Err(_) if t.starts_with('{') || t.starts_with('[') => None,
+        Err(_) => Some(t.to_string()),
+    };
+    found.map(|m| shorten(m.lines().next().unwrap_or(""), 240)).filter(|m| !m.is_empty() && !m.starts_with("HTTP "))
 }
 
 fn shorten(s: &str, n: usize) -> String {
@@ -150,6 +193,24 @@ mod tests {
             ProviderError::from_http(400, r#"{"error":{"code":"exceed_context_size_error","message":"too big"}}"#).kind,
             ErrorKind::ContextLength
         );
+    }
+
+    #[test]
+    fn the_person_reads_a_sentence_not_the_enum_and_the_body() {
+        let e = ProviderError::from_http(
+            429,
+            r#"{"error":{"type":"rate_limit_error","message":"Number of requests exceeded"}}"#,
+        );
+        assert_eq!(e.human(), "Rate limited: Number of requests exceeded");
+        let e = ProviderError::from_http(401, r#"{"error":"bad key"}"#);
+        assert_eq!(e.human(), "Key rejected (401): bad key");
+        assert_eq!(ProviderError::from_http(500, "").human(), "The provider failed (500)");
+        assert_eq!(ProviderError::from_http(502, r#"{"x":1}"#).human(), "The provider failed (502)");
+        assert_eq!(
+            ProviderError::new(ErrorKind::Network, "connection reset").human(),
+            "Could not reach the provider: connection reset"
+        );
+        assert!(!ProviderError::from_http(429, "{\"a\":1}").human().contains('{'));
     }
 
     #[test]

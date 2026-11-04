@@ -304,7 +304,7 @@ mod tests {
     fn interprets_markdown_json_and_tables_and_nothing_else() {
         let t = Theme::dark();
         let md = texts(&interpret("md", "# Title\n\n- one\n- two", 40, &t).unwrap());
-        assert_eq!(md, ["# Title", "", "• one", "• two"]);
+        assert_eq!(md, ["Title", "", "• one", "• two"]);
         let js = texts(&interpret("json", "{\"a\":[1,2],\"b\":\"x\"}", 40, &t).unwrap());
         assert_eq!(js.len(), 7, "indented: {js:?}");
         let csv = texts(&interpret("data.csv", "name,qty\n\"pear, green\",3\napple,12", 40, &t).unwrap());

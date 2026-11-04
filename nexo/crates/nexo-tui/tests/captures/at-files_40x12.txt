@@ -6,7 +6,7 @@
  realm.rs  crates/nexo-bench/src/tasks
  realm_game.rs  …s/nexo-bench/src/tasks
  small.rs  crates/nexo-bench/src/tasks
-────────────────────────────────────────
+─ ask ──────────────────────────────────
 › @ta
  ↑↓ choose · Tab or Enter insert
  nexo │ deepseek-chat │ ask     $0.0031

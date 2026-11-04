@@ -18,7 +18,7 @@
 
 
 
-────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
- Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks
+ Enter send · Ctrl+J newline · / commands · @ files · ! shell · ? help
  nexo │ deepseek/deepseek-chat │ /tmp/project │ ask │ ━━━━━━━━ ~0% 0 Σ 0 billed

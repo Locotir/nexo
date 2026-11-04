@@ -157,6 +157,7 @@ impl Block {
     pub fn render(&self, w: usize, theme: &Theme, o: RenderOpts) -> Vec<Line<'static>> {
         let w = w.max(8);
         match self {
+            Block::User { text, .. } if is_job_note(text) => job_card(text, w, theme),
             Block::User { text, at } => {
                 let bar = Span::styled("▌ ", theme.style(theme.user));
                 let mut lines = wrap_plain(text, w, Style::default(), &[bar]);
@@ -225,7 +226,8 @@ impl Block {
                 let mut lines = vec![Line::from(Span::styled(head_text, style))];
                 if !*folded || *streaming {
                     let body = if *streaming && *folded { tail(text, 3) } else { text.clone() };
-                    lines.extend(wrap_plain(&body, w, style, &[Span::styled(GUIDE, theme.dim2())]));
+                    let guide = [Span::styled(GUIDE, theme.dim2())];
+                    lines.extend(super::markdown::md_lines(&body, w, theme, style, true, &guide));
                 }
                 close_guide(&mut lines);
                 lines
@@ -335,6 +337,7 @@ impl Block {
                 // a sub-agent shows as a small robot (plain ASCII, any terminal) that blinks while it works
                 // the shell tool goes by the shell that really runs it (`sh`, `bash`, `pwsh`)
                 let shell;
+                let label;
                 let shown = if name == "task" {
                     head.push(Span::styled(format!("{} ", robot(running, o.spinner)), theme.style(theme.accent2)));
                     "agent"
@@ -342,7 +345,8 @@ impl Block {
                     shell = nexo_core::shell::shell().label();
                     shell.as_str()
                 } else {
-                    name.as_str()
+                    label = crate::replay::tool_label(name);
+                    label.as_str()
                 };
                 if matches!(status, ToolStatus::Running) {
                     head.extend(shimmer(shown, o.spinner, theme));
@@ -392,11 +396,12 @@ impl Block {
                 let text = user_notice(text);
                 let mut parts = text.split('\n');
                 // a long first line wraps under its text, not under a second icon
-                let first = [(parts.next().unwrap_or("").to_string(), style)];
+                let first = super::markdown::inline_runs(parts.next().unwrap_or(""), theme, style);
                 let mut lines =
                     crate::render::wrap::wrap_runs(&first, w, &[Span::styled(icon, style)], &[Span::raw("  ")]);
                 for rest in parts {
-                    lines.extend(wrap_plain(rest, w, Style::default().fg(theme.fg), &[Span::raw("  ")]));
+                    let runs = super::markdown::inline_runs(rest, theme, Style::default().fg(theme.fg));
+                    lines.extend(crate::render::wrap::wrap_runs(&runs, w, &[Span::raw("  ")], &[Span::raw("  ")]));
                 }
                 lines
             }
@@ -816,7 +821,11 @@ fn render_output(
                 out.content.trim_end_matches('\n').to_string()
             };
             let _ = (name, args);
-            lines.extend(wrap_plain(&text, w, style, pad));
+            if !out.is_error && super::markdown::looks_markdown(&text) {
+                lines.extend(super::markdown::md_lines(&text, w, theme, style, false, pad));
+            } else {
+                lines.extend(wrap_plain(&text, w, style, pad));
+            }
         }
     }
     lines
@@ -902,6 +911,75 @@ pub fn fmt_secs(s: u64) -> String {
     } else {
         format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
     }
+}
+
+const JOB_NOTE: &str = "[background jobs ended]\n";
+
+/// Whether a user-role message is the note nexo-core sends when background jobs end.
+pub fn is_job_note(text: &str) -> bool {
+    text.starts_with(JOB_NOTE)
+}
+
+/// One ended job from the note: its id, what ran, whether it went well, and the facts.
+struct JobRow<'a> {
+    id: &'a str,
+    what: &'a str,
+    ok: bool,
+    facts: String,
+}
+
+fn parse_job_row(line: &str) -> Option<JobRow<'_>> {
+    let rest = line.strip_prefix("- job ")?;
+    let (id, rest) = rest.split_once(' ')?;
+    let (rest, lines) = rest.rsplit_once(", ")?;
+    let n = lines.strip_suffix(" lines of output").or_else(|| lines.strip_suffix(" line of output"))?;
+    let (rest, dur) = rest.rsplit_once(" after ")?;
+    let (what, how) = if let Some(w) = rest.strip_suffix(" killed") {
+        (w, "killed")
+    } else {
+        let i = rest.rfind(" done (")?;
+        (&rest[..i], rest[i + 7..].strip_suffix(')')?)
+    };
+    let what = what.strip_prefix('`').and_then(|w| w.strip_suffix('`')).unwrap_or(what);
+    let unit = if n == "1" { "line" } else { "lines" };
+    Some(JobRow { id, what, ok: how == "exit 0", facts: format!("{how} · {dur} · {n} {unit}") })
+}
+
+/// The note as a quiet system card: a dim rule, then one row per job. Only the screen changes; the
+/// model keeps the exact text.
+fn job_card(text: &str, w: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let dim = theme.dim();
+    let title = " jobs ended ";
+    let rule = format!("──{title}{}", "─".repeat(w.saturating_sub(2 + width(title))));
+    let mut lines = vec![Line::from(Span::styled(truncate(&rule, w), theme.style(theme.dim2)))];
+    for raw in text.lines().skip(1) {
+        // the note ends at its last line; a message glued after it is not a job row
+        if raw.starts_with("Read the output with") {
+            break;
+        }
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let Some(r) = parse_job_row(raw) else {
+            lines.push(Line::from(Span::styled(truncate(raw, w), dim)));
+            continue;
+        };
+        let mark = if r.ok { "✓" } else { "✗" };
+        let mstyle = if r.ok { theme.style(theme.success) } else { theme.style(theme.error) };
+        let head = format!("⚙ job {}  ", r.id);
+        let tail = format!("{mark} {}", r.facts);
+        let room = w.saturating_sub(width(&head) + width(&tail) + 2);
+        let what = truncate(r.what, room);
+        let gap = w.saturating_sub(width(&head) + width(&what) + width(&tail)).max(2);
+        lines.push(Line::from(vec![
+            Span::styled(head, dim),
+            Span::raw(what),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(mark.to_string(), mstyle),
+            Span::styled(format!(" {}", r.facts), if r.ok { dim } else { mstyle }),
+        ]));
+    }
+    lines
 }
 
 /// A notice as the user reads it: the curator's name stays inside, the screen says what happened.
@@ -1248,6 +1326,40 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_notices_and_plain_results_read_as_markdown() {
+        let th = Theme::dark();
+        let r = Block::Reasoning {
+            text: "**plan** the `fix`\n- one".into(),
+            streaming: false,
+            started: None,
+            elapsed_ms: Some(10),
+            folded: false,
+        };
+        let all = texts(&r.render(40, &th, opts())).join("\n");
+        assert!(all.contains("plan the fix") && !all.contains("**") && !all.contains('`'), "{all}");
+        let n = notice_rows("run `nexo login` first\n  **ok** done", 60).join("\n");
+        assert!(n.contains("run nexo login first") && n.contains("ok done") && !n.contains("**"), "{n}");
+        let plain = |content: &str| {
+            let out = ToolOutput::ok(content).with_display(ToolDisplay::Plain);
+            let b = Block::Tool {
+                id: "w".into(),
+                name: "web".into(),
+                summary: "s".into(),
+                args: Value::Null,
+                status: ToolStatus::Done,
+                progress: vec![],
+                output: Some(out),
+                started: None,
+                elapsed_ms: None,
+                folded: false,
+            };
+            texts(&b.render(60, &th, opts())).join("\n")
+        };
+        let md = plain("## Findings\nit is **fast**");
+        assert!(md.contains("Findings") && !md.contains("##") && !md.contains("**"), "{md}");
+    }
+
+    #[test]
     fn reasoning_hides_when_asked_and_folds_to_one_line() {
         let b = Block::Reasoning {
             text: "a\nb\nc".into(),
@@ -1260,6 +1372,22 @@ mod tests {
         assert_eq!(t, vec!["▸ thinking · 3 lines · 2.1s"]);
         let hidden = b.render(40, &Theme::dark(), RenderOpts { show_reasoning: false, ..opts() });
         assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn ended_jobs_note_shows_as_a_compact_card() {
+        let note = "[background jobs ended]\n- job 1 `cd /home/lctr/virtmgr-shared/StorePrep && for t in a b c; do echo $t; done` done (exit 0) after 2 min 43 s, 40 lines of output\n- job 2 `false` done (exit 1) after 3 s, 1 lines of output\nRead the output with the `jobs` tool (action \"output\", the job's id).";
+        let b = Block::User { text: note.into(), at: None };
+        let t = texts(&b.render(70, &Theme::dark(), opts()));
+        let all = t.join("\n");
+        assert!(!all.contains("[background jobs ended]") && !all.contains("Read the output"), "{all}");
+        assert!(!all.contains('▌'), "{all}");
+        assert_eq!(t.len(), 3, "{all}");
+        assert!(t[1].starts_with("⚙ job 1  cd /home"), "{all}");
+        assert!(t[1].contains("…") && t[1].ends_with("✓ exit 0 · 2 min 43 s · 40 lines"), "{all}");
+        assert!(t[2].starts_with("⚙ job 2  false") && t[2].ends_with("✗ exit 1 · 3 s · 1 line"), "{all}");
+        assert!(t.iter().all(|l| width(l) <= 70), "{all}");
+        assert_eq!(b.copy_text().as_deref(), Some(note));
     }
 
     #[test]

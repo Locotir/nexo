@@ -156,6 +156,10 @@ pub struct App {
     last_ctrl_c: Option<Instant>,
     last_esc: Option<Instant>,
     pub status: Option<(String, Instant)>,
+    /// How serious the flash message is: it picks the colour and how long it stays.
+    pub status_level: Level,
+    /// The flash was clipped by the bar and its whole text already went to a toast.
+    pub status_toasted: bool,
     pub transcript_area: Rect,
     pub show_reasoning: bool,
     /// A dim `HH:MM` on each message and reply (`/timestamps`).
@@ -391,6 +395,8 @@ impl App {
             last_ctrl_c: None,
             last_esc: None,
             status: None,
+            status_level: Level::Info,
+            status_toasted: false,
             transcript_area: Rect::default(),
             show_reasoning: opts.show_reasoning,
             timestamps: opts.timestamps,
@@ -973,7 +979,7 @@ impl App {
     pub fn select_last(&mut self) {
         match (0..self.blocks.len()).rev().find(|&i| self.navigable(i)) {
             Some(i) => self.select(i),
-            None => self.flash("nothing to select yet"),
+            None => self.flash_level(Level::Warn, "nothing to select yet"),
         }
     }
 
@@ -1135,10 +1141,28 @@ Keep it under 150 lines; prefer facts you verified to guesses.";
 /// How long a flash message stays; it fades out over its last `STATUS_FADE_MS`.
 pub const STATUS_MS: u64 = 4000;
 pub const STATUS_FADE_MS: u64 = 900;
+/// An error stays longer: it is not a confirmation to miss.
+pub const STATUS_ERR_MS: u64 = 8000;
+
+/// How long a flash of this level stays.
+pub fn status_life(level: Level) -> u64 {
+    if level == Level::Error {
+        STATUS_ERR_MS
+    } else {
+        STATUS_MS
+    }
+}
 
 impl App {
     pub fn flash(&mut self, text: &str) {
+        self.flash_level(Level::Info, text);
+    }
+
+    /// A flash message that says how serious it is (warn and error are coloured; error stays longer).
+    pub fn flash_level(&mut self, level: Level, text: &str) {
         self.status = Some((text.to_string(), self.now()));
+        self.status_level = level;
+        self.status_toasted = false;
         self.dirty = true;
     }
 
@@ -1299,7 +1323,7 @@ impl App {
             self.dirty = true;
         }
         if let Some((_, t)) = &self.status {
-            if t.elapsed().as_millis() >= STATUS_MS as u128 {
+            if self.now().saturating_duration_since(*t).as_millis() >= status_life(self.status_level) as u128 {
                 self.status = None;
                 self.dirty = true;
             }
@@ -1601,6 +1625,10 @@ impl App {
                 self.refresh_welcome();
             }
             AgentEvent::PermissionModeChanged { mode } => {
+                if mode != self.permission_mode && self.opts.animations {
+                    self.fx.mode_from = Some(self.permission_mode);
+                    self.fx.mode_at = Some(self.now());
+                }
                 self.permission_mode = mode;
                 match mode {
                     PermissionMode::Plan => {
@@ -1788,7 +1816,7 @@ impl App {
                     let was_running = self.jobs.iter().any(|o| o.id == j.id && o.status.running());
                     if was_running && !j.status.running() {
                         let first: String = j.label.lines().next().unwrap_or("").chars().take(40).collect();
-                        self.flash(&format!("job {} {}: {first}", j.id, j.status.word()));
+                        self.flash(&format!("job {} {}: {first}", j.id, j.status.plain()));
                     }
                 }
                 self.jobs = jobs;
@@ -1833,7 +1861,37 @@ impl App {
                         }
                         None => None,
                     };
-                    self.push(Block::User { text, at });
+                    let pieces = crate::replay::split_user(&text);
+                    if pieces.len() == 1 && matches!(&pieces[0], crate::replay::Piece::Text(t) if *t == text) {
+                        self.push(Block::User { text, at });
+                    } else {
+                        let mut at = at;
+                        for p in pieces {
+                            use crate::replay::Piece;
+                            match p {
+                                Piece::JobNote(n) => {
+                                    self.push(Block::User { text: n, at: None });
+                                }
+                                Piece::Memory { title, tokens } => {
+                                    let title = if title.is_empty() { "memory" } else { title.as_str() };
+                                    let tok = crate::render::blocks::fmt_k(tokens);
+                                    self.push(Block::Notice {
+                                        level: Level::Info,
+                                        text: format!("⊕ memory from {title} · {tok} tok"),
+                                    });
+                                }
+                                Piece::Summary(n) => {
+                                    self.push(Block::Notice {
+                                        level: Level::Info,
+                                        text: format!("earlier conversation summarised · {n} lines"),
+                                    });
+                                }
+                                Piece::Text(t) => {
+                                    self.push(Block::User { text: t, at: at.take() });
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Role::Assistant => {
@@ -1921,7 +1979,7 @@ impl App {
     /// `/context-live`: the context map in the side panel.
     pub fn toggle_live(&mut self, term_width: u16) {
         if !self.show_live && term_width < FILES_PANEL_MIN_W {
-            self.flash(&format!("the context map needs {FILES_PANEL_MIN_W} columns"));
+            self.flash_level(Level::Warn, &format!("the context map needs {FILES_PANEL_MIN_W} columns"));
             return;
         }
         self.show_live = !self.show_live;
@@ -1934,7 +1992,7 @@ impl App {
     /// Ctrl+B: the changed-files panel (needs a wide enough terminal).
     pub fn toggle_files(&mut self, term_width: u16) {
         if !self.show_files && term_width < FILES_PANEL_MIN_W {
-            self.flash(&format!("the files panel needs {FILES_PANEL_MIN_W} columns"));
+            self.flash_level(Level::Warn, &format!("the files panel needs {FILES_PANEL_MIN_W} columns"));
             return;
         }
         self.show_files = !self.show_files;
@@ -2054,6 +2112,19 @@ impl App {
             if m && !self.modal_was {
                 self.modal_at = Some(now);
             }
+        }
+        if self.opts.animations && self.fx.ghost.is_some() {
+            if (self.palette_was && !p) || (self.modal_was && !m) {
+                self.fx.ghost_at = Some(now);
+            } else if p || m {
+                self.fx.ghost_at = None;
+            }
+        }
+        if !p {
+            self.fx.pal_sel.clear();
+        }
+        if !m {
+            self.fx.pick_sel.clear();
         }
         if !m {
             self.modal_bar = None;
@@ -2869,7 +2940,7 @@ impl App {
                     match crate::config_edit::set_string(&nexo_core::paths::user_config_file(), "ui", "theme", name) {
                         Ok(()) => self.flash_toast(&format!("theme: {name} (saved)")),
                         Err(e) => {
-                            self.flash(&format!("theme: {name} (not saved: {e})"));
+                            self.flash_level(Level::Error, &format!("theme: {name} (not saved: {e})"));
                             self.toast(crate::toast::Kind::Error, &format!("theme not saved: {e}"));
                         }
                     }
@@ -2931,7 +3002,7 @@ impl App {
             })
             .collect();
         if items.is_empty() {
-            self.flash("no requests sent yet");
+            self.flash_level(Level::Warn, "no requests sent yet");
             return;
         }
         self.modal = Some(Modal::Picker(Picker::new(PickKind::History, "Earlier requests", items, None)));
@@ -2946,7 +3017,7 @@ impl App {
                 self.input.insert_paste(&t);
                 self.refresh_palette();
             }
-            Err(e) => self.flash(&format!("nothing to paste: {e}")),
+            Err(e) => self.flash_level(Level::Error, &format!("nothing to paste: {e}")),
         }
     }
 
@@ -2974,7 +3045,7 @@ impl App {
                 self.input.set_text(&text);
                 self.flash("undone: the request is back in the editor");
             }
-            None => self.flash("nothing to undo"),
+            None => self.flash_level(Level::Warn, "nothing to undo"),
         }
     }
 
@@ -3023,7 +3094,7 @@ impl App {
                 Err(e) => self.notice(Level::Warn, format!("copy failed: {e}")),
             },
             None if code => self.flash("no code block to copy yet"),
-            None => self.flash("nothing to copy yet"),
+            None => self.flash_level(Level::Warn, "nothing to copy yet"),
         }
     }
 
@@ -3449,6 +3520,23 @@ pub fn parse_pricing(args: &str) -> Result<Pricing, String> {
     Ok(p)
 }
 
+/// `key value` pairs of an object of plain values (`action output, id 3`); None for anything else.
+fn pairs(args: &serde_json::Value) -> Option<String> {
+    let o = args.as_object().filter(|o| !o.is_empty())?;
+    let mut out = Vec::new();
+    for (k, v) in o {
+        let v = match v {
+            serde_json::Value::String(s) => s.trim().lines().next().unwrap_or("").to_string(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Null => continue,
+            _ => v.to_string(),
+        };
+        out.push(format!("{k} {v}"));
+    }
+    Some(out.join(", "))
+}
+
 /// One line for a call replayed from the history (the agent's summary is not recorded).
 pub fn summarise(name: &str, args: &serde_json::Value) -> String {
     let s = |k: &str| args.get(k).and_then(|v| v.as_str()).map(str::trim);
@@ -3474,7 +3562,7 @@ pub fn summarise(name: &str, args: &serde_json::Value) -> String {
         }
     }
     let _ = name;
-    let s = args.to_string();
+    let s = pairs(args).unwrap_or_else(|| args.to_string());
     if s.len() > 80 {
         // cut on a character boundary: the JSON keeps non-ASCII text as is
         let cut = (0..=79).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
@@ -4438,7 +4526,7 @@ mod tests {
         a.handle_agent(AgentEvent::PermissionModeChanged { mode: PermissionMode::Auto });
         assert!(matches!(&a.blocks[0], Block::Welcome { permission_mode, .. } if permission_mode == "auto"));
         let bar = crate::ui::title_segments(&a, 200);
-        let yolo = bar.iter().flatten().find(|s| s.text == "YOLO").expect("the mode that never asks reads YOLO");
+        let yolo = bar.iter().flatten().find(|s| s.text == "▲ YOLO").expect("the mode that never asks reads YOLO");
         assert_eq!(yolo.style.fg, Some(a.theme.error), "and is red");
         a.handle_agent(AgentEvent::History { index: 0, message: Message::user("go") });
         assert!(a.has_welcome(), "the banner stays and scrolls away with the transcript");
@@ -4920,6 +5008,51 @@ mod tests {
         assert!(screen.contains("read the parser") && !screen.contains("**read**"), "{screen}");
         assert!(screen.contains("❯ 1. red") && screen.contains("Tell the model what to change"), "{screen}");
         assert_eq!(a.picker_rows.len(), 4, "three options and the row of one's own");
+    }
+
+    #[test]
+    fn a_question_and_its_options_read_as_markdown() {
+        let (mut a, _rx) = app();
+        let mut q = question("m", false, None);
+        q.question = "## Which **fast** parser?".into();
+        q.options[0].label = "**Fast** `nom`".into();
+        q.options[0].description = "uses *less* memory".into();
+        a.handle_agent(AgentEvent::Question { question: q });
+        screen(&mut a, 100, 44); // the dialog pops in on this frame
+        a.fx.clock = Some(a.now() + std::time::Duration::from_secs(2));
+        let screen = screen(&mut a, 100, 44).join("\n");
+        assert!(!screen.contains("##") && !screen.contains("**") && !screen.contains('`'), "{screen}");
+        assert!(screen.contains("Which fast parser?"), "{screen}");
+        assert!(screen.contains("1. Fast nom") && screen.contains("uses less memory"), "{screen}");
+    }
+
+    #[test]
+    fn a_slash_word_is_known_unknown_or_still_being_typed() {
+        use crate::ui::{slash_word, SlashWord};
+        assert_eq!(slash_word("/plan add a cache", &[]), Some(("/plan", SlashWord::Known)));
+        assert_eq!(slash_word("/pla", &[]), Some(("/pla", SlashWord::Typing)));
+        assert_eq!(slash_word("/nosuch x", &[]), Some(("/nosuch", SlashWord::Unknown)));
+        assert_eq!(slash_word("/etc/hosts is odd", &[]), None);
+        assert_eq!(slash_word("hello /plan", &[]), None);
+    }
+
+    #[test]
+    fn plan_mode_shows_on_the_rule_and_a_known_command_is_coloured() {
+        let (mut a, _rx) = app();
+        a.handle_agent(AgentEvent::PermissionModeChanged { mode: PermissionMode::Plan });
+        // past the wipe: the rule has its new colour and name
+        a.fx.clock = Some(a.now() + std::time::Duration::from_secs(2));
+        a.input.set_text("/plan x");
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let rows = crate::ui::rows_of(&buf);
+        assert!(rows.iter().any(|r| r.contains("◇ plan")), "{}", rows.join("\n"));
+        let e = a.editor_area;
+        let cell = &buf[(e.x, e.y)];
+        assert_eq!(cell.symbol(), "/");
+        assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD), "the command word is lit");
     }
 
     #[test]
@@ -5422,6 +5555,101 @@ mod tests {
         assert!(matches!(&a.modal, Some(Modal::Info(i)) if !i.animating() && i.grow() == 1.0));
     }
 
+    fn fx_at(a: &mut App, t0: Instant, ms: u64) {
+        a.fx.clock = Some(t0 + std::time::Duration::from_millis(ms));
+    }
+
+    fn buf_of(a: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::draw(f, a)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    #[test]
+    fn a_closing_dialog_melts_away_instead_of_vanishing() {
+        let (mut a, _rx) = app();
+        let t0 = Instant::now();
+        fx_at(&mut a, t0, 0);
+        a.run_command(Command::Help);
+        frame(&mut a, 70, 20);
+        fx_at(&mut a, t0, 1000);
+        let boxes = |rows: &[String]| rows.iter().filter(|r| r.contains("╭ help")).count();
+        let open = frame(&mut a, 70, 20);
+        let base = 0;
+        assert!(boxes(&open) > base, "the dialog is up");
+        a.modal = None;
+        fx_at(&mut a, t0, 1020);
+        let closing = frame(&mut a, 70, 20);
+        assert!(boxes(&closing) > base, "its first frames of leaving still show it");
+        assert!(a.tick_fx(), "frames keep coming while it leaves");
+        fx_at(&mut a, t0, 1400);
+        let gone = frame(&mut a, 70, 20);
+        assert!(boxes(&gone) <= base);
+        assert!(!a.tick_fx());
+        // with the motion off it closes at once
+        let (mut b, _rx) = app();
+        b.opts.animations = false;
+        b.run_command(Command::Help);
+        let up = frame(&mut b, 70, 20);
+        assert!(up.iter().any(|r| r.contains("╭ help")));
+        b.modal = None;
+        assert!(!frame(&mut b, 70, 20).iter().any(|r| r.contains("╭ help")));
+    }
+
+    #[test]
+    fn the_palette_highlight_glides_to_the_next_row() {
+        let (mut a, _rx) = app();
+        let t0 = Instant::now();
+        fx_at(&mut a, t0, 0);
+        a.input.set_text("/");
+        a.refresh_palette();
+        frame(&mut a, 90, 24);
+        fx_at(&mut a, t0, 1000);
+        frame(&mut a, 90, 24);
+        let rows = a.palette_rows.clone();
+        assert!(rows.len() > 2, "palette rows: {}", rows.len());
+        let bg = |buf: &ratatui::buffer::Buffer, i: usize| buf[(rows[i].0.x + 3, rows[i].0.y)].bg;
+        let settled = buf_of(&mut a, 90, 24);
+        let sel_bg = bg(&settled, 0);
+        a.palette.as_mut().unwrap().selected = 1;
+        let first = buf_of(&mut a, 90, 24);
+        assert_ne!(bg(&first, 1), sel_bg, "the new row is not lit all at once");
+        assert_eq!(bg(&first, 0), sel_bg, "the old row has not gone dark yet");
+        assert!(a.tick_fx());
+        fx_at(&mut a, t0, 1300);
+        let done = buf_of(&mut a, 90, 24);
+        assert_eq!(bg(&done, 1), sel_bg);
+        assert_ne!(bg(&done, 0), sel_bg);
+    }
+
+    #[test]
+    fn a_queued_request_fades_in_and_the_keys_row_crossfades() {
+        let (mut a, _rx) = app();
+        let t0 = Instant::now();
+        fx_at(&mut a, t0, 0);
+        frame(&mut a, 100, 20);
+        fx_at(&mut a, t0, 1000);
+        frame(&mut a, 100, 20);
+        a.queued_msgs.push("then do the other thing".into());
+        a.queued = 1;
+        let find = |buf: &ratatui::buffer::Buffer| {
+            let y = (0..buf.area.height).find(|y| (0..buf.area.width).any(|x| buf[(x, *y)].symbol() == "◷")).unwrap();
+            let x = (0..buf.area.width).find(|x| buf[(*x, y)].symbol() == "t").unwrap();
+            buf[(x, y)].fg
+        };
+        let first = find(&buf_of(&mut a, 100, 20));
+        fx_at(&mut a, t0, 1600);
+        let later = find(&buf_of(&mut a, 100, 20));
+        assert_ne!(first, later, "the row's text comes up");
+        // the keys change with the state: a busy turn fades its row in
+        a.busy = true;
+        let k0 = buf_of(&mut a, 100, 20);
+        fx_at(&mut a, t0, 2200);
+        let k1 = buf_of(&mut a, 100, 20);
+        let y = k0.area.height - 2;
+        assert_ne!(k0[(2, y)].fg, k1[(2, y)].fg);
+    }
+
     fn screen(a: &mut App, w: u16, h: u16) -> Vec<String> {
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         crate::draw_frame(&mut t, a).unwrap();
@@ -5467,6 +5695,28 @@ mod tests {
         screen(&mut a, 80, 24);
         assert!(a.looks.iter().all(|l| l.born.is_none() && l.opened.is_none()));
         assert_eq!(a.fade(0), 1.0);
+    }
+
+    #[test]
+    fn an_unknown_tool_shows_key_value_pairs_not_json() {
+        let args = serde_json::json!({ "action": "output", "id": 3, "wait": 5 });
+        assert_eq!(summarise("jobs", &args), "action output, id 3, wait 5");
+    }
+
+    #[test]
+    fn a_replayed_message_with_a_note_memory_and_text_becomes_cards_and_a_bubble() {
+        let (mut a, _rx) = app();
+        let base = a.blocks.len();
+        let note = "[background jobs ended]\n- job 3 `make` done (exit 0) after 4s, 2 lines of output\nRead the output with the `jobs` tool (action \"output\", the job's id).";
+        let mem = "<memory from=\"s-1\" title=\"parser\">\nShared.\n</memory>";
+        a.history(0, Message::user(format!("{mem}\n\n{note}\n\nfix it")));
+        a.history(1, Message::user("[summary] The conversation before this point was replaced\n[files]"));
+        assert!(matches!(&a.blocks[base], Block::Notice { text, .. } if text.starts_with("⊕ memory from parser")));
+        assert!(matches!(&a.blocks[base + 1], Block::User { text, .. } if crate::render::blocks::is_job_note(text)));
+        assert!(matches!(&a.blocks[base + 2], Block::User { text, .. } if text == "fix it"));
+        assert!(
+            matches!(&a.blocks[base + 3], Block::Notice { text, .. } if text.starts_with("earlier conversation summarised"))
+        );
     }
 
     #[test]

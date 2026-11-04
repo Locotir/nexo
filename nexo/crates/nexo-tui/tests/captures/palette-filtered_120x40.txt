@@ -34,7 +34,7 @@
  /mouse                                         mouse capture on or off (off: the terminal's own s…
  /permissions  (mode)  [ask|accept-edits|plan…  set the permission mode
  /shared-memory        [id|off] [focus]         bring what another session knows into this one, wi…
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69% 6.2k/9.0k │  81% cached · 1 call            Σ 6.5k billed · $0.0031

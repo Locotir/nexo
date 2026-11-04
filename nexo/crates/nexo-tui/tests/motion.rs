@@ -52,7 +52,7 @@ fn a_toast_slides_in_stays_and_fades_out() {
     assert!(mid.contains("copied") || mid.trim_end().ends_with("ok") || !mid.trim().is_empty(), "{mid}");
     a.fx.clock = Some(ms(t0, 1000));
     let full = rows_of(&draw(&mut a))[0].clone();
-    assert!(full.trim_end().ends_with("ok copied 3 lines"), "{full}");
+    assert!(full.trim_end().ends_with("✓ copied 3 lines"), "{full}");
     a.fx.clock = Some(ms(t0, 3100));
     a.tick();
     assert!(!rows_of(&draw(&mut a))[0].contains("copied"));
@@ -176,7 +176,8 @@ fn the_end_of_a_turn_glows_along_the_rule_and_the_figures_count_up() {
     let done = draw(&mut a);
     assert!(bar(&done).contains("1.5k billed") || bar(&done).contains("billed"), "{}", bar(&done));
     assert!(bar(&done).contains("$0.0031"));
-    let plain = colours(&done);
+    // past the dim "ask" label the rule is one colour
+    let plain = colours(&done)[8..].to_vec();
     assert!(plain.windows(2).all(|w| w[0] == w[1]), "settled rule is one colour");
 }
 

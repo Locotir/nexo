@@ -18,7 +18,7 @@
 
 
 
-────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
- Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks
+ Enter send · Ctrl+J newline · / commands · @ files · ! shell · ? help
  deepseek-chat on deepseek | ctx 42% | $0.0123 | 20261102-140000-ab12 | turns 0

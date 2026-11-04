@@ -17,7 +17,7 @@
                                                                                ┃
       0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit           ┃
                                                                                ┃
-────────────────────────────────────────────────────────── 2 lines · 126 chars ─
+─ ask ──────────────────────────────────────────────────── 2 lines · 126 chars ─
 › a question that goes on and on and on, longer than the narrow screen is wide,
   to see how the editor wraps it
   and a second line

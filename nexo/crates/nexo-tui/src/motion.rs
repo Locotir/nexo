@@ -18,6 +18,12 @@ pub const GLOW_MS: u64 = 600;
 /// A finished card's mark pops, and its rail eases to the final colour, in this long.
 pub const POP_MS: u64 = 300;
 pub const RAIL_MS: u64 = 350;
+/// The rule over the draft takes the colour of a new permission mode in this long.
+pub const MODE_MS: u64 = 700;
+/// A slash command lights up once, in this long, when the draft first names a real one.
+pub const LIT_MS: u64 = 450;
+/// A moving highlight (palette row, selected block) changes hands in this long.
+pub const GLIDE_MS: u64 = 110;
 /// One breath of the running rail.
 const SHIMMER_MS: f32 = 1600.0;
 
@@ -137,6 +143,55 @@ pub fn sweep(theme: &Theme, n: usize, at: Instant, now: Instant) -> Vec<Span<'st
         }
     }
     out
+}
+
+/// A highlight that moves from one thing to another (a palette row, a selected block): the old one
+/// fades out as the new one fades in over `GLIDE_MS`. Drawn code feeds it what is selected each frame.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Glide {
+    cur: Option<usize>,
+    prev: Option<usize>,
+    at: Option<Instant>,
+}
+
+impl Glide {
+    /// What is selected now; a change starts the glide (with the motion off it is simply the new value).
+    pub fn note(&mut self, cur: Option<usize>, now: Instant, animate: bool) {
+        if self.cur == cur {
+            return;
+        }
+        self.prev = if animate { self.cur } else { None };
+        self.at = animate.then_some(now);
+        self.cur = cur;
+    }
+
+    /// 0..1: how strongly item `i` is lit at `now` (1 = fully selected).
+    pub fn level(&self, i: usize, now: Instant) -> f32 {
+        let t = crate::anim::ease_out(crate::anim::progress(self.at, now, GLIDE_MS)) as f32;
+        if self.cur == Some(i) {
+            t
+        } else if self.prev == Some(i) {
+            1.0 - t
+        } else {
+            0.0
+        }
+    }
+
+    pub fn moving(&self, now: Instant) -> bool {
+        within(self.at, now, GLIDE_MS)
+    }
+
+    /// Forgets everything: the next selection appears without a glide from the last session.
+    pub fn clear(&mut self) {
+        *self = Glide::default();
+    }
+}
+
+/// `style` with its background eased from `base` to the selection colour by `level` (0..1).
+pub fn lit_style(theme: &Theme, base: Style, level: f32) -> Style {
+    let sel = theme.selection().bg.unwrap_or(theme.border);
+    let from = base.bg.unwrap_or(theme.bg);
+    base.bg(fade(theme, from, sel, level))
 }
 
 /// What a tool card is doing, for its rail and mark.

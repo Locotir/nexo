@@ -685,7 +685,11 @@ impl Modal {
             }
             ToolDisplay::File { path, text, .. } => {
                 lines.push(Line::from(Span::styled(path.clone(), theme.style(theme.accent))));
-                lines.extend(wrap_plain(text, w, Style::default(), &[]));
+                if is_markdown_path(path) {
+                    lines.extend(crate::render::markdown::md_lines(text, w, theme, Style::default(), false, &[]));
+                } else {
+                    lines.extend(wrap_plain(text, w, Style::default(), &[]));
+                }
             }
             ToolDisplay::List { items } => {
                 for it in items {
@@ -695,7 +699,14 @@ impl Modal {
             ToolDisplay::Todo { items } => {
                 for it in items {
                     let (icon, style) = crate::render::blocks::todo_style(it.status, theme);
-                    lines.extend(wrap_plain(&it.text, w, style, &[Span::styled(format!("{icon} "), style)]));
+                    lines.extend(crate::render::markdown::md_lines(
+                        &it.text,
+                        w,
+                        theme,
+                        style,
+                        false,
+                        &[Span::styled(format!("{icon} "), style)],
+                    ));
                 }
             }
             ToolDisplay::Plain => {}
@@ -742,6 +753,7 @@ impl Modal {
                     &[],
                     (w / 3).clamp(12, 19),
                     w,
+                    theme,
                 ));
             }
         }
@@ -755,7 +767,14 @@ impl Modal {
                 let a: Vec<String> = s.aliases.iter().map(|a| format!("/{a}")).collect();
                 vec![Span::styled(format!("  ({})", a.join(" ")), theme.dim())]
             };
-            lines.extend(two_columns(Span::styled(left, theme.style(theme.accent)), s.description, &also, 24, w));
+            lines.extend(two_columns(
+                Span::styled(left, theme.style(theme.accent)),
+                s.description,
+                &also,
+                24,
+                w,
+                theme,
+            ));
         }
         lines
     }
@@ -779,10 +798,23 @@ pub fn permission_buttons(avail: usize) -> (Vec<(String, char)>, usize) {
     (vec![("[y]".to_string(), 'y'), ("[a]".to_string(), 'a'), ("[n]".to_string(), 'n')], 1)
 }
 
+/// Whether `path` names a markdown file.
+fn is_markdown_path(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    p.ends_with(".md") || p.ends_with(".markdown")
+}
+
 /// `left` in a column `col` wide, `desc` wrapped beside it; `tail` after the last line.
-fn two_columns(left: Span<'static>, desc: &str, tail: &[Span<'static>], col: usize, w: usize) -> Vec<Line<'static>> {
+fn two_columns(
+    left: Span<'static>,
+    desc: &str,
+    tail: &[Span<'static>],
+    col: usize,
+    w: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let desc_w = w.saturating_sub(col).max(12);
-    let mut body = wrap_plain(desc, desc_w, Style::default(), &[]);
+    let mut body = crate::render::markdown::md_lines(desc, desc_w, theme, Style::default(), false, &[]);
     if body.is_empty() {
         body.push(Line::default());
     }
@@ -836,6 +868,29 @@ mod tests {
             },
             suggested_rules: vec!["bash(git *)".into(), "bash".into()],
         }
+    }
+
+    #[test]
+    fn help_files_and_todos_in_the_dialog_show_no_marks() {
+        let th = Theme::dark();
+        let help =
+            Modal::help_lines(&th, 80).iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
+        assert!(!help.contains('`'), "{help}");
+        let mut r = req();
+        r.detail = ToolDisplay::File { path: "notes.md".into(), text: "# Title\nsome **bold**".into(), start_line: 1 };
+        let t = Modal::permission_lines(&r, 60, &th)
+            .iter()
+            .map(crate::render::markdown::text_of)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(t.contains("Title") && !t.contains("# Title") && !t.contains("**"), "{t}");
+        r.detail = ToolDisplay::File { path: "a.txt".into(), text: "# Title".into(), start_line: 1 };
+        let t = Modal::permission_lines(&r, 60, &th)
+            .iter()
+            .map(crate::render::markdown::text_of)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(t.contains("# Title"), "{t}");
     }
 
     #[test]

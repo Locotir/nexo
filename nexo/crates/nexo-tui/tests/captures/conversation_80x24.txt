@@ -18,7 +18,7 @@
                                                                                ┃
       0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit           ┃
                                                                                ┃
-────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
- Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks
+ Enter send · Ctrl+J newline · / commands · @ files · ! shell · ? help
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

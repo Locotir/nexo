@@ -6,7 +6,7 @@
  /rewind         go back to before an …
  /undo           undo the last request…
              1/39             33 more ↓
-────────────────────────────────────────
+─ ask ──────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run
  nexo │ deepseek-chat │ ask     $0.0031

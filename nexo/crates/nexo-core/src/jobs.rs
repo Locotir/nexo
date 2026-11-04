@@ -47,6 +47,16 @@ impl JobStatus {
         matches!(self, JobStatus::Running)
     }
 
+    /// How the person reads the state: no exit codes, no internals.
+    pub fn plain(&self) -> &'static str {
+        match self {
+            JobStatus::Running => "running",
+            JobStatus::Done { ok: true, .. } => "finished",
+            JobStatus::Done { .. } => "failed",
+            JobStatus::Killed => "stopped",
+        }
+    }
+
     pub fn word(&self) -> String {
         match self {
             JobStatus::Running => "running".into(),

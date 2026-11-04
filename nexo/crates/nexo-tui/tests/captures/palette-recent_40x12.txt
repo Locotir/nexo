@@ -6,7 +6,7 @@
  /clear          start a new session h…
  /rewind         go back to before an …
              1/39             34 more ↓
-────────────────────────────────────────
+─ ask ──────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run
  nexo │ deepseek-chat │ ask     $0.0031

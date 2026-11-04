@@ -18,7 +18,7 @@
  /undo                               undo the last request: its messages and t…
  /undelete       [id]                bring back a deleted session (the last on…
                                  1/39                                 32 more ↓
-────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

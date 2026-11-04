@@ -6,7 +6,7 @@
   │ [y] allow [a] always [n] deny    │ │
   ╰──────────────────────────────────╯ ┃
                                        ┃
-────────────────────────────────────────
+─ ask ──────────────────────────────────
 ›   ask anything
  y allow · a always · n deny · 1-9 rule
  nexo │ deepseek-chat │ ask     $0.0031

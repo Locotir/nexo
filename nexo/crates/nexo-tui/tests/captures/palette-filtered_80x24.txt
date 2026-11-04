@@ -18,7 +18,7 @@
  /mouse                                    mouse capture on or off (off: the t…
  /permissions  (mode)  [ask|accept-edits…  set the permission mode
  /shared-memory        [id|off] [focus]    bring what another session knows in…
-────────────────────────────────────────────────────────────────────────────────
+─ ask ──────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

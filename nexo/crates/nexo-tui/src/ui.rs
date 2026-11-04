@@ -8,17 +8,18 @@ use ratatui::Frame;
 
 use crate::anim;
 use crate::app::{
-    App, HintHit, Hover, StatusHit, FILES_PANEL_MIN_W, FILES_PANEL_W, MAP_FLASH_MS, STATUS_FADE_MS, STATUS_MS,
+    status_life, App, HintHit, Hover, StatusHit, FILES_PANEL_MIN_W, FILES_PANEL_W, MAP_FLASH_MS, STATUS_FADE_MS,
 };
 use crate::modal::{Modal, PickKind};
 use crate::overlay;
 use crate::palette::{PaletteKind, MAX_ROWS};
 use crate::render::blocks::{fmt_k, fmt_ms, todo_counts, todo_style, SPINNER};
-use crate::render::markdown::text_of;
+use crate::render::markdown::{inline_md, text_of, tint_plain};
 use crate::render::wrap::{truncate, width};
 use crate::scrollbar::{self, Bar, Target};
 use crate::select::style_cols;
 use crate::theme::{mix, Theme};
+use nexo_core::agent::Level;
 use nexo_core::permission::PermissionMode;
 
 pub const MAX_INPUT_LINES: u16 = 8;
@@ -124,6 +125,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_hints(f, app, hints);
         }
     }
+    // a dialog or the palette leaving is drawn as the reverse of its pop
+    if app.palette.is_some() || app.modal.is_some() {
+        app.ghost_save(f.buffer_mut(), middle);
+    } else {
+        app.ghost_draw(f.buffer_mut());
+    }
     scrub(f.buffer_mut());
     app.dirty = false;
 }
@@ -156,19 +163,15 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         text: if short { app.model.clone() } else { format!("{}/{}", app.provider, app.model) },
         style: base.fg(theme.accent).add_modifier(Modifier::BOLD),
     };
-    let mode_color = match app.permission_mode {
-        PermissionMode::Ask => theme.bar_fg,
-        PermissionMode::AcceptEdits => theme.warn,
-        PermissionMode::Auto => theme.error,
-        PermissionMode::ReadOnly => theme.info,
-        PermissionMode::Plan => theme.accent2,
+    // the same glyph, words and colour as the rule over the draft (mode_tint), minus its explanation
+    let (mode_color, mode_name) = match mode_tint(theme, app.permission_mode) {
+        Some((c, label)) => (c, label.split(" · ").next().unwrap_or(label).to_string()),
+        None => (theme.bar_fg, app.permission_mode.as_str().to_string()),
     };
     let mode = match app.permission_mode {
         // never asking is said plainly, and loud
-        PermissionMode::Auto => {
-            Seg { text: "YOLO".to_string(), style: base.fg(mode_color).add_modifier(Modifier::BOLD) }
-        }
-        m => Seg { text: m.as_str().to_string(), style: base.fg(mode_color) },
+        PermissionMode::Auto => Seg { text: mode_name, style: base.fg(mode_color).add_modifier(Modifier::BOLD) },
+        _ => Seg { text: mode_name, style: base.fg(mode_color) },
     };
     let goal = app.goal.as_ref().map(|_| Seg { text: "◎ goal".to_string(), style: base.fg(theme.accent2) });
     let gauge = {
@@ -510,7 +513,8 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 (format!("{}/{l:.2}", crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost))), c)
             }
-            None => (crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost)), theme.success),
+            // no limit, no meaning to colour: the bar's own text colour
+            None => (crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost)), theme.bar_fg),
         };
         // while it rolls the figure is lit
         let rolling = (app.cost - shown).abs() > 0.000_05;
@@ -674,6 +678,9 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let query = app.search.as_ref().filter(|s| !s.query.is_empty()).map(|s| s.query.to_lowercase());
     let current_match = app.search.as_ref().and_then(|s| s.matches.get(s.current).copied());
     let selected = app.selected;
+    let (now, on) = (app.now(), app.fx_on());
+    app.fx.block_sel.note(selected, now, on);
+    let glide = app.fx.block_sel;
     let selection = app.selection.clone();
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height);
     let mut line = scroll;
@@ -701,10 +708,17 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             l = fade_in(l, &theme, t);
         }
         // the selected block: a bar down its margin, the whole height of it, and its head lit
-        if selected == Some(bi) && j < n {
-            l = mark_margin(l, theme.style(theme.accent).add_modifier(Modifier::BOLD));
+        let lvl = glide.level(bi, now);
+        if lvl > 0.0 && j < n {
+            // the bar and the lit head ease in on the new block and out on the old one
+            let bar = crate::motion::fade(&theme, theme.border, theme.accent, lvl);
+            l = mark_margin(l, theme.style(bar).add_modifier(Modifier::BOLD));
             if j == 0 {
-                l = l.patch_style(theme.selection());
+                l = l.patch_style(if lvl >= 1.0 {
+                    theme.selection()
+                } else {
+                    crate::motion::lit_style(&theme, Style::default(), lvl)
+                });
             }
         } else if hovered_head == Some(bi) && j == 0 {
             l = l.patch_style(theme.hover());
@@ -717,7 +731,9 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         }
         // the person's message: its band is filled to the edge here, on screen only, so copying
         // its text never picks up the padding
-        if j < n && matches!(app.blocks[bi], crate::render::blocks::Block::User { .. }) {
+        if j < n
+            && matches!(&app.blocks[bi], crate::render::blocks::Block::User { text, .. } if !crate::render::blocks::is_job_note(text))
+        {
             let used = l.width();
             if used < text_w {
                 l.spans.push(Span::styled(" ".repeat(text_w - used), l.style));
@@ -838,9 +854,21 @@ fn highlight(line: Line<'static>, q: &str, style: Style, current: bool) -> Line<
     Line::from(spans).style(line.style)
 }
 
-fn draw_separator(f: &mut Frame, app: &App, area: Rect) {
+fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
+    }
+    // what opened or started since the last frame, to ease it in
+    let (now, on) = (app.now(), app.fx_on());
+    let open = app.search.is_some();
+    if app.fx.search_on != open {
+        app.fx.search_on = open;
+        app.fx.search_at = on.then_some(now);
+    }
+    let working = app.activity().is_some();
+    if app.fx.working != working {
+        app.fx.working = working;
+        app.fx.turn_start = (working && on).then_some(now);
     }
     let theme = &app.theme;
     let w = area.width as usize;
@@ -854,23 +882,149 @@ fn draw_separator(f: &mut Frame, app: &App, area: Rect) {
                 format!(" search: {} {pos} · n/N · Esc ", s.query)
             };
             let rest = w.saturating_sub(width(&label) + 2);
+            // the label comes up out of the rule
+            let hl = theme.highlight();
+            let label_style = if on {
+                let k = crate::anim::progress(app.fx.search_at, now, crate::motion::MODE_MS) as f32;
+                let k = crate::anim::ease_out(k as f64) as f32;
+                let from = |c: Option<ratatui::style::Color>, to: ratatui::style::Color| {
+                    crate::motion::fade(theme, theme.border, c.unwrap_or(to), k)
+                };
+                hl.fg(from(hl.fg, theme.fg)).bg(from(hl.bg, theme.bg))
+            } else {
+                hl
+            };
             Line::from(vec![
                 Span::styled("─ ", theme.style(theme.border)),
-                Span::styled(label, theme.highlight()),
+                Span::styled(label, label_style),
                 Span::styled(" ".to_string() + &"─".repeat(rest), theme.style(theme.border)),
             ])
         }
         None => match app.activity() {
-            Some(verb) => activity_line(app, &verb, w),
+            Some(verb) => {
+                let line = activity_line(app, &verb, w);
+                // a turn starting: the line comes up out of the plain rule
+                if on && crate::motion::within(app.fx.turn_start, now, crate::motion::MODE_MS) {
+                    let k = crate::anim::progress(app.fx.turn_start, now, crate::motion::MODE_MS);
+                    rise_from_rule(line, theme, crate::anim::ease_out(k) as f32)
+                } else {
+                    line
+                }
+            }
+            None if mode_tint(theme, app.permission_mode).is_some()
+                || crate::motion::within(app.fx.mode_at, app.now(), crate::motion::MODE_MS) =>
+            {
+                mode_rule(app, w)
+            }
             None => match app.fx.turn_done.filter(|t| {
                 app.opts.animations && !theme.mono && crate::motion::within(Some(*t), app.now(), crate::motion::GLOW_MS)
             }) {
                 Some(t) => Line::from(crate::motion::sweep(theme, w, t, app.now())),
-                None => Line::from(Span::styled("─".repeat(w), theme.style(theme.border))),
+                // search closed: the rule glows back from the left, as at the end of a turn
+                None if on && crate::motion::within(app.fx.search_at, now, crate::motion::GLOW_MS) => {
+                    Line::from(crate::motion::sweep(theme, w, app.fx.search_at.unwrap_or(now), now))
+                }
+                None => mode_rule(app, w),
             },
         },
     };
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// The colour and the name a permission mode wears on the rule over the draft; none for the
+/// default (ask), which keeps the plain rule.
+pub fn mode_tint(theme: &Theme, mode: PermissionMode) -> Option<(ratatui::style::Color, &'static str)> {
+    match mode {
+        PermissionMode::Ask => None,
+        PermissionMode::AcceptEdits => Some((theme.warn, "✎ accept edits")),
+        PermissionMode::Auto => Some((theme.error, "▲ YOLO · never asks")),
+        PermissionMode::ReadOnly => Some((theme.info, "◉ read-only")),
+        PermissionMode::Plan => Some((theme.accent2, "◇ plan · reads, then a plan to approve")),
+    }
+}
+
+/// The colour of the rule's line in `mode`: a tint of the mode's colour, the border otherwise.
+fn rule_colour(theme: &Theme, mode: PermissionMode) -> ratatui::style::Color {
+    match mode_tint(theme, mode) {
+        Some((c, _)) => crate::motion::fade(theme, theme.border, c, 0.55),
+        None => theme.border,
+    }
+}
+
+/// The rule over the draft in `mode`, one styled cell per column: `─ ◇ plan ─────`.
+fn mode_cells(theme: &Theme, mode: PermissionMode, w: usize) -> Vec<(char, Style)> {
+    let line = theme.style(rule_colour(theme, mode));
+    let mut out = Vec::with_capacity(w);
+    // ask has no tint, but the rule still names it (dim), so a quiet mode is told from a hidden one
+    let named = mode_tint(theme, mode).or(Some((theme.dim, "ask")));
+    if let Some((c, label)) = named.filter(|(_, l)| w > width(l) + 8) {
+        out.push(('─', line));
+        out.push((' ', line));
+        out.extend(label.chars().map(|ch| (ch, theme.bold(c))));
+        out.push((' ', line));
+    }
+    while out.len() < w {
+        out.push(('─', line));
+    }
+    out.truncate(w);
+    out
+}
+
+/// The rule over the draft at rest, or, just after a change of mode, wiping from the old mode to
+/// the new one, a bright edge leading.
+fn mode_rule(app: &App, w: usize) -> Line<'static> {
+    let theme = &app.theme;
+    let now = app.now();
+    let new = mode_cells(theme, app.permission_mode, w);
+    let moving =
+        app.opts.animations && !theme.mono && crate::motion::within(app.fx.mode_at, now, crate::motion::MODE_MS);
+    let cells: Vec<(char, Style)> = match (moving, app.fx.mode_from) {
+        (true, Some(from)) => {
+            let old = mode_cells(theme, from, w);
+            let p = crate::anim::ease_out(crate::anim::progress(app.fx.mode_at, now, crate::motion::MODE_MS));
+            let head = (p * (w as f64 + 6.0)) as usize;
+            let edge = mode_tint(theme, app.permission_mode).map_or(theme.accent, |t| t.0);
+            new.into_iter()
+                .zip(old)
+                .enumerate()
+                .map(|(x, (n, o))| {
+                    if x + 6 < head {
+                        n
+                    } else if x < head {
+                        // the edge: the new cell lit up, brightest at the front
+                        let glow = 1.0 - (head - x) as f32 / 6.0;
+                        let c = crate::motion::fade(theme, edge, theme.fg, glow * 0.7);
+                        (n.0, theme.bold(c))
+                    } else {
+                        o
+                    }
+                })
+                .collect()
+        }
+        _ => new,
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (ch, st) in cells {
+        match spans.last_mut() {
+            Some(last) if last.style == st => last.content.to_mut().push(ch),
+            _ => spans.push(Span::styled(ch.to_string(), st)),
+        }
+    }
+    Line::from(spans)
+}
+
+/// `line` with every colour eased from the rule's own (`k` 0..1).
+fn rise_from_rule(line: Line<'static>, theme: &Theme, k: f32) -> Line<'static> {
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|s| {
+            let fg = s.style.fg.unwrap_or(theme.fg);
+            let style = s.style.fg(crate::motion::fade(theme, theme.border, fg, k));
+            Span::styled(s.content, style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans).style(line.style)
 }
 
 /// `─ ⠴ Thinking… 3.7s · ↓ 120 tok · Esc interrupts ───`: what the agent is doing, with a
@@ -878,7 +1032,8 @@ fn draw_separator(f: &mut Frame, app: &App, area: Rect) {
 pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let theme = &app.theme;
     let frame = app.spinner;
-    let border = theme.style(theme.border);
+    // the mode keeps its colour while the agent works
+    let border = theme.style(rule_colour(theme, app.permission_mode));
     let mut spans = vec![
         Span::styled("─ ", border),
         Span::styled(SPINNER[frame % SPINNER.len()].to_string(), theme.bold(theme.accent)),
@@ -952,8 +1107,10 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let prefix = Rect { width: 2, ..area };
     // with the vim keys, the mark says the mode: › to type, ▮ in normal mode
     let mark = match app.input.vim {
-        Some(crate::input::VimMode::Normal) => Span::styled("▮ ", theme.bold(theme.warn)),
-        _ => Span::styled("› ", theme.bold(theme.accent)),
+        // plain text colour: no permission tint (warn, error, info, accent2) or the default accent wears it
+        Some(crate::input::VimMode::Normal) => Span::styled("▮ ", theme.bold(theme.fg)),
+        // the mark wears the permission mode's colour too, so it is seen where one types
+        _ => Span::styled("› ", theme.bold(mode_tint(&theme, app.permission_mode).map_or(theme.accent, |t| t.0))),
     };
     let mut marks = vec![Line::from(mark)];
     for _ in 1..area.height {
@@ -1008,11 +1165,28 @@ fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = area.height as usize;
     let first = app.queued_msgs.len().saturating_sub(rows);
     let mut hits = Vec::new();
+    // a request that just joined the queue fades in
+    let (now, on) = (app.now(), app.fx_on());
+    let queued = &app.queued_msgs;
+    app.fx.queue_seen.retain(|(t, _)| queued.contains(t));
+    for text in queued {
+        if !app.fx.queue_seen.iter().any(|(t, _)| t == text) {
+            app.fx.queue_seen.push((text.clone(), now));
+        }
+    }
     for (k, text) in app.queued_msgs.iter().enumerate().skip(first).take(rows) {
         let r = Rect { y: area.y + (k - first) as u16, height: 1, ..area };
         let line = text.lines().next().unwrap_or("");
         let line = truncate(&format!(" ◷ {line}"), r.width as usize);
-        f.render_widget(Paragraph::new(Span::styled(line, app.theme.dim())), r);
+        let mut row = Line::from(Span::styled(line, app.theme.dim()));
+        let seen = app.fx.queue_seen.iter().find(|(t, _)| t == text).map(|(_, at)| *at);
+        if on {
+            let k = crate::anim::progress(seen, now, crate::motion::LIT_MS) as f32;
+            if k < 1.0 {
+                row = fade_in(row, &app.theme, k);
+            }
+        }
+        f.render_widget(Paragraph::new(row), r);
         hits.push((r, k));
     }
     app.queue_rows = hits;
@@ -1028,7 +1202,7 @@ pub const TITLE_COLS: usize = 24;
 /// One piece of the right part of the keys row: its priority, what a click on it opens, its spans.
 type Piece = (u8, Option<HintHit>, Vec<Span<'static>>);
 
-fn hint_pieces(app: &App) -> Vec<Piece> {
+fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
     let theme = &app.theme;
     let base = theme.bar();
     // the piece under the pointer is underlined
@@ -1080,15 +1254,20 @@ fn hint_pieces(app: &App) -> Vec<Piece> {
     }
     if let Some((msg, at)) = &app.status {
         // the message fades into the bar over its last moments
-        let age = at.elapsed().as_millis() as u64;
-        let fade = age.saturating_sub(STATUS_MS - STATUS_FADE_MS) as f32 / STATUS_FADE_MS as f32;
+        let life = status_life(app.status_level);
+        let age = app.now().saturating_duration_since(*at).as_millis() as u64;
+        let fade = age.saturating_sub(life - STATUS_FADE_MS) as f32 / STATUS_FADE_MS as f32;
         // with animations off it keeps the bar's colour to the end, no shade in between
-        let colour = if app.opts.animations { mix(theme.bar_fg, theme.bar_bg, fade) } else { theme.bar_fg };
-        out.push((
-            5,
-            None,
-            vec![Span::styled(format!(" {} ", truncate(msg, 60)), base.fg(colour).add_modifier(Modifier::BOLD))],
-        ));
+        // a warning or an error keeps its colour (the level is the point), a confirmation the bar's
+        let tint = match app.status_level {
+            Level::Info => theme.bar_fg,
+            Level::Warn => theme.warn,
+            Level::Error => theme.error,
+        };
+        let colour = if app.opts.animations { mix(tint, theme.bar_bg, fade) } else { tint };
+        // the room the bar really has, less the two spaces around it
+        let text = truncate(msg, status_room.saturating_sub(2).max(1));
+        out.push((5, None, vec![Span::styled(format!(" {} ", text), base.fg(colour).add_modifier(Modifier::BOLD))]));
     } else if let Some(id) = &app.session_id {
         // the whole id or title, or nothing: a piece of a name tells nobody anything
         let span = if app.session_title.is_empty() {
@@ -1136,7 +1315,7 @@ pub fn hints_shown(app: &App) -> bool {
 
 /// The right part of the hint bar with everything on it.
 fn hint_right(app: &App) -> Vec<Span<'static>> {
-    join_pieces(app, &hint_pieces(app))
+    join_pieces(app, &hint_pieces(app, usize::MAX))
 }
 
 /// The right part of the hint bar as plain text (tests).
@@ -1148,7 +1327,8 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let theme = &app.theme;
+    let theme = app.theme.clone();
+    let theme = &theme;
     let base = theme.bar();
     let left = if app.modal.is_some() {
         match app.modal.as_ref() {
@@ -1182,22 +1362,33 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         " Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks · ? help".to_string()
     };
-    let left = if app.mouse_on { left } else { format!("{left} · mouse off · /mouse to enable") };
-    let left = match (app.input.vim, app.modal.is_some()) {
-        (Some(crate::input::VimMode::Normal), false) => format!(" NORMAL · i insert ·{left}"),
-        (Some(crate::input::VimMode::Insert), false) => format!(" INSERT · Esc normal ·{left}"),
-        _ => left,
+    let suffix = if app.mouse_on { "" } else { " · mouse off · /mouse to enable" };
+    let mut prefix = match (app.input.vim, app.modal.is_some()) {
+        (Some(crate::input::VimMode::Normal), false) => " NORMAL · i insert ·".to_string(),
+        (Some(crate::input::VimMode::Insert), false) => " INSERT · Esc normal ·".to_string(),
+        _ => String::new(),
     };
     // scrolled up: say first how to get back down
-    let left = if !app.follow && app.modal.is_none() && app.palette.is_none() && app.input.is_empty() {
-        format!(" End bottom ·{left}")
-    } else {
-        left
-    };
+    if !app.follow && app.modal.is_none() && app.palette.is_none() && app.input.is_empty() {
+        prefix = format!(" End bottom ·{prefix}");
+    }
+    let full = format!("{prefix}{left}{suffix}");
     let w = area.width as usize;
     // the keys come first, and the right side is whole pieces: the one that matters least goes first
-    let keys_min = if app.status.is_some() { width(&left).min(w / 2) } else { width(&left).min(w) };
-    let mut pieces = hint_pieces(app);
+    let keys_min = if app.status.is_some() { width(&full).min(w / 2) } else { width(&full).min(w) };
+    let mut pieces = hint_pieces(app, w.saturating_sub(keys_min));
+    // a warning or an error clipped to the room is not lost: the whole of it goes to a toast, once
+    if let Some((msg, _)) = app.status.clone() {
+        let room = w.saturating_sub(keys_min).saturating_sub(2).max(1);
+        if width(&msg) > room && !app.status_toasted && app.status_level != Level::Info {
+            app.status_toasted = true;
+            let kind = match app.status_level {
+                Level::Error => crate::toast::Kind::Error,
+                _ => crate::toast::Kind::Info,
+            };
+            app.toast(kind, &msg);
+        }
+    }
     let mut right = join_pieces(app, &pieces);
     let mut right_w: usize = right.iter().map(|s| width(&s.content)).sum();
     while right_w > w.saturating_sub(keys_min) && !pieces.is_empty() {
@@ -1206,8 +1397,29 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
         right = join_pieces(app, &pieces);
         right_w = right.iter().map(|s| width(&s.content)).sum();
     }
-    let left = fit_hints(&left, w.saturating_sub(right_w));
+    // the idle line keeps "? help" at its end; the others drop from the end (their last key is the least)
+    let keep_last = left.ends_with("? help");
+    let left = fit_hints(&prefix, &left, suffix, keep_last, w.saturating_sub(right_w));
     let pad = w.saturating_sub(width(&left) + right_w);
+    // a change of state (idle, busy, a block, the palette, a dialog) fades the new keys in
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        left.hash(&mut h);
+        h.finish()
+    };
+    let now = app.now();
+    if app.fx.hint_key != key {
+        if app.fx.hint_key != 0 && app.fx_on() {
+            app.fx.hint_at = Some(now);
+        }
+        app.fx.hint_key = key;
+    }
+    let hint_k = if app.fx_on() {
+        crate::anim::ease_out(crate::anim::progress(app.fx.hint_at, now, crate::motion::GLIDE_MS)) as f32
+    } else {
+        1.0
+    };
     // the key names in the accent, the words between them dim
     let mut spans = Vec::new();
     for (i, part) in left.split(" · ").enumerate() {
@@ -1220,6 +1432,14 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
                 spans.push(Span::styled(format!(" {rest}"), base));
             }
             _ => spans.push(Span::styled(part.to_string(), base)),
+        }
+    }
+    if hint_k < 1.0 {
+        let ground = base.bg.unwrap_or(theme.bg);
+        for s in spans.iter_mut() {
+            if let Some(fg) = s.style.fg {
+                s.style.fg = Some(crate::motion::fade(theme, ground, fg, hint_k));
+            }
         }
     }
     // where each clickable piece of the right part sits
@@ -1241,14 +1461,25 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     app.hint_hits = hits;
 }
 
-/// Whole hints are dropped from the end until the rest fits, so a key is never cut from its
-/// word; only a first hint wider than the bar itself is truncated.
-fn fit_hints(hints: &str, w: usize) -> String {
-    let mut parts: Vec<&str> = hints.split(" · ").collect();
-    while parts.len() > 1 && width(&parts.join(" · ")) > w {
-        parts.pop();
+/// Whole hints are dropped until the rest fits, so a key is never cut from its word: first the
+/// `suffix` (mouse note), then `base` from its end (with `keep_last`, from the one before the last,
+/// so the first hint, the main key, and the last, the help, stay); only what is left is truncated.
+fn fit_hints(prefix: &str, base: &str, suffix: &str, keep_last: bool, w: usize) -> String {
+    let mut parts: Vec<&str> = base.split(" · ").collect();
+    let mut suffix = suffix;
+    let build = |parts: &[&str], suffix: &str| format!("{prefix}{}{suffix}", parts.join(" · "));
+    while width(&build(&parts, suffix)) > w {
+        if !suffix.is_empty() {
+            suffix = "";
+        } else if keep_last && parts.len() > 2 {
+            parts.remove(parts.len() - 2);
+        } else if parts.len() > 1 {
+            parts.pop();
+        } else {
+            break;
+        }
     }
-    truncate(&parts.join(" · "), w)
+    truncate(&build(&parts, suffix), w)
 }
 
 /// The side panel at the right: the goal, the todo list and the files
@@ -1282,7 +1513,7 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
     }
     if let Some((text, round, max)) = &app.goal {
         lines.push(header("goal".to_string()));
-        let runs = [(text.clone(), theme.style(theme.accent))];
+        let runs = crate::render::markdown::inline_runs(text, theme, theme.style(theme.accent));
         let first = [rail(), Span::raw("◎ ")];
         let rest = [rail(), Span::raw("  ")];
         let body = crate::render::wrap::wrap_runs(&runs, inner_w, &first, &rest);
@@ -1302,8 +1533,9 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
         for it in &app.todo {
             let (icon, style) = todo_style(it.status, theme);
             let avail = inner_w.saturating_sub(2);
-            let text = if width(&it.text) > avail { truncate(&it.text, avail) } else { it.text.clone() };
-            lines.push(Line::from(vec![rail(), Span::styled(format!("{icon} "), style), Span::styled(text, style)]));
+            let mut row = vec![rail(), Span::styled(format!("{icon} "), style)];
+            row.extend(inline_md(&it.text, avail, theme, style));
+            lines.push(Line::from(row));
         }
         lines.push(Line::from(rail()));
     }
@@ -1462,14 +1694,16 @@ fn context_map(app: &App, w: usize, height: usize) -> Vec<Line<'static>> {
         out.push(Line::from(Span::styled(format!("… {hidden} older topics"), theme.dim2())));
     }
     out.push(Line::from(Span::styled(format!("1 cell ≈ {} tok · {policy}", fmt_k(unit)), theme.dim())));
+    // the legend wears the colours the cells wear, so the key matches the map
+    let kinds = theme.kind_colours();
     out.push(Line::from(vec![
-        Span::styled("█", theme.style(theme.user)),
+        Span::styled("█", theme.style(kinds[0])),
         Span::styled(" you ", theme.dim()),
-        Span::styled("█", theme.style(theme.assistant)),
+        Span::styled("█", theme.style(kinds[1])),
         Span::styled(" reply ", theme.dim()),
-        Span::styled("█", theme.style(theme.warn)),
+        Span::styled("█", theme.style(kinds[2])),
         Span::styled(" call ", theme.dim()),
-        Span::styled("█", theme.style(theme.info)),
+        Span::styled("█", theme.style(kinds[3])),
         Span::styled(" tool", theme.dim()),
     ]));
     let (recalled, left) = if zoned { ("░ back ", "· out") } else { ("", "· left out") };
@@ -1534,6 +1768,10 @@ fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
         Hover::Palette(i) => Some(i),
         _ => None,
     };
+    let (now, on) = (app.now(), app.fx_on());
+    let sel = app.palette.as_ref().map(|p| p.selected);
+    app.fx.pal_sel.note(sel, now, on);
+    let glide = app.fx.pal_sel;
     let cwd = app.cwd.clone();
     let Some(p) = &mut app.palette else { return };
     if transcript.height == 0 || transcript.width < 10 {
@@ -1602,9 +1840,12 @@ fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
             }
             crate::palette::Entry::Item(row, abs) => (row, *abs),
         };
-        let selected = abs == p.selected;
-        let style = if selected {
+        // the highlight glides from the old row to the new one
+        let lvl = glide.level(abs, now);
+        let style = if lvl >= 1.0 {
             theme.selection().add_modifier(Modifier::BOLD)
+        } else if lvl > 0.0 {
+            crate::motion::lit_style(&theme, ground, lvl)
         } else if hovered == Some(abs) {
             ground.patch(theme.hover())
         } else {
@@ -1787,9 +2028,16 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         Hover::Picker(i) => Some(i),
         _ => None,
     };
+    let (now, on) = (app.now(), app.fx_on());
+    let psel = match &app.modal {
+        Some(Modal::Picker(p)) => Some(p.selected),
+        _ => None,
+    };
+    app.fx.pick_sel.note(psel, now, on);
+    let glide = app.fx.pick_sel;
     let Some(modal) = &mut app.modal else { return };
     if area.width < 12 || area.height < 5 {
-        return;
+        return draw_too_narrow(f, &theme, area, area.width < 12);
     }
     let w = (area.width.saturating_sub(4)).min(96);
     let max_h = area.height.saturating_sub(2);
@@ -1848,8 +2096,10 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         Modifier::empty()
                     })
-                } else if i == p.selected {
+                } else if glide.level(i, now) >= 1.0 {
                     theme.selection().add_modifier(Modifier::BOLD)
+                } else if glide.level(i, now) > 0.0 {
+                    crate::motion::lit_style(&theme, Style::default().bg(theme.modal_bg), glide.level(i, now))
                 } else if hovered == Some(i) {
                     theme.hover()
                 } else {
@@ -2063,14 +2313,17 @@ pub fn question_rows(a: &crate::modal::Ask, w: usize, theme: &Theme) -> (Vec<Lin
         };
         starts.push(lines.len());
         let head = format!("{}{}. {tick}", cursor(i), i + 1);
-        let label = truncate(&o.label, w.saturating_sub(width(&head)));
-        lines.push(band(vec![Span::raw(head.clone()), Span::raw(label)], on));
+        // labels and descriptions are markdown too: **bold** and `code` read as such, never as marks
+        let mut row = vec![Span::raw(head.clone())];
+        row.extend(inline_md(&o.label, w.saturating_sub(width(&head)), theme, Style::default()));
+        lines.push(band(row, on));
         if !o.description.is_empty() {
             let pad = " ".repeat(width(&head));
-            lines.push(Line::from(vec![
-                Span::raw(pad.clone()),
-                Span::styled(truncate(&o.description, w.saturating_sub(pad.len())), theme.dim()),
-            ]));
+            for l in crate::render::markdown::render(&o.description, w.saturating_sub(pad.len()), theme) {
+                let mut spans = vec![Span::raw(pad.clone())];
+                spans.extend(l.spans.into_iter().map(|s| tint_plain(s, theme.dim())));
+                lines.push(Line::from(spans));
+            }
         }
     }
     let n = a.q.options.len();
@@ -2137,7 +2390,7 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
     let pop = app.modal_pop();
     let Some(Modal::Question(a)) = &mut app.modal else { return };
     if area.width < 20 || area.height < 6 {
-        return;
+        return draw_too_narrow(f, &theme, area, area.width < 20);
     }
     let w = (area.width.saturating_sub(4)).min(100);
     let inner_w = w.saturating_sub(4) as usize;
@@ -2147,7 +2400,10 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
         body.push(Line::default());
         body.push(Line::from(Span::styled("─".repeat(inner_w), theme.dim2())));
     }
-    body.extend(crate::render::wrap::wrap_plain(&a.q.question, inner_w, theme.bold(theme.fg), &[]));
+    // the question is markdown as well: a heading or a list in it reads as one, not as # and -
+    for l in crate::render::markdown::render(&a.q.question, inner_w, &theme) {
+        body.push(Line::from(l.spans.into_iter().map(|s| tint_plain(s, theme.bold(theme.fg))).collect::<Vec<_>>()));
+    }
     let (rows, starts) = question_rows(a, inner_w, &theme);
     let a_selected = a.selected;
     // a short area is used whole, so the options and a line of the question fit
@@ -2157,12 +2413,14 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
     let r = pop_rect(Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h), pop);
     clear_bg(f, r, &theme);
     let title = if a.q.plan.is_some() { " plan ".to_string() } else { format!(" {} ", a.q.header.to_lowercase()) };
+    // a plan wears the colour of plan mode; any other question the warning colour
+    let frame_c = if a.q.plan.is_some() { theme.accent2 } else { theme.warn };
     let block = Box_::default()
         .borders(Borders::ALL)
         // a question waits for the person: a heavier frame in the warning colour, so it is not missed
         .border_type(BorderType::Thick)
-        .border_style(pop_style(&theme, theme.warn, pop))
-        .title(Span::styled(title, badge(&theme, theme.warn)))
+        .border_style(pop_style(&theme, frame_c, pop))
+        .title(Span::styled(title, badge(&theme, frame_c)))
         .style(Style::default().bg(theme.modal_bg));
     let inner = block.inner(r);
     f.render_widget(block, r);
@@ -2205,7 +2463,8 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(Modal::Info(info)) = &app.modal else { return };
     if area.width < 30 || area.height < 6 {
-        return;
+        let theme = app.theme.clone();
+        return draw_too_narrow(f, &theme, area, area.width < 30);
     }
     let (tab, grow, fill, hover) = (info.tab, info.grow(), info.fill(), info.hover);
     let theme = app.theme.clone();
@@ -2321,10 +2580,88 @@ fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
         let r = Rect { y: editor.y + i as u16, height: 1, ..editor };
         f.render_widget(Paragraph::new(Span::styled(row.clone(), app.theme.base())), r);
     }
+    if top == 0 {
+        paint_command(f, app, editor);
+    }
     if crow >= top && crow - top < h {
         let x = editor.x + (ccol as u16).min(editor.width.saturating_sub(1));
         if let Some(c) = f.buffer_mut().cell_mut((x, editor.y + (crow - top) as u16)) {
             c.set_style(Style::default().add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
+/// What the slash word a draft starts with is: a real command, one that does not exist, or not
+/// finished being typed (a prefix of a real one).
+#[derive(Debug, PartialEq)]
+pub enum SlashWord {
+    Known,
+    Unknown,
+    Typing,
+}
+
+/// The `/word` at the start of `text`, with what it is; None when the draft is not a command.
+pub fn slash_word<'a>(text: &'a str, custom: &[crate::custom::CustomCommand]) -> Option<(&'a str, SlashWord)> {
+    let rest = text.strip_prefix('/')?;
+    let name = rest.split(char::is_whitespace).next().unwrap_or("");
+    if name.is_empty() || name.contains('/') {
+        // "/" alone, or a path such as /etc/hosts
+        return None;
+    }
+    let word = &text[..name.len() + 1];
+    let known = crate::commands::lookup(name).is_some() || custom.iter().any(|c| c.name == name);
+    let finished = rest.len() > name.len();
+    let kind = if known {
+        SlashWord::Known
+    } else if finished {
+        SlashWord::Unknown
+    } else {
+        SlashWord::Typing
+    };
+    Some((word, kind))
+}
+
+/// The command word of the draft in colour: the accent once it names a real command (it lights
+/// up once as it does), the error colour when a finished word names none.
+fn paint_command(f: &mut Frame, app: &mut App, editor: Rect) {
+    let text = app.input.text();
+    let Some((word, kind)) = slash_word(&text, &app.custom_commands) else {
+        app.fx.cmd_lit = None;
+        return;
+    };
+    let theme = app.theme.clone();
+    let now = app.now();
+    let colour = match kind {
+        SlashWord::Known => {
+            if !matches!(&app.fx.cmd_lit, Some((w, _)) if w == word) {
+                app.fx.cmd_lit = Some((word.to_string(), now));
+            }
+            theme.accent
+        }
+        SlashWord::Unknown => {
+            app.fx.cmd_lit = None;
+            theme.error
+        }
+        SlashWord::Typing => {
+            app.fx.cmd_lit = None;
+            return;
+        }
+    };
+    let n = width(word).min(editor.width as usize);
+    let since = app.fx.cmd_lit.as_ref().map(|c| c.1);
+    let moving =
+        app.opts.animations && kind == SlashWord::Known && crate::motion::within(since, now, crate::motion::LIT_MS);
+    let p = crate::anim::progress(since, now, crate::motion::LIT_MS) as f32;
+    for x in 0..n {
+        // a light runs once along the word, then it rests in the accent
+        let c = if moving {
+            let d = (p * (n as f32 + 4.0) - x as f32).abs();
+            crate::motion::fade(&theme, colour, theme.fg, (1.0 - d / 3.0).max(0.0))
+        } else {
+            colour
+        };
+        if let Some(cell) = f.buffer_mut().cell_mut((editor.x + x as u16, editor.y)) {
+            cell.set_style(Style::default().fg(c).add_modifier(Modifier::BOLD));
         }
     }
 }
@@ -2342,6 +2679,19 @@ pub fn files_panel_width(total: u16) -> u16 {
         120..=159 => FILES_PANEL_W + 6,
         _ => FILES_PANEL_W + 12,
     }
+}
+
+/// A dialog is open but its window does not fit: one line says so (the keys still reach the dialog),
+/// instead of a screen that looks frozen.
+fn draw_too_narrow(f: &mut Frame, theme: &Theme, area: Rect, narrow: bool) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let msg = if narrow { "make the window wider" } else { "make the window taller" };
+    let msg: String = truncate(msg, area.width as usize);
+    let y = area.y + area.height / 2;
+    let line = Line::from(Span::styled(msg, theme.style(theme.warn))).alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
 }
 
 /// The notice under the minimum size: what is wrong and what the window has, nothing cut mid-word.
@@ -2401,9 +2751,9 @@ mod tests {
     #[test]
     fn hints_that_do_not_fit_are_dropped_whole() {
         let h = " Enter send · Ctrl+J newline · / commands · @ files";
-        assert_eq!(super::fit_hints(h, 40), " Enter send · Ctrl+J newline");
-        assert_eq!(super::fit_hints(h, 100), h);
-        assert!(super::fit_hints(h, 5).chars().count() <= 5);
+        assert_eq!(super::fit_hints("", h, "", true, 40), " Enter send · Ctrl+J newline · @ files");
+        assert_eq!(super::fit_hints("", h, "", true, 100), h);
+        assert!(super::fit_hints("", h, "", true, 5).chars().count() <= 5);
     }
 
     #[test]
