@@ -7,7 +7,7 @@ same tasks with several arms shows what a context policy changes in score, steps
 ## Running it
 
 ```sh
-nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat --key "$DEEPSEEK_API_KEY" \
+printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat --key - \
     --tasks realm --arms curator --repeats 1 --max-steps 100 --budget 5 --out ../bench-out
 ```
 
@@ -15,7 +15,7 @@ nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat -
 |---|---|---|
 | `--upstream URL` | the provider's address | required |
 | `--model NAME` | the model | required |
-| `--key KEY` | the API key (leave out for a local server) | none |
+| `--key KEY` | the API key (leave out for a local server; `-` reads it from stdin, out of the process list) | none |
 | `--protocol P` | `anthropic`, `openai-chat`, `openai-responses`, `gemini` | guessed from the address |
 | `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `more`, `hard`), comma separated or repeated | `all` |
 | `--arms LIST` | arms, comma separated or repeated (see below) | `plain,compact,curator` |

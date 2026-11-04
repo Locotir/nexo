@@ -158,7 +158,7 @@ pub struct BenchArgs {
     /// The model, e.g. deepseek-chat (needed to run).
     #[arg(long)]
     pub model: Option<String>,
-    /// The API key (none for a local server).
+    /// The API key (none for a local server; `-` reads it from stdin).
     #[arg(long, value_name = "KEY")]
     pub key: Option<String>,
     /// anthropic | openai-chat | openai-responses | gemini (default: guessed from the address).
@@ -230,7 +230,7 @@ impl BenchArgs {
         Ok(nexo_bench::Options {
             upstream,
             model,
-            key: self.key.clone(),
+            key: key_arg(self.key.as_deref(), std::io::stdin().lock())?,
             protocol: self.protocol.clone(),
             tasks: self.tasks.clone(),
             arms: self.arms.clone(),
@@ -246,6 +246,21 @@ impl BenchArgs {
             limit: self.limit,
             cache: self.cache.clone(),
         })
+    }
+}
+
+/// The key as given, or read from `input` when it is `-`: then it stays out of the process list and the shell
+/// history.
+fn key_arg(key: Option<&str>, mut input: impl std::io::Read) -> anyhow::Result<Option<String>> {
+    match key {
+        Some("-") => {
+            let mut all = String::new();
+            input.read_to_string(&mut all)?;
+            let k = all.trim();
+            anyhow::ensure!(!k.is_empty(), "--key -: nothing on stdin");
+            Ok(Some(k.to_string()))
+        }
+        k => Ok(k.map(str::to_string)),
     }
 }
 
@@ -547,4 +562,18 @@ async fn headless(
         return Ok(1);
     }
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::key_arg;
+
+    #[test]
+    fn bench_key_dash_reads_stdin() {
+        let key = |arg, input: &str| key_arg(arg, input.as_bytes()).map_err(|e| e.to_string());
+        assert_eq!(key(Some("-"), "k-123\n"), Ok(Some("k-123".to_string())));
+        assert_eq!(key(Some("k-456"), "ignored"), Ok(Some("k-456".to_string())));
+        assert_eq!(key(None, "ignored"), Ok(None));
+        assert_eq!(key(Some("-"), " \n"), Err("--key -: nothing on stdin".to_string()));
+    }
 }

@@ -36,7 +36,7 @@ nexo -p "run the tests and fix what fails" --permission-mode auto --json
 nexo --continue                 # resume the latest session of this directory
 nexo --yolo                     # never ask for permission (also /yolo inside)
 nexo prompt                     # print the system prompt as it would be sent from here
-nexo bench --upstream URL --model M --key "$KEY" --out bench-out   # measure the context policies on agent tasks
+printf %s "$KEY" | nexo bench --upstream URL --model M --key - --out bench-out   # measure the context policies
 ```
 
 Local servers need no key: `nexo --provider ollama --model qwen3:8b`.
@@ -615,8 +615,8 @@ the history passes `compact_at` tokens.
 policies and scores each run with the task's own checker:
 
 ```sh
-nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat \
-  --key "$DEEPSEEK_API_KEY" --tasks realm --arms plain,compact,curator \
+printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat \
+  --key - --tasks realm --arms plain,compact,curator \
   --repeats 1 --max-steps 1000 --budget 5 --out bench-out
 ```
 
