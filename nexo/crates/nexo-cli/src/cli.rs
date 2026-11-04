@@ -143,6 +143,11 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Install the latest nexo from GitHub with cargo (`--check`: only say whether there is one).
+    Update {
+        #[arg(long)]
+        check: bool,
+    },
     /// Measure the agent on the benchmark tasks with each context policy (see crates/nexo-bench/README.md).
     Bench(Box<BenchArgs>),
 }
@@ -424,6 +429,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
             }
             return crate::account::doctor(&cwd, &config, *offline).await;
         }
+        Some(Cmd::Update { check }) => return crate::update::run(*check).await,
         Some(Cmd::Guide) => {
             print!("{}", crate::account::GUIDE);
             return Ok(0);
@@ -519,6 +525,14 @@ async fn interactive(
         session_id: resume,
         sessions,
     };
+    if !crate::update::off(&config) {
+        let events = ends.events.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(text)) = crate::update::check(false).await {
+                let _ = events.send(AgentEvent::Notice { level: nexo_core::agent::Level::Info, text });
+            }
+        });
+    }
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
     let ui = nexo_tui::run(handle, opts).await;
     agent.abort();

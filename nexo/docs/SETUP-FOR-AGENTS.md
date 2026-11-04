@@ -21,6 +21,7 @@ nexo doctor                     # what a run would use, and what is missing
 nexo providers                  # the usable providers and where each key comes from
 nexo providers --all --json     # every provider nexo knows (200+), as JSON
 nexo auth list                  # what the credential store holds (never the secrets)
+nexo update --check             # whether GitHub has a newer nexo (`nexo update` installs it)
 ```
 
 `nexo providers --all --json` gives, for each provider: `name`, `protocol`,

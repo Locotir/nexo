@@ -5,6 +5,7 @@
 mod account;
 mod cli;
 mod setup;
+mod update;
 
 fn main() {
     // A closed pipe (`nexo providers | head`) ends the process quietly instead of panicking.

@@ -433,9 +433,16 @@ mod tests {
 
     #[test]
     fn the_guide_covers_every_command_and_login() {
-        for s in
-            ["nexo auth login", "nexo use", "nexo doctor", "nexo providers --all", "api_key_cmd", "copilot", "codex"]
-        {
+        for s in [
+            "nexo auth login",
+            "nexo use",
+            "nexo doctor",
+            "nexo update",
+            "nexo providers --all",
+            "api_key_cmd",
+            "copilot",
+            "codex",
+        ] {
             assert!(GUIDE.contains(s), "{s}");
         }
     }

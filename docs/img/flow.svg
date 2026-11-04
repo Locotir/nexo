@@ -1,43 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="250" viewBox="0 0 760 250" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">
-<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#898781"/></marker></defs>
-<rect width="760" height="250" fill="#fcfcfb"/>
-<text x="16" y="22" fill="#0b0b0b" font-size="14" font-weight="600">Where the curator sits: between the conversation on disk and every request to the model</text>
-<!-- conversation -->
-<rect x="16" y="52" width="150" height="130" rx="6" fill="#fff" stroke="#c9c7bf"/>
-<text x="91" y="74" fill="#0b0b0b" text-anchor="middle" font-weight="600">conversation</text>
-<text x="91" y="90" fill="#52514e" text-anchor="middle">whole history, on disk</text>
-<rect x="30" y="102" width="122" height="10" rx="2" fill="#e1e0d9"/>
-<rect x="30" y="118" width="122" height="10" rx="2" fill="#e1e0d9"/>
-<rect x="30" y="134" width="122" height="10" rx="2" fill="#e1e0d9"/>
-<rect x="30" y="150" width="122" height="10" rx="2" fill="#e1e0d9"/>
-<text x="91" y="174" fill="#898781" text-anchor="middle">grows every step, nothing is lost</text>
-<!-- arrow -->
-<line x1="166" y1="117" x2="206" y2="117" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
-<!-- curator -->
-<rect x="208" y="40" width="300" height="190" rx="6" fill="#eaf2fc" stroke="#2a78d6"/>
-<text x="358" y="62" fill="#0b0b0b" text-anchor="middle" font-weight="600">nexo curator</text>
-<text x="358" y="78" fill="#52514e" text-anchor="middle">decides what the model sees, every request</text>
-<rect x="222" y="90" width="132" height="60" rx="4" fill="#fff" stroke="#8fb9ea"/>
-<text x="288" y="108" fill="#0b0b0b" text-anchor="middle" font-weight="600">squeeze at birth</text>
-<text x="288" y="124" fill="#52514e" text-anchor="middle">tool output trimmed</text>
-<text x="288" y="138" fill="#52514e" text-anchor="middle">before it is stored</text>
-<rect x="362" y="90" width="132" height="60" rx="4" fill="#fff" stroke="#8fb9ea"/>
-<text x="428" y="108" fill="#0b0b0b" text-anchor="middle" font-weight="600">cut in batches</text>
-<text x="428" y="124" fill="#52514e" text-anchor="middle">old chunks leave when</text>
-<text x="428" y="138" fill="#52514e" text-anchor="middle">a rewrite pays (EOQ)</text>
-<rect x="222" y="160" width="272" height="56" rx="4" fill="#fff" stroke="#8fb9ea"/>
-<text x="358" y="178" fill="#0b0b0b" text-anchor="middle" font-weight="600">anchor: what never drops</text>
-<text x="358" y="194" fill="#52514e" text-anchor="middle">user rules · notes · pins · ledger of what left · map</text>
-<!-- arrow -->
-<line x1="508" y1="117" x2="548" y2="117" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
-<!-- model -->
-<rect x="550" y="52" width="194" height="130" rx="6" fill="#fff" stroke="#c9c7bf"/>
-<text x="647" y="74" fill="#0b0b0b" text-anchor="middle" font-weight="600">model</text>
-<text x="647" y="90" fill="#52514e" text-anchor="middle">gets the curated view</text>
-<rect x="564" y="102" width="166" height="10" rx="2" fill="#2a78d6"/>
-<rect x="564" y="118" width="100" height="10" rx="2" fill="#8fb9ea"/>
-<rect x="564" y="134" width="60" height="10" rx="2" fill="#e1e0d9"/>
-<text x="647" y="160" fill="#0b0b0b" text-anchor="middle" font-weight="600">about half the tokens</text>
-<text x="647" y="174" fill="#898781" text-anchor="middle">−48% in one 100-step run</text>
-<text x="16" y="244" fill="#898781">Nothing is lost: the ledger says what left, and the agent can read it back from the history on disk.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="356" viewBox="0 0 760 356" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" role="img" aria-labelledby="t d">
+<title id="t">Where the curator sits</title>
+<desc id="d">The whole history stays on disk. On every call the nexo curator builds the view for the next step: it squeezes noise at birth, keeps one thread per goal, cuts old material in batches only when it pays, keeps an anchor that never drops, drops stale reads first, can keep a cached view per topic, and gives a resumed session the same view. The model gets the anchor, cards of earlier goals and the recent work.</desc>
+<style>
+.bg{fill:#fcfcfb}.tile{fill:#f3f2ee}.cur{fill:#eef4fc;stroke:#2a78d6;stroke-width:1.5}.t1{fill:#0b0b0b}.t2{fill:#52514e}.t3{fill:#76756f}
+.hb{fill:#bdbcb4}.hn{fill:#dddcd5}.dot{fill:#2a78d6}.ar{stroke:#898781;stroke-width:1.5;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.anc{fill:#d9e7f9;stroke:#2a78d6}.card{fill:none;stroke:#2a78d6;stroke-dasharray:3 2}.rb{fill:#8f8e86}
+@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}.tile{fill:#242422}.cur{fill:#1d2733;stroke:#4f93e6}.t1{fill:#f0efec}.t2{fill:#c3c2b7}.t3{fill:#9c9b93}
+.hb{fill:#55544f}.hn{fill:#363633}.dot{fill:#4f93e6}.ar{stroke:#9c9b93}.anc{fill:#22364f;stroke:#4f93e6}.card{stroke:#4f93e6}.rb{fill:#9c9b93}}
+</style>
+<rect class="bg" width="760" height="356" rx="8"/>
+<text x="24" y="36" class="t1" font-size="18" font-weight="600">Where the curator sits</text>
+<text x="24" y="57" class="t2">The whole history stays on disk. Every call, the model gets a view built for its next step.</text>
+<rect class="tile" x="24" y="80" width="190" height="236" rx="6"/>
+<text x="40" y="104" class="t1" font-weight="600">Whole history</text>
+<text x="40" y="121" class="t3" font-size="11">on disk, grows every step</text>
+<rect class="hb" x="40" y="136" width="150" height="8" rx="2"/>
+<rect class="hn" x="40" y="148" width="96" height="8" rx="2"/>
+<rect class="hb" x="40" y="160" width="132" height="8" rx="2"/>
+<rect class="hb" x="40" y="172" width="60" height="8" rx="2"/>
+<rect class="hn" x="40" y="184" width="158" height="8" rx="2"/>
+<rect class="hb" x="40" y="196" width="110" height="8" rx="2"/>
+<rect class="hb" x="40" y="208" width="150" height="8" rx="2"/>
+<rect class="hn" x="40" y="220" width="80" height="8" rx="2"/>
+<rect class="hb" x="40" y="232" width="124" height="8" rx="2"/>
+<rect class="hb" x="40" y="244" width="158" height="8" rx="2"/>
+<rect class="hb" x="40" y="256" width="70" height="8" rx="2"/>
+<rect class="hn" x="40" y="268" width="136" height="8" rx="2"/>
+<rect class="hb" x="40" y="280" width="104" height="8" rx="2"/>
+<rect class="hb" x="40" y="292" width="146" height="8" rx="2"/>
+<path class="ar" d="M218 198h16m-5-5l5 5-5 5"/>
+<rect class="cur" x="238" y="80" width="270" height="236" rx="6"/>
+<text x="254" y="104" class="t1" font-weight="600">nexo curator</text>
+<rect class="dot" x="254" y="121" width="6" height="6" rx="1"/><text x="268" y="128" class="t1" font-weight="600">Squeeze at birth</text><text x="268" y="141" class="t3" font-size="11">progress bars and repeats never enter</text>
+<rect class="dot" x="254" y="147" width="6" height="6" rx="1"/><text x="268" y="154" class="t1" font-weight="600">One thread per goal</text><text x="268" y="167" class="t3" font-size="11">a finished goal becomes a frozen card</text>
+<rect class="dot" x="254" y="173" width="6" height="6" rx="1"/><text x="268" y="180" class="t1" font-weight="600">Cut in batches, when it pays</text><text x="268" y="193" class="t3" font-size="11">saving beats one cache rewrite</text>
+<rect class="dot" x="254" y="199" width="6" height="6" rx="1"/><text x="268" y="206" class="t1" font-weight="600">An anchor that never drops</text><text x="268" y="219" class="t3" font-size="11">rules, notes, pins, ledger, map</text>
+<rect class="dot" x="254" y="225" width="6" height="6" rx="1"/><text x="268" y="232" class="t1" font-weight="600">Stale reads go first</text><text x="268" y="245" class="t3" font-size="11">a file read before it was edited</text>
+<rect class="dot" x="254" y="251" width="6" height="6" rx="1"/><text x="268" y="258" class="t1" font-weight="600">Cache pockets (opt-in)</text><text x="268" y="271" class="t3" font-size="11">one cached view per topic</text>
+<rect class="dot" x="254" y="277" width="6" height="6" rx="1"/><text x="268" y="284" class="t1" font-weight="600">Resume = same view</text><text x="268" y="297" class="t3" font-size="11">reopen a session, the cache still hits</text>
+<path class="ar" d="M512 198h16m-5-5l5 5-5 5"/>
+<rect class="tile" x="532" y="80" width="204" height="236" rx="6"/>
+<text x="548" y="104" class="t1" font-weight="600">The model gets</text>
+<text x="548" y="121" class="t3" font-size="11">the view for the next step</text>
+<rect class="anc" x="548" y="134" width="172" height="24" rx="4"/>
+<text x="558" y="150" class="t1" font-size="11">anchor: your rules, notes, pins</text>
+<rect class="card" x="548" y="166" width="172" height="18" rx="4"/>
+<text x="558" y="179" class="t2" font-size="11">card: an earlier goal</text>
+<rect class="card" x="548" y="190" width="172" height="18" rx="4"/>
+<text x="558" y="203" class="t2" font-size="11">card: another goal</text>
+<rect class="rb" x="548" y="218" width="160" height="8" rx="2"/>
+<rect class="rb" x="548" y="230" width="118" height="8" rx="2"/>
+<rect class="rb" x="548" y="242" width="172" height="8" rx="2"/>
+<rect class="rb" x="548" y="254" width="92" height="8" rx="2"/>
+<text x="548" y="282" class="t3" font-size="11">plus the current goal's work.</text>
+<text x="548" y="297" class="t3" font-size="11">What left is listed, with how</text>
+<text x="548" y="310" class="t3" font-size="11">to read it back.</text>
+<text x="24" y="340" class="t2">Two heavy sessions, five runs per arm: the curator solved 5 of 5 at $0.207 a run, the lowest cost of the four arms.</text>
 </svg>

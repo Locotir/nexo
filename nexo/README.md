@@ -11,6 +11,18 @@ Everything it does, and the test that checks each thing: [FEATURES.md](FEATURES.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh            # Linux
+irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex                 # Windows PowerShell
+```
+
+Both build the latest `main` with `cargo install` and offer to install Rust when it is missing. Once a day
+nexo asks GitHub whether `main` has moved past the commit it was built from and says so in the interface;
+`nexo update` builds the new one (`nexo update --check` only says). `[ui] update_check = false` or
+`NEXO_NO_UPDATE_CHECK=1` turns the check off; a build from changes never pushed is not checked.
+
+From a clone:
+
+```sh
 cd nexo
 cargo build --release          # target/release/nexo
 install -m 755 target/release/nexo ~/.local/bin/
