@@ -2205,6 +2205,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             let (lines, starts, at) = v.lines(inner_w, &theme);
             job_rows = starts;
             job_at = at;
+            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
             (v.title(), lines, None)
         }
         Modal::Todo(v) => {

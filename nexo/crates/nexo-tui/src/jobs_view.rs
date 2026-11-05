@@ -130,17 +130,48 @@ impl JobsView {
 
     pub fn title(&self) -> String {
         if self.detail {
-            return " job · ↑↓ scroll · x stops · Esc back ".into();
+            return " ⚙ job ".into();
+        }
+        if self.jobs.is_empty() {
+            return " ⚙ background jobs ".into();
         }
         let running = self.jobs.iter().filter(|j| j.status.running()).count();
-        format!(" background jobs · {running} running · Enter opens · x stops · Esc closes ")
+        format!(" ⚙ background jobs · {running} running ")
+    }
+
+    /// The keys, in the row pinned under the body; the longest set that fits `w`.
+    pub fn keys(&self, w: usize, theme: &Theme) -> Line<'static> {
+        let list: &[(&str, &str)] = &[("↑↓", "move"), ("Enter", "open"), ("x", "stop"), ("Esc", "close")];
+        let detail: &[(&str, &str)] = &[("↑↓", "scroll"), ("x", "stop"), ("Esc", "back")];
+        let short: &[(&str, &str)] = &[("Enter", ""), ("x", ""), ("Esc", "")];
+        let first = if self.detail { detail } else { list };
+        for set in [first, short] {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for (k, what) in set {
+                if !spans.is_empty() {
+                    spans.push(Span::styled(" · ", theme.dim2()));
+                }
+                spans.push(Span::styled((*k).to_string(), theme.style(theme.accent)));
+                if !what.is_empty() {
+                    spans.push(Span::styled(format!(" {what}"), theme.dim()));
+                }
+            }
+            if spans.iter().map(|s| crate::render::wrap::width(&s.content)).sum::<usize>() <= w {
+                return Line::from(spans);
+            }
+        }
+        Line::from(Span::styled("Esc closes", theme.dim()))
     }
 
     /// The body at `w` columns: the lines, the line each job's row starts at (the list) and the line
     /// to keep in sight.
     pub fn lines(&self, w: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<usize>, usize) {
         if self.is_empty() {
-            return (vec![Line::from(Span::styled("no background jobs", theme.dim()))], Vec::new(), 0);
+            let empty = vec![
+                Line::from(Span::styled("⚙", theme.dim2())).centered(),
+                Line::from(Span::styled("No background jobs", theme.dim())).centered(),
+            ];
+            return (empty, Vec::new(), 0);
         }
         if self.detail {
             return (self.detail_lines(w, theme), Vec::new(), 0);
