@@ -1757,6 +1757,13 @@ impl App {
                 label,
                 detail,
             } => {
+                // the view shrank while the history did not: the curator let something go
+                if let Some(prev) = &self.context {
+                    let dropped = prev.view_tokens.saturating_sub(view_tokens);
+                    if dropped >= crate::motion::CUT_LEAST && history_tokens >= prev.history_tokens {
+                        self.fx.cut = Some((dropped, self.now()));
+                    }
+                }
                 self.context = Some(ContextInfo {
                     view_tokens,
                     history_tokens,
@@ -5042,6 +5049,41 @@ mod tests {
         assert!(a.goal.is_none());
         a.handle_agent(AgentEvent::HistoryCleared);
         assert!(a.todo.is_empty(), "a new transcript starts without a list");
+    }
+
+    #[test]
+    fn a_cut_of_the_view_shows_by_the_gauge_and_goes_away() {
+        let (mut a, _rx) = app();
+        let t0 = a.opened;
+        a.fx.clock = Some(t0);
+        let ctx = |view: u64, history: u64| AgentEvent::Context {
+            view_tokens: view,
+            history_tokens: history,
+            history_bytes: history * 4,
+            view_bytes: view * 4,
+            messages_in_view: 1,
+            messages_total: 1,
+            policy: "curator".into(),
+            note: None,
+            label: "curator".into(),
+            detail: None,
+        };
+        let bar =
+            |a: &App| crate::ui::title_segments(a, 200).iter().flatten().map(|s| s.text.clone()).collect::<String>();
+        a.handle_agent(ctx(5000, 5000));
+        a.handle_agent(ctx(5200, 5400));
+        assert!(a.fx.cut.is_none(), "a view that grew is no cut");
+        a.handle_agent(ctx(2000, 5600));
+        assert_eq!(a.fx.cut.map(|c| c.0), Some(3200));
+        assert!(bar(&a).contains("−3.2k tok"), "{}", bar(&a));
+        assert!(a.tick_fx(), "the figure keeps the frames coming until it is gone");
+        a.fx.clock = Some(t0 + std::time::Duration::from_millis(crate::motion::CUT_MS + 200));
+        assert!(!bar(&a).contains("tok "), "{}", bar(&a));
+        assert!(!bar(&a).contains("−3.2k"), "{}", bar(&a));
+        // a rewind takes the history down too: not the curator
+        a.fx.cut = None;
+        a.handle_agent(ctx(500, 1000));
+        assert!(a.fx.cut.is_none());
     }
 
     #[test]

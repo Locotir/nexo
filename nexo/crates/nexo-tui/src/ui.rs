@@ -197,6 +197,13 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             text: if guessed { format!(" ~{pct}%") } else { format!(" {pct}%") },
             style: base.fg(colour).add_modifier(Modifier::BOLD),
         });
+        // what the curator just let go, fading from green to dim
+        let now = app.now();
+        if let Some((n, at)) = app.fx.cut.filter(|c| crate::motion::within(Some(c.1), now, crate::motion::CUT_MS)) {
+            let t = now.saturating_duration_since(at).as_millis() as f32 / crate::motion::CUT_MS as f32;
+            let fg = crate::motion::fade(theme, theme.success, theme.dim, t);
+            cells.push(Seg { text: format!(" −{} tok", fmt_k(n)), style: base.fg(fg).add_modifier(Modifier::BOLD) });
+        }
         let counts = if guessed { fmt_k(num) } else { format!("{}/{}", fmt_k(num), fmt_k(den)) };
         (cells, Seg { text: counts, style: base.fg(theme.dim) })
     };

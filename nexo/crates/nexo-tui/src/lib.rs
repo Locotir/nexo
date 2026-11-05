@@ -306,6 +306,9 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
             let mut out = std::io::stdout();
             let _ = write!(out, "{}", notification(&text));
             let _ = out.flush();
+            if desktop_fallback(|k| std::env::var(k).ok()) {
+                notify_desktop(&text);
+            }
         }
         if app.draft_edit_request {
             app.draft_edit_request = false;
@@ -417,6 +420,43 @@ fn edit_file(path: &std::path::Path) -> anyhow::Result<()> {
     anyhow::bail!(last.unwrap_or_else(|| "no editor found: set $EDITOR".into()))
 }
 
+/// Whether a long turn's end also goes to the desktop through `notify-send`: on Linux and the BSDs, with a
+/// local graphical session, in a terminal that drops OSC 9 and 777 (Alacritty, xterm, urxvt, st) or inside
+/// tmux, which does not pass them on. `var` reads the environment (tests hand it a table).
+pub fn desktop_fallback(var: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |k: &str| var(k).is_some_and(|v| !v.is_empty());
+    if cfg!(any(windows, target_os = "macos")) || set("SSH_CONNECTION") || set("SSH_TTY") {
+        return false;
+    }
+    if !set("DISPLAY") && !set("WAYLAND_DISPLAY") {
+        return false;
+    }
+    // TERM=xterm-256color is also what GNOME Terminal and many others say: real xterm is told by XTERM_VERSION
+    let term = var("TERM").unwrap_or_default();
+    let silent_term =
+        term.starts_with("alacritty") || term.starts_with("rxvt") || term == "st" || term.starts_with("st-");
+    silent_term || set("ALACRITTY_WINDOW_ID") || set("XTERM_VERSION") || set("TMUX")
+}
+
+/// Shows `text` as a desktop notification with `notify-send`, without waiting; a machine without it
+/// has the bell only.
+fn notify_desktop(text: &str) {
+    let Some(bin) = nexo_core::shell::find_program("notify-send") else { return };
+    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+    let child = std::process::Command::new(bin)
+        .args(["--app-name=nexo", "nexo", &clean])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    // reaped on its own thread so it never lingers as a zombie
+    if let Ok(mut c) = child {
+        std::thread::spawn(move || {
+            let _ = c.wait();
+        });
+    }
+}
+
 static SUPERVISE: std::sync::OnceLock<nexo_agent::supervise::Options> = std::sync::OnceLock::new();
 static MAILBOX: std::sync::OnceLock<std::sync::Arc<nexo_core::mailbox::Mailbox>> = std::sync::OnceLock::new();
 
@@ -463,5 +503,33 @@ mod tests {
             "\x07\x1b]9;nexo: done after 20s\x07\x1b]777;notify;nexo;nexo: done after 20s\x07"
         );
         assert!(!super::notification("a\x07b\x1bc").contains("a\x07"), "the text cannot close the sequence");
+    }
+
+    #[test]
+    fn the_desktop_gets_the_notification_only_where_the_terminal_drops_it() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        };
+        let local = cfg!(not(any(windows, target_os = "macos")));
+        assert_eq!(super::desktop_fallback(env(&[("WAYLAND_DISPLAY", "wayland-1"), ("TERM", "alacritty")])), local);
+        assert_eq!(super::desktop_fallback(env(&[("DISPLAY", ":0"), ("TERM", "screen"), ("TMUX", "/s,1,0")])), local);
+        assert_eq!(
+            super::desktop_fallback(env(&[("DISPLAY", ":0"), ("TERM", "xterm"), ("XTERM_VERSION", "390")])),
+            local
+        );
+        // these show OSC 9 / 777 themselves: a second notification would be a duplicate
+        assert!(!super::desktop_fallback(env(&[("DISPLAY", ":0"), ("TERM", "xterm-kitty")])));
+        assert!(!super::desktop_fallback(env(&[
+            ("DISPLAY", ":0"),
+            ("TERM", "xterm-256color"),
+            ("VTE_VERSION", "7800")
+        ])));
+        // no screen to show it on, or the screen is someone else's
+        assert!(!super::desktop_fallback(env(&[("TERM", "alacritty")])));
+        assert!(!super::desktop_fallback(env(&[
+            ("DISPLAY", ":0"),
+            ("TERM", "alacritty"),
+            ("SSH_CONNECTION", "1 2 3 4")
+        ])));
     }
 }

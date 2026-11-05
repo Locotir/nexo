@@ -16,6 +16,8 @@ pub struct Fx {
     pub tok: Counter,
     /// When the last turn ended: the rule glows and the figures pulse once.
     pub turn_done: Option<Instant>,
+    /// The curator just cut the view: the tokens it let go and when (shown by the gauge, fading).
+    pub cut: Option<(u64, Instant)>,
     /// When the permission mode last changed, and the mode before: the rule over the draft wipes
     /// from the old colour to the new one.
     pub mode_at: Option<Instant>,
@@ -80,6 +82,8 @@ impl App {
         let glow = on && motion::within(self.fx.turn_done, now, motion::GLOW_MS);
         let mode = on && motion::within(self.fx.mode_at, now, motion::MODE_MS);
         let cmd = on && motion::within(self.fx.cmd_lit.as_ref().map(|c| c.1), now, motion::LIT_MS);
+        // the cut figure goes away by itself, animations or not
+        let cut = motion::within(self.fx.cut.map(|c| c.1), now, motion::CUT_MS + 100);
         let fx = &self.fx;
         let still = on
             && !self.theme.mono
@@ -91,7 +95,7 @@ impl App {
                 || motion::within(fx.turn_start, now, motion::MODE_MS)
                 || motion::within(fx.ghost_at, now, crate::anim::POP_MS)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
-        t_moving || c_moving || glow || mode || cmd || still || self.toasts.alive(now)
+        t_moving || c_moving || glow || mode || cmd || cut || still || self.toasts.alive(now)
     }
 
     /// Called when a turn ends.

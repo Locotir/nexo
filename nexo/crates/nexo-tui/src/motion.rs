@@ -24,6 +24,10 @@ pub const MODE_MS: u64 = 700;
 pub const LIT_MS: u64 = 450;
 /// A moving highlight (palette row, selected block) changes hands in this long.
 pub const GLIDE_MS: u64 = 110;
+/// What the curator just let go of the view (`−3.2k tok` by the gauge) shows this long, fading to dim.
+pub const CUT_MS: u64 = 2500;
+/// A drop of the view smaller than this many tokens is not a cut worth showing.
+pub const CUT_LEAST: u64 = 500;
 /// One breath of the running rail.
 const SHIMMER_MS: f32 = 1600.0;
 
