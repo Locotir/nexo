@@ -181,15 +181,21 @@ impl Selection {
                 box_piece(info, from, to)
             } else if let Some(c) = info.cont {
                 slice_cols(&info.text, from.max(c.deco as usize), to)
-            } else if from <= info.margin {
-                // the margin and the rail took their columns: the requested columns move with them
+            } else {
                 let body = slice_cols(&info.text, info.margin, usize::MAX);
                 let piece = strip_rail(&body);
+                if is_rule(&piece) {
+                    // the rule over a code block crossed from prose: screen, not content
+                    continue;
+                }
                 let shift = width(&info.text) - width(&piece);
-                let to = if to == usize::MAX { to } else { to.saturating_sub(shift) };
-                slice_cols(&piece, 0, to)
-            } else {
-                slice_cols(&info.text, from, to)
+                if from <= shift {
+                    // started in the margin or the rail: the requested columns move with them
+                    let to = if to == usize::MAX { to } else { to.saturating_sub(shift) };
+                    slice_cols(&piece, 0, to)
+                } else {
+                    slice_cols(&info.text, from, to)
+                }
             };
             match info.cont {
                 Some(c) if !logical.is_empty() && k > 0 => {
@@ -240,6 +246,15 @@ pub fn strip_rail(line: &str) -> String {
         (Some(g), None) if RAILS.contains(&g) => String::new(),
         _ => line.to_string(),
     }
+}
+
+/// A row drawn as a rule, `────── js`: the line over a code block with its language, or a
+/// horizontal rule; it has no text of its own to copy.
+fn is_rule(row: &str) -> bool {
+    let row = row.trim();
+    let label = row.trim_start_matches('─');
+    row.len() - label.len() >= 3 * '─'.len_utf8()
+        && (label.is_empty() || (label.starts_with(' ') && !label[1..].contains(' ')))
 }
 
 /// `lines` without their `  12│ ` gutters when every non-empty line has one.

@@ -118,7 +118,7 @@ fn drag_from_prose_across_a_fence_copies_prose_and_code() {
     let got = drag(&mut a, (0, before), (40, after));
     let rows: Vec<&str> = got.lines().collect();
     assert_eq!(rows[0], "Before text");
-    assert!(rows.iter().any(|r| r.contains("rust")), "the label row is crossed: {got}");
+    assert!(!got.contains('─'), "the rule over the code is screen, not text: {got}");
     assert!(got.contains("fn main() {\n    let x = 1;\n}"), "{got}");
     assert!(!got.contains('▎'), "{got}");
     assert_eq!(*rows.last().unwrap(), "After text");
@@ -392,4 +392,15 @@ fn copy_has_no_trailing_newline() {
     let l0 = find(&mut a, "alpha");
     let got = drag(&mut a, (0, l0), (30, l0 + 1));
     assert!(!got.ends_with('\n'), "{got:?}");
+}
+
+#[test]
+fn drag_from_the_rail_space_copies_no_leading_space() {
+    let mut a = app();
+    reply(&mut a, "The handler answers health checks.");
+    shown(&mut a, 60, 30);
+    let line = find(&mut a, "The handler");
+    let col = a.line_text(line).unwrap().chars().position(|c| c == 'T').unwrap() as u16 - 1;
+    let got = drag(&mut a, (col, line), (59, line));
+    assert_eq!(got, "The handler answers health checks.");
 }
