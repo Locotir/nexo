@@ -13,6 +13,10 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 
 fn app() -> App {
+    app_with(false)
+}
+
+fn app_with(group_tools: bool) -> App {
     let (tx, _rx) = mpsc::unbounded_channel();
     let opts = TuiOptions {
         cwd: PathBuf::from("/tmp/project"),
@@ -25,7 +29,7 @@ fn app() -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 3,
-        group_tools: false,
+        group_tools,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),
@@ -97,4 +101,41 @@ fn cards_fold_and_unfold_with_status_duration_and_summary_at_two_sizes() {
         assert!(once.contains("line12"), "{w}x{h} the opened card does not show its whole output:\n{once}");
         assert_eq!(folded, twice, "{w}x{h} Ctrl+O twice is not the start");
     }
+}
+
+fn press(a: &mut App, code: KeyCode, mods: KeyModifiers) {
+    event::key(a, KeyEvent::new(code, mods));
+}
+
+#[test]
+fn a_picked_block_takes_the_arrows_even_over_a_draft() {
+    let mut a = app_with(true);
+    a.input.set_text("half a thought");
+    screen(&mut a, 80, 24);
+    // a click picks a block (here the last one, as Shift+↑ does on an empty draft); ↑ walks to the group
+    a.select_last();
+    while a
+        .selected
+        .is_some_and(|_| !screen(&mut a, 80, 24).lines().any(|l| l.contains("2 shell commands") && l.starts_with('┃')))
+    {
+        let before = a.selected;
+        press(&mut a, KeyCode::Up, KeyModifiers::NONE);
+        if a.selected == before {
+            break;
+        }
+    }
+    let shown = screen(&mut a, 80, 24);
+    assert!(shown.contains("2 shell commands") && !shown.contains("cargo test ·"), "{shown}");
+    // → opens the group: both calls show, folded; ↓ steps onto the first, → shows its output
+    press(&mut a, KeyCode::Right, KeyModifiers::NONE);
+    let open = screen(&mut a, 80, 24);
+    assert!(open.contains("cargo test") && open.contains("false"), "{open}");
+    press(&mut a, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut a, KeyCode::Right, KeyModifiers::NONE);
+    let out = screen(&mut a, 80, 24);
+    assert!(out.contains("line1"), "{out}");
+    // ← folds it again, and the draft was never touched
+    press(&mut a, KeyCode::Left, KeyModifiers::NONE);
+    assert!(screen(&mut a, 80, 24).matches("line1").count() < out.matches("line1").count());
+    assert_eq!(a.input.text(), "half a thought");
 }

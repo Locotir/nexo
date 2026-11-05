@@ -220,6 +220,16 @@ pub fn key(app: &mut App, k: KeyEvent) {
             _ => {}
         }
     }
+    // a block picked with a click or Shift+↑ takes the arrows even over a draft: ↑ ↓ walk
+    // the blocks, → opens and ← folds the selected one; typing lets it go
+    if app.selected.is_some() && app.palette.is_none() && !ctrl {
+        match k.code {
+            KeyCode::Up | KeyCode::Down => return app.select_step(k.code == KeyCode::Down),
+            KeyCode::Right => return app.open_selected(true),
+            KeyCode::Left => return app.open_selected(false),
+            _ => {}
+        }
+    }
     if app.input.is_empty() {
         match k.code {
             KeyCode::Home => return app.scroll_to_top(),
@@ -234,12 +244,8 @@ pub fn key(app: &mut App, k: KeyEvent) {
                 let last = app.queued_msgs.len() - 1;
                 return app.unqueue(last);
             }
-            // the blocks of the transcript: Shift+↑ steps in at the last one; with one
-            // selected, ↑ ↓ walk them, → opens and ← folds the selected one
+            // the blocks of the transcript: Shift+↑ steps in at the last one
             KeyCode::Up if shift && app.selected.is_none() => return app.select_last(),
-            KeyCode::Up | KeyCode::Down if app.selected.is_some() => return app.select_step(k.code == KeyCode::Down),
-            KeyCode::Right if app.selected.is_some() => return app.open_selected(true),
-            KeyCode::Left if app.selected.is_some() => return app.open_selected(false),
             _ => {}
         }
     }
