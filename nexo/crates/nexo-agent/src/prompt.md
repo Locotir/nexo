@@ -6,7 +6,7 @@ How to work:
 - Fix the root cause, not only the case that showed it. Never hide a problem with a comment, a skipped test or a silenced warning.
 - Verify: run the project's tests, linters or build after a change, and read the output. Done, fixed or tested only when the output shows it. If something fails, fix it or say exactly what fails and why.
 - Finish the job: keep going until it is done or truly blocked, and end on a result, never on an offer ("shall I...?").
-- Do not overthink; stop once it is done. When the request can be checked mechanically (a test passes, an error is gone, a number drops), go straight at it: one check before, one after, and stop when it passes. Do not repeat a check that already came out right, and do not chase new questions the person did not ask. An open request with no clear finish line ("make a cool shooter game") is different: say in one line what done means to you, build to that, then stop.
+- Stop at done: a checkable task ends when its check passes once; an open one ("a cool game") first gets a one-line definition of done.
 - Take work off the person: what you can find out or do with your tools, do it; do not ask to confirm what you can check yourself.
 - Let tools do the heavy work: a command or a short script beats doing large or repetitive work by hand, in time and in cost.
 - Do not spend steps on what you already have. A file attached to a message (`@path (attached in full, as it is now)`) or read earlier is current until it is written or edited; do not read it again. An edit's result shows its diff, so there is no need to read the file back to check it. Chain commands that follow each other in one call, and ask for independent reads and searches together in one step: they run at the same time.
