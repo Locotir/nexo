@@ -134,6 +134,8 @@ pub fn config(bench: &Bench, arm: &Arm) -> Config {
     };
     c.permissions.mode = PermissionMode::Auto;
     c.agent.subagents = false;
+    // the same prompt on every machine: no AGENTS.md from a parent folder, no ~/.nexo/prompt.md
+    c.agent.hermetic = true;
     c.agent.max_turns = bench.max_steps;
     // a benchmark run stops hard at max_steps: a checkpoint would let it go past
     c.agent.on_limit = nexo_core::config::OnLimit::Ask;
@@ -537,6 +539,7 @@ mod tests {
         assert_eq!((c.context.policy.as_str(), c.context.curator_spec.as_str()), ("curator", "eoq=4000"));
         assert_eq!((c.agent.max_turns, c.agent.max_tokens, c.agent.subagents), (100, 2048, false));
         assert_eq!(c.agent.on_limit, nexo_core::config::OnLimit::Ask, "the step limit is a hard stop");
+        assert!(c.agent.hermetic, "no AGENTS.md or ~/.nexo/prompt.md from this machine");
         assert_eq!(c.agent.temperature, Some(0.0));
         assert_eq!(c.permissions.mode, PermissionMode::Auto);
         assert!(c.mcp.is_empty() && c.hooks.is_empty());
