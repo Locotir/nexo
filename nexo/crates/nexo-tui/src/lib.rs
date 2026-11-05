@@ -25,6 +25,8 @@ pub mod frame_stats;
 pub mod fuzzy;
 pub mod inline;
 pub mod input;
+pub mod insights;
+pub mod jobs_view;
 pub mod keymap;
 pub mod modal;
 pub mod motion;

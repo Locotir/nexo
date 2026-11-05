@@ -21,6 +21,8 @@ pub const KEEP_CHARS: usize = 200_000;
 pub const READ_CHARS: usize = 30_000;
 /// Characters kept of one line; the rest of a longer one is dropped.
 pub const LINE_CHARS: usize = 16_384;
+/// Lines of output the interface gets of each job.
+pub const TAIL_LINES: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +79,16 @@ pub struct JobInfo {
     pub elapsed_ms: u64,
     /// Lines of output so far (including those no longer kept).
     pub lines: usize,
+}
+
+/// The end of a job's output, for the interface to show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobTail {
+    pub id: u32,
+    /// How long ago it ended; None while it runs.
+    pub ended_ago_ms: Option<u64>,
+    /// The last lines kept, at most `TAIL_LINES`.
+    pub text: String,
 }
 
 /// A job began or ended.
@@ -317,6 +329,20 @@ impl Jobs {
         Some(JobRead { info, new })
     }
 
+    /// The end of the output of every job, without marking anything read.
+    pub fn tails(&self) -> Vec<JobTail> {
+        let jobs = self.0.jobs.lock().unwrap();
+        jobs.values()
+            .map(|e| {
+                let ended_ago_ms = e.ended.lock().unwrap().map(|t| t.elapsed().as_millis() as u64);
+                let o = e.out.lock().unwrap();
+                let from = o.lines.len().saturating_sub(TAIL_LINES);
+                let text = o.lines.iter().skip(from).map(String::as_str).collect::<Vec<_>>().join("\n");
+                JobTail { id: e.id, ended_ago_ms, text }
+            })
+            .collect()
+    }
+
     /// Stops job `id`. False when there is no such job or it had ended.
     pub fn kill(&self, id: u32) -> bool {
         let Some(e) = self.entry(id) else { return false };
@@ -421,6 +447,23 @@ pub fn duration(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tails_show_the_end_of_each_output_without_marking_it_read() {
+        let jobs = Jobs::new();
+        let h = jobs.start(JobKind::Shell, "make");
+        for i in 0..(TAIL_LINES + 5) {
+            h.line(&format!("l{i}"));
+        }
+        let t = jobs.tails();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].ended_ago_ms, None);
+        assert_eq!(t[0].text.lines().count(), TAIL_LINES);
+        assert!(t[0].text.ends_with(&format!("l{}", TAIL_LINES + 4)));
+        h.finish(true, "exit 0");
+        assert!(jobs.tails()[0].ended_ago_ms.is_some());
+        assert_eq!(jobs.untold().len(), 1, "a look is not a read");
+    }
 
     #[tokio::test]
     async fn a_job_is_read_once_waited_for_and_told_once() {

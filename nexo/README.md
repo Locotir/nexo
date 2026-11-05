@@ -113,7 +113,10 @@ with a light sweeping across the word; the reply grows behind a blinking caret. 
 rings the terminal's bell when it ends, with a desktop notification where the terminal takes one (OSC 9/777):
 `[ui] notify_after = 0` turns it off.
 
-The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`. On the keys row, `todo d/t` opens the todo list (`/todo`), `⚙ N jobs` the jobs (`/jobs`), `⊕ mem` the shared memory that waits (`/shared-memory list`), `◷ N queued` the queued messages (`/queue`; pick one to edit it) and the session name the sessions (`/resume`); each is underlined under the pointer, and `Esc` closes the list.
+The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`. On the keys row, `todo d/t` opens the todo list (`/todo`), `⚙ N jobs` the jobs window with their output (`/jobs`), `⊕ mem` the shared memory that waits (`/shared-memory list`), `◷ N queued` the queued messages (`/queue`; pick one to edit it) and the session name the sessions (`/resume`); each is underlined under the pointer, and `Esc` closes the list.
+
+In the `/usage` window the **Usage** tab ends with "What's contributing to your usage?". nexo reads the sessions saved on this machine in the background and ranks what cost the most as a percentage, each row with one change under it: calls that carried over 150k tokens of context, cache misses, the tools whose output was re-sent most, spend by model and by project, and (for sessions recorded by this version) the history the curator left out. A table lists the biggest sessions by cost and cache hit, each named by its folder and the day it was last used. `d`, `w` and `m` pick today, the last 7 days or the last 30; switching never reads again. Shares overlap, so they do not add up to 100%, and the figures cover only the sessions on this machine.
+
 Scrolling eases out, new blocks fade in, dialogs and the palette pop open and a glow runs along the line
 under a working agent; `[ui] animations = false` turns all motion off (everything lands at once).
 Messages and replies carry a dim `HH:MM` at the right of their first line, and a reply its duration once it ends;
@@ -214,7 +217,7 @@ the briefing's tokens once, then read from the cache on every later call of the 
 returns at once with its job id; `task` with `background: true` does the same for a sub-agent that changes
 nothing (one that can change files runs in the foreground, so it never edits beside another). The model goes
 on with its work and uses the `jobs` tool to list jobs, read new output (optionally waiting for it) or kill
-one. When a job ends, the model is told once, and if it was idle it wakes up to look. `/jobs` lists them,
+one. When a job ends, the model is told once, and if it was idle it wakes up to look. `/jobs` opens a window with them and the end of their output,
 `/jobs kill [id]` stops one (or all), and the status line shows `⚙ N jobs` while any runs. In a `-p` run,
 jobs still running when the model finishes are stopped.
 
@@ -295,11 +298,15 @@ tool (`[ ]`, `[>]`, `[x]`); the interface shows it in the panel (`Ctrl+B`)
 and it comes back on resume. With the `note` tool it keeps what it learnt
 (`Finding:`, `Plan:`, `Rule:` lines): the call changes nothing, the context
 policy keeps the lines with the first message once their message leaves. `/goal <text>` pins a goal and starts working on
-it; while a turn runs it is pinned and checked when the turn ends. When a
-reply ends without the line `GOAL DONE` the agent continues by itself, up to
-five rounds (`NEXO_GOAL_ROUNDS`), but stops as soon as a continuation does
-nothing new (no tool call), so a model that is done is not nagged; `/goal
-off` clears it. The curator takes care of what the model *remembers*; the
+it; while a turn runs it is pinned and checked when the turn ends. The model first
+restates it as you mean it (what, why, how, when it is done) and works from that,
+so a goal typed in a hurry still gets a clear finish line. When a reply ends
+without the line `GOAL DONE` the agent continues by itself, up to five rounds
+(`NEXO_GOAL_ROUNDS`). It stops and tells you why when it needs you (a question
+waits for your answer, and your answer resumes it), when you press Esc, when a
+turn fails or when a round does nothing new; `/goal resume` goes on, `/goal
+pause` holds it, `/goal off` clears it. A question you send while it works is
+answered before the work goes on. The curator takes care of what the model *remembers*; the
 list and the goal take care of what it is *aiming at*.
 
 ### Plan mode and questions

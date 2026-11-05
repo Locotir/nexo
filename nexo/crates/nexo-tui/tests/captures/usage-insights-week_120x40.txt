@@ -1,0 +1,40 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ●─╮ ╭─●   nexo 0.1.0                                                     │
+│   ╰●╯     deepseek/deepseek-chat · ask                                   │
+│ ●─╯ ╰─●   /tmp/proj╭ usage ────────────────────────────────────────────────────────────────[✗]──╮
+│                    │  1 Context   2 Usage   3 Session                                           │
+│ /model sets up a mo│ ────────────────────────────────────────────────────────────────────────── │
+╰────────────────────│ What's contributing to your usage?                                         │
+                     │ Approximate · sessions on this machine only                                │
+                     │  today  [7 days]  30 days                                            d w m │
+                     │                                                                            │
+                     │ 9 sessions · 120 calls · $5.12                                             │
+                     │                                                                            │
+                     │ █████░░░  62%  Long context                                                ┃
+                     │                4 sessions over 150k · 31 calls                             ┃
+                     │                Start fresh or let the curator set more aside.              ┃
+                     │ ███▎░░░░  41%  Bash output                                                 ┃
+                     │                top: cargo test · 18 runs                                   ┃
+                     │                Pipe through head or tail, or let the curator trim it.      ┃
+                     │ █▉░░░░░░  24%  Cache misses                                                ┃
+                     │                23 re-sends · 310k tokens                                   ┃
+                     │                2 expected rebuilds not counted                             ┃
+                     │                Pauses past the cache lifetime or edits early in the        ┃
+                     │                prompt re-send everything.                                  ┃
+                     │ ██████▍░  80%  of spend on model-x  $4.10                                  ┃
+                     │                Use a cheaper model for routine steps.                      ┃
+                     │ █▊░░░░░░  22%  Curator left out 1.20M                                      ┃
+                     │                                                                            ┃
+                     │ Biggest sessions                                                cost cache ┃
+                     │ login · today                                                  $1.82   71% ┃
+                     │ exporter · yesterday                                           $0.94   88% ┃
+                     │ a-folder-name-far-too-long-for-its-column · Oct 23             $0.10   n/a │
+                     │ Tab switch · ↑↓ scroll · d/w/m period · Esc close  ↓                       │
+                     ╰────────────────────────────────────────────────────────────────────────────╯
+
+
+
+─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+›   ask anything
+ Esc close
+ nexo │ deepseek/deepseek-chat │ /tmp/project │ ask │ ━━━━━━━━ ~0% 0                                         Σ 0 billed

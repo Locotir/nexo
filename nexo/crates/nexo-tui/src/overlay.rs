@@ -9,6 +9,8 @@ use ratatui::text::{Line, Span};
 
 use crate::app::App;
 use crate::render::blocks::fmt_k;
+use nexo_agent::session_scan::Period;
+
 use crate::render::wrap::truncate;
 use crate::theme::{mix, Theme};
 
@@ -35,6 +37,10 @@ pub struct Info {
     pub hover: bool,
     /// Drawn whole at once, with no opening or filling in (`[ui] animations = false`).
     pub still: bool,
+    /// The days the insights of the usage tab cover.
+    pub period: Period,
+    /// The scan the window's size was last worked out for: a newer one asks for it again.
+    pub measured: Option<(Period, u64)>,
 }
 
 impl Info {
@@ -50,6 +56,8 @@ impl Info {
             tabs: Vec::new(),
             hover: false,
             still: false,
+            period: Period::Week,
+            measured: None,
         }
     }
 
@@ -119,10 +127,10 @@ pub fn bar(share: f64, cells: usize) -> (String, String) {
 }
 
 /// The lines of tab `tab` at `w` columns; `t` (0..1) is how far its figures have filled in.
-pub fn lines(app: &App, tab: usize, w: usize, t: f64) -> Vec<Line<'static>> {
+pub fn lines(app: &App, tab: usize, w: usize, t: f64, period: Period) -> Vec<Line<'static>> {
     match tab {
         0 => context_lines(app, w, t),
-        1 => usage_lines(app, w, t),
+        1 => usage_lines(app, w, t, period),
         _ => session_lines(app, w),
     }
 }
@@ -283,7 +291,7 @@ pub fn sparkline(values: &[u64], w: usize, t: f64) -> String {
         .collect()
 }
 
-fn usage_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
+fn usage_lines(app: &App, w: usize, t: f64, period: Period) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let u = app.session_usage;
     let mut out = Vec::new();
@@ -349,6 +357,8 @@ fn usage_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
             out.push(Line::from(spans));
         }
     }
+    out.push(Line::default());
+    out.extend(crate::insights::lines(theme, &app.insights.view(), period, w, t, crate::insights::home().as_deref()));
     out
 }
 

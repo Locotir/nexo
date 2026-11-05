@@ -47,6 +47,11 @@ impl Slot {
         (k.w.min(room.width), k.h.min(room.height))
     }
 
+    /// Works the size out again at the next frame (the content changed under the same dialog).
+    pub fn remeasure(&mut self) {
+        self.kept = None;
+    }
+
     /// The dialog went away: the next one starts afresh.
     pub fn forget(&mut self) {
         self.kept = None;
@@ -74,6 +79,7 @@ pub fn modal_key(m: &Modal) -> u64 {
         Modal::Setup(s) => (4u8, format!("{:?}", s.step)).hash(&mut h),
         Modal::Info(_) => 5u8.hash(&mut h),
         Modal::Agents(v) => (6u8, v.size_key()).hash(&mut h),
+        Modal::Jobs(_) => 7u8.hash(&mut h),
     }
     h.finish()
 }

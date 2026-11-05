@@ -14,6 +14,7 @@ use nexo_core::message::{Message, Part, Role};
 use nexo_core::paths;
 use nexo_core::stream::Usage;
 use nexo_core::tool::ToolOutput;
+use nexo_core::GoalState;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +38,30 @@ pub struct SessionMeta {
     pub fork_at: Option<usize>,
 }
 
+/// Whose model call a `usage` line pays for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageKind {
+    /// The conversation's own call.
+    Main,
+    /// A sub-agent.
+    Sub,
+    /// The reader that digests a large tool output.
+    Reader,
+    /// A compaction.
+    Compact,
+    /// Everything spent so far, written in one line when the file is rewritten.
+    Sum,
+}
+
+/// What a `usage` line says besides the counts; every field is optional on disk.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageMeta {
+    pub model: Option<String>,
+    pub kind: Option<UsageKind>,
+    pub held: Option<u64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Line {
@@ -53,6 +78,18 @@ enum Line {
     Usage {
         usage: Usage,
         cost_usd: f64,
+        /// When the call was paid (RFC 3339); old files have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ts: Option<String>,
+        /// The model that answered; old files have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Whose call it was; old files have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<UsageKind>,
+        /// Tokens of the history the view left out at this call; old files have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        held: Option<u64>,
     },
     Title {
         title: String,
@@ -61,9 +98,11 @@ enum Line {
         provider: String,
         model: String,
     },
-    /// The goal in force from here on (None: cleared).
+    /// The goal in force from here on (None: cleared), and where it stands (active when absent).
     Goal {
         text: Option<String>,
+        #[serde(default, skip_serializing_if = "GoalState::is_active")]
+        state: GoalState,
     },
     Reset,
 }
@@ -77,6 +116,7 @@ pub struct Session {
     cost: f64,
     file: Option<File>,
     goal: Option<String>,
+    goal_state: GoalState,
     /// Whether this session holds the lock next to its file (taken at the first write).
     locked: bool,
     /// When the lock was last touched by this session.
@@ -610,6 +650,7 @@ impl Session {
             cost: 0.0,
             file: Some(file),
             goal: None,
+            goal_state: GoalState::Active,
             locked: true,
             touched: std::time::Instant::now(),
             open_tail: false,
@@ -641,6 +682,7 @@ impl Session {
             cost: 0.0,
             file: None,
             goal: None,
+            goal_state: GoalState::Active,
             locked: false,
             touched: std::time::Instant::now(),
             open_tail: false,
@@ -670,13 +712,14 @@ impl Session {
         let mut usage = Usage::default();
         let mut cost = 0.0;
         let mut goal = None;
+        let mut goal_state = GoalState::Active;
         for l in lines {
             match serde_json::from_str::<Line>(&l) {
                 Ok(Line::Message { message, .. }) => messages.push(message),
                 Ok(Line::ToolOutput { call_id, output }) => {
                     outputs.insert(call_id, output);
                 }
-                Ok(Line::Usage { usage: u, cost_usd }) => {
+                Ok(Line::Usage { usage: u, cost_usd, .. }) => {
                     usage += u;
                     cost += cost_usd;
                 }
@@ -685,7 +728,10 @@ impl Session {
                     meta.provider = provider;
                     meta.model = model;
                 }
-                Ok(Line::Goal { text }) => goal = text,
+                Ok(Line::Goal { text, state }) => {
+                    goal = text;
+                    goal_state = state;
+                }
                 Ok(Line::Reset) => messages.clear(),
                 Ok(Line::Meta(_)) => {}
                 Err(_) => {} // a cut line: whatever was being written when the process died
@@ -702,6 +748,7 @@ impl Session {
             cost,
             file: Some(file),
             goal,
+            goal_state,
             locked: false,
             touched: std::time::Instant::now(),
             // a process killed mid-write leaves a last line without its end
@@ -864,9 +911,22 @@ impl Session {
     }
 
     pub fn record_usage(&mut self, usage: Usage, cost_usd: f64) -> anyhow::Result<()> {
+        self.record_usage_meta(usage, cost_usd, UsageMeta::default())
+    }
+
+    /// [`Session::record_usage`] with the time, and what else is known of the call (the insights of
+    /// the usage window read them; old readers ignore them).
+    pub fn record_usage_meta(&mut self, usage: Usage, cost_usd: f64, meta: UsageMeta) -> anyhow::Result<()> {
         self.usage += usage;
         self.cost += cost_usd;
-        self.write(&Line::Usage { usage, cost_usd })
+        self.write(&Line::Usage {
+            usage,
+            cost_usd,
+            ts: Some(now()),
+            model: meta.model,
+            kind: meta.kind,
+            held: meta.held,
+        })
     }
 
     pub fn record_model(&mut self, provider: &str, model: &str) -> anyhow::Result<()> {
@@ -880,9 +940,22 @@ impl Session {
         self.goal.as_deref()
     }
 
+    /// Where the goal stands, as last recorded.
+    pub fn goal_state(&self) -> &GoalState {
+        &self.goal_state
+    }
+
+    /// A new goal (or none): it starts active.
     pub fn record_goal(&mut self, text: Option<&str>) -> anyhow::Result<()> {
         self.goal = text.map(String::from);
-        self.write(&Line::Goal { text: text.map(String::from) })
+        self.goal_state = GoalState::Active;
+        self.write(&Line::Goal { text: self.goal.clone(), state: GoalState::Active })
+    }
+
+    /// The same goal, standing elsewhere (paused, waiting, met, active again).
+    pub fn record_goal_state(&mut self, state: GoalState) -> anyhow::Result<()> {
+        self.goal_state = state.clone();
+        self.write(&Line::Goal { text: self.goal.clone(), state })
     }
 
     pub fn set_title(&mut self, title: &str) -> anyhow::Result<()> {
@@ -964,10 +1037,25 @@ impl Session {
                 )?;
             }
             if !self.usage.is_empty() || self.cost > 0.0 {
-                writeln!(f, "{}", serde_json::to_string(&Line::Usage { usage: self.usage, cost_usd: self.cost })?)?;
+                writeln!(
+                    f,
+                    "{}",
+                    serde_json::to_string(&Line::Usage {
+                        usage: self.usage,
+                        cost_usd: self.cost,
+                        ts: Some(now()),
+                        model: None,
+                        kind: Some(UsageKind::Sum),
+                        held: None,
+                    })?
+                )?;
             }
             if self.goal.is_some() {
-                writeln!(f, "{}", serde_json::to_string(&Line::Goal { text: self.goal.clone() })?)?;
+                writeln!(
+                    f,
+                    "{}",
+                    serde_json::to_string(&Line::Goal { text: self.goal.clone(), state: self.goal_state.clone() })?
+                )?;
             }
             f.sync_all()?;
             Ok(())
@@ -1024,6 +1112,9 @@ impl Session {
         }
         if self.goal.is_some() {
             f.record_goal(self.goal.as_deref())?; // on disk too, so a resumed fork keeps it
+            if !self.goal_state.is_active() {
+                f.record_goal_state(self.goal_state.clone())?;
+            }
         }
         Ok(f)
     }
@@ -1239,6 +1330,38 @@ mod tests {
             vec![mk("a", None, "1"), mk("c", Some("a"), "3"), mk("b", Some("a"), "2"), mk("z", Some("gone"), "9")];
         let t: Vec<(usize, String)> = tree(&metas).into_iter().map(|(d, m)| (d, m.id)).collect();
         assert_eq!(t, vec![(0, "z".into()), (0, "a".into()), (1, "c".into()), (1, "b".into())]);
+    }
+
+    #[test]
+    fn usage_lines_say_when_whose_and_how_much_was_held_and_old_readers_still_read_them() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), &PathBuf::from("/p"), "mock", "m1").unwrap();
+        s.append(&Message::user("hello there")).unwrap();
+        let meta = UsageMeta { model: Some("m1".into()), kind: Some(UsageKind::Main), held: Some(42) };
+        s.record_usage_meta(Usage { input: 5, ..Default::default() }, 0.5, meta).unwrap();
+        s.record_usage(Usage { input: 1, ..Default::default() }, 0.25).unwrap();
+        let text = std::fs::read_to_string(s.path()).unwrap();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .filter(|v: &serde_json::Value| v["type"] == "usage")
+            .collect();
+        assert_eq!(
+            (lines[0]["kind"].as_str(), lines[0]["model"].as_str(), lines[0]["held"].as_u64()),
+            (Some("main"), Some("m1"), Some(42))
+        );
+        assert!(lines[0]["ts"].as_str().is_some_and(|t| t.contains('T')));
+        assert!(lines[1].get("kind").is_none() && lines[1].get("held").is_none(), "unknown stays unwritten");
+        // a file with none of the new fields (an older nexo) reads as before
+        let old = text.replace(",\"kind\":\"main\"", "").replace(",\"held\":42", "");
+        std::fs::write(s.path(), old).unwrap();
+        let mut back = Session::open_path(s.path()).unwrap();
+        assert_eq!(back.usage().input, 6);
+        // a rewrite keeps the totals in one line marked as a sum
+        back.rewind(1).unwrap();
+        let text = std::fs::read_to_string(back.path()).unwrap();
+        let sums = text.lines().filter(|l| l.contains("\"type\":\"usage\"") && l.contains("\"kind\":\"sum\"")).count();
+        assert_eq!(sums, 1, "{text}");
     }
 
     #[test]

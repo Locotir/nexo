@@ -153,18 +153,29 @@ session file (`{"type":"goal"}`, restored on resume), answers with `Goal {
 text, round: 0, max }` and **starts the work**: when no turn runs, the goal
 text is submitted as the request (`Goal: <text>`); while a turn runs it is
 only pinned (a notice says so) and checked when that turn ends; with requests
-queued it runs after them. When a turn ends on its own (`Done`) and the reply
-does not declare the goal done (`GOAL DONE` as its last non-empty line, or
-anywhere in its last 200 characters, case-insensitive), the agent submits
-`The goal is not marked done yet. Keep working on it…` by itself, once per
-round, up to `max` rounds (5; `NEXO_GOAL_ROUNDS`), with a `Goal` event and a
-notice per round. The first continuation always runs; a continuation round
-that called no tool did nothing new, so the loop stops there with a notice
-instead of asking again; after the last round a warning says the goal is
-still open. Whenever the loop stops (done, nothing to do, cap) the rounds go
-back to 0 in the `Goal` event and the goal stays set (`/goal off` clears it);
-a new request from the person resets the rounds too; an interrupt stops the
-continuation. Queued requests run before a continuation.
+queued it runs after them. The goal starts as the person's words, sent as
+`[goal set] <words>`; the pinned text asks the model to call `goal_brief` once
+(`want`, `why`, `how`, `done`), and from then on that restatement
+(`Want: …\nWhy: …\nHow: …\nDone when: …`) is the goal, in the system prompt,
+the session and the `Goal` event; the person's words are not kept as the goal.
+The model calls `goal_brief` again when the person changes what they want.
+A goal is in one of four states (`GoalState`): `active`, `waiting`,
+`paused(why)` or `done`; only an active goal continues. When a turn ends the
+loop settles it (`goal_settle`, before the inbox): an interrupt or a failed
+turn pauses it, the tool-round limit pauses it, a reply that declares
+`GOAL DONE` (last non-empty line, or anywhere in its last 200 characters) marks
+it done, and a reply that asks (`GOAL WAIT`, or a last line ending in `?`)
+makes it wait. A waiting goal goes back to active with the person's next
+message, whether it starts a turn or joins one; a paused or done goal stays
+so until `/goal resume` (`ResumeGoal`, which starts a continuation when idle)
+or a new `/goal`. `/goal pause` (`PauseGoal`) holds it. An active goal whose
+reply declared nothing gets `[goal: continue]`, once per round, up to `max`
+rounds (5; `NEXO_GOAL_ROUNDS`); the rules for that mark live in the pinned
+goal, so the request stays one short line and the TUI shows it as a notice,
+not as the person's message. A continuation round that called no tool did
+nothing new and pauses the goal; after the last round it pauses too. The
+state persists in the session and comes back on resume. Queued requests run
+before a continuation.
 
 Permission rules: `tool` (any call of it), `tool(glob)` where the glob is
 matched against the call's target: the command for `bash` (prefix globs such
@@ -354,7 +365,7 @@ with values: `SetPricing`, prices per million tokens), `/permissions [mode]`,
 `/yolo` (auto mode), `/prompt` (the system prompt as sent, shown as a card),
 `/prompt edit` (the TUI steps aside, `$VISUAL`/`$EDITOR`/`nano`/`vi` opens
 `~/.nexo/prompt.md`, created from the current prompt when missing,
-and the TUI returns), `/goal <text>` (`SetGoal`; alone it shows the goal,
+and the TUI returns), `/goal <text>` (`SetGoal`; alone it shows the goal, `pause` and `resume` hold and restart it,
 `off` clears it), `/compact`, `/clear`, `/resume` (picker; resumes in
 place), `/rewind`, `/export [path]`, `/rename <name>` (the title the pickers show), `/diff`, `/cost`, `/context` (what the
 next call will see), `/theme [name]` (picker with live preview; the choice is

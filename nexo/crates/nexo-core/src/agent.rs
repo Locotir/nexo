@@ -113,6 +113,11 @@ pub enum AgentCommand {
     SetGoal {
         text: Option<String>,
     },
+    /// Hold the goal: the turn in progress finishes, no continuation starts after it; answered with `Goal`.
+    PauseGoal,
+    /// Work on the goal again (after a pause, a wait or its end), the rounds counted from zero; when
+    /// nothing runs, a continuation starts now; answered with `Goal`.
+    ResumeGoal,
     /// Give the session a name (kept in its file; shown by the pickers); answered with `SessionChanged`.
     Rename {
         title: String,
@@ -179,6 +184,8 @@ pub enum AgentCommand {
     },
     /// Ask for the background jobs; answered with `Jobs` and a `Notice`.
     ShowJobs,
+    /// Ask for the end of the output of every background job; answered with `JobTails`.
+    JobTails,
     Shutdown,
 }
 
@@ -188,6 +195,36 @@ pub enum Level {
     Info,
     Warn,
     Error,
+}
+
+/// What the loop sends in the person's place to start a goal; the person's words follow it.
+pub const GOAL_SET_MARK: &str = "[goal set]";
+/// What the loop sends in the person's place to keep a goal going.
+pub const GOAL_CONTINUE_MARK: &str = "[goal: continue]";
+/// How a goal the agent restated (`goal_brief`) begins.
+pub const GOAL_BRIEF_HEAD: &str = "Want: ";
+
+/// Where a goal stands, which says what happens when a turn ends.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state", content = "why")]
+pub enum GoalState {
+    /// Worked on: a turn that ends without the goal met is followed by a continuation.
+    #[default]
+    Active,
+    /// The model asked the person something it cannot go on without: their next message answers
+    /// it and makes the goal active again.
+    Waiting,
+    /// Held until `/goal resume`, for the reason given (asked for, Esc, an error, a limit, the rounds
+    /// used up, a round that did nothing); messages in between are ordinary turns.
+    Paused(String),
+    /// Declared met: nothing more runs for it until `/goal resume` or a new goal.
+    Done,
+}
+
+impl GoalState {
+    pub fn is_active(&self) -> bool {
+        *self == GoalState::Active
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,6 +475,10 @@ pub enum AgentEvent {
     Jobs {
         jobs: Vec<crate::jobs::JobInfo>,
     },
+    /// The end of the output of each background job, answering `JobTails`.
+    JobTails {
+        tails: Vec<crate::jobs::JobTail>,
+    },
     /// The system prompt of this session, as the model receives it.
     SystemPrompt {
         text: String,
@@ -492,11 +533,13 @@ pub enum AgentEvent {
         current: Option<String>,
         levels: Vec<String>,
     },
-    /// The goal in force (None: cleared) and the continuation round out of the maximum.
+    /// The goal in force (None: cleared), the continuation round out of the maximum, and where it stands.
     Goal {
         text: Option<String>,
         round: u32,
         max: u32,
+        #[serde(default)]
+        state: GoalState,
     },
     Shutdown,
 }

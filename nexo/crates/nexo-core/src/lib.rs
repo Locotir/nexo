@@ -38,7 +38,7 @@ pub fn count(n: usize, word: &str) -> String {
 
 pub use agent::{
     AgentCommand, AgentEvent, CallMark, CellKind, CellState, CommandRx, CommandTx, ContextCell, ContextZone, EventRx,
-    EventTx, Level, TurnEnd,
+    EventTx, GoalState, Level, TurnEnd,
 };
 pub use config::{Config, ProviderConfig, WebConfig};
 pub use error::{is_context_error, ErrorKind, ProviderError};

@@ -8,7 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use nexo_agent::{AgentSetup, ModelClient};
-use nexo_core::agent::{channels, AgentCommand, AgentEvent, AgentHandle, Level, TurnEnd};
+use nexo_core::agent::{channels, AgentCommand, AgentEvent, AgentHandle, GoalState, Level, TurnEnd};
 use nexo_core::config::{Config, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::message::{Message, Part, Role};
@@ -1445,7 +1445,14 @@ async fn an_unknown_model_is_reported_with_the_closest_names() {
 
 fn goal_of(evs: &[AgentEvent]) -> Option<(Option<String>, u32, u32)> {
     evs.iter().rev().find_map(|e| match e {
-        AgentEvent::Goal { text, round, max } => Some((text.clone(), *round, *max)),
+        AgentEvent::Goal { text, round, max, .. } => Some((text.clone(), *round, *max)),
+        _ => None,
+    })
+}
+
+fn goal_state_of(evs: &[AgentEvent]) -> Option<GoalState> {
+    evs.iter().rev().find_map(|e| match e {
+        AgentEvent::Goal { state, .. } => Some(state.clone()),
         _ => None,
     })
 }
@@ -1461,8 +1468,7 @@ fn user_texts(evs: &[AgentEvent]) -> Vec<String> {
         .collect()
 }
 
-const CONTINUE: &str = "The goal is not marked done yet. Keep working on it. When it is fully met, end your reply \
-                        with the single line GOAL DONE; if nothing is left to do, say so and end with that line.";
+const CONTINUE: &str = "[goal: continue]";
 
 #[tokio::test]
 async fn a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done() {
@@ -1482,7 +1488,7 @@ async fn a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done() {
     assert_eq!(goal_of(&evs), Some((Some("make the tests pass".into()), 0, 5)));
     // /goal starts the work by itself: the goal is the first request
     let t1 = r.turn().await;
-    assert_eq!(user_texts(&t1), vec!["Goal: make the tests pass"]);
+    assert_eq!(user_texts(&t1), vec!["[goal set] make the tests pass"]);
     assert_eq!(text_of(&t1), "working on it");
     // the agent continues by itself, twice, then the model declares the goal met (with a closing sentence)
     let t2 = r.turn().await;
@@ -1494,9 +1500,58 @@ async fn a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done() {
     let after = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&after), Some((Some("make the tests pass".into()), 0, 5)));
     assert!(after.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("goal met"))));
+    assert_eq!(goal_state_of(&after), Some(GoalState::Done));
     let reqs = client.requests();
     assert_eq!(reqs.len(), 5);
-    assert!(reqs.iter().all(|q| q.system.contains("Goal: make the tests pass\n")));
+    assert!(reqs.iter().all(|q| q.system.contains("Goal, in the person's words: make the tests pass\n")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
+    let dir = tempfile::tempdir().unwrap();
+    let brief = json!({
+        "want": "every test in the workspace passes",
+        "why": "the release is blocked on red tests",
+        "how": "fix the code, not the tests; keep the style",
+        "done": "cargo test shows 0 failed"
+    });
+    let client =
+        Scripted::new(vec![Reply::Events(call("g1", "goal_brief", brief)), Reply::Events(text("on it\nGOAL DONE"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    r.send(AgentCommand::SetGoal { text: Some("tests green pls".into()) });
+    let t1 = r.turn().await;
+    let want =
+        "Want: every test in the workspace passes\nWhy: the release is blocked on red tests\nHow: fix the code, \
+                not the tests; keep the style\nDone when: cargo test shows 0 failed";
+    assert!(t1.iter().any(|e| matches!(e, AgentEvent::Goal { text: Some(t), .. } if t == want)));
+    let reqs = client.requests();
+    assert!(reqs[0].system.contains("Goal, in the person's words: tests green pls\n"));
+    assert!(reqs[0].tools.iter().any(|t| t.name == "goal_brief"));
+    // from the next request on, the restatement stands in for the person's words
+    assert!(reqs[1].system.contains(&format!("Goal, as the person means it:\n{want}\n")));
+    assert!(!reqs[1].system.contains("tests green pls"));
+    r.stop().await;
+    // a resumed session keeps the restatement
+    let client = Scripted::new(vec![]);
+    let mut r = start(client, config(PermissionMode::Auto), Some(id), dir.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_of(&evs).and_then(|g| g.0), Some(want.to_string()));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn without_a_goal_there_is_no_goal_brief_to_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("hi"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    r.turn().await;
+    assert!(!client.requests()[0].tools.iter().any(|t| t.name == "goal_brief"));
     r.stop().await;
 }
 
@@ -1510,9 +1565,7 @@ async fn a_goal_set_while_a_turn_runs_only_pins_it() {
     r.send(AgentCommand::SetGoal { text: Some("finish it".into()) });
     let t1 = r.turn().await;
     assert_eq!(user_texts(&t1), vec!["go"], "no second request while the turn runs");
-    assert!(t1
-        .iter()
-        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("goal applies from now"))));
+    assert!(t1.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("applies from now"))));
     // the goal is checked when that turn ends: the first continuation runs
     let t2 = r.turn().await;
     assert!(user_texts(&t2).contains(&CONTINUE.to_string()));
@@ -1533,9 +1586,10 @@ async fn a_continuation_without_tool_calls_ends_the_goal_loop() {
     assert_eq!(goal_of(&t2).map(|g| g.1), Some(1));
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&evs), Some((Some("tidy up".into()), 0, 5)), "rounds reset");
-    assert!(evs.iter().any(
-        |e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("goal: the model reports nothing more"))
-    ));
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("the last round did nothing new".into())));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("goal paused: the last round"))));
     r.send(AgentCommand::Shutdown);
     let rest = r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
     assert!(!rest.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })));
@@ -1562,10 +1616,12 @@ async fn the_goal_stops_after_its_rounds_and_when_cleared() {
         let t = r.turn().await;
         assert_eq!(goal_of(&t).map(|g| g.1), Some(round), "round {round}");
     }
-    let warned = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("still open"))).await;
+    let warned =
+        r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("rounds without GOAL DONE"))).await;
     assert!(!warned.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })));
     let reset = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&reset).map(|g| g.1), Some(0), "rounds reset after the cap");
+    assert_eq!(goal_state_of(&reset), Some(GoalState::Paused("5 rounds without GOAL DONE".into())));
     assert_eq!(client.requests().len(), 11, "the first turn and five continuations of two requests each");
     // clearing the goal: a turn ends and nothing follows
     r.send(AgentCommand::SetGoal { text: None });
@@ -1597,6 +1653,130 @@ async fn a_resumed_session_brings_its_goal_back() {
     let mut r = start(client, config(PermissionMode::Auto), Some(id), dir.path()).await;
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&evs), Some((Some("keep it green".into()), 0, 5)));
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Done), "a met goal is still met after a resume");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_reply_that_asks_waits_for_the_answer_and_the_answer_resumes_the_goal() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("Two branches could take the fix.\n\n**Which one should I use, `main` or `next`?**")),
+        Reply::Events(call("c1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(text("fixed on main")),
+        Reply::Events(text("all green\nGOAL DONE")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("fix the bug".into()) });
+    r.turn().await;
+    // the question stops the loop: no continuation answers it in the person's place
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("waiting for your answer"))));
+    assert_eq!(client.requests().len(), 1);
+    // the answer makes the goal active again, and the loop goes on after it
+    r.send(AgentCommand::Submit { text: "main".into(), attachments: vec![] });
+    let t2 = r.turn().await;
+    assert_eq!(goal_state_of(&t2), Some(GoalState::Active));
+    assert_eq!(user_texts(&t2), vec!["main"]);
+    let t3 = r.turn().await;
+    assert!(user_texts(&t3).contains(&CONTINUE.to_string()));
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Done));
+    assert_eq!(client.requests().len(), 4);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_met_goal_is_not_restarted_by_the_next_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("done\nGOAL DONE")), Reply::Events(text("you're welcome"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("ship it".into()) });
+    r.turn().await;
+    r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    r.send(AgentCommand::Submit { text: "thanks".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Shutdown);
+    let rest = r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    assert!(!rest.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })), "no continuation after a met goal");
+    assert_eq!(client.requests().len(), 2);
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn esc_and_a_failed_turn_pause_the_goal_and_resume_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Hang(vec![StreamEvent::TextDelta("half".into())]),
+        Reply::Err(ProviderError::new(ErrorKind::BadRequest, "bad request")),
+        Reply::Events(text("all set\nGOAL DONE")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::SetGoal { text: Some("tidy up".into()) });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Interrupt);
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Interrupted);
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("interrupted".into())));
+    // resume starts a continuation at once; it fails, and the goal pauses again instead of looping
+    r.send(AgentCommand::ResumeGoal);
+    let t = r.turn().await;
+    assert_eq!(goal_state_of(&t), Some(GoalState::Active));
+    assert_eq!(user_texts(&t), vec![CONTINUE.to_string()]);
+    assert_eq!(end_of(&t), TurnEnd::Error);
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("the turn failed".into())));
+    r.send(AgentCommand::ResumeGoal);
+    r.turn().await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Done));
+    assert_eq!(client.requests().len(), 3);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_paused_goal_holds_through_messages_until_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("I need one thing from you.\nGOAL WAIT")),
+        Reply::Events(text("noted")),
+        Reply::Events(text("finished\nGOAL DONE")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    };
+    r.send(AgentCommand::SetGoal { text: Some("clean the logs".into()) });
+    r.turn().await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Waiting), "GOAL WAIT waits as a question does");
+    r.send(AgentCommand::PauseGoal);
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("paused by you".into())));
+    // a message while paused is answered, and nothing more starts
+    r.send(AgentCommand::Submit { text: "note this".into(), attachments: vec![] });
+    let t = r.turn().await;
+    assert_eq!(goal_state_of(&t), None, "the message does not touch a paused goal");
+    r.stop().await;
+    assert_eq!(client.requests().len(), 2);
+
+    // the pause is kept with the session; resume goes on
+    let mut r = start(client.clone(), config(PermissionMode::Auto), Some(id), dir.path()).await;
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("paused by you".into())));
+    r.send(AgentCommand::ResumeGoal);
+    let t = r.turn().await;
+    assert_eq!(user_texts(&t), vec![CONTINUE.to_string()]);
+    let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
+    assert_eq!(goal_state_of(&evs), Some(GoalState::Done));
+    assert_eq!(client.requests().len(), 3);
     r.stop().await;
 }
 
@@ -2800,5 +2980,35 @@ async fn replies_of_only_reasoning_stop_after_two_asks() {
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
     assert_eq!(client.requests().len(), 3);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn asking_for_the_job_tails_answers_with_the_end_of_each_output() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "echo hi", "background": true}))),
+        Reply::Events(text("started")),
+        Reply::Events(text("saw it")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client, config(PermissionMode::Auto), None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run it in the background".into(), attachments: vec![] });
+    loop {
+        if matches!(r.raw().await, AgentEvent::Idle { running_jobs: 0 }) {
+            break;
+        }
+    }
+    r.send(AgentCommand::JobTails);
+    loop {
+        if let AgentEvent::JobTails { tails } = r.raw().await {
+            assert_eq!(tails.len(), 1);
+            assert_eq!(tails[0].id, 1);
+            assert_eq!(tails[0].text, "hi");
+            assert!(tails[0].ended_ago_ms.is_some());
+            break;
+        }
+    }
     r.stop().await;
 }

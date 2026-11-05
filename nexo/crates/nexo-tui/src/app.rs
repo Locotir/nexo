@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nexo_core::agent::{
-    AgentCommand, AgentEvent, Attachment, CallMark, CommandTx, ContextCell, ContextZone, Level, TurnEnd,
+    AgentCommand, AgentEvent, Attachment, CallMark, CommandTx, ContextCell, ContextZone, GoalState, Level, TurnEnd,
 };
 use nexo_core::message::{result_text, Message, Part, Role};
 use nexo_core::permission::{PermissionDecision, PermissionMode, PermissionRequest};
@@ -63,6 +63,24 @@ pub struct ContextInfo {
 }
 
 /// What is known of the model in use (from the agent's `ModelLimits`).
+/// The goal in force as the agent last told it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Goal {
+    pub text: String,
+    /// The continuation round in progress (0: none) and the most there are.
+    pub round: u32,
+    pub max: u32,
+    pub state: GoalState,
+}
+
+impl Goal {
+    /// The goal in one line: what the agent restated the person wants, or their own words.
+    pub fn headline(&self) -> &str {
+        let first = self.text.lines().next().unwrap_or_default();
+        first.strip_prefix(nexo_core::agent::GOAL_BRIEF_HEAD).unwrap_or(first)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Limits {
     pub pricing: Option<Pricing>,
@@ -264,8 +282,8 @@ pub struct App {
     pending_stamps: VecDeque<String>,
     /// The task list the model keeps (the latest `todo` output).
     pub todo: Vec<TodoItem>,
-    /// The goal in force: its text, the continuation round and the maximum.
-    pub goal: Option<(String, u32, u32)>,
+    /// The goal in force: its text, rounds and state.
+    pub goal: Option<Goal>,
     /// The scrollbars of the last frame: the transcript's, and the one of the dialog on top.
     pub transcript_bar: Option<Bar>,
     pub modal_bar: Option<Bar>,
@@ -289,6 +307,8 @@ pub struct App {
     pub status_hits: Vec<(Rect, StatusHit)>,
     /// `[ui] status_command`: the script that draws the bar, its last good line, when it runs.
     pub status_cmd: Option<crate::status_cmd::StatusCommand>,
+    /// The sessions read for the usage window's insights.
+    pub insights: crate::insights::Scanner,
     /// Turns ended this run: the bar's script runs again after each.
     pub turns_ended: u64,
     /// When the palette and the dialog on top opened: they pop in.
@@ -480,6 +500,7 @@ impl App {
             pill: Rect::default(),
             status_hits: Vec::new(),
             status_cmd: crate::status_cmd::StatusCommand::new(&opts.status_command, &opts.cwd),
+            insights: crate::insights::Scanner::default(),
             turns_ended: 0,
             palette_at: None,
             modal_at: None,
@@ -1196,6 +1217,16 @@ impl App {
         self.push(Block::Notice { level, text: text.into() });
     }
 
+    /// Reads the sessions for the usage window's insights when its tab is on show, and takes the result.
+    pub fn poll_insights(&mut self) {
+        if matches!(&self.modal, Some(Modal::Info(i)) if i.tab == 1) {
+            self.insights.ensure();
+        }
+        if self.insights.poll() {
+            self.dirty = true;
+        }
+    }
+
     /// Runs the bar's script (`[ui] status_command`) when a turn ended or the model changed,
     /// at most once a second, and takes its line when it comes.
     pub fn poll_status_cmd(&mut self) {
@@ -1304,6 +1335,7 @@ impl App {
         self.deliver_supervisor_nudges();
         self.poll_status_cmd();
         self.poll_diffview();
+        self.poll_insights();
         if !self.branch_read.is_some_and(|t| t.elapsed().as_secs() < 5) {
             self.read_branch();
         }
@@ -1388,8 +1420,17 @@ impl App {
                 self.dirty = true;
             }
         }
+        // the jobs window asks for fresh output now and then
+        if let Some(Modal::Jobs(v)) = &mut self.modal {
+            if let Some(cmd) = v.refresh() {
+                self.commands.send(cmd).ok();
+            }
+        }
         // the usage window grows open and its figures fill in
         if matches!(&self.modal, Some(Modal::Info(i)) if i.animating()) {
+            any = true;
+        }
+        if self.insights.running() && matches!(&self.modal, Some(Modal::Info(_))) {
             any = true;
         }
         // the transcript glides, the thumb beats, a palette or a dialog pops open
@@ -1774,16 +1815,22 @@ impl App {
                 self.effort = current;
                 self.effort_levels = levels;
             }
-            AgentEvent::Goal { text, round, max } => {
+            AgentEvent::Goal { text, round, max, state } => {
                 match (&text, &self.goal) {
                     (None, Some(_)) => self.flash("goal cleared"),
                     (Some(t), None) => self.flash(&format!("goal: {}", crate::render::wrap::truncate(t, 40))),
-                    (Some(_), Some((_, r, _))) if round > *r => {
+                    (Some(_), Some(g)) if g.state != state => self.flash(match &state {
+                        GoalState::Active => "goal resumed",
+                        GoalState::Waiting => "goal: waiting for your answer",
+                        GoalState::Paused(_) => "goal paused · /goal resume",
+                        GoalState::Done => "goal met ✓",
+                    }),
+                    (Some(_), Some(g)) if round > g.round => {
                         self.flash(&format!("goal: continuing, round {round}/{max}"))
                     }
                     _ => {}
                 }
-                self.goal = text.map(|t| (t, round, max));
+                self.goal = text.map(|text| Goal { text, round, max, state });
             }
             AgentEvent::SystemPrompt { text } => {
                 self.system_prompt = Some(text.clone());
@@ -1917,8 +1964,17 @@ impl App {
                         self.flash(&format!("job {} {}: {first}", j.id, j.status.plain()));
                     }
                 }
+                if let Some(Modal::Jobs(v)) = &mut self.modal {
+                    v.set_jobs(jobs.clone());
+                    self.commands.send(AgentCommand::JobTails).ok();
+                }
                 self.jobs = jobs;
                 self.dirty = true;
+            }
+            AgentEvent::JobTails { tails } => {
+                if let Some(Modal::Jobs(v)) = &mut self.modal {
+                    v.set_tails(tails);
+                }
             }
             AgentEvent::Idle { .. } => {}
             AgentEvent::Shutdown => self.should_quit = true,
@@ -1951,7 +2007,12 @@ impl App {
                 } else {
                     let text = m.text();
                     self.user_messages.retain(|(i, _)| *i != index);
-                    self.user_messages.push((index, text.clone()));
+                    // the loop's own goal requests are not the person's: nothing to rewind to or repeat
+                    if !text.starts_with(nexo_core::agent::GOAL_SET_MARK)
+                        && text.trim() != nexo_core::agent::GOAL_CONTINUE_MARK
+                    {
+                        self.user_messages.push((index, text.clone()));
+                    }
                     let at = match self.pending_stamps.iter().position(|t| *t == text) {
                         Some(i) => {
                             self.pending_stamps.remove(i);
@@ -1983,6 +2044,13 @@ impl App {
                                         level: Level::Info,
                                         text: format!("earlier conversation summarised · {n} lines"),
                                     });
+                                }
+                                Piece::Goal(words) => {
+                                    let text = match words {
+                                        Some(w) => format!("◎ goal set: {w}"),
+                                        None => "◎ goal · keeps going".to_string(),
+                                    };
+                                    self.push(Block::Notice { level: Level::Info, text });
                                 }
                                 Piece::Text(t) => {
                                     self.push(Block::User { text: t, at: at.take() });
@@ -2711,6 +2779,12 @@ impl App {
         self.modal = Some(Modal::Picker(Picker::new(PickKind::Todo, &title, items, None)));
     }
 
+    /// `/jobs`, a click on `⚙ N jobs`: the window with every background job and its output.
+    pub fn open_jobs(&mut self) {
+        self.modal = Some(Modal::Jobs(Box::new(crate::jobs_view::JobsView::new(self.jobs.clone()))));
+        self.send(AgentCommand::JobTails);
+    }
+
     /// `/queue`: the requests waiting for the turn to end; Enter takes one back into the draft.
     pub fn open_queue(&mut self) {
         if self.queued_msgs.is_empty() {
@@ -2829,11 +2903,27 @@ impl App {
             Command::ContextLive => self.toggle_live(self.term_width),
             Command::Goal(GoalArg::Set(text)) => self.send(AgentCommand::SetGoal { text: Some(text) }),
             Command::Goal(GoalArg::Clear) => self.send(AgentCommand::SetGoal { text: None }),
+            Command::Goal(GoalArg::Pause) => self.send(AgentCommand::PauseGoal),
+            Command::Goal(GoalArg::Resume) => self.send(AgentCommand::ResumeGoal),
             Command::Goal(GoalArg::Show) => match &self.goal {
-                Some((t, round, max)) if *round > 0 => {
-                    self.notice(Level::Info, format!("goal: {t} (round {round}/{max}) · /goal off clears it"))
+                Some(g) => {
+                    let t = &g.text;
+                    let text = match &g.state {
+                        GoalState::Active if g.round > 0 => {
+                            format!(
+                                "goal: {t} (round {}/{}) · /goal pause holds it, /goal off clears it",
+                                g.round, g.max
+                            )
+                        }
+                        GoalState::Active => format!("goal: {t} · /goal pause holds it, /goal off clears it"),
+                        GoalState::Waiting => {
+                            format!("goal: {t} · waiting for your answer: your next message resumes it")
+                        }
+                        GoalState::Paused(why) => format!("goal: {t} · paused ({why}) · /goal resume goes on"),
+                        GoalState::Done => format!("goal: {t} · met · /goal resume reopens it, /goal off clears it"),
+                    };
+                    self.notice(Level::Info, text)
                 }
-                Some((t, _, _)) => self.notice(Level::Info, format!("goal: {t} · /goal off clears it")),
                 None => self.notice(Level::Info, "no goal set: /goal <text> keeps the agent on it across turns"),
             },
             Command::Permissions(None) => {
@@ -2873,7 +2963,7 @@ impl App {
             }
             Command::Status => self.send(AgentCommand::ShowStatus),
             Command::Tools => self.send(AgentCommand::ShowTools),
-            Command::Jobs(None) => self.send(AgentCommand::ShowJobs),
+            Command::Jobs(None) => self.open_jobs(),
             Command::Jobs(Some(id)) => self.send(AgentCommand::KillJob { id }),
             Command::Budget(None) => self.send(AgentCommand::ShowBudget),
             Command::Budget(Some(arg)) => {
@@ -2979,9 +3069,11 @@ impl App {
                 self.modal = Some(Modal::Agents(Box::new(view)))
             }
             Command::Cost => {
+                self.insights.invalidate();
                 self.modal = Some(Modal::Info(Box::new(crate::overlay::Info::new(1).still(!self.opts.animations))))
             }
             Command::Context => {
+                self.insights.invalidate();
                 self.modal = Some(Modal::Info(Box::new(crate::overlay::Info::new(0).still(!self.opts.animations))))
             }
             Command::Theme(Some(name)) => self.set_theme(&name, true),
@@ -3483,7 +3575,7 @@ impl App {
                 .then(|| (format!("{slug}.md"), "a file here named after the session".to_string()));
         }
         let (now, what) = match cmd {
-            "goal" => (self.goal.as_ref()?.0.trim(), "the goal now · Tab to edit it"),
+            "goal" => (self.goal.as_ref()?.headline().trim(), "the goal now · Tab to edit it"),
             "rename" => (self.session_title.trim(), "the name now · Tab to edit it"),
             _ => return None,
         };
@@ -4258,17 +4350,38 @@ mod tests {
     }
 
     #[test]
+    fn a_restated_goal_reads_as_what_the_person_wants() {
+        let g = |text: &str| Goal { text: text.into(), round: 0, max: 5, state: GoalState::Active };
+        assert_eq!(g("Want: green tests\nWhy: release\nHow: x\nDone when: y").headline(), "green tests");
+        assert_eq!(g("ship it").headline(), "ship it");
+        let mut a = app().0;
+        a.handle_agent(AgentEvent::History { index: 0, message: Message::user("[goal set] tests pls") });
+        a.handle_agent(AgentEvent::History { index: 2, message: Message::user("[goal: continue]") });
+        let notices: Vec<&str> = a
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Notice { text, .. } => Some(text.as_str()),
+                Block::User { .. } => panic!("a goal request of the loop shows as a user message"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices, ["◎ goal set: tests pls", "◎ goal · keeps going"]);
+        assert!(a.user_messages.is_empty(), "nothing of the loop to rewind to");
+    }
+
+    #[test]
     fn goal_and_rename_offer_what_they_hold_now_to_edit() {
         let (mut a, _rx) = app();
         a.input.set_text("/rename ");
         a.refresh_palette();
         assert!(a.palette.is_none(), "no name yet: nothing to offer");
         a.session_title = "fix the parser".into();
-        a.goal = Some(("pass the tests".into(), 0, 5));
+        a.goal = Some(Goal { text: "pass the tests".into(), round: 0, max: 5, state: GoalState::Active });
         a.input.set_text("/goal ");
         a.refresh_palette();
         let p = a.palette.as_ref().unwrap();
-        assert_eq!((p.len(), p.current()), (2, Some("pass the tests")), "the goal now, then off");
+        assert_eq!((p.len(), p.current()), (4, Some("pass the tests")), "the goal now, then pause, resume and off");
         a.palette_accept(false);
         assert_eq!(a.input.text(), "/goal pass the tests");
         assert!(a.palette.is_none(), "free text from here on");
@@ -4673,15 +4786,41 @@ mod tests {
         assert_eq!(crate::render::blocks::todo_counts(&a.todo), (1, 2));
         a.run_command(Command::Goal(GoalArg::Set("pass the tests".into())));
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { text: Some(t) }) if t == "pass the tests"));
-        a.handle_agent(AgentEvent::Goal { text: Some("pass the tests".into()), round: 0, max: 3 });
-        assert_eq!(a.goal.as_ref().map(|g| g.0.as_str()), Some("pass the tests"));
+        a.handle_agent(AgentEvent::Goal {
+            text: Some("pass the tests".into()),
+            round: 0,
+            max: 3,
+            state: Default::default(),
+        });
+        assert_eq!(a.goal.as_ref().map(|g| g.text.as_str()), Some("pass the tests"));
         a.run_command(Command::Goal(GoalArg::Show));
         assert!(matches!(a.blocks.last(), Some(Block::Notice { text, .. }) if text.contains("pass the tests")));
-        a.handle_agent(AgentEvent::Goal { text: Some("pass the tests".into()), round: 2, max: 3 });
+        a.handle_agent(AgentEvent::Goal {
+            text: Some("pass the tests".into()),
+            round: 2,
+            max: 3,
+            state: Default::default(),
+        });
         assert_eq!(a.status.as_ref().map(|s| s.0.clone()), Some("goal: continuing, round 2/3".into()));
+        // the agent stops for an answer, then pauses: each change is said, and /goal shows why
+        let goal = |state: GoalState| AgentEvent::Goal { text: Some("pass the tests".into()), round: 0, max: 3, state };
+        a.handle_agent(goal(GoalState::Waiting));
+        assert_eq!(a.status.as_ref().map(|s| s.0.clone()), Some("goal: waiting for your answer".into()));
+        a.handle_agent(goal(GoalState::Paused("interrupted".into())));
+        assert_eq!(a.status.as_ref().map(|s| s.0.clone()), Some("goal paused · /goal resume".into()));
+        a.run_command(Command::Goal(GoalArg::Show));
+        assert!(
+            matches!(a.blocks.last(), Some(Block::Notice { text, .. }) if text.contains("paused (interrupted) · /goal resume"))
+        );
+        a.run_command(Command::Goal(GoalArg::Resume));
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::ResumeGoal)));
+        a.run_command(Command::Goal(GoalArg::Pause));
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::PauseGoal)));
+        a.handle_agent(goal(GoalState::Done));
+        assert_eq!(a.status.as_ref().map(|s| s.0.clone()), Some("goal met ✓".into()));
         a.run_command(Command::Goal(GoalArg::Clear));
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetGoal { text: None })));
-        a.handle_agent(AgentEvent::Goal { text: None, round: 0, max: 3 });
+        a.handle_agent(AgentEvent::Goal { text: None, round: 0, max: 3, state: Default::default() });
         assert!(a.goal.is_none());
         a.handle_agent(AgentEvent::HistoryCleared);
         assert!(a.todo.is_empty(), "a new transcript starts without a list");
@@ -5244,7 +5383,7 @@ mod tests {
         let (mut a, _rx) = app();
         a.cwd = std::path::PathBuf::from("/srv/project-alpha");
         a.branch = Some("main".into());
-        a.goal = Some(("ship it".into(), 0, 5));
+        a.goal = Some(Goal { text: "ship it".into(), round: 0, max: 5, state: GoalState::Active });
         a.handle_agent(AgentEvent::ModelLimits {
             provider: "p".into(),
             model: "m".into(),
@@ -5589,7 +5728,10 @@ mod tests {
         press(&mut a, KeyCode::Esc);
         assert!(a.modal.is_none(), "Esc closes it");
         click(&mut a, HintHit::Jobs);
-        assert!(drain(&mut rx).contains(&AgentCommand::ShowJobs));
+        assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.len() == 1));
+        assert!(drain(&mut rx).contains(&AgentCommand::JobTails));
+        press(&mut a, KeyCode::Esc);
+        assert!(a.modal.is_none());
         click(&mut a, HintHit::Mem);
         assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Shared && p.items.len() == 1));
         press(&mut a, KeyCode::Esc);

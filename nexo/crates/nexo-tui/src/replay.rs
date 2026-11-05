@@ -7,6 +7,7 @@ const JOBS_END: &str = "Read the output with the `jobs` tool";
 const MEMORY_START: &str = "<memory from=\"";
 const MEMORY_END: &str = "</memory>";
 const ATTACHED: &str = "(attached in full, as it is now):";
+use nexo_core::agent::{GOAL_CONTINUE_MARK, GOAL_SET_MARK};
 
 /// One part of a user message, as the screen shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +18,8 @@ pub enum Piece {
     Memory { title: String, tokens: u64 },
     /// What replaced the conversation before a compaction: the number of lines it takes.
     Summary(usize),
+    /// The loop's own request for a goal: the person's words when it was set, None when it keeps it going.
+    Goal(Option<String>),
     /// What the person wrote, attachments shortened to a line each.
     Text(String),
 }
@@ -48,6 +51,10 @@ pub fn split_user(text: &str) -> Vec<Piece> {
     }
     if t.starts_with("[summary]") {
         out.push(Piece::Summary(t.lines().count()));
+    } else if let Some(words) = t.strip_prefix(GOAL_SET_MARK) {
+        out.push(Piece::Goal(Some(words.trim().to_string())));
+    } else if t.trim_end() == GOAL_CONTINUE_MARK {
+        out.push(Piece::Goal(None));
     } else if !t.is_empty() {
         out.push(Piece::Text(collapse_attachments(t)));
     }
@@ -92,6 +99,13 @@ mod tests {
     use super::*;
 
     const NOTE: &str = "[background jobs ended]\n- job 3 `make` done (exit 0) after 4s, 2 lines of output\nRead the output with the `jobs` tool (action \"output\", the job's id).";
+
+    #[test]
+    fn goal_requests_of_the_loop_are_not_the_persons_words() {
+        assert_eq!(split_user("[goal set] make it fast"), vec![Piece::Goal(Some("make it fast".into()))]);
+        assert_eq!(split_user("[goal: continue]"), vec![Piece::Goal(None)]);
+        assert_eq!(split_user("my [goal set] idea"), vec![Piece::Text("my [goal set] idea".into())]);
+    }
 
     #[test]
     fn a_job_note_glued_to_the_typed_text_is_split_from_it() {

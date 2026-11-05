@@ -3,6 +3,7 @@
 //! A modal takes every key and click until it closes.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use nexo_agent::session_scan::Period;
 use nexo_core::permission::{PermissionDecision, PermissionRequest, Question};
 use nexo_core::tool::ToolDisplay;
 use ratatui::layout::Rect;
@@ -12,6 +13,7 @@ use ratatui::text::{Line, Span};
 use crate::fuzzy;
 
 pub mod setup;
+
 use crate::render::diff;
 use crate::render::wrap::{truncate, wrap_plain};
 use crate::theme::Theme;
@@ -249,6 +251,8 @@ pub enum Modal {
     Info(Box<crate::overlay::Info>),
     /// `/panel`: the agent sessions, read-only.
     Agents(Box<crate::agents_view::AgentsView>),
+    /// `/jobs`: the background jobs and their output.
+    Jobs(Box<crate::jobs_view::JobsView>),
 }
 
 /// What a key or click in a modal asks the app to do.
@@ -488,6 +492,7 @@ impl Modal {
             },
             Modal::Setup(s) => s.key(key).into(),
             Modal::Agents(a) => a.key(key),
+            Modal::Jobs(j) => j.key(key),
             Modal::Info(i) => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModalOut::Close,
                 KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
@@ -500,6 +505,15 @@ impl Modal {
                 }
                 KeyCode::Char(c @ '1'..='3') => {
                     i.set_tab(c as usize - '1' as usize);
+                    ModalOut::Nothing
+                }
+                // the days the usage tab's insights cover
+                KeyCode::Char(c)
+                    if i.tab == 1
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && Period::from_key(c).is_some() =>
+                {
+                    i.period = Period::from_key(c).unwrap_or(i.period);
                     ModalOut::Nothing
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -569,6 +583,12 @@ impl Modal {
             },
             Modal::Help { .. } => ModalOut::Close,
             Modal::Agents(a) => a.click(x, y),
+            Modal::Jobs(j) => {
+                if let Some((_, i)) = rows.iter().find(|(r, _)| contains(*r, x, y)) {
+                    j.click_row(*i);
+                }
+                ModalOut::Nothing
+            }
             Modal::Info(i) => {
                 if contains(i.close, x, y) || !contains(i.window, x, y) {
                     return ModalOut::Close;
@@ -606,6 +626,7 @@ impl Modal {
             Modal::Setup(s) => s.scroll_by(delta),
             Modal::Info(i) => i.scroll = (i.scroll as i32 + delta).max(0) as usize,
             Modal::Agents(a) => a.scroll_by(delta),
+            Modal::Jobs(j) => j.scroll_by(delta),
         }
     }
 
@@ -630,6 +651,7 @@ impl Modal {
             Modal::Help { scroll } => *scroll = off,
             Modal::Info(i) => i.scroll = off,
             Modal::Agents(a) => a.scroll = off,
+            Modal::Jobs(j) => j.scroll = off,
             Modal::Picker(p) => pick(p, off, viewport, first),
             Modal::Setup(s) => pick(&mut s.list, off, viewport, first),
         }

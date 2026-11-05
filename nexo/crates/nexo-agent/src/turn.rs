@@ -7,7 +7,10 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use nexo_core::agent::{AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, Level, TurnEnd};
+use nexo_core::agent::{
+    AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalState, Level, TurnEnd, GOAL_BRIEF_HEAD,
+    GOAL_CONTINUE_MARK, GOAL_SET_MARK,
+};
 use nexo_core::config::{Config, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::jobs::Jobs;
@@ -35,7 +38,7 @@ use crate::permission::{self, Decision, Policy};
 use crate::prompt;
 use crate::reader;
 use crate::reads::{attached_header, Reads};
-use crate::session::Session;
+use crate::session::{Session, UsageKind, UsageMeta};
 use crate::setup;
 use crate::AgentSetup;
 
@@ -52,9 +55,8 @@ const COMPACT_MARGIN: u64 = 10;
 /// Continuation rounds a goal gets after a turn ends without `GOAL DONE` (`NEXO_GOAL_ROUNDS`).
 const GOAL_ROUNDS: u32 = 5;
 /// What the agent submits by itself to keep working towards the goal.
-pub(crate) const GOAL_CONTINUE: &str = "The goal is not marked done yet. Keep working on it. When it is fully met, end your \
-                             reply with the single line GOAL DONE; if nothing is left to do, say so and end with that line.";
-/// Characters at the end of a reply where `GOAL DONE` counts even when it is not the last line.
+pub(crate) const GOAL_CONTINUE: &str = GOAL_CONTINUE_MARK;
+/// Characters at the end of a reply where `GOAL DONE` or `GOAL WAIT` counts even when it is not the last line.
 const GOAL_TAIL: usize = 200;
 
 fn goal_rounds() -> u32 {
@@ -82,29 +84,58 @@ fn full_system(st: &State) -> String {
     with_goal(&base, st.goal.as_deref())
 }
 
-/// The system prompt with the goal pinned at its end.
+/// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
+/// so pausing or resuming does not cost the cached prefix. The person's own words come with the
+/// request to restate them (`goal_brief`); once restated, the restatement is the goal.
 fn with_goal(system: &str, goal: Option<&str>) -> String {
-    match goal {
-        Some(g) => format!(
-            "{system}\n\nGoal: {g}\nKeep working towards this goal across turns. When it is fully met, end your reply \
-             with the single line GOAL DONE; if nothing is left to do, say so and end with that line."
-        ),
-        None => system.to_string(),
-    }
+    let Some(g) = goal else { return system.to_string() };
+    let head = if g.starts_with(GOAL_BRIEF_HEAD) {
+        format!("Goal, as the person means it:\n{g}")
+    } else {
+        format!(
+            "Goal, in the person's words: {g}\nBefore working on it, call `goal_brief` once to restate it as they \
+             mean it: what they want, why, how they expect it done, and when it counts as done."
+        )
+    };
+    format!(
+        "{system}\n\n{head}\nKeep working towards this goal across turns. `{GOAL_CONTINUE_MARK}` comes from the loop, \
+         not the person: the goal is not marked done yet, so go on. When it is fully met, end your reply with the \
+         single line GOAL DONE; if nothing is left to do, say so and end with that line. When you cannot go on \
+         without the person (a question only they can answer, a decision, an approval, access you lack), ask it and \
+         end your reply with the single line GOAL WAIT: the work waits for their answer. Do not stop for what you \
+         can decide or check yourself. A message from the person comes before the goal: answer it first, plainly, \
+         then go on; call `goal_brief` again when they change what they want."
+    )
 }
 
 /// Whether a reply declares the goal met: its last non-empty line is `GOAL DONE`, or the words
 /// appear in its last `GOAL_TAIL` characters (models add a closing sentence after the line).
 fn goal_done(text: &str) -> bool {
+    signal(text, "GOAL DONE")
+}
+
+/// Whether a reply stops for the person: `GOAL WAIT`, read as `GOAL DONE` is, or a last line that is
+/// a question (models end a reply with one when they wait for an answer, whether told to or not).
+fn goal_wait(text: &str) -> bool {
+    if signal(text, "GOAL WAIT") {
+        return true;
+    }
+    let last = text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("");
+    let bare = last.trim_end_matches(['*', '_', '`', ')', '"', '\'', '»', ' ']);
+    !last.starts_with("```") && (bare.ends_with('?') || bare.ends_with('？'))
+}
+
+/// `word` (upper case) as the last non-empty line of a reply, or in its last `GOAL_TAIL` characters.
+fn signal(text: &str, word: &str) -> bool {
     let last_line = text
         .lines()
         .rev()
         .map(str::trim)
         .find(|l| !l.is_empty())
-        .map(|l| l.trim_end_matches(['.', '!']).trim().eq_ignore_ascii_case("GOAL DONE"))
+        .map(|l| l.trim_end_matches(['.', '!']).trim().eq_ignore_ascii_case(word))
         .unwrap_or(false);
     let tail: String = text.chars().rev().take(GOAL_TAIL).collect::<Vec<_>>().into_iter().rev().collect();
-    last_line || tail.to_ascii_lowercase().contains("goal done")
+    last_line || tail.to_ascii_uppercase().contains(word)
 }
 
 struct State {
@@ -136,6 +167,8 @@ struct State {
     /// The goal the agent keeps working towards, and the continuation round in progress.
     goal: Option<String>,
     goal_round: u32,
+    /// Where the goal stands: only an active goal is continued when a turn ends.
+    goal_state: GoalState,
     /// What files looked like before the agent wrote them: `(history length at the time, file,
     /// its bytes then or None when it did not exist)`, so a rewind can put them back.
     checkpoints: Vec<(usize, PathBuf, Option<Vec<u8>>)>,
@@ -202,6 +235,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         tools.add(Arc::new(crate::ask::AskUser::new(asker.clone())));
     }
     tools.add(Arc::new(crate::ask::ExitPlan::new((!headless).then(|| asker.clone()), plan.clone())));
+    tools.add(Arc::new(crate::goal_brief::GoalBrief));
     let (session, history, replay) = match &resume {
         Some(id) => {
             // taken before anything is spent: a session another nexo writes is not resumed here
@@ -251,8 +285,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         );
     }
     let goal = session.goal().map(String::from);
+    let goal_state = session.goal_state().clone();
     if goal.is_some() {
-        emit(&events, AgentEvent::Goal { text: goal.clone(), round: 0, max: goal_rounds() });
+        emit(&events, AgentEvent::Goal { text: goal.clone(), round: 0, max: goal_rounds(), state: goal_state.clone() });
     }
     let (usage, cost) = (session.usage(), session.cost());
     let max_cost = config.agent.max_cost;
@@ -281,6 +316,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         turns: 0,
         goal,
         goal_round: 0,
+        goal_state,
         checkpoints: Vec::new(),
         budget: max_cost,
         budget_warned: false,
@@ -330,6 +366,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             st.inbox.push_back((text, attachments));
                             emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                         } else {
+                            person_spoke(&mut st);
                             drop(st);
                             turn = Some(start_turn(&state, text, attachments, cancel.child_token()).await);
                         }
@@ -403,12 +440,20 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::SetGoal { text } => {
                         if let Some(goal) = set_goal(&state, text).await {
-                            let request = format!("Goal: {goal}");
+                            let request = format!("{GOAL_SET_MARK} {goal}");
                             if turn.is_some() {
-                                notice(&events, Level::Info, "goal applies from now; checked when this turn ends");
+                                let text = format!("goal set: {goal} · applies from now; checked when this turn ends");
+                                notice(&events, Level::Info, text);
                             } else {
                                 turn = Some(start_turn(&state, request, Vec::new(), cancel.child_token()).await);
                             }
+                        }
+                    }
+                    AgentCommand::PauseGoal => pause_goal(&state, turn.is_some()).await,
+                    AgentCommand::ResumeGoal => {
+                        if resume_goal(&state, turn.is_some()).await {
+                            let text = GOAL_CONTINUE.to_string();
+                            turn = Some(start_turn(&state, text, Vec::new(), cancel.child_token()).await);
                         }
                     }
                     AgentCommand::ShowPrompt => {
@@ -574,6 +619,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         notice(&events, Level::Info, what);
                         emit(&events, AgentEvent::Jobs { jobs: jobs.list() });
                     }
+                    AgentCommand::JobTails => emit(&events, AgentEvent::JobTails { tails: jobs.tails() }),
                     AgentCommand::ShowJobs => {
                         notice(&events, Level::Info, jobs_text(&jobs));
                         emit(&events, AgentEvent::Jobs { jobs: jobs.list() });
@@ -611,12 +657,15 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     });
                 }
                 cancel = CancellationToken::new();
+                // the goal takes the turn's end first (met, waiting, paused), then a queued message runs
+                goal_settle(&state, reason).await;
                 // what is left came after the turn's last model call
                 let next = {
                     let mut st = state.lock().await;
                     let next = st.inbox.pop_front();
                     if next.is_some() {
                         emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
+                        person_spoke(&mut st);
                     }
                     next
                 };
@@ -699,13 +748,14 @@ fn install_session(st: &mut State, session: Session) {
     st.turn_start = 0;
     st.turns = 0;
     st.goal = st.session.goal().map(String::from);
+    st.goal_state = st.session.goal_state().clone();
     st.goal_round = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
         &st.events,
         AgentEvent::SessionChanged { session_id: st.session.id().to_string(), title: st.session.meta().title.clone() },
     );
-    emit(&st.events, AgentEvent::Goal { text: st.goal.clone(), round: 0, max: goal_rounds() });
+    emit_goal(st);
     replay_history(&st.events, &st.session, &st.tools);
     close_open_calls(st);
 }
@@ -742,54 +792,159 @@ async fn set_goal(state: &Shared, text: Option<String>) -> Option<String> {
     let text = text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     st.goal = text.clone();
     st.goal_round = 0;
+    st.goal_state = GoalState::Active;
     if let Err(e) = st.session.record_goal(text.as_deref()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
     match &text {
-        Some(g) => notice(&st.events, Level::Info, format!("goal set: {g}")),
+        // a goal set shows where its request joins the conversation
+        Some(_) => {}
         None => notice(&st.events, Level::Info, "goal cleared"),
     }
-    emit(&st.events, AgentEvent::Goal { text: text.clone(), round: 0, max: goal_rounds() });
+    emit_goal(&st);
     text
 }
 
-/// After a turn that ended on its own: what to submit to keep working towards
-/// the goal, if a goal is set, not yet declared done, and rounds are left. A
-/// continuation round that called no tool did nothing new, so the loop stops
-/// there instead of asking again; the first continuation always runs.
+/// Answers `goal_brief`: the agent's restatement takes the place of the goal from the next request on.
+async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
+    let brief = match crate::goal_brief::brief(args) {
+        Ok(b) => b,
+        Err(key) => return ToolOutput::error(format!("`{key}` is required")),
+    };
+    let mut st = state.lock().await;
+    if st.goal.is_none() {
+        return ToolOutput::error("no goal is set: carry on with the request");
+    }
+    st.goal = Some(brief.clone());
+    if let Err(e) = st.session.record_goal(Some(&brief)) {
+        notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
+    }
+    st.system = full_system(&st);
+    emit_goal(&st);
+    ToolOutput::ok("The goal now reads as restated. Go on with the work.")
+}
+
+/// Tells the interface the goal, its round and its state.
+fn emit_goal(st: &State) {
+    let event = AgentEvent::Goal {
+        text: st.goal.clone(),
+        round: st.goal_round,
+        max: goal_rounds(),
+        state: st.goal_state.clone(),
+    };
+    emit(&st.events, event);
+}
+
+/// Moves the goal to `to`, saves it with the session (a resumed session finds it as it was) and
+/// says why. The rounds start over: a goal that runs again gets all of them.
+fn goal_to(st: &mut State, to: GoalState, say: String) {
+    st.goal_state = to.clone();
+    st.goal_round = 0;
+    if let Err(e) = st.session.record_goal_state(to) {
+        notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
+    }
+    notice(&st.events, Level::Info, say);
+    emit_goal(st);
+}
+
+/// A message of the person starts a turn: a goal waiting for their answer has it, and runs again.
+fn person_spoke(st: &mut State) {
+    if st.goal.is_some() && st.goal_state == GoalState::Waiting {
+        goal_to(st, GoalState::Active, "goal: resumed with your answer".into());
+    }
+}
+
+/// What a turn's end does to an active goal, before anything else runs: met, waiting for the
+/// person, or paused because the turn did not end on its own (Esc, an error or spend limit, the
+/// tool-round limit). A goal that is not active stays as it is.
+async fn goal_settle(state: &Shared, reason: TurnEnd) {
+    let mut st = state.lock().await;
+    if st.goal.is_none() || !st.goal_state.is_active() {
+        return;
+    }
+    let paused = |why: &str| GoalState::Paused(why.to_string());
+    let (to, say) = match reason {
+        TurnEnd::Interrupted => (paused("interrupted"), "goal paused: interrupted · /goal resume goes on".to_string()),
+        TurnEnd::Error => {
+            (paused("the turn failed"), "goal paused: the turn failed · /goal resume tries again".to_string())
+        }
+        TurnEnd::MaxTurns => (
+            paused("the tool-round limit (agent.max_turns)"),
+            "goal paused: the turn reached the tool-round limit (agent.max_turns) · /goal resume goes on".to_string(),
+        ),
+        TurnEnd::Done => {
+            let last =
+                st.history.iter().rev().find(|m| m.role == Role::Assistant).map(Message::text).unwrap_or_default();
+            if goal_done(&last) {
+                (GoalState::Done, "goal met · /goal resume reopens it, /goal off clears it".to_string())
+            } else if goal_wait(&last) {
+                (GoalState::Waiting, "goal waiting for your answer: your next message resumes it".to_string())
+            } else {
+                return;
+            }
+        }
+    };
+    goal_to(&mut st, to, say);
+}
+
+/// After a turn that ended on its own, with nothing queued: what to submit to keep working towards
+/// an active goal, while rounds are left. A continuation round that called no tool did nothing
+/// new, so the goal pauses there instead of asking again; the first continuation always runs.
 async fn goal_follow_up(state: &Shared) -> Option<String> {
     let mut st = state.lock().await;
-    let goal = st.goal.clone()?;
-    let max = goal_rounds();
-    let last = st.history.iter().rev().find(|m| m.role == Role::Assistant).map(Message::text).unwrap_or_default();
-    let worked = st.history[st.turn_start.min(st.history.len())..].iter().any(Message::has_tool_calls);
-    if goal_done(&last) {
-        st.goal_round = 0;
-        notice(&st.events, Level::Info, "goal met (/goal off clears it)");
-        emit(&st.events, AgentEvent::Goal { text: Some(goal), round: 0, max });
+    st.goal.as_ref()?;
+    if !st.goal_state.is_active() {
         return None;
     }
+    let max = goal_rounds();
+    let worked = st.history[st.turn_start.min(st.history.len())..].iter().any(Message::has_tool_calls);
     if st.goal_round > 0 && !worked {
-        st.goal_round = 0;
-        notice(
-            &st.events,
-            Level::Info,
-            "goal: the model reports nothing more to do; `/goal off` to drop it, or ask it directly",
-        );
-        emit(&st.events, AgentEvent::Goal { text: Some(goal), round: 0, max });
+        let say = "goal paused: the last round did nothing new · /goal resume goes on, or say what next";
+        goal_to(&mut st, GoalState::Paused("the last round did nothing new".into()), say.into());
         return None;
     }
     if st.goal_round >= max {
-        st.goal_round = 0;
-        notice(&st.events, Level::Warn, format!("goal still open after {max} rounds; say more, or /goal off"));
-        emit(&st.events, AgentEvent::Goal { text: Some(goal), round: 0, max });
+        let why = format!("{max} rounds without GOAL DONE");
+        let say = format!("goal paused: {why} · /goal resume gives it {max} more");
+        goal_to(&mut st, GoalState::Paused(why), say);
         return None;
     }
     st.goal_round += 1;
     let round = st.goal_round;
     notice(&st.events, Level::Info, format!("goal: continuing (round {round}/{max})"));
-    emit(&st.events, AgentEvent::Goal { text: Some(goal), round, max });
+    emit_goal(&st);
     Some(GOAL_CONTINUE.to_string())
+}
+
+/// `/goal pause`: nothing more starts for the goal; a turn in progress finishes as it is.
+async fn pause_goal(state: &Shared, running: bool) {
+    let mut st = state.lock().await;
+    if st.goal.is_none() {
+        notice(&st.events, Level::Info, "no goal to pause");
+        return;
+    }
+    if matches!(st.goal_state, GoalState::Paused(_)) {
+        notice(&st.events, Level::Info, "the goal is already paused · /goal resume goes on");
+        return;
+    }
+    let say = if running {
+        "goal paused: the turn in progress finishes, nothing more starts · /goal resume goes on"
+    } else {
+        "goal paused · /goal resume goes on"
+    };
+    goal_to(&mut st, GoalState::Paused("paused by you".into()), say.into());
+}
+
+/// `/goal resume`: the goal is active again with all its rounds. True when nothing runs, so the
+/// caller starts a continuation now; a turn in progress is followed by one when it ends.
+async fn resume_goal(state: &Shared, running: bool) -> bool {
+    let mut st = state.lock().await;
+    if st.goal.is_none() {
+        notice(&st.events, Level::Info, "no goal set: /goal <text> sets one");
+        return false;
+    }
+    goal_to(&mut st, GoalState::Active, "goal resumed".into());
+    !running && st.inbox.is_empty()
 }
 
 async fn resume_session(state: &Shared, id: &str) {
@@ -1058,6 +1213,7 @@ async fn take_inbox(state: &Shared) {
     while let Some((text, attachments)) = st.inbox.pop_front() {
         push_user(&mut st, text, &attachments);
     }
+    person_spoke(&mut st);
     // the message shows in the transcript where it joined: nothing else to say
     emit(&st.events, AgentEvent::Queued { pending: 0 });
 }
@@ -1145,7 +1301,11 @@ fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     st.tools
         .specs()
         .into_iter()
-        .filter(|s| (plan || s.name != "exit_plan") && (curator || s.name != "recall"))
+        .filter(|s| {
+            (plan || s.name != "exit_plan")
+                && (curator || s.name != "recall")
+                && (st.goal.is_some() || s.name != "goal_brief")
+        })
         .collect()
 }
 
@@ -1457,7 +1617,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             }
             if !usage.is_empty() {
                 let model = st.target.model();
-                add_usage(&mut st, &events, &model, usage, call);
+                add_usage(&mut st, &events, &model, usage, call, UsageKind::Main);
                 st.policy.usage(call.cache_read, call.total_input());
                 st.tok_ratio = learn_ratio(st.tok_ratio, st.est_sent, call.total_input());
             }
@@ -1826,12 +1986,20 @@ async fn permit(
 /// Adds what a model call spent to the session and the day, and says so; `call` is the usage of the
 /// attempt that answered, without the attempts the client retried, and empty for a side call (a
 /// sub-agent, the reader, a compaction) whose request is not the conversation's.
-fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage) {
-    add_usage_priced(st, events, model, usage, call, None)
+fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage, kind: UsageKind) {
+    add_usage_priced(st, events, model, usage, call, None, kind)
 }
 
 /// [`add_usage`] with the prices of another provider (a sub-agent sent there); none: the main agent's.
-fn add_usage_priced(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage, other: Option<Pricing>) {
+fn add_usage_priced(
+    st: &mut State,
+    events: &EventTx,
+    model: &str,
+    usage: Usage,
+    call: Usage,
+    other: Option<Pricing>,
+    kind: UsageKind,
+) {
     st.usage += usage;
     let (_, cfg, main) = st.target.get();
     let pricing = other.or_else(|| {
@@ -1843,7 +2011,10 @@ fn add_usage_priced(st: &mut State, events: &EventTx, model: &str, usage: Usage,
     });
     let cost = pricing.map(|p| p.cost(&usage)).unwrap_or(0.0);
     st.cost += cost;
-    let _ = st.session.record_usage(usage, cost);
+    // what the view left out of the history at this call (the conversation's own calls only)
+    let held = (kind == UsageKind::Main).then(|| st.last_view.0.saturating_sub(st.last_view.1));
+    let meta = UsageMeta { model: Some(model.to_string()), kind: Some(kind), held };
+    let _ = st.session.record_usage_meta(usage, cost, meta);
     emit(events, AgentEvent::Usage { turn: usage, call, session: st.usage, cost_usd: st.cost });
     let day = budget::add(cost);
     emit(events, budget_event(st, day));
@@ -1879,7 +2050,7 @@ impl crate::subagent::Host for StateHost {
     async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) {
         if let Some(state) = self.state.upgrade() {
             let mut st = state.lock().await;
-            add_usage_priced(&mut st, &self.events, model, usage, Usage::default(), pricing);
+            add_usage_priced(&mut st, &self.events, model, usage, Usage::default(), pricing, UsageKind::Sub);
         }
     }
 
@@ -2078,6 +2249,8 @@ async fn run_one(
             let t0 = Instant::now();
             let out = if name == "recall" {
                 crate::recall::answer(&state.lock().await.history, args)
+            } else if name == "goal_brief" {
+                goal_brief(state, args).await
             } else {
                 tokio::select! {
                     o = tool.run(args.clone(), &ctx) => o,
@@ -2197,7 +2370,7 @@ async fn digest(
     let mut st = state.lock().await;
     match done {
         Ok((notes, usage, model)) => {
-            add_usage(&mut st, events, &model, usage, Usage::default());
+            add_usage(&mut st, events, &model, usage, Usage::default(), UsageKind::Reader);
             st.digests.insert(ask.key(), notes.clone());
             Some(reader::shown(&ask.label, &notes))
         }
@@ -2257,7 +2430,7 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
                 c.0 = if c.0 >= from { c.0 - from + shift } else { 0 };
             }
             st.history.replace(work);
-            add_usage(st, &events, &done.model, done.usage, Usage::default());
+            add_usage(st, &events, &done.model, done.usage, Usage::default(), UsageKind::Compact);
             st.last_prompt = None;
             st.turn_start = 0;
             if let Err(e) = st.session.reset_with(&st.history.to_vec()) {
@@ -2684,8 +2857,9 @@ async fn clear(state: &Shared) {
     st.turns = 0;
     let had_goal = st.goal.take().is_some();
     st.goal_round = 0;
+    st.goal_state = GoalState::Active;
     if had_goal {
-        emit(&st.events, AgentEvent::Goal { text: None, round: 0, max: goal_rounds() });
+        emit_goal(&st);
     }
     emit(
         &st.events,
@@ -2767,6 +2941,19 @@ mod goal_tests {
     }
 
     #[test]
+    fn goal_wait_reads_a_question_or_the_wait_line() {
+        assert!(goal_wait("Which branch should I use?"));
+        assert!(goal_wait("Two ways.\n\n**Should I drop the old table?**\n"));
+        assert!(goal_wait("¿Lo borro (`rm -rf build`)?"));
+        assert!(goal_wait("I need the staging key.\nGOAL WAIT"));
+        assert!(goal_wait("I need the staging key.\n\nGOAL WAIT. I will go on once I have it."));
+        assert!(!goal_wait("Fixed it. Want more? Not needed: all tests pass."));
+        assert!(!goal_wait("```\nwhat?\n```"), "a fence closes the reply, not a question");
+        assert!(!goal_wait("all set\nGOAL DONE"));
+        assert!(!goal_wait(""));
+    }
+
+    #[test]
     fn fresh_lines_tells_an_output_that_brings_a_line_not_seen_before() {
         let out = |text: &str| vec![Part::tool_result("c", text, false)];
         let mut known = known_lines(&[Message::tool_results(out("fn main() {\n    run();\n}"))]);
@@ -2807,7 +2994,14 @@ mod goal_tests {
     fn the_goal_is_pinned_at_the_end() {
         assert_eq!(with_goal("base", None), "base");
         let s = with_goal("base", Some("ship it"));
-        assert!(s.starts_with("base\n\nGoal: ship it\n") && s.contains("single line GOAL DONE"));
+        assert!(s.starts_with("base\n\nGoal, in the person's words: ship it\n") && s.contains("single line GOAL DONE"));
+        assert!(s.contains("single line GOAL WAIT") && s.contains("call `goal_brief` once"));
+        // once restated, the restatement is the goal and nothing asks for it again
+        let s = with_goal("base", Some("Want: a\nWhy: b\nHow: c\nDone when: d"));
+        assert!(
+            s.starts_with("base\n\nGoal, as the person means it:\nWant: a\n") && !s.contains("call `goal_brief` once")
+        );
+        assert!(s.contains("`[goal: continue]` comes from the loop"));
     }
 }
 

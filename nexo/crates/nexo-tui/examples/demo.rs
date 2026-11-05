@@ -41,7 +41,12 @@ async fn main() -> anyhow::Result<()> {
             source: source.into(),
         };
         let _ = events.send(limits(pricing, "preset"));
-        let _ = events.send(AgentEvent::Goal { text: Some("make the weight tests pass".into()), round: 0, max: 3 });
+        let _ = events.send(AgentEvent::Goal {
+            text: Some("make the weight tests pass".into()),
+            round: 0,
+            max: 3,
+            state: Default::default(),
+        });
         // the banner shows for a moment, then the person's first message arrives
         tokio::time::sleep(Duration::from_millis(1500)).await;
         // the history as the agent would keep it: the person's messages and the replies
@@ -144,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
                     let _ = events.send(limits(pricing, "preset"));
                 }
                 Some(AgentCommand::SetGoal { text }) => {
-                    let _ = events.send(AgentEvent::Goal { text, round: 0, max: 3 });
+                    let _ = events.send(AgentEvent::Goal { text, round: 0, max: 3, state: Default::default() });
                 }
                 Some(AgentCommand::SetPricing { pricing: p }) => {
                     pricing = p;

@@ -328,7 +328,12 @@ fn the_ground_is_painted_with_the_themes_colours_everywhere() {
 fn the_panel_shows_the_goal_and_the_todo_list_above_the_files() {
     let mut a = app();
     fill(&mut a);
-    a.handle_agent(AgentEvent::Goal { text: Some("pass the weight tests".into()), round: 1, max: 3 });
+    a.handle_agent(AgentEvent::Goal {
+        text: Some("pass the weight tests".into()),
+        round: 1,
+        max: 3,
+        state: Default::default(),
+    });
     a.handle_agent(AgentEvent::ToolCall {
         id: "t1".into(),
         name: "todo".into(),
@@ -698,4 +703,80 @@ fn the_keys_row_gives_its_line_to_the_text_while_a_draft_is_typed() {
     a.refresh_palette();
     let rows = draw(&mut a, 100, 30);
     assert!(rows[28].contains("Enter send"), "{}", rows[28]);
+}
+
+#[test]
+fn the_jobs_window_lists_running_then_ended_jobs_with_their_output_and_opens_one() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+    use nexo_core::jobs::{JobInfo, JobKind, JobStatus, JobTail};
+    use nexo_tui::modal::Modal;
+    let job = |id, label: &str, status, elapsed_ms| JobInfo {
+        id,
+        kind: JobKind::Shell,
+        label: label.into(),
+        status,
+        elapsed_ms,
+        lines: 3,
+    };
+    let mut a = app();
+    fill(&mut a);
+    a.handle_agent(AgentEvent::Jobs {
+        jobs: vec![
+            job(1, "cargo test", JobStatus::Done { ok: false, how: "exit 101".into() }, 42_000),
+            job(2, "npm run dev", JobStatus::Running, 125_000),
+            job(3, "make", JobStatus::Done { ok: true, how: "exit 0".into() }, 3_000),
+        ],
+    });
+    // a click on the indicator opens the window
+    let all = draw(&mut a, 120, 30);
+    let (row, text) = all.iter().enumerate().find(|(_, r)| r.contains("1 job")).expect("the indicator shows");
+    let col = text.chars().position(|c| c == '⚙').unwrap() as u16;
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), col + 1, row as u16);
+    assert!(matches!(&a.modal, Some(Modal::Jobs(_))));
+    a.handle_agent(AgentEvent::JobTails {
+        tails: vec![
+            JobTail {
+                id: 1,
+                ended_ago_ms: Some(90_000),
+                text: "running 2 tests\ntest a ... ok\ntest b ... FAILED".into(),
+            },
+            JobTail { id: 2, ended_ago_ms: None, text: "ready on :3000".into() },
+            JobTail { id: 3, ended_ago_ms: Some(5_000), text: "built".into() },
+        ],
+    });
+    let all = draw(&mut a, 120, 30).join("\n");
+    assert!(all.contains("background jobs") && all.contains("1 running"), "{all}");
+    let (run, ended, one) = (
+        all.find("npm run dev").expect("running"),
+        all.find("ended").expect("a heading for the ended ones"),
+        all.find("cargo test").expect("ended"),
+    );
+    assert!(run < ended && ended < one, "running first, then the ended:\n{all}");
+    assert!(all.contains("running 2 min 5 s") && all.contains("ready on :3000"), "{all}");
+    assert!(
+        all.contains("done (exit 0) after 3 s, 5 s ago") && all.contains("done (exit 101) after 42 s, 1 min 30 s ago"),
+        "{all}"
+    );
+    assert!(all.contains("test b ... FAILED") && !all.contains("running 2 tests"), "the last lines only:\n{all}");
+    // Down, Enter: the second row (the newest ended job, 3) opens with its output
+    nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let all = draw(&mut a, 120, 30).join("\n");
+    assert!(all.contains("job 3") && all.contains("built") && all.contains("3 lines of output"), "{all}");
+    assert!(!all.contains("npm run dev"), "{all}");
+    // Esc goes back to the list, Esc again closes
+    nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(draw(&mut a, 120, 30).join("\n").contains("npm run dev"));
+    nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.modal.is_none());
+    // a click on a row opens that job
+    a.run_command(nexo_tui::commands::Command::Jobs(None));
+    draw(&mut a, 120, 30);
+    let r = a.picker_rows.iter().find(|(_, i)| *i == 2).map(|(r, _)| *r).expect("rows are clickable");
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y);
+    assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.detail && v.current().map(|j| j.id) == Some(1)));
+    // small screens do not panic
+    for (w, h) in [(30, 8), (44, 12), (200, 60)] {
+        draw(&mut a, w, h);
+    }
 }

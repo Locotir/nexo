@@ -1,0 +1,24 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ●─╮ ╭─●   ne╭ usage ──────────────────────────────────────[✗]──╮         │
+│   ╰●╯     de│  1 Context   2 Usage   3 Session                 │         │
+│ ●─╯ ╰─●   /t│ ──────────────────────────────────────────────── │         │
+│             │                                                  │         │
+│ /model sets │ sent               0  ░░░░░░░░░░░░░░░░░░░░░░░░   ┃         │
+╰─────────────│   from cache       0  ░░░░░░░░░░░░░░░░░░░░░░░░   ┃─────────╯
+              │ written            0  ░░░░░░░░░░░░░░░░░░░░░░░░   ┃
+              │   reasoning        0  ░░░░░░░░░░░░░░░░░░░░░░░░   ┃
+              │                                                  ┃
+              │ ──────────────────────────────────────────────── ┃
+              │ What's contributing to your usage?               ┃
+              │ Approximate · sessions on this machine only      ┃
+              │  [today]  7 days  30 days                  d w m ┃
+              │                                                  ┃
+              │ No sessions today on this machine.               ┃
+              │ Try 7 days (w).                                  ┃
+              │ Tab · ↑↓ · d w m · Esc close                     │
+              ╰──────────────────────────────────────────────────╯
+
+─ ask ──────────────────────────────────────────────────────────────────────────
+›   ask anything
+ Esc close
+ nexo │ deepseek/deepseek-chat │ /tmp/project │ ask │ ━━━━━━━━ ~0% 0 Σ 0 billed

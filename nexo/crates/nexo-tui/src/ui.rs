@@ -19,7 +19,7 @@ use crate::render::wrap::{truncate, width};
 use crate::scrollbar::{self, Bar, Target};
 use crate::select::style_cols;
 use crate::theme::{mix, Theme};
-use nexo_core::agent::Level;
+use nexo_core::agent::{GoalState, Level};
 use nexo_core::permission::PermissionMode;
 
 pub const MAX_INPUT_LINES: u16 = 8;
@@ -175,7 +175,13 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         PermissionMode::Auto => Seg { text: mode_name, style: base.fg(mode_color).add_modifier(Modifier::BOLD) },
         _ => Seg { text: mode_name, style: base.fg(mode_color) },
     };
-    let goal = app.goal.as_ref().map(|_| Seg { text: "◎ goal".to_string(), style: base.fg(theme.accent2) });
+    // the goal and, when it does not run, why: waiting for an answer, paused, met
+    let goal = app.goal.as_ref().map(|g| match &g.state {
+        GoalState::Active => Seg { text: "◎ goal".to_string(), style: base.fg(theme.accent2) },
+        GoalState::Waiting => Seg { text: "◎ goal: your turn".to_string(), style: base.fg(theme.warn) },
+        GoalState::Paused(_) => Seg { text: "◎ goal paused".to_string(), style: base.fg(theme.dim) },
+        GoalState::Done => Seg { text: "✓ goal".to_string(), style: base.fg(theme.success) },
+    });
     let gauge = {
         let (num, den, guessed) = app.gauge_view();
         let pct = share(num, den);
@@ -1523,9 +1529,9 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
             return;
         }
     }
-    if let Some((text, round, max)) = &app.goal {
+    if let Some(goal) = &app.goal {
         lines.push(header("goal".to_string()));
-        let runs = crate::render::markdown::inline_runs(text, theme, theme.style(theme.accent));
+        let runs = crate::render::markdown::inline_runs(goal.headline(), theme, theme.style(theme.accent));
         let first = [rail(), Span::raw("◎ ")];
         let rest = [rail(), Span::raw("  ")];
         let body = crate::render::wrap::wrap_runs(&runs, inner_w, &first, &rest);
@@ -1534,8 +1540,17 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(l);
             }
         }
-        if *round > 0 {
-            lines.push(Line::from(vec![rail(), Span::styled(format!("round {round}/{max}"), theme.dim())]));
+        let (round, max) = (goal.round, goal.max);
+        let state = match &goal.state {
+            GoalState::Active if round > 0 => Some((format!("round {round}/{max}"), theme.dim())),
+            GoalState::Active => None,
+            GoalState::Waiting => Some(("waiting for your answer".to_string(), theme.style(theme.warn))),
+            GoalState::Paused(why) => Some((format!("paused: {why} · /goal resume"), theme.dim())),
+            GoalState::Done => Some(("met ✓ · /goal off clears it".to_string(), theme.style(theme.success))),
+        };
+        if let Some(state) = state {
+            let body = crate::render::wrap::wrap_runs(&[state], inner_w, &[rail()], &[rail()]);
+            lines.extend(body.into_iter().take(2));
         }
         lines.push(Line::from(rail()));
     }
@@ -2071,6 +2086,9 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     // laid out for the width it has now, so nothing is cut while it pops open
     let inner_w = pop_rect(Rect::new(0, 0, w, 3), pop).width.saturating_sub(4) as usize;
     let mut list_at: Option<usize> = None;
+    // the jobs window: the line each job starts at, and the one to keep in sight
+    let mut job_rows: Vec<usize> = Vec::new();
+    let mut job_at = 0;
     // the rules of a permission: pinned above the buttons, never scrolled out of sight
     let mut pinned: Vec<Line<'static>> = Vec::new();
     let (title, body, buttons): (String, Vec<Line<'static>>, Option<Buttons>) = match modal {
@@ -2147,6 +2165,12 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             (title, lines, None)
         }
         Modal::Help { .. } => (" help ".to_string(), Modal::help_lines(&theme, inner_w), None),
+        Modal::Jobs(v) => {
+            let (lines, starts, at) = v.lines(inner_w, &theme);
+            job_rows = starts;
+            job_at = at;
+            (v.title(), lines, None)
+        }
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => return,
         Modal::Setup(s) => {
             let (lines, at) = s.lines(inner_w, &theme, app.spinner, max_h < 12);
@@ -2190,6 +2214,15 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             *scroll = (*scroll).min(body.len().saturating_sub(body_h));
             *scroll
         }
+        Modal::Jobs(v) => {
+            if !v.detail {
+                // the selected job and its lines stay in view
+                let end = job_at + 1 + 2;
+                v.scroll = end.saturating_sub(body_h);
+            }
+            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
+            v.scroll
+        }
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => 0,
         Modal::Picker(p) => {
             // keep the selection in view: two header lines, then the rows
@@ -2226,11 +2259,21 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     };
     // a bar on the right border, for what scrolls: the text, or a list (moving its selection)
     let bar = match modal {
-        Modal::Permission(_) | Modal::Help { .. } => Some(0),
+        Modal::Permission(_) | Modal::Help { .. } | Modal::Jobs(_) => Some(0),
         Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => None,
     };
     let bar = bar.map(|first| (r, body_area.y, body_h, body.len(), scroll, first));
+    if let (Modal::Jobs(v), false) = (&*modal, job_rows.is_empty()) {
+        if !v.detail {
+            for (i, &line) in job_rows.iter().enumerate() {
+                if line >= scroll && line < scroll + body_h {
+                    app.picker_rows
+                        .push((Rect::new(body_area.x, body_area.y + (line - scroll) as u16, body_area.width, 1), i));
+                }
+            }
+        }
+    }
     if let Some((first, n)) = rows {
         for i in 0..n {
             let row = i + first;
@@ -2502,14 +2545,23 @@ fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
         let theme = app.theme.clone();
         return draw_too_narrow(f, &theme, area, area.width < 30);
     }
-    let (tab, grow, fill, hover) = (info.tab, info.grow(), info.fill(), info.hover);
+    let (tab, grow, fill, hover, period) = (info.tab, info.grow(), info.fill(), info.hover, info.period);
+    // a reading that came in changes what the usage tab holds: the window is sized again
+    let version = (period, app.insights.version);
+    if matches!(&app.modal, Some(Modal::Info(i)) if i.measured != Some(version)) {
+        app.dialog_size.modal.remeasure();
+        if let Some(Modal::Info(i)) = &mut app.modal {
+            i.measured = Some(version);
+        }
+    }
     let theme = app.theme.clone();
     let inner_w = overlay::window_rect(area, 0).width.saturating_sub(4) as usize;
     let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
-    let body = overlay::lines(app, tab, inner_w, fill);
+    let body = overlay::lines(app, tab, inner_w, fill, period);
     // as tall as the tallest tab, and it keeps the size it took when it opened:
     // neither a tab change nor the figures filling in resize the window
-    let tallest = (0..overlay::TABS.len()).map(|t| overlay::lines(app, t, inner_w, 1.0).len()).max().unwrap_or(0);
+    let tallest =
+        (0..overlay::TABS.len()).map(|t| overlay::lines(app, t, inner_w, 1.0, period).len()).max().unwrap_or(0);
     let asked = overlay::window_rect(area, tallest);
     let (fw, fh) = app.dialog_size.modal.keep(key, f.area(), area, || (asked.width, asked.height));
     let full = Rect::new(area.x + (area.width - fw) / 2, area.y + (area.height - fh) / 2, fw, fh);
@@ -2551,8 +2603,17 @@ fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
         let more = if scroll + body_h < body.len() { "  ↓" } else { "" };
         let shown: Vec<Line<'static>> = body.into_iter().skip(scroll).take(body_h).collect();
         f.render_widget(Paragraph::new(Text::from(shown)), body_area);
-        let hint = format!("Tab switch · ↑↓ scroll · Esc close{more}");
+        let days = if tab == 1 { " · d/w/m period" } else { "" };
         let foot = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
+        // the longest wording that fits: closing the window is the last thing to lose
+        let hint = [
+            format!("Tab switch · ↑↓ scroll{days} · Esc close{more}"),
+            format!("Tab · ↑↓{} · Esc close{more}", if tab == 1 { " · d w m" } else { "" }),
+            format!("Esc close{more}"),
+        ]
+        .into_iter()
+        .find(|h| width(h) <= foot.width as usize)
+        .unwrap_or_else(|| "Esc".to_string());
         f.render_widget(Paragraph::new(Span::styled(truncate(&hint, foot.width as usize), theme.dim2())), foot);
         modal_scrollbar(f, app, r, inner.y + 2, body_h, body_len, scroll, 0);
     }

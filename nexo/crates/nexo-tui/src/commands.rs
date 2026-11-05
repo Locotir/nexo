@@ -45,7 +45,12 @@ pub const COMMANDS: &[Spec] = &[
     ),
     spec("mouse", &[], "", "mouse capture on or off (off: the terminal's own selection works)"),
     spec("timestamps", &[], "", "the HH:MM on each message and reply, and a reply's duration, on or off"),
-    spec("goal", &["g"], "[text|off]", "keep working towards a goal across turns; `off` clears it"),
+    spec(
+        "goal",
+        &["g"],
+        "[text|pause|resume|off]",
+        "keep working towards a goal across turns; `pause` holds it, `off` clears it",
+    ),
     spec("compact", &[], "", "replace the history with a summary"),
     spec("clear", &["new"], "", "start a new session here"),
     spec("resume", &["sessions"], "[session]", "pick a session to resume; with an id or a title: that one"),
@@ -70,7 +75,12 @@ pub const COMMANDS: &[Spec] = &[
         "[dollars|off]",
         "what this session and today cost; with a number: this session's limit",
     ),
-    spec("jobs", &["bg"], "[kill [id]]", "the background jobs (commands and sub-agents); `kill` stops one, or all"),
+    spec(
+        "jobs",
+        &["bg"],
+        "[kill [id]]",
+        "a window with the background jobs and their output; `kill` stops one, or all",
+    ),
     spec("export", &["save"], "[path]", "write the conversation as markdown"),
     spec("rename", &["title", "name"], "<name>", "give this session a name"),
     spec("diff", &[], "", "browse staged, unstaged and new files"),
@@ -98,7 +108,7 @@ pub enum Command {
     Tools,
     Vim,
     Budget(Option<String>),
-    /// `/jobs` lists, `/jobs kill` stops every one, `/jobs kill 3` stops job 3.
+    /// `/jobs` opens the window, `/jobs kill` stops every one, `/jobs kill 3` stops job 3.
     Jobs(Option<Option<u32>>),
     /// The supervisor's panel: one card per agent session.
     Panel,
@@ -111,7 +121,7 @@ pub enum Command {
     Pricing(Option<String>),
     Mouse,
     Timestamps,
-    /// `/goal text` sets, `/goal` shows, `/goal off` clears.
+    /// `/goal text` sets, `/goal` shows, `/goal pause` and `/goal resume` hold it and go on, `/goal off` clears.
     Goal(GoalArg),
     Compact,
     Clear,
@@ -149,6 +159,8 @@ pub enum GoalArg {
     Show,
     Set(String),
     Clear,
+    Pause,
+    Resume,
 }
 
 /// Names that work but are listed nowhere (not in /help, not in the palette): `(alias, command)`.
@@ -211,6 +223,9 @@ pub fn parse(line: &str) -> Option<Command> {
         "goal" => Command::Goal(match arg.as_deref() {
             None => GoalArg::Show,
             Some("off") | Some("clear") | Some("none") | Some("done") => GoalArg::Clear,
+            // only the bare word: `/goal pause the cron jobs` is a goal
+            Some("pause") => GoalArg::Pause,
+            Some("resume") => GoalArg::Resume,
             Some(t) => GoalArg::Set(t.to_string()),
         }),
         "compact" => Command::Compact,
@@ -363,7 +378,11 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "prompt" => &[("edit", "open the system prompt in $EDITOR")],
         "copy" => &[("code", "the last code block of the last reply")],
-        "goal" => &[("off", "clear the goal")],
+        "goal" => &[
+            ("pause", "hold the goal: nothing more starts for it"),
+            ("resume", "go on with the goal"),
+            ("off", "clear the goal"),
+        ],
         "plan" => &[("off", "leave plan mode")],
         "budget" => &[("off", "no limit for this session")],
         "jobs" => &[("kill", "stop every background job (or `kill <id>`)")],
@@ -454,6 +473,9 @@ mod tests {
         assert_eq!(parse("/goal"), Some(Command::Goal(GoalArg::Show)));
         assert_eq!(parse("/goal make the tests pass"), Some(Command::Goal(GoalArg::Set("make the tests pass".into()))));
         assert_eq!(parse("/goal off"), Some(Command::Goal(GoalArg::Clear)));
+        assert_eq!(parse("/goal pause"), Some(Command::Goal(GoalArg::Pause)));
+        assert_eq!(parse("/goal resume"), Some(Command::Goal(GoalArg::Resume)));
+        assert_eq!(parse("/goal pause the cron jobs"), Some(Command::Goal(GoalArg::Set("pause the cron jobs".into()))));
         assert_eq!(parse("/plan"), Some(Command::Plan(None)));
         assert_eq!(parse("/planning add a cache"), Some(Command::Plan(Some("add a cache".into()))));
         assert_eq!(parse("/g x"), Some(Command::Goal(GoalArg::Set("x".into()))));
