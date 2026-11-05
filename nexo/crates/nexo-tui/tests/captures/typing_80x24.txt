@@ -1,4 +1,3 @@
-   • the input is 3 1 2                                                        │
    • the output must be 1 2 3                                                  │
                                                                                │
    ────────────────────────────────────────────────────────────────────── rust │
@@ -6,7 +5,7 @@
                                                                                │
    ✓ read tests/a.rs · 2 lines  12ms ▸                                         │
    ✓ edit src/lib.rs · +1 −1  3ms                                              │
-   │ @@ -1,1 +1,1 @@                                                           ┃
+   │ @@ -1,1 +1,1 @@                                                           │
    │ 1 - let x = 1;                                                            ┃
    └ 1 + let x = 2;                                                            ┃
                                                                                ┃
@@ -21,4 +20,5 @@
 › a question that goes on and on and on, longer than the narrow screen is wide,
   to see how the editor wraps it
   and a second line
+
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

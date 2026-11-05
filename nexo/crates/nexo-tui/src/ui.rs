@@ -68,11 +68,8 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     let input_h = (crate::input::wrapped_rows(&app.input, area.width.saturating_sub(2) as usize).0.len() as u16)
         .clamp(1, MAX_INPUT_LINES);
     // a short window gives its keys line to the text, unless a window or the commands list is open
-    let hints_h = if !hints_shown(app) || (area.height <= SHORT_H && app.modal.is_none() && app.palette.is_none()) {
-        0
-    } else {
-        1
-    };
+    // the keys row keeps its line while a draft is typed (blank then), so the text above never jumps
+    let hints_h = if area.height <= SHORT_H && app.modal.is_none() && app.palette.is_none() { 0 } else { 1 };
     // the requests waiting behind the turn, a dim row each, right above the draft
     let queue_h = if app.queued_msgs.is_empty() || area.height <= SHORT_H {
         0
@@ -1347,8 +1344,8 @@ fn join_pieces(app: &App, pieces: &[Piece]) -> Vec<Span<'static>> {
     out
 }
 
-/// The keys row is for a moment of doubt: while a draft is being typed it gives its line to the
-/// text, unless it carries something that must be seen (a queued message, a note, the vim mode),
+/// The keys row is for a moment of doubt: while a draft is being typed it stays blank (its line kept,
+/// so nothing above moves), unless it carries something that must be seen (a queued message, a note, the vim mode),
 /// or a list or window is open whose keys are not obvious.
 pub fn hints_shown(app: &App) -> bool {
     let typing = !app.input.is_empty()
@@ -1372,6 +1369,10 @@ pub fn hint_right_text(app: &App) -> String {
 
 fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
+        return;
+    }
+    if !hints_shown(app) {
+        f.render_widget(Box_::default().style(app.theme.base()), area);
         return;
     }
     let theme = app.theme.clone();

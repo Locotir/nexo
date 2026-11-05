@@ -734,14 +734,18 @@ fn a_tool_card_adds_the_price_of_its_output_only_with_full_prices_and_room() {
 }
 
 #[test]
-fn the_keys_row_gives_its_line_to_the_text_while_a_draft_is_typed() {
+fn the_keys_row_goes_blank_while_a_draft_is_typed_and_nothing_moves() {
     let mut a = app();
     let rows = draw(&mut a, 100, 30);
     assert!(rows[28].contains("Enter send"), "an empty draft shows the keys: {}", rows[28]);
+    let before = rows[..27].to_vec();
     a.input.set_text("hello");
     let rows = draw(&mut a, 100, 30);
     assert!(!rows.join("\n").contains("Enter send"), "typing hides them");
-    assert!(rows[28].starts_with("› hello"), "the draft moves down into their line: {}", rows[28]);
+    // the row keeps its line: the draft and the text above stay where they were
+    assert!(rows[27].starts_with("› hello"), "the draft stays put: {}", rows[27]);
+    assert!(rows[28].trim().is_empty(), "their line is blank: {}", rows[28]);
+    assert_eq!(rows[..27], before[..], "the text above does not move");
     // a list that is open keeps its keys
     a.input.set_text("/mo");
     a.refresh_palette();
