@@ -50,6 +50,9 @@ pub fn source_file(cfg: &AgentConfig) -> Option<PathBuf> {
     if let Some(f) = &cfg.system_prompt_file {
         return Some(f.clone());
     }
+    if cfg.hermetic {
+        return None;
+    }
     let f = paths::prompt_file();
     f.is_file().then_some(f)
 }
@@ -146,7 +149,8 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
     let date = time::OffsetDateTime::now_utc().date();
     let mut out = format!("{base}\n\nWorking directory: {}\nDate: {date}", cwd.display());
     out.push_str(&tool_guidance(tools));
-    for f in paths::project_instructions(cwd) {
+    let instructions = if cfg.hermetic { Vec::new() } else { paths::project_instructions(cwd) };
+    for f in instructions {
         if let Ok(text) = std::fs::read_to_string(&f) {
             let text = text.trim();
             if !text.is_empty() {
@@ -193,6 +197,27 @@ mod tests {
         let cfg = AgentConfig { system_prompt_file: Some(f), ..Default::default() };
         assert!(system_prompt(d.path(), &cfg, &ToolSet::new()).starts_with("Custom."));
         std::env::remove_var("NEXO_CONFIG_DIR");
+    }
+
+    #[test]
+    fn a_hermetic_prompt_leaves_out_the_machines_instructions_and_preferences() {
+        let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_CONFIG_DIR", home.path());
+        std::fs::write(home.path().join("prompt.md"), "Reply in Spanish.\n").unwrap();
+        std::fs::write(d.path().join("AGENTS.md"), "Private notes.\n").unwrap();
+        let mut cfg = AgentConfig::default();
+        let p = system_prompt(d.path(), &cfg, &ToolSet::new());
+        assert!(p.contains("Private notes.") && p.contains("Reply in Spanish."), "{p}");
+        cfg.hermetic = true;
+        let p = system_prompt(d.path(), &cfg, &ToolSet::new());
+        std::env::remove_var("NEXO_CONFIG_DIR");
+        assert!(p.starts_with(built_in()), "{p}");
+        assert!(
+            !p.contains("Private notes.") && !p.contains("Reply in Spanish.") && !p.contains("Instructions from"),
+            "{p}"
+        );
     }
 
     #[test]

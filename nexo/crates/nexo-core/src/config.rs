@@ -199,6 +199,9 @@ pub struct AgentConfig {
     pub system_prompt_file: Option<PathBuf>,
     /// Text appended to the system prompt.
     pub system_prompt_extra: Option<String>,
+    /// Leave out what lives on this machine: the project instructions (`NEXO.md`, `AGENTS.md`)
+    /// and `~/.nexo/prompt.md`. Benchmarks set it, so a run sends the same prompt everywhere.
+    pub hermetic: bool,
     /// Retries on retryable provider errors.
     pub retries: u32,
     /// Gives the model the `task` tool: a read-only sub-agent for wide searches.
@@ -243,6 +246,7 @@ impl Default for AgentConfig {
             reasoning: None,
             system_prompt_file: None,
             system_prompt_extra: None,
+            hermetic: false,
             retries: 4,
             subagents: true,
             parallel_tasks: true,
