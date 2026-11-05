@@ -1580,7 +1580,7 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
     }
     if !app.todo.is_empty() {
         let (done, total) = todo_counts(&app.todo);
-        let mut head = vec![rail(), Span::styled("☰ todo  ", Style::default().add_modifier(Modifier::BOLD))];
+        let mut head = vec![rail(), Span::styled("≡ todo  ", Style::default().add_modifier(Modifier::BOLD))];
         head.extend(crate::render::todo::todo_summary(theme, done as f64 / total as f64, done, total, false));
         lines.push(Line::from(head));
         let ctx = crate::render::todo::RowCtx {

@@ -359,11 +359,11 @@ fn the_panel_shows_the_goal_and_the_todo_list_above_the_files() {
     assert!(all.contains("│ goal"), "{all}");
     assert!(all.contains("◎ pass the weight tests"), "{all}");
     assert!(all.contains("round 1/3"), "{all}");
-    assert!(all.contains("│ ☰ todo") && all.contains("1/3"), "{all}");
+    assert!(all.contains("│ ≡ todo") && all.contains("1/3"), "{all}");
     assert!(all.contains("● read the test") && all.contains("◐ fix the conversion") && all.contains("○ run the suite"));
     assert!(all.contains("│ changed files (1)"), "{all}");
     let goal_row = rows.iter().position(|r| r.contains("│ goal")).unwrap();
-    let todo_row = rows.iter().position(|r| r.contains("☰ todo")).unwrap();
+    let todo_row = rows.iter().position(|r| r.contains("≡ todo")).unwrap();
     let files_row = rows.iter().position(|r| r.contains("│ changed files")).unwrap();
     assert!(goal_row < todo_row && todo_row < files_row);
     assert!(all.contains("✓ todo 3 tasks · 1/3 done"), "the card in the transcript: {all}");

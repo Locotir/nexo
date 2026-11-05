@@ -91,7 +91,7 @@ fn the_window_shows_the_bar_the_groups_and_the_whole_text() {
     open(&mut a, list());
     let (rows, _) = render(&mut a, 100, 32);
     let text = rows.join("\n");
-    for want in ["☰ To-do", "▕", "3/7", "43%", "NOW", "NEXT · 3", "DONE · 3", "Space opens", "Enter copy"] {
+    for want in ["≡ To-do", "▕", "3/7", "43%", "NOW", "NEXT · 3", "DONE · 3", "Space opens", "Enter copy"] {
         assert!(text.contains(want), "{want}\n{text}");
     }
     // the long task is wrapped, not cut: its end is there too

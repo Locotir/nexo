@@ -216,7 +216,7 @@ impl TodoView {
     }
 
     pub fn title(&self) -> String {
-        " ☰ To-do ".into()
+        " ≡ To-do ".into()
     }
 
     /// The keys, in the row pinned under the list; the longest that fits.
@@ -249,7 +249,7 @@ impl TodoView {
         let mut done_head = None;
         if self.items.is_empty() {
             lines.push(Line::default());
-            lines.push(Line::from(Span::styled("☰", theme.dim2())).centered());
+            lines.push(Line::from(Span::styled("≡", theme.dim2())).centered());
             lines.push(Line::from(Span::styled("No tasks yet", theme.dim())).centered());
             lines.push(Line::from(Span::styled("The agent adds them as it plans.", theme.dim2())).centered());
             return Body { lines, starts, done_head, sel_len: 1 };
