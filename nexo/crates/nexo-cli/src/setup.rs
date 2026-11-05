@@ -620,6 +620,8 @@ model = "deepseek-chat"
 
 [agent]
 max_turns = 200
+# on_limit = "checkpoint"           # at max_turns the model gets a progress report and decides to stop or go on; "ask": stop and wait for you
+# max_checkpoints = 5               # per request; default 5 with no spend limit, unlimited under max_cost / max_cost_day (0: never)
 max_tokens = 16384
 # loop_guard = 3                    # stop when the same tool rounds come back 3 times with the same outputs (0: never)
 # stale_guard = 6                   # stop after 6 tool rounds in a row that wrote nothing and brought no new output line (0: never)

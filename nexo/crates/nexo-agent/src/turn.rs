@@ -11,7 +11,7 @@ use nexo_core::agent::{
     AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalState, Level, TurnEnd, GOAL_BRIEF_HEAD,
     GOAL_CONTINUE_MARK, GOAL_SET_MARK,
 };
-use nexo_core::config::{Config, ProviderConfig};
+use nexo_core::config::{Config, OnLimit, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::jobs::Jobs;
 use nexo_core::leak;
@@ -30,6 +30,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::budget;
+use crate::checkpoint;
 use crate::client::{ModelClient, Target};
 use crate::compact::{self, Summariser};
 use crate::config_edit;
@@ -178,6 +179,10 @@ struct State {
     budget: Option<f64>,
     /// The 80% warning was given.
     budget_warned: bool,
+    /// Checkpoints taken since the person last wrote (`agent.on_limit`); a goal's rounds, a mail or a job's end do not reset it.
+    ck_used: u32,
+    /// Why the last request ended at a checkpoint cap or for lack of progress, for a goal's pause.
+    ck_stop: Option<String>,
     /// Messages sent while a turn runs: they join it before its next model call.
     inbox: VecDeque<(String, Vec<Attachment>)>,
     /// What other sessions know, waiting to go with the next request: `(id, title, block)`.
@@ -333,6 +338,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         checkpoints: Vec::new(),
         budget: max_cost,
         budget_warned: false,
+        ck_used: 0,
+        ck_stop: None,
         inbox: VecDeque::new(),
         shared: Vec::new(),
         reads: Reads::default(),
@@ -907,6 +914,8 @@ fn goal_to(st: &mut State, to: GoalState, say: String) {
 
 /// A message of the person starts a turn: a goal waiting for their answer has it, and runs again.
 fn person_spoke(st: &mut State) {
+    // only a person's message gives a request its checkpoints back: a goal's rounds, a mail or a job's end do not
+    st.ck_used = 0;
     if st.goal.is_some() && st.goal_state == GoalState::Waiting {
         goal_to(st, GoalState::Active, "goal: resumed with your answer".into());
     }
@@ -926,10 +935,14 @@ async fn goal_settle(state: &Shared, reason: TurnEnd) {
         TurnEnd::Error => {
             (paused("the turn failed"), "goal paused: the turn failed · /goal resume tries again".to_string())
         }
-        TurnEnd::MaxTurns => (
-            paused("the tool-round limit (agent.max_turns)"),
-            "goal paused: the turn reached the tool-round limit (agent.max_turns) · /goal resume goes on".to_string(),
-        ),
+        TurnEnd::MaxTurns => match st.ck_stop.take() {
+            Some(why) => (paused(&why), format!("goal paused: {why} · /goal resume goes on")),
+            None => (
+                paused("the tool-round limit (agent.max_turns)"),
+                "goal paused: the turn reached the tool-round limit (agent.max_turns) · /goal resume goes on"
+                    .to_string(),
+            ),
+        },
         TurnEnd::Done => {
             let last =
                 st.history.iter().rev().find(|m| m.role == Role::Assistant).map(Message::text).unwrap_or_default();
@@ -1260,6 +1273,7 @@ async fn start_turn(
         st.system = full_system(&st);
         st.turn_start = st.history.len();
         st.turns += 1;
+        st.ck_stop = None;
         let ended = st.jobs.take_ended();
         let text = if ended.is_empty() || text.starts_with("[background jobs ended]") {
             text
@@ -1562,12 +1576,29 @@ async fn view_now(st: &mut State) -> View {
 }
 
 async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
-    let (events, max_turns, guard, stale_guard, guard_answer, turn_no, mut known) = {
+    let (events, max_turns, guard, stale_guard, guard_answer, turn_no, mut known, ck_on, mut ck, mut known_ck) = {
         let st = state.lock().await;
         let a = &st.config.agent;
-        // the output lines the session has already brought (`agent.stale_guard`)
+        let ck_on = a.on_limit == OnLimit::Checkpoint && a.max_checkpoints != Some(0);
+        // the output lines the session has already brought (`agent.stale_guard`, and the checkpoints' progress)
         let known = if a.stale_guard > 0 { known_lines(&st.history) } else { HashSet::new() };
-        (st.events.clone(), a.max_turns, a.loop_guard, a.stale_guard, a.guard_answer, st.turns, known)
+        let known_ck = if ck_on { known_numberless(&st.history) } else { HashSet::new() };
+        let mark = checkpoint::Mark { writes: st.checkpoints.len(), wrote: 0, fresh: 0, todo: 0 };
+        let todo = checkpoint::todo_of(&st.history[st.turn_start.min(st.history.len())..]);
+        let mark = checkpoint::Mark { todo: todo.as_ref().map_or(0, |t| t.hash), ..mark };
+        let ck = checkpoint::Tracker::new(st.cost, st.usage, mark, todo);
+        (
+            st.events.clone(),
+            a.max_turns,
+            a.loop_guard,
+            a.stale_guard,
+            a.guard_answer,
+            st.turns,
+            known,
+            ck_on,
+            ck,
+            known_ck,
+        )
     };
     emit(&events, AgentEvent::TurnStart { turn: turn_no });
     let mut compacted = false;
@@ -1586,7 +1617,9 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
     // replies in a row that held only reasoning: no answer and no call
     let mut mute = 0u32;
     loop {
-        if rounds >= max_turns {
+        // with checkpoints the limit is met after the tool round that reaches it; here only a request that went
+        // on without tools (a guard's answer) stops
+        if rounds >= max_turns && (!ck_on || answer != Answer::No) {
             notice(
                 &events,
                 Level::Warn,
@@ -1783,9 +1816,49 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             continue;
         }
         mute = 0;
+        if let Some((n, line)) = ck.pending.take() {
+            let text = msg.text();
+            match checkpoint::parse_decision(&text) {
+                Some(d) if !d.go_on => {
+                    notice(&events, Level::Info, format!("⟳ checkpoint {n} · {line} · stop: {}", d.reason));
+                    ck.stopping = Some(d.reason.clone());
+                    if d.rest.is_empty() {
+                        // the reason alone is no summary: one more call asks for it, the tools staying declared
+                        let mut out = cancelled_results(&calls, "stopped at a checkpoint");
+                        out.push(Part::text(SUMMARY_NOW));
+                        push_results(&state, out).await;
+                        answer = Answer::Asked;
+                        continue;
+                    }
+                    if !calls.is_empty() {
+                        push_results(&state, cancelled_results(&calls, "stopped at a checkpoint")).await;
+                    }
+                    checkpoint_stopped(&state, &d.reason, &text).await;
+                    return TurnEnd::Done;
+                }
+                Some(d) => {
+                    notice(&events, Level::Info, format!("⟳ checkpoint {n} · {line} · continue: {}", d.reason));
+                    if calls.is_empty() && !ck.nudged {
+                        ck.nudged = true;
+                        push_results(&state, vec![Part::text(CHECKPOINT_GO_ON)]).await;
+                        continue;
+                    }
+                }
+                None if !calls.is_empty() => {
+                    notice(&events, Level::Info, format!("⟳ checkpoint {n} · {line} · continue (no decision line)"));
+                }
+                None if calls.is_empty() => {
+                    notice(&events, Level::Info, format!("⟳ checkpoint {n} · {line} · ended without a decision line"));
+                }
+                None => {}
+            }
+        }
         if calls.is_empty() {
             if cut {
                 notice(&events, Level::Warn, "the reply was cut at max_tokens (agent.max_tokens)");
+            }
+            if let Some(why) = ck.stopping.take() {
+                checkpoint_stopped(&state, &why, &msg.text()).await;
             }
             return TurnEnd::Done;
         }
@@ -1794,6 +1867,11 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             // that none may be called, and if it calls one even so, the request stops
             push_results(&state, cancelled_results(&calls, "a guard stopped the tool rounds")).await;
             if answer == Answer::Forced {
+                if let Some(why) = ck.stopping.take() {
+                    // it chose to stop and would not write the summary: the stop stands, not the round limit
+                    checkpoint_stopped(&state, &why, &msg.text()).await;
+                    return TurnEnd::Done;
+                }
                 return TurnEnd::MaxTurns;
             }
             answer = Answer::Forced;
@@ -1802,17 +1880,23 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         let asked = calls.iter().map(|(_, n, a)| (n.clone(), a.to_string())).collect::<Vec<_>>();
         let (results, cancelled) = run_tools(&state, &events, calls, &cancel).await;
         seen.push(round_hash(&asked, &results));
+        let (lines, new) = if stale_guard > 0 { fresh_count(&mut known, &results, false) } else { (0, 0) };
+        if ck_on {
+            ck.fresh += fresh_count(&mut known_ck, &results, true).1;
+            ck.round(&asked, &results);
+            note_writes(&state, &mut ck, &asked, &results).await;
+        }
         if stale_guard > 0 {
             let wrote = {
                 let st = state.lock().await;
                 asked.iter().any(|(n, _)| st.tools.get(n).is_some_and(|t| t.kind() == ToolKind::Write))
             };
             // a round with no output line (a file written by a shell command, a silent step) is neither
-            stale = match fresh_lines(&mut known, &results) {
+            stale = match (lines, new) {
                 _ if wrote => 0,
-                Some(true) => 0,
-                Some(false) => stale + 1,
-                None => stale,
+                (0, _) => stale,
+                (_, 0) => stale + 1,
+                _ => 0,
             };
         }
         // a guard that stops the tool rounds here, and what the person is told
@@ -1835,6 +1919,19 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             // call as text even when the protocol forbids calls (seen with DeepSeek, with or without tools)
             answer = Answer::Asked;
             results.push(Part::text(ANSWER_NOW));
+        }
+        if ck_on && stop.is_none() && !cancelled && answer == Answer::No && rounds >= max_turns {
+            let ctx = Standing { rounds: &seen, guard, stale, stale_guard };
+            match checkpoint_now(&state, &events, &mut ck, &ctx).await {
+                Ok(text) => {
+                    results.push(Part::text(text));
+                    rounds = 0;
+                }
+                Err(end) => {
+                    push_results(&state, results).await;
+                    return end;
+                }
+            }
         }
         push_results(&state, results).await;
         if cancelled {
@@ -1876,6 +1973,185 @@ const ANSWER_NOW: &str =
     "Tool calls are off for the rest of this request: they will not run. Give your answer now, from what you have already seen. \
      The next message of the person turns them on again.";
 
+/// Sent after `CHECKPOINT STOP` with no summary: the request ends on the model's account of its work.
+const SUMMARY_NOW: &str = "<system-reminder>You chose to stop at the checkpoint. Tool calls will not run now. \
+     Write your final summary for the person: what was done, what is left and how to go on.</system-reminder>";
+
+/// Sent once when the model chose to continue at a checkpoint but called no tool.
+const CHECKPOINT_GO_ON: &str =
+    "<system-reminder>You chose to continue at the checkpoint. Go on with the next tool call.</system-reminder>";
+
+/// What `checkpoint_now` reads of the loop's locals.
+struct Standing<'a> {
+    rounds: &'a [u64],
+    guard: u32,
+    stale: u32,
+    stale_guard: u32,
+}
+
+/// The most checkpoints this request may still take: none for a spend limit that is in force (the limit
+/// stops the request), `agent.max_checkpoints` or 5 otherwise. A limit counts only once this request has spent
+/// something: on a model with no prices, or when the day's spend cannot be kept, it would never fire.
+fn checkpoint_cap(st: &State, cost0: f64) -> Option<u32> {
+    if let Some(n) = st.config.agent.max_checkpoints {
+        return Some(n);
+    }
+    let limited = st.budget.is_some_and(|b| b > 0.0) || st.config.agent.max_cost_day.is_some_and(|d| d > 0.0);
+    if limited && st.cost > cost0 {
+        None
+    } else {
+        Some(checkpoint::DEFAULT_MAX)
+    }
+}
+
+/// A request reached `agent.max_turns` with `on_limit = "checkpoint"`: the message to add to the tool results,
+/// or the end of the request when a cap or the lack of progress says so (the model is not asked then).
+async fn checkpoint_now(
+    state: &Shared,
+    events: &EventTx,
+    ck: &mut checkpoint::Tracker,
+    ctx: &Standing<'_>,
+) -> Result<String, TurnEnd> {
+    let mut st = state.lock().await;
+    let (used, cap) = (st.ck_used, checkpoint_cap(&st, ck.cost0));
+    if cap.is_some_and(|c| used >= c) {
+        let limited = if st.config.agent.max_checkpoints.is_some() { "" } else { "; no spend limit is set" };
+        notice(
+            events,
+            Level::Warn,
+            format!("stopped after {used} checkpoints (agent.max_checkpoints{limited}); ask to continue"),
+        );
+        st.ck_stop = Some(format!("stopped after {used} checkpoints"));
+        return Err(TurnEnd::MaxTurns);
+    }
+    let todo = checkpoint::todo_of(&st.history[st.turn_start.min(st.history.len())..]);
+    let now = checkpoint::Mark {
+        writes: st.checkpoints.len(),
+        wrote: ck.wrote(),
+        fresh: ck.fresh,
+        todo: todo.as_ref().map_or(0, |t| t.hash),
+    };
+    // a message of the person that joins now is steering: it counts as progress
+    if checkpoint::progress(&now, &ck.prev) || !st.inbox.is_empty() {
+        ck.idle = 0;
+    } else {
+        ck.idle += 1;
+    }
+    if ck.idle >= 2 {
+        notice(
+            events,
+            Level::Warn,
+            "stopped: two checkpoints in a row with no file written, no new output line and no change in the todo list; ask to continue",
+        );
+        st.ck_stop = Some("two checkpoints in a row without progress".to_string());
+        return Err(TurnEnd::MaxTurns);
+    }
+    let from = st.turn_start.min(st.history.len());
+    let distinct = |from: usize| {
+        let mut out: Vec<String> = Vec::new();
+        for (_, p, _) in st.checkpoints.iter().skip(from) {
+            let p = p.display().to_string();
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        out
+    };
+    let first = st.history.get(from).map(Message::text).unwrap_or_default();
+    let request = if first.starts_with(GOAL_CONTINUE_MARK) { "(goal continuation)".to_string() } else { first };
+    let (u, u0) = (st.usage, ck.usage0);
+    let spend = {
+        let mut s = format!("${:.2} this request, ${:.2} this session", st.cost - ck.cost0, st.cost);
+        if let Some(b) = st.budget.filter(|b| *b > 0.0) {
+            s.push_str(&format!(" of ${b:.2} (max_cost)"));
+        }
+        if let Some(d) = st.config.agent.max_cost_day.filter(|d| *d > 0.0) {
+            s.push_str(&format!("; ${:.2} of ${d:.2} today (max_cost_day)", budget::spent_today()));
+        }
+        match checkpoint_cap(&st, ck.cost0) {
+            Some(c) if st.config.agent.max_checkpoints.is_none() => {
+                s.push_str(&format!(" | no spend limit is set: at most {c} checkpoints"))
+            }
+            Some(c) => s.push_str(&format!(" | at most {c} checkpoints")),
+            None => s.push_str(" | a spend limit is set: it ends the request"),
+        }
+        s
+    };
+    let loop_hits = (2..ctx.guard.max(2)).rev().find(|t| looping(ctx.rounds, *t).is_some()).unwrap_or(0);
+    let report = checkpoint::Report {
+        number: used + 1,
+        cap,
+        cost: st.cost - ck.cost0,
+        calls: checkpoint::calls_in(&st.history[from..]),
+        rounds: ck.rounds,
+        input: u.total_input().saturating_sub(u0.total_input()),
+        output: u.output.saturating_sub(u0.output),
+        cached: u.cache_read.saturating_sub(u0.cache_read),
+        elapsed: ck.started.elapsed(),
+        request,
+        goal: st.goal.clone(),
+        todo: todo.clone(),
+        prev_todo: ck.prev_todo.clone(),
+        files: distinct(ck.writes0),
+        new_files: distinct(ck.prev.writes),
+        fresh_total: ck.fresh,
+        fresh_new: ck.fresh - ck.prev.fresh,
+        build: ck.build(),
+        errors: ck.repeated(),
+        loop_hits,
+        loop_limit: ctx.guard,
+        stale: ctx.stale,
+        stale_limit: ctx.stale_guard,
+        spend,
+        idle: ck.idle,
+    };
+    let line = checkpoint::stats(&report);
+    notice(events, Level::Info, format!("⟳ checkpoint {} · {line} · asking", report.number));
+    st.ck_used += 1;
+    ck.pending = Some((report.number, line));
+    ck.nudged = false;
+    ck.prev = now;
+    ck.prev_todo = todo;
+    Ok(checkpoint::render(&report))
+}
+
+/// Notes the files the write tools of a round left: only a write that succeeded, with content this request had
+/// not left in that file before, is progress (a rewrite of the same bytes, a denied or failed write is not).
+async fn note_writes(state: &Shared, ck: &mut checkpoint::Tracker, asked: &[(String, String)], results: &[Part]) {
+    use std::hash::{Hash, Hasher};
+    let outs: Vec<bool> = results
+        .iter()
+        .filter_map(|p| if let Part::ToolResult { is_error, .. } = p { Some(*is_error) } else { None })
+        .collect();
+    if outs.len() != asked.len() {
+        return;
+    }
+    let st = state.lock().await;
+    for ((name, args), failed) in asked.iter().zip(outs) {
+        if failed || !st.tools.get(name).is_some_and(|t| t.kind() == ToolKind::Write) {
+            continue;
+        }
+        let args: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+        let Some(p) = args.get("path").and_then(Value::as_str) else { continue };
+        let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { st.cwd.join(p) };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        match std::fs::read(&path) {
+            Ok(bytes) => bytes.hash(&mut h),
+            Err(_) => args.to_string().hash(&mut h),
+        }
+        ck.note_write(&path.display().to_string(), h.finish());
+    }
+}
+
+/// The model chose to stop at a checkpoint: an active goal pauses there, unless the reply meets or awaits it.
+async fn checkpoint_stopped(state: &Shared, why: &str, reply: &str) {
+    let mut st = state.lock().await;
+    if st.goal.is_some() && st.goal_state.is_active() && !goal_done(reply) && !goal_wait(reply) {
+        let say = format!("goal paused: stopped at a checkpoint ({why}) · /goal resume goes on");
+        goal_to(&mut st, GoalState::Paused(format!("stopped at a checkpoint: {why}")), say);
+    }
+}
+
 fn then(answer: bool) -> &'static str {
     if answer {
         "; one last call without tools asks for the answer"
@@ -1902,22 +2178,59 @@ fn round_hash(asked: &[(String, String)], results: &[Part]) -> u64 {
 /// when there was no line (`agent.stale_guard`). A line counts trimmed and from four characters on: blank
 /// lines, braces and short markers come back in any output and tell nothing of what it brought.
 fn fresh_lines(known: &mut HashSet<u64>, parts: &[Part]) -> Option<bool> {
+    match fresh_count(known, parts, false) {
+        (0, _) => None,
+        (_, new) => Some(new > 0),
+    }
+}
+
+/// [`fresh_lines`] as numbers: the lines counted and how many of them were new. With `norm` a line counts
+/// with its digit runs read as one mark, so a clock, a counter or a pid does not make an old line new.
+fn fresh_count(known: &mut HashSet<u64>, parts: &[Part], norm: bool) -> (usize, usize) {
     use std::hash::{Hash, Hasher};
-    let mut fresh = None;
+    let (mut lines, mut fresh) = (0, 0);
     for p in parts {
         if let Part::ToolResult { content, .. } = p {
             for line in content.iter().filter_map(Part::as_text).flat_map(str::lines) {
                 let line = line.trim();
                 if line.chars().count() >= 4 {
                     let mut h = std::collections::hash_map::DefaultHasher::new();
-                    line.hash(&mut h);
-                    let new = known.insert(h.finish());
-                    fresh = Some(fresh.unwrap_or(false) || new);
+                    if norm {
+                        numberless(line).hash(&mut h);
+                    } else {
+                        line.hash(&mut h);
+                    }
+                    lines += 1;
+                    fresh += usize::from(known.insert(h.finish()));
                 }
             }
         }
     }
-    fresh
+    (lines, fresh)
+}
+
+/// `line` with each run of digits turned into one `#`.
+fn numberless(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars() {
+        if c.is_ascii_digit() {
+            if !out.ends_with('#') {
+                out.push('#');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The lines a conversation has brought, digits aside: what the checkpoints call new.
+fn known_numberless(history: &[Message]) -> HashSet<u64> {
+    let mut known = HashSet::new();
+    for m in history {
+        let _ = fresh_count(&mut known, &m.content, true);
+    }
+    known
 }
 
 /// The output lines a conversation has already brought, as `fresh_lines` counts them.

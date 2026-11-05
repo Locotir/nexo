@@ -135,6 +135,8 @@ pub fn config(bench: &Bench, arm: &Arm) -> Config {
     c.permissions.mode = PermissionMode::Auto;
     c.agent.subagents = false;
     c.agent.max_turns = bench.max_steps;
+    // a benchmark run stops hard at max_steps: a checkpoint would let it go past
+    c.agent.on_limit = nexo_core::config::OnLimit::Ask;
     if let Some(n) = bench.max_tokens {
         c.agent.max_tokens = n;
     }
@@ -534,10 +536,12 @@ mod tests {
         assert_eq!(c.provider.as_deref(), Some(PROVIDER));
         assert_eq!((c.context.policy.as_str(), c.context.curator_spec.as_str()), ("curator", "eoq=4000"));
         assert_eq!((c.agent.max_turns, c.agent.max_tokens, c.agent.subagents), (100, 2048, false));
+        assert_eq!(c.agent.on_limit, nexo_core::config::OnLimit::Ask, "the step limit is a hard stop");
         assert_eq!(c.agent.temperature, Some(0.0));
         assert_eq!(c.permissions.mode, PermissionMode::Auto);
         assert!(c.mcp.is_empty() && c.hooks.is_empty());
         let c = config(&bench, &Arm::parse("compact:at=50000").unwrap());
+        assert_eq!(c.agent.on_limit, nexo_core::config::OnLimit::Ask, "every arm stops hard at max_steps");
         assert_eq!((c.context.policy.as_str(), c.context.compact_at), ("compact", 50_000));
         assert_eq!(c.context.curator_spec, "");
         assert_eq!(config(&bench, &Arm::parse("compact").unwrap()).context.compact_at, crate::arm::COMPACT_AT);

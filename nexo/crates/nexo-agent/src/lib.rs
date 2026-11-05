@@ -10,6 +10,7 @@
 pub mod ask;
 pub mod brief;
 pub mod budget;
+pub mod checkpoint;
 pub mod client;
 pub mod compact;
 pub mod config_edit;
