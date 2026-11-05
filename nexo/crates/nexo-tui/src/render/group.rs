@@ -36,11 +36,26 @@ fn call_name(tool: &str) -> String {
     }
 }
 
+thread_local! {
+    /// The line totals of each edit call, by call id: a live group is drawn every tick and its
+    /// diffs are not worth running again each time.
+    static STATS: std::cell::RefCell<std::collections::HashMap<String, (usize, usize)>> = Default::default();
+}
+
+fn stats_of(id: &str, old: &str, new: &str) -> (usize, usize) {
+    if let Some(s) = STATS.with(|m| m.borrow().get(id).copied()) {
+        return s;
+    }
+    let s = diff::stats(old, new);
+    STATS.with(|m| m.borrow_mut().insert(id.to_string(), s));
+    s
+}
+
 /// The phrases of the calls in `members`, in the order each kind first appears.
 fn rows(members: &[Block]) -> Vec<Row> {
     let mut out: Vec<Row> = Vec::new();
     for b in members {
-        let Block::Tool { name, status, output, .. } = b else { continue };
+        let Block::Tool { id, name, status, output, .. } = b else { continue };
         let what = classify(name).what;
         let label = if what == What::Other { call_name(name) } else { String::new() };
         let at = match out.iter().position(|r| r.what == what && r.name == label) {
@@ -58,7 +73,7 @@ fn rows(members: &[Block]) -> Vec<Row> {
                 // the totals come from what the tool returned, never from the disk
                 match &o.display {
                     ToolDisplay::Diff { old, new, .. } => {
-                        let (a, d) = diff::stats(old, new);
+                        let (a, d) = stats_of(id, old, new);
                         r.added += a;
                         r.removed += d;
                         r.diffs = true;
@@ -164,9 +179,19 @@ pub fn header(members: &[Block], folded: bool, spinner: usize, w: usize, theme: 
         ("✓", theme.style(theme.success))
     };
     let text = sentence(members);
-    let fails = if failed > 0 { format!(" · {failed} failed") } else { String::new() };
-    let denies = if denied > 0 { format!(" · {denied} denied") } else { String::new() };
     let chevron = if folded { " ▸" } else { " ▾" };
+    let long = |f: usize, d: usize| {
+        (
+            if f > 0 { format!(" · {f} failed") } else { String::new() },
+            if d > 0 { format!(" · {d} denied") } else { String::new() },
+        )
+    };
+    let (mut fails, mut denies) = long(failed, denied);
+    // in a very narrow pane the markers shrink to a symbol and a count so the chevron still fits
+    if w < 2 + width(&fails) + width(&denies) + width(chevron) + 4 {
+        fails = if failed > 0 { format!(" ✗{failed}") } else { String::new() };
+        denies = if denied > 0 { format!(" ⊘{denied}") } else { String::new() };
+    }
     let stamp = elapsed_ms(members).map(|ms| format!("  {}", fmt_ms(ms))).unwrap_or_default();
     let fixed = |stamp: &str| 2 + width(&fails) + width(&denies) + width(stamp) + width(chevron);
     // the failures and the chevron are the last to go; the time goes first when the line is tight
@@ -305,6 +330,17 @@ mod tests {
             let t = text(&header(&m, true, 0, w, &theme));
             assert!(width(&t) <= w, "{w}: {t:?} is {}", width(&t));
             assert!(t.contains("1 failed") && t.contains("1 denied"), "{w}: {t}");
+        }
+    }
+
+    #[test]
+    fn both_markers_fit_a_very_narrow_pane() {
+        let theme = Theme::dark();
+        let m = [done("read"), call("bash", ToolStatus::Failed), call("bash", ToolStatus::Denied)];
+        for w in [20usize, 24, 26] {
+            let t = text(&header(&m, true, 0, w, &theme));
+            assert!(width(&t) <= w, "{w}: {t:?}");
+            assert!(t.contains("✗1") && t.contains("⊘1") && t.ends_with('▸'), "{w}: {t}");
         }
     }
 

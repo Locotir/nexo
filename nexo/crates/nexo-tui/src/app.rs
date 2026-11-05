@@ -748,7 +748,15 @@ impl App {
     /// its group's line stands for. A call still running or waiting stays in sight.
     pub fn hidden(&self, i: usize) -> bool {
         match self.group_of(i) {
-            Some(m) => matches!(self.blocks[m], Block::Group { folded: true, .. }) && !self.blocks[i].is_live(),
+            Some(m) => {
+                let kept = match &self.blocks[i] {
+                    // the agreed plan and thinking the user opened stay in sight
+                    Block::Tool { name, .. } => name == "exit_plan",
+                    Block::Reasoning { folded, text, .. } => !*folded && !text.trim().is_empty(),
+                    _ => false,
+                };
+                matches!(self.blocks[m], Block::Group { folded: true, .. }) && !self.blocks[i].is_live() && !kept
+            }
             None => false,
         }
     }
@@ -4400,6 +4408,26 @@ mod tests {
         a.push(Block::Assistant { text: "x".into(), streaming: false, at: None, started: None, took_ms: None });
         a.push(card("c", 1));
         assert_eq!(groups(&a), 1, "an answer breaks the run");
+    }
+
+    #[test]
+    fn the_agreed_plan_and_opened_thinking_stay_visible_in_a_folded_group() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 1));
+        let mut open = thinking();
+        if let Block::Reasoning { folded, .. } = &mut open {
+            *folded = false;
+        }
+        a.push(open);
+        let mut plan = card("p", 1);
+        if let Block::Tool { name, .. } = &mut plan {
+            *name = "exit_plan".into();
+        }
+        a.push(plan);
+        a.push(card("b", 1));
+        assert!(a.hidden(1) && !a.hidden(2), "thinking the user opened is not hidden");
+        assert!(!a.hidden(3), "the plan is not hidden");
+        assert!(a.hidden(4));
     }
 
     #[test]
