@@ -31,6 +31,7 @@ fn app(animations: bool, theme: &str) -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 4,
+        group_tools: true,
         keys: Default::default(),
         notify_after: 15,
         animations,

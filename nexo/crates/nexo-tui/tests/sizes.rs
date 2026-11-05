@@ -33,6 +33,7 @@ fn app() -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 4,
+        group_tools: false,
         keys: Default::default(),
         notify_after: 15,
         animations: false,

@@ -564,6 +564,7 @@ async fn interactive(
         show_reasoning: config.ui.show_reasoning,
         timestamps: config.ui.timestamps,
         fold_after: config.ui.fold_after,
+        group_tools: config.ui.group_tools,
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,
         status_line: config.ui.status_line.clone(),

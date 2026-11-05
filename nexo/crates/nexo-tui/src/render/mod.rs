@@ -4,6 +4,7 @@ pub mod blocks;
 pub mod code;
 pub mod diff;
 pub mod gauge;
+pub mod group;
 pub mod markdown;
 pub mod phase;
 pub mod summary;

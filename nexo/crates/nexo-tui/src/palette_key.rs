@@ -80,6 +80,7 @@ mod tests {
             show_reasoning: true,
             timestamps: false,
             fold_after: 3,
+            group_tools: true,
             notify_after: 15,
             animations: false,
             vim: false,

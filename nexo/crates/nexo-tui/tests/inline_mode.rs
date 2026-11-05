@@ -23,6 +23,7 @@ fn app() -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 4,
+        group_tools: true,
         keys: Default::default(),
         notify_after: 15,
         animations: false,
@@ -103,4 +104,31 @@ fn flush_writes_above_the_viewport_at_both_sizes() {
         assert!(shown.contains("a question"), "{w}x{h}: {shown}");
         assert_eq!(a.inline_flushed, 3, "the banner goes to the scrollback too");
     }
+}
+
+#[test]
+fn scrollback_dump_shows_the_summary_line_for_a_folded_group() {
+    let mut a = app();
+    a.push(Block::User { text: "go".into(), at: None });
+    for id in ["a", "b"] {
+        a.push(Block::Tool {
+            id: id.into(),
+            name: "bash".into(),
+            summary: format!("bash: run {id}"),
+            args: serde_json::Value::Null,
+            status: nexo_tui::render::blocks::ToolStatus::Done,
+            progress: vec![],
+            output: Some(nexo_core::tool::ToolOutput::ok("out")),
+            started: None,
+            elapsed_ms: None,
+            folded: true,
+        });
+    }
+    a.busy = false;
+    let dump = nexo_tui::inline::scrollback_text(&mut a, 80);
+    assert!(dump.contains("Ran 2 shell commands"), "{dump}");
+    assert!(!dump.contains("run a"), "{dump}");
+    let rows = take_settled(&mut a, 80);
+    let t = text(&rows);
+    assert!(t.contains("Ran 2 shell commands") && !t.contains("run b"), "{t}");
 }

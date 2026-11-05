@@ -12,6 +12,9 @@ pub fn scrollback_text(app: &mut App, width: u16) -> String {
     for i in 0..app.blocks.len() {
         let end = app.offsets.get(i + 1).copied().unwrap_or(app.total_lines);
         let room = end - app.offsets[i];
+        if room == 0 {
+            continue;
+        }
         let lines = app.lines(i, w).to_vec();
         for line in lines.iter().take(room) {
             let row: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -49,6 +52,10 @@ pub fn take_settled(app: &mut App, width: u16) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     // the blank lines of a block that was already written belong to the one before it
     for i in app.inline_flushed..target {
+        // the calls of a folded group are stood for by its line
+        if app.hidden(i) {
+            continue;
+        }
         let lines = app.lines(i, w).to_vec();
         let gap = app.gap_after(i, lines.len());
         // a block that shows nothing takes no room

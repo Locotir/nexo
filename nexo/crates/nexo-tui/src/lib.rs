@@ -74,6 +74,8 @@ pub struct TuiOptions {
     /// A dim `HH:MM` on each message and reply (`[ui] timestamps`).
     pub timestamps: bool,
     pub fold_after: usize,
+    /// A run of tool calls is one summary line, unfolded on demand (`[ui] group_tools`).
+    pub group_tools: bool,
     /// `[ui.keys]`: action name -> key, over the default keys.
     pub keys: std::collections::BTreeMap<String, String>,
     /// Smooth scrolling, fades, pulses and the other motion (`[ui] animations`).
@@ -102,6 +104,7 @@ impl Default for TuiOptions {
             show_reasoning: true,
             timestamps: true,
             fold_after: 12,
+            group_tools: true,
             keys: Default::default(),
             animations: true,
             status_line: Vec::new(),

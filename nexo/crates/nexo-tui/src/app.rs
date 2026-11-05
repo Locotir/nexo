@@ -97,6 +97,8 @@ pub struct Search {
     /// Absolute line indices of the matches.
     pub matches: Vec<usize>,
     pub current: usize,
+    /// Group blocks whose hit stands for calls the fold leaves out (one hit per group).
+    pub groups: Vec<usize>,
 }
 
 /// A block's render: the width, the line count (kept), and the lines (dropped when far from the view).
@@ -676,17 +678,88 @@ impl App {
     // ------------------------------------------------------------ blocks
 
     pub fn push(&mut self, b: Block) -> usize {
+        let is_call = self.opts.group_tools && matches!(b, Block::Tool { .. });
         self.blocks.push(b);
         self.cache.push(None);
         let born = self.opts.animations.then(|| self.now());
         self.looks.push(Look { born, ..Look::default() });
         self.dirty = true;
-        self.blocks.len() - 1
+        let at = self.blocks.len() - 1;
+        if is_call {
+            return self.join_group(at);
+        }
+        at
+    }
+
+    /// The call just pushed at `at` joins the run of calls before it (thinking in between is part of
+    /// the run): the second call of a run puts a group block in front of the first. Returns where the
+    /// call is now.
+    fn join_group(&mut self, at: usize) -> usize {
+        let mut first = at;
+        while first > 0 && matches!(self.blocks[first - 1], Block::Reasoning { .. }) {
+            first -= 1;
+        }
+        let Some(prev) = first.checked_sub(1).filter(|p| matches!(self.blocks[*p], Block::Tool { .. })) else {
+            return at;
+        };
+        if let Some(back) = self.looks[prev].group_back {
+            let m = prev - back as usize;
+            if let Block::Group { len, .. } = &mut self.blocks[m] {
+                *len = at - m;
+            }
+            for k in first..=at {
+                self.looks[k].group_back = Some((k - m) as u32);
+            }
+            self.cache[m] = None;
+            return at;
+        }
+        // what the inline mode already wrote cannot take a block in front of it
+        if prev < self.inline_flushed {
+            return at;
+        }
+        let born = self.looks[prev].born;
+        self.blocks.insert(prev, Block::Group { folded: true, len: at + 1 - prev });
+        self.cache.insert(prev, None);
+        self.looks.insert(prev, Look { born, ..Look::default() });
+        for k in prev + 1..=at + 1 {
+            self.looks[k].group_back = Some((k - prev) as u32);
+        }
+        // the indices at and after the new block moved up by one
+        let shift = |i: &mut usize| {
+            if *i >= prev {
+                *i += 1;
+            }
+        };
+        self.selected.iter_mut().for_each(shift);
+        self.reveal.iter_mut().for_each(shift);
+        if matches!(self.hover, Hover::Head(_)) {
+            self.hover = Hover::Nothing;
+        }
+        at + 1
+    }
+
+    /// The group block that block `i` belongs to.
+    fn group_of(&self, i: usize) -> Option<usize> {
+        let back = self.looks.get(i)?.group_back?;
+        i.checked_sub(back as usize).filter(|m| matches!(self.blocks.get(*m), Some(Block::Group { .. })))
+    }
+
+    /// Whether block `i` is left out of the transcript: a finished call of a folded group, which
+    /// its group's line stands for. A call still running or waiting stays in sight.
+    pub fn hidden(&self, i: usize) -> bool {
+        match self.group_of(i) {
+            Some(m) => matches!(self.blocks[m], Block::Group { folded: true, .. }) && !self.blocks[i].is_live(),
+            None => false,
+        }
     }
 
     pub fn invalidate(&mut self, i: usize) {
         if let Some(c) = self.cache.get_mut(i) {
             *c = None;
+        }
+        // a group line is made from its calls
+        if let Some(m) = self.group_of(i) {
+            self.cache[m] = None;
         }
         self.dirty = true;
     }
@@ -759,7 +832,21 @@ impl App {
         };
         if fresh {
             let indent = indent_of(&self.blocks[i], width);
-            let mut lines = self.blocks[i].render(width - indent, &self.theme, self.render_opts());
+            let mut lines = match &self.blocks[i] {
+                // a group's line is made from the calls it stands for
+                Block::Group { folded, len } => {
+                    let end = (i + 1 + len).min(self.blocks.len());
+                    let head = crate::render::group::header(
+                        &self.blocks[i + 1..end],
+                        *folded,
+                        self.spinner,
+                        (width - indent).max(8),
+                        &self.theme,
+                    );
+                    vec![head]
+                }
+                b => b.render(width - indent, &self.theme, self.render_opts()),
+            };
             crate::render::wrap::clean_lines(&mut lines);
             if let Block::Tool { id, output: Some(_), .. } = &self.blocks[i] {
                 if let (Some(m), Some(head)) = (self.marks.get(id), lines.first_mut()) {
@@ -767,7 +854,7 @@ impl App {
                     mark_head(head, *m, cost, width - indent, &self.theme);
                 }
             }
-            if self.opts.animations && matches!(self.blocks[i], Block::Tool { .. }) {
+            if self.opts.animations && matches!(self.blocks[i], Block::Tool { .. } | Block::Group { .. }) {
                 let now = self.now();
                 let card = if self.blocks[i].is_live() {
                     Some(crate::motion::Card::Running {
@@ -812,6 +899,10 @@ impl App {
             (bi, self.scroll.saturating_sub(self.offsets[bi]))
         });
         self.last_width = width;
+        // a call that finished inside a folded group leaves the view: its group takes the selection
+        if let Some(m) = self.selected.filter(|s| self.hidden(*s)).and_then(|s| self.group_of(s)) {
+            self.selected = Some(m);
+        }
         let mut off = 0;
         self.offsets.clear();
         for i in 0..self.blocks.len() {
@@ -841,7 +932,12 @@ impl App {
         if matches!(self.blocks[i], Block::Welcome { .. }) {
             return 1;
         }
-        match self.blocks.get(i + 1) {
+        // the calls a folded group leaves out are not there to be next to
+        let mut at = i + 1;
+        while self.hidden(at) {
+            at += 1;
+        }
+        match self.blocks.get(at) {
             Some(Block::User { .. }) => 2,
             Some(next) if n == 1 && is_step(&self.blocks[i]) && is_step(next) => 0,
             _ => 1,
@@ -902,10 +998,12 @@ impl App {
         if self.offsets.is_empty() || line >= self.total_lines {
             return None;
         }
-        let i = match self.offsets.binary_search(&line) {
-            Ok(i) => i,
-            Err(i) => i.saturating_sub(1),
-        };
+        // blocks that show nothing share their offset with the next one: the last of them is the one
+        // that holds the line
+        let i = self.offsets.partition_point(|o| *o <= line).checked_sub(1)?;
+        if self.hidden(i) {
+            return None;
+        }
         // the blank separator after a block belongs to nobody
         let n = self.cache.get(i).and_then(|c| c.as_ref()).map(|(_, h, _)| *h).unwrap_or(0);
         if line < self.offsets[i] + n {
@@ -917,6 +1015,9 @@ impl App {
 
     /// How many of block `i`'s lines are in sight: all, except while it is opening.
     pub fn shown(&mut self, i: usize, width: usize) -> usize {
+        if self.hidden(i) {
+            return 0;
+        }
         let n = self.height(i, width);
         match self.looks.get(i).and_then(|l| l.opened) {
             Some((at, from)) if from < n => {
@@ -953,6 +1054,9 @@ impl App {
             self.selected = Some(i);
             return;
         }
+        if matches!(self.blocks[i], Block::Group { .. }) {
+            return self.toggle_group(i);
+        }
         let before = self.lines(i, self.last_width).len();
         if !self.blocks[i].toggle_fold() {
             self.looks[i].folded = !self.looks[i].folded;
@@ -962,20 +1066,56 @@ impl App {
         self.selected = Some(i);
     }
 
+    /// A group of calls opens, or folds back to its line. Opening shows the calls it had left out,
+    /// growing in; folding keeps the view inside the transcript and the selection on the group.
+    fn toggle_group(&mut self, m: usize) {
+        let Block::Group { folded, len } = self.blocks[m] else { return };
+        let end = (m + len + 1).min(self.blocks.len());
+        let top = self.offsets.get(m).copied();
+        let old_end = self.offsets.get(end).copied().unwrap_or(self.total_lines);
+        let was_hidden: Vec<usize> = (m + 1..end).filter(|k| self.hidden(*k)).collect();
+        self.blocks[m].toggle_fold();
+        self.invalidate(m);
+        if folded {
+            if self.opts.animations {
+                let now = self.now();
+                for k in was_hidden {
+                    self.looks[k].opened = Some((now, 0));
+                }
+            }
+        } else if !self.follow {
+            // the lines under the view may be gone: the view lands on the group instead of past it
+            if let Some(top) = top.filter(|t| self.scroll > *t && self.scroll < old_end) {
+                self.scroll = top;
+                self.scroll_fx.snap(top as f64);
+            }
+        }
+        self.selected = Some(m);
+        self.dirty = true;
+    }
+
     pub fn fold_all(&mut self) {
-        // tool cards and thinking fold together: one key for every body
-        let any_open = self
-            .blocks
-            .iter()
-            .any(|b| matches!(b, Block::Tool { folded: false, .. } | Block::Reasoning { folded: false, .. }));
+        // groups, tool cards and thinking fold together: one key for every body
+        let any_open = self.blocks.iter().any(|b| {
+            matches!(
+                b,
+                Block::Tool { folded: false, .. }
+                    | Block::Reasoning { folded: false, .. }
+                    | Block::Group { folded: false, .. }
+            )
+        });
         for (i, b) in self.blocks.iter_mut().enumerate() {
-            if matches!(b, Block::Tool { .. } | Block::Reasoning { .. }) {
+            if matches!(b, Block::Tool { .. } | Block::Reasoning { .. } | Block::Group { .. }) {
                 b.set_fold(any_open);
                 self.cache[i] = None;
             }
         }
         self.dirty = true;
-        self.flash(if any_open { "tool and thinking bodies folded" } else { "tool and thinking bodies unfolded" });
+        self.flash(if any_open {
+            "tool groups, tool and thinking bodies folded"
+        } else {
+            "tool groups, tool and thinking bodies unfolded"
+        });
     }
 
     pub fn toggle_reasoning(&mut self) {
@@ -1026,7 +1166,7 @@ impl App {
 
     /// A block the keys stop at: one that folds and shows something.
     pub fn navigable(&mut self, i: usize) -> bool {
-        self.foldable(i) && !self.lines(i, self.last_width).is_empty()
+        !self.hidden(i) && self.foldable(i) && !self.lines(i, self.last_width).is_empty()
     }
 
     fn select(&mut self, i: usize) {
@@ -1084,7 +1224,7 @@ impl App {
     /// Whether block `i` shows only its head.
     pub fn is_folded(&self, i: usize) -> bool {
         match self.blocks.get(i) {
-            Some(Block::Tool { folded, .. } | Block::Reasoning { folded, .. }) => *folded,
+            Some(Block::Tool { folded, .. } | Block::Reasoning { folded, .. } | Block::Group { folded, .. }) => *folded,
             Some(_) => self.looks.get(i).is_some_and(|l| l.folded),
             None => false,
         }
@@ -1132,7 +1272,7 @@ impl App {
 
     pub fn open_search(&mut self) {
         let q = self.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
-        self.search = Some(Search { query: q, focused: true, matches: Vec::new(), current: 0 });
+        self.search = Some(Search { query: q, focused: true, matches: Vec::new(), current: 0, groups: Vec::new() });
         self.rematch();
         self.dirty = true;
     }
@@ -1146,18 +1286,36 @@ impl App {
         let width = self.last_width;
         let Some(q) = self.search.as_ref().map(|s| s.query.to_lowercase()) else { return };
         let mut matches = Vec::new();
+        let mut groups = Vec::new();
         if !q.is_empty() {
             for i in 0..self.blocks.len() {
                 let off = self.offsets.get(i).copied().unwrap_or(0);
-                for (j, l) in self.lines(i, width).iter().enumerate() {
-                    if crate::render::markdown::text_of(l).to_lowercase().contains(&q) {
-                        matches.push(off + j);
+                let hidden = self.hidden(i);
+                let hit_lines: Vec<usize> = self
+                    .lines(i, width)
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| crate::render::markdown::text_of(l).to_lowercase().contains(&q))
+                    .map(|(j, _)| j)
+                    .collect();
+                if hidden {
+                    // a call the fold leaves out is found at its group's line, once per group
+                    if let (false, Some(m)) = (hit_lines.is_empty(), self.group_of(i)) {
+                        if !groups.contains(&m) {
+                            groups.push(m);
+                            matches.push(self.offsets.get(m).copied().unwrap_or(0));
+                        }
                     }
+                } else {
+                    matches.extend(hit_lines.into_iter().map(|j| off + j));
                 }
             }
+            matches.sort_unstable();
+            matches.dedup();
         }
         if let Some(s) = &mut self.search {
             s.matches = matches;
+            s.groups = groups;
             s.current = s.current.min(s.matches.len().saturating_sub(1));
         }
         self.dirty = true;
@@ -1172,16 +1330,38 @@ impl App {
         let n = s.matches.len();
         s.current = if forward { (s.current + 1) % n } else { (s.current + n - 1) % n };
         let line = s.matches[s.current];
+        let line = self.open_hit(line);
         self.scroll = line.saturating_sub(h / 3).min(self.max_scroll(h));
         self.follow = false;
         self.dirty = true;
     }
 
+    /// A hit that stands for the calls of a folded group opens the group; the line to go to is the
+    /// first one of those calls that matches.
+    fn open_hit(&mut self, line: usize) -> usize {
+        let Some(m) = self
+            .search
+            .as_ref()
+            .and_then(|s| s.groups.iter().copied().find(|m| self.offsets.get(*m) == Some(&line)))
+            .filter(|m| matches!(self.blocks[*m], Block::Group { folded: true, .. }))
+        else {
+            return line;
+        };
+        self.toggle_group(m);
+        self.layout(self.last_width);
+        self.rematch();
+        let Some(s) = &mut self.search else { return line };
+        // the first hit at or after the old line (the header itself may match too)
+        s.current = s.matches.iter().position(|l| *l >= line).unwrap_or(s.matches.len().saturating_sub(1));
+        s.matches.get(s.current).copied().unwrap_or(line)
+    }
+
     /// Jumps to the first match without moving the counter (on typing).
     pub fn search_first(&mut self) {
         let h = self.transcript_area.height as usize;
-        if let Some(s) = &self.search {
-            if let Some(&line) = s.matches.get(s.current) {
+        if let Some(line) = self.search.as_ref().and_then(|s| s.matches.get(s.current).copied()) {
+            let line = self.open_hit(line);
+            {
                 self.scroll = line.saturating_sub(h / 3).min(self.max_scroll(h));
                 self.follow = false;
             }
@@ -1440,11 +1620,26 @@ impl App {
             let now = self.now();
             let on = self.opts.animations;
             let settle = crate::motion::RAIL_MS.max(crate::motion::POP_MS) + 30;
+            // a group is live while one of its calls is: its line shows the spinner and the clock
+            let mut live_groups: Vec<usize> = Vec::new();
             for i in 0..self.blocks.len() {
-                if !matches!(self.blocks[i], Block::Tool { .. }) {
+                if self.blocks[i].is_live() {
+                    if let Some(m) = self.group_of(i) {
+                        if live_groups.last() != Some(&m) {
+                            live_groups.push(m);
+                        }
+                        self.cache[m] = None;
+                    }
+                }
+            }
+            for i in 0..self.blocks.len() {
+                if !matches!(self.blocks[i], Block::Tool { .. } | Block::Group { .. }) {
                     continue;
                 }
-                let live = self.blocks[i].is_live();
+                let live = match self.blocks[i] {
+                    Block::Group { .. } => live_groups.contains(&i),
+                    _ => self.blocks[i].is_live(),
+                };
                 let look = &mut self.looks[i];
                 if look.was_live && !live && on {
                     look.done_at = Some(now);
@@ -3963,11 +4158,13 @@ struct Look {
     /// When a tool card stopped running, and whether it was running at the last tick.
     done_at: Option<Instant>,
     was_live: bool,
+    /// How far back the group block of a call is (None: not in a group).
+    group_back: Option<u32>,
 }
 
-/// The steps of a turn: a tool call with its result, the model's thinking.
+/// The steps of a turn: a tool call with its result, the model's thinking, a group of calls.
 fn is_step(b: &Block) -> bool {
-    matches!(b, Block::Tool { .. } | Block::Reasoning { .. })
+    matches!(b, Block::Tool { .. } | Block::Reasoning { .. } | Block::Group { .. })
 }
 
 /// Columns before a block's lines: a margin of one for every block (where the selection's
@@ -4124,6 +4321,7 @@ mod tests {
             show_reasoning: true,
             timestamps: false,
             fold_after: 3,
+            group_tools: true,
             keys: Default::default(),
             notify_after: 15,
             animations: true,
@@ -4145,6 +4343,262 @@ mod tests {
         a.cache.clear();
         a.looks.clear();
         (a, rx)
+    }
+
+    // ------------------------------------------------------------ groups of calls
+
+    fn running(id: &str) -> Block {
+        let mut b = card(id, 1);
+        if let Block::Tool { status, output, started, .. } = &mut b {
+            *status = ToolStatus::Running;
+            *output = None;
+            *started = Some(Instant::now());
+        }
+        b
+    }
+
+    fn thinking() -> Block {
+        Block::Reasoning { text: "hm".into(), streaming: false, started: None, elapsed_ms: Some(5), folded: true }
+    }
+
+    fn head(a: &mut App, i: usize) -> String {
+        a.lines(i, 80).first().map(crate::render::markdown::text_of).unwrap_or_default()
+    }
+
+    fn groups(a: &App) -> usize {
+        a.blocks.iter().filter(|b| matches!(b, Block::Group { .. })).count()
+    }
+
+    #[test]
+    fn two_tool_calls_form_one_group_marker_and_a_single_call_does_not() {
+        let (mut a, _rx) = bare();
+        a.push(Block::User { text: "go".into(), at: None });
+        let one = a.push(card("a", 2));
+        assert_eq!(groups(&a), 0);
+        assert_eq!(one, 1);
+        let two = a.push(card("b", 2));
+        assert_eq!(groups(&a), 1);
+        assert!(matches!(a.blocks[1], Block::Group { folded: true, len: 2 }));
+        assert_eq!(two, 3, "the call is returned where it now is");
+        a.push(card("c", 2));
+        assert!(matches!(a.blocks[1], Block::Group { len: 3, .. }), "a third call joins the same group");
+        assert_eq!(groups(&a), 1);
+        assert_eq!(a.blocks.len(), 5);
+        assert!(!a.hidden(1) && a.hidden(2) && a.hidden(3) && a.hidden(4));
+    }
+
+    #[test]
+    fn reasoning_between_calls_joins_the_group_but_trailing_reasoning_does_not() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 1));
+        a.push(thinking());
+        a.push(card("b", 1));
+        assert!(matches!(a.blocks[0], Block::Group { len: 3, .. }), "{:?}", a.blocks.len());
+        a.push(thinking());
+        assert!(matches!(a.blocks[0], Block::Group { len: 3, .. }), "thinking after the last call is outside");
+        assert!(!a.hidden(5));
+        a.push(Block::Assistant { text: "x".into(), streaming: false, at: None, started: None, took_ms: None });
+        a.push(card("c", 1));
+        assert_eq!(groups(&a), 1, "an answer breaks the run");
+    }
+
+    #[test]
+    fn group_tools_off_creates_no_marker() {
+        let (mut a, _rx) = bare();
+        a.opts.group_tools = false;
+        a.push(card("a", 1));
+        a.push(card("b", 1));
+        assert_eq!(groups(&a), 0);
+        assert_eq!(a.blocks.len(), 2);
+    }
+
+    #[test]
+    fn a_running_member_stays_visible_under_a_folded_header() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 1));
+        a.push(running("b"));
+        a.layout(80);
+        assert!(a.hidden(1) && !a.hidden(2));
+        let h = head(&mut a, 0);
+        assert!(h.contains("Running"), "{h}");
+        assert_eq!(a.offsets[1], a.offsets[2], "the finished call takes no room");
+    }
+
+    #[test]
+    fn group_header_changes_tense_when_the_last_call_finishes() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 1));
+        a.push(running("b"));
+        a.layout(80);
+        assert!(head(&mut a, 0).contains("Running"), "{}", head(&mut a, 0));
+        if let Block::Tool { status, output, .. } = &mut a.blocks[2] {
+            *status = ToolStatus::Done;
+            *output = Some(ToolOutput::ok("ok"));
+        }
+        a.invalidate(2);
+        a.layout(80);
+        let h = head(&mut a, 0);
+        assert!(h.contains("Ran 2 shell commands"), "{h}");
+        assert!(a.hidden(2), "folded again once everything finished");
+    }
+
+    #[test]
+    fn enter_on_a_group_toggles_it_and_inner_cards_keep_their_own_fold() {
+        let (mut a, _rx) = bare();
+        a.opts.animations = false;
+        a.push(card("a", 3));
+        a.push(card("b", 3));
+        a.layout(80);
+        a.selected = Some(0);
+        press(&mut a, KeyCode::Enter);
+        assert!(matches!(a.blocks[0], Block::Group { folded: false, .. }));
+        a.layout(80);
+        assert!(!a.hidden(1) && !a.hidden(2));
+        assert!(matches!(a.blocks[1], Block::Tool { folded: true, .. }), "the cards stay folded inside");
+        assert!(a.offsets[2] > a.offsets[1]);
+        press(&mut a, KeyCode::Enter);
+        a.layout(80);
+        assert!(a.hidden(1) && a.hidden(2));
+        assert_eq!(a.selected, Some(0));
+    }
+
+    #[test]
+    fn click_on_the_header_selects_then_toggles() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 1));
+        a.push(card("b", 1));
+        a.layout(80);
+        a.click_block(0, 0);
+        assert_eq!(a.selected, Some(0));
+        assert!(a.is_folded(0));
+        a.click_block(0, 0);
+        assert!(!a.is_folded(0));
+    }
+
+    #[test]
+    fn arrow_navigation_skips_hidden_members() {
+        let (mut a, _rx) = bare();
+        a.push(Block::User { text: "a long\nmessage\nof lines".into(), at: None });
+        a.push(card("a", 3));
+        a.push(card("b", 3));
+        a.push(Block::Assistant {
+            text: "done\n\nmore\n\nlines".into(),
+            streaming: false,
+            at: None,
+            started: None,
+            took_ms: None,
+        });
+        a.layout(80);
+        a.selected = None;
+        for _ in 0..4 {
+            a.select_next(true);
+            if let Some(s) = a.selected {
+                assert!(!a.hidden(s), "{s} is hidden");
+            }
+        }
+    }
+
+    #[test]
+    fn collapse_keeps_scroll_inside_the_transcript() {
+        let (mut a, _rx) = bare();
+        a.opts.animations = false;
+        a.push(Block::User { text: "go".into(), at: None });
+        for id in ["a", "b", "c", "d"] {
+            a.push(card(id, 20));
+        }
+        a.transcript_area = Rect::new(0, 1, 80, 6);
+        a.layout(80);
+        a.toggle_block(1);
+        for k in 2..6 {
+            a.blocks[k].set_fold(false);
+            a.invalidate(k);
+        }
+        a.layout(80);
+        a.follow = false;
+        a.scroll = a.offsets[5] + 2;
+        a.toggle_block(1);
+        a.layout(80);
+        a.settle(6);
+        assert!(a.scroll <= a.max_scroll(6), "{} > {}", a.scroll, a.max_scroll(6));
+        assert!(a.scroll <= a.offsets[1] + 1);
+    }
+
+    #[test]
+    fn ctrl_o_flips_every_group_and_card() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 2));
+        a.push(card("b", 2));
+        a.fold_all();
+        assert!(matches!(a.blocks[0], Block::Group { folded: false, .. }), "everything was folded: it opens");
+        assert!(matches!(a.blocks[1], Block::Tool { folded: false, .. }));
+        a.fold_all();
+        assert!(matches!(a.blocks[0], Block::Group { folded: true, .. }));
+        assert!(matches!(a.blocks[2], Block::Tool { folded: true, .. }));
+    }
+
+    #[test]
+    fn search_hit_in_a_folded_group_counts_once_and_unfolds_on_jump() {
+        let (mut a, _rx) = bare();
+        a.opts.animations = false;
+        a.push(card("a", 2));
+        a.push(card("b", 2));
+        a.transcript_area = Rect::new(0, 1, 80, 10);
+        a.layout(80);
+        a.open_search();
+        a.search.as_mut().unwrap().query = "line".into();
+        a.rematch();
+        assert_eq!(a.search.as_ref().unwrap().matches.len(), 1, "one hit for the whole folded group");
+        a.search_first();
+        assert!(matches!(a.blocks[0], Block::Group { folded: false, .. }));
+        a.layout(80);
+        assert!(!a.search.as_ref().unwrap().matches.is_empty());
+    }
+
+    #[test]
+    fn a_folded_group_is_one_copyable_line() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 1));
+        a.push(card("b", 1));
+        a.layout(80);
+        let t = a.line_text(0).unwrap();
+        assert!(t.contains("Ran 2 shell commands"), "{t}");
+    }
+
+    #[test]
+    fn replayed_session_groups_like_a_live_one() {
+        let (mut a, _rx) = bare();
+        a.push(card("a", 1));
+        a.push(thinking());
+        a.push(card("b", 1));
+        a.push(card("c", 1));
+        assert!(matches!(a.blocks[0], Block::Group { len: 4, .. }));
+        assert_eq!(a.blocks.len(), 5);
+    }
+
+    #[test]
+    fn animations_off_opens_instantly() {
+        let (mut a, _rx) = bare();
+        a.opts.animations = false;
+        a.push(card("a", 4));
+        a.push(card("b", 4));
+        a.layout(80);
+        a.toggle_block(0);
+        a.layout(80);
+        let full = a.height(1, 80);
+        assert_eq!(a.shown(1, 80), full);
+    }
+
+    #[test]
+    fn a_long_finished_group_costs_nothing_per_frame() {
+        let (mut a, _rx) = bare();
+        for n in 0..200 {
+            a.push(card(&format!("c{n}"), 3));
+        }
+        a.layout(80);
+        a.layout(80);
+        let rendered = a.cache.iter().filter(|c| matches!(c, Some((_, _, Some(_))))).count();
+        assert!(rendered <= 2, "hidden calls are not rendered: {rendered}");
+        assert!(a.total_lines <= 2, "one line and its gap: {}", a.total_lines);
     }
 
     #[test]
@@ -4945,6 +5399,7 @@ mod tests {
     #[test]
     fn the_arrows_walk_the_blocks_and_open_and_fold_them() {
         let (mut a, _rx) = bare();
+        a.opts.group_tools = false;
         a.input.push_history("an earlier request");
         a.push(Block::User { text: "run them".into(), at: None });
         for id in ["a", "b", "c"] {
@@ -5003,6 +5458,7 @@ mod tests {
     #[test]
     fn the_steps_of_a_turn_sit_under_the_reply_and_one_line_steps_read_as_a_list() {
         let (mut a, _rx) = bare();
+        a.opts.group_tools = false;
         a.push(Block::User { text: "go".into(), at: None });
         a.push(Block::Assistant { text: "On it.".into(), streaming: false, at: None, started: None, took_ms: None });
         a.push(card("a", 2));

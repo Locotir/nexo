@@ -644,6 +644,7 @@ notify_after = 15                   # ring when a turn this long (s) ends; 0: ne
 mouse = true
 show_reasoning = true
 fold_after = 12
+group_tools = true                  # a run of tool calls is one summary line (Made 1 edit, read 2 files, ran 3 shell commands); Enter or a click opens it; false: every call on its own
 animations = true                   # smooth scrolling, fades, pulses; false: no motion
 # timestamps = true                 # a dim HH:MM at the right of each message and reply, and how long a reply took; /timestamps toggles
 screen = "full"                     # full (alternate screen) | inline (finished turns go to the terminal scrollback)

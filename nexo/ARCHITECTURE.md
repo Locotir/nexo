@@ -290,7 +290,7 @@ an error removes it. Write pins are not carried across a sync reset.
 ### nexo-tui
 
 ```rust
-pub struct TuiOptions { pub cwd: PathBuf, pub provider: String, pub model: String, pub models: Vec<(String, String)>, pub theme: String, pub mouse: bool, pub show_reasoning: bool, pub fold_after: usize, pub session_id: Option<String>, pub sessions: Vec<(String, String)> /* id, title */ }
+pub struct TuiOptions { pub cwd: PathBuf, pub provider: String, pub model: String, pub models: Vec<(String, String)>, pub theme: String, pub mouse: bool, pub show_reasoning: bool, pub fold_after: usize, pub group_tools: bool, pub session_id: Option<String>, pub sessions: Vec<(String, String)> /* id, title */ }
 pub async fn run(handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()>;   // takes the terminal until quit
 ```
 

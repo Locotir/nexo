@@ -329,7 +329,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("PgUp / PgDn", "scroll"),
             ("Home / End", "go to top / bottom (empty draft)"),
             ("Ctrl+F", "search · Enter: next · Shift+Enter: previous"),
-            ("Ctrl+O", "fold or open all tool and thinking blocks"),
+            ("Ctrl+O", "fold or open every tool group, tool card and thinking block"),
             ("Ctrl+T", "show or hide thinking"),
             ("Ctrl+P", "show code as source or as rendered"),
             ("Ctrl+Y", "copy the last reply"),

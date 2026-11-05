@@ -24,6 +24,7 @@ fn app() -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 4,
+        group_tools: true,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

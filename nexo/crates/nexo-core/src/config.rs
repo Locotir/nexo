@@ -279,6 +279,8 @@ pub struct UiConfig {
     pub show_reasoning: bool,
     /// Lines of a tool result shown before it is folded.
     pub fold_after: usize,
+    /// A run of tool calls shows as one summary line that unfolds on demand.
+    pub group_tools: bool,
     /// The vim keys in the editor (`/vim` toggles them).
     pub vim: bool,
     /// Ring the terminal's bell (and send a desktop notification where the terminal
@@ -314,6 +316,7 @@ impl Default for UiConfig {
             mouse: true,
             show_reasoning: true,
             fold_after: 12,
+            group_tools: true,
             vim: false,
             notify_after: 15,
             animations: true,

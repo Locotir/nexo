@@ -27,6 +27,7 @@ fn app(animations: bool) -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 4,
+        group_tools: true,
         keys: Default::default(),
         notify_after: 15,
         animations,
@@ -335,4 +336,29 @@ fn a_short_window_gives_the_keys_line_to_the_text() {
     assert!(keys.contains("Enter send"), "{keys}");
     let short = check(&mut a, 80, 10, "short");
     assert!(!short.join("\n").contains("Enter send"), "{}", short.join("\n"));
+}
+
+#[test]
+fn a_run_of_calls_reads_as_one_summary_line_and_opens_with_ctrl_o() {
+    let mut a = app(false);
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    let diff = ToolDisplay::Diff { path: "src/a.rs".into(), old: "a\n".into(), new: "b\nc\n".into(), start_line: 1 };
+    tool(&mut a, "e1", "edit", "src/a.rs", ToolOutput::ok("edited").with_display(diff));
+    tool(&mut a, "r1", "read", "src/b.rs", ToolOutput::ok("one\ntwo"));
+    tool(&mut a, "r2", "read", "src/c.rs", ToolOutput::ok("one\ntwo"));
+    tool(&mut a, "b1", "bash", "ls", ToolOutput::ok("x"));
+    tool(&mut a, "m1", "mcp__slack__post", "post", ToolOutput::ok("sent"));
+    tool(&mut a, "m2", "mcp__slack__post", "post", ToolOutput::error("boom"));
+    let rows = check(&mut a, 140, 24, "folded group");
+    let at = rows.iter().position(|r| r.contains("Made 1 edit")).unwrap_or_else(|| panic!("{}", rows.join("\n")));
+    let line = rows[at].trim();
+    assert!(line.contains("read 2 files"), "{line}");
+    assert!(line.contains("called slack 2 times"), "{line}");
+    assert!(line.contains("· 1 failed") && line.ends_with('▸'), "{line}");
+    assert!(!rows.iter().any(|r| r.contains("src/b.rs")), "{}", rows.join("\n"));
+    // Ctrl+O opens the group: every call is on screen again
+    nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    let rows = check(&mut a, 140, 40, "open group");
+    assert!(rows.iter().any(|r| r.contains("src/b.rs")), "{}", rows.join("\n"));
+    assert!(rows.iter().any(|r| r.contains('▾')), "{}", rows.join("\n"));
 }

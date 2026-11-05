@@ -29,16 +29,46 @@ impl TurnTally {
     }
 }
 
+/// What a tool call does, for the sentence of a group of calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum What {
+    File,
+    Page,
+    Edit,
+    Shell,
+    Pattern,
+    Dir,
+    Web,
+    Agent,
+    Other,
+}
+
+/// How a tool is counted: its kind word and what it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Class {
+    pub kind: &'static str,
+    pub what: What,
+}
+
+/// The one classification of tools: `kind_word` and the group lines both read it.
+pub fn classify(tool: &str) -> Class {
+    let (kind, what) = match tool {
+        "read" => ("read", What::File),
+        "web_fetch" => ("read", What::Page),
+        "write" | "edit" => ("edit", What::Edit),
+        "bash" => ("run", What::Shell),
+        "grep" | "glob" => ("find", What::Pattern),
+        "ls" => ("find", What::Dir),
+        "web_search" => ("find", What::Web),
+        "task" => ("agent", What::Agent),
+        _ => ("other", What::Other),
+    };
+    Class { kind, what }
+}
+
 /// The short word a tool is counted under.
 pub fn kind_word(tool: &str) -> &'static str {
-    match tool {
-        "read" | "web_fetch" => "read",
-        "write" | "edit" => "edit",
-        "bash" => "run",
-        "grep" | "glob" | "ls" | "web_search" => "find",
-        "task" => "agent",
-        _ => "other",
-    }
+    classify(tool).kind
 }
 
 /// `3 read 2 edit 1 run`.
@@ -131,6 +161,18 @@ mod tests {
     #[test]
     fn calls_are_counted_by_kind() {
         assert_eq!(calls_text(&tally().calls), "3 read 2 edit 1 run");
+    }
+
+    #[test]
+    fn kind_word_is_unchanged_after_classify_refactor() {
+        let kinds: Vec<&str> =
+            ["read", "web_fetch", "write", "edit", "bash", "grep", "glob", "ls", "web_search", "task", "todo"]
+                .iter()
+                .map(|t| kind_word(t))
+                .collect();
+        assert_eq!(kinds, ["read", "read", "edit", "edit", "run", "find", "find", "find", "find", "agent", "other"]);
+        assert_eq!(classify("web_fetch").what, What::Page);
+        assert_eq!(classify("mcp__slack__post").what, What::Other);
     }
 
     #[test]

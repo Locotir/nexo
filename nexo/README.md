@@ -92,7 +92,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | `Shift+↑` or `Tab` (empty draft) | select the last block: a tool call with its result, thinking, a reply or message of several lines |
 | `↑`/`↓` (a block selected) | the previous / next block, the view following it; `↓` past the last goes back to the draft |
 | `→` / `←` / `Enter` (a block selected) | open / fold / toggle it; `Esc` or typing lets it go |
-| `Ctrl+O` | fold or open all tool cards |
+| `Ctrl+O` | fold or open every tool group, tool card and thinking block |
 | `Ctrl+T` | show or hide the model's reasoning |
 | `Ctrl+P` | interpreted view: a markdown, JSON, CSV or TSV block (and a `.md`/`.json`/`.csv` file a tool read or wrote) shows rendered instead of as source; again: the source |
 | `Shift+Tab` (no block selected) | permission mode: ask → accept-edits → plan → ask |
@@ -121,6 +121,8 @@ Scrolling eases out, new blocks fade in, dialogs and the palette pop open and a 
 under a working agent; `[ui] animations = false` turns all motion off (everything lands at once).
 Messages and replies carry a dim `HH:MM` at the right of their first line, and a reply its duration once it ends;
 `[ui] timestamps = false` turns it off, `/timestamps` toggles it for the session.
+
+A run of two or more tool calls (thinking in between counts) is one line while it is folded: `Made 1 edit +29 −3, read 2 files, ran 3 shell commands · 1 failed  4.2s ▸`. It reads in the present tense with a live clock while a call runs (the running call stays in view) and folds by itself once all have finished. Select it with the arrows or click it, then Enter or → opens it; `Ctrl+O` opens or folds all of them. `[ui] group_tools = false` shows every call on its own line again.
 
 **Spend limits.** `[agent] max_cost = 1.0` stops a session at a dollar; `max_cost_day = 5.0` stops every
 session together for the day (what was spent each day is in `~/.nexo/spend.json`). Past 80% nexo

@@ -65,6 +65,12 @@ pub enum Block {
         elapsed_ms: Option<u64>,
         folded: bool,
     },
+    /// The summary line of a run of tool calls: the `len` blocks after it (cards, and the thinking
+    /// between them) belong to it. It is built from them when drawn, so it has no text of its own.
+    Group {
+        folded: bool,
+        len: usize,
+    },
     Notice {
         level: Level,
         text: String,
@@ -139,12 +145,12 @@ pub struct RenderOpts {
 
 impl Block {
     pub fn is_foldable(&self) -> bool {
-        matches!(self, Block::Tool { .. } | Block::Reasoning { .. })
+        matches!(self, Block::Tool { .. } | Block::Reasoning { .. } | Block::Group { .. })
     }
 
     pub fn toggle_fold(&mut self) -> bool {
         match self {
-            Block::Tool { folded, .. } | Block::Reasoning { folded, .. } => {
+            Block::Tool { folded, .. } | Block::Reasoning { folded, .. } | Block::Group { folded, .. } => {
                 *folded = !*folded;
                 true
             }
@@ -153,7 +159,7 @@ impl Block {
     }
 
     pub fn set_fold(&mut self, v: bool) {
-        if let Block::Tool { folded, .. } | Block::Reasoning { folded, .. } = self {
+        if let Block::Tool { folded, .. } | Block::Reasoning { folded, .. } | Block::Group { folded, .. } = self {
             *folded = v;
         }
     }
@@ -409,6 +415,8 @@ impl Block {
                 close_guide(&mut lines);
                 lines
             }
+            // drawn by the app, which has the blocks it summarises
+            Block::Group { .. } => Vec::new(),
             Block::Notice { level, text } => {
                 let (icon, style) = match level {
                     Level::Info => ("◇ ", theme.style(theme.info)),
