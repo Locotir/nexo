@@ -1293,7 +1293,7 @@ impl App {
             "cost": { "usd": self.cost, "limit_usd": self.budget.and_then(|(_, _, l, _)| l) },
             "busy": self.busy,
             "turns": self.turns_ended,
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": nexo_core::version::get(),
         });
         format!("{v}\n")
     }

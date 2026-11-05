@@ -9,6 +9,7 @@ mod supervise;
 mod update;
 
 fn main() {
+    nexo_core::version::set(nexo_bench::run::VERSION);
     // A closed pipe (`nexo providers | head`) ends the process quietly instead of panicking.
     #[cfg(unix)]
     unsafe {

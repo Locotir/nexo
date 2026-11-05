@@ -27,6 +27,7 @@ pub mod redact;
 pub mod shell;
 pub mod stream;
 pub mod tool;
+pub mod version;
 
 /// `n` and the word, plural unless `n` is one: `count(1, "line")` is "1 line".
 pub fn count(n: usize, word: &str) -> String {

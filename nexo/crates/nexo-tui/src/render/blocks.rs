@@ -700,7 +700,7 @@ fn welcome(
     let info: [Vec<Span<'static>>; 3] = [
         vec![
             Span::styled("nexo", theme.bold(theme.accent)),
-            Span::styled(format!(" {}", env!("CARGO_PKG_VERSION")), theme.dim()),
+            Span::styled(format!(" {}", nexo_core::version::get()), theme.dim()),
         ],
         vec![
             Span::raw(truncate(model, text.saturating_sub(width(permissions) + 3))),

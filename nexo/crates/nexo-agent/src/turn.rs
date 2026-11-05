@@ -2646,7 +2646,7 @@ fn status_text(st: &State) -> String {
     let mut lines = vec![
         format!(
             "nexo {} · {}{}",
-            env!("CARGO_PKG_VERSION"),
+            nexo_core::version::get(),
             std::env::consts::OS,
             if nexo_core::paths::is_root() { " · running as root" } else { "" }
         ),

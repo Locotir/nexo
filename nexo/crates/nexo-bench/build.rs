@@ -1,5 +1,5 @@
 //! Records the nexo commit the bench was built from (`NEXO_COMMIT`), so results name the code
-//! they measured. `unknown` outside a git checkout.
+//! they measured, and the version shown with it (`NEXO_VERSION`). `unknown` outside a git checkout.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -33,6 +33,13 @@ fn head_from_files() -> Option<String> {
 fn main() {
     let commit = git(&["rev-parse", "HEAD"]).or_else(head_from_files).unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=NEXO_COMMIT={commit}");
+    // the version shown to people: the package version and the short commit, so each release reads apart
+    let pkg = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let version = match commit.get(..7) {
+        Some(short) if commit != "unknown" => format!("{pkg} ({short})"),
+        _ => pkg,
+    };
+    println!("cargo:rustc-env=NEXO_VERSION={version}");
     // when that commit was made, in UTC: an update check can compare dates when GitHub does not know it
     let when = Command::new("git")
         .args(["log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%dT%H:%M:%SZ"])

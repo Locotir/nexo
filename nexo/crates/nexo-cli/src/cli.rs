@@ -9,7 +9,7 @@ use nexo_core::permission::PermissionMode;
 use crate::setup::{self, Picked};
 
 #[derive(Parser, Debug)]
-#[command(name = "nexo", version, about = "A terminal coding harness for any model provider.", long_about = None)]
+#[command(name = "nexo", version = nexo_bench::run::VERSION, about = "A terminal coding harness for any model provider.", long_about = None)]
 pub struct Args {
     /// Run one request without the interface and print the reply.
     #[arg(short = 'p', long = "print", value_name = "PROMPT")]

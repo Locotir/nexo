@@ -28,6 +28,8 @@ pub const KEY_ENV: &str = "NEXO_BENCH_KEY";
 pub const COMMIT: &str = env!("NEXO_COMMIT");
 /// When [`COMMIT`] was made, UTC (`2026-11-04T18:05:00Z`), or `unknown`.
 pub const COMMIT_TIME: &str = env!("NEXO_COMMIT_TIME");
+/// The version shown to people: the package version and the short commit (`0.1.0 (aa7820a)`).
+pub const VERSION: &str = env!("NEXO_VERSION");
 
 /// What every run of a benchmark shares.
 pub struct Bench {
