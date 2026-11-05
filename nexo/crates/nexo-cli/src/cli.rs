@@ -189,7 +189,7 @@ pub struct BenchArgs {
     /// anthropic | openai-chat | openai-responses | gemini (default: guessed from the address).
     #[arg(long)]
     pub protocol: Option<String>,
-    /// Task ids or groups (all, core, long, heavy, more, hard, padded), or the external benchmark's repoqa and canonstep (with --llmb),
+    /// Task ids or groups (all, core, long, heavy, more, hard, padded), the external benchmark's repoqa and canonstep (with --llmb), or polyglot (Aider's exercises, see --polyglot),
     /// comma separated or repeated.
     #[arg(long, value_name = "TASKS", value_delimiter = ',', default_value = "all")]
     pub tasks: Vec<String>,
@@ -228,13 +228,19 @@ pub struct BenchArgs {
     /// The external benchmark's distribution folder (for --tasks repoqa,canonstep).
     #[arg(long, value_name = "DIR")]
     pub llmb: Option<PathBuf>,
-    /// Instance ids of repoqa and canonstep, comma separated (default: all of them).
+    /// The Polyglot benchmark checkout (for --tasks polyglot; default: the pinned commit is cloned into the cache).
+    #[arg(long, value_name = "DIR")]
+    pub polyglot: Option<PathBuf>,
+    /// Languages of polyglot, comma separated (default: python,rust,go,cpp,javascript).
+    #[arg(long, value_name = "LANGS", value_delimiter = ',')]
+    pub langs: Vec<String>,
+    /// Instance ids of repoqa, canonstep and polyglot (lang/name), comma separated (default: all of them).
     #[arg(long, value_name = "IDS", value_delimiter = ',')]
     pub instances: Vec<String>,
-    /// At most this many instances per task, in id order.
+    /// At most this many instances per task (per language for polyglot, in a fixed shuffled order), in id order otherwise.
     #[arg(long, value_name = "N")]
     pub limit: Option<usize>,
-    /// Where repoqa's repositories are cloned once (default: <out>/.cache/repos).
+    /// Where repoqa's repositories, polyglot's checkout and its package caches are kept once (default: <out>/.cache/repos).
     #[arg(long, value_name = "DIR")]
     pub cache: Option<PathBuf>,
 }
@@ -276,6 +282,8 @@ impl BenchArgs {
             out: self.out.clone(),
             skip_preflight: self.skip_preflight,
             llmb: self.llmb.clone(),
+            polyglot: self.polyglot.clone(),
+            langs: self.langs.clone(),
             instances: self.instances.clone(),
             limit: self.limit,
             cache: self.cache.clone(),

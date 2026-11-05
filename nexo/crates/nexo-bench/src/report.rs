@@ -31,6 +31,8 @@ pub struct Header {
     pub stopped: Option<String>,
     /// What every priced reply cost, runs that ended in an error included (none: the records' sum).
     pub spent: Option<f64>,
+    /// The command that repeats the benchmark, for the Polyglot section.
+    pub repro: Option<String>,
 }
 
 /// The columns after the arm or the run, in both tables.
@@ -72,6 +74,7 @@ pub fn header_of(records: &[Record]) -> Header {
         skipped: vec![],
         stopped: None,
         spent: None,
+        repro: None,
     }
 }
 
@@ -173,6 +176,9 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
     }
     if arms.is_empty() {
         return s;
+    }
+    if let Some(p) = crate::polyglot::report::section(h.repro.as_deref(), records) {
+        s.push_str(&p);
     }
     s.push_str("\n## Arms\n\nScore and views are means over runs; the other counts are totals. Runs that reached outside their folders (contaminated) are left out of the numbers and counted apart.\n\n");
     s.push_str(&header(&["arm", "settings", "runs", "contaminated"]));
@@ -470,6 +476,7 @@ mod tests {
             skipped: vec![],
             stopped: None,
             spent: None,
+            repro: None,
         }
     }
 

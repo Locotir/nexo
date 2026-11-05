@@ -185,7 +185,7 @@ pub struct Ctx {
 }
 
 /// Writes `text` as the system prompt file `name` under the bench's own nexo home.
-fn system_file(bench: &Bench, name: &str, text: &str) -> Result<PathBuf, String> {
+pub(crate) fn system_file(bench: &Bench, name: &str, text: &str) -> Result<PathBuf, String> {
     let dir = bench.out.join(".nexo").join("llmb");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(name);
@@ -194,7 +194,7 @@ fn system_file(bench: &Bench, name: &str, text: &str) -> Result<PathBuf, String>
 }
 
 /// Writes the scoring of a run next to its transcript.
-fn write_score(bench: &Bench, transcript: &str, value: &Value) {
+pub(crate) fn write_score(bench: &Bench, transcript: &str, value: &Value) {
     let name = transcript.strip_suffix(".jsonl").unwrap_or(transcript);
     let path = bench.out.join(format!("{name}.score.json"));
     let _ = std::fs::write(path, serde_json::to_string_pretty(value).unwrap_or_default());

@@ -11,6 +11,7 @@ pub mod counters;
 pub mod env;
 pub mod html;
 pub mod llmb;
+pub mod polyglot;
 pub mod preflight;
 pub mod report;
 pub mod rng;
@@ -60,6 +61,10 @@ pub struct Options {
     pub limit: Option<usize>,
     /// Where repositories are cloned once; None: `<out>/.cache/repos`.
     pub cache: Option<PathBuf>,
+    /// The Polyglot benchmark checkout (task `polyglot`); None: the pinned commit is cloned into the cache.
+    pub polyglot: Option<PathBuf>,
+    /// The languages of the task `polyglot`; empty: python, rust, go, cpp and javascript.
+    pub langs: Vec<String>,
 }
 
 /// The protocol an address most likely speaks: `anthropic` when the address says so (DeepSeek's
@@ -92,8 +97,9 @@ fn prices(opts: &Options) -> anyhow::Result<Option<Pricing>> {
 /// Runs the benchmark; the exit code is 0, or 2 when it stopped at the budget.
 pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let arms = arm::Arm::parse_all(&opts.arms).map_err(anyhow::Error::msg)?;
-    let (llmb_names, nexo_names) = split_tasks(&opts.tasks);
-    let tasks = if nexo_names.is_empty() && !llmb_names.is_empty() {
+    let (poly, rest) = take_polyglot(&opts.tasks);
+    let (llmb_names, nexo_names) = split_tasks(&rest);
+    let tasks = if nexo_names.is_empty() && (!llmb_names.is_empty() || poly) {
         Vec::new()
     } else {
         tasks::select(&nexo_names).map_err(anyhow::Error::msg)?
@@ -102,13 +108,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         (_, true) => Vec::new(),
         (None, false) => bail!("the tasks {} need --llmb DIR (the benchmark's distribution)", llmb_names.join(", ")),
         (Some(root), false) => {
-            let jobs = llmb::jobs(root, &llmb_names, &opts.instances, opts.limit).map_err(anyhow::Error::msg)?;
-            for w in &opts.instances {
-                if !jobs.iter().any(|j| j.name().ends_with(&format!("/{w}"))) {
-                    bail!("no instance {w:?} in the tasks {}", llmb_names.join(", "));
-                }
-            }
-            jobs
+            llmb::jobs(root, &llmb_names, &opts.instances, opts.limit).map_err(anyhow::Error::msg)?
         }
     };
     if opts.repeats == 0 || opts.max_steps == 0 {
@@ -119,6 +119,30 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let out = opts.out.canonicalize()?;
     fresh_out(&out)?;
     isolate(&out, opts.key.as_deref())?;
+    let cache = opts.cache.clone().unwrap_or_else(|| out.join(".cache").join("repos"));
+    let mut poly_commit = None;
+    let mut poly_root = None;
+    let (poly_ctx, poly_jobs) = if poly {
+        let langs = polyglot::parse_langs(&opts.langs).map_err(anyhow::Error::msg)?;
+        seal::available().map_err(|e| anyhow::anyhow!("the task polyglot runs in a sealed box: {e}"))?;
+        std::fs::create_dir_all(&cache).with_context(|| format!("creating {}", cache.display()))?;
+        let cache = cache.canonicalize()?;
+        let root = polyglot::root_of(opts.polyglot.as_deref(), &cache).map_err(anyhow::Error::msg)?;
+        let jobs = polyglot::jobs(&root, &langs, &opts.instances, opts.limit).map_err(anyhow::Error::msg)?;
+        poly_commit = polyglot::commit_of(&root);
+        poly_root = Some(root.clone());
+        let ctx = polyglot::Ctx { root, cache };
+        polyglot::prepare(&ctx, &jobs).map_err(anyhow::Error::msg)?;
+        (Some(ctx), jobs)
+    } else {
+        (None, Vec::new())
+    };
+    for w in &opts.instances {
+        let named = |n: &str| n.ends_with(&format!("/{w}"));
+        if !llmb_jobs.iter().any(|j| named(&j.name())) && !poly_jobs.iter().any(|j| named(&j.name())) {
+            bail!("no instance {w:?} in the tasks {}", opts.tasks.join(", "));
+        }
+    }
 
     let protocol = opts.protocol.clone().unwrap_or_else(|| protocol_of(&opts.upstream).into());
     let mut provider = ProviderConfig::new(&protocol, &opts.upstream, opts.key.as_ref().map(|_| run::KEY_ENV));
@@ -155,9 +179,14 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
 
     let ctx = llmb::Ctx {
         root: opts.llmb.as_ref().map(|r| r.canonicalize().unwrap_or_else(|_| r.clone())).unwrap_or_default(),
-        cache: opts.cache.clone().unwrap_or_else(|| out.join(".cache").join("repos")),
+        cache: cache.clone(),
     };
-    let units: Vec<Unit> = tasks.iter().map(Unit::Nexo).chain(llmb_jobs.iter().map(Unit::Llmb)).collect();
+    let units: Vec<Unit> = tasks
+        .iter()
+        .map(Unit::Nexo)
+        .chain(llmb_jobs.iter().map(Unit::Llmb))
+        .chain(poly_jobs.iter().map(Unit::Polyglot))
+        .collect();
     let mut records = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut stopped = None;
@@ -176,6 +205,10 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
                 let done = match unit {
                     Unit::Nexo(task) => run::run(&bench, task, a, rep, left).await,
                     Unit::Llmb(job) => llmb::run(&bench, &ctx, job, a, rep, left).await,
+                    Unit::Polyglot(job) => match &poly_ctx {
+                        Some(pc) => polyglot::run(&bench, pc, job, a, rep, left).await,
+                        None => Err("polyglot has no context".to_string()),
+                    },
                 };
                 match done {
                     Ok(rec) => {
@@ -217,6 +250,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         skipped,
         stopped: stopped.clone(),
         spent: Some(spent),
+        repro: poly.then(|| repro_command(&opts, poly_root.as_deref().unwrap_or(&out), poly_commit.as_deref())),
     };
     let meta = Meta {
         results: Some(RESULTS.into()),
@@ -224,6 +258,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         spent,
         stopped: stopped.clone(),
         skipped: header.skipped.clone(),
+        repro: header.repro.clone(),
     };
     std::fs::write(out.join(Meta::FILE), serde_json::to_string(&meta)?)?;
     let summary = report::summary(&header, &records);
@@ -263,6 +298,7 @@ pub fn arm_order<T>(arms: &[T], rep: u32, unit: usize) -> Vec<&T> {
 enum Unit<'a> {
     Nexo(&'a tasks::Task),
     Llmb(&'a llmb::Job),
+    Polyglot(&'a polyglot::Job),
 }
 
 impl Unit<'_> {
@@ -270,8 +306,54 @@ impl Unit<'_> {
         match self {
             Unit::Nexo(t) => t.id.to_string(),
             Unit::Llmb(j) => j.name(),
+            Unit::Polyglot(j) => j.name(),
         }
     }
+}
+
+/// The task `polyglot` taken out of the names: whether it was asked for, and the other names.
+pub fn take_polyglot(names: &[String]) -> (bool, Vec<String>) {
+    let mut asked = false;
+    let mut rest = Vec::new();
+    for n in names.iter().flat_map(|n| n.split(',')).map(str::trim).filter(|n| !n.is_empty()) {
+        if n == polyglot::NAME {
+            asked = true;
+        } else {
+            rest.push(n.to_string());
+        }
+    }
+    (asked, rest)
+}
+
+/// The command that repeats a Polyglot run; the key is read from `$API_KEY`.
+fn repro_command(opts: &Options, root: &std::path::Path, commit: Option<&str>) -> String {
+    let mut s = format!(
+        "nexo bench --upstream {} --model {} --key \"$API_KEY\" --tasks polyglot --polyglot {} --max-steps {}",
+        opts.upstream,
+        opts.model,
+        root.display(),
+        opts.max_steps
+    );
+    if !opts.langs.is_empty() {
+        s.push_str(&format!(" --langs {}", opts.langs.join(",")));
+    }
+    if let Some(n) = opts.limit {
+        s.push_str(&format!(" --limit {n}"));
+    }
+    if !opts.instances.is_empty() {
+        s.push_str(&format!(" --instances {}", opts.instances.join(",")));
+    }
+    if !opts.arms.is_empty() {
+        s.push_str(&format!(" --arms {}", opts.arms.join(",")));
+    }
+    if let Some(b) = opts.budget {
+        s.push_str(&format!(" --budget {b}"));
+    }
+    s.push_str(" --out DIR");
+    if let Some(c) = commit {
+        s.push_str(&format!("   # benchmark commit {c}"));
+    }
+    s
 }
 
 /// The task names split into the external benchmark's (`repoqa`, `canonstep`) and nexo's own.
@@ -301,6 +383,7 @@ pub fn report(out: &std::path::Path, inputs: &[PathBuf], summary: Option<&std::p
         header.spent = Some(metas.iter().map(|m| m.spent).sum());
         header.budget = metas.first().and_then(|m| m.budget).filter(|_| metas.len() == 1);
         header.stopped = metas.iter().find_map(|m| m.stopped.clone());
+        header.repro = metas.iter().find_map(|m| m.repro.clone());
         header.skipped = metas.into_iter().flat_map(|m| m.skipped).collect();
     }
     if let Some(file) = summary {
@@ -326,6 +409,8 @@ struct Meta {
     spent: f64,
     stopped: Option<String>,
     skipped: Vec<String>,
+    /// The command that repeats the run (Polyglot).
+    repro: Option<String>,
 }
 
 impl Meta {
@@ -406,6 +491,7 @@ mod tests {
             spent: 2.0,
             stopped: Some("the budget of $2 is spent".into()),
             skipped: vec!["x: no compiler".into()],
+            repro: None,
         };
         std::fs::write(dir.path().join(Meta::FILE), serde_json::to_string(&meta).unwrap()).unwrap();
         let file = dir.path().join("again.md");
@@ -487,6 +573,8 @@ mod tests {
             out,
             skip_preflight: false,
             llmb: None,
+            polyglot: None,
+            langs: vec![],
             instances: vec![],
             limit: None,
             cache: None,

@@ -90,18 +90,26 @@ pub struct Seal {
     pub mask: Vec<String>,
     /// A folder of the run that commands see as /tmp, kept between commands; none: an empty /tmp each time.
     pub tmp: Option<PathBuf>,
+    /// Further folders kept visible read-only at their own paths, besides the Rust toolchain.
+    pub keep: Vec<PathBuf>,
 }
 
 impl Seal {
     /// The seal for `wd`, or why commands cannot be sealed on this machine.
     pub fn new(wd: &Path, hide: Vec<PathBuf>, mask: Vec<String>) -> Result<Seal, String> {
         available()?;
-        Ok(Seal { wd: wd.to_path_buf(), hide, sysroot: sysroot(), mask, tmp: None })
+        Ok(Seal { wd: wd.to_path_buf(), hide, sysroot: sysroot(), mask, tmp: None, keep: Vec::new() })
     }
 
     /// The same seal with `tmp` as every command's /tmp.
     pub fn with_tmp(mut self, tmp: &Path) -> Seal {
         self.tmp = Some(tmp.to_path_buf());
+        self
+    }
+
+    /// The same seal with `dir` kept visible read-only (a package cache the task installs from).
+    pub fn with_keep(mut self, dir: &Path) -> Seal {
+        self.keep.push(dir.to_path_buf());
         self
     }
 
@@ -126,7 +134,9 @@ impl Seal {
         parts.extend(UNSHARE.iter().map(|s| s.to_string()));
         parts.extend(["sh".into(), "-c".into(), quote(SCRIPT), "seal".into()]);
         parts.push(quote(&self.wd.to_string_lossy()));
-        parts.push(quote(&self.sysroot.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()));
+        let kept: Vec<String> =
+            self.sysroot.iter().chain(&self.keep).map(|p| p.to_string_lossy().into_owned()).collect();
+        parts.push(quote(&kept.join(":")));
         parts.push(quote(&self.mask.join(":")));
         parts.push(quote(&self.tmp.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()));
         parts.push(quote(cmd));
