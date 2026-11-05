@@ -134,6 +134,11 @@ fn draw_all(f: &mut Frame, app: &mut App) {
             _ if middle.height >= 5 => middle,
             _ => area,
         };
+        // a window that is not about the text behind it gets clear ground, so no piece of the welcome card
+        // or of a line cut by its edge shows beside it; a permission or a question keeps the text in sight
+        if !matches!(app.modal, Some(Modal::Permission(_) | Modal::Question(_))) {
+            clear_bg(f, area_for, &app.theme);
+        }
         draw_modal(f, app, area_for);
         if matches!(app.modal, Some(Modal::Permission(_))) {
             draw_hints(f, app, hints);
