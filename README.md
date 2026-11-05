@@ -83,14 +83,18 @@ The engine, every setting and its default: [`docs/how-it-works.md`](docs/how-it-
 
 ## Install
 
-Linux or Windows. The scripts install whatever is missing (Rust, a C compiler or the Visual Studio build tools) and build nexo, no questions asked.
+The scripts install whatever is missing (Rust, a C compiler or the Visual Studio C++ build tools) and build nexo, no questions asked. On Windows the only thing to do is allow the prompt for the build tools.
+
+**Linux** (terminal):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh     # Linux
+curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
 ```
 
+**Windows** (PowerShell):
+
 ```powershell
-irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex          # Windows
+irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 ```
 
 Or directly: `cargo install --locked --git https://github.com/Locotir/nexo nexo-cli`.

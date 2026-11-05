@@ -6,6 +6,8 @@ use std::time::Duration;
 
 pub const REPO: &str = "https://github.com/Locotir/nexo";
 const API: &str = "https://api.github.com/repos/Locotir/nexo";
+/// The Windows installer: installs what is missing (Rust, the C++ build tools), then builds nexo.
+const INSTALLER: &str = "https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1";
 
 /// The commit this binary was built from (`unknown` outside a git checkout).
 pub fn commit() -> &'static str {
@@ -91,10 +93,22 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
     // Windows cannot write over a running program, but it can rename one.
     let moved = if cfg!(windows) { set_aside() } else { None };
     println!("nexo: cargo install --locked --git {REPO} nexo-cli");
-    let status = std::process::Command::new("cargo")
-        .args(["install", "--locked", "--git", REPO, "nexo-cli"])
-        .status()
-        .map_err(|e| anyhow::anyhow!("cannot run cargo ({e}); install Rust from https://rustup.rs"))?;
+    let built = std::process::Command::new("cargo").args(["install", "--locked", "--git", REPO, "nexo-cli"]).status();
+    // On Windows a missing Rust or missing C++ build tools is the usual reason a build cannot start or
+    // link: the installer script installs what is missing and builds, so nobody has to look it up.
+    let status = match built {
+        Ok(s) if s.success() || !cfg!(windows) => s,
+        _ if cfg!(windows) => {
+            println!("nexo: installing what the build needs (Rust, the Visual Studio C++ build tools), then building");
+            let run = format!("irm {INSTALLER} | iex");
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &run])
+                .status()
+                .map_err(|e| anyhow::anyhow!("cannot run PowerShell ({e}); run: {run}"))?
+        }
+        Err(e) => anyhow::bail!("cannot run cargo ({e}); install Rust from https://rustup.rs"),
+        Ok(s) => s,
+    };
     if !status.success() {
         if let Some((from, to)) = moved {
             let _ = std::fs::rename(to, from);

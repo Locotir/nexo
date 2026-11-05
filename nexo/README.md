@@ -10,12 +10,21 @@ Everything it does, and the test that checks each thing: [FEATURES.md](FEATURES.
 
 ## Install
 
+**Linux** (terminal):
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh            # Linux
-irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex                 # Windows PowerShell
+curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
 ```
 
-Both install what is missing (Rust, a C compiler or the Visual Studio build tools) without asking, then
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
+```
+
+Both install what is missing (Rust, a C compiler or the Visual Studio C++ build tools) without asking. On
+Windows the build tools come from the Visual Studio already installed, from winget, or from Microsoft's own
+installer, in that order; the only thing to do is allow the Windows prompt. Then both
 build the latest `main` with `cargo install`. Each time the interface starts, nexo asks GitHub in the
 background whether `main` has moved past the commit it was built from and says so;
 `nexo update` builds the new one (`nexo update --check` only says). `[ui] update_check = false` or
