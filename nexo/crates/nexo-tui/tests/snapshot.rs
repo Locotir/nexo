@@ -662,8 +662,8 @@ fn a_tool_card_says_where_its_output_stands() {
     let rows = draw(&mut a, 120, 30);
     let row = |s: &str| rows.iter().find(|r| r.contains(s)).unwrap_or_else(|| panic!("{s}:\n{}", rows.join("\n")));
     // the word sits at the right of the head, the head itself unchanged
-    assert!(row("tests/a.rs").trim_end().ends_with("cached"), "{}", rows.join("\n"));
-    assert!(row("src/lib.rs").trim_end().ends_with("out of view"), "{}", rows.join("\n"));
+    assert!(row("tests/a.rs").trim_end().ends_with("● cached"), "{}", rows.join("\n"));
+    assert!(row("src/lib.rs").trim_end().ends_with("○ set aside"), "{}", rows.join("\n"));
     // a new call moves the words: the card is drawn again
     a.handle_agent(AgentEvent::ContextMap {
         cells: Vec::new(),
@@ -672,8 +672,8 @@ fn a_tool_card_says_where_its_output_stands() {
     });
     let rows = draw(&mut a, 120, 30);
     let row = |s: &str| rows.iter().find(|r| r.contains(s)).unwrap().trim_end().to_string();
-    assert!(row("tests/a.rs").ends_with("brought back"), "{}", rows.join("\n"));
-    assert!(!row("src/lib.rs").ends_with("out of view"), "{}", rows.join("\n"));
+    assert!(row("tests/a.rs").ends_with("↺ recalled"), "{}", rows.join("\n"));
+    assert!(!row("src/lib.rs").ends_with("○ set aside"), "{}", rows.join("\n"));
     // narrow, the head keeps its room and the word goes
     let rows = draw(&mut a, 30, 30);
     assert!(!rows.join("\n").contains("brought"), "{}", rows.join("\n"));

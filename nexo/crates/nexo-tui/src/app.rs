@@ -3739,16 +3739,16 @@ fn is_step(b: &Block) -> bool {
 /// bar is drawn), and two more for the steps of a turn, so a call and its result sit under
 /// the reply's text. Narrow terminals keep every column for the text.
 /// The word at the right of a tool card's head: where its output stands for the last model call (in the
-/// cached part of the request, sent and paid in full, trimmed, left out, brought back). Plain text, quiet,
+/// cached part of the request, paid in full, trimmed, set aside, recalled). A glyph and a word, coloured like the bar,
 /// and only when it fits beside the head.
 fn mark_head(head: &mut Line<'static>, m: CallMark, w: usize, theme: &Theme) {
     use crate::render::wrap::width;
     let (word, style) = match m {
-        CallMark::Cached => ("cached", theme.dim2()),
-        CallMark::Sent => ("sent", theme.dim()),
-        CallMark::Cut => ("trimmed", theme.style(theme.warn)),
-        CallMark::Out => ("out of view", theme.dim2()),
-        CallMark::Back => ("brought back", theme.style(theme.success)),
+        CallMark::Cached => ("● cached", theme.style(theme.success)),
+        CallMark::Sent => ("● full price", theme.style(theme.accent)),
+        CallMark::Cut => ("◐ trimmed", theme.style(theme.warn)),
+        CallMark::Out => ("○ set aside", theme.dim2()),
+        CallMark::Back => ("↺ recalled", theme.style(theme.accent2)),
     };
     let used: usize = head.spans.iter().map(|s| width(&s.content)).sum();
     let room = w.saturating_sub(used);
