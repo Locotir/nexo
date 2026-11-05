@@ -579,6 +579,19 @@ The status bar says what the policy is doing, next to the gauge:
 | `curator off` | the curator stopped; every call sends the whole history (the reason is in `/context`) |
 | `plain` | every call sends the whole history; when `auto` chose it, a warning says why |
 
+Each tool card in the transcript also says, at the right of its first line, what the last model call
+did with that card's output:
+
+| Mark | Meaning | What it costs |
+|---|---|---|
+| `● cached` | sent whole, inside the part of the request that did not change since the call before, so the provider serves it from its prompt cache | about a tenth of the normal price |
+| `● full price` | sent whole, after the point where the request changed, so the provider reads it again | the normal input price |
+| `◐ trimmed` | sent shortened: the curator kept the lines that matter (errors, results, the first and last lines) and left a note saying what was cut | less than whole |
+| `○ set aside` | not sent this time; the model did not see it in this call. It is still in the history, with its name, and nothing is lost | nothing |
+| `↺ recalled` | it had been set aside and came back, whole or in part, because the model asked for it (`recall`) or the work turned back to it | as `full price` for what came back |
+
+A card with no mark was not part of the last call's decision (for example it is still running).
+
 `/context` and `/status` add the sentence behind the label. Every message the curator leaves out keeps a name (`m00042`), and the model can bring it back exactly with the `recall` tool, which nexo answers from the whole history it keeps: leaving a message out never loses it. The view never passes the model's window: when the history is too big for it, the oldest messages leave first, and a single output too big on its own keeps its first and last lines with a mark saying which lines were left out. Every fallback is
 said, never silent: a `curator_spec` setting the curator cannot run or an
 unknown policy name shows a warning in the transcript and in the log. A history

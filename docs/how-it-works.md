@@ -128,3 +128,18 @@ The ledger is where most of the moved-out knowledge survives, so what it keeps m
 
 On a 100-step `realm` recording this took the ledger from 588 lines to 55 without losing the commands,
 paths, breakpoints and data rows the later steps used.
+
+## Reading the screen: the mark on each tool card
+
+Every tool card in the transcript ends its first line with what the last model call did with that output:
+
+| Mark | Meaning |
+|---|---|
+| `● cached` | Sent whole, in the unchanged start of the request: the provider's prompt cache serves it at about a tenth of the price. |
+| `● full price` | Sent whole, after the point where the request changed: paid at the normal input price. |
+| `◐ trimmed` | Sent shortened: errors, results and the first and last lines kept, with a note naming what was cut. |
+| `○ set aside` | Left out of this call. The model did not see it this time, but it stays in the history under its name: nothing is lost. |
+| `↺ recalled` | It had been set aside and came back, whole or in part, because the model asked for it (`recall`) or the work returned to it. |
+
+Set aside is the curator's main saving: the view stays small while the history keeps everything. Recalled is
+the proof that leaving something out is reversible.

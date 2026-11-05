@@ -79,7 +79,7 @@ Every figure, its data and its limits (mostly one model, one author's tasks):
 - **Resume = same view.** Reopen or rewind a session and the curator replays its decisions, so the
   provider's cache still hits.
 
-The engine, every setting and its default: [`docs/how-it-works.md`](docs/how-it-works.md).
+The engine, every setting and its default: [`docs/how-it-works.md`](docs/how-it-works.md). What the marks on each tool card mean (`● cached`, `● full price`, `◐ trimmed`, `○ set aside`, `↺ recalled`): [reading the screen](docs/how-it-works.md#reading-the-screen-the-mark-on-each-tool-card).
 
 ## Install
 
