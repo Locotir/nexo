@@ -30,6 +30,18 @@ pub const MAX_QUEUE_ROWS: usize = 3;
 type Buttons = (Vec<(String, char)>, usize);
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    draw_all(f, app);
+    // a highlight noted while drawing (a list row, a block) starts its glide in this frame, after
+    // the tick: the loop must know, or at rest the next frame waits for the next key and the
+    // list shows the row before the one chosen
+    let now = app.now();
+    let fx = &app.fx;
+    if fx.pick_sel.moving(now) || fx.pal_sel.moving(now) || fx.block_sel.moving(now) {
+        app.moving = true;
+    }
+}
+
+fn draw_all(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.term_width = area.width;
     app.queue_rows.clear();

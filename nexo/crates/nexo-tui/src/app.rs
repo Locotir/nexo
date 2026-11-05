@@ -1492,6 +1492,10 @@ impl App {
         {
             any = true;
         }
+        // the frame where a motion ends is drawn too, so nothing rests half lit
+        if self.moving && !any {
+            self.dirty = true;
+        }
         self.moving = any;
         if any || live || self.busy {
             self.dirty = true;
@@ -6340,5 +6344,28 @@ mod tests {
         // a second press quits, as at the prompt
         crate::event::key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(a.should_quit);
+    }
+
+    #[test]
+    fn a_list_at_rest_shows_the_row_the_arrow_reached_without_another_key() {
+        let (mut a, _rx) = app();
+        a.opts.animations = true;
+        a.opts.sessions = (0..5).map(|i| (format!("s{i}"), format!("chat {i}"))).collect();
+        a.run_command(Command::Sessions);
+        let t0 = Instant::now();
+        fx_at(&mut a, t0, 0);
+        frame(&mut a, 70, 16);
+        fx_at(&mut a, t0, 20_000);
+        a.tick_frame(false);
+        assert_eq!(a.load(), crate::frame::Load::Idle, "the open list rests");
+        press(&mut a, KeyCode::Down);
+        frame(&mut a, 70, 16);
+        assert_eq!(a.load(), crate::frame::Load::Motion, "the glide begun in the frame asks for the next ones");
+        fx_at(&mut a, t0, 20_000 + crate::motion::GLIDE_MS + 50);
+        a.tick_frame(false);
+        assert!(a.dirty, "a frame comes after the glide ends");
+        frame(&mut a, 70, 16);
+        let Some(Modal::Picker(p)) = &a.modal else { panic!() };
+        assert_eq!(a.fx.pick_sel.level(p.selected, a.now()), 1.0, "the row reached is fully lit");
     }
 }
