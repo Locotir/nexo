@@ -17,7 +17,13 @@ fn syntaxes() -> &'static SyntaxSet {
 
 fn themes() -> &'static ThemeSet {
     static T: OnceLock<ThemeSet> = OnceLock::new();
-    T.get_or_init(ThemeSet::load_defaults)
+    // syntect's own themes and bat's (Monokai Extended and others)
+    T.get_or_init(|| {
+        let mut set = ThemeSet::load_defaults();
+        let extra: ThemeSet = two_face::theme::extra().into();
+        set.themes.extend(extra.themes);
+        set
+    })
 }
 
 /// Expands tabs to four spaces.
