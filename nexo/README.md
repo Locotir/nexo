@@ -22,12 +22,17 @@ curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
 irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 ```
 
-Both install what is missing (Rust, a C compiler or the Visual Studio C++ build tools) without asking. On
-Windows the build tools come from the Visual Studio already installed, from winget, or from Microsoft's own
-installer, in that order; the only thing to do is allow the Windows prompt. Then both
-build the latest `main` with `cargo install`. Each time the interface starts, nexo asks GitHub in the
-background whether `main` has moved past the commit it was built from and says so;
-`nexo update` builds the new one (`nexo update --check` only says). `[ui] update_check = false` or
+Both download the ready-built nexo from the [latest release](https://github.com/Locotir/nexo/releases/latest)
+(Linux and Windows, x86_64 and ARM; checked against its SHA-256 list) and put it in `~/.local/bin` on Linux
+or `%LOCALAPPDATA%\Programs\nexo` on Windows, adding that folder to PATH. No Rust, no compiler, a few seconds.
+Where no ready-built file fits, or with `NEXO_BUILD=1`, they install what the build needs without asking
+(Rust, a C compiler or the Visual Studio C++ build tools; on Windows only the Windows prompt to allow) and
+build from source. `NEXO_INSTALL_DIR` picks another folder. A copy left in cargo's own folder by older
+installs is removed.
+
+Each time the interface starts, nexo asks GitHub in the background whether the latest release is newer than
+the commit it was built from and says so; `nexo update` downloads it and replaces nexo where it is (it builds
+from source when no release fits), and `nexo update --check` only says. `[ui] update_check = false` or
 `NEXO_NO_UPDATE_CHECK=1` turns the check off; a build from changes never pushed is not checked.
 
 From a clone:

@@ -83,7 +83,7 @@ The engine, every setting and its default: [`docs/how-it-works.md`](docs/how-it-
 
 ## Install
 
-The scripts install whatever is missing (Rust, a C compiler or the Visual Studio C++ build tools) and build nexo, no questions asked. On Windows the only thing to do is allow the prompt for the build tools.
+The scripts download the ready-built nexo from the [latest release](https://github.com/Locotir/nexo/releases/latest) (checked against its SHA-256) and put it on your PATH: `~/.local/bin` on Linux, `%LOCALAPPDATA%\Programs\nexo` on Windows. No Rust, no compiler, a few seconds. Where no ready-built file fits, they install what the build needs (Rust, a C compiler or the Visual Studio C++ build tools) and build it, no questions asked.
 
 **Linux** (terminal):
 
@@ -99,8 +99,8 @@ irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 
 Or directly: `cargo install --locked --git https://github.com/Locotir/nexo nexo-cli`.
 
-**Updates.** Each time it starts, nexo checks GitHub in the background and tells you when `main` has new commits;
-`nexo update` installs them. `[ui] update_check = false` or `NEXO_NO_UPDATE_CHECK=1` turns it off.
+**Updates.** Each time it starts, nexo checks GitHub in the background and tells you when a newer release is out;
+`nexo update` downloads it. `[ui] update_check = false` or `NEXO_NO_UPDATE_CHECK=1` turns it off.
 
 Or from source:
 

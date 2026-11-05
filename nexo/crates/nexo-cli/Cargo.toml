@@ -29,6 +29,7 @@ tracing-subscriber = { workspace = true }
 libc = { workspace = true }
 toml_edit = { workspace = true }
 reqwest = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

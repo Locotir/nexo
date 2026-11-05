@@ -1625,6 +1625,7 @@ dependencies = [
  "nexo-tui",
  "reqwest",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "toml_edit",

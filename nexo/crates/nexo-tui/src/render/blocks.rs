@@ -995,7 +995,7 @@ fn update_card(behind: u32, theme: &Theme, w: usize) -> Vec<Line<'static>> {
     let text = Style::default().fg(theme.fg);
     let cmd = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
     let s = if behind == 1 { "" } else { "s" };
-    let what = format!("{behind} new commit{s} on main.");
+    let what = format!("{behind} new commit{s}, ready-built.");
     let run = [("Run ", text), ("nexo update", cmd), (", then restart nexo.", text)];
     let run_w: usize = run.iter().map(|(t, _)| width(t)).sum();
     let title = " ⬆ Update ready ";
@@ -1421,7 +1421,7 @@ mod tests {
         let all = t.join("\n");
         assert_eq!(t.len(), 4, "{all}");
         assert!(t[0].starts_with("╭─ ⬆ Update ready ") && t[0].ends_with('╮'), "{all}");
-        assert_eq!(t[1].trim_end(), "│ 4 new commits on main.              │", "{all}");
+        assert_eq!(t[1].trim_end(), "│ 4 new commits, ready-built.         │", "{all}");
         assert!(t[2].contains("Run nexo update, then restart nexo.") && t[3].starts_with('╰'), "{all}");
         assert!(t.iter().all(|l| width(l) == width(&t[0])), "{all}");
         // too narrow for the frame: two plain lines that still say what to do
