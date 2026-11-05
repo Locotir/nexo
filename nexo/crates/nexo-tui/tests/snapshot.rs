@@ -497,6 +497,7 @@ fn the_context_map_shows_what_the_call_sends() {
         ],
         zones: Vec::new(),
         calls: Vec::new(),
+        call_tokens: Vec::new(),
     });
     a.toggle_live(120);
     assert!(a.show_live);
@@ -536,6 +537,7 @@ fn the_context_map_shows_the_curators_memory_by_topic() {
             zone("write the docs", true, false),
         ],
         calls: Vec::new(),
+        call_tokens: Vec::new(),
     });
     a.toggle_live(120);
     let rows = draw(&mut a, 120, 40);
@@ -663,6 +665,7 @@ fn a_tool_card_says_where_its_output_stands() {
         cells: Vec::new(),
         zones: Vec::new(),
         calls: vec![("c1".into(), CallMark::Cached), ("c2".into(), CallMark::Out)],
+        call_tokens: Vec::new(),
     });
     let rows = draw(&mut a, 120, 30);
     let row = |s: &str| rows.iter().find(|r| r.contains(s)).unwrap_or_else(|| panic!("{s}:\n{}", rows.join("\n")));
@@ -674,6 +677,7 @@ fn a_tool_card_says_where_its_output_stands() {
         cells: Vec::new(),
         zones: Vec::new(),
         calls: vec![("c1".into(), CallMark::Back)],
+        call_tokens: Vec::new(),
     });
     let rows = draw(&mut a, 120, 30);
     let row = |s: &str| rows.iter().find(|r| r.contains(s)).unwrap().trim_end().to_string();
@@ -682,6 +686,47 @@ fn a_tool_card_says_where_its_output_stands() {
     // narrow, the head keeps its room and the word goes
     let rows = draw(&mut a, 30, 30);
     assert!(!rows.join("\n").contains("brought"), "{}", rows.join("\n"));
+}
+
+#[test]
+fn a_tool_card_adds_the_price_of_its_output_only_with_full_prices_and_room() {
+    use nexo_core::pricing::Pricing;
+    use nexo_core::CallMark;
+    let limits = |pricing| AgentEvent::ModelLimits {
+        provider: "p".into(),
+        model: "m".into(),
+        pricing,
+        context_window: Some(128_000),
+        max_output: Some(8192),
+        source: "config".into(),
+    };
+    let map = || AgentEvent::ContextMap {
+        cells: Vec::new(),
+        zones: Vec::new(),
+        calls: vec![("c1".into(), CallMark::Cached), ("c2".into(), CallMark::Sent)],
+        call_tokens: vec![("c1".into(), 5000), ("c2".into(), 1000)],
+    };
+    let full = Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 0.0 };
+    let text = |a: &mut App, w| draw(a, w, 30).join("\n");
+    let mut a = app();
+    fill(&mut a);
+    a.handle_agent(limits(Some(full)));
+    a.handle_agent(map());
+    // 5000 tokens at the cached rate, 1000 at the full one
+    let wide = text(&mut a, 120);
+    assert!(wide.contains("● cached 0.00150 $"), "{wide}");
+    assert!(wide.contains("● full price 0.00300 $"), "{wide}");
+    // narrow: the word may stay, the price never takes the head's room
+    let narrow = text(&mut a, 50);
+    assert!(narrow.contains("● cached") && narrow.contains("● full price"), "{narrow}");
+    assert!(!narrow.contains("0.00150") && !narrow.contains("0.00300"), "{narrow}");
+    // a price missing (no cached rate): nothing extra, the word stays
+    a.handle_agent(limits(Some(Pricing { cache_read: 0.0, ..full })));
+    let part = text(&mut a, 120);
+    assert!(part.contains("● cached") && !part.contains("0.00150"), "{part}");
+    a.handle_agent(limits(None));
+    let none = text(&mut a, 120);
+    assert!(none.contains("● full price") && !none.contains("0.00300"), "{none}");
 }
 
 #[test]

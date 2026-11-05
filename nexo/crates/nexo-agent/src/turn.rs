@@ -1453,7 +1453,8 @@ async fn view_now(st: &mut State) -> View {
     let same = st.last_sent.iter().zip(&view.messages).take_while(|(a, b)| a == b).count();
     let calls = crate::context_map::calls(&st.history, &cells, &view.messages, same);
     st.last_sent = view.messages.clone();
-    emit(&st.events, AgentEvent::ContextMap { cells, zones, calls });
+    let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
+    emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
     view
 }
 

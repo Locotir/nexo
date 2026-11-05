@@ -226,6 +226,8 @@ pub struct App {
     /// Where the output of each tool call stands for the last model call, by call id: the word at the
     /// right of its card.
     pub marks: std::collections::HashMap<String, CallMark>,
+    /// The tokens of each tool call's output, by call id, to price the card's word.
+    pub call_tokens: std::collections::HashMap<String, u64>,
     pub map_at: Option<Instant>,
     pub files_area: Rect,
     /// The "panel hidden" note was shown for the current shrink.
@@ -455,6 +457,7 @@ impl App {
             map_zones: Vec::new(),
             map_changed: Vec::new(),
             marks: std::collections::HashMap::new(),
+            call_tokens: std::collections::HashMap::new(),
             map_at: None,
             files_area: Rect::default(),
             panel_hint_shown: false,
@@ -658,6 +661,7 @@ impl App {
         self.map_zones.clear();
         self.map_changed.clear();
         self.marks.clear();
+        self.call_tokens.clear();
         self.queued = 0;
         self.queued_msgs.clear();
         self.dirty = true;
@@ -680,6 +684,20 @@ impl App {
             *c = None;
         }
         self.dirty = true;
+    }
+
+    /// The price of the output of tool call `id` in the last request: its tokens at the cached or the
+    /// full rate, from `Pricing::cost`. None unless the model's prices are all given (input, output,
+    /// cache read), the mark says the output was sent whole, and its tokens are known.
+    fn call_cost(&self, id: &str, m: CallMark) -> Option<f64> {
+        let p = self.limits.as_ref()?.pricing.filter(|p| p.input > 0.0 && p.output > 0.0 && p.cache_read > 0.0)?;
+        let tokens = *self.call_tokens.get(id)?;
+        let usage = match m {
+            CallMark::Cached => nexo_core::stream::Usage { cache_read: tokens, ..Default::default() },
+            CallMark::Sent => nexo_core::stream::Usage { input: tokens, ..Default::default() },
+            _ => return None,
+        };
+        Some(p.cost(&usage))
     }
 
     pub fn invalidate_all(&mut self) {
@@ -740,7 +758,8 @@ impl App {
             crate::render::wrap::clean_lines(&mut lines);
             if let Block::Tool { id, output: Some(_), .. } = &self.blocks[i] {
                 if let (Some(m), Some(head)) = (self.marks.get(id), lines.first_mut()) {
-                    mark_head(head, *m, width - indent, &self.theme);
+                    let cost = self.call_cost(id, *m);
+                    mark_head(head, *m, cost, width - indent, &self.theme);
                 }
             }
             if self.opts.animations && matches!(self.blocks[i], Block::Tool { .. }) {
@@ -1721,18 +1740,20 @@ impl App {
                     detail,
                 });
             }
-            AgentEvent::ContextMap { cells, zones, calls } => {
+            AgentEvent::ContextMap { cells, zones, calls, call_tokens } => {
                 let marks: std::collections::HashMap<String, CallMark> = calls.into_iter().collect();
+                let call_tokens: std::collections::HashMap<String, u64> = call_tokens.into_iter().collect();
                 // a card whose word changed is drawn again
                 for i in 0..self.blocks.len() {
                     if let Block::Tool { id, .. } = &self.blocks[i] {
-                        if marks.get(id) != self.marks.get(id) {
+                        if marks.get(id) != self.marks.get(id) || call_tokens.get(id) != self.call_tokens.get(id) {
                             self.cache[i] = None;
                             self.dirty = true;
                         }
                     }
                 }
                 self.marks = marks;
+                self.call_tokens = call_tokens;
                 self.map_changed = cells
                     .iter()
                     .enumerate()
@@ -1772,6 +1793,7 @@ impl App {
                 self.provider = provider.clone();
                 self.model = model.clone();
                 self.limits = Some(Limits { pricing, context_window, max_output, source: source.clone() });
+                self.invalidate_all();
                 self.refresh_welcome();
                 // the card is worth a line after a change or a question, not at every start
                 if !self.fresh() || source == "error" {
@@ -3833,7 +3855,7 @@ fn is_step(b: &Block) -> bool {
 /// The word at the right of a tool card's head: where its output stands for the last model call (in the
 /// cached part of the request, paid in full, trimmed, set aside, recalled). A glyph and a word, coloured like the bar,
 /// and only when it fits beside the head.
-fn mark_head(head: &mut Line<'static>, m: CallMark, w: usize, theme: &Theme) {
+fn mark_head(head: &mut Line<'static>, m: CallMark, cost: Option<f64>, w: usize, theme: &Theme) {
     use crate::render::wrap::width;
     let (word, style) = match m {
         CallMark::Cached => ("● cached", theme.style(theme.success)),
@@ -3844,11 +3866,15 @@ fn mark_head(head: &mut Line<'static>, m: CallMark, w: usize, theme: &Theme) {
     };
     let used: usize = head.spans.iter().map(|s| width(&s.content)).sum();
     let room = w.saturating_sub(used);
-    if room < width(word) + 3 {
-        return;
-    }
-    head.spans.push(Span::raw(" ".repeat(room - width(word))));
-    head.spans.push(Span::styled(word, style));
+    // the price of this output in the last request goes after the word, only where all of it fits
+    let priced = cost.map(|c| format!("{word} {c:.5} $"));
+    let text = match priced {
+        Some(p) if room >= width(&p) + 3 => p,
+        _ if room >= width(word) + 3 => word.to_string(),
+        _ => return,
+    };
+    head.spans.push(Span::raw(" ".repeat(room - width(&text))));
+    head.spans.push(Span::styled(text, style));
 }
 
 fn indent_of(b: &Block, width: usize) -> usize {

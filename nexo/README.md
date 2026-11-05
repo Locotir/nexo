@@ -613,6 +613,8 @@ did with that card's output:
 
 A card with no mark was not part of the last call's decision (for example it is still running).
 
+On `● cached` and `● full price` the card adds what that output cost in the last request (`0.00150 $`: its tokens at the cached or the full input price), when the model's input, output and cached prices are all known and the line has room for it; with a price missing, or on a narrow terminal, only the mark shows.
+
 `/context` and `/status` add the sentence behind the label. Every message the curator leaves out keeps a name (`m00042`), and the model can bring it back exactly with the `recall` tool, which nexo answers from the whole history it keeps: leaving a message out never loses it. The view never passes the model's window: when the history is too big for it, the oldest messages leave first, and a single output too big on its own keeps its first and last lines with a mark saying which lines were left out. Every fallback is
 said, never silent: a `curator_spec` setting the curator cannot run or an
 unknown policy name shows a warning in the transcript and in the log. A history

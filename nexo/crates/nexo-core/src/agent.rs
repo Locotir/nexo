@@ -409,6 +409,10 @@ pub enum AgentEvent {
         /// Where each tool call's output stands (call id, mark).
         #[serde(default)]
         calls: Vec<(String, CallMark)>,
+        /// The tokens of each tool call's output (call id, tokens), where one message carries just that
+        /// one output; the interface prices it with the mark.
+        #[serde(default)]
+        call_tokens: Vec<(String, u64)>,
     },
     Notice {
         level: Level,

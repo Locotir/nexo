@@ -240,6 +240,7 @@ fn with_animations_off_a_changed_context_cell_does_not_blink() {
             cells: vec![cell(CellKind::Request, 40, CellState::Whole), cell(CellKind::Output, 900, CellState::Shrunk)],
             zones: Vec::new(),
             calls: Vec::new(),
+            call_tokens: Vec::new(),
         });
         a.toggle_live(120);
         assert!(a.show_live);

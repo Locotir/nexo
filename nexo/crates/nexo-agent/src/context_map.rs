@@ -99,6 +99,23 @@ pub fn calls(history: &[Message], cells: &[ContextCell], view: &[Message], same:
         .collect()
 }
 
+/// The tokens of the output of each tool call in `history`, for the messages that carry just that one
+/// output (several outputs in a message share one count, so none is given for them).
+pub fn call_tokens(history: &[Message], cells: &[ContextCell]) -> Vec<(String, u64)> {
+    history
+        .iter()
+        .zip(cells)
+        .filter_map(|(h, c)| {
+            let mut ids = h.content.iter().filter_map(|p| match p {
+                Part::ToolResult { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            });
+            let id = ids.next()?;
+            ids.next().is_none().then_some((id, c.tokens))
+        })
+        .collect()
+}
+
 /// The curator's own map of its memory, with the kinds taken from `history`;
 /// `None` when it does not cover the history message for message.
 pub fn from_memory(history: &[Message], mem: &Memory) -> Option<(Vec<ContextCell>, Vec<ContextZone>)> {
@@ -217,5 +234,8 @@ mod tests {
         );
         // nothing repeated (a first request, or one after a change at the start): all paid
         assert_eq!(calls(&history, &cells, &view, 0)[0].1, CallMark::Sent);
+        let tokens = call_tokens(&history, &cells);
+        assert_eq!(tokens.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["c1", "c2", "c3"]);
+        assert!(tokens.iter().all(|t| t.1 > 0));
     }
 }
