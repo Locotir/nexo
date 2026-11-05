@@ -74,7 +74,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("export", &["save"], "[path]", "write the conversation as markdown"),
     spec("rename", &["title", "name"], "<name>", "give this session a name"),
     spec("diff", &[], "", "browse staged, unstaged and new files"),
-    spec("panel", &[], "", "every agent session at a glance, read-only"),
+    spec("panel", &[], "", "agent sessions by program, nexo first (s filters), read-only"),
     spec("cost", &["usage"], "", "window: tokens, cost, calls"),
     spec("context", &["ctx"], "", "window: what the next call sends"),
     spec("theme", &[], "[name]", "change the colours (a picker without a name)"),

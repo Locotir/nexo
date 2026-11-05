@@ -140,6 +140,8 @@ pub struct App {
     pub nexo_src: nexo_agent::supervise::NexoSource,
     /// The `/panel` poller, started the first time the panel opens.
     pub panel: Option<std::sync::Arc<nexo_agent::supervise::Panel>>,
+    /// Which sessions `/panel` lists (all, nexo only, external only); kept while this session runs.
+    pub panel_filter: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pub spinner: usize,
     pub session_usage: Usage,
     pub turn_usage: Usage,
@@ -295,6 +297,8 @@ pub struct App {
     /// Whether the last frame had a palette, a dialog: what is new this frame pops.
     pub palette_was: bool,
     pub modal_was: bool,
+    /// The size each dialog took when it opened, and the rectangle it was drawn at.
+    pub dialog_size: crate::dialog_size::DialogSize,
 }
 
 /// A piece of the status bar that answers a click.
@@ -385,6 +389,7 @@ impl App {
             jobs: Vec::new(),
             nexo_src: nexo_agent::supervise::NexoSource::default(),
             panel: None,
+            panel_filter: Default::default(),
             spinner: 0,
             session_usage: Usage::default(),
             turn_usage: Usage::default(),
@@ -479,6 +484,7 @@ impl App {
             palette_at: None,
             modal_at: None,
             palette_was: false,
+            dialog_size: Default::default(),
             kept_draft: None,
             modal_was: false,
             opts,
@@ -1739,6 +1745,18 @@ impl App {
                     s.found_local(found);
                 }
             }
+            AgentEvent::LoginPrompt { url, code } => {
+                if let Some(Modal::Setup(s)) = &mut self.modal {
+                    s.login_prompt(url, code);
+                }
+            }
+            AgentEvent::LoggedIn { result, .. } => {
+                if let Some(Modal::Setup(s)) = &mut self.modal {
+                    if let crate::modal::setup::SetupOut::Send(cmd) = s.logged_in(result) {
+                        self.send(cmd);
+                    }
+                }
+            }
             AgentEvent::Probed { result, .. } => {
                 if let Some(Modal::Setup(s)) = &mut self.modal {
                     s.probed(result);
@@ -2185,6 +2203,13 @@ impl App {
     pub fn note_popups(&mut self) {
         let now = self.now();
         let (p, m) = (self.palette.is_some(), self.modal.is_some());
+        // a dialog that just came up starts from its own size, not the last one's
+        if p && !self.palette_was {
+            self.dialog_size.palette.forget();
+        }
+        if m && !self.modal_was {
+            self.dialog_size.modal.forget();
+        }
         if self.opts.animations {
             if p && !self.palette_was {
                 self.palette_at = Some(now);
@@ -2202,6 +2227,10 @@ impl App {
         }
         if !p {
             self.fx.pal_sel.clear();
+            self.dialog_size.palette.forget();
+        }
+        if !m {
+            self.dialog_size.modal.forget();
         }
         if !m {
             self.fx.pick_sel.clear();
@@ -2945,8 +2974,9 @@ impl App {
             },
             Command::Panel => {
                 let panel = self.panel_handle();
-                self.modal =
-                    Some(Modal::Agents(Box::new(crate::agents_view::AgentsView::new(Some(panel), !self.fx_on()))))
+                let view = crate::agents_view::AgentsView::new(Some(panel), !self.fx_on())
+                    .remembering(self.panel_filter.clone());
+                self.modal = Some(Modal::Agents(Box::new(view)))
             }
             Command::Cost => {
                 self.modal = Some(Modal::Info(Box::new(crate::overlay::Info::new(1).still(!self.opts.animations))))

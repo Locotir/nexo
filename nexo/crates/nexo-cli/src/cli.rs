@@ -319,7 +319,7 @@ pub enum AuthCmd {
         /// Keep this key (`-` or nothing after it: read it from stdin or ask).
         #[arg(long, num_args = 0..=1, default_missing_value = "-")]
         key: Option<String>,
-        /// The login flow when the name does not say it: copilot | codex | xai.
+        /// The login flow when the name does not say it: copilot | codex | codex-browser | codex-cli | codex-device | xai.
         #[arg(long)]
         flow: Option<String>,
     },

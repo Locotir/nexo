@@ -48,6 +48,7 @@ fn row(key: &str, name: &str, source: SourceKind, state: State, idle: Option<u64
         key: key.into(),
         name: name.into(),
         source,
+        program: if source == SourceKind::Nexo { "nexo" } else { "agentx" }.into(),
         state,
         since: NOW - 60,
         last_step: step.map(Into::into),
@@ -93,6 +94,10 @@ fn rows() -> Vec<AgentRow> {
         row("s-5", "refactor", SourceKind::External, State::Idle { min: 17 }, Some(1020), None),
         row("s-6", "release", SourceKind::External, State::Done, Some(7300), Some("Bash  gh release create v1.4")),
     ];
+    // two external programs, to see two sections
+    for i in [5, 6] {
+        v[i].program = "othertool".into();
+    }
     v[1].last_action = Some(("marked permission".into(), NOW - 90));
     v[1].cost_usd = Some(1.25);
     let mut sub =
@@ -192,7 +197,7 @@ fn keys_move_the_selection_and_escape_closes() {
     press(&mut a, KeyCode::Right);
     press(&mut a, KeyCode::Down);
     let Some(Modal::Agents(v)) = &a.modal else { panic!() };
-    assert_eq!(v.selected, 4, "one right, one row down in three columns");
+    assert_eq!(v.selected, 3, "one right, then down to the second row of the external group (three columns)");
     press(&mut a, KeyCode::End);
     press(&mut a, KeyCode::Right);
     let Some(Modal::Agents(v)) = &a.modal else { panic!() };
@@ -479,4 +484,118 @@ fn a_moving_frame_at_400x120_stays_cheap() {
     let per = start.elapsed() / 30;
     eprintln!("400x120, 40 sessions: {per:?} per frame (debug build)");
     assert!(per < Duration::from_millis(100), "{per:?} per frame is too slow for 30 fps");
+}
+
+fn press(a: &mut App, keys: &str) {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    for c in keys.chars() {
+        v.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+}
+
+fn window(a: &mut App) -> String {
+    panel_part(&capture(a, 120, 40).join("\n"))
+}
+
+#[test]
+fn sessions_sit_under_a_header_per_program_nexo_first_and_every_card_has_its_tag() {
+    let mut a = scene(rows());
+    let text = window(&mut a);
+    let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("no {needle:?}\n{text}"));
+    assert!(at("◆ nexo · 2") < at("◈ agentx · 4") && at("◈ agentx · 4") < at("◈ othertool · 2"), "{text}");
+    for tag in ["[nexo]", "[agentx]", "[othertool]"] {
+        assert!(text.contains(tag), "no {tag} tag\n{text}");
+    }
+    assert_eq!(text.matches("[nexo]").count(), 2, "one tag per nexo card\n{text}");
+    assert_eq!(text.matches("[agentx]").count(), 4, "{text}");
+    assert!(text.contains("all"), "the header says which sessions these are\n{text}");
+    assert!(text.contains("s source"), "the key is listed\n{text}");
+}
+
+#[test]
+fn s_cycles_all_nexo_only_external_only_and_the_choice_outlives_the_window() {
+    let mut a = scene(rows());
+    press(&mut a, "s");
+    let nexo = window(&mut a);
+    assert!(nexo.contains("◆ nexo · 2") && !nexo.contains("agentx") && !nexo.contains("othertool"), "{nexo}");
+    assert!(nexo.contains("nexo only +6"), "the header counts what is hidden\n{nexo}");
+    press(&mut a, "s");
+    let ext = window(&mut a);
+    assert!(!ext.contains("◆ nexo") && ext.contains("◈ agentx · 4") && ext.contains("◈ othertool · 2"), "{ext}");
+    assert!(ext.contains("external only +2"), "{ext}");
+    press(&mut a, "s");
+    let all = window(&mut a);
+    assert!(all.contains("◆ nexo · 2") && all.contains("◈ othertool · 2"), "back to everything\n{all}");
+
+    // a window opened later in the same session starts where the last one stopped
+    let mut b = app();
+    let mem = b.panel_filter.clone();
+    b.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows(), NOW, true).remembering(mem.clone()))));
+    press(&mut b, "ss");
+    let Some(Modal::Agents(v)) = &b.modal else { panic!() };
+    assert_eq!(v.filter, nexo_tui::agents_view::Filter::External);
+    b.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows(), NOW, true).remembering(mem))));
+    let Some(Modal::Agents(v)) = &b.modal else { panic!() };
+    assert_eq!(v.filter, nexo_tui::agents_view::Filter::External, "remembered");
+}
+
+#[test]
+fn a_group_with_nothing_in_it_says_so() {
+    let only_nexo: Vec<AgentRow> = rows().into_iter().filter(|r| r.source == SourceKind::Nexo).collect();
+    let text = window(&mut scene(only_nexo.clone()));
+    assert!(text.contains("◈ external") && text.contains("no sessions from other programs"), "{text}");
+    let mut a = scene(only_nexo);
+    press(&mut a, "ss");
+    let text = window(&mut a);
+    assert!(text.contains("no sessions from other programs found") && !text.contains("◆ nexo"), "{text}");
+
+    let only_ext: Vec<AgentRow> = rows().into_iter().filter(|r| r.source == SourceKind::External).collect();
+    let text = window(&mut scene(only_ext));
+    assert!(text.contains("◆ nexo") && text.contains("no nexo sessions yet"), "{text}");
+
+    let text = window(&mut scene(vec![]));
+    assert!(text.contains("no nexo sessions yet") && text.contains("no sessions from other programs"), "{text}");
+}
+
+#[test]
+fn the_arrows_walk_the_groups_in_the_order_they_are_drawn() {
+    use crossterm::event::KeyCode;
+    let mut a = scene(rows());
+    capture(&mut a, 120, 40);
+    let sel = |a: &App| match &a.modal {
+        Some(Modal::Agents(v)) => v.selected,
+        _ => panic!(),
+    };
+    let key = |a: &mut App, c: KeyCode| {
+        if let Some(Modal::Agents(v)) = &mut a.modal {
+            v.key(crossterm::event::KeyEvent::new(c, crossterm::event::KeyModifiers::NONE));
+        }
+    };
+    key(&mut a, KeyCode::Down);
+    assert_eq!(sel(&a), 2, "down from the nexo row to the first card of the next group");
+    key(&mut a, KeyCode::Down);
+    assert_eq!(sel(&a), 5, "then to the group's second row");
+    key(&mut a, KeyCode::Down);
+    assert_eq!(sel(&a), 6);
+    key(&mut a, KeyCode::Up);
+    key(&mut a, KeyCode::Up);
+    key(&mut a, KeyCode::Up);
+    assert_eq!(sel(&a), 0);
+}
+
+#[test]
+fn a_long_list_scrolls_with_its_headers_and_keeps_the_selection_in_sight() {
+    let many: Vec<AgentRow> = (0..14)
+        .map(|i| row(&format!("k{i}"), &format!("job{i:02}"), SourceKind::External, State::Working, Some(i), None))
+        .collect();
+    let mut a = scene(many);
+    capture(&mut a, 80, 24);
+    for _ in 0..7 {
+        press(&mut a, "j");
+    }
+    let Some(Modal::Agents(v)) = &a.modal else { panic!() };
+    let want = format!("job{:02}", v.selected);
+    let text = capture(&mut a, 80, 24).join("\n");
+    assert!(text.contains(&want), "the selected session is drawn\n{text}");
 }

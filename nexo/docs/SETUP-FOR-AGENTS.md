@@ -54,6 +54,15 @@ credential store (`nexo auth list` shows where) and are renewed by nexo when
 they expire. An assistant running the command must show the address and the
 code to the person and wait; it cannot approve for them.
 
+`codex` has three ways in, chosen with `--flow` (or in `/model`, which lists
+them). With no flow, nexo reuses the login of the Codex CLI when its file is on
+the machine (`$CODEX_HOME/auth.json` or `~/.codex/auth.json`): nothing is typed
+and no token is shown; when nexo renews it, the new tokens are written back to
+that file so the two never spend the same refresh token. Without that file it
+opens the browser (`--flow codex-browser`, answered on `localhost:1455`, or the
+next free port of 1455 and 1457). On a machine without a browser use
+`--flow codex-device`: it prints an address and a code instead.
+
 ### Stored keys
 
 ```sh

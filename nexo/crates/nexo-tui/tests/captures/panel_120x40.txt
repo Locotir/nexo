@@ -1,37 +1,37 @@
 ╭──────────────────────────────────────────────────────────────────────────╮
 │ ●─╮ ╭─●   nexo 0.1.0                                                     │
-│   ╰●╯     deepseek/deepseek-chat · ask                                   │
-│ ●─╯ ╰─●   /tmp/project                                                   │
-│                                                                          │
-│ /model sets up a model · /resume picks a session · ? help                │
 ╭ panel ──────────────────────────────────────────────────────────────────────────────────────────────────────────[✗]──╮
-│ ◈ 1 permission  ◆ 1 question  ◐ 1 stalled  ↻ 1 looping  ● 2 working  ○ 1 idle  ✓ 1 done         watching · read-only │
+│ ◈ 1 permission  ◆ 1 question  ◐ 1 stalled  ↻ 1 looping  ● 2 working  ○ 1 idle  ✓ 1 done   all · watching · read-only │
 │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ◆ nexo · 2 ────────────────────────────────────────────────────────────────────────────────────────────────────────  │
+│ ╭───────────────────────────────────╮  ╭───────────────────────────────────╮                                         │
+│ │ ◆ project               ● working │  │ └ ◆ explore             ● working │                                         │
+│ │ ▸ Edit  src/parser.rs             │  │ ▸ Grep  fn classify               │                                         │
+│ │ [nexo] · quiet 2s                 │  │ [nexo] · quiet 1s                 │                                         │
+│ ╰───────────────────────────────────╯  ╰───────────────────────────────────╯                                         │
+│                                                                                                                      │
+│ ◈ agentx · 4 ──────────────────────────────────────────────────────────────────────────────────────────────────────  │
 │ ╭───────────────────────────────────╮  ╭───────────────────────────────────╮  ╭───────────────────────────────────╮  │
-│ │ ◆ project               ● working │  │ └ ◆ explore             ● working │  │ ◈ api-migration      ◈ permission │  │
-│ │ ▸ Edit  src/parser.rs             │  │ ▸ Grep  fn classify               │  │ ▸ Bash  cargo publish --dry-run   │  │
-│ │ nexo · quiet 2s                   │  │ nexo · quiet 1s                   │  │ external · $1.25 · quiet 1m 35s   │  │
+│ │ ◈ api-migration      ◈ permission │  │ ◈ docs                 ◆ question │  │ ◈ nightly-fixer         ◐ stalled │  │
+│ │ ▸ Bash  cargo publish --dry-run   │  │ ▸ which license should the READM… │  │ ▸ Read  tests/long_running.rs     │  │
+│ │ [agentx] · $1.25 · quiet 1m 35s   │  │ [agentx] · quiet 6m 40s           │  │ [agentx] · quiet 40m 00s          │  │
 │ ╰───────────────────────────────────╯  ╰───────────────────────────────────╯  ╰───────────────────────────────────╯  │
 │                                                                                                                      │
-│ ╭───────────────────────────────────╮  ╭───────────────────────────────────╮  ╭───────────────────────────────────╮  │
-│ │ ◈ docs                 ◆ question │  │ ◈ nightly-fixer         ◐ stalled │  │ ◈ scheduler             ↻ looping │  │
-│ │ ▸ which license should the READM… │  │ ▸ Read  tests/long_running.rs     │  │ ▸ Bash  git pull                  │  │
-│ │ external · quiet 6m 40s           │  │ external · quiet 40m 00s          │  │ external · quiet 30s              │  │
-│ ╰───────────────────────────────────╯  ╰───────────────────────────────────╯  ╰───────────────────────────────────╯  │
+│ ╭───────────────────────────────────╮                                                                                │
+│ │ ◈ scheduler             ↻ looping │                                                                                │
+│ │ ▸ Bash  git pull                  │                                                                                │
+│ │ [agentx] · quiet 30s              │                                                                                │
+│ ╰───────────────────────────────────╯                                                                                │
 │                                                                                                                      │
+│ ◈ othertool · 2 ───────────────────────────────────────────────────────────────────────────────────────────────────  │
 │ ╭───────────────────────────────────╮  ╭───────────────────────────────────╮                                         │
 │ │ ◈ refactor                 ○ idle │  │ ◈ release                  ✓ done │                                         │
 │ │ ▸ no step seen yet                │  │ ▸ Bash  gh release create v1.4    │                                         │
-│ │ external · quiet 17m 00s          │  │ external · quiet 2h 01m           │                                         │
+│ │ [othertool] · quiet 17m 00s       │  │ [othertool] · quiet 2h 01m        │                                         │
 │ ╰───────────────────────────────────╯  ╰───────────────────────────────────╯                                         │
 │ /home/dev/project · default · this-session                                                                           │
-│ ←↑↓→ move · +/- zoom · Esc close                                                                                     │
+│ ←↑↓→ move · s source · +/- zoom · Esc close                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-
-
-
-
 
 
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -16,12 +16,17 @@ use super::source_list::ListSource;
 use super::source_nexo::NexoSource;
 use super::{classify, AgentTrack, Secs, State};
 
+/// What one source returned in a round: its kind, its program name and the observations.
+pub(super) type Polled = (SourceKind, String, Vec<super::Observation>);
+
 /// What the panel shows of one session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
     pub key: String,
     pub name: String,
     pub source: SourceKind,
+    /// The program the session belongs to (`nexo`, or the name of the other tool), the panel's section.
+    pub program: String,
     pub state: State,
     /// Since when the session has been in this state.
     pub since: Secs,
@@ -43,6 +48,7 @@ pub struct AgentRow {
 pub(super) struct Entry {
     pub(super) track: AgentTrack,
     pub(super) source: SourceKind,
+    pub(super) program: String,
     pub(super) state: State,
     pub(super) since: Secs,
     pub(super) action: Option<(String, Secs)>,
@@ -106,14 +112,14 @@ impl Supervisor {
 
     /// One round: poll, fold, classify. True when anything a row shows changed.
     pub fn tick(&mut self, now: Secs) -> bool {
-        let polled = self.sources.iter_mut().map(|s| (s.kind(), s.poll(now))).collect();
+        let polled = self.sources.iter_mut().map(|s| (s.kind(), s.program(), s.poll(now))).collect();
         self.fold(polled, now)
     }
 
     /// Fold what the sources returned in and classify every session.
-    pub(super) fn fold(&mut self, polled: Vec<(SourceKind, Vec<super::Observation>)>, now: Secs) -> bool {
+    pub(super) fn fold(&mut self, polled: Vec<Polled>, now: Secs) -> bool {
         let mut changed = false;
-        for (kind, mut obs) in polled {
+        for (kind, program, mut obs) in polled {
             obs.sort_by_key(|o| o.at);
             for o in obs {
                 if o.agent_key.is_empty() {
@@ -122,10 +128,15 @@ impl Supervisor {
                 let e = self.entries.entry(o.agent_key.clone()).or_insert_with(|| Entry {
                     track: AgentTrack::new(o.agent_key.clone()),
                     source: kind,
+                    program: program.clone(),
                     state: State::Working,
                     since: now,
                     action: None,
                 });
+                if e.program == super::source::EXTERNAL && program != e.program {
+                    e.program = program.clone();
+                    changed = true;
+                }
                 let before = (e.track.last_step.clone(), e.track.name.clone(), e.track.cost_usd);
                 e.track.apply(&o);
                 changed |= before != (e.track.last_step.clone(), e.track.name.clone(), e.track.cost_usd);
@@ -164,6 +175,7 @@ impl Supervisor {
                     key: t.key.clone(),
                     name: display_name(t),
                     source: e.source,
+                    program: e.program.clone(),
                     state: e.state,
                     since: e.since,
                     last_step: t.last_step.clone(),
@@ -196,7 +208,14 @@ pub fn display_name(t: &AgentTrack) -> String {
 
 /// Nexo sessions first, then by name; a sub-agent follows its parent.
 pub fn order(rows: &mut Vec<AgentRow>) {
-    rows.sort_by(|a, b| (a.source, a.name.to_lowercase(), &a.key).cmp(&(b.source, b.name.to_lowercase(), &b.key)));
+    rows.sort_by(|a, b| {
+        (a.source, a.program.to_lowercase(), a.name.to_lowercase(), &a.key).cmp(&(
+            b.source,
+            b.program.to_lowercase(),
+            b.name.to_lowercase(),
+            &b.key,
+        ))
+    });
     let mut out: Vec<AgentRow> = Vec::with_capacity(rows.len());
     let mut rest: Vec<AgentRow> = std::mem::take(rows);
     let (kids, tops): (Vec<AgentRow>, Vec<AgentRow>) = rest.drain(..).partition(|r| r.parent.is_some());
@@ -298,8 +317,7 @@ impl Core {
     fn round(&self, now: Secs) {
         let _turn = self.polling.lock();
         let mut taken = self.sup.lock().map(|mut g| std::mem::take(&mut g.sources)).unwrap_or_default();
-        let polled: Vec<(SourceKind, Vec<super::Observation>)> =
-            taken.iter_mut().map(|s| (s.kind(), s.poll(now))).collect();
+        let polled: Vec<Polled> = taken.iter_mut().map(|s| (s.kind(), s.program(), s.poll(now))).collect();
         if let Ok(mut g) = self.sup.lock() {
             g.sources = taken;
             g.fold(polled, now);
@@ -477,7 +495,7 @@ pub fn write_state(path: &Path, rows: &[AgentRow], now: Secs) -> std::io::Result
         .iter()
         .map(|r| {
             serde_json::json!({
-                "key": r.key, "name": r.name, "source": r.source.label(), "state": r.state.label(),
+                "key": r.key, "name": r.name, "source": r.source.label(), "program": r.program, "state": r.state.label(),
                 "since": r.since, "idle_secs": r.idle_secs, "last_step": r.last_step,
                 "cost_usd": r.cost_usd, "model": r.model, "cwd": r.cwd, "parent": r.parent, "paused": r.paused,
                 "last_action": r.last_action.as_ref().map(|(t, at)| serde_json::json!({"text": t, "at": at})),
@@ -578,6 +596,7 @@ mod tests {
         let rows = s.rows(105);
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].key.as_str(), rows[0].source), ("s1", SourceKind::Nexo));
+        assert_eq!(rows[0].program, "nexo");
         assert_eq!((rows[1].key.as_str(), rows[1].parent.as_deref()), ("s1.3", Some("s1")));
         assert_eq!(rows[1].name, "scan the docs");
     }

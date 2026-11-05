@@ -54,7 +54,8 @@ printf %s "$KEY" | nexo bench --upstream URL --model M --key - --out bench-out  
 
 Local servers need no key: `nexo --provider ollama --model qwen3:8b`.
 With a subscription instead of a key: `nexo auth login copilot` (or `codex`
-for ChatGPT Plus/Pro), then `nexo use copilot`. `nexo doctor` checks the
+for ChatGPT Plus/Pro: it reuses the Codex CLI login if there is one, else
+opens the browser; `/model` offers the same), then `nexo use copilot`. `nexo doctor` checks the
 setup, and `nexo guide` prints the step-by-step guide
 ([`docs/SETUP-FOR-AGENTS.md`](docs/SETUP-FOR-AGENTS.md)), which an assistant
 can follow to set nexo up for you.

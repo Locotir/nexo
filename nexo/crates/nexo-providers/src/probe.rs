@@ -176,6 +176,18 @@ pub async fn server(cfg: &ProviderConfig, key: Option<&str>) -> Result<ServerPro
         }
         _ => {}
     }
+    // a subscription backend lists no models to an account: the ones nexo knows are offered, and the
+    // test request is the proof that the login works
+    if cfg.login.is_some() && !cfg.models.is_empty() {
+        return Ok(ServerProbe {
+            kind: "subscription".into(),
+            protocol: cfg.protocol.clone(),
+            base_url: base,
+            models: cfg.models.iter().map(|m| ModelInfo { id: m.clone(), tools: true, ..Default::default() }).collect(),
+            trail: vec!["subscription: the models nexo knows for this login".into()],
+            ..Default::default()
+        });
+    }
     let root = root_of(&base);
     let mut trail = Vec::new();
     let mut probe = ServerProbe {

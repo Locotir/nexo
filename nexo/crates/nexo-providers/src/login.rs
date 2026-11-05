@@ -25,7 +25,10 @@ use crate::http;
 /// The flows nexo can run, with a line on each.
 pub const FLOWS: &[(&str, &str)] = &[
     ("copilot", "GitHub Copilot subscription (github.com device code)"),
-    ("codex", "ChatGPT Plus/Pro/Team subscription (auth.openai.com device code)"),
+    ("codex", "ChatGPT Plus/Pro/Team subscription: the Codex CLI login if there is one, else the browser"),
+    ("codex-browser", "ChatGPT subscription: sign in in the browser (PKCE, callback on localhost:1455)"),
+    ("codex-cli", "ChatGPT subscription: reuse the login of the Codex CLI ($CODEX_HOME/auth.json)"),
+    ("codex-device", "ChatGPT subscription: device code, for a machine without a browser"),
     ("xai", "SuperGrok / X Premium subscription (auth.x.ai device code)"),
 ];
 
@@ -40,6 +43,10 @@ pub struct Endpoints {
     pub github_api: String,
     pub openai_issuer: String,
     pub xai_issuer: String,
+    /// The Codex CLI's login file (None: its usual place).
+    pub codex_auth: Option<std::path::PathBuf>,
+    /// The ports tried for the browser callback.
+    pub callback_ports: Vec<u16>,
     /// Added to every wait between two polls (GitHub asks for a margin).
     pub pad: Duration,
 }
@@ -51,13 +58,15 @@ impl Default for Endpoints {
             github_api: "https://api.github.com".into(),
             openai_issuer: "https://auth.openai.com".into(),
             xai_issuer: "https://auth.x.ai/oauth2".into(),
+            codex_auth: None,
+            callback_ports: crate::codex::CALLBACK_PORTS.to_vec(),
             pad: Duration::from_secs(3),
         }
     }
 }
 
 const COPILOT_CLIENT: &str = "Ov23li8tweQw6odWQebz";
-const CODEX_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+pub(crate) const CODEX_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const XAI_CLIENT: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 const XAI_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -66,7 +75,8 @@ const GIVE_UP: Duration = Duration::from_secs(15 * 60);
 
 pub const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
-/// What the person has to do: open `url`, type `code`.
+/// What the person has to do: open `url`, type `code` (empty: the browser comes back by itself, only the
+/// address is to be opened).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceCode {
     pub url: String,
@@ -85,7 +95,17 @@ pub async fn login_at(
 ) -> Result<Credential, ProviderError> {
     match flow {
         "copilot" => copilot(at, show).await,
-        "codex" => codex(at, show).await,
+        "codex" => {
+            let file = at.codex_auth.clone().unwrap_or_else(crate::codex::cli_file);
+            if crate::codex::cli_login_in(&file) {
+                crate::codex::from_cli(&file)
+            } else {
+                crate::codex::browser(at, show).await
+            }
+        }
+        "codex-browser" => crate::codex::browser(at, show).await,
+        "codex-cli" => crate::codex::from_cli(&at.codex_auth.clone().unwrap_or_else(crate::codex::cli_file)),
+        "codex-device" => codex(at, show).await,
         "xai" => xai(at, show).await,
         other => Err(fail(format!(
             "no login flow {other:?} (known: {})",
@@ -94,17 +114,17 @@ pub async fn login_at(
     }
 }
 
-fn fail(msg: impl Into<String>) -> ProviderError {
+pub(crate) fn fail(msg: impl Into<String>) -> ProviderError {
     ProviderError::new(ErrorKind::Auth, msg)
 }
 
-enum Body {
+pub(crate) enum Body {
     Json(Value),
     Form(String),
 }
 
 /// POSTs and returns the status with the body as JSON (`{}` when it is not).
-async fn post(url: &str, body: Body) -> Result<(u16, Value), ProviderError> {
+pub(crate) async fn post(url: &str, body: Body) -> Result<(u16, Value), ProviderError> {
     let r = http::client().post(url).header("accept", "application/json");
     let r = match body {
         Body::Json(v) => r.json(&v),
@@ -129,7 +149,7 @@ pub fn form(pairs: &[(&str, &str)]) -> String {
     pairs.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&")
 }
 
-fn text(v: &Value, k: &str) -> Option<String> {
+pub(crate) fn text(v: &Value, k: &str) -> Option<String> {
     match &v[k] {
         Value::String(s) if !s.is_empty() => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
@@ -141,7 +161,7 @@ fn secs(v: &Value, k: &str) -> Option<u64> {
     text(v, k).and_then(|s| s.parse().ok())
 }
 
-fn said(v: &Value) -> String {
+pub(crate) fn said(v: &Value) -> String {
     text(v, "error_description").or_else(|| text(v, "error")).or_else(|| text(v, "text")).unwrap_or_default()
 }
 
@@ -298,7 +318,7 @@ pub fn account_id(jwt: &str) -> Option<String> {
 
 /// A token response turned into a credential; `old` keeps what a refresh
 /// does not repeat (the refresh token, the account).
-fn tokens(flow: &str, st: u16, v: &Value, old: Option<&Credential>) -> Result<Credential, ProviderError> {
+pub(crate) fn tokens(flow: &str, st: u16, v: &Value, old: Option<&Credential>) -> Result<Credential, ProviderError> {
     let Some(access) = text(v, "access_token") else {
         return Err(fail(format!("{flow} login: no token ({st}): {}", said(v))));
     };
@@ -355,6 +375,76 @@ async fn xai(at: &Endpoints, show: &(dyn Fn(&DeviceCode) + Sync)) -> Result<Cred
     tokens("xai", st, &v, None)
 }
 
+// ---- choosing and opening ----
+
+/// A way to sign in, for a list: the flow to run, a label and a line on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choice {
+    pub flow: String,
+    pub label: String,
+    pub hint: String,
+}
+
+/// The ways to sign in to `flow`'s subscription: the Codex CLI's login first when one is on this
+/// machine, then the browser, then the device code. Other subscriptions have one way.
+pub fn choices(flow: &str) -> Vec<Choice> {
+    choices_in(flow, &crate::codex::cli_file())
+}
+
+pub fn choices_in(flow: &str, codex_file: &std::path::Path) -> Vec<Choice> {
+    let pick = |f: &str, label: &str, hint: &str| Choice { flow: f.into(), label: label.into(), hint: hint.into() };
+    if flow != "codex" {
+        let what = FLOWS.iter().find(|(f, _)| *f == flow).map(|(_, w)| *w).unwrap_or("");
+        return vec![pick(flow, "Sign in", what)];
+    }
+    let mut out = Vec::new();
+    if crate::codex::cli_login_in(codex_file) {
+        out.push(pick(
+            "codex-cli",
+            "Use the Codex CLI login",
+            "found on this machine; nothing to type, the tokens are not shown",
+        ));
+    }
+    out.push(pick(
+        "codex-browser",
+        "Sign in with ChatGPT in the browser",
+        "opens a page; the answer comes back to localhost:1455",
+    ));
+    out.push(pick(
+        "codex-device",
+        "Sign in with a device code",
+        "for a machine without a browser: type a code on another device",
+    ));
+    out
+}
+
+/// Opens `url` in the default browser; false when nothing could be started (the person opens it).
+pub fn open_url(url: &str) -> bool {
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.args(["url.dll,FileProtocolHandler", url]);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    match cmd.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 // ---- refresh and use ----
 
 /// A fresh access token for `cred`, when its flow has one to give.
@@ -363,6 +453,17 @@ pub async fn refresh(cred: &Credential) -> Result<Credential, ProviderError> {
 }
 
 pub async fn refresh_at(at: &Endpoints, cred: &Credential) -> Result<Credential, ProviderError> {
+    // a login that lives in the Codex CLI's file is renewed together with that file
+    if cred.metadata("flow") == Some("codex") {
+        if let Some(f) = cred.metadata("source_file") {
+            return crate::codex::renew_shared(at, cred, std::path::Path::new(f)).await;
+        }
+    }
+    refresh_plain(at, cred).await
+}
+
+/// The renewal request itself.
+pub(crate) async fn refresh_plain(at: &Endpoints, cred: &Credential) -> Result<Credential, ProviderError> {
     let Credential::Oauth { refresh, .. } = cred else { return Ok(cred.clone()) };
     let flow = cred.metadata("flow").unwrap_or_default().to_string();
     let (url, client) = match flow.as_str() {
@@ -493,6 +594,8 @@ mod tests {
             github_api: s.base_url(),
             openai_issuer: s.base_url(),
             xai_issuer: s.base_url(),
+            codex_auth: Some(std::path::PathBuf::from("/nonexistent/nexo-test/auth.json")),
+            callback_ports: vec![0],
             pad: Duration::ZERO,
         }
     }
@@ -587,7 +690,7 @@ mod tests {
             }));
         });
         let seen = Mutex::new(None);
-        let cred = login_at(&at(&s), "codex", &|d| *seen.lock().unwrap() = Some(d.clone())).await.unwrap();
+        let cred = login_at(&at(&s), "codex-device", &|d| *seen.lock().unwrap() = Some(d.clone())).await.unwrap();
         assert_eq!(seen.lock().unwrap().as_ref().unwrap().url, format!("{}/codex/device", s.base_url()));
         let Credential::Oauth { access, refresh, expires, .. } = &cred else { panic!() };
         assert_eq!((access.as_str(), refresh.as_str()), ("at1", "rt1"));

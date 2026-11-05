@@ -294,6 +294,7 @@ impl Supervisor {
         self.entries.entry(key.to_string()).or_insert_with(|| Entry {
             track: AgentTrack::new(key),
             source: SourceKind::External,
+            program: super::source::EXTERNAL.to_string(),
             state: State::Working,
             since: now,
             action: None,

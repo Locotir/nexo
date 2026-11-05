@@ -224,6 +224,7 @@ pub fn kind_label(kind: &str) -> &str {
         "anthropic" => "Anthropic",
         "gemini" => "Gemini",
         "mock" => "mock",
+        "subscription" => "subscription",
         _ => "OpenAI-compatible",
     }
 }

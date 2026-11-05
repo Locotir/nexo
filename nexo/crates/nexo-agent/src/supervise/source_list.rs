@@ -4,13 +4,14 @@
 //! turns itself off without a word. It only runs the program and reads its output.
 
 use std::io::Read;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::Value;
 
-use super::source::{Source, SourceKind};
+use super::source::{Source, SourceKind, EXTERNAL};
 use super::{ObsKind, Observation, Reported, Secs};
 
 /// The program gets this long to answer.
@@ -80,6 +81,14 @@ impl Source for ListSource {
         SourceKind::External
     }
 
+    fn program(&self) -> String {
+        Path::new(&self.program)
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .map_or_else(|| EXTERNAL.to_string(), str::to_string)
+    }
+
     fn poll(&mut self, now: Secs) -> Vec<Observation> {
         if self.off || self.last.is_some_and(|t| now - t < self.every) {
             return Vec::new();
@@ -134,6 +143,12 @@ pub fn parse(text: &str, now: Secs, alive: impl Fn(u64) -> Option<bool>) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_program_is_the_command_name() {
+        assert_eq!(ListSource::new("/usr/bin/othertool", vec![], 10).program(), "othertool");
+        assert_eq!(ListSource::new("", vec![], 10).program(), "external");
+    }
 
     const LIST: &str = r#"[
       {"id":"a1","sessionId":"s-1","name":"build","kind":"bg","pid":11,"cwd":"/work/app","startedAt":1,"state":"working","status":"busy"},

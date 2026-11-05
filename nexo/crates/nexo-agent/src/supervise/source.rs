@@ -24,9 +24,20 @@ impl SourceKind {
     }
 }
 
+/// The program name of an external session whose source cannot tell it.
+pub const EXTERNAL: &str = "external";
+
 pub trait Source: Send {
     fn id(&self) -> &str;
     fn kind(&self) -> SourceKind;
+    /// The name of the program the sessions belong to, for the panel's section header. A source that does
+    /// not know it leaves the generic name.
+    fn program(&self) -> String {
+        match self.kind() {
+            SourceKind::Nexo => "nexo".to_string(),
+            SourceKind::External => EXTERNAL.to_string(),
+        }
+    }
     /// What happened since the last call.
     fn poll(&mut self, now: Secs) -> Vec<Observation>;
 }

@@ -1,10 +1,10 @@
 ╭ panel ──────────────────────────[✗]──╮
-│ ◈1 ◆1 ◐1 ↻1 ●2 ○1 ✓1       read-only │
+│ ◈1 ◆1 ◐1 ↻1 ●2 ○1 ✓1             all │
 │ ──────────────────────────────────── │
+│ ◆ nexo · 2 ───────────────────────── │
 │ ▌● working    ◆ project              │
-│  ● working    └ ◆ explore            │
 │ /home/dev/project · default · this-… │
-│ ←↑↓→ move · +/- zoom · Esc …  ↓ more │
+│ s source · Esc close  ↓ more         │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything

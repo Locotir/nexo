@@ -1,10 +1,10 @@
 ╭ panel ──────────────────────────[✗]──╮
-│ no sessions     watching · read-only │
+│ no sessions          all · read-only │
 │ ──────────────────────────────────── │
-│            no sessions yet           │
-│ this one shows up with your first me │
+│ ◆ nexo ───────────────────────────── │
+│   no nexo sessions yet · this one s… │
 │                                      │
-│ ←↑↓→ move · +/- zoom · Esc close     │
+│ s source · Esc close                 │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything

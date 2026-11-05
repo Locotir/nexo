@@ -16,6 +16,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod config_edit;
 pub mod custom;
+pub mod dialog_size;
 pub mod diffkey;
 pub mod diffview;
 pub mod event;

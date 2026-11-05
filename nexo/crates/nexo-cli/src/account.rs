@@ -98,13 +98,22 @@ pub async fn login_cmd(
             }
             println!("logging in to {name} ({f})…");
             let show = |d: &login::DeviceCode| {
-                println!("\n  open   {}\n  enter  {}\n", d.url, d.code);
+                if d.code.is_empty() {
+                    // the browser flow: the page is opened, and the answer comes back to this machine
+                    let opened = login::open_url(&d.url);
+                    println!("\n  {}   {}\n", if opened { "opened" } else { "open  " }, d.url);
+                } else {
+                    println!("\n  open   {}\n  enter  {}\n", d.url, d.code);
+                }
                 println!("waiting for the browser (Ctrl+C gives up)…");
             };
             login::login(&f, &show).await.map_err(|e| anyhow::anyhow!("{}", e.message))?
         }
         None => Credential::Api { key: read_key(name, &p, key)? },
     };
+    if cred.metadata("source") == Some("codex-cli") {
+        println!("using the Codex CLI login on this machine (its tokens stay in its file and are renewed there)");
+    }
     let kind = cred.kind();
     auth::set(&entry, cred)?;
     println!("{name}: {kind} saved in {}", auth::file().display());

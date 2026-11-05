@@ -586,7 +586,7 @@ model = "deepseek-chat"
 
 # Without editing this file:
 #   nexo auth login deepseek --key      keep a key (in the credential store, not here)
-#   nexo auth login copilot             a subscription: copilot, codex (ChatGPT), xai
+#   nexo auth login copilot             a subscription: copilot, codex (ChatGPT; reuses the Codex CLI login or opens the browser), xai
 #   nexo use deepseek deepseek-chat     make it the default
 #   nexo doctor                         check everything, with a live call
 #   nexo providers --all                the 200+ providers nexo knows by name

@@ -139,6 +139,15 @@ pub enum AgentCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
     },
+    /// Sign in to a provider's subscription (`/model` setup) with `flow` (see `login::choices`);
+    /// the address to open is announced with `LoginPrompt` and the end with `LoggedIn`. The
+    /// tokens go to the credential store, never to the screen.
+    Login {
+        name: String,
+        flow: String,
+    },
+    /// Give up a sign-in that waits for the browser.
+    CancelLogin,
     /// Find out what one model can do and try it with a real request (one short reply that
     /// should call a test tool); answered with `ModelChecked`.
     CheckModel {
@@ -454,6 +463,16 @@ pub enum AgentEvent {
     /// The usual local servers found running: `(preset, what answered)`.
     LocalServers {
         found: Vec<(String, String)>,
+    },
+    /// The page a sign-in waits on, and the code to type there when it has one (empty: none).
+    LoginPrompt {
+        url: String,
+        code: String,
+    },
+    /// A sign-in ended: stored, or why not.
+    LoggedIn {
+        name: String,
+        result: Result<(), String>,
     },
     /// What answers at a provider's address, or why nothing does.
     Probed {

@@ -315,6 +315,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     catalogue::refresh_if_stale(None);
     spawn_vendor_fill(&state);
     let mut turn: Option<JoinHandle<TurnEnd>> = None;
+    // a sign-in waiting for the browser, so Esc in the setup can drop it
+    let mut signing_in: Option<tokio::task::AbortHandle> = None;
     let mut cancel = CancellationToken::new();
     loop {
         tokio::select! {
@@ -504,10 +506,42 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     AgentCommand::Probe { name, cfg, key } => {
                         let events = events.clone();
                         tokio::spawn(async move {
-                            let key = key.or_else(|| cfg.resolve_key());
+                            // a stored subscription login is renewed and applied like in a request
+                            let (cfg, stored) = match (&key, cfg.auth.is_some()) {
+                                (None, true) => nexo_providers::login::prepare(&cfg).await.unwrap_or((cfg.clone(), None)),
+                                _ => (cfg, None),
+                            };
+                            let key = key.or_else(|| cfg.resolve_key()).or(stored);
                             let result = nexo_providers::probe::server(&cfg, key.as_deref()).await;
                             emit(&events, AgentEvent::Probed { name, result });
                         });
+                    }
+                    AgentCommand::Login { name, flow } => {
+                        if let Some(prev) = signing_in.take() {
+                            prev.abort();
+                        }
+                        let events = events.clone();
+                        signing_in = Some(
+                            tokio::spawn(async move {
+                                let shown = events.clone();
+                                let show = move |d: &nexo_providers::login::DeviceCode| {
+                                    nexo_providers::login::open_url(&d.url);
+                                    emit(&shown, AgentEvent::LoginPrompt { url: d.url.clone(), code: d.code.clone() });
+                                };
+                                let result = match nexo_providers::login::login(&flow, &show).await {
+                                    Ok(cred) => nexo_core::auth::set(&name, cred)
+                                        .map_err(|e| format!("the login could not be kept: {e}")),
+                                    Err(e) => Err(e.message),
+                                };
+                                emit(&events, AgentEvent::LoggedIn { name, result });
+                            })
+                            .abort_handle(),
+                        );
+                    }
+                    AgentCommand::CancelLogin => {
+                        if let Some(prev) = signing_in.take() {
+                            prev.abort();
+                        }
                     }
                     AgentCommand::CheckModel { name, probe, cfg, model, key } => {
                         let events = events.clone();

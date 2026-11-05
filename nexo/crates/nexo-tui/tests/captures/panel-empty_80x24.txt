@@ -2,17 +2,17 @@
 │ ●─╮ ╭─●   nexo 0.1.0                                                     │
 │   ╰●╯     deepseek/deepseek-chat · ask                                   │
 │ ●─╯ ╰─●   /tmp/project                                                   │
-│                                                                          │
-│ /model sets up a model · /resume picks a session · ? help                │
 ╭ panel ──────────────────────────────────────────────────────────────────[✗]──╮
-│ no sessions                                             watching · read-only │
+│ no sessions                                       all · watching · read-only │
 │ ──────────────────────────────────────────────────────────────────────────── │
-│                                no sessions yet                               │
-│                   this one shows up with your first message                  │
+│ ◆ nexo ───────────────────────────────────────────────────────────────────── │
+│   no nexo sessions yet · this one shows up with your first message           │
 │                                                                              │
-│ ←↑↓→ move · +/- zoom · Esc close                                             │
+│ ◈ external ───────────────────────────────────────────────────────────────── │
+│   no sessions from other programs                                            │
+│                                                                              │
+│ ←↑↓→ move · s source · +/- zoom · Esc close                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

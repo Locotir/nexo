@@ -3,6 +3,7 @@
 //! the supervisor's last action. Read-only: it shows, it sends nothing.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -63,6 +64,77 @@ pub enum Zoom {
     Blocks,
     List,
     Cards,
+}
+
+/// Which sessions the view lists: `s` cycles it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Filter {
+    /// Every session, nexo first.
+    #[default]
+    All,
+    /// Only this program's sessions.
+    Nexo,
+    /// Only the sessions of other programs.
+    External,
+}
+
+impl Filter {
+    pub fn next(self) -> Filter {
+        match self {
+            Filter::All => Filter::Nexo,
+            Filter::Nexo => Filter::External,
+            Filter::External => Filter::All,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Filter::All => "all",
+            Filter::Nexo => "nexo only",
+            Filter::External => "external only",
+        }
+    }
+
+    fn keeps(self, r: &AgentRow) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Nexo => r.source == SourceKind::Nexo,
+            Filter::External => r.source == SourceKind::External,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Filter::All => 0,
+            Filter::Nexo => 1,
+            Filter::External => 2,
+        }
+    }
+
+    fn from_u8(n: u8) -> Filter {
+        match n {
+            1 => Filter::Nexo,
+            2 => Filter::External,
+            _ => Filter::All,
+        }
+    }
+}
+
+/// The sessions of one program, under one header.
+#[derive(Debug, Clone)]
+struct Group {
+    label: String,
+    source: SourceKind,
+    /// Indices into the shown rows; empty for a placeholder that says there is nothing yet.
+    idx: Vec<usize>,
+}
+
+/// One horizontal strip of the body: a header, a row of cards (or one line), or a group's empty line.
+#[derive(Debug, Clone)]
+enum Band {
+    Header(usize),
+    Row(Vec<usize>),
+    Empty(usize),
 }
 
 /// The blocks of the far zoom in a body `w` wide: as many columns as fit.
@@ -162,6 +234,12 @@ pub struct AgentsView {
     pulse_key: Option<String>,
     pulse_at: Option<(String, Instant)>,
     pub zoom: Zoom,
+    /// Which sessions are listed.
+    pub filter: Filter,
+    /// Where the filter is kept for the rest of the session.
+    memory: Option<Arc<AtomicU8>>,
+    /// The rows of cards (or lines) of the last draw, as indices into the shown sessions, for the arrows.
+    grid: Vec<Vec<usize>>,
     /// No motion (`[ui] animations = false`, or a mono theme).
     still: bool,
     /// The nudge being written for the selected session.
@@ -173,6 +251,8 @@ pub struct AgentsView {
     /// The policy page is showing instead of the sessions.
     policy_page: bool,
     policy_scroll: usize,
+    /// The size the window took when it opened.
+    size: crate::dialog_size::Slot,
 }
 
 impl AgentsView {
@@ -195,15 +275,107 @@ impl AgentsView {
             pulse_key: None,
             pulse_at: None,
             zoom: Zoom::Cards,
+            filter: Filter::All,
+            memory: None,
+            grid: Vec::new(),
             still,
             edit: None,
             note: None,
             open: false,
             policy_page: false,
             policy_scroll: 0,
+            size: Default::default(),
         };
         v.refresh();
         v
+    }
+
+    /// Starts from the filter kept in `memory` and writes every change back to it, so the choice outlives the
+    /// window for the rest of the session.
+    pub fn remembering(mut self, memory: Arc<AtomicU8>) -> AgentsView {
+        self.filter = Filter::from_u8(memory.load(Ordering::Relaxed));
+        self.memory = Some(memory);
+        self
+    }
+
+    /// The sessions the filter keeps, grouped by program: nexo first, then each other program by name. The
+    /// order is the one they are drawn in, so an index into it is what the selection holds.
+    fn shown(&self) -> Vec<AgentRow> {
+        let mut v: Vec<AgentRow> = self.rows.iter().filter(|r| self.filter.keeps(r)).cloned().collect();
+        v.sort_by_key(|r| (r.source, r.program.to_lowercase()));
+        v
+    }
+
+    fn selected_row(&self) -> Option<AgentRow> {
+        self.shown().into_iter().nth(self.selected)
+    }
+
+    /// The groups of the shown sessions. A program with no sessions that the filter allows still gets its
+    /// header, with a line that says there is nothing.
+    fn groups(&self, shown: &[AgentRow]) -> Vec<Group> {
+        let mut out: Vec<Group> = Vec::new();
+        for (i, r) in shown.iter().enumerate() {
+            let label = if r.source == SourceKind::Nexo { "nexo".to_string() } else { r.program.clone() };
+            match out.last_mut() {
+                Some(g) if g.label == label && g.source == r.source => g.idx.push(i),
+                _ => out.push(Group { label, source: r.source, idx: vec![i] }),
+            }
+        }
+        if self.filter != Filter::External && !out.iter().any(|g| g.source == SourceKind::Nexo) {
+            out.insert(0, Group { label: "nexo".into(), source: SourceKind::Nexo, idx: Vec::new() });
+        }
+        if self.filter != Filter::Nexo && !out.iter().any(|g| g.source == SourceKind::External) {
+            out.push(Group { label: "external".into(), source: SourceKind::External, idx: Vec::new() });
+        }
+        out
+    }
+
+    /// The strips of the body for `cols` cards across.
+    fn bands(groups: &[Group], cols: usize) -> Vec<Band> {
+        let mut out = Vec::new();
+        for (g, grp) in groups.iter().enumerate() {
+            out.push(Band::Header(g));
+            if grp.idx.is_empty() {
+                out.push(Band::Empty(g));
+            }
+            for chunk in grp.idx.chunks(cols.max(1)) {
+                out.push(Band::Row(chunk.to_vec()));
+            }
+        }
+        out
+    }
+
+    /// Cards across, the height of one, and whether the strips sit tight (lines) or breathe.
+    fn shape(l: Layout) -> (usize, u16, bool) {
+        match l {
+            Layout::Cards { cols, .. } => (cols as usize, CARD_H, false),
+            Layout::Blocks { cols } => (cols as usize, BLOCK_H, false),
+            Layout::List => (1, 1, true),
+        }
+    }
+
+    fn band_h(b: &Band, item_h: u16) -> u16 {
+        match b {
+            Band::Row(_) => item_h,
+            _ => 1,
+        }
+    }
+
+    /// The blank rows between two strips: none in the lines, none under a header, one elsewhere.
+    fn band_gap(prev: &Band, tight: bool) -> u16 {
+        u16::from(!tight && !matches!(prev, Band::Header(_)))
+    }
+
+    /// The height of strips `from..to` laid one under the other.
+    fn span(bands: &[Band], from: usize, to: usize, item_h: u16, tight: bool) -> u16 {
+        let mut h = 0;
+        for i in from..to.min(bands.len()) {
+            if i > from {
+                h += Self::band_gap(&bands[i - 1], tight);
+            }
+            h += Self::band_h(&bands[i], item_h);
+        }
+        h
     }
 
     /// A view of fixed rows, no panel behind it (tests).
@@ -237,7 +409,7 @@ impl AgentsView {
         self.seen = v;
         self.rows = rows;
         self.clock = clock;
-        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        self.selected = self.selected.min(self.shown().len().saturating_sub(1));
         changed
     }
 
@@ -342,6 +514,11 @@ impl AgentsView {
         }
     }
 
+    /// What keeps the window the same window: the zoom, the filter and the page, not the cursor.
+    pub fn size_key(&self) -> (u8, u8, bool) {
+        (self.zoom as u8, self.filter as u8, self.policy_page)
+    }
+
     // ---------------------------------------------------------------- input
 
     pub fn key(&mut self, key: KeyEvent) -> ModalOut {
@@ -352,12 +529,12 @@ impl AgentsView {
         if self.policy_page {
             return self.policy_key(key);
         }
-        let n = self.rows.len();
-        let cols = self.cols.max(1);
+        let n = self.shown().len();
         match key.code {
             KeyCode::Esc if self.open => self.open = false,
             KeyCode::Esc | KeyCode::Char('q') => return ModalOut::Close,
-            KeyCode::Enter => self.open = !self.open && !self.rows.is_empty(),
+            KeyCode::Enter => self.open = !self.open && n > 0,
+            KeyCode::Char('s') => self.cycle_filter(),
             KeyCode::Char('o') if self.panel.is_some() => {
                 self.policy_page = true;
                 self.policy_scroll = 0;
@@ -381,15 +558,40 @@ impl AgentsView {
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
                 self.selected = (self.selected + 1).min(n.saturating_sub(1))
             }
-            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(cols),
-            KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + cols).min(n.saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => self.step_rows(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.step_rows(1),
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = n.saturating_sub(1),
-            KeyCode::PageUp => self.selected = self.selected.saturating_sub(cols * 3),
-            KeyCode::PageDown => self.selected = (self.selected + cols * 3).min(n.saturating_sub(1)),
+            KeyCode::PageUp => self.step_rows(-3),
+            KeyCode::PageDown => self.step_rows(3),
             _ => {}
         }
         ModalOut::Nothing
+    }
+
+    /// `s`: all, then nexo only, then external only, kept for the rest of the session.
+    fn cycle_filter(&mut self) {
+        self.filter = self.filter.next();
+        if let Some(m) = &self.memory {
+            m.store(self.filter.to_u8(), Ordering::Relaxed);
+        }
+        self.selected = 0;
+        self.scroll = 0;
+        self.open = false;
+        self.note = Some(format!("showing {}", self.filter.label()));
+    }
+
+    /// Moves the selection `delta` rows of cards (or lines) up or down, keeping its column.
+    fn step_rows(&mut self, delta: i32) {
+        let at = self
+            .grid
+            .iter()
+            .enumerate()
+            .find_map(|(r, row)| row.iter().position(|i| *i == self.selected).map(|c| (r, c)));
+        let Some((r, c)) = at else { return };
+        let to = (r as i32 + delta).clamp(0, self.grid.len() as i32 - 1) as usize;
+        let row = &self.grid[to];
+        self.selected = row[c.min(row.len() - 1)];
     }
 
     fn policy_key(&mut self, key: KeyEvent) -> ModalOut {
@@ -432,7 +634,7 @@ impl AgentsView {
     }
 
     fn start_nudge(&mut self) {
-        let Some(row) = self.rows.get(self.selected) else { return };
+        let Some(row) = self.selected_row() else { return };
         let Some(panel) = &self.panel else { return };
         if row.parent.is_some() {
             self.note = Some("a sub-agent takes no message; write to its session".into());
@@ -451,7 +653,7 @@ impl AgentsView {
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => text.push(c),
             KeyCode::Enter => {
                 let text = self.edit.take().unwrap_or_default();
-                if let (Some(row), Some(panel)) = (self.rows.get(self.selected), &self.panel) {
+                if let (Some(row), Some(panel)) = (self.selected_row(), &self.panel) {
                     if !text.trim().is_empty() {
                         panel.nudge(&row.key, &text);
                         self.pulse_key = Some(row.key.clone());
@@ -475,7 +677,7 @@ impl AgentsView {
             let on = !panel.paused_all();
             panel.pause(None, on);
             self.note = Some(if on { "all sessions paused" } else { "all sessions resumed" }.into());
-        } else if let Some(row) = self.rows.get(self.selected) {
+        } else if let Some(row) = self.selected_row() {
             panel.pause(Some(&row.key), !row.paused);
             self.note = Some(format!("{} {}", row.name, if row.paused { "resumed" } else { "paused" }));
         }
@@ -526,21 +728,25 @@ impl AgentsView {
             Zoom::List => Layout::List,
             Zoom::Cards => cards_layout(inner_w, h),
         };
-        let line_per_row = |l: Layout| match l {
-            Layout::Cards { cols, .. } => {
-                (self.rows.len() as u16).div_ceil(cols) * CARD_H
-                    + (self.rows.len() as u16).div_ceil(cols).saturating_sub(1)
-            }
-            Layout::List => self.rows.len() as u16,
-            Layout::Blocks { cols } => {
-                let n = (self.rows.len() as u16).div_ceil(cols);
-                n * BLOCK_H + n.saturating_sub(1)
-            }
+        let shown = self.shown();
+        let groups = self.groups(&shown);
+        let content = |l: Layout| {
+            let (cols, item_h, tight) = Self::shape(l);
+            let bands = Self::bands(&groups, cols);
+            Self::span(&bands, 0, bands.len(), item_h, tight)
         };
         let chrome = 2 + 2 + 1 + 1; // borders, header and rule, detail, footer
-        let want = if self.policy_page { area.height } else { line_per_row(layout_for(area.height)) + chrome };
+        let want = if self.policy_page { area.height } else { content(layout_for(area.height)) + chrome };
         let h = want.clamp(8.min(area.height), area.height);
         let w = inner_w + 4;
+        // the size it took when it opened: sessions coming and going never resize it
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut k = std::collections::hash_map::DefaultHasher::new();
+            self.size_key().hash(&mut k);
+            k.finish()
+        };
+        let (w, h) = self.size.keep(key, f.area(), area, || (w, h));
         let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
         f.render_widget(Clear, r);
         let block = Box_::default()
@@ -576,8 +782,6 @@ impl AgentsView {
         self.cards.clear();
         if self.policy_page {
             self.draw_policy(f, body, theme);
-        } else if self.rows.is_empty() {
-            self.empty(f, body, theme);
         } else {
             self.glide.note(Some(self.selected), now, fx);
             self.note(now, fx);
@@ -586,12 +790,8 @@ impl AgentsView {
                 Zoom::Blocks | Zoom::List => Layout::List,
                 Zoom::Cards => cards_layout(body.width, body.height),
             };
-            match layout {
-                Layout::Cards { cols, card_w } => self.draw_cards(f, body, cols, card_w, CARD_H, theme, now, fx),
-                Layout::Blocks { cols } => self.draw_cards(f, body, cols, BLOCK_W, BLOCK_H, theme, now, fx),
-                Layout::List => self.draw_list(f, body, theme, now, fx),
-            }
-            if let Some(row) = self.rows.get(self.selected) {
+            self.draw_bands(f, body, layout, &shown, &groups, theme, now, fx);
+            if let Some(row) = shown.get(self.selected) {
                 f.render_widget(Paragraph::new(Line::from(self.detail(row, theme, detail.width as usize))), detail);
             }
         }
@@ -610,16 +810,22 @@ impl AgentsView {
         } else if let Some(n) = &self.note {
             Line::from(Span::styled(truncate(n, foot.width as usize), theme.style(theme.accent2)))
         } else {
-            let hint = if self.panel.is_some() {
-                "←↑↓→ move · Enter details · n nudge · o policy · p pause · P pause all · +/- zoom · Esc close"
-                    .to_string()
-            } else {
-                "←↑↓→ move · +/- zoom · Esc close".to_string()
-            };
             // "more below" is the part that must survive a narrow window
             let room = (foot.width as usize).saturating_sub(width(more));
+            let hints: &[&str] = if self.panel.is_some() {
+                &[
+                    "←↑↓→ move · s source · Enter details · n nudge · o policy · p pause · P pause all · +/- zoom · Esc close",
+                    "←↑↓→ move · s source · n nudge · o policy · p pause · +/- zoom · Esc close",
+                    "s source · n nudge · p pause · Esc close",
+                    "s source · Esc close",
+                    "Esc close",
+                ]
+            } else {
+                &["←↑↓→ move · s source · +/- zoom · Esc close", "s source · Esc close", "Esc close"]
+            };
+            let hint = hints.iter().find(|h| width(h) <= room).copied().unwrap_or("Esc close");
             Line::from(vec![
-                Span::styled(truncate(&hint, room), theme.dim2()),
+                Span::styled(truncate(hint, room), theme.dim2()),
                 Span::styled(more, theme.style(theme.accent2)),
             ])
         };
@@ -629,7 +835,7 @@ impl AgentsView {
     fn more_below(&self, body: Rect) -> &'static str {
         let last = self.cards.iter().map(|(i, _)| *i).max().map_or(0, |i| i + 1);
         let _ = body;
-        if last < self.rows.len() {
+        if last < self.shown().len() {
             "  ↓ more"
         } else {
             ""
@@ -646,10 +852,11 @@ impl AgentsView {
             State::Idle { min: 0 },
             State::Done,
         ];
+        let shown = self.shown();
         let counts: Vec<(State, usize)> = order
             .into_iter()
             .map(|s| {
-                (s, self.rows.iter().filter(|r| std::mem::discriminant(&r.state) == std::mem::discriminant(&s)).count())
+                (s, shown.iter().filter(|r| std::mem::discriminant(&r.state) == std::mem::discriminant(&s)).count())
             })
             .filter(|(_, n)| *n > 0)
             .collect();
@@ -683,28 +890,34 @@ impl AgentsView {
             (Some(_), true) => ["supervisor paused", "paused"],
             (Some(_), false) => ["supervising · rules", "supervising"],
         };
-        for right in rights {
+        // which sessions this is, ahead of what the supervisor does; "+N" counts those the filter hides
+        let hidden = self.rows.len() - shown.len();
+        let which =
+            if hidden > 0 { format!("{} +{hidden}", self.filter.label()) } else { self.filter.label().to_string() };
+        let candidates = [
+            format!("{which} · {}", rights[0]),
+            format!("{which} · {}", rights[1]),
+            which.clone(),
+            which.split(' ').next().unwrap_or("").to_string(),
+        ];
+        for right in &candidates {
             let rw = width(right);
             if used + rw + 2 <= w {
                 left.push(Span::raw(" ".repeat(w - used - rw)));
-                left.push(Span::styled(right, theme.dim2()));
+                left.push(Span::styled(right.clone(), theme.dim2()));
                 break;
             }
         }
         left
     }
 
-    fn empty(&self, f: &mut Frame, body: Rect, theme: &Theme) {
-        let lines = vec![
-            Line::from(Span::styled("no sessions yet", theme.dim())).alignment(ratatui::layout::Alignment::Center),
-            Line::from(Span::styled("this one shows up with your first message", theme.dim2()))
-                .alignment(ratatui::layout::Alignment::Center),
-        ];
-        let h = (lines.len() as u16).min(body.height);
-        f.render_widget(
-            Paragraph::new(Text::from(lines)),
-            Rect::new(body.x, body.y + body.height.saturating_sub(h) / 2, body.width, h),
-        );
+    /// The line under a header with no sessions.
+    fn nothing_line(&self, group: &Group) -> &'static str {
+        match (group.source, self.filter) {
+            (SourceKind::Nexo, _) => "no nexo sessions yet · this one shows up with your first message",
+            (SourceKind::External, Filter::External) => "no sessions from other programs found",
+            (SourceKind::External, _) => "no sessions from other programs",
+        }
     }
 
     /// The chip as spans: glyph and label, breathing when it wants a person.
@@ -739,58 +952,136 @@ impl AgentsView {
         }
     }
 
+    /// The small source tag every card carries: `[nexo]`, or `[program]` for another tool.
+    fn tag_of(row: &AgentRow) -> String {
+        let name = if row.source == SourceKind::Nexo { "nexo" } else { row.program.as_str() };
+        format!("[{}]", truncate(name, 14))
+    }
+
+    fn tag_color(theme: &Theme, row: &AgentRow) -> ratatui::style::Color {
+        match row.source {
+            SourceKind::Nexo => theme.accent,
+            SourceKind::External => theme.accent2,
+        }
+    }
+
     fn since_action(&self, at: Secs) -> String {
         let d = (self.clock - at).max(0) as u64;
         format!("{} ago", age(d))
     }
 
+    /// The body: each group under its header (or its empty line), the cards flowing in rows, the strips
+    /// scrolled so the selected one is in sight.
     #[allow(clippy::too_many_arguments)]
-    fn draw_cards(
+    fn draw_bands(
         &mut self,
         f: &mut Frame,
         body: Rect,
-        cols: u16,
-        card_w: u16,
-        item_h: u16,
+        layout: Layout,
+        shown: &[AgentRow],
+        groups: &[Group],
         theme: &Theme,
         now: Instant,
         fx: bool,
     ) {
-        self.cols = cols as usize;
-        let per_screen = ((body.height + 1) / (item_h + 1)).max(1) as usize;
-        let sel_row = self.selected / cols as usize;
-        if sel_row < self.scroll {
-            self.scroll = sel_row;
-        } else if sel_row >= self.scroll + per_screen {
-            self.scroll = sel_row + 1 - per_screen;
+        let (cols, item_h, tight) = Self::shape(layout);
+        let card_w = match layout {
+            Layout::Cards { card_w, .. } => card_w,
+            Layout::Blocks { .. } => BLOCK_W,
+            Layout::List => body.width,
+        };
+        self.cols = cols;
+        let bands = Self::bands(groups, cols);
+        self.grid = bands.iter().filter_map(|b| if let Band::Row(r) = b { Some(r.clone()) } else { None }).collect();
+        // the strip that holds the selection, and the first strip that keeps it in sight
+        let sel = bands.iter().position(|b| matches!(b, Band::Row(r) if r.contains(&self.selected))).unwrap_or(0);
+        // a group's first row brings its header along
+        let sel_top = if sel > 0 && matches!(bands[sel - 1], Band::Header(_)) { sel - 1 } else { sel };
+        let fits = |from: usize, to: usize| Self::span(&bands, from, to + 1, item_h, tight) <= body.height;
+        if sel_top < self.scroll {
+            self.scroll = sel_top;
         }
-        let total_rows = self.rows.len().div_ceil(cols as usize);
-        self.scroll = self.scroll.min(total_rows.saturating_sub(per_screen));
-        let used_w = card_w * cols + GAP * (cols - 1);
+        while self.scroll < sel && !fits(self.scroll, sel) {
+            self.scroll += 1;
+        }
+        // never scroll past the point where the last strip is at the foot
+        let mut last_first = bands.len().saturating_sub(1);
+        while last_first > 0 && fits(last_first - 1, bands.len() - 1) {
+            last_first -= 1;
+        }
+        self.scroll = self.scroll.min(last_first);
+
+        let used_w = if tight { body.width } else { card_w * cols as u16 + GAP * (cols as u16 - 1) };
         let x0 = body.x + body.width.saturating_sub(used_w) / 2;
-        for (i, row) in self.rows.clone().iter().enumerate() {
-            let (gr, gc) = (i / cols as usize, i % cols as usize);
-            if gr < self.scroll || gr >= self.scroll + per_screen {
-                continue;
+        let mut y = body.y;
+        for (n, band) in bands.iter().enumerate().skip(self.scroll) {
+            if n > self.scroll {
+                y += Self::band_gap(&bands[n - 1], tight);
             }
-            let y = body.y + (gr - self.scroll) as u16 * (item_h + 1);
-            if y + item_h > body.y + body.height {
-                continue;
+            let h = Self::band_h(band, item_h);
+            if y + h > body.y + body.height {
+                break;
             }
-            let r = Rect::new(x0 + gc as u16 * (card_w + GAP), y, card_w, item_h);
-            let t = self.entered(&row.key, now);
-            // a card rises one row as it fades in, when the row below it is free
-            let drawn = if t < 0.4 && y + item_h < body.y + body.height { Rect { y: y + 1, ..r } } else { r };
-            if t > 0.0 {
-                if item_h == BLOCK_H {
-                    self.block(f, drawn, i, row, theme, now);
-                } else {
-                    self.card(f, drawn, i, row, theme, now, fx);
+            match band {
+                Band::Header(g) => self.group_header(f, Rect::new(x0, y, used_w, 1), &groups[*g], theme),
+                Band::Empty(g) => {
+                    let text = truncate(self.nothing_line(&groups[*g]), used_w.saturating_sub(2) as usize);
+                    f.render_widget(
+                        Paragraph::new(Span::styled(text, theme.dim2())),
+                        Rect::new(x0 + 2, y, used_w - 2, 1),
+                    );
                 }
-                Self::veil(f, drawn, theme, t);
+                Band::Row(items) => {
+                    for (c, &i) in items.iter().enumerate() {
+                        let row = &shown[i];
+                        let r = if tight {
+                            Rect::new(body.x, y, body.width, 1)
+                        } else {
+                            Rect::new(x0 + c as u16 * (card_w + GAP), y, card_w, item_h)
+                        };
+                        let t = self.entered(&row.key, now);
+                        if tight {
+                            self.list_line(f, r, i, row, theme, now, fx);
+                            Self::veil(f, r, theme, t);
+                        } else {
+                            // a card rises one row as it fades in, when the row below it is free
+                            let drawn =
+                                if t < 0.4 && y + item_h < body.y + body.height { Rect { y: y + 1, ..r } } else { r };
+                            if t > 0.0 {
+                                if item_h == BLOCK_H {
+                                    self.block(f, drawn, i, row, theme, now);
+                                } else {
+                                    self.card(f, drawn, i, row, theme, now, fx);
+                                }
+                                Self::veil(f, drawn, theme, t);
+                            }
+                        }
+                        self.cards.push((i, r));
+                    }
+                }
             }
-            self.cards.push((i, r));
+            y += h;
         }
+    }
+
+    /// `◆ nexo · 2 ─────`: the program's name, how many sessions it has, a rule to the edge.
+    fn group_header(&self, f: &mut Frame, r: Rect, group: &Group, theme: &Theme) {
+        let mark = if group.source == SourceKind::Nexo { "◆" } else { "◈" };
+        let color = match group.source {
+            SourceKind::Nexo => theme.accent,
+            SourceKind::External => theme.accent2,
+        };
+        let name = truncate(&format!("{mark} {}", group.label), (r.width as usize).saturating_sub(12).max(4));
+        let count = if group.idx.is_empty() { String::new() } else { format!(" · {}", group.idx.len()) };
+        let used = width(&name) + width(&count) + 1;
+        let rule = "─".repeat((r.width as usize).saturating_sub(used));
+        let line = Line::from(vec![
+            Span::styled(name, theme.bold(color)),
+            Span::styled(count, theme.dim()),
+            Span::raw(" "),
+            Span::styled(rule, theme.dim2()),
+        ]);
+        f.render_widget(Paragraph::new(line), r);
     }
 
     /// How lit a card's ground is: selected, gliding, and a soft hump while its state changes.
@@ -825,7 +1116,14 @@ impl AgentsView {
         let sub = format!("{g} {}", truncate(&quiet, w.saturating_sub(2)));
         let at = |dy| Rect::new(r.x + 2, r.y + dy, w as u16, 1);
         f.render_widget(Paragraph::new(Line::from(name_line)).style(bg), at(0));
-        f.render_widget(Paragraph::new(Line::from(Span::styled(sub, theme.style(color)))).style(bg), at(1));
+        let mut sub_line = vec![Span::styled(sub.clone(), theme.style(color))];
+        let prog = if row.source == SourceKind::Nexo { "nexo" } else { row.program.as_str() };
+        let room = w.saturating_sub(width(&sub) + 1);
+        // the whole name or none: a cut-off name would read as another program
+        if width(prog) <= room {
+            sub_line.push(Span::styled(format!(" {prog}"), theme.style(Self::tag_color(theme, row))));
+        }
+        f.render_widget(Paragraph::new(Line::from(sub_line)).style(bg), at(1));
         if r.height > 2 {
             let step = row.last_step.clone().unwrap_or_default();
             f.render_widget(Paragraph::new(Span::styled(truncate(&step, w), theme.dim2())).style(bg), at(2));
@@ -874,15 +1172,21 @@ impl AgentsView {
 
         // line 3: quiet for, source, cost; the supervisor's last action when there is room
         let quiet = row.idle_secs.map_or_else(|| "-".to_string(), age);
-        let mut left = row.source.label().to_string();
+        let tag = Self::tag_of(row);
+        let mut rest = String::new();
         if let Some(c) = row.cost_usd.filter(|c| *c > 0.0) {
-            left.push_str(&format!(" · ${c:.2}"));
+            rest.push_str(&format!(" · ${c:.2}"));
         }
-        left.push_str(&format!(" · quiet {quiet}"));
+        rest.push_str(&format!(" · quiet {quiet}"));
+        let tag_room = cw.saturating_sub(width(&rest));
+        let tag = truncate(&tag, tag_room.max(3));
+        let used = width(&tag) + width(&rest);
         let action = row.last_action.as_ref().map(|(what, t)| format!("{what} · {}", self.since_action(*t)));
-        let mut l3 = vec![Span::styled(truncate(&left, cw), theme.dim())];
+        let mut l3 = vec![
+            Span::styled(tag, theme.style(Self::tag_color(theme, row))),
+            Span::styled(truncate(&rest, cw.saturating_sub(used - width(&rest))), theme.dim()),
+        ];
         if let Some(a) = action {
-            let used = width(&left);
             if used + 2 + width(&a) <= cw {
                 l3.push(Span::raw(" ".repeat(cw - used - width(&a))));
                 l3.push(Span::styled(a, theme.style(theme.accent2)));
@@ -891,65 +1195,49 @@ impl AgentsView {
         f.render_widget(Paragraph::new(Line::from(l3)).style(bg), at(2));
     }
 
-    fn draw_list(&mut self, f: &mut Frame, body: Rect, theme: &Theme, now: Instant, fx: bool) {
-        self.cols = 1;
-        let rows_in = body.height.max(1) as usize;
-        if self.selected < self.scroll {
-            self.scroll = self.selected;
-        } else if self.selected >= self.scroll + rows_in {
-            self.scroll = self.selected + 1 - rows_in;
+    /// One session as a line, in `r`: chip | name | quiet | step, dropped from the right as the width shrinks.
+    #[allow(clippy::too_many_arguments)]
+    fn list_line(&self, f: &mut Frame, r: Rect, i: usize, row: &AgentRow, theme: &Theme, now: Instant, fx: bool) {
+        let w = r.width as usize;
+        let level = self.lit(i, row, now);
+        let bg = lit_style(theme, Style::default().bg(theme.modal_bg), level);
+        let chip = self.chip_spans(row, theme, now, fx);
+        let chip_w = 13usize;
+        let shown_w: usize = chip.iter().map(|s| width(&s.content)).sum();
+        let quiet = row.idle_secs.map(age).unwrap_or_else(|| "-".to_string());
+        let quiet_w = 7usize;
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled(if self.selected == i { "▌" } else { " " }, theme.style(theme.accent)));
+        let mut used = 1;
+        if w >= chip_w + 12 {
+            spans.extend(chip);
+            spans.push(Span::raw(" ".repeat(chip_w.saturating_sub(shown_w))));
+            used += chip_w;
+        } else {
+            // too narrow for the label: the glyph alone
+            let g = super::agents_view::chip(row.state).0;
+            spans.push(Span::styled(format!("{g} "), theme.style(chip_color(theme, row.state))));
+            used += 2;
         }
-        self.scroll = self.scroll.min(self.rows.len().saturating_sub(rows_in));
-        let w = body.width as usize;
-        for (i, row) in self.rows.clone().iter().enumerate().skip(self.scroll).take(rows_in) {
-            let k = i - self.scroll;
-            let r = Rect::new(body.x, body.y + k as u16, body.width, 1);
-            let level = self.lit(i, row, now);
-            let bg = lit_style(theme, Style::default().bg(theme.modal_bg), level);
-            // columns, dropped from the right as the width shrinks: chip | name | quiet | step
-            let chip = self.chip_spans(row, theme, now, fx);
-            let chip_w = 13usize;
-            let shown_w: usize = chip.iter().map(|s| width(&s.content)).sum();
-            let quiet = row.idle_secs.map(age).unwrap_or_else(|| "-".to_string());
-            let quiet_w = 7usize;
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            spans.push(Span::styled(if self.selected == i { "▌" } else { " " }, theme.style(theme.accent)));
-            let mut used = 1;
-            let push_chip = |spans: &mut Vec<Span<'static>>| {
-                spans.extend(chip.clone());
-                spans.push(Span::raw(" ".repeat(chip_w.saturating_sub(shown_w))));
-            };
-            if w >= chip_w + 12 {
-                push_chip(&mut spans);
-                used += chip_w;
-            } else {
-                // too narrow for the label: the glyph alone
-                let g = super::agents_view::chip(row.state).0;
-                spans.push(Span::styled(format!("{g} "), theme.style(chip_color(theme, row.state))));
-                used += 2;
-            }
-            let show_quiet = w >= 40;
-            let show_step = w >= 64;
-            let step_w = if show_step { (w - used).saturating_sub(quiet_w + 2) * 45 / 100 } else { 0 };
-            let name_room = w
-                .saturating_sub(used)
-                .saturating_sub(if show_quiet { quiet_w + 1 } else { 0 })
-                .saturating_sub(if show_step { step_w + 1 } else { 0 });
-            let name = truncate(&Self::name_of(row), name_room.max(1));
-            let pad_name = name_room.saturating_sub(width(&name));
-            spans.push(Span::styled(name, theme.bold(theme.fg)));
-            spans.push(Span::raw(" ".repeat(pad_name)));
-            if show_quiet {
-                spans.push(Span::styled(format!(" {}", fixed(&quiet, &"8".repeat(quiet_w))), theme.dim()));
-            }
-            if show_step {
-                let step = row.last_step.clone().unwrap_or_default();
-                spans.push(Span::styled(format!("  {}", truncate(&step, step_w.saturating_sub(1))), theme.dim2()));
-            }
-            f.render_widget(Paragraph::new(Line::from(spans)).style(bg), r);
-            Self::veil(f, r, theme, self.entered(&row.key, now));
-            self.cards.push((i, r));
+        let show_quiet = w >= 40;
+        let show_step = w >= 64;
+        let step_w = if show_step { (w - used).saturating_sub(quiet_w + 2) * 45 / 100 } else { 0 };
+        let name_room = w
+            .saturating_sub(used)
+            .saturating_sub(if show_quiet { quiet_w + 1 } else { 0 })
+            .saturating_sub(if show_step { step_w + 1 } else { 0 });
+        let name = truncate(&Self::name_of(row), name_room.max(1));
+        let pad_name = name_room.saturating_sub(width(&name));
+        spans.push(Span::styled(name, theme.bold(theme.fg)));
+        spans.push(Span::raw(" ".repeat(pad_name)));
+        if show_quiet {
+            spans.push(Span::styled(format!(" {}", fixed(&quiet, &"8".repeat(quiet_w))), theme.dim()));
         }
+        if show_step {
+            let step = row.last_step.clone().unwrap_or_default();
+            spans.push(Span::styled(format!("  {}", truncate(&step, step_w.saturating_sub(1))), theme.dim2()));
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)).style(bg), r);
     }
 
     fn detail(&self, row: &AgentRow, theme: &Theme, w: usize) -> Vec<Span<'static>> {

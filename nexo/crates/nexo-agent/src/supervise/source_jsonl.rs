@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::source::{one_line, tail, tool_step, Source, SourceKind};
+use super::source::{one_line, tail, tool_step, Source, SourceKind, EXTERNAL};
 use super::{input_hash, ObsKind, Observation, Secs};
 
 /// The most bytes read from one file in one poll.
@@ -73,6 +73,16 @@ impl JsonlSource {
     }
 }
 
+/// The program a log folder belongs to: `<home>/.<name>/projects` is `<name>`; any other place is not named.
+fn program_of_root(root: &Path) -> String {
+    let home = if root.file_name().and_then(|n| n.to_str()) == Some("projects") { root.parent() } else { None };
+    home.and_then(|h| h.file_name())
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix('.'))
+        .filter(|n| !n.is_empty())
+        .map_or_else(|| EXTERNAL.to_string(), str::to_string)
+}
+
 fn mtime(meta: &std::fs::Metadata) -> Secs {
     meta.modified()
         .ok()
@@ -88,6 +98,10 @@ impl Source for JsonlSource {
 
     fn kind(&self) -> SourceKind {
         SourceKind::External
+    }
+
+    fn program(&self) -> String {
+        program_of_root(&self.root)
     }
 
     fn poll(&mut self, now: Secs) -> Vec<Observation> {
@@ -339,6 +353,14 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+
+    #[test]
+    fn the_program_is_named_by_the_hidden_folder_the_logs_sit_in() {
+        let name = |p: &str| JsonlSource::new(p, 12).program();
+        assert_eq!(name("/home/u/.othertool/projects"), "othertool");
+        assert_eq!(name("/data/logs"), "external");
+        assert_eq!(name("/home/u/projects"), "external");
+    }
 
     fn append(path: &Path, lines: &[Value]) {
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();

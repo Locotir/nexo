@@ -31,15 +31,17 @@ impl OpenAiResponses {
             input.extend(convert(m, &req.model));
         }
         let mut body = json!({"model": req.model, "input": input, "stream": true});
-        // a subscription backend (ChatGPT's) sets the limit itself and rejects one
-        if !cfg.extra.get("omit_max_tokens").and_then(|v| v.as_bool()).unwrap_or(false) {
+        // a subscription backend (ChatGPT's) sets the limit itself, rejects a sampling temperature and
+        // wants the instructions even when empty
+        let subscription = cfg.extra.get("omit_max_tokens").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !subscription {
             body["max_output_tokens"] = json!(req.max_tokens);
         }
         body["store"] = json!(cfg.extra.get("store").and_then(|v| v.as_bool()).unwrap_or(false));
-        if !req.system.is_empty() {
+        if subscription || !req.system.is_empty() {
             body["instructions"] = json!(req.system);
         }
-        if let Some(t) = req.temperature {
+        if let (Some(t), false) = (req.temperature, subscription) {
             body["temperature"] = temp(t);
         }
         if !req.tools.is_empty() {

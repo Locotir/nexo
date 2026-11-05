@@ -44,6 +44,7 @@ toml_edit = "0.25"
 uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros", "local-offset"] }
 base64 = "0.23"
+sha2 = "0.10"
 bytes = "1"
 
 # errors and logs

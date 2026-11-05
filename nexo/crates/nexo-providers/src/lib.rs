@@ -10,6 +10,7 @@
 pub mod anthropic;
 pub mod catalogue;
 pub mod client;
+pub mod codex;
 pub mod copilot;
 pub mod directory;
 pub mod gemini;

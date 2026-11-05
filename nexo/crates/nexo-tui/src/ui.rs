@@ -1801,10 +1801,21 @@ fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
         view = p.view(cap - 1);
     }
     let list_h = view.entries.len().max(1) + usize::from(footer);
-    let full_h = if preview_w > 0 { cap.max(list_h) } else { list_h } as u16;
+    let want_h = if preview_w > 0 { cap.max(list_h) } else { list_h } as u16;
+    // the height it took for this filter: moving the selection through it never resizes the list
+    // (typing does, as it leaves other rows)
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut k = std::collections::hash_map::DefaultHasher::new();
+        (format!("{:?}", p.kind), &p.query, preview_w > 0).hash(&mut k);
+        k.finish()
+    };
+    let (_, full_h) = app.dialog_size.palette.keep(key, f.area(), transcript, || (tw, want_h));
+    let full_h = full_h.max(1);
     // it rises from the input: a few rows more each frame while it opens
     let h = ((full_h as f64 * pop).ceil() as u16).clamp(1, full_h);
     let r = Rect::new(transcript.x, transcript.y + transcript.height - h, tw, h);
+    app.dialog_size.palette.drawn = r;
     // on a short screen a sliver of conversation above the list only distracts: clear it
     if transcript.height.saturating_sub(full_h) < 5 {
         clear_bg(f, transcript, &theme);
@@ -2050,6 +2061,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     };
     app.fx.pick_sel.note(psel, now, on);
     let glide = app.fx.pick_sel;
+    let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
     let Some(modal) = &mut app.modal else { return };
     if area.width < 12 || area.height < 5 {
         return draw_too_narrow(f, &theme, area, area.width < 12);
@@ -2149,10 +2161,15 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         (true, false) => 2,
     };
     let pinned_h = pinned.len() as u16;
-    let h = ((body.len() as u16) + pinned_h + 2 + button_h).min(max_h).max(5);
+    // the size it took when it opened: a cursor, a filter or a longer line never stretches it
+    let want_h = ((body.len() as u16) + pinned_h + 2 + button_h).min(max_h).max(5);
+    let room = Rect::new(0, 0, area.width, max_h.max(5));
+    let (w, h) = app.dialog_size.modal.keep(key, f.area(), room, || (w, want_h));
+    let h = h.max(5).min(area.height);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
     let r = pop_rect(Rect::new(x, y, w, h), pop);
+    app.dialog_size.modal.drawn = r;
     clear_margin(f, r, area, &theme);
     clear_bg(f, r, &theme);
     let block = Box_::default()
@@ -2403,6 +2420,7 @@ fn hard_wrap(s: &str, room: usize) -> Vec<String> {
 fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let pop = app.modal_pop();
+    let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
     let Some(Modal::Question(a)) = &mut app.modal else { return };
     if area.width < 20 || area.height < 6 {
         return draw_too_narrow(f, &theme, area, area.width < 20);
@@ -2424,8 +2442,11 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
     // a short area is used whole, so the options and a line of the question fit
     let max_h = area.height.saturating_sub(if area.height < 10 { 0 } else { 2 });
     let rows_h = rows.len() as u16;
-    let h = (body.len() as u16 + 1 + rows_h + 2).min(max_h);
+    // the size it took when it opened: moving the cursor (a description, a typed answer) never resizes it
+    let want_h = (body.len() as u16 + 1 + rows_h + 2).min(max_h);
+    let (w, h) = app.dialog_size.modal.keep(key, f.area(), Rect::new(0, 0, area.width, max_h), || (w, want_h));
     let r = pop_rect(Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h), pop);
+    app.dialog_size.modal.drawn = r;
     clear_bg(f, r, &theme);
     let title = if a.q.plan.is_some() { " plan ".to_string() } else { format!(" {} ", a.q.header.to_lowercase()) };
     // a plan wears the colour of plan mode; any other question the warning colour
@@ -2484,13 +2505,18 @@ fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
     let (tab, grow, fill, hover) = (info.tab, info.grow(), info.fill(), info.hover);
     let theme = app.theme.clone();
     let inner_w = overlay::window_rect(area, 0).width.saturating_sub(4) as usize;
-    // as tall as the tallest tab: the window does not jump when the tab changes
-    let tallest = (0..overlay::TABS.len()).map(|t| overlay::lines(app, t, inner_w, 1.0).len()).max().unwrap_or(0);
+    let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
     let body = overlay::lines(app, tab, inner_w, fill);
-    let full = overlay::window_rect(area, tallest);
+    // as tall as the tallest tab, and it keeps the size it took when it opened:
+    // neither a tab change nor the figures filling in resize the window
+    let tallest = (0..overlay::TABS.len()).map(|t| overlay::lines(app, t, inner_w, 1.0).len()).max().unwrap_or(0);
+    let asked = overlay::window_rect(area, tallest);
+    let (fw, fh) = app.dialog_size.modal.keep(key, f.area(), area, || (asked.width, asked.height));
+    let full = Rect::new(area.x + (area.width - fw) / 2, area.y + (area.height - fh) / 2, fw, fh);
     let w = ((full.width as f64) * (0.7 + 0.3 * grow)).round() as u16;
     let h = (3.0 + (full.height.saturating_sub(3)) as f64 * grow).round() as u16;
     let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    app.dialog_size.modal.drawn = r;
     clear_bg(f, r, &theme);
     let block = Box_::default()
         .borders(Borders::ALL)
@@ -2538,6 +2564,7 @@ fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
     let (now, fx) = (app.now(), app.fx_on());
     if let Some(Modal::Agents(v)) = &mut app.modal {
         v.draw(f, area, &theme, now, fx);
+        app.dialog_size.modal.drawn = v.window;
     }
 }
 

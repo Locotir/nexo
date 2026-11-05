@@ -1,23 +1,23 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-│ ●─╮ ╭─●   nexo 0.1.0                                                     │
-│   ╰●╯     deepseek/deepseek-chat · ask                                   │
 ╭ panel ──────────────────────────────────────────────────────────────────[✗]──╮
-│ ◈1 ◆1 ◐1 ↻1 ●2 ○1 ✓1                                    watching · read-only │
+│ ◈1 ◆1 ◐1 ↻1 ●2 ○1 ✓1                              all · watching · read-only │
 │ ──────────────────────────────────────────────────────────────────────────── │
-│    █ project         ▌ explore         ▌ api-migration   ▌ docs              │
-│    █ ● 2s            ▌ ● 1s            ▌ ◈ 1m 35s        ▌ ◆ 6m 40s          │
-│    █ Edit  src/pa…   ▌ Grep  fn cla…   ▌ Bash  cargo …   ▌ which licens…     │
+│    ◆ nexo · 2 ───────────────────────────────────────────────────────────    │
+│    █ project         ▌ explore                                               │
+│    █ ● 2s nexo       ▌ ● 1s nexo                                             │
+│    █ Edit  src/pa…   ▌ Grep  fn cla…                                         │
 │                                                                              │
-│    ▌ nightly-fixer   ▌ scheduler       ▌ refactor        ▌ release           │
-│    ▌ ◐ 40m 00s       ▌ ↻ 30s           ▌ ○ 17m 00s       ▌ ✓ 2h 01m          │
-│    ▌ Read  tests/…   ▌ Bash  git pu…   ▌                 ▌ Bash  gh rel…     │
+│    ◈ agentx · 4 ─────────────────────────────────────────────────────────    │
+│    ▌ api-migration   ▌ docs            ▌ nightly-fixer   ▌ scheduler         │
+│    ▌ ◈ 1m 35s        ▌ ◆ 6m 40s        ▌ ◐ 40m 00s       ▌ ↻ 30s agentx      │
+│    ▌ Bash  cargo …   ▌ which licens…   ▌ Read  tests/…   ▌ Bash  git pu…     │
+│                                                                              │
+│    ◈ othertool · 2 ──────────────────────────────────────────────────────    │
+│    ▌ refactor        ▌ release                                               │
+│    ▌ ○ 17m 00s       ▌ ✓ 2h 01m                                              │
+│    ▌                 ▌ Bash  gh rel…                                         │
 │ /home/dev/project · default · this-session                                   │
-│ ←↑↓→ move · +/- zoom · Esc close                                             │
+│ ←↑↓→ move · s source · +/- zoom · Esc close                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
-
-
-
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
  Esc close                                                 20261102-100000-ef56

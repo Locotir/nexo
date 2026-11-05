@@ -20,6 +20,8 @@ use crate::theme::Theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Provider,
+    /// How to sign in to a subscription provider.
+    Login,
     Address,
     Key,
     Model,
@@ -30,7 +32,7 @@ impl Step {
     fn number(self) -> usize {
         match self {
             Step::Provider => 1,
-            Step::Address => 2,
+            Step::Login | Step::Address => 2,
             Step::Key => 3,
             Step::Model => 4,
             Step::Review => 5,
@@ -40,6 +42,7 @@ impl Step {
     fn name(self) -> &'static str {
         match self {
             Step::Provider => "provider",
+            Step::Login => "sign in",
             Step::Address => "address",
             Step::Key => "key",
             Step::Model => "model",
@@ -84,6 +87,8 @@ pub struct Setup {
     /// A key typed at the key step (never shown again, kept in a file of its own on save).
     pub key: Option<String>,
     pub probe: Option<ServerProbe>,
+    /// The page a sign-in waits on and the code to type there (empty: none).
+    pub prompt: Option<(String, String)>,
     pub model: String,
     pub check: Option<ModelCheck>,
     pub fields: Vec<Field>,
@@ -113,6 +118,7 @@ impl Setup {
             cfg: ProviderConfig::default(),
             key: None,
             probe: None,
+            prompt: None,
             model: String::new(),
             check: None,
             fields: Vec::new(),
@@ -148,6 +154,7 @@ impl Setup {
                 // a key kept with `nexo auth login` counts too; a command is not run just to list
                 let stored = || nexo_core::auth::get(c.auth.as_deref().unwrap_or(name)).is_some();
                 let key = match &c.api_key_env {
+                    _ if c.login.is_some() => if stored() { "signed in ✓" } else { "sign in" }.to_string(),
                     _ if c.api_key_cmd.is_some() || stored() => "key ✓".to_string(),
                     Some(v) if std::env::var(v).is_ok_and(|k| !k.trim().is_empty()) => "key ✓".to_string(),
                     Some(v) => format!("needs {v}"),
@@ -198,6 +205,54 @@ impl Setup {
         SetupOut::Send(AgentCommand::Probe { name: self.name.clone(), cfg: self.cfg.clone(), key: self.key.clone() })
     }
 
+    /// The list of the sign-in step: the saved login (when there is one), then the ways to sign in.
+    fn fill_login(&mut self) {
+        let flow = self.cfg.login.clone().unwrap_or_default();
+        let mut items = Vec::new();
+        if nexo_core::auth::get(self.cfg.auth.as_deref().unwrap_or(&self.name)).is_some() {
+            items.push(PickItem {
+                label: "Keep the saved login".into(),
+                value: "keep".into(),
+                hint: "already signed in on this machine".into(),
+            });
+        }
+        items.extend(nexo_providers::login::choices(&flow).into_iter().map(|c| PickItem {
+            label: c.label,
+            value: c.flow,
+            hint: c.hint,
+        }));
+        self.list = Picker::new(PickKind::Model, "", items, None);
+        self.prompt = None;
+        self.step = Step::Login;
+    }
+
+    /// The page a sign-in waits on arrived.
+    pub fn login_prompt(&mut self, url: String, code: String) {
+        if self.step == Step::Login && self.busy.is_some() {
+            self.prompt = Some((url, code));
+        }
+    }
+
+    /// A sign-in ended: on success the provider is asked what it serves.
+    pub fn logged_in(&mut self, result: Result<(), String>) -> SetupOut {
+        if self.step != Step::Login || self.busy.is_none() {
+            return SetupOut::Nothing;
+        }
+        self.busy = None;
+        self.prompt = None;
+        match result {
+            Ok(()) => {
+                self.step = Step::Address;
+                self.field = self.cfg.base_url.clone();
+                self.probe_cmd()
+            }
+            Err(e) => {
+                self.error = Some(e);
+                SetupOut::Nothing
+            }
+        }
+    }
+
     /// The answer to a probe of the address.
     pub fn probed(&mut self, result: Result<ServerProbe, String>) {
         if self.busy.is_none() {
@@ -207,7 +262,14 @@ impl Setup {
         match result {
             Err(e) => {
                 self.error = Some(e);
-                self.step = if self.step == Step::Key { Step::Key } else { Step::Address };
+                self.step = match self.step {
+                    Step::Key => Step::Key,
+                    _ if self.cfg.login.is_some() => {
+                        self.fill_login();
+                        Step::Login
+                    }
+                    _ => Step::Address,
+                };
             }
             Ok(p) => {
                 self.cfg.protocol = p.protocol.clone();
@@ -318,13 +380,22 @@ impl Setup {
     fn back(&mut self) -> SetupOut {
         self.error = None;
         if self.busy.take().is_some() {
+            // a sign-in waiting for the browser is dropped
+            if self.step == Step::Login {
+                self.prompt = None;
+                return SetupOut::Send(AgentCommand::CancelLogin);
+            }
             return SetupOut::Nothing;
         }
         self.step = match self.step {
             Step::Provider => return SetupOut::Close,
-            Step::Address => {
+            Step::Login | Step::Address => {
                 self.fill_providers();
                 Step::Provider
+            }
+            Step::Key | Step::Model if self.cfg.login.is_some() => {
+                self.fill_login();
+                Step::Login
             }
             Step::Key | Step::Model => {
                 self.field = self.cfg.base_url.clone();
@@ -347,7 +418,7 @@ impl Setup {
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match self.step {
-            Step::Provider | Step::Model => match key.code {
+            Step::Provider | Step::Model | Step::Login => match key.code {
                 KeyCode::Enter | KeyCode::Tab => self.pick(),
                 KeyCode::Up => {
                     self.move_list(-1);
@@ -401,7 +472,7 @@ impl Setup {
         let text = text.trim();
         match self.step {
             Step::Address | Step::Key => self.field.push_str(text),
-            Step::Provider | Step::Model => {
+            Step::Provider | Step::Model | Step::Login => {
                 self.list.query.push_str(text);
                 self.list.refilter();
             }
@@ -440,6 +511,13 @@ impl Setup {
                     .unwrap_or_else(|| ProviderConfig::new("openai-chat", "", None));
                 self.name = if name.is_empty() { "custom".into() } else { name };
                 self.key = None;
+                // a subscription: the login first, kept under the provider's name
+                if self.cfg.login.is_some() {
+                    let own = self.name.clone();
+                    self.cfg.auth.get_or_insert(own);
+                    self.fill_login();
+                    return SetupOut::Nothing;
+                }
                 // a server found running here is asked at once
                 if let Some(root) = LOCAL
                     .iter()
@@ -455,6 +533,20 @@ impl Setup {
                 self.field = self.cfg.base_url.clone();
                 self.step = Step::Address;
                 SetupOut::Nothing
+            }
+            Step::Login => {
+                let Some(it) = self.list.current().cloned() else { return SetupOut::Nothing };
+                self.error = None;
+                if it.value == "keep" {
+                    self.step = Step::Address;
+                    self.field = self.cfg.base_url.clone();
+                    return self.probe_cmd();
+                }
+                self.busy = Some(format!("{}: waiting for you to finish in the browser", it.label));
+                if it.value == "codex-cli" {
+                    self.busy = Some("reading the Codex CLI login".into());
+                }
+                SetupOut::Send(AgentCommand::Login { name: self.name.clone(), flow: it.value })
             }
             Step::Model => {
                 let typed = self.list.query.trim().to_string();
@@ -586,6 +678,8 @@ impl Setup {
     pub fn hints(&self) -> &'static str {
         match self.step {
             Step::Provider => " type to filter · ↑↓ choose · Enter pick · Esc close",
+            Step::Login if self.busy.is_some() => " finish in the browser · Esc cancel",
+            Step::Login => " ↑↓ choose · Enter sign in · Esc back",
             Step::Model => " type to filter (or a name not listed) · ↑↓ choose · Enter try it · Esc back",
             Step::Address | Step::Key => " type · Enter check · Ctrl+U clear · Esc back",
             Step::Review => " ↑↓ field · type to change · ←→ effort · Enter save and use · Esc back",
@@ -615,6 +709,28 @@ impl Setup {
                 say(&mut lines, "Switch to a model you have, or set up a provider: nexo asks the server what it is and what it serves.", dim);
                 if self.local.is_empty() {
                     say(&mut lines, "Looking for Ollama, LM Studio, vLLM and llama.cpp on this machine…", dim);
+                }
+            }
+            Step::Login => {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{} ", self.name), theme.bold(theme.accent)),
+                    Span::styled("sign in with your subscription", dim),
+                ]));
+                say(
+                    &mut lines,
+                    "The login is kept in a file only you can read; it is never shown and never put in the config.",
+                    dim,
+                );
+                if let Some((url, code)) = &self.prompt {
+                    lines.push(Line::default());
+                    say(&mut lines, "If the browser did not open, open this page:", dim);
+                    say(&mut lines, url, theme.style(theme.accent));
+                    if !code.is_empty() {
+                        lines.push(Line::from(vec![
+                            Span::styled("and type the code ", dim),
+                            Span::styled(code.clone(), theme.bold(theme.accent)),
+                        ]));
+                    }
                 }
             }
             Step::Address => {
@@ -717,7 +833,7 @@ impl Setup {
             lines.push(Line::default());
             say(&mut lines, &format!("✗ {e}"), theme.style(theme.error));
         }
-        let list_at = matches!(self.step, Step::Provider | Step::Model).then(|| {
+        let list_at = matches!(self.step, Step::Provider | Step::Model | Step::Login).then(|| {
             lines.push(Line::default());
             lines.len()
         });
@@ -768,7 +884,7 @@ impl Setup {
 
     /// The list row under a click, when the list is shown.
     pub fn click_row(&mut self, i: usize) -> SetupOut {
-        if matches!(self.step, Step::Provider | Step::Model) && i < self.list.ranked.len() {
+        if matches!(self.step, Step::Provider | Step::Model | Step::Login) && i < self.list.ranked.len() {
             self.list.selected = i;
             return self.pick();
         }
@@ -777,7 +893,7 @@ impl Setup {
 
     pub fn scroll_by(&mut self, d: i32) {
         match self.step {
-            Step::Provider | Step::Model => self.move_list(d),
+            Step::Provider | Step::Model | Step::Login => self.move_list(d),
             Step::Review => {
                 let rows = (self.fields.len() + usize::from(!self.efforts.is_empty())) as i32;
                 if rows > 0 {
@@ -986,5 +1102,72 @@ mod tests {
         typing(&mut s, "my-model");
         let out = press(&mut s, KeyCode::Enter);
         assert!(matches!(out, SetupOut::Send(AgentCommand::CheckModel { ref model, .. }) if model == "my-model"));
+    }
+
+    fn subscription() -> Setup {
+        let mut cx = ProviderConfig::new("openai-responses", "https://chatgpt.example/backend-api/codex", None);
+        cx.login = Some("codex".into());
+        cx.models = vec!["gpt-x".into()];
+        Setup::new(vec![("codex".into(), cx)], Vec::new(), "")
+    }
+
+    #[test]
+    fn a_subscription_provider_asks_how_to_sign_in_before_its_address() {
+        let mut s = subscription();
+        typing(&mut s, "codex");
+        assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Login);
+        assert_eq!(s.cfg.auth.as_deref(), Some("codex"), "the login is kept under the provider's name");
+        let values: Vec<&str> = s.list.items.iter().map(|i| i.value.as_str()).collect();
+        assert!(values.contains(&"codex-browser") && values.contains(&"codex-device"), "{values:?}");
+
+        // the browser way: the command goes out, the page shown, Esc drops it
+        typing(&mut s, "browser");
+        let out = press(&mut s, KeyCode::Enter);
+        assert_eq!(out, SetupOut::Send(AgentCommand::Login { name: "codex".into(), flow: "codex-browser".into() }));
+        assert!(s.busy.is_some());
+        s.login_prompt("https://auth.example/oauth/authorize?state=abc".into(), String::new());
+        let (lines, _) = s.lines(80, &Theme::nexo(), 0, false);
+        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|sp| sp.content.to_string())).collect();
+        assert!(text.contains("https://auth.example/oauth/authorize?state=abc"), "{text}");
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Send(AgentCommand::CancelLogin));
+        assert!(s.busy.is_none() && s.prompt.is_none() && s.step == Step::Login);
+
+        // a refused sign-in stays on the list with its reason
+        s.list.query.clear();
+        s.list.refilter();
+        typing(&mut s, "browser");
+        press(&mut s, KeyCode::Enter);
+        assert_eq!(s.logged_in(Err("sign-in was declined".into())), SetupOut::Nothing);
+        assert_eq!((s.step, s.error.as_deref()), (Step::Login, Some("sign-in was declined")));
+
+        // a good one asks the provider what it serves, and Esc from the models goes back to the sign-in
+        s.list.query.clear();
+        s.list.refilter();
+        typing(&mut s, "browser");
+        press(&mut s, KeyCode::Enter);
+        let out = s.logged_in(Ok(()));
+        assert!(matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, .. }) if name == "codex"), "{out:?}");
+        s.probed(Ok(ServerProbe {
+            kind: "subscription".into(),
+            protocol: "openai-responses".into(),
+            base_url: "https://chatgpt.example/backend-api/codex".into(),
+            models: vec![ModelInfo { id: "gpt-x".into(), ..Default::default() }],
+            ..Default::default()
+        }));
+        assert_eq!(s.step, Step::Model);
+        press(&mut s, KeyCode::Esc);
+        assert_eq!(s.step, Step::Login);
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Provider);
+    }
+
+    #[test]
+    fn a_login_that_arrives_after_the_setup_moved_on_is_ignored() {
+        let mut s = subscription();
+        assert_eq!(s.logged_in(Ok(())), SetupOut::Nothing);
+        s.login_prompt("https://x".into(), String::new());
+        assert!(s.prompt.is_none());
+        assert_eq!(s.step, Step::Provider);
     }
 }
