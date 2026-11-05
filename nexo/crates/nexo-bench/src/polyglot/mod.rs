@@ -229,12 +229,44 @@ fn link(_: &Path, _: &Path) -> Result<(), String> {
     Err("the benchmark's tests run in a sealed box, which needs Linux".into())
 }
 
-/// Installs the tests, runs them, and takes them out again so the model never sees them.
-fn grade(ex: &Exercise, wd: &Path, seal: &Seal) -> Result<Outcome, String> {
-    ex.install_tests(wd)?;
-    let out = runner::run_tests(ex.lang, wd, seal);
+/// The scratch `/tmp` of the grading runs next to the agent's `tmp`.
+fn grade_tmp(tmp: &Path) -> PathBuf {
+    let name = tmp.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    tmp.with_file_name(format!("{name}.grade"))
+}
+
+/// Grades `wd` as the benchmark would: harness files restored and stray tests removed, the tests installed,
+/// run in a fresh `/tmp` (`scratch`, deleted afterwards, so nothing the agent left in its own `/tmp` is
+/// there), and taken out again so the model never sees them.
+fn grade(ex: &Exercise, wd: &Path, seal: &Seal, scratch: &Path) -> Result<Outcome, String> {
+    ex.restore_harness(wd)?;
+    let _ = std::fs::remove_dir_all(scratch);
+    std::fs::create_dir_all(scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    let sealed = seal.clone().with_tmp(scratch);
+    let out = ex.install_tests(wd).and_then(|_| runner::run_tests(ex.lang, wd, &sealed));
     ex.remove_tests(wd);
+    let _ = std::fs::remove_dir_all(scratch);
     out
+}
+
+/// A failed record for an exercise that could not be set up or graded here: it counts as not solved (and
+/// its cost, if any, is in `driven`'s record), never as left out of the score.
+fn failed(bench: &Bench, arm: &Arm, rep: u32, name: &str, why: &str) -> Record {
+    Record {
+        task: name.to_string(),
+        arm: arm.name.clone(),
+        policy: arm.policy.clone(),
+        spec: arm.spec.clone(),
+        rep,
+        model: bench.model.clone(),
+        commit: run::COMMIT.into(),
+        max_steps: bench.max_steps,
+        max_tokens: bench.max_tokens,
+        temperature: bench.temperature,
+        detail: format!("pass@1 no, pass@2 no (not run: {why})"),
+        parts: vec![Part { id: "pass@1".into(), ok: Some(false) }, Part { id: "pass@2".into(), ok: Some(false) }],
+        ..Default::default()
+    }
 }
 
 /// The attempts of an exercise as they are graded: the model gets the test output once.
@@ -280,6 +312,8 @@ pub async fn run(bench: &Bench, ctx: &Ctx, job: &Job, arm: &Arm, rep: u32, budge
     let result = attempt(bench, ctx, &ex, &name, arm, rep, budget_left, &wd, &tmp).await;
     let _ = std::fs::remove_dir_all(&wd);
     let _ = std::fs::remove_dir_all(work.join(&tag));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = std::fs::remove_dir_all(grade_tmp(&tmp));
     result
 }
 
@@ -295,11 +329,15 @@ async fn attempt(
     wd: &Path,
     tmp: &Path,
 ) -> Result<Record, String> {
-    ex.stage(wd)?;
-    provision(ctx, ex, wd)?;
-    let prompt = ex.prompt()?;
-    let mut hide: Vec<PathBuf> = bench.hide.iter().filter(|h| !wd.starts_with(h)).cloned().collect();
+    let setup = ex.stage(wd).and_then(|_| provision(ctx, ex, wd)).and_then(|_| ex.prompt());
+    let prompt = match setup {
+        Ok(p) => p,
+        Err(e) => return Ok(failed(bench, arm, rep, name, &e)),
+    };
+    // the run's own folders and the benchmark's are hidden, the working directory and the packages put back
+    let mut hide: Vec<PathBuf> = bench.hide.clone();
     hide.push(ctx.root.canonicalize().unwrap_or_else(|_| ctx.root.clone()));
+    hide.push(ctx.cache.canonicalize().unwrap_or_else(|_| ctx.cache.clone()));
     let mut seal = Seal::new(wd, hide, vec![])?.with_tmp(tmp);
     if ex.lang == Lang::Javascript {
         seal = seal.with_keep(&npm_dir(&ctx.cache));
@@ -307,14 +345,14 @@ async fn attempt(
     let tries = Arc::new(Mutex::new(Tries::default()));
     let file_list = ex.file_list();
     let followup: Followup = {
-        let (tries, ex, wd, seal, file_list) =
-            (tries.clone(), ex.clone(), wd.to_path_buf(), seal.clone(), file_list.clone());
+        let (tries, ex, wd, seal, file_list, gt) =
+            (tries.clone(), ex.clone(), wd.to_path_buf(), seal.clone(), file_list.clone(), grade_tmp(tmp));
         Arc::new(move |turn, _replies| {
             let mut t = tries.lock().unwrap();
             if turn != 0 || t.attempts.len() >= 2 {
                 return None;
             }
-            match grade(&ex, &wd, &seal) {
+            match grade(&ex, &wd, &seal, &gt) {
                 Ok(o) => t.after(o, &file_list),
                 Err(e) => {
                     t.error = Some(e);
@@ -336,30 +374,32 @@ async fn attempt(
         followup: Some(followup),
     };
     let driven = run::drive(bench, &plan, arm, rep, budget_left).await?;
-    if let Some(e) = tries.lock().unwrap().error.clone() {
-        return Err(format!("grading: {e}"));
-    }
-    let budget_cut = driven.tally.stop == Some(Stop::Budget);
-    // an attempt the conversation ended without grading (the step limit, an early stop) is graded as it stands
+    let mut grading_error = tries.lock().unwrap().error.clone();
+    // an attempt the conversation ended without grading (the step limit, an early stop, the budget) is graded
+    // as it stands: grading costs nothing
     let missing = {
         let t = tries.lock().unwrap();
-        (t.attempts.is_empty() || (t.attempts.len() == 1 && t.retry_sent)) && !budget_cut
+        t.attempts.is_empty() || (t.attempts.len() == 1 && t.retry_sent)
     };
-    if missing {
-        let (ex2, wd2, seal2, fl) = (ex.clone(), wd.to_path_buf(), seal.clone(), file_list.clone());
-        let o = tokio::task::spawn_blocking(move || grade(&ex2, &wd2, &seal2)).await.map_err(|e| e.to_string())??;
-        tries.lock().unwrap().after(o, &fl);
+    if missing && grading_error.is_none() {
+        let (ex2, wd2, seal2, fl, gt) = (ex.clone(), wd.to_path_buf(), seal.clone(), file_list.clone(), grade_tmp(tmp));
+        match tokio::task::spawn_blocking(move || grade(&ex2, &wd2, &seal2, &gt)).await {
+            Ok(Ok(o)) => {
+                tries.lock().unwrap().after(o, &fl);
+            }
+            Ok(Err(e)) => grading_error = Some(e),
+            Err(e) => grading_error = Some(e.to_string()),
+        }
     }
     let t = tries.lock().unwrap();
-    if t.attempts.is_empty() {
-        return Err("stopped by the budget before the first attempt was graded".into());
-    }
     let (p1, p2) = (t.passed(1), t.passed(2));
-    let second_known = t.attempts.len() >= 2 || p1;
+    // a grading failure counts as not solved, never as left out
+    let second_known = t.attempts.len() >= 2 || p1 || grading_error.is_some();
     let tests_s: f64 = t.attempts.iter().map(|a| a.seconds).sum();
     let summaries: Vec<String> = t.attempts.iter().map(|a| a.summary.clone()).collect();
+    let cut = driven.tally.stop == Some(Stop::Budget);
     let detail = format!(
-        "pass@1 {}, pass@2 {} ({}); tests took {:.0}s{}",
+        "pass@1 {}, pass@2 {} ({}); tests took {:.0}s{}{}",
         if p1 { "yes" } else { "no" },
         if p2 {
             "yes"
@@ -370,7 +410,8 @@ async fn attempt(
         },
         summaries.join(" -> "),
         tests_s,
-        if second_known { "" } else { "; the budget ended the second attempt" },
+        if cut { "; the budget ended the run" } else { "" },
+        grading_error.as_ref().map(|e| format!("; grading failed: {e}")).unwrap_or_default(),
     );
     let solved = solution_dir(bench, ex);
     for f in ex.solution() {
@@ -464,7 +505,8 @@ mod tests {
             if lang == Lang::Javascript {
                 seal = seal.with_keep(&npm_dir(&ctx.cache));
             }
-            let stub = grade(&ex, &wd, &seal).unwrap();
+            let gt = work.path().join("grade-tmp");
+            let stub = grade(&ex, &wd, &seal, &gt).unwrap();
             eprintln!(
                 "{} stub: pass={} {} | {}",
                 ex.id(),
@@ -476,7 +518,7 @@ mod tests {
             for (s, e) in ex.solution().iter().zip(&ex.files.example) {
                 std::fs::copy(ex.dir.join(e), wd.join(s)).unwrap();
             }
-            let done = grade(&ex, &wd, &seal).unwrap();
+            let done = grade(&ex, &wd, &seal, &gt).unwrap();
             eprintln!(
                 "{} example: pass={} {} | {}",
                 ex.id(),
@@ -487,6 +529,39 @@ mod tests {
             assert!(done.pass, "{}: the example failed:\n{}", ex.id(), done.output);
         }
     }
+    #[test]
+    fn grading_has_its_own_tmp_beside_the_agents() {
+        let g = grade_tmp(Path::new("/x/work/go-bob-plain-0.tmp"));
+        assert_eq!(g, Path::new("/x/work/go-bob-plain-0.tmp.grade"));
+    }
+
+    // Needs a sealed box: what the agent leaves in its /tmp is not there when the tests run.
+    #[test]
+    fn the_tests_run_in_a_fresh_tmp() {
+        if crate::seal::available().is_err() {
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let (wd, tmp, gt) = (work.path().join("wd"), work.path().join("tmp"), work.path().join("tmp.grade"));
+        for d in [&wd, &tmp] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (wd, tmp) = (wd.canonicalize().unwrap(), tmp.canonicalize().unwrap());
+        std::fs::write(tmp.join("left-by-the-agent"), "x").unwrap();
+        let seal = Seal::new(&wd, vec![], vec![]).unwrap().with_tmp(&tmp);
+        let sealed = seal.clone().with_tmp({
+            std::fs::create_dir_all(&gt).unwrap();
+            &gt
+        });
+        let line = |s: &Seal| format!("{} 2>&1", s.wrap("ls /tmp"));
+        let run = |s: &Seal| {
+            String::from_utf8_lossy(&std::process::Command::new("sh").args(["-c", &line(s)]).output().unwrap().stdout)
+                .into_owned()
+        };
+        assert!(run(&seal).contains("left-by-the-agent"));
+        assert!(!run(&sealed).contains("left-by-the-agent"));
+    }
+
     #[test]
     fn the_second_message_is_sent_once_and_only_after_a_failure() {
         let mut t = Tries::default();

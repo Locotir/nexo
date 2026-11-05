@@ -92,7 +92,7 @@ pub struct Exercise {
 const NOT_EDITED: [&str; 2] = ["CMakeLists.txt", "Cargo.toml"];
 
 /// Folders that never reach the agent: the exercise's metadata, docs and alternative approaches.
-const HIDDEN_DIRS: [&str; 4] = [".meta", ".docs", ".approaches", ".git"];
+const HIDDEN_DIRS: [&str; 5] = [".meta", ".docs", ".approaches", ".articles", ".git"];
 
 impl Exercise {
     /// Reads the exercise in `dir`.
@@ -158,7 +158,7 @@ impl Exercise {
                 let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
                 let Ok(meta) = e.metadata() else { continue };
                 if meta.is_dir() {
-                    if top && HIDDEN_DIRS.contains(&name.as_str()) {
+                    if top && (name.starts_with('.') || HIDDEN_DIRS.contains(&name.as_str())) {
                         continue;
                     }
                     go(base, &path, out, false);
@@ -229,6 +229,62 @@ impl Exercise {
     }
 }
 
+/// Folders of a working directory that hold installs and builds, not the agent's files.
+const MACHINE_DIRS: [&str; 6] = ["node_modules", "vendor", "target", "build", ".cargo", ".git"];
+
+/// Files that change what a test run collects or how it judges it (Python's configuration).
+const RUN_CONFIG: [&str; 5] = ["conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml"];
+
+impl Exercise {
+    /// Whether `rel` is a file the test run would pick up as a test of the language, wherever it is.
+    fn collected_as_test(&self, rel: &str) -> bool {
+        let file = rel.rsplit('/').next().unwrap_or(rel);
+        self.lang.is_test(rel)
+            || match self.lang {
+                Lang::Python => file.starts_with("test_") && file.ends_with(".py"),
+                Lang::Javascript => file.ends_with(".test.js") || rel.contains("__tests__/"),
+                _ => false,
+            }
+    }
+
+    /// Puts `wd` back to what the benchmark's run would see besides the model's solution files: the files the
+    /// agent was given that are not solution files (`Cargo.toml`, `CMakeLists.txt`, `go.mod`, `package.json`...)
+    /// are restored from the exercise, and test files or test configuration the agent left behind are removed.
+    /// Files the agent added that are not tests (a Rust module, a C++ header) stay.
+    pub fn restore_harness(&self, wd: &Path) -> Result<(), String> {
+        let solution = self.solution();
+        let tests = self.tests();
+        let given = self.walk();
+        for rel in &given {
+            if tests.contains(rel) || self.files.example.contains(rel) || solution.contains(rel) {
+                continue;
+            }
+            copy_file(&self.dir.join(rel), &wd.join(rel))?;
+        }
+        fn go(ex: &Exercise, base: &Path, rel: &str, given: &[String], solution: &[String]) {
+            let Ok(rd) = std::fs::read_dir(base.join(rel)) else { return };
+            for e in rd.filter_map(Result::ok) {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                let Ok(meta) = std::fs::symlink_metadata(e.path()) else { continue };
+                if meta.is_dir() {
+                    if rel.is_empty() && MACHINE_DIRS.contains(&name.as_str()) {
+                        continue;
+                    }
+                    go(ex, base, &path, given, solution);
+                } else if !solution.contains(&path) {
+                    let config = ex.lang == Lang::Python && RUN_CONFIG.contains(&name.as_str());
+                    if (ex.collected_as_test(&path) || config) && !given.contains(&path) {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
+        }
+        go(self, wd, "", &given, &solution);
+        Ok(())
+    }
+}
+
 fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
     if let Some(p) = to.parent() {
         std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
@@ -287,6 +343,72 @@ mod tests {
         go(dir, "", &mut out);
         out.sort();
         out
+    }
+
+    #[test]
+    fn no_dot_folder_reaches_the_agent() {
+        let (_root, ex) = fixture(
+            Lang::Go,
+            "pig-latin",
+            r#"{"files":{"solution":["pig_latin.go"],"test":["pig_latin_test.go"],"example":[".meta/example.go"]}}"#,
+            &[
+                "pig_latin.go",
+                "pig_latin_test.go",
+                "go.mod",
+                ".articles/config.json",
+                ".articles/performance/content.md",
+                ".approaches/a.md",
+            ],
+        );
+        let wd = tempfile::tempdir().unwrap();
+        ex.stage(wd.path()).unwrap();
+        assert_eq!(all_files(wd.path()), ["go.mod", "pig_latin.go"]);
+    }
+
+    #[test]
+    fn grading_restores_the_harness_files_and_removes_stray_tests_but_keeps_added_sources() {
+        let (_root, ex) = fixture(
+            Lang::Python,
+            "bob",
+            r#"{"files":{"solution":["bob.py"],"test":["bob_test.py"],"example":[".meta/example.py"]}}"#,
+            &["bob.py", "bob_test.py"],
+        );
+        let wd = tempfile::tempdir().unwrap();
+        ex.stage(wd.path()).unwrap();
+        for (f, t) in [
+            ("bob.py", "my solution"),
+            ("helper.py", "an added module"),
+            ("test_scratch.py", "def test_x(): assert False"),
+            ("notes_test.py", "stray"),
+            ("conftest.py", "import pytest"),
+            ("pytest.ini", "[pytest]"),
+            ("sub/test_more.py", "stray"),
+        ] {
+            write(wd.path(), f, t);
+        }
+        ex.restore_harness(wd.path()).unwrap();
+        assert_eq!(all_files(wd.path()), ["bob.py", "helper.py"]);
+        assert_eq!(std::fs::read_to_string(wd.path().join("bob.py")).unwrap(), "my solution");
+    }
+
+    #[test]
+    fn grading_puts_back_an_edited_cargo_toml_and_drops_a_tests_folder() {
+        let (_root, ex) = fixture(
+            Lang::Rust,
+            "react",
+            r#"{"files":{"solution":["src/lib.rs"],"test":["tests/react.rs"],"example":[".meta/example.rs"]}}"#,
+            &["src/lib.rs", "tests/react.rs", "Cargo.toml"],
+        );
+        let wd = tempfile::tempdir().unwrap();
+        ex.stage(wd.path()).unwrap();
+        write(wd.path(), "Cargo.toml", "[dependencies]\nevil = \"1\"\n");
+        write(wd.path(), "tests/mine.rs", "stray");
+        write(wd.path(), "src/extra.rs", "an added module");
+        write(wd.path(), "target/debug/x_test.rs", "build output");
+        ex.restore_harness(wd.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(wd.path().join("Cargo.toml")).unwrap(), "content of Cargo.toml");
+        assert!(!wd.path().join("tests/mine.rs").exists() && wd.path().join("src/extra.rs").exists());
+        assert!(wd.path().join("target/debug/x_test.rs").exists(), "installs and builds are left alone");
     }
 
     #[test]
