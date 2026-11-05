@@ -486,9 +486,11 @@ pub fn live_values(
     jobs: &[JobInfo],
     trashed: &[String],
     sessions: &[(String, String)],
+    peers: &[(String, String)],
 ) -> Vec<(String, String)> {
     match command {
         "resume" => sessions.to_vec(),
+        "msg" => peers.to_vec(),
         "jobs" => jobs
             .iter()
             .filter(|j| j.status == JobStatus::Running)
@@ -717,19 +719,19 @@ mod tests {
             job(4, JobKind::Shell, JobStatus::Killed),
             job(7, JobKind::Agent, JobStatus::Running),
         ];
-        let v = live_values("jobs", &jobs, &[], &[]);
+        let v = live_values("jobs", &jobs, &[], &[], &[]);
         assert_eq!(v.iter().map(|(v, _)| v.as_str()).collect::<Vec<_>>(), ["kill 3", "kill 7"], "only running ones");
         assert_eq!(v[0].1, "stop: cargo build 3", "the first line of the command");
         assert_eq!(v[1].1, "stop sub-agent: cargo build 7");
         let t = vec!["s1".to_string(), "s2".to_string()];
-        let u = live_values("undelete", &[], &t, &[]);
+        let u = live_values("undelete", &[], &t, &[], &[]);
         assert_eq!(u.iter().map(|(v, _)| v.as_str()).collect::<Vec<_>>(), ["s2", "s1"], "the last deleted first");
         assert!(u[0].1.contains("brings back"));
-        assert!(live_values("theme", &jobs, &t, &[]).is_empty());
+        assert!(live_values("theme", &jobs, &t, &[], &[]).is_empty());
         // /resume finds a session by a word of its title
         let s =
             vec![("20261101-1".to_string(), "parser fix".to_string()), ("20261102-1".to_string(), "docs".to_string())];
-        let p = Palette::args("resume", "pars", 8, live_values("resume", &[], &[], &s));
+        let p = Palette::args("resume", "pars", 8, live_values("resume", &[], &[], &s, &[]));
         assert_eq!(p.current(), Some("20261101-1"));
         assert!(p.runs_selection(), "Enter opens it");
     }

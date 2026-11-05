@@ -16,6 +16,8 @@ pub mod config;
 pub mod error;
 pub mod jobs;
 pub mod leak;
+pub mod mail;
+pub mod mailbox;
 pub mod message;
 pub mod paths;
 pub mod permission;

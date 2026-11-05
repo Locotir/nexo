@@ -543,7 +543,16 @@ async fn interactive(
     // A session nothing was said in has nothing to resume.
     let sessions =
         nexo_agent::session::list().into_iter().filter(|m| m.messages > 0).map(|m| (m.id, m.title)).collect();
-    let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume.clone(), None).await?;
+    // sessions write to each other through the mailbox; it takes its session when the agent has one
+    let mailbox = config.mail.enabled.then(|| {
+        nexo_core::mailbox::Mailbox::unbound(
+            &nexo_core::mailbox::mail_root(),
+            &cwd.display().to_string(),
+            false,
+            nexo_core::mail::Inbound::parse(&config.mail.inbound),
+        )
+    });
+    let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume.clone(), None, mailbox.clone()).await?;
     let opts = nexo_tui::TuiOptions {
         cwd: cwd.clone(),
         provider: picked.provider.clone(),
@@ -574,6 +583,9 @@ async fn interactive(
     }
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
     nexo_tui::set_supervise_options(nexo_agent::supervise::Options::detect());
+    if let Some(m) = mailbox {
+        nexo_tui::set_mailbox(m);
+    }
     let ui = nexo_tui::run(handle, opts).await;
     agent.abort();
     ui?;
@@ -591,7 +603,7 @@ async fn headless(
     use std::io::Write;
     let (mut handle, ends) = channels();
     let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
-    let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume, Some(gate)).await?;
+    let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume, Some(gate), None).await?;
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
     // an agent that already stopped (a session that cannot be resumed) closed its end: its own error says why
     let sent = handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] }).is_ok();

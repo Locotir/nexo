@@ -122,6 +122,40 @@ pub fn hump(at: Option<Instant>, now: Instant, ms: u64) -> f32 {
     (p as f32 * std::f32::consts::PI).sin()
 }
 
+/// Slow at both ends, quick in the middle. `t` is clamped to 0..1.
+pub fn ease_in_out(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (2.0 - 2.0 * t).powi(3) / 2.0
+    }
+}
+
+/// A cell of the screen: column, row.
+pub type Cell = (u16, u16);
+
+/// Where a thing sent along an L-shaped route is: it runs along the row of `from` to the column of `to`, then
+/// down that column. `t` is 0..1 of the route. Returns the head and up to `tail` cells behind it, nearest
+/// first, each with whether that cell lies on the horizontal leg. A pure function of `t`.
+pub fn route(from: Cell, to: Cell, t: f32, tail: u16) -> (Cell, Vec<(Cell, bool)>) {
+    let across = to.0.abs_diff(from.0) as u32;
+    let down = to.1.abs_diff(from.1) as u32;
+    let total = across + down;
+    let at = |d: u32| -> (Cell, bool) {
+        if d <= across {
+            let x = if to.0 >= from.0 { from.0 as u32 + d } else { from.0 as u32 - d };
+            ((x as u16, from.1), true)
+        } else {
+            let y = if to.1 >= from.1 { from.1 as u32 + (d - across) } else { from.1 as u32 - (d - across) };
+            ((to.0, y as u16), false)
+        }
+    };
+    let d = (t.clamp(0.0, 1.0) * total as f32).round() as u32;
+    let behind = (1..=tail as u32).take_while(|k| *k <= d).map(|k| at(d - k)).collect();
+    (at(d).0, behind)
+}
+
 /// Whether something that began at `at` is still moving `ms` later.
 pub fn within(at: Option<Instant>, now: Instant, ms: u64) -> bool {
     at.is_some_and(|t| (now.saturating_duration_since(t).as_millis() as u64) < ms)
@@ -259,6 +293,23 @@ mod tests {
 
     fn at(t0: Instant, ms: u64) -> Instant {
         t0 + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_route_runs_across_then_down_and_is_pure_in_t() {
+        assert_eq!(route((2, 1), (6, 4), 0.0, 3).0, (2, 1));
+        assert_eq!(route((2, 1), (6, 4), 1.0, 3).0, (6, 4));
+        let (head, behind) = route((2, 1), (6, 4), 4.0 / 7.0, 3);
+        assert_eq!(head, (6, 1), "the corner");
+        assert_eq!(behind, vec![((5, 1), true), ((4, 1), true), ((3, 1), true)]);
+        let (head, behind) = route((2, 1), (6, 4), 6.0 / 7.0, 2);
+        assert_eq!(head, (6, 3));
+        assert_eq!(behind, vec![((6, 2), false), ((6, 1), true)]);
+        assert_eq!(route((6, 1), (2, 1), 0.5, 1).0, (4, 1), "right to left");
+        assert!(route((5, 5), (5, 5), 0.5, 2).1.is_empty(), "no route, no tail");
+        assert_eq!(ease_in_out(0.0), 0.0);
+        assert_eq!(ease_in_out(1.0), 1.0);
+        assert!(ease_in_out(0.3) < 0.2 && ease_in_out(0.7) > 0.8);
     }
 
     #[test]

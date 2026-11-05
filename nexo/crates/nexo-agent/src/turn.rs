@@ -15,6 +15,8 @@ use nexo_core::config::{Config, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::jobs::Jobs;
 use nexo_core::leak;
+use nexo_core::mail::Mail;
+use nexo_core::mailbox::Mailbox;
 use nexo_core::message::{ImageSource, Message, Part, Role};
 use nexo_core::permission::{PermissionDecision, PermissionGate, PermissionMode, PermissionRequest};
 use nexo_core::pricing::Pricing;
@@ -196,6 +198,11 @@ struct State {
     /// 4 characters each, so the view is fitted to the window in the provider's own count.
     est_sent: u64,
     tok_ratio: Option<f64>,
+    /// The mailbox other sessions write to, and the mails that reached the model: those waiting for the turn
+    /// in progress to end, and those the turn in progress carries (told "read" when the model starts answering).
+    mail: Option<Arc<Mailbox>>,
+    mail_wait: Vec<Mail>,
+    mail_turn: Vec<Mail>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -210,7 +217,7 @@ fn notice(events: &EventTx, level: Level, text: impl Into<String>) {
 
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
-    let AgentSetup { config, cwd, provider, model, mut tools, client, resume, gate } = setup;
+    let AgentSetup { config, cwd, provider, model, mut tools, client, resume, gate, mail } = setup;
     let headless = gate.is_some();
     let chan_gate = ChannelGate::new(events.clone());
     let asker = crate::ask::ChannelAsker::new(events.clone());
@@ -257,6 +264,12 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let policy = context::from_config(&config.context);
     let perm = Policy::from_config(&config.permissions);
     plan.lock().unwrap_or_else(|e| e.into_inner()).set(perm.mode);
+    if let Some(m) = &mail {
+        m.set_bypass(perm.mode == PermissionMode::Auto);
+        m.rebind(session.id(), &mail_name(session.meta().title.as_str(), &cwd));
+        // a session that has just started is between turns: mail may be handed over right away
+        m.set_idle(true);
+    }
     emit(
         &events,
         AgentEvent::Ready {
@@ -329,6 +342,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         last_prompt: None,
         est_sent: 0,
         tok_ratio: None,
+        mail,
+        mail_wait: Vec::new(),
+        mail_turn: Vec::new(),
     }));
     let _ = host.set(Arc::new(StateHost { state: Arc::downgrade(&state), events: events.clone() }));
     {
@@ -370,6 +386,40 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             drop(st);
                             turn = Some(start_turn(&state, text, attachments, cancel.child_token()).await);
                         }
+                    }
+                    AgentCommand::Deliver { mails } => {
+                        if mails.is_empty() {
+                        } else if turn.is_some() {
+                            // never in the middle of a turn: it goes when this one ends
+                            state.lock().await.mail_wait.extend(mails);
+                        } else {
+                            turn = Some(deliver_mails(&state, mails, cancel.child_token()).await);
+                        }
+                    }
+                    AgentCommand::SendMail { to, text } => {
+                        let mail = state.lock().await.mail.clone();
+                        match mail {
+                            None => notice(&events, Level::Warn, "mail between sessions is off"),
+                            Some(m) => {
+                                let evs = tokio::task::spawn_blocking(move || {
+                                    let _ = m.send(&to, &text, None, nexo_core::mail::FromKind::Person);
+                                    m.drain_events()
+                                })
+                                .await
+                                .unwrap_or_default();
+                                for e in evs {
+                                    emit(&events, e);
+                                }
+                            }
+                        }
+                    }
+                    AgentCommand::ListPeers => {
+                        let mail = state.lock().await.mail.clone();
+                        let peers = match mail {
+                            Some(m) => tokio::task::spawn_blocking(move || m.peers()).await.unwrap_or_default(),
+                            None => Vec::new(),
+                        };
+                        emit(&events, AgentEvent::Peers { peers });
                     }
                     AgentCommand::Unqueue { index, text } => {
                         let mut st = state.lock().await;
@@ -517,6 +567,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             notice(&events, Level::Error, format!("cannot rename the session: {e}"));
                         } else {
                             emit(&events, AgentEvent::SessionChanged { session_id: st.session.id().to_string(), title });
+                            mail_sync(&st);
                         }
                     }
                     AgentCommand::SetBudget { limit } => {
@@ -672,6 +723,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 if let Some((text, attachments)) = next {
                     notice(&events, Level::Info, "running the queued request");
                     turn = Some(start_turn(&state, text, attachments, cancel.child_token()).await);
+                } else if !state.lock().await.mail_wait.is_empty() {
+                    let mails = std::mem::take(&mut state.lock().await.mail_wait);
+                    turn = Some(deliver_mails(&state, mails, cancel.child_token()).await);
                 } else if reason == TurnEnd::Done {
                     if let Some(text) = goal_follow_up(&state).await {
                         turn = Some(start_turn(&state, text, Vec::new(), cancel.child_token()).await);
@@ -683,6 +737,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     turn = Some(start_turn(&state, note, Vec::new(), cancel.child_token()).await);
                 }
                 if turn.is_none() {
+                    if let Some(m) = state.lock().await.mail.clone() {
+                        m.set_idle(true);
+                    }
                     emit(&events, AgentEvent::Idle { running_jobs: jobs.running() });
                 }
             }
@@ -755,6 +812,7 @@ fn install_session(st: &mut State, session: Session) {
         &st.events,
         AgentEvent::SessionChanged { session_id: st.session.id().to_string(), title: st.session.meta().title.clone() },
     );
+    mail_sync(st);
     emit_goal(st);
     replay_history(&st.events, &st.session, &st.tools);
     close_open_calls(st);
@@ -1068,6 +1126,7 @@ async fn rewind(state: &Shared, index: usize) {
         &st.events,
         AgentEvent::SessionChanged { session_id: st.session.id().to_string(), title: st.session.meta().title.clone() },
     );
+    mail_sync(&st);
     replay_history(&st.events, &st.session, &st.tools);
     if !st.history.is_empty() {
         view_now(&mut st).await;
@@ -1145,6 +1204,46 @@ fn summary_of(tools: &ToolSet, name: &str, args: &Value) -> String {
     }
 }
 
+/// The name a session goes by in the mailbox: its title, else the folder it works in.
+fn mail_name(title: &str, cwd: &Path) -> String {
+    let t = title.trim();
+    if !t.is_empty() {
+        return t.chars().take(40).collect();
+    }
+    cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "nexo".into())
+}
+
+/// The mailbox follows the session when it changes (resumed, forked, cleared, renamed).
+fn mail_sync(st: &State) {
+    if let Some(m) = &st.mail {
+        m.rebind(st.session.id(), &mail_name(&st.session.meta().title, &st.cwd));
+    }
+}
+
+/// Items done out of the total in a `todo` call's `items`; None for a call that only shows the list.
+fn todo_counts(args: &Value) -> Option<(u16, u16)> {
+    let items = args.get("items")?.as_array()?;
+    let done = items
+        .iter()
+        .filter(|i| matches!(i.get("status").and_then(Value::as_str), Some("done") | Some("completed")))
+        .count();
+    Some((done.min(u16::MAX as usize) as u16, items.len().min(u16::MAX as usize) as u16))
+}
+
+/// Hands mails to the model as one message that is not the person's: the host has them as delivered (receipts go
+/// out, `MailDelivered`), and the first answer of the turn marks them read.
+async fn deliver_mails(state: &Shared, mails: Vec<Mail>, cancel: CancellationToken) -> JoinHandle<TurnEnd> {
+    let text = nexo_core::mail::render(&mails);
+    {
+        let mut st = state.lock().await;
+        if let Some(m) = st.mail.clone() {
+            emit(&st.events, m.delivered(&mails));
+        }
+        st.mail_turn = mails;
+    }
+    start_turn(state, text, Vec::new(), cancel).await
+}
+
 async fn start_turn(
     state: &Shared,
     text: String,
@@ -1154,6 +1253,10 @@ async fn start_turn(
     {
         let mut st = state.lock().await;
         // the prompt file may have changed since the last request
+        // a turn is under way: mail waits for the next idle point
+        if let Some(m) = &st.mail {
+            m.set_idle(false);
+        }
         st.system = full_system(&st);
         st.turn_start = st.history.len();
         st.turns += 1;
@@ -1518,6 +1621,15 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             return TurnEnd::Interrupted;
         }
         emit(&events, AgentEvent::AssistantStart);
+        {
+            let mut st = state.lock().await;
+            if !st.mail_turn.is_empty() {
+                let mails = std::mem::take(&mut st.mail_turn);
+                if let Some(m) = st.mail.clone() {
+                    emit(&events, m.read(&mails));
+                }
+            }
+        }
         let started = tokio::select! {
             r = client.stream(&cfg, &req, retries) => r,
             _ = cancel.cancelled() => return TurnEnd::Interrupted,
@@ -2081,6 +2193,9 @@ fn set_mode(st: &mut State, mode: PermissionMode) {
     if (was == PermissionMode::Plan) != (mode == PermissionMode::Plan) {
         st.system = full_system(st);
     }
+    if let Some(m) = &st.mail {
+        m.set_bypass(mode == PermissionMode::Auto);
+    }
     emit(&st.events, AgentEvent::PermissionModeChanged { mode });
 }
 
@@ -2301,6 +2416,11 @@ async fn run_one(
                 }
             };
             emit(events, AgentEvent::ToolDone { id: id.into(), output: out.clone(), elapsed_ms });
+            if name == "todo" && !out.is_error {
+                if let Some((done, total)) = todo_counts(args) {
+                    emit(events, AgentEvent::TodoChanged { done, total });
+                }
+            }
             if !hooks.is_empty() {
                 let payload = serde_json::json!({
                     "event": "post_tool", "tool": name, "args": args,
@@ -2438,6 +2558,13 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
                 notice(&events, Level::Warn, format!("cannot save the session: {e}"));
             }
             st.policy.compacted();
+            emit(
+                &events,
+                AgentEvent::Compacted {
+                    before_tokens: tokens_before.min(u32::MAX as u64) as u32,
+                    after_tokens: st.history.tokens().min(u32::MAX as u64) as u32,
+                },
+            );
             notice(
                 &events,
                 Level::Info,
@@ -2874,6 +3001,7 @@ async fn clear(state: &Shared) {
     );
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(&st.events, AgentEvent::SessionChanged { session_id: st.session.id().to_string(), title: String::new() });
+    mail_sync(&st);
 }
 
 /// A `!` command: run outside the model's view, its output shown.

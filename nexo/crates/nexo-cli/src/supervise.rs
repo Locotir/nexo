@@ -56,6 +56,7 @@ pub async fn daemon() -> anyhow::Result<i32> {
         }
         Err(e) => return Err(e.into()),
     };
+    panel.add_source(Box::new(nexo_agent::supervise::source_mail::MailSource::new(nexo_core::mailbox::mail_root())));
     let mut notes: Vec<String> = loaded.errors.clone();
     if let Some(m) = &model {
         // the providers come from the config of the folder the daemon starts in

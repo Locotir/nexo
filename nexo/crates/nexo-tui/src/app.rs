@@ -154,6 +154,9 @@ pub struct App {
     pub hint_hits: Vec<(Rect, HintHit)>,
     /// The background jobs, as the agent last listed them.
     pub jobs: Vec<nexo_core::jobs::JobInfo>,
+    /// The sessions that can be written to, as the mailbox last listed them (for `/msg`).
+    pub peers: Vec<nexo_core::mail::PeerInfo>,
+    mail_polled: Option<Instant>,
     /// What this session does, told to the `/panel` supervisor.
     pub nexo_src: nexo_agent::supervise::NexoSource,
     /// The `/panel` poller, started the first time the panel opens.
@@ -409,6 +412,8 @@ impl App {
             queue_rows: Vec::new(),
             hint_hits: Vec::new(),
             jobs: Vec::new(),
+            peers: Vec::new(),
+            mail_polled: None,
             nexo_src: nexo_agent::supervise::NexoSource::default(),
             panel: None,
             panel_filter: Default::default(),
@@ -1325,6 +1330,12 @@ impl App {
                 Err(_) => notes.push("the model needs the async runtime, which is not running".into()),
             }
         }
+        // the other sessions' mail (the ledgers and receipts on disk), only where this process has a mailbox
+        if crate::mailbox().is_some() {
+            started.add_source(Box::new(nexo_agent::supervise::source_mail::MailSource::new(
+                nexo_core::mailbox::mail_root(),
+            )));
+        }
         started.set_notes(notes);
         let p = std::sync::Arc::new(started);
         self.panel = Some(p.clone());
@@ -1347,12 +1358,31 @@ impl App {
     }
 
     /// One tick of the clock; `beat` steps the spinner (the loop ticks faster while things glide).
+    /// About once a second: the mailbox beats, takes in what arrived, and hands the agent the mails
+    /// to read (only when it said it is idle); what it saw is shown like any other agent event.
+    fn poll_mailbox(&mut self) {
+        let Some(m) = crate::mailbox() else { return };
+        let now = self.now();
+        if self.mail_polled.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(900)) {
+            return;
+        }
+        self.mail_polled = Some(now);
+        let t = m.tick();
+        for ev in t.events {
+            self.handle_agent(ev);
+        }
+        if !t.deliver.is_empty() {
+            self.send(AgentCommand::Deliver { mails: t.deliver });
+        }
+    }
+
     pub fn tick_frame(&mut self, beat: bool) {
         if beat {
             self.spinner = self.spinner.wrapping_add(1);
         }
         self.deliver_supervisor_nudges();
         self.poll_status_cmd();
+        self.poll_mailbox();
         self.poll_diffview();
         self.poll_insights();
         if !self.branch_read.is_some_and(|t| t.elapsed().as_secs() < 5) {
@@ -1999,7 +2029,50 @@ impl App {
                 }
             }
             AgentEvent::Idle { .. } => {}
+            AgentEvent::MailSent { id, to_name, to, summary, .. } => {
+                let peer = if to_name.is_empty() { to } else { to_name };
+                self.push(Block::Mail { id, outgoing: true, peer, text: summary, stage: nexo_core::mail::Stage::Sent });
+            }
+            AgentEvent::MailFailed { to, reason } => {
+                self.notice(Level::Warn, format!("not sent to {to}: {reason}"));
+                self.flash_level(Level::Warn, &format!("message not sent: {reason}"));
+            }
+            AgentEvent::MailArrived { id, from, from_name, summary, held } => {
+                let peer = if from_name.is_empty() { from } else { from_name };
+                let stage = if held { nexo_core::mail::Stage::Held } else { nexo_core::mail::Stage::Sent };
+                self.push(Block::Mail { id, outgoing: false, peer: peer.clone(), text: summary, stage });
+                self.flash(&format!("message from {peer}"));
+            }
+            AgentEvent::MailDelivered { ids } => {
+                for id in ids {
+                    self.mail_stage(&id, nexo_core::mail::Stage::Delivered);
+                }
+            }
+            AgentEvent::MailRead { ids } => {
+                for id in ids {
+                    self.mail_stage(&id, nexo_core::mail::Stage::Read);
+                }
+            }
+            AgentEvent::MailStage { id, stage } => self.mail_stage(&id, stage),
+            AgentEvent::Peers { peers } => {
+                self.peers = peers;
+                self.dirty = true;
+            }
+            AgentEvent::Compacted { .. } | AgentEvent::Retrying { .. } | AgentEvent::TodoChanged { .. } => {}
+
             AgentEvent::Shutdown => self.should_quit = true,
+        }
+    }
+
+    /// A message of the transcript moved on the receipt ladder (never back).
+    fn mail_stage(&mut self, id: &str, to: nexo_core::mail::Stage) {
+        for i in 0..self.blocks.len() {
+            if let Block::Mail { id: bid, stage, .. } = &mut self.blocks[i] {
+                if bid == id && stage.advances_to(to) {
+                    *stage = to;
+                    self.invalidate(i);
+                }
+            }
         }
     }
 
@@ -3020,6 +3093,17 @@ impl App {
                 self.send(AgentCommand::Export { path: path.map(PathBuf::from) });
                 self.flash("exporting…");
             }
+            Command::Msg(None) => {
+                self.send(AgentCommand::ListPeers);
+                self.input.set_text("/msg ");
+                self.refresh_palette();
+            }
+            Command::Msg(Some(arg)) => match arg.trim().split_once(char::is_whitespace) {
+                Some((to, text)) if !text.trim().is_empty() => {
+                    self.send(AgentCommand::SendMail { to: to.to_string(), text: text.trim().to_string() })
+                }
+                _ => self.notice(Level::Info, "write to a session: /msg <session> <text>"),
+            },
             Command::Rename(None) => self.notice(Level::Info, "give the session a name: /rename <name>"),
             Command::Rename(Some(title)) => self.send(AgentCommand::Rename { title }),
             Command::Diff => self.open_diffview(),
@@ -3564,7 +3648,13 @@ impl App {
                         PaletteKind::Args(cmd) => {
                             let mut values =
                                 palette::arg_values(&cmd, &self.opts.models, &self.model, &self.effort_levels);
-                            values.extend(palette::live_values(&cmd, &self.jobs, &self.trashed, &self.opts.sessions));
+                            values.extend(palette::live_values(
+                                &cmd,
+                                &self.jobs,
+                                &self.trashed,
+                                &self.opts.sessions,
+                                &self.peer_values(),
+                            ));
                             values.splice(0..0, self.current_arg(&cmd));
                             Palette::args(&cmd, &query, start, values)
                         }
@@ -3578,6 +3668,26 @@ impl App {
             self.palette = None;
         }
         self.dirty = true;
+    }
+
+    /// The sessions `/msg` offers: a one-word name when it is unique, else the start of the id.
+    fn peer_values(&self) -> Vec<(String, String)> {
+        let ok = |p: &&nexo_core::mail::PeerInfo| p.sendable && !p.me && !p.external;
+        self.peers
+            .iter()
+            .filter(ok)
+            .map(|p| {
+                let unique = self.peers.iter().filter(|q| q.name == p.name).count() == 1;
+                let value = if !p.name.is_empty() && !p.name.contains(char::is_whitespace) && unique {
+                    p.name.clone()
+                } else {
+                    p.id.chars().take(8).collect()
+                };
+                let tail = p.cwd.rsplit('/').next().unwrap_or("");
+                let hint = if p.bypass { format!("{tail} · every tool allowed") } else { tail.to_string() };
+                (value, hint)
+            })
+            .collect()
     }
 
     /// What `/goal` and `/rename` hold now, first in their list: Tab puts it on the line to edit.
@@ -4274,6 +4384,88 @@ mod tests {
         assert_eq!(a.session_title, "the other one");
         a.handle_agent(AgentEvent::Queued { pending: 0 });
         assert_eq!(a.queued, 0);
+    }
+
+    #[test]
+    fn msg_writes_to_a_session_and_the_transcript_follows_the_receipts() {
+        use nexo_core::mail::{PeerInfo, Stage};
+        let (mut a, mut rx) = app();
+        assert_eq!(
+            commands::parse("/msg api look at parser.rs"),
+            Some(Command::Msg(Some("api look at parser.rs".into())))
+        );
+        a.run_command(Command::Msg(Some("api look at parser.rs".into())));
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentCommand::SendMail { to, text }) if to == "api" && text == "look at parser.rs")
+        );
+        // a session and no text: nothing goes out
+        a.run_command(Command::Msg(Some("api".into())));
+        assert!(rx.try_recv().is_err() && matches!(a.blocks.last(), Some(Block::Notice { .. })));
+        // no arguments: the sessions are asked for and the palette opens on them
+        let peer = |id: &str, name: &str, me: bool| PeerInfo {
+            id: id.into(),
+            name: name.into(),
+            cwd: "/home/dev/api".into(),
+            pid: 1,
+            external: false,
+            bypass: false,
+            sendable: true,
+            me,
+        };
+        a.handle_agent(AgentEvent::Peers {
+            peers: vec![
+                peer("aaaa1111", "me", true),
+                peer("bbbb2222", "api", false),
+                peer("cccc3333", "two words", false),
+            ],
+        });
+        a.run_command(Command::Msg(None));
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::ListPeers)));
+        assert_eq!(a.input.text(), "/msg ");
+        let v: Vec<String> = a.peer_values().into_iter().map(|(v, _)| v).collect();
+        assert_eq!(v, ["api", "cccc3333"], "not itself; a name with spaces is offered by its id");
+
+        // the receipts move the line along and never back
+        let stage = |a: &App| {
+            a.blocks.iter().rev().find_map(|b| if let Block::Mail { stage, .. } = b { Some(*stage) } else { None })
+        };
+        a.handle_agent(AgentEvent::MailSent {
+            id: "m1".into(),
+            to: "bbbb2222".into(),
+            to_name: "api".into(),
+            summary: "look at parser.rs".into(),
+            bytes: 17,
+        });
+        assert_eq!(stage(&a), Some(Stage::Sent));
+        a.handle_agent(AgentEvent::MailStage { id: "m1".into(), stage: Stage::Delivered });
+        assert_eq!(stage(&a), Some(Stage::Delivered));
+        a.handle_agent(AgentEvent::MailStage { id: "m1".into(), stage: Stage::Read });
+        a.handle_agent(AgentEvent::MailStage { id: "m1".into(), stage: Stage::Delivered });
+        assert_eq!(stage(&a), Some(Stage::Read));
+        let lines = a.blocks.iter().rev().find(|b| matches!(b, Block::Mail { .. })).unwrap();
+        let text: String = lines
+            .render(80, &a.theme, a.render_opts())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("✉ -> api: look at parser.rs") && text.contains("✓✓ read"), "{text}");
+
+        // a mail that comes in is marked, and a refusal warns
+        a.handle_agent(AgentEvent::MailArrived {
+            id: "m2".into(),
+            from: "bbbb2222".into(),
+            from_name: "api".into(),
+            summary: "done".into(),
+            held: false,
+        });
+        assert!(matches!(a.blocks.last(), Some(Block::Mail { outgoing: false, .. })));
+        a.handle_agent(AgentEvent::MailDelivered { ids: vec!["m2".into()] });
+        assert_eq!(stage(&a), Some(Stage::Delivered));
+        a.handle_agent(AgentEvent::MailFailed { to: "web".into(), reason: "no such session".into() });
+        assert!(
+            matches!(a.blocks.last(), Some(Block::Notice { level: Level::Warn, text }) if text.contains("no such session"))
+        );
     }
 
     #[test]

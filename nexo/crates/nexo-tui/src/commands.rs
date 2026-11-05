@@ -83,8 +83,9 @@ pub const COMMANDS: &[Spec] = &[
     ),
     spec("export", &["save"], "[path]", "write the conversation as markdown"),
     spec("rename", &["title", "name"], "<name>", "give this session a name"),
+    spec("msg", &["mail", "tell"], "<session> <text>", "write to another running session; it reads it when it is idle"),
     spec("diff", &[], "", "browse staged, unstaged and new files"),
-    spec("panel", &[], "", "agent sessions by program, nexo first (s filters), read-only"),
+    spec("panel", &[], "", "live agent sessions by program: events, todo, mail; message and pause them (s filters)"),
     spec("cost", &["usage"], "", "window: tokens, cost, calls"),
     spec("context", &["ctx"], "", "window: what the next call sends"),
     spec("theme", &[], "[name]", "change the colours (a picker without a name)"),
@@ -141,6 +142,8 @@ pub enum Command {
     Tree,
     Export(Option<String>),
     Rename(Option<String>),
+    /// `/msg session text`; without arguments, the sessions that can be written to.
+    Msg(Option<String>),
     Diff,
     Cost,
     Context,
@@ -243,6 +246,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "queue" => Command::Queue,
         "export" => Command::Export(arg),
         "rename" | "title" | "name" => Command::Rename(arg),
+        "msg" | "mail" | "tell" => Command::Msg(arg),
         "diff" => Command::Diff,
         "cost" => Command::Cost,
         "context" => Command::Context,
@@ -329,6 +333,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "undo",
             "undelete",
             "rename",
+            "msg",
             "export",
             "compact",
             "goal",
@@ -399,7 +404,7 @@ pub fn closed_args(name: &str) -> bool {
 
 /// Whether the palette offers values for the command's argument at all.
 pub fn takes_listed_args(name: &str) -> bool {
-    matches!(name, "model" | "effort" | "theme" | "undelete" | "resume" | "rename" | "export")
+    matches!(name, "model" | "effort" | "theme" | "undelete" | "resume" | "rename" | "export" | "msg")
         || !fixed_args(name).is_empty()
 }
 

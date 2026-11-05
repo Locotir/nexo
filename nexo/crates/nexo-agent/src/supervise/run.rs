@@ -9,12 +9,14 @@ use std::sync::{Arc, Mutex};
 
 use super::audit::Audit;
 use super::decide::Ledger;
+use super::events::Ev;
 use super::policy::Policy;
 use super::source::{Source, SourceKind};
 use super::source_jsonl::JsonlSource;
 use super::source_list::ListSource;
 use super::source_nexo::NexoSource;
-use super::{classify, AgentTrack, Secs, State};
+use super::{classify, input_hash, AgentTrack, ObsKind, Secs, State};
+use nexo_core::mail::Stage;
 
 /// What one source returned in a round: its kind, its program name and the observations.
 pub(super) type Polled = (SourceKind, String, Vec<super::Observation>);
@@ -43,7 +45,42 @@ pub struct AgentRow {
     pub last_action: Option<(String, Secs)>,
     /// The supervisor leaves it alone (paused for it, for its kind, or for all).
     pub paused: bool,
+    /// The latest events, newest last (at most 12).
+    pub ribbon: Vec<Ev>,
+    /// Tokens per minute over the last 24 minutes, the newest last (events per minute when no usage is known).
+    pub spark: Vec<u32>,
+    /// Todo items done and in all.
+    pub todo: Option<(u16, u16)>,
+    /// The last test run: passed and failed.
+    pub tests: Option<(u32, u32)>,
+    /// Sub-agents: key and state.
+    pub subs: Vec<(String, State)>,
+    /// Mails that wait for this session's next idle moment.
+    pub unread: u16,
+    /// Mails that wait for the person's approval.
+    pub held: u16,
+    /// Seconds until the provider is tried again.
+    pub retry_secs: Option<u32>,
 }
+
+/// One mail between two sessions, one row per mail id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MailRow {
+    pub id: String,
+    /// The sender: a session key when known, else its name.
+    pub from: String,
+    /// The receiver: a session key when known, else its name.
+    pub to: String,
+    pub summary: String,
+    pub stage: Stage,
+    pub at: Secs,
+    pub bytes: usize,
+    /// Times this row changed (a view that animates new rows looks at it).
+    pub n: u16,
+}
+
+/// Mails kept for the feed.
+const MAIL_KEEP: usize = 200;
 
 pub(super) struct Entry {
     pub(super) track: AgentTrack,
@@ -68,6 +105,8 @@ pub struct Supervisor {
     pub(super) advisor: Option<super::model::Advisor>,
     /// The live session of this program, to hand its nudges to.
     pub(super) nexo: Option<NexoSource>,
+    /// Every mail seen, by id.
+    pub(super) mails: BTreeMap<String, MailRow>,
     /// Why the model is not in use, or other news about the policy, for the policy tab.
     pub notes: Vec<String>,
     /// Counts every change of the rows, for a view that repaints on change.
@@ -87,6 +126,7 @@ impl Supervisor {
             last_act: None,
             advisor: None,
             nexo: None,
+            mails: BTreeMap::new(),
             notes: Vec::new(),
             version: 0,
         }
@@ -125,6 +165,13 @@ impl Supervisor {
                 if o.agent_key.is_empty() {
                     continue;
                 }
+                if matches!(o.kind, ObsKind::MsgOut { .. } | ObsKind::MsgIn { .. } | ObsKind::MsgStage { .. }) {
+                    // a mail between sessions is a row of the feed; it gives a card to no one
+                    changed |= fold_mail(&mut self.mails, &o);
+                    if !self.entries.contains_key(&o.agent_key) {
+                        continue;
+                    }
+                }
                 let e = self.entries.entry(o.agent_key.clone()).or_insert_with(|| Entry {
                     track: AgentTrack::new(o.agent_key.clone()),
                     source: kind,
@@ -137,9 +184,9 @@ impl Supervisor {
                     e.program = program.clone();
                     changed = true;
                 }
-                let before = (e.track.last_step.clone(), e.track.name.clone(), e.track.cost_usd);
+                let before = fingerprint(&e.track);
                 e.track.apply(&o);
-                changed |= before != (e.track.last_step.clone(), e.track.name.clone(), e.track.cost_usd);
+                changed |= before != fingerprint(&e.track);
             }
         }
         for e in self.entries.values_mut() {
@@ -160,6 +207,15 @@ impl Supervisor {
             self.version += 1;
         }
         changed
+    }
+
+    /// The mails between sessions, newest last, from `since` on (at most the newest 40).
+    pub fn mail_feed(&self, since: Secs) -> Vec<MailRow> {
+        let mut v: Vec<MailRow> = self.mails.values().filter(|m| m.at >= since).cloned().collect();
+        v.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
+        let cut = v.len().saturating_sub(40);
+        v.drain(..cut);
+        v
     }
 
     /// The rows, nexo sessions first, each session's sub-agents under it.
@@ -187,12 +243,160 @@ impl Supervisor {
                     parent,
                     last_action: e.action.clone(),
                     paused: self.paused(t),
+                    ribbon: t.ribbon.iter().rev().take(12).rev().cloned().collect(),
+                    spark: spark(t, now),
+                    todo: t.todo,
+                    tests: t.tests.map(|(p, f, _)| (p, f)),
+                    subs: self
+                        .entries
+                        .values()
+                        .filter(|k| k.track.key.rsplit_once('.').is_some_and(|(p, _)| p == t.key))
+                        .map(|k| (k.track.key.clone(), k.state))
+                        .collect(),
+                    unread: t.inbox.iter().filter(|m| !m.1).count() as u16,
+                    held: t.inbox.iter().filter(|m| m.1).count() as u16,
+                    retry_secs: t.retry_until.map(|u| (u - now).max(0) as u32).filter(|s| *s > 0),
                 }
             })
             .collect();
         order(&mut rows);
         rows
     }
+}
+
+/// What a change of a row would show, to tell whether anything moved.
+type Print = (
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+    Option<(Secs, super::EvKind, u32)>,
+    usize,
+    Option<(u16, u16)>,
+    Option<(u32, u32, Secs)>,
+    Option<Secs>,
+    Option<(Secs, u32)>,
+);
+
+fn fingerprint(t: &AgentTrack) -> Print {
+    (
+        t.last_step.clone(),
+        t.name.clone(),
+        t.cost_usd,
+        t.ribbon.back().map(|e| (e.at, e.kind, e.n)),
+        t.inbox.len() * 2 + t.inbox.iter().filter(|m| m.1).count(),
+        t.todo,
+        t.tests,
+        t.retry_until,
+        t.tokens.back().copied(),
+    )
+}
+
+/// Per-minute tokens of the last 24 minutes; events per minute when the session reports no usage.
+fn spark(t: &AgentTrack, now: Secs) -> Vec<u32> {
+    let minute = now.div_euclid(60);
+    let mut v = vec![0u32; 24];
+    if !t.tokens.is_empty() {
+        for (m, n) in &t.tokens {
+            let back = minute - m;
+            if (0..24).contains(&back) {
+                v[(23 - back) as usize] = *n;
+            }
+        }
+    } else {
+        for e in &t.ribbon {
+            let back = minute - e.at.div_euclid(60);
+            if (0..24).contains(&back) {
+                v[(23 - back) as usize] += e.n;
+            }
+        }
+    }
+    if v.iter().all(|n| *n == 0) {
+        v.clear();
+    }
+    v
+}
+
+/// Fold the mail observations of one source into the mail table; true when a row changed.
+fn fold_mail(mails: &mut BTreeMap<String, MailRow>, o: &super::Observation) -> bool {
+    let (id, stage, bytes) = match &o.kind {
+        ObsKind::MsgOut { mail, summary, bytes, to } => {
+            (mail.clone().unwrap_or_else(|| external_id(mails, summary, o.at, to)), Stage::Sent, *bytes)
+        }
+        ObsKind::MsgIn { mail, summary, held, from } => (
+            mail.clone().unwrap_or_else(|| external_id(mails, summary, o.at, from)),
+            if mail.is_none() {
+                Stage::Delivered
+            } else if *held {
+                Stage::Held
+            } else {
+                Stage::Sent
+            },
+            0,
+        ),
+        ObsKind::MsgStage { mail, stage } => (mail.clone(), *stage, 0),
+        _ => return false,
+    };
+    let is_stage = matches!(o.kind, ObsKind::MsgStage { .. });
+    let row = mails.entry(id.clone()).or_insert_with(|| MailRow {
+        id: id.clone(),
+        from: String::new(),
+        to: String::new(),
+        summary: String::new(),
+        stage,
+        at: o.at,
+        bytes: 0,
+        n: 0,
+    });
+    let before = row.clone();
+    match &o.kind {
+        ObsKind::MsgOut { to, summary, .. } => {
+            row.from = o.agent_key.clone();
+            if row.to.is_empty() || !row.to.contains(['-', '.']) {
+                row.to = to.clone();
+            }
+            row.summary = summary.clone();
+        }
+        ObsKind::MsgIn { from, summary, .. } => {
+            row.to = o.agent_key.clone();
+            if row.from.is_empty() {
+                row.from = from.clone();
+            }
+            if row.summary.is_empty() {
+                row.summary = summary.clone();
+            }
+        }
+        _ => {}
+    }
+    if bytes > 0 {
+        row.bytes = bytes;
+    }
+    if !is_stage || row.at == 0 {
+        row.at = row.at.min(o.at);
+    }
+    if row.stage.advances_to(stage) {
+        row.stage = stage;
+    }
+    let changed = *row != before;
+    if changed {
+        row.n = row.n.saturating_add(1);
+    }
+    while mails.len() > MAIL_KEEP {
+        let Some(oldest) = mails.values().min_by_key(|m| m.at).map(|m| m.id.clone()) else { break };
+        mails.remove(&oldest);
+    }
+    changed
+}
+
+/// An id for a mail another program's log tells of: the out and the in of one message, seen within 30 s with
+/// the same summary, get the same id.
+fn external_id(mails: &BTreeMap<String, MailRow>, summary: &str, at: Secs, _peer: &str) -> String {
+    let h = input_hash(summary);
+    if let Some(m) =
+        mails.values().find(|m| m.id.starts_with("x-") && input_hash(&m.summary) == h && (m.at - at).abs() <= 30)
+    {
+        return m.id.clone();
+    }
+    format!("x-{h:x}-{at}")
 }
 
 /// The name a card shows: the session's name, else its folder, else the start of its key.
@@ -319,6 +523,8 @@ impl Core {
         let mut taken = self.sup.lock().map(|mut g| std::mem::take(&mut g.sources)).unwrap_or_default();
         let polled: Vec<Polled> = taken.iter_mut().map(|s| (s.kind(), s.program(), s.poll(now))).collect();
         if let Ok(mut g) = self.sup.lock() {
+            // a source added while the round ran stays
+            taken.append(&mut g.sources);
             g.sources = taken;
             g.fold(polled, now);
             self.after(&g, now);
@@ -401,6 +607,18 @@ impl Panel {
 
     pub fn version(&self) -> u64 {
         self.core.version.load(Ordering::Relaxed)
+    }
+
+    /// The mails between sessions from `since` on, newest last (at most 40), one row per mail.
+    pub fn mail_feed(&self, since: Secs) -> Vec<MailRow> {
+        self.core.sup.lock().map(|g| g.mail_feed(since)).unwrap_or_default()
+    }
+
+    /// Add a source to a panel that is already polling.
+    pub fn add_source(&self, source: Box<dyn Source>) {
+        if let Ok(mut g) = self.core.sup.lock() {
+            g.add(source);
+        }
     }
 
     pub fn rows(&self, now: Secs) -> Vec<AgentRow> {
@@ -519,6 +737,7 @@ impl std::fmt::Debug for Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::supervise::EvKind;
     use crate::supervise::{ObsKind, Observation};
     use nexo_core::agent::AgentEvent;
 
@@ -614,5 +833,145 @@ mod tests {
         assert_eq!(v["agents"][0]["source"], "external");
         let left: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().collect();
         assert_eq!(left.len(), 1, "no temporary file stays");
+    }
+    #[test]
+    fn nexo_events_fill_the_ribbon_the_counters_and_the_mail_feed() {
+        use nexo_core::mail::Stage;
+        let nexo = NexoSource::new();
+        let mut s = Supervisor::new(Policy::default());
+        s.add(Box::new(nexo.clone()));
+        nexo.observe(&AgentEvent::SessionChanged { session_id: "s1".into(), title: "api".into() }, 100);
+        nexo.observe(&AgentEvent::TurnStart { turn: 1 }, 100);
+        nexo.observe(&AgentEvent::TodoChanged { done: 1, total: 4 }, 101);
+        nexo.observe(&AgentEvent::Retrying { attempt: 1, wait_secs: 30, rate_limit: true }, 102);
+        nexo.observe(&AgentEvent::Compacted { before_tokens: 9000, after_tokens: 900 }, 103);
+        nexo.observe(
+            &AgentEvent::MailSent {
+                id: "m-1".into(),
+                to: "s2".into(),
+                to_name: "web".into(),
+                summary: "hi".into(),
+                bytes: 2,
+            },
+            104,
+        );
+        nexo.observe(
+            &AgentEvent::MailArrived {
+                id: "m-2".into(),
+                from: "s2".into(),
+                from_name: "web".into(),
+                summary: "yo".into(),
+                held: false,
+            },
+            105,
+        );
+        nexo.observe(
+            &AgentEvent::MailArrived {
+                id: "m-3".into(),
+                from: "s2".into(),
+                from_name: "web".into(),
+                summary: "ok?".into(),
+                held: true,
+            },
+            105,
+        );
+        s.tick(106);
+        let r = &s.rows(106)[0];
+        assert_eq!((r.todo, r.unread, r.held), (Some((1, 4)), 1, 1));
+        assert_eq!(r.retry_secs, Some(26));
+        let kinds: Vec<(EvKind, u32)> = r.ribbon.iter().map(|e| (e.kind, e.n)).collect();
+        // two mails in one second fold into one cell
+        let want = vec![
+            (EvKind::TurnStart, 1),
+            (EvKind::Todo, 1),
+            (EvKind::RateLimit, 1),
+            (EvKind::Compact, 1),
+            (EvKind::MsgOut, 1),
+            (EvKind::MsgIn, 2),
+        ];
+        assert_eq!(kinds, want);
+        let feed = s.mail_feed(0);
+        assert_eq!(
+            feed.iter().map(|m| (m.id.as_str(), m.stage)).collect::<Vec<_>>(),
+            vec![("m-1", Stage::Sent), ("m-2", Stage::Sent), ("m-3", Stage::Held)]
+        );
+        // the receiver's host delivers m-2 and the model reads it; the mail leaves the unread count
+        nexo.observe(&AgentEvent::MailDelivered { ids: vec!["m-2".into()] }, 110);
+        nexo.observe(&AgentEvent::TurnStart { turn: 2 }, 110);
+        nexo.observe(&AgentEvent::MailRead { ids: vec!["m-2".into()] }, 111);
+        s.tick(112);
+        let r = &s.rows(112)[0];
+        assert_eq!((r.unread, r.held), (0, 1));
+        let m2 = s.mail_feed(0).into_iter().find(|m| m.id == "m-2").unwrap();
+        assert_eq!(m2.stage, Stage::Read);
+        assert!(
+            !r.ribbon.iter().any(|e| e.kind == EvKind::TurnStart && e.at == 110),
+            "the mail turn is not the person's"
+        );
+    }
+
+    #[test]
+    fn two_sources_telling_one_mail_make_one_row_and_one_ribbon_event() {
+        let nexo = NexoSource::new();
+        let mut s = Supervisor::new(Policy::default());
+        s.add(Box::new(nexo.clone()));
+        nexo.observe(&AgentEvent::SessionChanged { session_id: "s1".into(), title: "api".into() }, 100);
+        let out = |at| {
+            ob(
+                "s1",
+                at,
+                ObsKind::MsgOut { to: "s2".into(), mail: Some("m-9".into()), summary: "hello".into(), bytes: 5 },
+            )
+        };
+        nexo.observe(
+            &AgentEvent::MailSent {
+                id: "m-9".into(),
+                to: "s2".into(),
+                to_name: "web".into(),
+                summary: "hello".into(),
+                bytes: 5,
+            },
+            101,
+        );
+        s.add(Box::new(Fake(SourceKind::Nexo, vec![out(101)])));
+        s.tick(102);
+        assert_eq!(s.mail_feed(0).len(), 1);
+        let r = &s.rows(102)[0];
+        assert_eq!(r.ribbon.iter().filter(|e| e.kind == EvKind::MsgOut).map(|e| e.n).sum::<u32>(), 1);
+    }
+
+    #[test]
+    fn a_mail_of_a_log_pairs_its_out_and_its_in_and_a_stranger_gets_no_card() {
+        let mut s = Supervisor::new(Policy::default());
+        s.add(Box::new(Fake(
+            SourceKind::External,
+            vec![
+                ob("k1", 1000, ObsKind::Activity),
+                ob("k2", 1000, ObsKind::Activity),
+                ob(
+                    "k1",
+                    1010,
+                    ObsKind::MsgOut { to: "second".into(), mail: None, summary: "build is red".into(), bytes: 12 },
+                ),
+                ob(
+                    "k2",
+                    1015,
+                    ObsKind::MsgIn { from: "first".into(), mail: None, summary: "build is red".into(), held: false },
+                ),
+                ob(
+                    "ghost",
+                    1016,
+                    ObsKind::MsgIn { from: "x".into(), mail: Some("m-5".into()), summary: "boo".into(), held: false },
+                ),
+            ],
+        )));
+        s.tick(1020);
+        let feed = s.mail_feed(0);
+        let x: Vec<_> = feed.iter().filter(|m| m.id.starts_with("x-")).collect();
+        assert_eq!(x.len(), 1, "{feed:?}");
+        assert_eq!((x[0].from.as_str(), x[0].to.as_str()), ("k1", "k2"));
+        assert_eq!(x[0].stage, nexo_core::mail::Stage::Delivered);
+        assert_eq!(s.rows(1020).len(), 2, "the mail of a session nobody tracks adds no card");
+        assert!(feed.iter().any(|m| m.id == "m-5"));
     }
 }

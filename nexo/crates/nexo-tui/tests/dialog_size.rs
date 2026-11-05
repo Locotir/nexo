@@ -120,6 +120,14 @@ fn row(key: &str, name: &str, state: State) -> AgentRow {
         parent: None,
         paused: false,
         last_action: None,
+        ribbon: vec![],
+        spark: vec![],
+        todo: None,
+        tests: None,
+        subs: vec![],
+        unread: 0,
+        held: 0,
+        retry_secs: None,
     }
 }
 

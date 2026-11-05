@@ -7,8 +7,10 @@ use std::sync::{Arc, Mutex};
 
 use nexo_core::agent::{AgentEvent, TurnEnd};
 use nexo_core::jobs::{JobKind, JobStatus};
+use nexo_core::mail::Stage;
 use nexo_core::permission::PermissionMode;
 
+use super::events::{after_command, Ev, EvDetail, EvKind};
 use super::source::{one_line, tail, tool_step, Source, SourceKind, STEP_CHARS};
 use super::{input_hash, ObsKind, Observation, Secs};
 
@@ -34,6 +36,10 @@ struct Inner {
     outbox: VecDeque<(String, String, Secs)>,
     /// The next turn starts from a supervisor nudge, not from the person.
     nudge_turn: bool,
+    /// The next turn starts from mail of another session, not from the person.
+    mail_turn: bool,
+    /// Shell commands waiting for their result: call id to command.
+    cmds: HashMap<String, String>,
 }
 
 impl Inner {
@@ -144,7 +150,8 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
         }
         AgentEvent::TurnStart { .. } => {
             g.text.clear();
-            let by_supervisor = std::mem::take(&mut g.nudge_turn);
+            let by_mail = std::mem::take(&mut g.mail_turn);
+            let by_supervisor = std::mem::take(&mut g.nudge_turn) || by_mail;
             out.push(mk(if by_supervisor { ObsKind::Activity } else { ObsKind::UserInput }));
         }
         AgentEvent::TextDelta { text } => {
@@ -154,13 +161,23 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
             }
             out.push(mk(ObsKind::Activity));
         }
-        AgentEvent::ReasoningDelta { .. } | AgentEvent::AssistantStart | AgentEvent::ToolProgress { .. } => {
+        AgentEvent::ReasoningDelta { .. } => {
+            out.push(mk(ObsKind::Activity));
+            out.push(mk(ObsKind::Ev(Ev::new(now, EvKind::Thinking))));
+        }
+        AgentEvent::AssistantStart | AgentEvent::ToolProgress { .. } => {
             out.push(mk(ObsKind::Activity));
         }
         AgentEvent::ToolCall { id, name, args, summary } => {
             g.calls.insert(id.clone(), (name.clone(), input_hash(&args.to_string())));
             if g.calls.len() > 512 {
                 g.calls.clear();
+            }
+            if let Some(c) = args.get("command").and_then(|c| c.as_str()) {
+                if g.cmds.len() > 64 {
+                    g.cmds.clear();
+                }
+                g.cmds.insert(id.clone(), c.to_string());
             }
             let text = if summary.is_empty() {
                 tool_step(name, args)
@@ -174,6 +191,11 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
         AgentEvent::ToolDone { id, output, .. } => {
             let (name, hash) = g.calls.remove(id).unwrap_or_else(|| ("tool".to_string(), 0));
             out.push(mk(ObsKind::ToolResult { name, input_hash: hash, is_error: output.is_error }));
+            if let Some(cmd) = g.cmds.remove(id) {
+                if let Some(ev) = after_command(&cmd, &output.content, output.is_error, now) {
+                    out.push(mk(ObsKind::Ev(ev)));
+                }
+            }
             busy(g, &mut out);
         }
         AgentEvent::PermissionAsk { request } => {
@@ -182,8 +204,12 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
         AgentEvent::PermissionResolved { .. } => out.push(mk(ObsKind::PermissionResolved)),
         AgentEvent::Question { .. } => out.push(mk(ObsKind::AskPending)),
         AgentEvent::QuestionResolved { .. } => out.push(mk(ObsKind::AskResolved)),
-        AgentEvent::Usage { cost_usd, .. } => {
+        AgentEvent::Usage { cost_usd, call, .. } => {
             g.cost = *cost_usd;
+            if call.output > 0 {
+                let n = call.output.min(u32::MAX as u64) as u32;
+                out.push(mk(ObsKind::Ev(Ev::with(now, EvKind::Cost, EvDetail::Tokens(n)))));
+            }
             out.push(mk(ObsKind::Spend { usd: g.cost, model: g.model.clone() }));
             out.push(mk(ObsKind::Activity));
         }
@@ -203,13 +229,63 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
                 if j.status == JobStatus::Running {
                     out.push(mk3(ObsKind::Activity));
                     if !g.running.contains(&k) {
+                        out.push(Observation {
+                            agent_key: parent.clone(),
+                            at: now,
+                            kind: ObsKind::Ev(Ev::new(now, EvKind::SubSpawn)),
+                        });
                         g.running.push(k.clone());
                     }
                 } else {
                     out.push(mk3(ObsKind::Done));
+                    if g.running.contains(&k) {
+                        out.push(Observation {
+                            agent_key: parent.clone(),
+                            at: now,
+                            kind: ObsKind::Ev(Ev::new(now, EvKind::SubDone)),
+                        });
+                    }
                     g.running.retain(|r| r != &k);
                 }
             }
+        }
+        AgentEvent::MailSent { id, to, summary, bytes, .. } => {
+            out.push(mk(ObsKind::MsgOut {
+                to: to.clone(),
+                mail: Some(id.clone()),
+                summary: summary.clone(),
+                bytes: *bytes,
+            }));
+        }
+        AgentEvent::MailArrived { id, from, summary, held, .. } => {
+            out.push(mk(ObsKind::MsgIn {
+                from: from.clone(),
+                mail: Some(id.clone()),
+                summary: summary.clone(),
+                held: *held,
+            }));
+        }
+        AgentEvent::MailDelivered { ids } => {
+            g.mail_turn = true;
+            for id in ids {
+                out.push(mk(ObsKind::MsgStage { mail: id.clone(), stage: Stage::Delivered }));
+            }
+        }
+        AgentEvent::MailRead { ids } => {
+            for id in ids {
+                out.push(mk(ObsKind::MsgStage { mail: id.clone(), stage: Stage::Read }));
+            }
+        }
+        AgentEvent::MailStage { id, stage } => {
+            out.push(mk(ObsKind::MsgStage { mail: id.clone(), stage: *stage }));
+        }
+        AgentEvent::Compacted { .. } => out.push(mk(ObsKind::Ev(Ev::new(now, EvKind::Compact)))),
+        AgentEvent::Retrying { wait_secs, rate_limit, .. } => {
+            let kind = if *rate_limit { EvKind::RateLimit } else { EvKind::Retry };
+            out.push(mk(ObsKind::Ev(Ev::with(now, kind, EvDetail::Wait { secs: *wait_secs }))));
+        }
+        AgentEvent::TodoChanged { done, total } => {
+            out.push(mk(ObsKind::Ev(Ev::with(now, EvKind::Todo, EvDetail::Progress { done: *done, total: *total }))));
         }
         _ => {}
     }

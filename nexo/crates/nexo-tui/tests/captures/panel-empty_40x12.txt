@@ -1,7 +1,7 @@
 ╭ panel ──────────────────────────[✗]──╮
 │ no sessions          all · read-only │
 │ ──────────────────────────────────── │
-│ ◆ nexo ───────────────────────────── │
+│ ▣ nexo ───────────────────────────── │
 │   no nexo sessions yet · this one s… │
 │                                      │
 │ s source · Esc close                 │

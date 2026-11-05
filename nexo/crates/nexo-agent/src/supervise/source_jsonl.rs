@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::events::{after_command, Ev, EvDetail, EvKind};
 use super::source::{one_line, tail, tool_step, Source, SourceKind, EXTERNAL};
 use super::{input_hash, ObsKind, Observation, Secs};
 
@@ -33,6 +34,8 @@ struct FileState {
     skip_line: bool,
     /// Tool calls waiting for their result: id to (name, hash of the input).
     tools: HashMap<String, (String, u64)>,
+    /// Shell commands waiting for their result: id to command.
+    cmds: HashMap<String, String>,
     cwd_sent: bool,
     /// Set while a shrunk file is read again: what is kept so far.
     resync: Option<Vec<Observation>>,
@@ -131,6 +134,7 @@ fn read_new(path: &Path, st: &mut FileState, now: Secs) -> Option<Vec<Observatio
     if len < st.offset {
         st.offset = 0;
         st.skip_line = false;
+        st.cmds.clear();
         st.tools.clear();
         st.resync = Some(Vec::new());
     }
@@ -198,6 +202,84 @@ fn read_new(path: &Path, st: &mut FileState, now: Secs) -> Option<Vec<Observatio
         }
         None => Some(fresh),
     }
+}
+
+/// Characters of a message kept as the summary of a mail.
+const MAIL_SUMMARY: usize = 60;
+
+/// What a `SendMessage` call says it sends: to whom, a summary, how many bytes.
+fn send_message(input: &Value) -> ObsKind {
+    let to = input.get("to").and_then(Value::as_str).unwrap_or("").to_string();
+    let body = input.get("message").or_else(|| input.get("text")).and_then(Value::as_str).unwrap_or("");
+    let summary = match input.get("summary").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        Some(s) => one_line(s, MAIL_SUMMARY),
+        None => one_line(body, MAIL_SUMMARY),
+    };
+    ObsKind::MsgOut { to, mail: None, summary, bytes: body.len() }
+}
+
+/// Items done and in all, from the input of a `TodoWrite` call.
+fn todo_progress(input: &Value) -> Option<EvDetail> {
+    let items = input.get("todos")?.as_array()?;
+    let done = items.iter().filter(|i| i.get("status").and_then(Value::as_str) == Some("completed")).count();
+    Some(EvDetail::Progress {
+        done: done.min(u16::MAX as usize) as u16,
+        total: items.len().min(u16::MAX as usize) as u16,
+    })
+}
+
+/// The text blocks of a user record (the whole content when it is a string).
+fn user_texts(content: Option<&Value>) -> Vec<String> {
+    match content {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str).map(String::from))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The text of a tool result (a string, or the text blocks of a list).
+fn result_text(r: &Value) -> String {
+    match r.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) => {
+            a.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n")
+        }
+        _ => String::new(),
+    }
+}
+
+/// The value of `attr="..."` in a tag, when the attribute stands alone (`from=` is not `from-name=`).
+fn attr(tag: &str, name: &str) -> Option<String> {
+    let pat = format!(" {name}=\"");
+    let i = tag.find(&pat)? + pat.len();
+    let rest = &tag[i..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// The messages of other sessions in a piece of text: who wrote (the name, else the id) and what.
+fn cross_messages(text: &str) -> Vec<(String, String)> {
+    const OPEN: &str = "<cross-session-message";
+    const CLOSE: &str = "</cross-session-message>";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(OPEN) {
+        let after = &rest[i..];
+        let Some(end) = after.find('>') else { break };
+        let tag = &after[..end];
+        let from = attr(tag, "from-name").filter(|n| !n.is_empty()).or_else(|| attr(tag, "from")).unwrap_or_default();
+        let body = &after[end + 1..];
+        let (body, next) = match body.find(CLOSE) {
+            Some(c) => (&body[..c], &body[c + CLOSE.len()..]),
+            None => (body, ""),
+        };
+        out.push((from, body.trim().to_string()));
+        rest = next;
+    }
+    out
 }
 
 /// Timestamp of a record in seconds, when it has one.
@@ -283,6 +365,25 @@ fn convert(v: &Value, st: &mut FileState, now: Secs) -> (Vec<Observation>, bool)
                             }
                             st.tools.insert(id.to_string(), (name.clone(), input_hash(&input.to_string())));
                         }
+                        if name == "SendMessage" {
+                            out.push(mk(send_message(&input)));
+                        }
+                        if let Some(c) = input.get("command").and_then(Value::as_str) {
+                            if let Some(id) = b.get("id").and_then(Value::as_str) {
+                                if st.cmds.len() >= TOOL_KEEP {
+                                    st.cmds.clear();
+                                }
+                                st.cmds.insert(id.to_string(), c.to_string());
+                            }
+                        }
+                        if name == "TodoWrite" {
+                            if let Some(p) = todo_progress(&input) {
+                                out.push(mk(ObsKind::Ev(Ev::with(at, EvKind::Todo, p))));
+                            }
+                        }
+                        if matches!(name.as_str(), "Agent" | "Task") {
+                            out.push(mk(ObsKind::Ev(Ev::new(at, EvKind::SubSpawn))));
+                        }
                         out.push(mk(ObsKind::Step { text: tool_step(&name, &input) }));
                         out.push(mk(ObsKind::ToolPending { name }));
                         any = true;
@@ -313,13 +414,34 @@ fn convert(v: &Value, st: &mut FileState, now: Secs) -> (Vec<Observation>, bool)
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")).collect())
                 .unwrap_or_default();
+            // text of the record, also beside tool results: another session may have written there
+            let texts = user_texts(content);
+            let mails: Vec<(String, String)> = texts.iter().flat_map(|t| cross_messages(t)).collect();
+            for (from, body) in &mails {
+                out.push(mk(ObsKind::MsgIn {
+                    from: from.clone(),
+                    mail: None,
+                    summary: one_line(body, MAIL_SUMMARY),
+                    held: false,
+                }));
+            }
             if !results.is_empty() {
                 for r in results {
                     let id = r.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
                     let (name, hash) = st.tools.remove(id).unwrap_or_else(|| ("tool".to_string(), 0));
                     let is_error = r.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    if matches!(name.as_str(), "Agent" | "Task") {
+                        out.push(mk(ObsKind::Ev(Ev::new(at, EvKind::SubDone))));
+                    }
+                    if let Some(cmd) = st.cmds.remove(id) {
+                        if let Some(ev) = after_command(&cmd, &result_text(r), is_error, at) {
+                            out.push(mk(ObsKind::Ev(ev)));
+                        }
+                    }
                     out.push(mk(ObsKind::ToolResult { name, input_hash: hash, is_error }));
                 }
+            } else if !mails.is_empty() {
+                out.push(mk(ObsKind::Activity));
             } else {
                 let meta = v.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
                 let origin = v.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str);
@@ -331,12 +453,21 @@ fn convert(v: &Value, st: &mut FileState, now: Secs) -> (Vec<Observation>, bool)
             let sub = v.get("subtype").and_then(Value::as_str).unwrap_or("");
             if sub == "compact_boundary" {
                 compact = true;
+                out.push(mk(ObsKind::Ev(Ev::new(at, EvKind::Compact))));
             }
             if sub == "scheduled_task_fire" {
                 let cron = v.get("cron").and_then(Value::as_str).unwrap_or("");
                 out.push(mk(ObsKind::Loop { cron_secs: cron_period(cron) }));
             }
             if v.get("level").and_then(Value::as_str) == Some("error") {
+                let low = v.to_string().to_ascii_lowercase();
+                if low.contains("rate limit")
+                    || low.contains("rate_limit")
+                    || low.contains("429")
+                    || low.contains("overloaded")
+                {
+                    out.push(mk(ObsKind::Ev(Ev::new(at, EvKind::RateLimit))));
+                }
                 out.push(mk(ObsKind::SystemError));
             } else {
                 out.push(mk(ObsKind::Activity));
@@ -419,8 +550,10 @@ mod tests {
                 {"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"boom"}]}})],
         );
         let k = kinds(&src.poll(now()));
-        assert_eq!(k.len(), 1);
-        assert!(matches!(&k[0], ObsKind::ToolResult { name, is_error: true, .. } if name == "Bash"));
+        // a failed test run is an event of its own, then the result
+        assert_eq!(k.len(), 2, "{k:?}");
+        assert!(matches!(&k[0], ObsKind::Ev(e) if e.kind == EvKind::TestsFail));
+        assert!(matches!(&k[1], ObsKind::ToolResult { name, is_error: true, .. } if name == "Bash"));
     }
 
     #[test]
@@ -507,6 +640,113 @@ mod tests {
         let k = kinds(&src.poll(now()));
         assert!(k.contains(&ObsKind::Loop { cron_secs: 900 }));
         assert!(k.contains(&ObsKind::SystemError));
+    }
+
+    fn wrapper(from: &str, name: &str, body: &str) -> String {
+        format!("<cross-session-message from=\"{from}\" from-name=\"{name}\" from-mode=\"ask\">{body}</cross-session-message>")
+    }
+
+    #[test]
+    fn a_message_of_another_session_is_a_mail_also_beside_a_tool_result() {
+        let (_d, log, mut src) = setup();
+        append(&log, &[assistant_tool("t1", "Bash", json!({"command":"ls"}), "2026-11-02T11:00:00Z")]);
+        src.poll(now());
+        append(
+            &log,
+            &[
+                // the wrapper sits next to the result of a tool in one record
+                json!({"type":"user","timestamp":"2026-11-02T11:00:05Z","message":{"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"t1","content":"ok"},
+                    {"type":"text","text": wrapper("pid-77", "api", "the build is red\nsecond line")}]}}),
+                // and alone, as a string: not the person
+                json!({"type":"user","timestamp":"2026-11-02T11:00:09Z","message":{"role":"user","content":
+                    wrapper("pid-78", "web", "ping")}}),
+            ],
+        );
+        let obs = src.poll(now());
+        let k = kinds(&obs);
+        assert!(
+            k.contains(&ObsKind::MsgIn {
+                from: "api".into(),
+                mail: None,
+                summary: "the build is red".into(),
+                held: false
+            }),
+            "{k:?}"
+        );
+        assert!(k.contains(&ObsKind::MsgIn { from: "web".into(), mail: None, summary: "ping".into(), held: false }));
+        assert!(
+            k.iter().any(|k| matches!(k, ObsKind::ToolResult { name, .. } if name == "Bash")),
+            "the result still counts"
+        );
+        assert!(!k.contains(&ObsKind::UserInput), "a mail is not the person");
+    }
+
+    #[test]
+    fn a_send_message_call_is_a_mail_out_and_secrets_stay_out_of_its_summary() {
+        let (_d, log, mut src) = setup();
+        let key = format!("{}{}", "s", "k-abcdefghijklmnopqrstuvwx");
+        append(
+            &log,
+            &[assistant_tool(
+                "t1",
+                "SendMessage",
+                json!({"to":"api","summary":format!("use {key} now"),"message":"x".repeat(300)}),
+                "2026-11-02T11:00:00Z",
+            )],
+        );
+        let k = kinds(&src.poll(now()));
+        let out = k.iter().find_map(|k| {
+            if let ObsKind::MsgOut { to, summary, bytes, .. } = k {
+                Some((to, summary, bytes))
+            } else {
+                None
+            }
+        });
+        let (to, summary, bytes) = out.expect("a mail out");
+        assert_eq!((to.as_str(), *bytes), ("api", 300));
+        assert!(!summary.contains(&key), "{summary}");
+    }
+
+    #[test]
+    fn tests_commits_todo_and_compaction_become_events() {
+        let (_d, log, mut src) = setup();
+        let result = |id: &str, text: &str, err: bool, ts: &str| {
+            json!({"type":"user","timestamp":ts,"message":{"role":"user","content":[
+                {"type":"tool_result","tool_use_id":id,"is_error":err,"content":text}]}})
+        };
+        append(
+            &log,
+            &[
+                assistant_tool("a", "Bash", json!({"command":"cargo test -p x"}), "2026-11-02T11:00:00Z"),
+                result("a", "test result: ok. 12 passed; 0 failed", false, "2026-11-02T11:00:01Z"),
+                assistant_tool("b", "Bash", json!({"command":"git commit -m wip"}), "2026-11-02T11:00:02Z"),
+                result("b", "[main 1234] wip", false, "2026-11-02T11:00:03Z"),
+                assistant_tool("c", "Bash", json!({"command":"pytest"}), "2026-11-02T11:00:04Z"),
+                result("c", "3 failed, 4 passed", true, "2026-11-02T11:00:05Z"),
+                assistant_tool(
+                    "d",
+                    "TodoWrite",
+                    json!({"todos":[{"status":"completed"},{"status":"pending"},{"status":"completed"}]}),
+                    "2026-11-02T11:00:06Z",
+                ),
+                json!({"type":"system","subtype":"compact_boundary","timestamp":"2026-11-02T11:00:07Z"}),
+            ],
+        );
+        let evs: Vec<Ev> = src
+            .poll(now())
+            .into_iter()
+            .filter_map(|o| if let ObsKind::Ev(e) = o.kind { Some(e) } else { None })
+            .collect();
+        let want = [
+            (EvKind::TestsPass, EvDetail::Tests { pass: 12, fail: 0 }),
+            (EvKind::GitCommit, EvDetail::None),
+            (EvKind::TestsFail, EvDetail::Tests { pass: 4, fail: 3 }),
+            (EvKind::Todo, EvDetail::Progress { done: 2, total: 3 }),
+            (EvKind::Compact, EvDetail::None),
+        ];
+        let got: Vec<(EvKind, EvDetail)> = evs.into_iter().map(|e| (e.kind, e.detail)).collect();
+        assert_eq!(got, want);
     }
 
     #[test]

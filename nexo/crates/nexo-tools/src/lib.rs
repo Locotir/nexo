@@ -15,6 +15,7 @@ pub mod grep;
 pub mod jobs;
 pub mod ls;
 pub mod lsp;
+pub mod mail;
 pub mod mcp;
 pub mod note;
 pub mod read;

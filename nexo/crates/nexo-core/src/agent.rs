@@ -184,6 +184,18 @@ pub enum AgentCommand {
     },
     /// Ask for the background jobs; answered with `Jobs` and a `Notice`.
     ShowJobs,
+    /// Mails taken from this session's inbox, handed over at an idle point: one user message that is
+    /// not the person's own (like a nudge). The host sends it only after `Idle`, never mid-turn.
+    Deliver {
+        mails: Vec<crate::mail::Mail>,
+    },
+    /// The person writes to another session (`/msg`); answered with `MailSent` or `MailFailed`.
+    SendMail {
+        to: String,
+        text: String,
+    },
+    /// Ask which sessions can be written to; answered with `Peers`.
+    ListPeers,
     /// Ask for the end of the output of every background job; answered with `JobTails`.
     JobTails,
     Shutdown,
@@ -544,6 +556,60 @@ pub enum AgentEvent {
         max: u32,
         #[serde(default)]
         state: GoalState,
+    },
+    /// A mail of this session was written into another's inbox.
+    MailSent {
+        id: String,
+        to: String,
+        to_name: String,
+        summary: String,
+        bytes: usize,
+    },
+    /// A mail could not be sent; `reason` is written for the model to read ("rate limit, retry in 30 s").
+    MailFailed {
+        to: String,
+        reason: String,
+    },
+    /// A mail reached this session's inbox; `held` when it waits for the person's approval.
+    MailArrived {
+        id: String,
+        from: String,
+        from_name: String,
+        summary: String,
+        held: bool,
+    },
+    /// Mails handed to the model (receiver side).
+    MailDelivered {
+        ids: Vec<String>,
+    },
+    /// The model started answering the turn that carried these mails (receiver side).
+    MailRead {
+        ids: Vec<String>,
+    },
+    /// A mail this session sent moved on the receipt ladder.
+    MailStage {
+        id: String,
+        stage: crate::mail::Stage,
+    },
+    /// The sessions that can be written to (the answer to `ListPeers`).
+    Peers {
+        peers: Vec<crate::mail::PeerInfo>,
+    },
+    /// The history was replaced by a summary of it.
+    Compacted {
+        before_tokens: u32,
+        after_tokens: u32,
+    },
+    /// A request to the provider failed and is tried again.
+    Retrying {
+        attempt: u8,
+        wait_secs: u32,
+        rate_limit: bool,
+    },
+    /// The todo list changed: items done out of the total.
+    TodoChanged {
+        done: u16,
+        total: u16,
     },
     Shutdown,
 }

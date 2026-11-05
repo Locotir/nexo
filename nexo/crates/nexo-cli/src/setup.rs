@@ -115,10 +115,20 @@ pub async fn agent_setup(
     picked: &Picked,
     resume: Option<String>,
     gate: Option<Arc<dyn PermissionGate>>,
+    mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
 ) -> anyhow::Result<nexo_agent::AgentSetup> {
     let client: Arc<dyn nexo_agent::client::ModelClient> =
         Arc::new(nexo_providers::Client::new(nexo_providers::registry()));
     let mut tools: ToolSet = nexo_tools::builtin_with(&cfg.web);
+    if let Some(m) = &mail {
+        let mt = nexo_tools::mail::tools(m.clone());
+        let names: Vec<String> = mt.names().map(String::from).collect();
+        for n in names {
+            if let Some(t) = mt.get(&n) {
+                tools.add(t.clone());
+            }
+        }
+    }
     for (name, server) in &cfg.mcp {
         if server.enabled == Some(false) {
             continue;
@@ -143,6 +153,7 @@ pub async fn agent_setup(
         client,
         resume,
         gate,
+        mail,
     })
 }
 

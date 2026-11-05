@@ -60,6 +60,14 @@ fn row(key: &str, name: &str, source: SourceKind, state: State, idle: Option<u64
         parent: None,
         paused: false,
         last_action: None,
+        ribbon: vec![],
+        spark: vec![],
+        todo: None,
+        tests: None,
+        subs: vec![],
+        unread: 0,
+        held: 0,
+        retry_secs: None,
     }
 }
 
@@ -257,13 +265,13 @@ fn n_writes_a_nudge_p_pauses_and_enter_opens_the_details() {
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(v)));
     let text = |a: &mut App| capture(a, 120, 30).join("\n");
-    assert!(text(&mut a).contains("n nudge"), "the keys are listed");
+    assert!(text(&mut a).contains("n message"), "the keys are listed");
     let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
     key(v, KeyCode::Char('n'));
     for c in " now".chars() {
         key(v, KeyCode::Char(c));
     }
-    assert!(text(&mut a).contains("nudge ›"), "the field shows");
+    assert!(text(&mut a).contains("message ›"), "the field shows");
     let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
     key(v, KeyCode::Enter);
     let row = panel.rows(nexo_agent::supervise::run::now_secs()).remove(0);
@@ -419,7 +427,7 @@ mod motion {
         v.set_rows(r);
         let early = at(&mut a, t0, 2050);
         let late = at(&mut a, t0, 2600);
-        let line = |s: &str| s.lines().find(|l| l.contains("◆ project")).unwrap_or_default().to_string();
+        let line = |s: &str| s.lines().find(|l| l.contains("▣ project")).unwrap_or_default().to_string();
         assert!(line(&early).contains("working"), "{}", line(&early));
         assert!(line(&late).contains("done"), "{}", line(&late));
     }
@@ -503,7 +511,7 @@ fn sessions_sit_under_a_header_per_program_nexo_first_and_every_card_has_its_tag
     let mut a = scene(rows());
     let text = window(&mut a);
     let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("no {needle:?}\n{text}"));
-    assert!(at("◆ nexo · 2") < at("◈ agentx · 4") && at("◈ agentx · 4") < at("◈ othertool · 2"), "{text}");
+    assert!(at("▣ nexo · 2") < at("▢ agentx · 4") && at("▢ agentx · 4") < at("▢ othertool · 2"), "{text}");
     for tag in ["[nexo]", "[agentx]", "[othertool]"] {
         assert!(text.contains(tag), "no {tag} tag\n{text}");
     }
@@ -518,15 +526,15 @@ fn s_cycles_all_nexo_only_external_only_and_the_choice_outlives_the_window() {
     let mut a = scene(rows());
     press(&mut a, "s");
     let nexo = window(&mut a);
-    assert!(nexo.contains("◆ nexo · 2") && !nexo.contains("agentx") && !nexo.contains("othertool"), "{nexo}");
+    assert!(nexo.contains("▣ nexo · 2") && !nexo.contains("agentx") && !nexo.contains("othertool"), "{nexo}");
     assert!(nexo.contains("nexo only +6"), "the header counts what is hidden\n{nexo}");
     press(&mut a, "s");
     let ext = window(&mut a);
-    assert!(!ext.contains("◆ nexo") && ext.contains("◈ agentx · 4") && ext.contains("◈ othertool · 2"), "{ext}");
+    assert!(!ext.contains("▣ nexo") && ext.contains("▢ agentx · 4") && ext.contains("▢ othertool · 2"), "{ext}");
     assert!(ext.contains("external only +2"), "{ext}");
     press(&mut a, "s");
     let all = window(&mut a);
-    assert!(all.contains("◆ nexo · 2") && all.contains("◈ othertool · 2"), "back to everything\n{all}");
+    assert!(all.contains("▣ nexo · 2") && all.contains("▢ othertool · 2"), "back to everything\n{all}");
 
     // a window opened later in the same session starts where the last one stopped
     let mut b = app();
@@ -544,15 +552,15 @@ fn s_cycles_all_nexo_only_external_only_and_the_choice_outlives_the_window() {
 fn a_group_with_nothing_in_it_says_so() {
     let only_nexo: Vec<AgentRow> = rows().into_iter().filter(|r| r.source == SourceKind::Nexo).collect();
     let text = window(&mut scene(only_nexo.clone()));
-    assert!(text.contains("◈ external") && text.contains("no sessions from other programs"), "{text}");
+    assert!(text.contains("▢ external") && text.contains("no sessions from other programs"), "{text}");
     let mut a = scene(only_nexo);
     press(&mut a, "ss");
     let text = window(&mut a);
-    assert!(text.contains("no sessions from other programs found") && !text.contains("◆ nexo"), "{text}");
+    assert!(text.contains("no sessions from other programs found") && !text.contains("▣ nexo"), "{text}");
 
     let only_ext: Vec<AgentRow> = rows().into_iter().filter(|r| r.source == SourceKind::External).collect();
     let text = window(&mut scene(only_ext));
-    assert!(text.contains("◆ nexo") && text.contains("no nexo sessions yet"), "{text}");
+    assert!(text.contains("▣ nexo") && text.contains("no nexo sessions yet"), "{text}");
 
     let text = window(&mut scene(vec![]));
     assert!(text.contains("no nexo sessions yet") && text.contains("no sessions from other programs"), "{text}");

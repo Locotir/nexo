@@ -8,6 +8,7 @@ pub mod alert;
 pub mod audit;
 pub mod classify;
 pub mod decide;
+pub mod events;
 pub mod install;
 pub mod model;
 pub mod policy;
@@ -16,13 +17,17 @@ pub mod socket;
 pub mod source;
 pub mod source_jsonl;
 pub mod source_list;
+pub mod source_mail;
 pub mod source_nexo;
 
 use std::collections::VecDeque;
 
+pub use events::{Ev, EvDetail, EvKind};
+use nexo_core::mail::Stage;
+
 pub use classify::{classify, ends_in_question, loop_signal, LoopWhy};
 pub use policy::{Loaded, Policy, Verdict};
-pub use run::{AgentRow, Options, Panel, Setup, Supervisor};
+pub use run::{AgentRow, MailRow, Options, Panel, Setup, Supervisor};
 pub use source::{Source, SourceKind};
 pub use source_nexo::NexoSource;
 
@@ -125,6 +130,27 @@ pub enum ObsKind {
         cwd: Option<String>,
         permission_mode: Option<String>,
     },
+    /// An event the older kinds cannot say (test results, commits, compactions, retries, the todo list).
+    Ev(Ev),
+    /// The session wrote to another one.
+    MsgOut {
+        to: String,
+        mail: Option<String>,
+        summary: String,
+        bytes: usize,
+    },
+    /// Another session wrote to this one; `held` while it waits for approval.
+    MsgIn {
+        from: String,
+        mail: Option<String>,
+        summary: String,
+        held: bool,
+    },
+    /// A mail moved on the receipt ladder.
+    MsgStage {
+        mail: String,
+        stage: Stage,
+    },
 }
 
 /// A tool result kept for the loop signal.
@@ -166,6 +192,20 @@ pub struct AgentTrack {
     pub model: Option<String>,
     pub done: bool,
     pub dead: bool,
+    /// The latest events, newest last.
+    pub ribbon: VecDeque<Ev>,
+    /// Tokens produced, in per-minute buckets (minute number, tokens), oldest first.
+    pub tokens: VecDeque<(Secs, u32)>,
+    /// Todo items done and in all.
+    pub todo: Option<(u16, u16)>,
+    /// The last test run: passed, failed, when.
+    pub tests: Option<(u32, u32, Secs)>,
+    /// The provider is being retried until this moment.
+    pub retry_until: Option<Secs>,
+    /// Mails received and not yet handed to the model: id and whether it is held for approval.
+    pub inbox: Vec<(String, bool)>,
+    /// Mail events already noted (two sources may tell the same one).
+    seen_mail: VecDeque<String>,
 }
 
 impl AgentTrack {
@@ -176,10 +216,21 @@ impl AgentTrack {
     /// Fold one observation in. Order of arrival does not move the activity clock backwards.
     pub fn apply(&mut self, o: &Observation) {
         let at = o.at;
-        let alive =
-            !matches!(o.kind, ObsKind::Meta { .. } | ObsKind::Reported(_) | ObsKind::Dead | ObsKind::Spend { .. });
+        let alive = !matches!(
+            o.kind,
+            ObsKind::Meta { .. }
+                | ObsKind::Reported(_)
+                | ObsKind::Dead
+                | ObsKind::Spend { .. }
+                | ObsKind::MsgStage { .. }
+        );
         if alive {
             self.last_activity = Some(self.last_activity.map_or(at, |t| t.max(at)));
+        }
+        if !self.seen_mail_event(&o.kind) {
+            if let Some(ev) = events::derive(&o.kind, at) {
+                self.note(ev);
+            }
         }
         match &o.kind {
             ObsKind::Activity => {}
@@ -244,7 +295,75 @@ impl AgentTrack {
                     self.permission_mode = permission_mode.clone();
                 }
             }
+            ObsKind::Ev(_) => {}
+            ObsKind::MsgOut { .. } => {}
+            ObsKind::MsgIn { mail, held, .. } => {
+                if let Some(id) = mail {
+                    if !self.inbox.iter().any(|(m, _)| m == id) {
+                        self.inbox.push((id.clone(), *held));
+                    }
+                    while self.inbox.len() > 50 {
+                        self.inbox.remove(0);
+                    }
+                }
+            }
+            ObsKind::MsgStage { mail, stage } => match stage {
+                Stage::Held => {
+                    if let Some(m) = self.inbox.iter_mut().find(|(m, _)| m == mail) {
+                        m.1 = true;
+                    }
+                }
+                Stage::Sent => {}
+                _ => self.inbox.retain(|(m, _)| m != mail),
+            },
         }
+    }
+
+    /// Whether this mail observation was already noted; notes it when not.
+    fn seen_mail_event(&mut self, kind: &ObsKind) -> bool {
+        let key = match kind {
+            ObsKind::MsgOut { mail: Some(id), .. } => format!("o:{id}"),
+            ObsKind::MsgIn { mail: Some(id), .. } => format!("i:{id}"),
+            ObsKind::MsgStage { mail, stage } => format!("s:{mail}:{}", stage.label()),
+            _ => return false,
+        };
+        if self.seen_mail.contains(&key) {
+            return true;
+        }
+        self.seen_mail.push_back(key);
+        while self.seen_mail.len() > 128 {
+            self.seen_mail.pop_front();
+        }
+        false
+    }
+
+    /// Keep an event and what it says besides: the tests, the todo bar, the retry wait, the token buckets.
+    fn note(&mut self, ev: Ev) {
+        match (&ev.kind, &ev.detail) {
+            (EvKind::TestsPass | EvKind::TestsFail, EvDetail::Tests { pass, fail }) => {
+                self.tests = Some((*pass, *fail, ev.at));
+            }
+            (EvKind::Todo, EvDetail::Progress { done, total }) => self.todo = Some((*done, *total)),
+            (EvKind::Retry | EvKind::RateLimit, EvDetail::Wait { secs }) => {
+                self.retry_until = Some(ev.at + *secs as Secs)
+            }
+            (EvKind::Cost, EvDetail::Tokens(n)) => {
+                let minute = ev.at.div_euclid(60);
+                match self.tokens.back_mut() {
+                    Some(b) if b.0 == minute => b.1 = b.1.saturating_add(*n),
+                    _ => self.tokens.push_back((minute, *n)),
+                }
+                while self.tokens.len() > 30 {
+                    self.tokens.pop_front();
+                }
+                return;
+            }
+            _ => {}
+        }
+        if ev.kind == EvKind::TurnStart || ev.kind == EvKind::TurnEnd {
+            self.retry_until = None;
+        }
+        events::push(&mut self.ribbon, ev);
     }
 
     /// New work starts: the last turn is over for good and the session is not finished.

@@ -1,6 +1,10 @@
 //! `/panel`: one card per agent session (this one, sub-agents, and other tools' sessions read from their
 //! logs), each with its name, source, a coloured state chip, the last step, how long it has been quiet and
-//! the supervisor's last action. Read-only: it shows, it sends nothing.
+//! the supervisor's last action. It supervises and messages: a message flies to its card as a letter.
+
+mod draw;
+mod effects;
+mod pulse;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -16,15 +20,19 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block as Box_, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::anim::{ease_out, progress, pulse, PULSE_MS};
+use crate::anim::{ease_out, progress};
 use crate::modal::{contains, ModalOut};
-use crate::motion::{fade, fixed, hump, lit_style, within, Glide};
+use crate::motion::{fade, within, Glide};
 use crate::render::wrap::{truncate, width};
 use crate::theme::Theme;
 
 const CARD_MIN_W: u16 = 34;
 const CARD_MAX_W: u16 = 60;
 const CARD_H: u16 = 5;
+/// With this much room the cards take a sixth row for the last events.
+const RIBBON_FROM: u16 = 20;
+/// With this much room the fleet pulse gets a line of its own under the header.
+const PULSE_FROM: u16 = 22;
 const GAP: u16 = 2;
 const MAX_COLS: u16 = 4;
 /// The width under which the cards give way to one line per session.
@@ -42,6 +50,14 @@ const CHIP_MS: u64 = 400;
 const BLOCK_W: u16 = 16;
 const BLOCK_H: u16 = 3;
 const MAX_BLOCK_COLS: u16 = 12;
+/// A letter takes this long from the header to the card it is for; the card then pulses.
+const FLIGHT_MS: u64 = 1000;
+/// Cells of streak behind the letter.
+const TRAIL: u16 = 4;
+/// Rows the window spends besides the sessions: borders, header and rule, detail, footer.
+const CHROME: u16 = 2 + 2 + 1 + 1;
+/// From this window height a blank row sets the sessions apart from their details.
+const SPARE_FROM: u16 = 16;
 
 /// The cards or the lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,10 +246,21 @@ pub struct AgentsView {
     /// When the view was first drawn (the phase of the breathing chips).
     opened: Option<Instant>,
     fx: HashMap<String, RowFx>,
-    /// A nudge was sent to this session: its card pulses once at the next draw.
-    pulse_key: Option<String>,
+    /// The card that pulses when a letter lands, and from when.
     pulse_at: Option<(String, Instant)>,
+    /// A message is on its way to this session: the letter starts at the next draw.
+    fly_key: Option<String>,
+    /// The letter in flight: whose card it is going to, and when it left.
+    flight: Option<(String, Instant)>,
+    /// Ids of the mails whose letter was already sent; none until the first look (old mail does not fly).
+    mails_seen: Option<std::collections::HashSet<String>>,
     pub zoom: Zoom,
+    /// The ASCII forms of the glyphs the panel draws itself.
+    ascii: bool,
+    /// What the effects remember between two draws.
+    live: effects::Fleet,
+    /// The layout of the last draw (where a letter flies).
+    drawn: Layout,
     /// Which sessions are listed.
     pub filter: Filter,
     /// Where the filter is kept for the rest of the session.
@@ -272,9 +299,14 @@ impl AgentsView {
             glide: Glide::default(),
             opened: None,
             fx: HashMap::new(),
-            pulse_key: None,
+            fly_key: None,
+            flight: None,
+            mails_seen: None,
             pulse_at: None,
             zoom: Zoom::Cards,
+            ascii: crate::ascii::wanted(),
+            live: effects::Fleet::default(),
+            drawn: Layout::List,
             filter: Filter::All,
             memory: None,
             grid: Vec::new(),
@@ -346,9 +378,9 @@ impl AgentsView {
     }
 
     /// Cards across, the height of one, and whether the strips sit tight (lines) or breathe.
-    fn shape(l: Layout) -> (usize, u16, bool) {
+    fn shape(l: Layout, card_h: u16) -> (usize, u16, bool) {
         match l {
-            Layout::Cards { cols, .. } => (cols as usize, CARD_H, false),
+            Layout::Cards { cols, .. } => (cols as usize, card_h, false),
             Layout::Blocks { cols } => (cols as usize, BLOCK_H, false),
             Layout::List => (1, 1, true),
         }
@@ -378,6 +410,26 @@ impl AgentsView {
         h
     }
 
+    /// The height of all the strips of `groups` laid out as `l`.
+    fn content_h(groups: &[Group], l: Layout, card_h: u16) -> u16 {
+        let (cols, item_h, tight) = Self::shape(l, card_h);
+        let bands = Self::bands(groups, cols);
+        Self::span(&bands, 0, bands.len(), item_h, tight)
+    }
+
+    /// Cards that would hide sessions behind a scroll give way to the lines when those show every session.
+    fn fit_cards(groups: &[Group], l: Layout, body_h: u16, card_h: u16) -> Layout {
+        match l {
+            Layout::Cards { .. }
+                if Self::content_h(groups, l, card_h) > body_h
+                    && Self::content_h(groups, Layout::List, card_h) <= body_h =>
+            {
+                Layout::List
+            }
+            other => other,
+        }
+    }
+
     /// A view of fixed rows, no panel behind it (tests).
     pub fn with_rows(rows: Vec<AgentRow>, clock: Secs, still: bool) -> AgentsView {
         let mut v = AgentsView::new(None, still);
@@ -395,6 +447,11 @@ impl AgentsView {
         &self.rows
     }
 
+    /// Draws the glyphs the panel makes itself in their ASCII forms (or not).
+    pub fn set_ascii(&mut self, on: bool) {
+        self.ascii = on;
+    }
+
     /// Takes the panel's newest rows. True when something the view shows changed (the caller repaints).
     pub fn refresh(&mut self) -> bool {
         let Some(panel) = &self.panel else { return false };
@@ -406,64 +463,13 @@ impl AgentsView {
         }
         let clock = if rows.iter().any(|r| r.idle_secs.is_some_and(|s| s < 120)) { now } else { now / 60 * 60 };
         let changed = rows != self.rows || clock != self.clock;
+        let feed = panel.mail_feed(now - 3600);
+        self.ingest_mail(feed, &rows, now);
         self.seen = v;
         self.rows = rows;
         self.clock = clock;
         self.selected = self.selected.min(self.shown().len().saturating_sub(1));
         changed
-    }
-
-    /// Whether something moves on its own (a breathing chip, an entering card, a chip changing colour, the
-    /// selection gliding, a pulse): the loop keeps drawing. At rest it is false, so nothing repaints.
-    pub fn animating(&self, now: Instant) -> bool {
-        if self.still {
-            return false;
-        }
-        self.rows.iter().any(|r| attention(r.state))
-            || self.glide.moving(now)
-            || self
-                .fx
-                .values()
-                .any(|x| within(Some(x.born), now, x.delay_ms + ENTER_MS) || within(x.changed, now, CHIP_MS))
-            || self.pulse_key.is_some()
-            || self.pulse_at.as_ref().is_some_and(|(_, t)| within(Some(*t), now, PULSE_MS))
-    }
-
-    /// Learns what changed since the last draw: new sessions (their card enters), new states (the chip
-    /// cross-fades), a nudge just sent (its card pulses). Without motion nothing is kept.
-    fn note(&mut self, now: Instant, fx: bool) {
-        if self.opened.is_none() {
-            self.opened = Some(now);
-        }
-        if !fx {
-            self.fx.clear();
-            self.pulse_key = None;
-            self.pulse_at = None;
-            return;
-        }
-        let first = self.fx.is_empty();
-        self.fx.retain(|k, _| self.rows.iter().any(|r| &r.key == k));
-        for (i, r) in self.rows.iter().enumerate() {
-            match self.fx.get_mut(&r.key) {
-                Some(x) => {
-                    if chip(x.state).1 != chip(r.state).1 {
-                        x.prev = x.state;
-                        x.changed = Some(now);
-                    }
-                    x.state = r.state;
-                }
-                None => {
-                    let delay_ms = if first { (i as u64 * STAGGER_MS).min(STAGGER_MAX) } else { 0 };
-                    self.fx.insert(
-                        r.key.clone(),
-                        RowFx { born: now, delay_ms, state: r.state, prev: r.state, changed: None },
-                    );
-                }
-            }
-        }
-        if let Some(k) = self.pulse_key.take() {
-            self.pulse_at = Some((k, now));
-        }
     }
 
     /// 0..1: how far a session's card has entered (1 with no motion).
@@ -656,7 +662,7 @@ impl AgentsView {
                 if let (Some(row), Some(panel)) = (self.selected_row(), &self.panel) {
                     if !text.trim().is_empty() {
                         panel.nudge(&row.key, &text);
-                        self.pulse_key = Some(row.key.clone());
+                        self.fly_key = Some(row.key.clone());
                         self.note = Some(if row.source == SourceKind::Nexo {
                             format!("message sent to {}", row.name)
                         } else {
@@ -723,20 +729,31 @@ impl AgentsView {
         };
         let inner_w = area.width.min(widest + 4).saturating_sub(4);
         let zoom = self.zoom;
-        let layout_for = |h: u16| match zoom {
-            Zoom::Blocks => blocks_layout(inner_w),
-            Zoom::List => Layout::List,
-            Zoom::Cards => cards_layout(inner_w, h),
-        };
         let shown = self.shown();
         let groups = self.groups(&shown);
-        let content = |l: Layout| {
-            let (cols, item_h, tight) = Self::shape(l);
-            let bands = Self::bands(&groups, cols);
-            Self::span(&bands, 0, bands.len(), item_h, tight)
+        // the cards take a sixth row for the last events, and the fleet a line of figures under the header,
+        // when the terminal has the room for every session that way; else the cards keep five rows
+        let pulse_ok = !self.policy_page && !self.rows.is_empty() && area.height >= PULSE_FROM;
+        let layout_with = |h: u16, card_h: u16, pulse: u16| match zoom {
+            Zoom::Blocks => blocks_layout(inner_w),
+            Zoom::List => Layout::List,
+            Zoom::Cards => {
+                Self::fit_cards(&groups, cards_layout(inner_w, h), h.saturating_sub(CHROME + 1 + pulse), card_h)
+            }
         };
-        let chrome = 2 + 2 + 1 + 1; // borders, header and rule, detail, footer
-        let want = if self.policy_page { area.height } else { content(layout_for(area.height)) + chrome };
+        let (card_h, pulse) = [(CARD_H + 1, 1), (CARD_H, 1), (CARD_H, 0)]
+            .into_iter()
+            .filter(|(ch, pl)| (*ch == CARD_H || area.height >= RIBBON_FROM) && (*pl == 0 || pulse_ok))
+            .find(|&(ch, pl)| zoom != Zoom::Cards || matches!(layout_with(area.height, ch, pl), Layout::Cards { .. }))
+            .unwrap_or((CARD_H, u16::from(pulse_ok)));
+        let layout_for = |h: u16| layout_with(h, card_h, pulse);
+        // a blank row between the sessions and their details, when the window is tall enough to spare it
+        let spare = u16::from(area.height >= SPARE_FROM);
+        let want = if self.policy_page {
+            area.height
+        } else {
+            Self::content_h(&groups, layout_for(area.height), card_h) + CHROME + spare + pulse
+        };
         let h = want.clamp(8.min(area.height), area.height);
         let w = inner_w + 4;
         // the size it took when it opened: sessions coming and going never resize it
@@ -767,30 +784,51 @@ impl AgentsView {
         f.render_widget(Paragraph::new(Span::styled("[✗]", close_style)), self.close);
 
         let pad = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
+        // the pulse row only where the window kept room for it
+        let pulse = pulse.min(u16::from(r.height >= CHROME + 5));
+        let rule_y = pad.y + 1 + pulse;
         // header: how many sessions are in which state, and what this view is
-        f.render_widget(Paragraph::new(Line::from(self.header(theme, pad.width as usize))), Rect { height: 1, ..pad });
-        if pad.height > 1 {
+        f.render_widget(
+            Paragraph::new(Line::from(self.header(theme, pad.width as usize, pulse == 0))),
+            Rect { height: 1, ..pad },
+        );
+        if pulse > 0 {
+            let line = self.pulse_line(theme, pad.width as usize, now, fx);
+            f.render_widget(Paragraph::new(Line::from(line)), Rect { y: pad.y + 1, height: 1, ..pad });
+        }
+        if pad.height > 1 + pulse {
             f.render_widget(
                 Paragraph::new(Span::styled("─".repeat(pad.width as usize), theme.dim2())),
-                Rect { y: pad.y + 1, height: 1, ..pad },
+                Rect { y: rule_y, height: 1, ..pad },
             );
         }
         let foot = Rect::new(pad.x, pad.y + pad.height.saturating_sub(1), pad.width, 1);
         let detail = Rect::new(pad.x, foot.y.saturating_sub(1), pad.width, 1);
-        let body_top = pad.y + 2;
-        let body = Rect::new(pad.x, body_top, pad.width, detail.y.saturating_sub(body_top));
+        let body_top = pad.y + 2 + pulse;
+        let spare = u16::from(r.height >= SPARE_FROM);
+        let body = Rect::new(pad.x, body_top, pad.width, detail.y.saturating_sub(body_top + spare));
         self.cards.clear();
         if self.policy_page {
             self.draw_policy(f, body, theme);
         } else {
             self.glide.note(Some(self.selected), now, fx);
             self.note(now, fx);
-            let layout = match self.zoom {
-                Zoom::Blocks if body.height >= BLOCK_H => blocks_layout(body.width),
-                Zoom::Blocks | Zoom::List => Layout::List,
-                Zoom::Cards => cards_layout(body.width, body.height),
+            let (layout, card_h) = match self.zoom {
+                Zoom::Blocks if body.height >= BLOCK_H => (blocks_layout(body.width), card_h),
+                Zoom::Blocks | Zoom::List => (Layout::List, card_h),
+                Zoom::Cards => {
+                    // a window that kept an older size may have lost the room for the sixth row
+                    let at = |ch: u16| Self::fit_cards(&groups, cards_layout(body.width, body.height), body.height, ch);
+                    match at(card_h) {
+                        Layout::List if card_h > CARD_H => (at(CARD_H), CARD_H),
+                        other => (other, card_h),
+                    }
+                }
             };
-            self.draw_bands(f, body, layout, &shown, &groups, theme, now, fx);
+            self.draw_bands(f, body, layout, card_h, &shown, &groups, theme, now, fx);
+            let lane = Rect { y: rule_y, height: 1, ..pad };
+            self.draw_flights(f, lane, body, &shown, theme, now);
+            self.draw_letter(f, lane, body, &shown, theme, now);
             if let Some(row) = shown.get(self.selected) {
                 f.render_widget(Paragraph::new(Line::from(self.detail(row, theme, detail.width as usize))), detail);
             }
@@ -802,7 +840,7 @@ impl AgentsView {
                 theme.dim2(),
             ))
         } else if let Some(t) = &self.edit {
-            let shown = truncate(&format!("nudge › {t}▏"), foot.width.saturating_sub(24) as usize);
+            let shown = truncate(&format!("message › {t}▏"), foot.width.saturating_sub(24) as usize);
             Line::from(vec![
                 Span::styled(shown, theme.style(theme.accent)),
                 Span::styled("  Enter send · Esc cancel", theme.dim2()),
@@ -814,9 +852,9 @@ impl AgentsView {
             let room = (foot.width as usize).saturating_sub(width(more));
             let hints: &[&str] = if self.panel.is_some() {
                 &[
-                    "←↑↓→ move · s source · Enter details · n nudge · o policy · p pause · P pause all · +/- zoom · Esc close",
-                    "←↑↓→ move · s source · n nudge · o policy · p pause · +/- zoom · Esc close",
-                    "s source · n nudge · p pause · Esc close",
+                    "←↑↓→ move · s source · Enter open · n message · o policy · p/P pause · +/- zoom · Esc",
+                    "←↑↓→ move · s source · n message · o policy · p pause · +/- zoom · Esc close",
+                    "s source · n message · p pause · Esc close",
                     "s source · Esc close",
                     "Esc close",
                 ]
@@ -842,7 +880,7 @@ impl AgentsView {
         }
     }
 
-    fn header(&self, theme: &Theme, w: usize) -> Vec<Span<'static>> {
+    fn header(&self, theme: &Theme, w: usize, fold: bool) -> Vec<Span<'static>> {
         let order = [
             State::WaitingPermission,
             State::WaitingAnswer,
@@ -894,12 +932,20 @@ impl AgentsView {
         let hidden = self.rows.len() - shown.len();
         let which =
             if hidden > 0 { format!("{} +{hidden}", self.filter.label()) } else { self.filter.label().to_string() };
-        let candidates = [
+        // with no pulse row of its own, the fleet's figures ride at the front of the right side
+        let fold = if fold { self.pulse_fold(&shown) } else { None };
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(p) = &fold {
+            candidates.push(format!("{p} · {which} · {}", rights[0]));
+            candidates.push(format!("{p} · {which} · {}", rights[1]));
+            candidates.push(format!("{p} · {which}"));
+        }
+        candidates.extend([
             format!("{which} · {}", rights[0]),
             format!("{which} · {}", rights[1]),
             which.clone(),
             which.split(' ').next().unwrap_or("").to_string(),
-        ];
+        ]);
         for right in &candidates {
             let rw = width(right);
             if used + rw + 2 <= w {
@@ -909,358 +955,5 @@ impl AgentsView {
             }
         }
         left
-    }
-
-    /// The line under a header with no sessions.
-    fn nothing_line(&self, group: &Group) -> &'static str {
-        match (group.source, self.filter) {
-            (SourceKind::Nexo, _) => "no nexo sessions yet · this one shows up with your first message",
-            (SourceKind::External, Filter::External) => "no sessions from other programs found",
-            (SourceKind::External, _) => "no sessions from other programs",
-        }
-    }
-
-    /// The chip as spans: glyph and label, breathing when it wants a person.
-    fn chip_spans(&self, row: &AgentRow, theme: &Theme, now: Instant, fx: bool) -> Vec<Span<'static>> {
-        let (shown, base) = self.chip_at(row, theme, now);
-        let (g, label) = chip(shown);
-        let mut color = base;
-        if fx && attention(row.state) {
-            let opened = self.opened.unwrap_or(now);
-            let ms = now.saturating_duration_since(opened).as_millis() % BREATH_MS;
-            let phase = ms as f32 / BREATH_MS as f32 * std::f32::consts::TAU;
-            color = fade(theme, base, theme.dim, 0.45 * (0.5 - 0.5 * phase.cos()));
-        } else if row.state == State::Done {
-            color = fade(theme, base, theme.dim, 0.4);
-        }
-        let mut style = theme.style(color);
-        if attention(row.state) || row.state == State::Looping {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        vec![Span::styled(if row.paused { format!("{g} {label} ⏸") } else { format!("{g} {label}") }, style)]
-    }
-
-    fn name_of(row: &AgentRow) -> String {
-        let mark = match row.source {
-            SourceKind::Nexo => "◆",
-            SourceKind::External => "◈",
-        };
-        if row.parent.is_some() {
-            format!("└ {mark} {}", row.name)
-        } else {
-            format!("{mark} {}", row.name)
-        }
-    }
-
-    /// The small source tag every card carries: `[nexo]`, or `[program]` for another tool.
-    fn tag_of(row: &AgentRow) -> String {
-        let name = if row.source == SourceKind::Nexo { "nexo" } else { row.program.as_str() };
-        format!("[{}]", truncate(name, 14))
-    }
-
-    fn tag_color(theme: &Theme, row: &AgentRow) -> ratatui::style::Color {
-        match row.source {
-            SourceKind::Nexo => theme.accent,
-            SourceKind::External => theme.accent2,
-        }
-    }
-
-    fn since_action(&self, at: Secs) -> String {
-        let d = (self.clock - at).max(0) as u64;
-        format!("{} ago", age(d))
-    }
-
-    /// The body: each group under its header (or its empty line), the cards flowing in rows, the strips
-    /// scrolled so the selected one is in sight.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_bands(
-        &mut self,
-        f: &mut Frame,
-        body: Rect,
-        layout: Layout,
-        shown: &[AgentRow],
-        groups: &[Group],
-        theme: &Theme,
-        now: Instant,
-        fx: bool,
-    ) {
-        let (cols, item_h, tight) = Self::shape(layout);
-        let card_w = match layout {
-            Layout::Cards { card_w, .. } => card_w,
-            Layout::Blocks { .. } => BLOCK_W,
-            Layout::List => body.width,
-        };
-        self.cols = cols;
-        let bands = Self::bands(groups, cols);
-        self.grid = bands.iter().filter_map(|b| if let Band::Row(r) = b { Some(r.clone()) } else { None }).collect();
-        // the strip that holds the selection, and the first strip that keeps it in sight
-        let sel = bands.iter().position(|b| matches!(b, Band::Row(r) if r.contains(&self.selected))).unwrap_or(0);
-        // a group's first row brings its header along
-        let sel_top = if sel > 0 && matches!(bands[sel - 1], Band::Header(_)) { sel - 1 } else { sel };
-        let fits = |from: usize, to: usize| Self::span(&bands, from, to + 1, item_h, tight) <= body.height;
-        if sel_top < self.scroll {
-            self.scroll = sel_top;
-        }
-        while self.scroll < sel && !fits(self.scroll, sel) {
-            self.scroll += 1;
-        }
-        // never scroll past the point where the last strip is at the foot
-        let mut last_first = bands.len().saturating_sub(1);
-        while last_first > 0 && fits(last_first - 1, bands.len() - 1) {
-            last_first -= 1;
-        }
-        self.scroll = self.scroll.min(last_first);
-
-        let used_w = if tight { body.width } else { card_w * cols as u16 + GAP * (cols as u16 - 1) };
-        let x0 = body.x + body.width.saturating_sub(used_w) / 2;
-        let mut y = body.y;
-        for (n, band) in bands.iter().enumerate().skip(self.scroll) {
-            if n > self.scroll {
-                y += Self::band_gap(&bands[n - 1], tight);
-            }
-            let h = Self::band_h(band, item_h);
-            if y + h > body.y + body.height {
-                break;
-            }
-            match band {
-                Band::Header(g) => self.group_header(f, Rect::new(x0, y, used_w, 1), &groups[*g], theme),
-                Band::Empty(g) => {
-                    let text = truncate(self.nothing_line(&groups[*g]), used_w.saturating_sub(2) as usize);
-                    f.render_widget(
-                        Paragraph::new(Span::styled(text, theme.dim2())),
-                        Rect::new(x0 + 2, y, used_w - 2, 1),
-                    );
-                }
-                Band::Row(items) => {
-                    for (c, &i) in items.iter().enumerate() {
-                        let row = &shown[i];
-                        let r = if tight {
-                            Rect::new(body.x, y, body.width, 1)
-                        } else {
-                            Rect::new(x0 + c as u16 * (card_w + GAP), y, card_w, item_h)
-                        };
-                        let t = self.entered(&row.key, now);
-                        if tight {
-                            self.list_line(f, r, i, row, theme, now, fx);
-                            Self::veil(f, r, theme, t);
-                        } else {
-                            // a card rises one row as it fades in, when the row below it is free
-                            let drawn =
-                                if t < 0.4 && y + item_h < body.y + body.height { Rect { y: y + 1, ..r } } else { r };
-                            if t > 0.0 {
-                                if item_h == BLOCK_H {
-                                    self.block(f, drawn, i, row, theme, now);
-                                } else {
-                                    self.card(f, drawn, i, row, theme, now, fx);
-                                }
-                                Self::veil(f, drawn, theme, t);
-                            }
-                        }
-                        self.cards.push((i, r));
-                    }
-                }
-            }
-            y += h;
-        }
-    }
-
-    /// `◆ nexo · 2 ─────`: the program's name, how many sessions it has, a rule to the edge.
-    fn group_header(&self, f: &mut Frame, r: Rect, group: &Group, theme: &Theme) {
-        let mark = if group.source == SourceKind::Nexo { "◆" } else { "◈" };
-        let color = match group.source {
-            SourceKind::Nexo => theme.accent,
-            SourceKind::External => theme.accent2,
-        };
-        let name = truncate(&format!("{mark} {}", group.label), (r.width as usize).saturating_sub(12).max(4));
-        let count = if group.idx.is_empty() { String::new() } else { format!(" · {}", group.idx.len()) };
-        let used = width(&name) + width(&count) + 1;
-        let rule = "─".repeat((r.width as usize).saturating_sub(used));
-        let line = Line::from(vec![
-            Span::styled(name, theme.bold(color)),
-            Span::styled(count, theme.dim()),
-            Span::raw(" "),
-            Span::styled(rule, theme.dim2()),
-        ]);
-        f.render_widget(Paragraph::new(line), r);
-    }
-
-    /// How lit a card's ground is: selected, gliding, and a soft hump while its state changes.
-    fn lit(&self, i: usize, row: &AgentRow, now: Instant) -> f32 {
-        let sel = if self.selected == i && self.still { 1.0 } else { self.glide.level(i, now) };
-        let changed = self.fx.get(&row.key).and_then(|x| x.changed);
-        sel.max(0.5 * hump(changed, now, CHIP_MS))
-    }
-
-    /// The far zoom: a tinted block with the state's colour down its left edge, the name, and the chip.
-    fn block(&self, f: &mut Frame, r: Rect, i: usize, row: &AgentRow, theme: &Theme, now: Instant) {
-        let (shown, color) = self.chip_at(row, theme, now);
-        let (g, _) = chip(shown);
-        let tint = fade(theme, theme.modal_bg, color, 0.2);
-        let bg = lit_style(theme, Style::default().bg(tint), self.lit(i, row, now) * 0.6);
-        let selected = self.selected == i;
-        f.render_widget(Paragraph::new("").style(bg), r);
-        let bar = if selected { "█" } else { "▌" };
-        for dy in 0..r.height {
-            f.render_widget(
-                Paragraph::new(Span::styled(bar, theme.style(color))).style(bg),
-                Rect::new(r.x, r.y + dy, 1, 1),
-            );
-        }
-        let w = r.width.saturating_sub(3) as usize;
-        let mut name = theme.bold(theme.fg);
-        if selected {
-            name = name.add_modifier(Modifier::UNDERLINED);
-        }
-        let name_line = Span::styled(truncate(&row.name, w), name);
-        let quiet = row.idle_secs.map_or_else(|| "-".to_string(), age);
-        let sub = format!("{g} {}", truncate(&quiet, w.saturating_sub(2)));
-        let at = |dy| Rect::new(r.x + 2, r.y + dy, w as u16, 1);
-        f.render_widget(Paragraph::new(Line::from(name_line)).style(bg), at(0));
-        let mut sub_line = vec![Span::styled(sub.clone(), theme.style(color))];
-        let prog = if row.source == SourceKind::Nexo { "nexo" } else { row.program.as_str() };
-        let room = w.saturating_sub(width(&sub) + 1);
-        // the whole name or none: a cut-off name would read as another program
-        if width(prog) <= room {
-            sub_line.push(Span::styled(format!(" {prog}"), theme.style(Self::tag_color(theme, row))));
-        }
-        f.render_widget(Paragraph::new(Line::from(sub_line)).style(bg), at(1));
-        if r.height > 2 {
-            let step = row.last_step.clone().unwrap_or_default();
-            f.render_widget(Paragraph::new(Span::styled(truncate(&step, w), theme.dim2())).style(bg), at(2));
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn card(&self, f: &mut Frame, r: Rect, i: usize, row: &AgentRow, theme: &Theme, now: Instant, fx: bool) {
-        let level = self.lit(i, row, now);
-        let selected = self.selected == i;
-        let base = Style::default().bg(theme.modal_bg);
-        let bg = lit_style(theme, base, level);
-        let mut border = if selected { theme.accent } else { theme.border };
-        if let Some((k, at)) = &self.pulse_at {
-            if *k == row.key {
-                border = fade(theme, border, theme.accent2, pulse(Some(*at), now));
-            }
-        }
-        let mut bstyle = theme.style(border);
-        if selected && theme.mono {
-            bstyle = bstyle.add_modifier(Modifier::BOLD);
-        }
-        let block =
-            Box_::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(bstyle).style(bg);
-        let inner = block.inner(r);
-        f.render_widget(block, r);
-        let cw = inner.width.saturating_sub(2) as usize;
-        let at = |dy: u16| Rect::new(inner.x + 1, inner.y + dy, cw as u16, 1);
-
-        // line 1: the name, the chip on the right
-        let chip = self.chip_spans(row, theme, now, fx);
-        let chip_w: usize = chip.iter().map(|s| width(&s.content)).sum();
-        let name = truncate(&Self::name_of(row), cw.saturating_sub(chip_w + 1));
-        let gap = cw.saturating_sub(width(&name) + chip_w);
-        let mut l1 = vec![Span::styled(name, theme.bold(theme.fg))];
-        l1.push(Span::raw(" ".repeat(gap)));
-        l1.extend(chip);
-        f.render_widget(Paragraph::new(Line::from(l1)).style(bg), at(0));
-
-        // line 2: the last step
-        let l2 = match &row.last_step {
-            Some(s) => Span::styled(format!("▸ {}", truncate(s, cw.saturating_sub(2))), theme.dim()),
-            None => Span::styled("▸ no step seen yet", theme.dim2()),
-        };
-        f.render_widget(Paragraph::new(Line::from(l2)).style(bg), at(1));
-
-        // line 3: quiet for, source, cost; the supervisor's last action when there is room
-        let quiet = row.idle_secs.map_or_else(|| "-".to_string(), age);
-        let tag = Self::tag_of(row);
-        let mut rest = String::new();
-        if let Some(c) = row.cost_usd.filter(|c| *c > 0.0) {
-            rest.push_str(&format!(" · ${c:.2}"));
-        }
-        rest.push_str(&format!(" · quiet {quiet}"));
-        let tag_room = cw.saturating_sub(width(&rest));
-        let tag = truncate(&tag, tag_room.max(3));
-        let used = width(&tag) + width(&rest);
-        let action = row.last_action.as_ref().map(|(what, t)| format!("{what} · {}", self.since_action(*t)));
-        let mut l3 = vec![
-            Span::styled(tag, theme.style(Self::tag_color(theme, row))),
-            Span::styled(truncate(&rest, cw.saturating_sub(used - width(&rest))), theme.dim()),
-        ];
-        if let Some(a) = action {
-            if used + 2 + width(&a) <= cw {
-                l3.push(Span::raw(" ".repeat(cw - used - width(&a))));
-                l3.push(Span::styled(a, theme.style(theme.accent2)));
-            }
-        }
-        f.render_widget(Paragraph::new(Line::from(l3)).style(bg), at(2));
-    }
-
-    /// One session as a line, in `r`: chip | name | quiet | step, dropped from the right as the width shrinks.
-    #[allow(clippy::too_many_arguments)]
-    fn list_line(&self, f: &mut Frame, r: Rect, i: usize, row: &AgentRow, theme: &Theme, now: Instant, fx: bool) {
-        let w = r.width as usize;
-        let level = self.lit(i, row, now);
-        let bg = lit_style(theme, Style::default().bg(theme.modal_bg), level);
-        let chip = self.chip_spans(row, theme, now, fx);
-        let chip_w = 13usize;
-        let shown_w: usize = chip.iter().map(|s| width(&s.content)).sum();
-        let quiet = row.idle_secs.map(age).unwrap_or_else(|| "-".to_string());
-        let quiet_w = 7usize;
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        spans.push(Span::styled(if self.selected == i { "▌" } else { " " }, theme.style(theme.accent)));
-        let mut used = 1;
-        if w >= chip_w + 12 {
-            spans.extend(chip);
-            spans.push(Span::raw(" ".repeat(chip_w.saturating_sub(shown_w))));
-            used += chip_w;
-        } else {
-            // too narrow for the label: the glyph alone
-            let g = super::agents_view::chip(row.state).0;
-            spans.push(Span::styled(format!("{g} "), theme.style(chip_color(theme, row.state))));
-            used += 2;
-        }
-        let show_quiet = w >= 40;
-        let show_step = w >= 64;
-        let step_w = if show_step { (w - used).saturating_sub(quiet_w + 2) * 45 / 100 } else { 0 };
-        let name_room = w
-            .saturating_sub(used)
-            .saturating_sub(if show_quiet { quiet_w + 1 } else { 0 })
-            .saturating_sub(if show_step { step_w + 1 } else { 0 });
-        let name = truncate(&Self::name_of(row), name_room.max(1));
-        let pad_name = name_room.saturating_sub(width(&name));
-        spans.push(Span::styled(name, theme.bold(theme.fg)));
-        spans.push(Span::raw(" ".repeat(pad_name)));
-        if show_quiet {
-            spans.push(Span::styled(format!(" {}", fixed(&quiet, &"8".repeat(quiet_w))), theme.dim()));
-        }
-        if show_step {
-            let step = row.last_step.clone().unwrap_or_default();
-            spans.push(Span::styled(format!("  {}", truncate(&step, step_w.saturating_sub(1))), theme.dim2()));
-        }
-        f.render_widget(Paragraph::new(Line::from(spans)).style(bg), r);
-    }
-
-    fn detail(&self, row: &AgentRow, theme: &Theme, w: usize) -> Vec<Span<'static>> {
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(c) = &row.cwd {
-            parts.push(c.clone());
-        }
-        if let Some(m) = &row.permission_mode {
-            parts.push(m.clone());
-        }
-        if let Some(m) = &row.model {
-            parts.push(m.clone());
-        }
-        if self.open {
-            parts.push(row.key.clone());
-            parts.push(format!("{} since {}", row.state.label(), self.since_action(row.since)));
-            if row.paused {
-                parts.push("paused".into());
-            }
-        } else {
-            parts.push(row.key.chars().take(12).collect());
-        }
-        let text = parts.join(" · ");
-        vec![Span::styled(truncate(&text, w), theme.dim2())]
     }
 }

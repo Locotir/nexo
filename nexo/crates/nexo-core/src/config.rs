@@ -27,6 +27,8 @@ pub struct Config {
     pub mcp: BTreeMap<String, McpServerConfig>,
     pub ui: UiConfig,
     pub web: WebConfig,
+    /// Mail between sessions (`[mail]`).
+    pub mail: crate::mail::MailConfig,
     /// Shell commands run at points of the loop (`[[hooks]]` blocks).
     pub hooks: Vec<HookConfig>,
     /// What loading had to tell the person (settings of an untrusted project left out); not read from files.

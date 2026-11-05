@@ -69,6 +69,14 @@ pub enum Block {
         level: Level,
         text: String,
     },
+    /// A message between sessions, as the person sees it: `✉ -> name: text` with how far it got.
+    Mail {
+        id: String,
+        outgoing: bool,
+        peer: String,
+        text: String,
+        stage: nexo_core::mail::Stage,
+    },
     /// A newer nexo is waiting on `main`: a framed card that is hard to miss.
     Update {
         behind: u32,
@@ -101,6 +109,18 @@ pub enum Block {
         branch: Option<String>,
         permission_mode: String,
     },
+}
+
+/// How far a message got, in the words of the transcript line.
+pub fn mail_tail(outgoing: bool, stage: nexo_core::mail::Stage) -> String {
+    use nexo_core::mail::Stage;
+    match (stage, outgoing) {
+        (Stage::Sent, true) => "sent".into(),
+        (Stage::Sent, false) => "waiting".into(),
+        (Stage::Delivered, _) => "✓ delivered".into(),
+        (Stage::Read, _) => "✓✓ read".into(),
+        (s, _) => s.label().into(),
+    }
 }
 
 /// What the renderer needs to know besides the block.
@@ -406,6 +426,18 @@ impl Block {
                 for rest in parts {
                     let runs = super::markdown::inline_runs(rest, theme, Style::default().fg(theme.fg));
                     lines.extend(crate::render::wrap::wrap_runs(&runs, w, &[Span::raw("  ")], &[Span::raw("  ")]));
+                }
+                lines
+            }
+            Block::Mail { outgoing, peer, text, stage, .. } => {
+                let first: String = text.lines().next().unwrap_or("").chars().take(200).collect();
+                let arrow = if *outgoing { "->" } else { "<-" };
+                let line = format!("✉ {arrow} {peer}: {first}");
+                let tail = mail_tail(*outgoing, *stage);
+                let mut lines = wrap_plain(&line, w.saturating_sub(tail.chars().count() + 3).max(8), theme.dim(), &[]);
+                let color = if *stage == nexo_core::mail::Stage::Read { theme.success } else { theme.dim };
+                if let Some(last) = lines.last_mut() {
+                    last.spans.push(Span::styled(format!(" · {tail}"), theme.style(color)));
                 }
                 lines
             }

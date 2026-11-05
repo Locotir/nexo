@@ -1,0 +1,12 @@
+╭ panel ──────────────────────────[✗]──╮
+│ ◈1 ◐1 ↻1 ●2 ○2 ✓1      ! 2 ◉ 2 · all │
+│━──────────────────────────────────── │
+│┃▣ nexo · 4 ───────────────────────── │
+│✉▌● working    ▣ project              │
+│ /home/dev/project · default · n1     │
+│ s source · Esc close  ↓ more         │
+╰──────────────────────────────────────╯
+─ ask ──────────────────────────────────
+›   ask anything
+ Esc close         20261102-100000-ef56
+ nexo │ deepseek-chat │ ask  Σ 0 billed

@@ -33,6 +33,7 @@ pub mod motion;
 pub mod overlay;
 pub mod palette;
 pub mod palette_key;
+pub mod panel_fx;
 pub mod render;
 pub mod replay;
 pub mod scrollbar;
@@ -417,6 +418,17 @@ fn edit_file(path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 static SUPERVISE: std::sync::OnceLock<nexo_agent::supervise::Options> = std::sync::OnceLock::new();
+static MAILBOX: std::sync::OnceLock<std::sync::Arc<nexo_core::mailbox::Mailbox>> = std::sync::OnceLock::new();
+
+/// The mailbox of this process: the interface polls it, hands its deliveries to the agent and shows what
+/// it brings. Unset (as in tests, or with mail off), nothing is polled.
+pub fn set_mailbox(m: std::sync::Arc<nexo_core::mailbox::Mailbox>) {
+    let _ = MAILBOX.set(m);
+}
+
+pub(crate) fn mailbox() -> Option<std::sync::Arc<nexo_core::mailbox::Mailbox>> {
+    MAILBOX.get().cloned()
+}
 
 /// Where `/panel` keeps its audit log and listens for hooks. Unset (as in tests), it writes nothing and
 /// listens nowhere.

@@ -230,6 +230,7 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
             client: client.clone(),
             resume: session.clone(),
             gate: Some(Arc::new(crate::tools::AllowAll)),
+            mail: None,
         };
         let id =
             converse(setup, &plan.turns, n, plan.followup.as_ref(), &mut stats, &tally, &mut answers, &mut replies)

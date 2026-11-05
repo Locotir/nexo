@@ -61,6 +61,8 @@ pub struct AgentSetup {
     /// Who answers permission asks; None: the interface, through
     /// `PermissionAsk` events and `Permission` commands.
     pub gate: Option<Arc<dyn PermissionGate>>,
+    /// The mailbox other sessions write to (the interface and its `/msg`); None: no mail.
+    pub mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
 }
 
 /// Runs the agent until `Shutdown` (or the command channel closes).
