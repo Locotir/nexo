@@ -3981,17 +3981,49 @@ fn mark_head(head: &mut Line<'static>, m: CallMark, cost: Option<f64>, w: usize,
         CallMark::Out => ("○ set aside", theme.dim2()),
         CallMark::Back => ("↺ recalled", theme.style(theme.accent2)),
     };
+    // the mark wins over the end of a long head: the command is cut with an ellipsis, never below this
+    const HEAD_KEEP: usize = 16;
     let used: usize = head.spans.iter().map(|s| width(&s.content)).sum();
-    let room = w.saturating_sub(used);
-    // the price of this output in the last request goes after the word, only where all of it fits
+    // the price of this output in the last request goes after the word when it fits, else the word alone
     let priced = cost.map(|c| format!("{word} {c:.5} $"));
-    let text = match priced {
-        Some(p) if room >= width(&p) + 3 => p,
-        _ if room >= width(word) + 3 => word.to_string(),
-        _ => return,
+    let Some((text, limit)) = priced.into_iter().chain([word.to_string()]).find_map(|t| {
+        let limit = w.saturating_sub(width(&t) + 3);
+        (used <= limit || limit >= HEAD_KEEP).then_some((t, limit))
+    }) else {
+        return;
     };
-    head.spans.push(Span::raw(" ".repeat(room - width(&text))));
+    if used > limit {
+        cut_line(head, limit);
+    }
+    let used: usize = head.spans.iter().map(|s| width(&s.content)).sum();
+    head.spans.push(Span::raw(" ".repeat(w.saturating_sub(used + width(&text)))));
     head.spans.push(Span::styled(text, style));
+}
+
+/// Cuts `line` to at most `w` cells, ending in an ellipsis; the spans keep their styles.
+fn cut_line(line: &mut Line<'static>, w: usize) {
+    use crate::render::wrap::{truncate, width};
+    let mut acc = 0;
+    for i in 0..line.spans.len() {
+        let sw = width(&line.spans[i].content);
+        let rem = w.saturating_sub(acc);
+        if sw < rem {
+            acc += sw;
+            continue;
+        }
+        // this span reaches the edge: it ends in the ellipsis and the rest goes
+        let c = line.spans[i].content.to_string();
+        line.spans[i].content = if sw > rem {
+            truncate(&c, rem)
+        } else if rem > 1 {
+            truncate(&c, rem - 1)
+        } else {
+            "…".to_string()
+        }
+        .into();
+        line.spans.truncate(i + 1);
+        return;
+    }
 }
 
 fn indent_of(b: &Block, width: usize) -> usize {
@@ -4045,6 +4077,32 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc;
+
+    #[test]
+    fn a_long_command_is_cut_so_the_cache_mark_and_price_still_show() {
+        use crate::render::wrap::width;
+        let theme = Theme::dark();
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let head = || Line::from(vec![Span::raw("▸ bash  "), Span::raw("cargo test -p nexo-bench ".repeat(6))]);
+        // too long for the line: the command ends in … and the mark and price close the line
+        let mut l = head();
+        mark_head(&mut l, CallMark::Cached, Some(0.00012), 60, &theme);
+        let t = text(&l);
+        assert!(t.ends_with("● cached 0.00012 $") && t.contains('…'), "{t}");
+        assert_eq!(width(&t), 60);
+        // no price known: the word alone
+        let mut l = head();
+        mark_head(&mut l, CallMark::Sent, None, 50, &theme);
+        assert!(text(&l).ends_with("● full price") && width(&text(&l)) == 50, "{}", text(&l));
+        // a short command is left whole
+        let mut l = Line::from(vec![Span::raw("▸ bash  "), Span::raw("ls")]);
+        mark_head(&mut l, CallMark::Cached, Some(0.00012), 60, &theme);
+        assert!(text(&l).starts_with("▸ bash  ls ") && !text(&l).contains('…'));
+        // a window too narrow for any of it keeps the head as it was
+        let mut l = head();
+        mark_head(&mut l, CallMark::Cached, Some(0.00012), 20, &theme);
+        assert_eq!(text(&l), text(&head()));
+    }
 
     fn app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
         let (tx, rx) = mpsc::unbounded_channel();

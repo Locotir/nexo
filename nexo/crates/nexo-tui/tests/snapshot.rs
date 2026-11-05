@@ -716,10 +716,12 @@ fn a_tool_card_adds_the_price_of_its_output_only_with_full_prices_and_room() {
     let wide = text(&mut a, 120);
     assert!(wide.contains("● cached 0.00150 $"), "{wide}");
     assert!(wide.contains("● full price 0.00300 $"), "{wide}");
-    // narrow: the word may stay, the price never takes the head's room
+    // narrow: the command is cut with an ellipsis, the word and the price stay
     let narrow = text(&mut a, 50);
-    assert!(narrow.contains("● cached") && narrow.contains("● full price"), "{narrow}");
-    assert!(!narrow.contains("0.00150") && !narrow.contains("0.00300"), "{narrow}");
+    assert!(narrow.contains("● cached 0.00150 $") && narrow.contains("● full price 0.00300 $"), "{narrow}");
+    // too narrow for the price: the word alone
+    let tight = text(&mut a, 34);
+    assert!(tight.contains("● cached") && !tight.contains("0.00150"), "{tight}");
     // a price missing (no cached rate): nothing extra, the word stays
     a.handle_agent(limits(Some(Pricing { cache_read: 0.0, ..full })));
     let part = text(&mut a, 120);
