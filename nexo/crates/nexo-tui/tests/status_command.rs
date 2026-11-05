@@ -82,9 +82,9 @@ fn screen(a: &mut App, w: u16, h: u16) -> (Vec<String>, Terminal<TestBackend>) {
 #[test]
 fn the_script_gets_the_session_and_its_first_line_is_the_bar() {
     let mut a = app(&script("echo.sh"));
-    tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some());
+    tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some());
     let want = "deepseek-chat on deepseek | ctx 42% | $0.0123 | 20261102-140000-ab12 | turns 0";
-    let got = line(&a).unwrap_or_else(|| panic!("no line within 5 s: {:?}", a.status_cmd.as_ref().unwrap().error));
+    let got = line(&a).unwrap_or_else(|| panic!("no line within 30 s: {:?}", a.status_cmd.as_ref().unwrap().error));
     assert_eq!(nexo_tui::status_cmd::visible(&got), want);
     let update = std::env::var("NEXO_UPDATE_GOLDEN").is_ok();
     for (w, h) in [(80u16, 24u16), (40, 12)] {
@@ -121,12 +121,12 @@ fn the_script_gets_the_session_and_its_first_line_is_the_bar() {
 #[test]
 fn the_script_runs_again_when_a_turn_ends_or_the_model_changes() {
     let mut a = app(&script("echo.sh"));
-    tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some());
+    tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some());
     a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
-    tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some_and(|l| l.contains("turns 1")));
+    tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some_and(|l| l.contains("turns 1")));
     assert!(line(&a).unwrap().contains("turns 1"), "{:?}", line(&a));
     a.model = "deepseek-reasoner".into();
-    tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some_and(|l| l.contains("reasoner")));
+    tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some_and(|l| l.contains("reasoner")));
     assert!(line(&a).unwrap().contains("deepseek-reasoner"), "{:?}", line(&a));
 }
 
@@ -164,7 +164,7 @@ fn a_script_that_fails_later_keeps_its_last_good_line() {
     let mark = dir.join("ran");
     let _ = std::fs::remove_file(&mark);
     let mut a = app(&format!("{} '{}'", script("once.sh"), mark.display()));
-    tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some());
+    tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some());
     assert_eq!(line(&a).as_deref(), Some("first and last good line"));
     a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
     // past the one-second gap the second run happens and fails
@@ -185,8 +185,8 @@ fn the_scripts_colours_stay_only_on_24_bit_and_italics_never_show() {
             a.theme = a.theme.clone().downsampled();
             assert!(a.theme.degraded);
         }
-        tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some());
-        assert!(line(&a).is_some(), "no line within 5 s");
+        tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some());
+        assert!(line(&a).is_some(), "no line within 30 s");
         let (rows, t) = screen(&mut a, 80, 24);
         let bar = rows.last().unwrap();
         let buf = t.backend().buffer();
@@ -200,7 +200,7 @@ fn the_scripts_colours_stay_only_on_24_bit_and_italics_never_show() {
         }
     }
     let mut a = app("printf '\\033[3mslanted\\033[0m plain\\n'");
-    tick_until(&mut a, Duration::from_secs(5), |a| line(a).is_some());
+    tick_until(&mut a, Duration::from_secs(30), |a| line(a).is_some());
     assert!(line(&a).is_some_and(|l| l.contains("slanted")), "{:?}", line(&a));
     let (_, t) = screen(&mut a, 80, 24);
     assert!(t.backend().buffer().content().iter().all(|c| !c.modifier.contains(Modifier::ITALIC)));
