@@ -540,22 +540,16 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
                 } else if share >= 0.8 {
                     theme.warn
                 } else {
-                    theme.success
+                    theme.money
                 };
                 (format!("{}/{l:.2}", crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost))), c)
             }
-            // no limit: money reads in the soft green, never the plain text colour
-            None => (crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost)), theme.success),
+            // no limit: money reads in the money green, never the plain text colour
+            None => (crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost)), theme.money),
         };
-        // while it rolls the figure is lit
+        // while it rolls or glows the figure keeps its colour and turns bold
         let rolling = (app.cost - shown).abs() > 0.000_05;
-        let style = if rolling {
-            base.fg(theme.accent2).add_modifier(Modifier::BOLD)
-        } else if glow > 0.0 {
-            base.fg(crate::motion::fade(theme, colour, theme.accent2, glow)).add_modifier(Modifier::BOLD)
-        } else {
-            base.fg(colour)
-        };
+        let style = if rolling || glow > 0.0 { base.fg(colour).add_modifier(Modifier::BOLD) } else { base.fg(colour) };
         right.push(Seg { text, style });
     }
     right.push(Seg { text: " ".to_string(), style: base });

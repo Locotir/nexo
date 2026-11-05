@@ -104,7 +104,7 @@ fn pieces(theme: &Theme, u: &Usage, cost: f64, ms: u64, t: &TurnTally) -> Vec<(S
     };
     out.push((txt, theme.style(col)));
     let cost_txt = if cost > 0.0 { format!("${:<6.4}", cost.min(99.0)) } else { " ".repeat(7) };
-    out.push((cost_txt, theme.style(theme.success)));
+    out.push((cost_txt, theme.style(theme.money)));
     if !t.calls.is_empty() {
         out.push((calls_text(&t.calls), theme.style(theme.accent2)));
     }

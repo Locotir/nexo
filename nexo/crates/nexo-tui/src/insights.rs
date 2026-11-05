@@ -342,7 +342,7 @@ pub fn lines(
     head.push(Span::styled(format!(" · {}", plural(totals.calls, "call", "calls")), theme.dim()));
     if totals.cost > 0.0 {
         head.push(Span::styled(" · ", theme.dim()));
-        head.push(Span::styled(format!("${:.2}", totals.cost), theme.style(theme.success)));
+        head.push(Span::styled(format!("${:.2}", totals.cost), theme.style(theme.money)));
     }
     out.push(Line::from(head));
     out.push(Line::default());
@@ -374,7 +374,7 @@ pub fn lines(
             let title = truncate(&format!("{folder}{day}"), room);
             let pad = left.saturating_sub(width(&title));
             let mut spans = vec![Span::raw(title), Span::raw(" ".repeat(pad))];
-            spans.push(Span::styled(format!("{:>8}", format!("${:.2}", s.cost)), theme.style(theme.success)));
+            spans.push(Span::styled(format!("{:>8}", format!("${:.2}", s.cost)), theme.style(theme.money)));
             match s.cache_hit {
                 Some(h) => {
                     spans.push(Span::styled(format!("{:>5}%", h), theme.style(theme.level_color(100 - h.min(100)))))
@@ -435,7 +435,7 @@ fn row_lines(theme: &Theme, row: &Insight, w: usize, t: f64, home: Option<&str>)
         l.remove(0);
         first.extend(l);
         if let Some(m) = money {
-            first.push(Span::styled(m, theme.style(theme.success)));
+            first.push(Span::styled(m, theme.style(theme.money)));
         }
         out.push(Line::from(first));
     }
@@ -616,7 +616,7 @@ mod tests {
         let track = ls.iter().find(|l| text(l).contains("Cache misses")).unwrap();
         assert_eq!(track.spans[1].style.fg, Some(th.dim2));
         let money = ls.iter().find(|l| text(l).contains("$4.10")).unwrap();
-        assert_eq!(money.spans.last().unwrap().style.fg, Some(th.success));
+        assert_eq!(money.spans.last().unwrap().style.fg, Some(th.money));
     }
 
     #[test]
