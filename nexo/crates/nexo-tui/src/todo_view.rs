@@ -27,6 +27,8 @@ pub struct TodoView {
     changed_at: Vec<Option<Instant>>,
     bar: Counter,
     moving: bool,
+    /// The line each row started at in the last body, for a dragged scrollbar.
+    row_starts: Vec<usize>,
 }
 
 /// What `lines` hands the window.
@@ -51,6 +53,7 @@ impl TodoView {
             changed_at: vec![None; n],
             bar: Counter::default(),
             moving: false,
+            row_starts: Vec::new(),
         };
         v.done_open = v.all_done();
         v
@@ -156,6 +159,16 @@ impl TodoView {
             self.selected = i;
         }
         ModalOut::Nothing
+    }
+
+    /// A dragged scrollbar wants line `off` first in sight: the cursor goes to the first task from there.
+    pub fn scroll_to_line(&mut self, off: usize) {
+        let n = self.order().len();
+        if n == 0 {
+            return;
+        }
+        let row = self.row_starts.iter().position(|&s| s >= off).unwrap_or(n - 1);
+        self.selected = row.min(n - 1);
     }
 
     pub fn scroll_by(&mut self, delta: i32) {
@@ -311,6 +324,7 @@ impl TodoView {
                 Span::styled("  Space opens", theme.dim2()),
             ]);
         }
+        self.row_starts = starts.iter().map(|s| s.0).collect();
         Body { lines, starts, done_head, sel_len }
     }
 }
@@ -394,6 +408,16 @@ mod tests {
             vec![it("new", TodoStatus::Pending), it("ship", TodoStatus::Pending), it("test", TodoStatus::Done)],
             Instant::now(),
         );
+        assert_eq!(v.current().unwrap().text, "ship");
+    }
+
+    #[test]
+    fn a_dragged_scrollbar_moves_the_cursor_to_the_task_at_that_line() {
+        let mut v = view();
+        v.body(60, &Theme::dark(), None, 0.0, Instant::now());
+        v.scroll_to_line(0);
+        assert_eq!(v.selected, 0);
+        v.scroll_to_line(1000);
         assert_eq!(v.current().unwrap().text, "ship");
     }
 

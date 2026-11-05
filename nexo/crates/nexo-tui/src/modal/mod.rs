@@ -660,7 +660,7 @@ impl Modal {
             Modal::Info(i) => i.scroll = off,
             Modal::Agents(a) => a.scroll = off,
             Modal::Jobs(j) => j.scroll = off,
-            Modal::Todo(t) => t.scroll = off,
+            Modal::Todo(t) => t.scroll_to_line(off),
             Modal::Picker(p) => pick(p, off, viewport, first),
             Modal::Setup(s) => pick(&mut s.list, off, viewport, first),
         }

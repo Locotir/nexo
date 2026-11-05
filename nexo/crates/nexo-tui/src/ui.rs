@@ -2274,7 +2274,11 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             // the selected task stays in view, headers above it too when there is room
             let (at, len) = todo_sel;
             let end = at + len;
-            v.scroll = end.saturating_sub(body_h).min(at);
+            let top = match v.selected.checked_sub(1).and_then(|p| todo_rows.get(p)) {
+                Some(&(s, l)) => s + l,
+                None => 0,
+            };
+            v.scroll = end.saturating_sub(body_h).min(top.min(at));
             v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
             v.scroll
         }
