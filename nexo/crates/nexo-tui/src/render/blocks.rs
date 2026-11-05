@@ -544,6 +544,7 @@ impl Block {
                     push_plain(&mut lines, &mut meta, raw, w.saturating_sub(2), style, &pad);
                 }
                 meta.regions.push(Region::new(Kind::Output, 1, lines.len() - 1, 2));
+                keep_source(&mut meta, 1, lines.len(), &all[..shown].join("\n"));
                 if shown < all.len() {
                     lines.push(Line::from(vec![
                         Span::styled(GUIDE, theme.style(theme.border)),
@@ -835,7 +836,9 @@ fn render_output(
         }
         ToolDisplay::Diff { old, new, start_line, .. } => {
             let mut region = Region::new(Kind::Diff, 0, 0, 2);
-            for (k, l) in diff::unified(old, new, *start_line, theme).into_iter().enumerate() {
+            let (drows, dsrc) = diff::unified_rows(old, new, *start_line, theme);
+            let nrows = drows.len();
+            for (k, l) in drows.into_iter().enumerate() {
                 // a row with a gutter and a sign is content; a hunk header or a rule is not
                 if l.spans.len() == 2 {
                     if region.deco == 2 {
@@ -849,6 +852,11 @@ fn render_output(
                 lines.push(Line::from(spans));
             }
             region.end = lines.len().saturating_sub(1) as u32;
+            if dsrc.len() == nrows
+                && dsrc.iter().all(|s| super::wrap::clean(&s.replace('\t', "    ")) == s.replace('\t', "    "))
+            {
+                region.src = Some(std::sync::Arc::new(dsrc));
+            }
             meta.regions.push(region);
         }
         ToolDisplay::File { path, text, start_line } => {
@@ -904,6 +912,7 @@ fn render_output(
             };
             push_plain(&mut lines, meta, text.trim_end_matches('\n'), w, Style::default(), pad);
             boxed(meta, Kind::Output, first, lines.len(), 2);
+            keep_source(meta, first, lines.len(), text.trim_end_matches('\n'));
         }
         ToolDisplay::List { items } => {
             for it in items {
@@ -935,6 +944,18 @@ fn render_output(
         }
     }
     lines
+}
+
+/// The box that starts at row `from` keeps `raw` as its source when it maps one to one onto its rows
+/// (nothing wrapped), so a copy has the text as it was written, tabs included.
+fn keep_source(meta: &mut Meta, from: usize, to: usize, raw: &str) {
+    if let Some(r) = meta.regions.iter_mut().rev().find(|r| r.start as usize == from) {
+        let src: Vec<String> = raw.split('\n').map(str::to_string).collect();
+        let plain = super::wrap::clean(&raw.replace('\t', "    ")) == raw.replace('\t', "    ");
+        if plain && r.src.is_none() && src.len() == to - from {
+            r.src = Some(std::sync::Arc::new(src));
+        }
+    }
 }
 
 /// Rows `from..to` of a body as one box of `kind`, `deco` columns of decoration deep.

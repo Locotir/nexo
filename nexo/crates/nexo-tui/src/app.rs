@@ -2598,8 +2598,8 @@ impl App {
     fn region_bounds(&self, r: &RegionRef) -> (usize, usize) {
         let off = self.offsets.get(r.block).copied().unwrap_or(0);
         let (s, e) = match self.cache.get(r.block).and_then(|c| c.as_ref()).and_then(|c| c.3.regions.get(r.idx)) {
-            Some(g) => (g.start as usize, g.end as usize),
-            None => (r.start, r.end),
+            Some(g) if g.kind == r.kind => (g.start as usize, g.end as usize),
+            _ => (r.start, r.end),
         };
         (off + s, off + e)
     }
@@ -2635,6 +2635,7 @@ impl App {
             info.region = Some((i, idx));
             info.deco = r.deco as usize;
             info.skip = r.skip.contains(&(j as u32));
+            info.whole = r.kind == crate::regions::Kind::Table;
             info.src = r.src.as_ref().and_then(|s| s.get(j - r.start as usize).cloned());
         }
         info
@@ -2701,7 +2702,11 @@ impl App {
     pub fn drag_to(&mut self, x: u16, y: u16) {
         let Some((px, py)) = self.press else { return };
         if self.selection.as_ref().is_some_and(|s| s.fixed) {
-            return;
+            // a quick click then a drag: once the pointer leaves the cell, the drag is a plain one
+            if (x, y) == (px, py) {
+                return;
+            }
+            self.selection = None;
         }
         if self.selection.is_none() {
             if !crate::modal::contains(self.transcript_area, px, py) {

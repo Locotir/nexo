@@ -108,6 +108,9 @@ impl Meta {
         }
         self.regions.retain(|r| r.end as usize >= n);
         for r in &mut self.regions {
+            for s in &mut r.skip {
+                *s = s.saturating_sub(n as u32);
+            }
             r.start = r.start.saturating_sub(n as u32);
             r.end -= n as u32;
         }

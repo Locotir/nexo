@@ -328,3 +328,68 @@ fn find_last(a: &mut App, needle: &str) -> usize {
         .find(|l| a.line_text(*l).is_some_and(|t| t.contains(needle)))
         .unwrap_or_else(|| panic!("no line with {needle:?}"))
 }
+
+#[test]
+fn fence_with_tabs_copies_its_tabs() {
+    let mut a = app();
+    reply(&mut a, "Before\n\n```js\nif (a) {\n\treturn [1,\n\t\t2];\n}\n```\n\nAfter");
+    shown(&mut a, 60, 30);
+    let (first, after) = (find(&mut a, "if (a)"), find(&mut a, "After"));
+    let got = drag(&mut a, (0, first), (30, after));
+    assert_eq!(got, "if (a) {\n\treturn [1,\n\t\t2];\n}");
+}
+
+#[test]
+fn file_view_partial_selection_with_tabs_is_aligned() {
+    let mut a = app();
+    let text = "fn f() {\n\tlet x = 1;\n\t\tlet yy = 22;\n}\n".to_string();
+    tool(
+        &mut a,
+        "read",
+        ToolOutput {
+            content: text.clone(),
+            is_error: false,
+            display: ToolDisplay::File { path: "a.rs".into(), text, start_line: 1 },
+        },
+    );
+    shown(&mut a, 60, 30);
+    let l = find(&mut a, "let x");
+    let t = a.line_text(l).unwrap();
+    let c = nexo_tui::select::width_of(&t[..t.find("let").unwrap()]) as u16;
+    let got = drag(&mut a, (c, l), (c + 4, l));
+    assert_eq!(got, "let x");
+}
+
+#[test]
+fn table_copies_cells_not_the_screen() {
+    let mut a = app();
+    reply(&mut a, "Intro\n\n| a | b |\n|---|---|\n| 1 | dos |\n\nFin");
+    shown(&mut a, 60, 30);
+    let (first, fin) = (find(&mut a, "dos") - 2, find(&mut a, "Fin"));
+    let got = drag(&mut a, (3, first), (20, fin - 1));
+    assert_eq!(got, "a\tb\n1\tdos");
+}
+
+#[test]
+fn quick_click_then_drag_is_a_plain_drag() {
+    let mut a = app();
+    reply(&mut a, "alpha\n\nbeta\n\ngamma");
+    shown(&mut a, 60, 30);
+    let (l0, l2) = (find(&mut a, "alpha"), find(&mut a, "gamma"));
+    a.press_at(4, row(&a, l0));
+    a.release_at(4, row(&a, l0));
+    a.press_at(4, row(&a, l0));
+    a.drag_to(8, row(&a, l2));
+    let got = a.selection_text().unwrap_or_default();
+    assert!(got.contains("beta") && got.contains("gamma"), "{got:?}");
+}
+
+#[test]
+fn copy_has_no_trailing_newline() {
+    let mut a = app();
+    reply(&mut a, "alpha\n\nbeta");
+    shown(&mut a, 60, 30);
+    let l0 = find(&mut a, "alpha");
+    let got = drag(&mut a, (0, l0), (30, l0 + 1));
+    assert!(!got.ends_with('\n'), "{got:?}");
+}

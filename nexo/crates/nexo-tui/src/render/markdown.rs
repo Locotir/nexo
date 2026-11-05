@@ -23,6 +23,9 @@ struct ListCtx {
 
 struct Renderer<'t> {
     theme: &'t Theme,
+    /// The text's lines with their tabs, and a cursor past the fences already taken: set only when
+    /// tabs are all the cleaning changed, so a fence copies with the tabs it was written with.
+    raw: Option<(Vec<String>, usize)>,
     width: usize,
     out: Vec<Line<'static>>,
     runs: Vec<(String, Style)>,
@@ -251,7 +254,17 @@ impl<'t> Renderer<'t> {
         }
         if self.out.len() > first_row {
             let mut r = Region::new(Kind::Code, first_row, self.out.len() - 1, prefix_w + 2);
-            let src: Vec<String> = body.split('\n').map(str::to_string).collect();
+            let mut src: Vec<String> = body.split('\n').map(str::to_string).collect();
+            if let Some((raw, at)) = &mut self.raw {
+                // the same lines as written, tabs and all
+                let n = src.len();
+                let hit = (*at..(raw.len() + 1).saturating_sub(n))
+                    .find(|&i| raw[i..i + n].iter().zip(&src).all(|(a, b)| a.replace('\t', "    ") == *b));
+                if let Some(i) = hit {
+                    src = raw[i..i + n].to_vec();
+                    *at = i + n;
+                }
+            }
             if !shown && src.len() == self.out.len() - first_row {
                 r.src = Some(std::sync::Arc::new(src));
             }
@@ -303,18 +316,29 @@ impl<'t> Renderer<'t> {
             .collect();
         // once a body row spans lines, a faint rule keeps the rows apart
         let ruled = wrapped.iter().skip(usize::from(has_head)).any(|c| c.iter().any(|l| l.len() > 1));
+        let mut tsrc: Vec<String> = Vec::new();
+        let mut tskip: Vec<u32> = Vec::new();
         for (ri, cells) in wrapped.iter().enumerate() {
             if ruled && ri > usize::from(has_head) {
                 let mut spans = rest.clone();
                 let line: Vec<String> = widths.iter().map(|w| "╌".repeat(*w)).collect();
                 spans.push(Span::styled(line.join("╌┼╌"), self.theme.dim2()));
                 self.out.push(Line::from(spans));
+                tskip.push((self.out.len() - 1) as u32);
+                tsrc.push(String::new());
             }
             let height = cells.iter().map(Vec::len).max().unwrap_or(1);
             let style =
                 if has_head && ri == 0 { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() };
             for li in 0..height {
                 let mut spans = rest.clone();
+                if li == 0 {
+                    let full: Vec<&str> = (0..cols).map(|ci| rows[ri].get(ci).map_or("", |s| s.trim())).collect();
+                    tsrc.push(full.join("\t"));
+                } else {
+                    tskip.push(self.out.len() as u32);
+                    tsrc.push(String::new());
+                }
                 for (ci, w) in widths.iter().enumerate() {
                     let text = cells[ci].get(li).map(String::as_str).unwrap_or("");
                     let pad = w.saturating_sub(width(text));
@@ -335,10 +359,17 @@ impl<'t> Renderer<'t> {
                 let line: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
                 spans.push(Span::styled(line.join("─┼─"), self.theme.dim()));
                 self.out.push(Line::from(spans));
+                tskip.push((self.out.len() - 1) as u32);
+                tsrc.push(String::new());
             }
         }
         if self.out.len() > first_row {
-            self.meta.regions.push(Region::new(Kind::Table, first_row, self.out.len() - 1, prefix_w));
+            let mut r = Region::new(Kind::Table, first_row, self.out.len() - 1, prefix_w);
+            if tsrc.len() == self.out.len() - first_row {
+                r.src = Some(std::sync::Arc::new(tsrc));
+                r.skip = tskip;
+            }
+            self.meta.regions.push(r);
         }
     }
 
@@ -539,10 +570,14 @@ pub fn render_as(md: &str, width: usize, theme: &Theme, interpreted: bool) -> Ve
 pub fn render_as_meta(md: &str, width: usize, theme: &Theme, interpreted: bool) -> (Vec<Line<'static>>, Meta) {
     // escapes cleaned before parsing: the parser splits "\x1b[31m" at the bracket, and a span
     // cleaned on its own would leave "[31m" behind
+    let raw_md = md;
     let md = &*crate::render::wrap::clean(md);
+    let raw = (raw_md.contains('\t') && raw_md.replace('\t', "    ") == md)
+        .then(|| (raw_md.split('\n').map(str::to_string).collect::<Vec<_>>(), 0));
     let width = width.max(8);
     let mut r = Renderer {
         theme,
+        raw,
         width,
         out: Vec::new(),
         runs: Vec::new(),

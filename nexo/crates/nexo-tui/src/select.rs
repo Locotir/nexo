@@ -153,6 +153,8 @@ pub struct LineInfo {
     pub skip: bool,
     /// Blank columns before the row's rail.
     pub margin: usize,
+    /// `src` is the row's whole content, not laid out in the row's columns (a table row).
+    pub whole: bool,
 }
 
 impl Selection {
@@ -199,7 +201,11 @@ impl Selection {
                 _ => logical.push(piece),
             }
         }
-        let logical: Vec<String> = logical.into_iter().map(|l| l.trim_end().to_string()).collect();
+        let mut logical: Vec<String> = logical.into_iter().map(|l| l.trim_end().to_string()).collect();
+        // a drag that ends on a block's blank separator row copies no trailing newline
+        while logical.len() > 1 && logical.last().is_some_and(String::is_empty) {
+            logical.pop();
+        }
         if self.free || (contained.is_none() && !infos.iter().any(|i| i.region.is_some())) {
             strip_gutter(logical).join("\n")
         } else {
@@ -213,16 +219,17 @@ fn box_piece(info: &LineInfo, from: usize, to: usize) -> String {
     let deco = info.cont.map_or(info.deco, |c| info.deco.max(c.deco as usize));
     let from = from.max(deco);
     match &info.src {
+        Some(src) if info.whole => src.clone(),
         Some(src) if info.cont.is_none() => {
             let base = info.deco;
-            slice_cols(src, from - base, if to == usize::MAX { to } else { to.saturating_sub(base) })
+            slice_tabs(src, from - base, if to == usize::MAX { to } else { to.saturating_sub(base) })
         }
         _ => slice_cols(&info.text, from, to),
     }
 }
 
 /// The glyphs the transcript puts in front of a block's first line.
-const RAILS: &[char] = &['▌', '◆', '▸', '▾', '✓', '✗', '○', '⊘', '▲', '●', '◇'];
+const RAILS: &[char] = &['▌', '▎', '◆', '▸', '▾', '✓', '✗', '○', '⊘', '▲', '●', '◇'];
 
 /// `line` without its two-column rail (a glyph and a space, or two spaces).
 pub fn strip_rail(line: &str) -> String {
@@ -251,6 +258,26 @@ pub fn strip_gutter(lines: Vec<String>) -> Vec<String> {
         return lines;
     }
     lines.into_iter().map(|l| gutter_end(&l).map(|i| l[i..].to_string()).unwrap_or(l)).collect()
+}
+
+/// [`slice_cols`] over a source text whose tabs count four columns, as the layout draws them.
+pub fn slice_tabs(s: &str, from: usize, to: usize) -> String {
+    if !s.contains('\t') {
+        return slice_cols(s, from, to);
+    }
+    let mut out = String::new();
+    let mut col = 0;
+    for g in s.graphemes(true) {
+        let w = if g == "\t" { 4 } else { width(g) };
+        if col >= to {
+            break;
+        }
+        if col + w > from {
+            out.push_str(g);
+        }
+        col += w;
+    }
+    out
 }
 
 /// The graphemes of `s` whose columns fall in `from..to`.

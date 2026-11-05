@@ -768,7 +768,11 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         if let Some(q) = &query {
             l = highlight(l, q, theme.highlight(), current_match == Some(line));
         }
-        if let Some((from, to)) = selection.as_ref().and_then(|s| s.covers(line)) {
+        if let Some((from, mut to)) = selection.as_ref().and_then(|s| s.covers(line)) {
+            // inside a box the highlight stops at the end of the row, not at the screen edge
+            if to == usize::MAX && selection.as_ref().is_some_and(|s| s.region.is_some() && !s.free) {
+                to = l.width();
+            }
             l = style_cols(l, from, to, theme.highlight());
         }
         // the person's message: its band is filled to the edge here, on screen only, so copying
