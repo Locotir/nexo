@@ -313,6 +313,8 @@ pub struct UiConfig {
     pub fold_after: usize,
     /// A run of tool calls shows as one summary line that unfolds on demand.
     pub group_tools: bool,
+    /// Grey ghost text finishes the word being typed from the words of the session; → takes it.
+    pub complete_words: bool,
     /// The vim keys in the editor (`/vim` toggles them).
     pub vim: bool,
     /// Ring the terminal's bell (and send a desktop notification where the terminal
@@ -349,6 +351,7 @@ impl Default for UiConfig {
             show_reasoning: true,
             fold_after: 12,
             group_tools: true,
+            complete_words: true,
             vim: false,
             notify_after: 15,
             animations: true,

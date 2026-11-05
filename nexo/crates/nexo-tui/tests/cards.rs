@@ -30,6 +30,7 @@ fn app_with(group_tools: bool) -> App {
         timestamps: false,
         fold_after: 3,
         group_tools,
+        complete_words: true,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

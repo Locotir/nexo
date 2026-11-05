@@ -123,6 +123,8 @@ pub struct App {
     reveal: Option<usize>,
     pub search: Option<Search>,
     pub input: Input,
+    /// Every word of the session, for the ghost text of the draft.
+    pub words: crate::complete::WordIndex,
     pub palette: Option<Palette>,
     /// The draft set aside while the commands window opened by its key has the box.
     pub kept_draft: Option<crate::input::Draft>,
@@ -395,6 +397,7 @@ impl App {
                 i.vim = opts.vim.then_some(crate::input::VimMode::Insert);
                 i
             },
+            words: crate::complete::WordIndex::new(opts.complete_words),
             palette: None,
             modal: None,
             diffview: None,
@@ -639,6 +642,7 @@ impl App {
 
     /// Forgets the transcript (a resume, a rewind, a new session).
     pub fn clear_transcript(&mut self) {
+        self.words.clear();
         self.blocks.clear();
         self.cache.clear();
         self.looks.clear();
@@ -678,6 +682,12 @@ impl App {
     // ------------------------------------------------------------ blocks
 
     pub fn push(&mut self, b: Block) -> usize {
+        // a block that is final is indexed now; a streaming one when it closes
+        match &b {
+            Block::Assistant { text, streaming: false, .. } => self.words.feed(text, crate::complete::Src::Other),
+            Block::Tool { args, .. } => self.words.feed_json(args, crate::complete::Src::Other),
+            _ => {}
+        }
         let is_call = self.opts.group_tools && matches!(b, Block::Tool { .. });
         self.blocks.push(b);
         self.cache.push(None);
@@ -1565,6 +1575,7 @@ impl App {
     }
 
     pub fn tick_frame(&mut self, beat: bool) {
+        self.words.pump(crate::complete::PUMP);
         if beat {
             self.spinner = self.spinner.wrapping_add(1);
         }
@@ -1892,6 +1903,7 @@ impl App {
                 if let Some(i) = self.tool_index(&id) {
                     if let Block::Tool { status, output: o, elapsed_ms: e, .. } = &mut self.blocks[i] {
                         *status = status_of(&output);
+                        self.words.feed(&output.content, crate::complete::Src::Other);
                         *o = Some(output);
                         *e = (elapsed_ms > 0).then_some(elapsed_ms); // a replay has no timing
                     }
@@ -2313,6 +2325,7 @@ impl App {
                                 if let Block::Tool { output, status, .. } = &mut self.blocks[i] {
                                     if output.is_none() {
                                         let text = result_text(content);
+                                        self.words.feed(&text, crate::complete::Src::Other);
                                         *status = if *is_error { ToolStatus::Failed } else { ToolStatus::Done };
                                         *output = Some(ToolOutput {
                                             content: text,
@@ -2328,6 +2341,11 @@ impl App {
                     }
                 } else {
                     let text = m.text();
+                    for p in crate::replay::split_user(&text) {
+                        if let crate::replay::Piece::Text(t) = p {
+                            self.words.feed(&t, crate::complete::Src::User);
+                        }
+                    }
                     self.user_messages.retain(|(i, _)| *i != index);
                     // the loop's own goal requests are not the person's: nothing to rewind to or repeat
                     if !text.starts_with(nexo_core::agent::GOAL_SET_MARK)
@@ -2955,10 +2973,11 @@ impl App {
         self.close_reasoning();
         let now = self.now();
         for i in 0..self.blocks.len() {
-            if let Block::Assistant { streaming, started, took_ms, .. } = &mut self.blocks[i] {
+            if let Block::Assistant { streaming, started, took_ms, text, .. } = &mut self.blocks[i] {
                 if *streaming {
                     *streaming = false;
                     *took_ms = started.map(|s| now.saturating_duration_since(s).as_millis() as u64);
+                    self.words.feed(text, crate::complete::Src::Other);
                     self.cache[i] = None;
                 }
             }
@@ -2983,6 +3002,25 @@ impl App {
             None => !self.search.as_ref().is_some_and(|s| s.focused),
             Some(m) => matches!(m, Modal::Setup(_)),
         }
+    }
+
+    /// The grey ghost of the draft: what finishes the word before the cursor from the words of the
+    /// session. A pure function of the draft and the index, so it cannot go stale. None when it
+    /// would not fit on the row (the layout never shifts for it).
+    pub fn complete_suffix(&self) -> Option<String> {
+        if !self.opts.complete_words || self.palette.is_some() || self.modal.is_some() || self.words.is_empty() {
+            return None;
+        }
+        let typed = self.input.word_before_cursor()?;
+        let s = self.words.suggest(&typed)?;
+        let w = self.input.wrap_width;
+        if w > 0 {
+            let (_, (_, ccol)) = crate::input::wrapped_rows(&self.input, w);
+            if ccol + crate::render::wrap::width(&s) >= w {
+                return None;
+            }
+        }
+        Some(s)
     }
 
     /// Enter on the draft.
@@ -4327,6 +4365,7 @@ mod tests {
             timestamps: false,
             fold_after: 3,
             group_tools: true,
+            complete_words: true,
             keys: Default::default(),
             notify_after: 15,
             animations: true,

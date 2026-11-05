@@ -656,6 +656,48 @@ impl Input {
         }
     }
 
+    /// The word being typed: the unit (letters, digits, and the joiners of a path, a flag or an
+    /// identifier) that ends at the cursor, when the cursor is at its end. None in vim's normal
+    /// mode, with a selection, inside the first word of a command, or inside a paste chip.
+    pub fn word_before_cursor(&self) -> Option<String> {
+        if self.vim == Some(VimMode::Normal) || self.editor.selection_range().is_some() {
+            return None;
+        }
+        let (row, col) = self.editor.cursor();
+        let chars: Vec<char> = self.editor.lines().get(row)?.chars().collect();
+        let col = col.min(chars.len());
+        let unit = |c: char| c.is_alphanumeric() || "_-./\\:@~+%#=?&".contains(c);
+        if chars.get(col).is_some_and(|c| unit(*c)) {
+            return None;
+        }
+        let mut start = col;
+        while start > 0 && unit(chars[start - 1]) {
+            start -= 1;
+        }
+        if start == col {
+            return None;
+        }
+        let word: String = chars[start..col].iter().collect();
+        // /command: the palette owns it (a path such as /etc/ho is a word)
+        if row == 0 && start == 0 && word.starts_with('/') && !word[1..].contains('/') {
+            return None;
+        }
+        // inside a [Pasted text #n ...] chip
+        let before: String = chars[..col].iter().collect();
+        if let Some(open) = before.rfind('[') {
+            if before[open..].starts_with("[Pasted") && !before[open..].contains(']') {
+                return None;
+            }
+        }
+        Some(word)
+    }
+
+    /// Takes the ghost the draft showed: its text goes in at the cursor.
+    pub fn accept_complete(&mut self, suffix: &str) {
+        self.editor.insert_str(suffix);
+        self.hist = None;
+    }
+
     fn history_up(&mut self) -> Edit {
         if self.history.is_empty() {
             return Edit::Ignored;

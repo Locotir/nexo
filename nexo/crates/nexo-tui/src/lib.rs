@@ -14,6 +14,7 @@ pub mod app_fx;
 pub mod ascii;
 pub mod clipboard;
 pub mod commands;
+pub mod complete;
 pub mod config_edit;
 pub mod custom;
 pub mod dialog_size;
@@ -77,6 +78,8 @@ pub struct TuiOptions {
     pub fold_after: usize,
     /// A run of tool calls is one summary line, unfolded on demand (`[ui] group_tools`).
     pub group_tools: bool,
+    /// Grey ghost text finishes the word being typed from the session's words; → takes it (`[ui] complete_words`).
+    pub complete_words: bool,
     /// `[ui.keys]`: action name -> key, over the default keys.
     pub keys: std::collections::BTreeMap<String, String>,
     /// Smooth scrolling, fades, pulses and the other motion (`[ui] animations`).
@@ -106,6 +109,7 @@ impl Default for TuiOptions {
             timestamps: true,
             fold_after: 12,
             group_tools: true,
+            complete_words: true,
             keys: Default::default(),
             animations: true,
             status_line: Vec::new(),

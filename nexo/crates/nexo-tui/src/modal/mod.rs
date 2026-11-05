@@ -294,6 +294,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Enter", "send"),
             ("Ctrl+J / Alt+Enter", "new line"),
+            ("→", "complete the word shown in grey"),
             ("↑ / ↓", "go through past requests (kept between runs)"),
             ("Ctrl+R", "search past requests"),
             ("Ctrl+Z / Alt+Z", "undo / redo"),

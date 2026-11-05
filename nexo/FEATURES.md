@@ -13,6 +13,7 @@ runs all of them; the last column names the test function.
 | Interpreted view (`Ctrl+P`): markdown, JSON, CSV/TSV rendered instead of source | ✅ | `interprets_markdown_json_and_tables_and_nothing_else` |
 | Reasoning shown, folded, hidden (`Ctrl+T`) | ✅ | `reasoning_hides_when_asked_and_folds_to_one_line` |
 | Multi-line editor, `Ctrl+J` / `Alt+Enter` | ✅ | `enter_submits_and_ctrl_j_adds_a_line` |
+| Word completion: grey ghost text finishes the word being typed from every word of the session (plain words in any language, names, paths and their segments, flags, URLs, hashes; secrets never), `→` at the end of the word takes it, a picked block and the palette keep their keys; `[ui] complete_words = false` turns it off | ✅ | `right_completes_hash`, `right_completes_word`, `right_with_block_selected_does_not`, `palette_open_keeps_keys`, `eight_megabytes_index_in_linear_time_and_look_up_fast` |
 | Prompt history `↑`/`↓`, kept between runs, searched with `Ctrl+R` | ✅ | `history_browses_up_and_down_and_keeps_the_draft`, `ctrl_r_finds_an_earlier_request_and_the_history_outlives_the_run` |
 | Write the draft in `$EDITOR` (`Ctrl+G`) | ✅ | `undo_init_status_tools_and_the_editor_key` |
 | Vim keys (`/vim`, `[ui] vim`) | ✅ | `the_vim_keys_move_edit_and_switch_modes` |

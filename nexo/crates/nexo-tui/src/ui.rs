@@ -1162,6 +1162,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let editor = Rect { x: area.x + 2, width: area.width - 2, ..area };
     draw_draft(f, app, editor);
     f.render_widget(Box_::default().style(theme.base()), editor);
+    paint_complete(f, app, editor);
     // on the rule above the box, at the right: the reasoning level and, for a long or
     // multiline draft, its size; never over the text
     let mut tags: Vec<String> = Vec::new();
@@ -2727,6 +2728,23 @@ fn _unused(l: &Line) -> String {
 }
 
 /// The draft in rows that fit the box, the cursor as a lit cell; the rows scroll to keep it in sight.
+/// The ghost: what finishes the word before the cursor, in the dim of the placeholder. Drawn after
+/// the box takes its base colours, so they do not cover it.
+fn paint_complete(f: &mut Frame, app: &App, editor: Rect) {
+    if app.input.is_empty() {
+        return;
+    }
+    let Some(s) = app.complete_suffix() else { return };
+    let (_, (crow, ccol)) = crate::input::wrapped_rows(&app.input, editor.width as usize);
+    let top = app.editor_top;
+    if crow < top || crow - top >= editor.height as usize {
+        return;
+    }
+    let x = editor.x + (ccol as u16).min(editor.width.saturating_sub(1));
+    let room = (editor.x + editor.width).saturating_sub(x) as usize;
+    f.buffer_mut().set_stringn(x, editor.y + (crow - top) as u16, &s, room, app.theme.dim());
+}
+
 fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
     app.editor_area = editor;
     app.input.wrap_width = editor.width as usize;

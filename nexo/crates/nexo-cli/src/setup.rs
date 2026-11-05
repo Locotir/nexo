@@ -647,6 +647,7 @@ mouse = true
 show_reasoning = true
 fold_after = 12
 group_tools = true                  # a run of tool calls is one summary line (Made 1 edit, read 2 files, ran 3 shell commands); Enter or a click opens it; false: every call on its own
+complete_words = true                # grey ghost text finishes the word you type from any word of this session (names, paths, hashes, plain words); → takes it; false: off
 animations = true                   # smooth scrolling, fades, pulses; false: no motion
 # timestamps = true                 # a dim HH:MM at the right of each message and reply, and how long a reply took; /timestamps toggles
 screen = "full"                     # full (alternate screen) | inline (finished turns go to the terminal scrollback)

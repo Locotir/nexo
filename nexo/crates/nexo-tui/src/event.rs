@@ -253,6 +253,19 @@ pub fn key(app: &mut App, k: KeyEvent) {
     if app.selected.is_some() && matches!(k.code, KeyCode::Char(_)) && !ctrl {
         app.selected = None;
     }
+    // → at the end of a word that shows a ghost takes it (a picked block and the palette had the key above)
+    if k.code == KeyCode::Right
+        && !ctrl
+        && !shift
+        && !k.modifiers.contains(KeyModifiers::ALT)
+        && app.selected.is_none()
+        && app.palette.is_none()
+    {
+        if let Some(s) = app.complete_suffix() {
+            app.input.accept_complete(&s);
+            return app.refresh_palette();
+        }
+    }
     match app.input.key(k) {
         Edit::Submit => app.submit(),
         Edit::Changed => app.refresh_palette(),

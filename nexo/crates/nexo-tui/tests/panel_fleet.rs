@@ -32,6 +32,7 @@ fn app(animations: bool) -> App {
         timestamps: false,
         fold_after: 4,
         group_tools: true,
+        complete_words: true,
         keys: Default::default(),
         notify_after: 15,
         animations,
