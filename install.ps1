@@ -158,7 +158,7 @@ function Install-Nexo {
 
     # older installs left nexo in cargo's own folder, where it would come first or confuse
     $old = Join-Path $cargoBin 'nexo.exe'
-    if (($cargoBin -ne $dir) -and (Test-Path $old)) {
+    if ((-not $env:NEXO_INSTALL_DIR) -and ($cargoBin -ne $dir) -and (Test-Path $old)) {
         $ErrorActionPreference = 'Continue'
         cargo uninstall --quiet nexo-cli 2>$null | Out-Null
         $ErrorActionPreference = 'Stop'

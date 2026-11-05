@@ -81,7 +81,7 @@ mv -f "$dir/.nexo.new" "$dir/nexo"
 
 # older installs left nexo in cargo's own folder, where it would come first or confuse
 cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
-if [ "$cargo_bin" != "$dir" ] && [ -e "$cargo_bin/nexo" ]; then
+if [ -z "${NEXO_INSTALL_DIR:-}" ] && [ "$cargo_bin" != "$dir" ] && [ -e "$cargo_bin/nexo" ]; then
     { command -v cargo >/dev/null 2>&1 && cargo uninstall --quiet nexo-cli >/dev/null 2>&1; } || rm -f "$cargo_bin/nexo"
     say "removed the old copy in $cargo_bin"
 fi

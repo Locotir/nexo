@@ -28,7 +28,7 @@ or `%LOCALAPPDATA%\Programs\nexo` on Windows, adding that folder to PATH. No Rus
 Where no ready-built file fits, or with `NEXO_BUILD=1`, they install what the build needs without asking
 (Rust, a C compiler or the Visual Studio C++ build tools; on Windows only the Windows prompt to allow) and
 build from source. `NEXO_INSTALL_DIR` picks another folder. A copy left in cargo's own folder by older
-installs is removed.
+installs is removed, unless `NEXO_INSTALL_DIR` is set.
 
 Each time the interface starts, nexo asks GitHub in the background whether the latest release is newer than
 the commit it was built from and says so; `nexo update` downloads it and replaces nexo where it is (it builds
