@@ -1672,6 +1672,14 @@ impl App {
                 self.dirty = true;
             }
         }
+        // the todo window: the bar fills, a task that changed glows, the one being worked on spins
+        if let Some(Modal::Todo(v)) = &self.modal {
+            let live = self.opts.animations && v.order().iter().any(|&i| v.item_running(i));
+            if v.animating(at) || live {
+                any = true;
+                self.dirty = true;
+            }
+        }
         // the jobs window asks for fresh output now and then
         if let Some(Modal::Jobs(v)) = &mut self.modal {
             if let Some(cmd) = v.refresh() {
@@ -1875,6 +1883,11 @@ impl App {
             AgentEvent::ToolDone { id, output, elapsed_ms } => {
                 if let ToolDisplay::Todo { items } = &output.display {
                     self.todo = items.clone();
+                    let at = self.now();
+                    if let Some(Modal::Todo(v)) = &mut self.modal {
+                        v.set_items(items.clone(), at);
+                        self.dirty = true;
+                    }
                 }
                 if let Some(i) = self.tool_index(&id) {
                     if let Block::Tool { status, output: o, elapsed_ms: e, .. } = &mut self.blocks[i] {
@@ -3063,29 +3076,9 @@ impl App {
         self.flash("queued message back in the draft: edit it, Enter sends it again");
     }
 
-    /// `/todo`: every item of the todo list with its state.
+    /// `/todo`: the task list in its own window, grouped by state.
     pub fn open_todo(&mut self) {
-        if self.todo.is_empty() {
-            return self.notice(Level::Info, "no todo list yet");
-        }
-        let (done, total) = crate::render::blocks::todo_counts(&self.todo);
-        let items = self
-            .todo
-            .iter()
-            .enumerate()
-            .map(|(i, it)| {
-                let (icon, _) = crate::render::blocks::todo_style(it.status, &self.theme);
-                let hint = match it.status {
-                    nexo_core::tool::TodoStatus::Pending => "pending",
-                    nexo_core::tool::TodoStatus::InProgress => "in progress",
-                    nexo_core::tool::TodoStatus::Done => "done",
-                };
-                let text = it.text.lines().next().unwrap_or("");
-                PickItem { label: format!("{icon} {text}"), value: i.to_string(), hint: hint.to_string() }
-            })
-            .collect();
-        let title = format!("Todo · {done}/{total} done");
-        self.modal = Some(Modal::Picker(Picker::new(PickKind::Todo, &title, items, None)));
+        self.modal = Some(Modal::Todo(Box::new(crate::todo_view::TodoView::new(self.todo.clone()))));
     }
 
     /// `/jobs`, a click on `⚙ N jobs`: the window with every background job and its output.
@@ -3748,6 +3741,10 @@ impl App {
                 self.next_permission();
             }
             ModalOut::Send(cmd) => self.send(cmd),
+            ModalOut::Copy(text) => match crate::clipboard::copy(&text) {
+                Ok(how) => self.flash_toast(&format!("copied ({how})")),
+                Err(e) => self.notice(Level::Warn, format!("copy failed: {e}")),
+            },
             ModalOut::SendAndClose(cmd) => {
                 self.modal = None;
                 if let AgentCommand::SaveModel { name, model, .. } = &cmd {
@@ -3808,7 +3805,7 @@ impl App {
                         self.end_theme_preview(true);
                         self.set_theme(&value, true);
                     }
-                    PickKind::Todo | PickKind::Shared => {}
+                    PickKind::Shared => {}
                     PickKind::Queue => {
                         if let Ok(i) = value.parse::<usize>() {
                             self.unqueue(i);
@@ -6517,16 +6514,12 @@ mod tests {
         };
         click(&mut a, HintHit::Todo);
         match &a.modal {
-            Some(Modal::Picker(p)) => {
-                assert_eq!(p.kind, PickKind::Todo);
-                let labels: Vec<_> = p.items.iter().map(|i| (i.label.clone(), i.hint.clone())).collect();
+            Some(Modal::Todo(v)) => {
+                assert_eq!(v.len(), 3);
                 assert_eq!(
-                    labels,
-                    vec![
-                        ("● read".to_string(), "done".to_string()),
-                        ("◐ fix".to_string(), "in progress".to_string()),
-                        ("○ ship".to_string(), "pending".to_string()),
-                    ]
+                    v.current().map(|t| t.text.as_str()),
+                    Some("fix"),
+                    "the cursor starts on the task being worked on"
                 );
             }
             other => panic!("{other:?}"),
@@ -6560,8 +6553,13 @@ mod tests {
         assert_eq!(commands::parse("/todo"), Some(Command::Todo));
         assert_eq!(commands::parse("/queue"), Some(Command::Queue));
         assert_eq!(commands::parse("/shared-memory list"), Some(Command::Mem(Some("list".into()))));
+        // no tasks: the window says so, and closes
+        a.input.set_text("/todo");
+        a.submit();
+        assert!(matches!(&a.modal, Some(Modal::Todo(v)) if v.is_empty()));
+        a.modal = None;
         // nothing to list: a notice, no window
-        for c in ["/todo", "/queue", "/shared-memory list"] {
+        for c in ["/queue", "/shared-memory list"] {
             a.input.set_text(c);
             a.submit();
             assert!(a.modal.is_none(), "{c}");

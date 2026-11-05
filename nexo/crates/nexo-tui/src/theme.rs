@@ -765,6 +765,19 @@ impl Theme {
     pub fn todo_done(&self) -> Style {
         self.dim().add_modifier(Modifier::CROSSED_OUT)
     }
+
+    /// The ground of the row being worked on, `t` (0..1) of the way from the dialog to the accent.
+    pub fn todo_now_bg(&self, t: f32) -> Style {
+        if self.mono {
+            return Style::default();
+        }
+        Style::default().bg(crate::motion::fade(self, self.modal_bg, self.accent, 0.10 + 0.08 * t))
+    }
+
+    /// The small header over a group of tasks.
+    pub fn todo_head(&self) -> Style {
+        self.dim().add_modifier(Modifier::BOLD)
+    }
 }
 
 /// Whether the terminal takes 24-bit colour: `NEXO_COLORS` wins; then `COLORTERM` says so, or `TERM`

@@ -35,8 +35,6 @@ pub enum PickKind {
     Tree,
     Effort,
     History,
-    /// The todo list (read only).
-    Todo,
     /// The requests queued behind the running turn: picking one edits it.
     Queue,
     /// The memory of other sessions waiting to join the next message (read only).
@@ -253,6 +251,8 @@ pub enum Modal {
     Agents(Box<crate::agents_view::AgentsView>),
     /// `/jobs`: the background jobs and their output.
     Jobs(Box<crate::jobs_view::JobsView>),
+    /// `/todo`: the task list, grouped by state.
+    Todo(Box<crate::todo_view::TodoView>),
 }
 
 /// What a key or click in a modal asks the app to do.
@@ -272,6 +272,8 @@ pub enum ModalOut {
     Send(nexo_core::agent::AgentCommand),
     /// A command for the agent, and the modal closes.
     SendAndClose(nexo_core::agent::AgentCommand),
+    /// Text for the clipboard; the modal stays.
+    Copy(String),
 }
 
 impl From<SetupOut> for ModalOut {
@@ -493,6 +495,7 @@ impl Modal {
             Modal::Setup(s) => s.key(key).into(),
             Modal::Agents(a) => a.key(key),
             Modal::Jobs(j) => j.key(key),
+            Modal::Todo(t) => t.key(key),
             Modal::Info(i) => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModalOut::Close,
                 KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
@@ -589,6 +592,10 @@ impl Modal {
                 }
                 ModalOut::Nothing
             }
+            Modal::Todo(t) => match rows.iter().find(|(r, _)| contains(*r, x, y)) {
+                Some((_, i)) => t.click_row(*i),
+                None => ModalOut::Nothing,
+            },
             Modal::Info(i) => {
                 if contains(i.close, x, y) || !contains(i.window, x, y) {
                     return ModalOut::Close;
@@ -627,6 +634,7 @@ impl Modal {
             Modal::Info(i) => i.scroll = (i.scroll as i32 + delta).max(0) as usize,
             Modal::Agents(a) => a.scroll_by(delta),
             Modal::Jobs(j) => j.scroll_by(delta),
+            Modal::Todo(t) => t.scroll_by(delta),
         }
     }
 
@@ -652,6 +660,7 @@ impl Modal {
             Modal::Info(i) => i.scroll = off,
             Modal::Agents(a) => a.scroll = off,
             Modal::Jobs(j) => j.scroll = off,
+            Modal::Todo(t) => t.scroll = off,
             Modal::Picker(p) => pick(p, off, viewport, first),
             Modal::Setup(s) => pick(&mut s.list, off, viewport, first),
         }
@@ -727,15 +736,7 @@ impl Modal {
             }
             ToolDisplay::Todo { items } => {
                 for it in items {
-                    let (icon, style) = crate::render::blocks::todo_style(it.status, theme);
-                    lines.extend(crate::render::markdown::md_lines(
-                        &it.text,
-                        w,
-                        theme,
-                        style,
-                        false,
-                        &[Span::styled(format!("{icon} "), style)],
-                    ));
+                    lines.extend(crate::render::todo::todo_row(it, w, theme, Default::default()));
                 }
             }
             ToolDisplay::Plain => {}

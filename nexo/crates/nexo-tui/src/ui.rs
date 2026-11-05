@@ -13,7 +13,7 @@ use crate::app::{
 use crate::modal::{Modal, PickKind};
 use crate::overlay;
 use crate::palette::{PaletteKind, MAX_ROWS};
-use crate::render::blocks::{fmt_k, fmt_ms, todo_counts, todo_style, SPINNER};
+use crate::render::blocks::{fmt_k, fmt_ms, todo_counts, SPINNER};
 use crate::render::markdown::{inline_md, text_of, tint_plain};
 use crate::render::wrap::{truncate, width};
 use crate::scrollbar::{self, Bar, Target};
@@ -1575,13 +1575,20 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
     }
     if !app.todo.is_empty() {
         let (done, total) = todo_counts(&app.todo);
-        lines.push(header(format!("todo {done}/{total}")));
+        let mut head = vec![rail(), Span::styled("☰ todo  ", Style::default().add_modifier(Modifier::BOLD))];
+        head.extend(crate::render::todo::todo_summary(theme, done as f64 / total as f64, done, total, false));
+        lines.push(Line::from(head));
+        let ctx = crate::render::todo::RowCtx {
+            spinner: app.opts.animations.then_some(app.spinner),
+            compact: true,
+            ..Default::default()
+        };
         for it in &app.todo {
-            let (icon, style) = todo_style(it.status, theme);
-            let avail = inner_w.saturating_sub(2);
-            let mut row = vec![rail(), Span::styled(format!("{icon} "), style)];
-            row.extend(inline_md(&it.text, avail, theme, style));
-            lines.push(Line::from(row));
+            for row in crate::render::todo::todo_row(it, inner_w, theme, ctx) {
+                let mut spans = vec![rail()];
+                spans.extend(row.spans);
+                lines.push(Line::from(spans));
+            }
         }
         lines.push(Line::from(rail()));
     }
@@ -2100,7 +2107,8 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width < 12 || area.height < 5 {
         return draw_too_narrow(f, &theme, area, area.width < 12);
     }
-    let w = (area.width.saturating_sub(4)).min(96);
+    let cap = if matches!(modal, Modal::Todo(_)) { 76 } else { 96 };
+    let w = (area.width.saturating_sub(4)).min(cap);
     let max_h = area.height.saturating_sub(2);
     // laid out for the width it has now, so nothing is cut while it pops open
     let inner_w = pop_rect(Rect::new(0, 0, w, 3), pop).width.saturating_sub(4) as usize;
@@ -2108,6 +2116,10 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     // the jobs window: the line each job starts at, and the one to keep in sight
     let mut job_rows: Vec<usize> = Vec::new();
     let mut job_at = 0;
+    // the todo window: where each task starts and how long it is, the selected one, the finished ones' header
+    let mut todo_rows: Vec<(usize, usize)> = Vec::new();
+    let mut todo_sel = (0usize, 1usize);
+    let mut todo_head: Option<usize> = None;
     // the rules of a permission: pinned above the buttons, never scrolled out of sight
     let mut pinned: Vec<Line<'static>> = Vec::new();
     let (title, body, buttons): (String, Vec<Line<'static>>, Option<Buttons>) = match modal {
@@ -2190,6 +2202,16 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             job_at = at;
             (v.title(), lines, None)
         }
+        Modal::Todo(v) => {
+            let spinner = app.opts.animations.then_some(app.spinner);
+            let pulse = if spinner.is_some() { ((app.spinner as f32 * 0.35).sin() + 1.0) / 2.0 } else { 0.0 };
+            let b = v.body(inner_w, &theme, spinner, pulse, now);
+            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
+            todo_sel = b.starts.get(v.selected).copied().unwrap_or((0, 1));
+            todo_rows = b.starts;
+            todo_head = b.done_head;
+            (v.title(), b.lines, None)
+        }
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => return,
         Modal::Setup(s) => {
             let (lines, at) = s.lines(inner_w, &theme, app.spinner, max_h < 12);
@@ -2242,6 +2264,14 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
             v.scroll
         }
+        Modal::Todo(v) => {
+            // the selected task stays in view, headers above it too when there is room
+            let (at, len) = todo_sel;
+            let end = at + len;
+            v.scroll = end.saturating_sub(body_h).min(at);
+            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
+            v.scroll
+        }
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => 0,
         Modal::Picker(p) => {
             // keep the selection in view: two header lines, then the rows
@@ -2278,7 +2308,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     };
     // a bar on the right border, for what scrolls: the text, or a list (moving its selection)
     let bar = match modal {
-        Modal::Permission(_) | Modal::Help { .. } | Modal::Jobs(_) => Some(0),
+        Modal::Permission(_) | Modal::Help { .. } | Modal::Jobs(_) | Modal::Todo(_) => Some(0),
         Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => None,
     };
@@ -2291,6 +2321,23 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                         .push((Rect::new(body_area.x, body_area.y + (line - scroll) as u16, body_area.width, 1), i));
                 }
             }
+        }
+    }
+    if matches!(modal, Modal::Todo(_)) {
+        let visible = |line: usize| line >= scroll && line < scroll + body_h;
+        for (i, &(at, len)) in todo_rows.iter().enumerate() {
+            for line in at..at + len {
+                if visible(line) {
+                    app.picker_rows
+                        .push((Rect::new(body_area.x, body_area.y + (line - scroll) as u16, body_area.width, 1), i));
+                }
+            }
+        }
+        if let Some(line) = todo_head.filter(|&l| visible(l)) {
+            app.picker_rows.push((
+                Rect::new(body_area.x, body_area.y + (line - scroll) as u16, body_area.width, 1),
+                todo_rows.len(),
+            ));
         }
     }
     if let Some((first, n)) = rows {
