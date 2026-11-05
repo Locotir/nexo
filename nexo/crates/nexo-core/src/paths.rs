@@ -94,8 +94,8 @@ pub fn user_config_file() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-/// `~/.nexo/prompt.md`: when it exists, its text replaces the built-in system prompt
-/// (the tool guidance, directory, date and project instructions are still appended).
+/// `~/.nexo/prompt.md`: the person's preferences, added after the built-in system prompt
+/// (a file that starts like the built-in text replaces it instead).
 pub fn prompt_file() -> PathBuf {
     config_dir().join("prompt.md")
 }

@@ -291,9 +291,9 @@ model and permission mode, the directory and branch, and one line of hints. The 
 context gauge (`━━━╸━━━━ 42% 54k/128k`: what the last call sent over the model's
 window); `/pricing` shows what is known of the model (prices, context window,
 largest reply) and `/pricing in=0.28 out=0.42 cache=0.028` sets its prices per
-million tokens and remembers them. `/prompt edit` opens the system prompt in
-`$EDITOR` (`~/.nexo/prompt.md`, created from the built-in text on the
-first edit); it applies from the next request.
+million tokens and remembers them. `/prompt edit` opens your preferences in
+`$EDITOR` (`~/.nexo/prompt.md`, added after the built-in prompt); they apply
+from the next request.
 
 ### Todo and goals
 
@@ -557,12 +557,14 @@ deny rule refuses it, and another site no rule allows is not read on the way
 ### Your own system prompt
 
 `nexo prompt` prints the prompt as it would be sent from the directory;
-`nexo prompt --edit` (or `/prompt edit` inside) opens
-`~/.nexo/prompt.md` in your editor, created from the built-in text.
-When that file exists its text replaces the built-in one; the tool guidance,
-directory, date and project instructions (`NEXO.md`, `AGENTS.md`) are still
-appended, unless the file starts with the line `<!-- nexo: raw -->`, in
-which case it is sent exactly as written. `[agent] system_prompt_file` points
+The prompt has two layers. The built-in one always comes first: how to work,
+the tools, subagents. Then come the directory, date, tool guidance and project
+instructions (`NEXO.md`, `AGENTS.md`), and last your preferences:
+`nexo prompt --edit` (or `/prompt edit` inside) opens `~/.nexo/prompt.md`
+in your editor (who you are, your machine and stack, how you like answers;
+`<!-- comments -->` are not sent). A file that starts like the built-in text
+(`You are nexo,`) replaces it instead, and one that starts with the line
+`<!-- nexo: raw -->` is sent exactly as written. `[agent] system_prompt_file` points
 at another file; `system_prompt_extra` appends text. Edits apply from the
 next request.
 

@@ -439,8 +439,14 @@ pub fn edit_prompt(cfg: &Config) -> anyhow::Result<i32> {
         if let Some(d) = file.parent() {
             std::fs::create_dir_all(d)?;
         }
-        std::fs::write(&file, format!("{}\n", nexo_agent::prompt::built_in()))?;
-        println!("created {} from the built-in text", file.display());
+        // `[agent] system_prompt_file` is a whole prompt; `~/.nexo/prompt.md` adds preferences after the built-in one
+        if cfg.agent.system_prompt_file.is_some() {
+            std::fs::write(&file, format!("{}\n", nexo_agent::prompt::built_in()))?;
+            println!("created {} from the built-in text", file.display());
+        } else {
+            std::fs::write(&file, nexo_agent::prompt::PREFS_TEMPLATE)?;
+            println!("created {} for your preferences (added after the built-in prompt)", file.display());
+        }
     }
     // `$VISUAL`, `$EDITOR`, else Notepad on Windows and nano or vi elsewhere: the first that starts
     let status = nexo_core::shell::editors()

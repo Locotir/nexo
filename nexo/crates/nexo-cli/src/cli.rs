@@ -106,7 +106,7 @@ pub enum Cmd {
     },
     /// Print the system prompt as it would be sent from this directory.
     Prompt {
-        /// Open the prompt file (~/.nexo/prompt.md) in $VISUAL or $EDITOR (else Notepad on Windows, nano or vi elsewhere), creating it from the built-in text.
+        /// Open your preferences (~/.nexo/prompt.md, added after the built-in prompt) in $VISUAL or $EDITOR (else Notepad on Windows, nano or vi elsewhere), creating it on first use.
         #[arg(long)]
         edit: bool,
     },

@@ -276,8 +276,6 @@ pub struct App {
     branch_read: Option<Instant>,
     /// The system prompt as last shown (`/prompt`), the seed of the prompt file.
     pub system_prompt: Option<String>,
-    /// `/prompt edit` asked before any prompt was seen: edit once it arrives.
-    edit_after_prompt: bool,
     /// The run loop opens `$EDITOR` on this file when set.
     pub edit_request: Option<PathBuf>,
     /// Ctrl+G: the draft goes to `$EDITOR` and comes back.
@@ -496,7 +494,6 @@ impl App {
             update_behind: None,
             branch_read: None,
             system_prompt: None,
-            edit_after_prompt: false,
             edit_request: None,
             draft_edit_request: false,
             custom_commands: crate::custom::load(&opts.cwd),
@@ -2146,12 +2143,7 @@ impl App {
             }
             AgentEvent::SystemPrompt { text } => {
                 self.system_prompt = Some(text.clone());
-                if self.edit_after_prompt {
-                    self.edit_after_prompt = false;
-                    self.prompt_edit();
-                } else {
-                    self.push(Block::Shell { command: "system prompt".to_string(), output: text, exit_code: None });
-                }
+                self.push(Block::Shell { command: "system prompt".to_string(), output: text, exit_code: None });
             }
             AgentEvent::TurnEnd { reason } => {
                 self.close_streaming();
@@ -3789,17 +3781,11 @@ impl App {
     pub fn prompt_edit(&mut self) {
         let path = nexo_core::paths::prompt_file();
         if !path.is_file() {
-            let Some(text) = self.system_prompt.clone() else {
-                self.edit_after_prompt = true;
-                self.send(AgentCommand::ShowPrompt);
-                return;
-            };
             if let Some(d) = path.parent() {
                 let _ = std::fs::create_dir_all(d);
             }
-            // only the base text: nexo appends the directory, date and tools itself
-            let text = nexo_core::paths::prompt_base(&text);
-            if let Err(e) = std::fs::write(&path, text.to_string() + "\n") {
+            // the person's preferences, added after the built-in prompt
+            if let Err(e) = std::fs::write(&path, nexo_agent::prompt::PREFS_TEMPLATE) {
                 self.notice(Level::Error, format!("cannot write {}: {e}", path.display()));
                 return;
             }
@@ -6362,21 +6348,17 @@ mod tests {
     }
 
     #[test]
-    fn prompt_edit_waits_for_the_prompt_when_the_file_is_missing() {
+    fn prompt_edit_creates_the_preferences_file_when_it_is_missing() {
         let dir = tempfile::tempdir().unwrap();
         let (mut a, mut rx) = app();
         let path = dir.path().join("prompt.md");
-        // the file is missing and no prompt was seen: the agent is asked first
-        a.system_prompt = None;
-        assert!(a.edit_request.is_none());
         std::env::set_var("NEXO_CONFIG_DIR", dir.path());
         a.prompt_edit();
-        assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShowPrompt)));
-        a.handle_agent(AgentEvent::SystemPrompt { text: "You are nexo.".into() });
         std::env::remove_var("NEXO_CONFIG_DIR");
+        // no round trip to the agent: the file starts as the preferences template and opens
+        assert!(rx.try_recv().is_err());
         assert_eq!(a.edit_request.as_deref(), Some(path.as_path()));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "You are nexo.\n");
-        assert!(!matches!(a.blocks.last(), Some(Block::Shell { .. })), "no card when the prompt was fetched to edit");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), nexo_agent::prompt::PREFS_TEMPLATE);
     }
 
     #[test]

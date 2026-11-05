@@ -14,9 +14,34 @@ const BUILT_IN: &str = include_str!("prompt.md");
 /// directory, date, project instructions or extra text appended.
 pub const RAW_MARK: &str = "<!-- nexo: raw -->";
 
-/// The built-in text (what `nexo prompt --edit` starts a prompt file from).
+/// The built-in text: what every request starts with.
 pub fn built_in() -> &'static str {
     BUILT_IN.trim()
+}
+
+/// What a new `~/.nexo/prompt.md` holds: the file adds the person's own preferences after the built-in text.
+pub const PREFS_TEMPLATE: &str = "<!-- Your preferences: added after nexo's built-in prompt, which stays first (tools, subagents, how to work).
+     Write who you are, your machine and stack, how you like answers. Comments like this one are not sent.
+     A file that starts with \"You are nexo,\" replaces the built-in prompt instead (README: Your own system prompt). -->
+";
+
+/// Whether a prompt file is a whole prompt of its own rather than preferences: one set in the
+/// config, or one that starts like the built-in text (the copies earlier versions made).
+fn replaces(cfg: &AgentConfig, text: &str) -> bool {
+    let opening = built_in().split(',').next().unwrap_or_default();
+    cfg.system_prompt_file.is_some() || text.starts_with(opening)
+}
+
+/// `text` without its `<!-- ... -->` comments.
+fn without_comments(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("<!--") {
+        out.push_str(&rest[..i]);
+        rest = rest[i..].find("-->").map_or("", |j| &rest[i + j + 3..]);
+    }
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 /// The file the base text comes from: `agent.system_prompt_file` when set,
@@ -103,17 +128,21 @@ fn tool_guidance(tools: &ToolSet) -> String {
     format!("\n\nTools:\n{}", lines.join("\n"))
 }
 
-/// The whole system prompt for a session in `cwd`.
+/// The whole system prompt for a session in `cwd`: the built-in text first, then the directory,
+/// date, tools and project instructions, then the person's preferences (`~/.nexo/prompt.md`).
 pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
-    let base = source_file(cfg)
+    let file = source_file(cfg)
         .and_then(|f| std::fs::read_to_string(f).ok())
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| built_in().to_string());
-    if let Some(raw) = base.strip_prefix(RAW_MARK) {
+        .filter(|s| !s.is_empty());
+    if let Some(raw) = file.as_deref().and_then(|t| t.strip_prefix(RAW_MARK)) {
         return raw.trim().to_string();
     }
-    let base = paths::prompt_base(&base);
+    let (base, prefs) = match &file {
+        Some(t) if replaces(cfg, t) => (paths::prompt_base(t), String::new()),
+        Some(t) => (built_in(), without_comments(t)),
+        None => (built_in(), String::new()),
+    };
     let date = time::OffsetDateTime::now_utc().date();
     let mut out = format!("{base}\n\nWorking directory: {}\nDate: {date}", cwd.display());
     out.push_str(&tool_guidance(tools));
@@ -124,6 +153,9 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
                 out.push_str(&format!("\n\nInstructions from {}:\n{text}", f.display()));
             }
         }
+    }
+    if !prefs.is_empty() {
+        out.push_str(&format!("\n\nThe person's preferences:\n{prefs}"));
     }
     if let Some(extra) = &cfg.system_prompt_extra {
         if !extra.trim().is_empty() {
@@ -164,25 +196,35 @@ mod tests {
     }
 
     #[test]
-    fn the_persons_prompt_file_replaces_the_text_and_raw_sends_it_alone() {
+    fn the_persons_prompt_file_adds_preferences_and_a_whole_copy_replaces_the_text() {
         let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("NEXO_CONFIG_DIR", home.path());
         let cfg = AgentConfig::default();
         assert!(system_prompt(d.path(), &cfg, &ToolSet::new()).starts_with("You are nexo"));
-        std::fs::write(home.path().join("prompt.md"), "Mine.\n").unwrap();
+        // preferences: the built-in text stays first, they come last, the comments are not sent
+        std::fs::write(home.path().join("prompt.md"), format!("{PREFS_TEMPLATE}Mine.\n<!-- note -->Short answers.\n"))
+            .unwrap();
         let p = system_prompt(d.path(), &cfg, &ToolSet::new());
-        assert!(p.starts_with("Mine.\n\nWorking directory:"), "{p}");
-        // a file saved from the whole prompt: its old directory, date and tools are not sent again
+        assert!(p.starts_with(built_in()), "{p}");
+        assert!(p.ends_with("The person's preferences:\nMine.\nShort answers."), "{p}");
+        assert!(!p.contains("<!--"), "{p}");
+        // only the template: nothing is added
+        std::fs::write(home.path().join("prompt.md"), PREFS_TEMPLATE).unwrap();
+        assert!(!system_prompt(d.path(), &cfg, &ToolSet::new()).contains("preferences:"));
+        // a whole prompt saved by an earlier version replaces the built-in text, without its stale
+        // directory, date and tools
         std::fs::write(
             home.path().join("prompt.md"),
-            "Mine.\n\nWorking directory: /old\nDate: 2020-01-01\n\nTools:\n- `read`: x\n",
+            "You are nexo, mine.\n\nWorking directory: /old\nDate: 2020-01-01\n\nTools:\n- `read`: x\n",
         )
         .unwrap();
         let p = system_prompt(d.path(), &cfg, &ToolSet::new());
         assert!(
-            p.starts_with("Mine.\n\nWorking directory:") && !p.contains("/old") && !p.contains("2020-01-01"),
+            p.starts_with("You are nexo, mine.\n\nWorking directory:")
+                && !p.contains("/old")
+                && !p.contains("2020-01-01"),
             "{p}"
         );
         std::fs::write(home.path().join("prompt.md"), format!("{RAW_MARK}\nOnly this.\n")).unwrap();
