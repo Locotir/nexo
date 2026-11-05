@@ -213,7 +213,7 @@ pub struct BenchArgs {
     /// Largest reply, in tokens.
     #[arg(long)]
     pub max_tokens: Option<u32>,
-    /// Sampling temperature of every request (default: the provider's own).
+    /// Sampling temperature of every request (default: 0 with the task polyglot, as Aider; the provider's own otherwise).
     #[arg(long)]
     pub temperature: Option<f32>,
     /// The model's context window in tokens (default: what nexo knows of it), e.g. 8000 for a small model.

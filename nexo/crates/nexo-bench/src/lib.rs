@@ -95,9 +95,16 @@ fn prices(opts: &Options) -> anyhow::Result<Option<Pricing>> {
 }
 
 /// Runs the benchmark; the exit code is 0, or 2 when it stopped at the budget.
+/// The sampling temperature of a run: the one given, else 0 when polyglot is among the tasks (Aider's harness
+/// sends 0), else the provider's own.
+pub fn temperature_of(given: Option<f32>, poly: bool) -> Option<f32> {
+    given.or(poly.then_some(0.0))
+}
+
 pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let arms = arm::Arm::parse_all(&opts.arms).map_err(anyhow::Error::msg)?;
     let (poly, rest) = take_polyglot(&opts.tasks);
+    let temperature = temperature_of(opts.temperature, poly);
     let (llmb_names, nexo_names) = split_tasks(&rest);
     let tasks = if nexo_names.is_empty() && (!llmb_names.is_empty() || poly) {
         Vec::new()
@@ -170,7 +177,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         estimated,
         max_steps: opts.max_steps,
         max_tokens: opts.max_tokens,
-        temperature: opts.temperature,
+        temperature,
         out: out.clone(),
         hide,
         client,
@@ -242,7 +249,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         commit: run::COMMIT.into(),
         max_steps: opts.max_steps,
         max_tokens: opts.max_tokens,
-        temperature: opts.temperature,
+        temperature,
         repeats: opts.repeats,
         budget: opts.budget,
         price: opts.price.map(|p| report::price_line(&p)),
@@ -460,6 +467,13 @@ fn isolate(out: &std::path::Path, key: Option<&str>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polyglot_runs_at_temperature_0_unless_told() {
+        assert_eq!(temperature_of(None, true), Some(0.0), "as Aider's harness");
+        assert_eq!(temperature_of(Some(0.7), true), Some(0.7));
+        assert_eq!(temperature_of(None, false), None, "the provider's own");
+    }
 
     #[test]
     fn an_out_folder_with_earlier_results_is_refused() {
