@@ -28,6 +28,7 @@ fn app(animations: bool, theme: &str) -> App {
         timestamps: false,
         fold_after: 4,
         group_tools: true,
+        complete_words: true,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

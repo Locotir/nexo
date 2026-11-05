@@ -686,6 +686,11 @@ impl App {
         match &b {
             Block::Assistant { text, streaming: false, .. } => self.words.feed(text, crate::complete::Src::Other),
             Block::Tool { args, .. } => self.words.feed_json(args, crate::complete::Src::Other),
+            // a command the person ran with `!`: its words are theirs, its output like a tool's
+            Block::Shell { command, output, .. } => {
+                self.words.feed(command, crate::complete::Src::User);
+                self.words.feed(output, crate::complete::Src::Other);
+            }
             _ => {}
         }
         let is_call = self.opts.group_tools && matches!(b, Block::Tool { .. });

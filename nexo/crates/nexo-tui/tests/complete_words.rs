@@ -275,3 +275,17 @@ fn a_picked_block_hides_the_ghost() {
     a.selected = Some(a.blocks.len() - 1);
     assert_eq!(a.complete_suffix(), None);
 }
+
+#[test]
+fn a_shell_command_the_person_ran_feeds_the_words() {
+    let mut a = app_with("dark", true);
+    let hash = "a768d4a88fb4ace4c9e1611f082dd5065b6da219bf45dd934519a24beb7b502f";
+    a.handle_agent(AgentEvent::ShellOutput {
+        command: "echo nexo | sha256sum".into(),
+        output: format!("{hash}  -\n"),
+        exit_code: Some(0),
+    });
+    type_str(&mut a, "a768");
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.input.full_text(), hash);
+}
