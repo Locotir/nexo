@@ -97,12 +97,10 @@ impl Theme {
     pub fn nexo() -> Theme {
         Theme {
             name: "nexo",
-            description: "the default colours on Monokai's charcoal ground",
+            description: "the default colours on the Monokai charcoal ground (#272822)",
             bg: rgb(0x272822),
             bg_alt: rgb(0x2f302a),
-            border: rgb(0x49483e),
             code_bg: rgb(0x2f302a),
-            selection_bg: rgb(0x49483e),
             highlight_fg: rgb(0x272822),
             diff_add_bg: rgb(0x2f3b1c),
             diff_del_bg: rgb(0x40202b),
@@ -112,36 +110,36 @@ impl Theme {
         }
     }
 
-    /// The default: Monokai colours on a pure black ground. White and bold carry the structure; cyan
-    /// is the person, pink the assistant, green code, purple emphasis; orange only warns.
+    /// The default: Monokai colours on a pure black ground. White carries the text, purple bold the
+    /// headings and strong words, cyan the person, magenta the assistant, green code; orange only warns.
     /// Every colour that carries text reads at 4.5:1 or more on every ground (WCAG AA).
     pub fn dark() -> Theme {
         Theme {
             name: "dark",
-            description: "the default: Monokai colours on a pure black ground, AA contrast",
+            description: "the default: the Monokai colours of an alacritty setup on a pure black ground, AA contrast",
             mono: false,
             bg: rgb(0x000000),
             bg_alt: rgb(0x141414),
             fg: rgb(0xf8f8f2),
-            dim: rgb(0xa8a48e),
-            dim2: rgb(0x8f8b76),
+            dim: rgb(0xcfcfc7),
+            dim2: rgb(0x9e9552),
             accent: rgb(0x66d9ef),
-            accent2: rgb(0xffffff),
+            accent2: rgb(0xae81ff),
             code_fg: rgb(0xa6e22e),
             user: rgb(0x66d9ef),
-            assistant: rgb(0xf92672),
+            assistant: rgb(0xf92690),
             success: rgb(0xa6e22e),
-            error: rgb(0xff5f5f),
+            error: rgb(0xff0000),
             warn: rgb(0xe6db74),
             warn2: rgb(0xfd971f),
-            info: rgb(0xae81ff),
-            border: rgb(0x3e3d32),
+            info: rgb(0x66d9ef),
+            border: rgb(0x414868),
             code_bg: rgb(0x141414),
-            selection_bg: rgb(0x3e3d32),
+            selection_bg: rgb(0x4b6b3e),
             highlight_bg: rgb(0xe6db74),
             highlight_fg: rgb(0x000000),
             diff_add: rgb(0xa6e22e),
-            diff_del: rgb(0xf92672),
+            diff_del: rgb(0xf92690),
             diff_add_bg: rgb(0x16240a),
             diff_del_bg: rgb(0x2e0a16),
             hunk: rgb(0xae81ff),
@@ -1024,7 +1022,7 @@ mod tests {
         }
         // the default theme: calls in orange, output in purple
         let t = Theme::dark();
-        assert_eq!(t.kind_colours(), [t.user, t.assistant, t.warn2, t.info]);
+        assert_eq!(t.kind_colours(), [t.user, t.assistant, t.warn2, t.accent2]);
         assert_eq!(Theme::mono().kind_colours(), [Color::Reset; 4]);
     }
 
