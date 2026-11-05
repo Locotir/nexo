@@ -41,6 +41,10 @@ pub const INLINE: usize = 64 * 1024;
 pub const PUMP: usize = 256 * 1024;
 /// A word the person wrote outlives others this many blocks when making room.
 const USER_GRACE: u32 = 4096;
+/// Units after a key/token/password word that are never indexed (same line).
+const SKIP_UNITS: u8 = 3;
+/// Newest words kept in the set a lookup walks first, so the scan cap cannot hide them.
+const FRESH: usize = 1024;
 
 /// Exact case, the person's or recent, frequency, shorter, newer: higher is better.
 type Rank = (u8, u8, u16, Reverse<usize>, u32);
@@ -81,6 +85,8 @@ pub struct WordIndex {
     map: BTreeMap<Box<str>, Entry>,
     /// Keys of the words the person wrote: always looked at first, whatever `SCAN_CAP` cuts.
     hot: BTreeSet<Box<str>>,
+    /// Keys of the newest words (about `FRESH`): looked at right after `hot`.
+    fresh: BTreeSet<Box<str>>,
     seq: u32,
     pending: VecDeque<(String, Src, u32)>,
     buf: String,
@@ -93,6 +99,7 @@ impl WordIndex {
             enabled,
             map: BTreeMap::new(),
             hot: BTreeSet::new(),
+            fresh: BTreeSet::new(),
             seq: 0,
             pending: VecDeque::new(),
             buf: String::new(),
@@ -116,6 +123,7 @@ impl WordIndex {
     pub fn clear(&mut self) {
         self.map.clear();
         self.hot.clear();
+        self.fresh.clear();
         self.pending.clear();
         self.seq = 0;
     }
@@ -175,9 +183,18 @@ impl WordIndex {
             while !text.is_char_boundary(cut) {
                 cut -= 1;
             }
-            let cut = text[..cut].rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(cut);
+            // no blank inside the slice: run on to the next one rather than split the word
+            let cut = match text[..cut].rfind(char::is_whitespace) {
+                Some(i) => i + 1,
+                None => text[cut..].find(char::is_whitespace).map_or(text.len(), |i| cut + i),
+            };
             if cut == 0 {
                 self.pending.push_front((text, src, seq));
+                break;
+            }
+            if cut >= text.len() {
+                done += text.len();
+                self.index(&text, src, seq);
                 break;
             }
             done += cut;
@@ -234,12 +251,17 @@ impl WordIndex {
                 if !self.hot.contains(self.buf.as_str()) {
                     self.hot.insert(self.buf.as_str().into());
                 }
+            } else {
+                self.touch();
             }
             return;
         }
         let key: Box<str> = self.buf.as_str().into();
         if src == Src::User {
             self.hot.insert(key.clone());
+        } else {
+            self.fresh.insert(key.clone());
+            self.prune_fresh();
         }
         self.map.insert(
             key,
@@ -252,6 +274,26 @@ impl WordIndex {
                 user: if src == Src::User { seq } else { 0 },
             },
         );
+    }
+
+    /// Notes a word of the session as new.
+    fn touch(&mut self) {
+        if !self.fresh.contains(self.buf.as_str()) {
+            self.fresh.insert(self.buf.as_str().into());
+            self.prune_fresh();
+        }
+    }
+
+    /// Keeps the newest `FRESH` keys once the set is twice that.
+    fn prune_fresh(&mut self) {
+        if self.fresh.len() <= 2 * FRESH {
+            return;
+        }
+        let mut v: Vec<(u32, Box<str>)> =
+            self.fresh.iter().map(|k| (self.map.get(k).map_or(0, |e| e.last), k.clone())).collect();
+        v.sort_unstable_by_key(|x| Reverse(x.0));
+        v.truncate(FRESH);
+        self.fresh = v.into_iter().map(|x| x.1).collect();
     }
 
     /// Drops the oldest words (the person's last longer) down to nine tenths of `CAP`.
@@ -270,6 +312,7 @@ impl WordIndex {
         for (_, k) in v.into_iter().take(drop_n) {
             self.map.remove(&k);
             self.hot.remove(&k);
+            self.fresh.remove(&k);
         }
     }
 
@@ -334,6 +377,12 @@ impl WordIndex {
             }
         }
         scanned += hot_n as u64;
+        for k in self.fresh.range::<str, _>(from).take_while(|k| k.starts_with(&key)).take(SCAN_CAP) {
+            scanned += 1;
+            if let Some(e) = self.map.get(k) {
+                see(k, e);
+            }
+        }
         // the person's words were all seen above unless that scan was cut
         let seen_hot = hot_n < SCAN_CAP;
         for (k, e) in self.map.range::<str, _>(from).take_while(|(k, _)| k.starts_with(&key)).take(SCAN_CAP) {
@@ -475,11 +524,11 @@ fn unit_tokens(raw: &str, sep_after: bool, skip: &mut u8, emit: &mut impl FnMut(
     }
     let kw = secret_word(unit, sep_after || raw.len() > unit.len());
     if *skip > 0 {
-        *skip = u8::from(kw);
+        *skip = if kw { SKIP_UNITS } else { *skip - 1 };
         return;
     }
     if kw {
-        *skip = 1;
+        *skip = SKIP_UNITS;
     }
     if secret_value(unit) {
         return;
@@ -709,6 +758,43 @@ mod tests {
         assert_eq!(w.pending(), 0);
         assert_eq!(w.stats.bytes_scanned, s.len() as u64);
         assert_eq!(w.suggest("configu").as_deref(), Some("ración"));
+    }
+
+    #[test]
+    fn secret_values_a_few_units_after_the_keyword_stay_out() {
+        let w = idx("the password is hunter2xyz\nmy token was abcdef123456 ok\nsecret = the value zxcvbn99");
+        for t in ["hunter", "hunter2", "abcdef", "zxcvbn"] {
+            assert_eq!(w.suggest(t), None, "{t}");
+        }
+        // the next line is ordinary again
+        let w = idx("the password is hunter2xyz\ndeployment finished");
+        assert_eq!(w.suggest("deploy").as_deref(), Some("ment"));
+    }
+
+    #[test]
+    fn a_new_word_wins_over_an_alphabetical_flood() {
+        let mut w = WordIndex::new(true);
+        let flood: String = (0..20_000).map(|i| format!("con{i:016} ")).collect();
+        w.feed(&flood, Src::Other);
+        for i in 0..70 {
+            w.feed(&format!("filler{i:04} text"), Src::Other);
+        }
+        w.feed("la configuración nueva", Src::Other);
+        w.flush();
+        assert_eq!(w.suggest("con").as_deref(), Some("figuración"));
+    }
+
+    #[test]
+    fn pump_never_splits_a_word() {
+        let mut w = WordIndex::new(true);
+        let first = "x ".repeat(40_000);
+        w.feed(&first, Src::Other);
+        w.feed("configuración deployment", Src::Other);
+        w.pump(first.len() + 5);
+        w.flush();
+        assert_eq!(w.suggest("configu").as_deref(), Some("ración"));
+        assert_eq!(w.suggest("confi").as_deref(), Some("guración"));
+        assert_eq!(w.suggest("guraci"), None, "no stray half word");
     }
 
     #[test]

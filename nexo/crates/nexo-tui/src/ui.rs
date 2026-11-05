@@ -2742,7 +2742,21 @@ fn paint_complete(f: &mut Frame, app: &App, editor: Rect) {
     }
     let x = editor.x + (ccol as u16).min(editor.width.saturating_sub(1));
     let room = (editor.x + editor.width).saturating_sub(x) as usize;
-    f.buffer_mut().set_stringn(x, editor.y + (crow - top) as u16, &s, room, app.theme.dim());
+    // too long for the row: cut with an ellipsis; → still takes it all
+    let shown = if crate::render::wrap::width(&s) > room {
+        let mut t = String::new();
+        for c in s.chars() {
+            if crate::render::wrap::width(&t) + crate::render::wrap::width(c.encode_utf8(&mut [0; 4])) + 1 > room {
+                break;
+            }
+            t.push(c);
+        }
+        t.push('…');
+        t
+    } else {
+        s
+    };
+    f.buffer_mut().set_stringn(x, editor.y + (crow - top) as u16, &shown, room, app.theme.dim());
 }
 
 fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {

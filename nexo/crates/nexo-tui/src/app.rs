@@ -3005,22 +3005,19 @@ impl App {
     }
 
     /// The grey ghost of the draft: what finishes the word before the cursor from the words of the
-    /// session. A pure function of the draft and the index, so it cannot go stale. None when it
-    /// would not fit on the row (the layout never shifts for it).
+    /// session. A pure function of the draft and the index, so it cannot go stale. None while a block
+    /// is picked (the arrows are the block's). The painter cuts it to the row; → takes it whole.
     pub fn complete_suffix(&self) -> Option<String> {
-        if !self.opts.complete_words || self.palette.is_some() || self.modal.is_some() || self.words.is_empty() {
+        if !self.opts.complete_words
+            || self.palette.is_some()
+            || self.modal.is_some()
+            || self.selected.is_some()
+            || self.words.is_empty()
+        {
             return None;
         }
         let typed = self.input.word_before_cursor()?;
-        let s = self.words.suggest(&typed)?;
-        let w = self.input.wrap_width;
-        if w > 0 {
-            let (_, (_, ccol)) = crate::input::wrapped_rows(&self.input, w);
-            if ccol + crate::render::wrap::width(&s) >= w {
-                return None;
-            }
-        }
-        Some(s)
+        self.words.suggest(&typed)
     }
 
     /// Enter on the draft.

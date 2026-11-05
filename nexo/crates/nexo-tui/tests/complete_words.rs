@@ -247,18 +247,31 @@ fn the_ghost_survives_ascii_mode_and_stays_plain() {
 }
 
 #[test]
-fn a_ghost_that_does_not_fit_is_not_shown() {
+fn a_long_ghost_is_cut_with_an_ellipsis_and_right_takes_it_whole() {
     let mut a = app();
-    let _ = draw(&mut a, 40, 16);
-    let w = a.input.wrap_width;
-    assert!(w > 12);
-    type_str(&mut a, &format!("{} configu", "x".repeat(w - 9)));
-    assert_eq!(a.complete_suffix(), None, "6 more cells would not fit on the row");
-    let t = draw(&mut a, 40, 16);
-    let buf = t.backend().buffer();
-    let draft: Vec<String> = (0..buf.area.height)
-        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
-        .filter(|r| r.contains("xxxx"))
-        .collect();
-    assert!(!draft.is_empty() && draft.iter().all(|r| !r.contains("ración")), "{draft:?}");
+    for w in [60u16, 70] {
+        a.input.clear();
+        let _ = draw(&mut a, w, 16);
+        type_str(&mut a, "check e23");
+        let s = a.complete_suffix().expect("the hash still has a ghost");
+        assert_eq!(s, &HASH[3..]);
+        let t = draw(&mut a, w, 16);
+        let buf = t.backend().buffer();
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .filter(|r| r.contains("check e23"))
+            .collect();
+        assert!(rows.iter().any(|r| r.contains('…')), "{rows:?}");
+    }
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.input.full_text(), format!("check {HASH}"));
+}
+
+#[test]
+fn a_picked_block_hides_the_ghost() {
+    let mut a = app();
+    type_str(&mut a, "configu");
+    assert!(a.complete_suffix().is_some());
+    a.selected = Some(a.blocks.len() - 1);
+    assert_eq!(a.complete_suffix(), None);
 }
