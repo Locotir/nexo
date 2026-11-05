@@ -1701,13 +1701,22 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         };
         let mut c = Collector::for_model(req.model.clone());
         let mut interrupted = false;
+        let mut marker = ck.pending.is_some().then(checkpoint::MarkerFilter::start);
         loop {
             tokio::select! {
                 ev = stream.next() => match ev {
                     None => break,
                     Some(ev) => {
                         match &ev {
-                            StreamEvent::TextDelta(t) => emit(&events, AgentEvent::TextDelta { text: t.clone() }),
+                            StreamEvent::TextDelta(t) => {
+                                let text = match &mut marker {
+                                    Some(f) => f.push(t),
+                                    None => t.clone(),
+                                };
+                                if !text.is_empty() {
+                                    emit(&events, AgentEvent::TextDelta { text });
+                                }
+                            }
                             StreamEvent::ReasoningDelta(t) => emit(&events, AgentEvent::ReasoningDelta { text: t.clone() }),
                             _ => {}
                         }
@@ -1715,6 +1724,12 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
                     }
                 },
                 _ = cancel.cancelled() => { interrupted = true; break }
+            }
+        }
+        if let Some(f) = &mut marker {
+            let text = f.finish();
+            if !text.is_empty() {
+                emit(&events, AgentEvent::TextDelta { text });
             }
         }
         drop(stream);

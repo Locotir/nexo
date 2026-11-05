@@ -3522,3 +3522,72 @@ async fn a_goal_stopped_for_lack_of_progress_says_so() {
     assert!(!all.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("tool-round limit"))));
     r.stop().await;
 }
+
+fn deltas(evs: &[AgentEvent]) -> String {
+    evs.iter().filter_map(|e| if let AgentEvent::TextDelta { text } = e { Some(text.as_str()) } else { None }).collect()
+}
+
+/// A reply streamed in the given pieces.
+fn pieces(parts: &[&str]) -> Vec<StreamEvent> {
+    let mut evs = vec![StreamEvent::Start { response_id: None, model: None }];
+    evs.extend(parts.iter().map(|p| StreamEvent::TextDelta((*p).into())));
+    evs.extend([StreamEvent::Finish(FinishReason::Stop), StreamEvent::Done]);
+    evs
+}
+
+#[tokio::test]
+async fn the_decision_line_of_a_checkpoint_reply_is_not_streamed() {
+    let client = Scripted::new(vec![
+        Reply::Events(call("c0", "read", json!({"path": "a"}))),
+        Reply::Events(call("c1", "read", json!({"path": "b"}))),
+        Reply::Events(pieces(&["CHECK", "POINT STOP: secret", " reason\n", "The work", " is finished."])),
+    ]);
+    let evs = run_request(&client, ck_config(2), "go").await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(deltas(&evs), "The work is finished.");
+    assert!(has_notice(&evs, "stop: secret reason"));
+}
+
+#[tokio::test]
+async fn a_checkpoint_reply_that_is_only_the_marker_streams_nothing() {
+    let client = Scripted::new(vec![
+        Reply::Events(call("c0", "read", json!({"path": "a"}))),
+        Reply::Events(call("c1", "read", json!({"path": "b"}))),
+        Reply::Events(pieces(&["checkpoint continue: why. NEXT: x"])),
+        Reply::Events(text("Done.")),
+    ]);
+    let evs = run_request(&client, ck_config(2), "go").await;
+    assert_eq!(deltas(&evs), "Done.");
+}
+
+#[tokio::test]
+async fn a_checkpoint_reply_without_the_marker_streams_unchanged() {
+    let client = Scripted::new(vec![
+        Reply::Events(call("c0", "read", json!({"path": "a"}))),
+        Reply::Events(call("c1", "read", json!({"path": "b"}))),
+        Reply::Events(pieces(&["Plain ", "words\nmore"])),
+    ]);
+    let evs = run_request(&client, ck_config(2), "go").await;
+    assert_eq!(deltas(&evs), "Plain words\nmore");
+}
+
+#[tokio::test]
+async fn text_starting_with_checkpoint_outside_a_checkpoint_is_untouched() {
+    let client = Scripted::new(vec![Reply::Events(pieces(&["CHECKPOINT STOP: not a decision\n", "body"]))]);
+    let evs = run_request(&client, ck_config(2), "go").await;
+    assert_eq!(deltas(&evs), "CHECKPOINT STOP: not a decision\nbody");
+}
+
+#[tokio::test]
+async fn the_history_keeps_the_full_checkpoint_reply() {
+    let client = Scripted::new(vec![
+        Reply::Events(call("c0", "read", json!({"path": "a"}))),
+        Reply::Events(call("c1", "read", json!({"path": "b"}))),
+        Reply::Events(pieces(&["CHECKPOINT CONTINUE: keep me. NEXT: x\n", "going on"])),
+        Reply::Events(text("Done.")),
+    ]);
+    let evs = run_request(&client, ck_config(2), "go").await;
+    assert_eq!(deltas(&evs), "going onDone.");
+    let kept = serde_json::to_string(&client.requests()[3].messages).unwrap();
+    assert!(kept.contains("CHECKPOINT CONTINUE: keep me. NEXT: x\\ngoing on"), "{kept}");
+}

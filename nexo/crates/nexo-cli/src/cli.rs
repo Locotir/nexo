@@ -610,6 +610,7 @@ async fn headless(
     let sent = handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] }).is_ok();
     let mut out = std::io::stdout().lock();
     let mut code = 0;
+    // the text printed so far ends in the middle of a line
     let mut printed = false;
     while let Some(ev) = handle.events.recv().await {
         if json {
@@ -619,7 +620,12 @@ async fn headless(
             AgentEvent::TextDelta { text } if !json => {
                 out.write_all(text.as_bytes())?;
                 out.flush()?;
-                printed = true;
+                printed = !text.ends_with('\n');
+            }
+            // the next message starts on a line of its own
+            AgentEvent::AssistantStart if !json && printed => {
+                writeln!(out)?;
+                printed = false;
             }
             AgentEvent::ToolCall { summary, .. } if !json => eprintln!("· {summary}"),
             AgentEvent::Notice { level, text } if !json => eprintln!("[{level:?}] {text}"),

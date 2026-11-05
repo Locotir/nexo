@@ -130,6 +130,57 @@ pub fn parse_decision(text: &str) -> Option<Decision> {
     None
 }
 
+/// Holds back the start of a checkpoint reply until its first line is known, so the decision line is not shown
+/// to the person as reply text. The model's message itself is kept as sent.
+#[derive(Debug)]
+pub struct MarkerFilter {
+    held: String,
+    open: bool,
+}
+
+impl MarkerFilter {
+    pub fn start() -> Self {
+        MarkerFilter { held: String::new(), open: true }
+    }
+
+    /// Whether `s`, the start of a line, may still turn out to begin with the marker.
+    fn may_start(s: &str) -> bool {
+        let t = s.trim().trim_start_matches(['*', '_', '`', '#', '>', '-', '[', '(', ' ']);
+        let t = t.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start_matches(['.', ')']);
+        let t = t.trim_start_matches(['*', '_', '`', '[', '(', ' ']).to_ascii_lowercase();
+        t.is_empty() || "checkpoint".starts_with(&t) || t.starts_with("checkpoint")
+    }
+
+    /// The text of the next delta that may be shown.
+    pub fn push(&mut self, t: &str) -> String {
+        if !self.open {
+            return t.to_string();
+        }
+        self.held.push_str(t);
+        if let Some(i) = self.held.find('\n') {
+            self.open = false;
+            let held = std::mem::take(&mut self.held);
+            return if parse_decision(&held[..i]).is_some() { held[i + 1..].to_string() } else { held };
+        }
+        if Self::may_start(&self.held) {
+            return String::new();
+        }
+        self.open = false;
+        std::mem::take(&mut self.held)
+    }
+
+    /// What is still held when the stream ends.
+    pub fn finish(&mut self) -> String {
+        self.open = false;
+        let held = std::mem::take(&mut self.held);
+        if parse_decision(&held).is_some() {
+            String::new()
+        } else {
+            held
+        }
+    }
+}
+
 /// The facts of one checkpoint.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
