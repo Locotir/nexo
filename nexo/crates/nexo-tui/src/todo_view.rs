@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use nexo_core::tool::{TodoItem, TodoStatus};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::modal::ModalOut;
@@ -16,6 +17,9 @@ use crate::theme::Theme;
 
 /// How long a task that just changed state glows, in milliseconds.
 const GLOW_MS: u64 = 700;
+
+/// The longest gap between two clicks on a row that count as a double click, in milliseconds.
+const DOUBLE_CLICK_MS: u128 = 400;
 
 #[derive(Debug, Clone)]
 pub struct TodoView {
@@ -29,6 +33,8 @@ pub struct TodoView {
     moving: bool,
     /// The line each row started at in the last body, for a dragged scrollbar.
     row_starts: Vec<usize>,
+    /// The row and the moment of the last click, for the second click that copies.
+    last_click: Option<(usize, Instant)>,
 }
 
 /// What `lines` hands the window.
@@ -54,6 +60,7 @@ impl TodoView {
             bar: Counter::default(),
             moving: false,
             row_starts: Vec::new(),
+            last_click: None,
         };
         v.done_open = v.all_done();
         v
@@ -84,6 +91,13 @@ impl TodoView {
             v.extend(by(TodoStatus::Done));
         }
         v
+    }
+
+    /// What the size of the window depends on: how many tasks, how many in each group, whether the
+    /// finished ones are open.
+    pub fn size_key(&self) -> (usize, usize, usize, bool) {
+        let n = |s: TodoStatus| self.items.iter().filter(|i| i.status == s).count();
+        (self.items.len(), n(TodoStatus::InProgress), n(TodoStatus::Done), self.done_open)
     }
 
     pub fn current(&self) -> Option<&TodoItem> {
@@ -150,10 +164,23 @@ impl TodoView {
     /// A click on the row `i` of the order: it takes the cursor, a second click copies it. The
     /// place just after the last row is the header of the finished ones.
     pub fn click_row(&mut self, i: usize) -> ModalOut {
+        self.click_row_at(i, Instant::now())
+    }
+
+    /// `click_row` with the moment of the click: a second click on the same row within
+    /// [`DOUBLE_CLICK_MS`] copies; a first one only moves the cursor.
+    pub fn click_row_at(&mut self, i: usize, now: Instant) -> ModalOut {
         let n = self.order().len();
+        let twice = self
+            .last_click
+            .is_some_and(|(r, t)| r == i && now.saturating_duration_since(t).as_millis() <= DOUBLE_CLICK_MS);
+        self.last_click = Some((i, now));
         if i >= n {
+            self.last_click = None;
             self.toggle_done();
-        } else if self.selected == i {
+        } else if twice {
+            self.last_click = None;
+            self.selected = i;
             return self.copy();
         } else {
             self.selected = i;
@@ -298,8 +325,19 @@ impl TodoView {
                 number: Some((i + 1, digits)),
                 glow: pulse.max(hump(self.changed_at.get(i).copied().flatten(), now, GLOW_MS)),
                 compact: false,
+                roomy: false,
             };
-            let mut rows = todo_row(it, w, theme, ctx);
+            // two columns at the left for the cursor: a bar on its rows, blank on the others
+            let mut rows = todo_row(it, w.saturating_sub(2), theme, ctx);
+            for l in &mut rows {
+                let ground = l.spans.first().and_then(|s| s.style.bg);
+                let mark = if sel { "▌ " } else { "  " };
+                let mut style = ground.map(|c| Style::default().bg(c)).unwrap_or_default();
+                if sel {
+                    style = style.fg(theme.accent);
+                }
+                l.spans.insert(0, Span::styled(mark, style));
+            }
             if sel {
                 sel_len = rows.len();
                 for l in &mut rows {
@@ -374,8 +412,8 @@ mod tests {
         )]);
         let rows = plain(&v.body(40, &Theme::dark(), None, 0.0, Instant::now()));
         assert!(rows.iter().all(|r| width(r) <= 40), "{rows:#?}");
-        let n = rows.iter().position(|r| r.starts_with("○ 1")).unwrap();
-        assert!(rows[n + 1].starts_with("     "), "{rows:#?}");
+        let n = rows.iter().position(|r| r.trim_start_matches(['▌', ' ']).starts_with("○ 1")).unwrap();
+        assert!(rows[n + 1].trim_start_matches('▌').starts_with("      "), "{rows:#?}");
     }
 
     #[test]
@@ -427,6 +465,21 @@ mod tests {
         let rows = plain(&v.body(40, &Theme::dark(), None, 0.0, Instant::now()));
         assert!(rows.iter().any(|r| r.contains("No tasks yet")));
         assert_eq!(press(&mut v, KeyCode::Enter), ModalOut::Nothing);
+    }
+
+    #[test]
+    fn the_first_click_on_the_row_with_the_cursor_only_selects() {
+        let mut v = view();
+        let t = Instant::now();
+        assert_eq!(v.selected, 0);
+        assert_eq!(v.click_row_at(0, t), ModalOut::Nothing);
+        assert_eq!(v.click_row_at(0, t + std::time::Duration::from_millis(900)), ModalOut::Nothing, "too slow");
+        assert_eq!(
+            v.click_row_at(0, t + std::time::Duration::from_millis(1100)),
+            ModalOut::Copy("fix the parser".into())
+        );
+        assert_eq!(v.click_row_at(2, t + std::time::Duration::from_millis(1200)), ModalOut::Nothing);
+        assert_eq!(v.click_row_at(1, t + std::time::Duration::from_millis(1300)), ModalOut::Nothing, "another row");
     }
 
     #[test]

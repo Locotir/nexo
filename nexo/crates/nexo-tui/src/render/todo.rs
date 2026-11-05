@@ -4,6 +4,7 @@
 use nexo_core::tool::{TodoItem, TodoStatus};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::render::blocks::{todo_style, SPINNER};
 use crate::render::markdown::md_lines;
@@ -21,6 +22,8 @@ pub struct RowCtx {
     pub glow: f32,
     /// One line per task, cut with `…`; else the whole text.
     pub compact: bool,
+    /// With `compact`: two lines when the text needs them (the panel has height to spare).
+    pub roomy: bool,
 }
 
 /// The glyph of a task and its style.
@@ -47,11 +50,14 @@ pub fn todo_row(item: &TodoItem, w: usize, theme: &Theme, ctx: RowCtx) -> Vec<Li
         lines.push(Line::from(Span::raw(indent)));
     }
     if ctx.compact {
-        let more = lines.len() > 2;
-        lines.truncate(2);
-        if more {
-            if let Some(last) = lines.last_mut() {
-                last.spans.push(Span::styled(" …", theme.dim()));
+        let keep = if ctx.roomy { 2 } else { 1 };
+        let more = lines.len() > keep;
+        lines.truncate(keep);
+        if let Some(last) = lines.last_mut() {
+            let used: usize = last.spans.iter().map(|s| width(&s.content)).sum();
+            if more || used > w {
+                clip(last, w.saturating_sub(1));
+                last.spans.push(Span::styled("…", theme.dim()));
             }
         }
     }
@@ -76,6 +82,39 @@ pub fn todo_row(item: &TodoItem, w: usize, theme: &Theme, ctx: RowCtx) -> Vec<Li
         }
     }
     lines
+}
+
+/// Cuts a line to at most `cols` columns, trailing blanks dropped.
+fn clip(line: &mut Line<'static>, cols: usize) {
+    let mut left = cols;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for s in line.spans.drain(..) {
+        if left == 0 {
+            break;
+        }
+        if width(&s.content) <= left {
+            left -= width(&s.content);
+            out.push(s);
+            continue;
+        }
+        let mut cut = String::new();
+        for g in s.content.graphemes(true) {
+            if width(g) > left {
+                break;
+            }
+            left -= width(g);
+            cut.push_str(g);
+        }
+        out.push(Span::styled(cut, s.style));
+        break;
+    }
+    while out.last().is_some_and(|s| s.content.trim_end().is_empty() && out.len() > 1) {
+        out.pop();
+    }
+    if let Some(s) = out.last_mut() {
+        s.content = s.content.trim_end().to_string().into();
+    }
+    line.spans = out;
 }
 
 /// `▕███▌░░▏ 3/7` for the status bar and the side panel header, a fixed width.
@@ -121,12 +160,15 @@ mod tests {
     }
 
     #[test]
-    fn a_compact_row_is_two_lines_at_most() {
+    fn a_compact_row_is_one_line_cut_with_an_ellipsis_unless_there_is_room() {
         let t = Theme::dark();
         let it = item(&"word ".repeat(40), TodoStatus::Pending);
-        let lines = todo_row(&it, 20, &t, RowCtx { compact: true, ..Default::default() });
-        assert_eq!(lines.len(), 2);
-        assert!(text(&lines[1]).ends_with('…'));
+        let one = todo_row(&it, 20, &t, RowCtx { compact: true, ..Default::default() });
+        assert_eq!(one.len(), 1);
+        assert!(text(&one[0]).ends_with('…') && width(&text(&one[0])) <= 20, "{:?}", text(&one[0]));
+        let two = todo_row(&it, 20, &t, RowCtx { compact: true, roomy: true, ..Default::default() });
+        assert_eq!(two.len(), 2);
+        assert!(text(&two[1]).ends_with('…'));
     }
 
     #[test]

@@ -23,6 +23,7 @@ fn app() -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 4,
+        group_tools: true,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),
@@ -67,4 +68,14 @@ fn an_empty_jobs_window_is_small_and_keeps_its_keys_in_their_own_row() {
     assert!(!title.contains("Enter opens") && title.contains('╮'), "{title:?}");
     let all = rows.join("\n");
     assert!(all.contains("No background jobs") && all.contains("Esc"), "{all}");
+}
+
+#[test]
+fn the_theme_picker_leaves_the_chat_in_sight() {
+    for cmd in [Command::Theme(None), Command::Model(None)] {
+        let mut a = app();
+        a.run_command(cmd.clone());
+        let text = draw(&mut a, 140, 40).join("\n");
+        assert!(text.contains("nexo 0.1.0"), "{cmd:?}: the screen behind the picker is not wiped\n{text}");
+    }
 }

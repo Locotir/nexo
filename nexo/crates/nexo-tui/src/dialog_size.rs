@@ -80,7 +80,7 @@ pub fn modal_key(m: &Modal) -> u64 {
         Modal::Info(_) => 5u8.hash(&mut h),
         Modal::Agents(v) => (6u8, v.size_key()).hash(&mut h),
         Modal::Jobs(_) => 7u8.hash(&mut h),
-        Modal::Todo(_) => 8u8.hash(&mut h),
+        Modal::Todo(v) => (8u8, v.size_key()).hash(&mut h),
     }
     h.finish()
 }

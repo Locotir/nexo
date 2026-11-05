@@ -27,6 +27,7 @@ fn app(animations: bool, theme: &str) -> App {
         show_reasoning: true,
         timestamps: false,
         fold_after: 4,
+        group_tools: true,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),
@@ -218,4 +219,68 @@ fn a_click_on_a_task_selects_it_and_on_the_finished_header_opens_them() {
     let (h, _) = a.picker_rows.iter().find(|(_, i)| *i == 4).cloned().expect("the header");
     click(&mut a, h.x, h.y);
     assert!(matches!(&a.modal, Some(Modal::Todo(v)) if v.done_open));
+}
+
+fn push_list(a: &mut App, items: Vec<TodoItem>) {
+    a.handle_agent(AgentEvent::ToolDone {
+        id: "t2".into(),
+        output: ToolOutput::ok("ok").with_display(ToolDisplay::Todo { items }),
+        elapsed_ms: 1,
+    });
+}
+
+#[test]
+fn a_window_opened_on_one_task_grows_when_the_list_does() {
+    let mut a = app(false, "dark");
+    open(&mut a, vec![item("Only task", TodoStatus::Pending)]);
+    render(&mut a, 100, 32);
+    let many: Vec<TodoItem> = (1..=7).map(|n| item(&format!("Task number {n}"), TodoStatus::Pending)).collect();
+    push_list(&mut a, many);
+    let text = render(&mut a, 100, 32).0.join("\n");
+    assert!(text.contains("Task number 7") && text.contains("NEXT · 7"), "{text}");
+    assert!(text.contains("0%") && text.contains("Esc"), "the bar and the keys stay in view\n{text}");
+}
+
+#[test]
+fn opening_the_finished_ones_makes_room_for_all_of_them() {
+    let mut a = app(false, "dark");
+    let mut items = vec![item("Still to do", TodoStatus::Pending)];
+    items.extend((1..=4).map(|n| item(&format!("Finished {n}"), TodoStatus::Done)));
+    open(&mut a, items);
+    render(&mut a, 100, 32);
+    press(&mut a, crossterm::event::KeyCode::Char(' '));
+    let text = render(&mut a, 100, 32).0.join("\n");
+    for n in 1..=4 {
+        assert!(text.contains(&format!("Finished {n}")), "{n}\n{text}");
+    }
+    assert!(text.contains("Esc"), "{text}");
+}
+
+#[test]
+fn only_the_row_under_the_cursor_has_the_bar() {
+    for theme in ["dark", "light"] {
+        let mut a = app(false, theme);
+        open(&mut a, list());
+        press(&mut a, crossterm::event::KeyCode::Down);
+        let (rows, _) = render(&mut a, 100, 32);
+        let marked: Vec<&String> = rows.iter().filter(|r| r.contains("▌ ")).collect();
+        assert_eq!(marked.len(), 1, "{theme}\n{}", rows.join("\n"));
+        assert!(marked[0].contains("○ 5"), "{theme}: the second task\n{}", rows.join("\n"));
+        // the first row (the one being worked on) has no bar once the cursor left it
+        assert!(rows.iter().any(|r| r.contains("◐ 4") && !r.contains('▌')));
+    }
+}
+
+#[test]
+fn the_side_panel_keeps_changed_files_in_sight_with_a_long_list() {
+    let mut a = app(false, "dark");
+    a.show_files = true;
+    a.todo = (1..=16)
+        .map(|n| item(&format!("Task {n} with a text long enough to wrap in a narrow side panel"), TodoStatus::Pending))
+        .collect();
+    a.changed = vec![nexo_tui::app::ChangedFile { path: "src/lib.rs".into(), added: 3, removed: 1 }];
+    let (rows, _) = render(&mut a, 120, 30);
+    let text = rows.join("\n");
+    assert!(text.contains("changed files (1)") && text.contains("src/lib.rs"), "{text}");
+    assert!(text.contains("..") || text.contains('…'), "{text}");
 }

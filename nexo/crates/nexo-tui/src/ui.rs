@@ -134,9 +134,9 @@ fn draw_all(f: &mut Frame, app: &mut App) {
             _ if middle.height >= 5 => middle,
             _ => area,
         };
-        // a window that is not about the text behind it gets clear ground, so no piece of the welcome card
-        // or of a line cut by its edge shows beside it; a permission or a question keeps the text in sight
-        if !matches!(app.modal, Some(Modal::Permission(_) | Modal::Question(_))) {
+        // the to-do and jobs windows get clear ground, so no piece of the welcome card shows beside them; the
+        // others keep the text in sight (a theme preview needs it) and clear only the cells beside the box
+        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_))) {
             clear_bg(f, area_for, &app.theme);
         }
         draw_modal(f, app, area_for);
@@ -1586,6 +1586,8 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
         let ctx = crate::render::todo::RowCtx {
             spinner: app.opts.animations.then_some(app.spinner),
             compact: true,
+            // two lines a task only when the changed files still fit under them
+            roomy: lines.len() + app.todo.len() * 2 + 3 + app.changed.len().max(1) <= area.height as usize,
             ..Default::default()
         };
         for it in &app.todo {
