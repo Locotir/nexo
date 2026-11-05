@@ -80,6 +80,8 @@ const NOTE_CHARS: usize = 400;
 pub const NOTE_TOOL: &str = "note";
 /// The tool the host may offer to bring a message back exactly, by the `m#####` name the curator gives it.
 pub const RECALL_TOOL: &str = "recall";
+/// The arguments of an edit that hold the text it replaced, in the shapes editor tools name them.
+const REPLACED_ARGS: &[&str] = &["old_string", "old_str", "old_text"];
 /// Output messages a closed request names by their `m#####` number before the rest are counted.
 const RECALL_NAMED: usize = 6;
 
@@ -1779,16 +1781,19 @@ impl Engine {
             if let Some(Value::Object(args)) = b.get("input") {
                 // only a write leaves its text in a file to read back; a command or a prompt does not
                 let wrote = classify(get_str(b, "name"), b.get("input")).0 == Kind::Write;
+                // the text an edit replaced is gone from the file: saying the file holds it would mislead
                 let args: Map<String, Value> = args
                     .iter()
                     .map(|(k, v)| {
+                        let what = match (wrote, REPLACED_ARGS.contains(&k.as_str())) {
+                            (true, true) => "this edit replaced here are omitted; they are no longer in the file",
+                            (true, false) => "written here are omitted; the file on disk is current",
+                            _ => "of this argument here are omitted",
+                        };
                         let v = match v {
-                            Value::String(s) if py::len(s) > 200 => Value::String(format!(
-                                "{MARK} {} lines {} here are omitted{}",
-                                s.matches('\n').count() + 1,
-                                if wrote { "written" } else { "of this argument" },
-                                if wrote { "; the file on disk is current" } else { "" }
-                            )),
+                            Value::String(s) if py::len(s) > 200 => {
+                                Value::String(format!("{MARK} {} lines {what}", s.matches('\n').count() + 1))
+                            }
                             _ => v.clone(),
                         };
                         (k.clone(), v)
@@ -5409,6 +5414,31 @@ mod tests {
         let call = e.view()[1].to_string();
         assert!(call.contains("lines of this argument here are omitted"), "{call} {:?}", e.stats);
         assert!(!call.contains("the file on disk is current"), "{call}");
+    }
+
+    #[test]
+    fn the_text_an_edit_replaced_is_not_said_to_be_in_the_file() {
+        let old = (0..40).map(|k| format!("let {} = {};", word(k), k)).collect::<Vec<_>>().join("\n");
+        let new = (0..40).map(|k| format!("let {} = {};", word(k + 70), k)).collect::<Vec<_>>().join("\n");
+        let input = json!({"path": "a.rs", "old_string": old, "new_string": new});
+        let mut msgs = vec![
+            json!({"role": "user", "content": "Rename the bindings."}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "edit", "input": input}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "edited a.rs"}]}),
+        ];
+        for k in 2..8 {
+            msgs.extend(step(k, &format!("wc -l part{k}"), &format!("{k} lines")));
+        }
+        let mut whole = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+        whole.sync(&msgs);
+        let total = whole.tokens();
+        let cap = total - 1;
+        let floor = (total - est_str(&old)) as f64 / cap as f64;
+        let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;cap={cap};floor={floor}")).unwrap());
+        e.sync(&msgs);
+        let call = e.view()[1].to_string();
+        assert!(call.contains("lines this edit replaced here are omitted; they are no longer in the file"), "{call}");
+        assert!(call.contains("lines written here are omitted; the file on disk is current"), "{call}");
     }
 
     #[test]
