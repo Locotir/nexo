@@ -5,6 +5,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::regions::{Cont, Kind};
 use crate::render::wrap::width;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -13,21 +14,40 @@ pub struct Pos {
     pub col: usize,
 }
 
+/// The box a drag started in: block `block`, region `idx` of it, rows `start..=end` of the block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionRef {
+    pub block: usize,
+    pub idx: usize,
+    pub start: usize,
+    pub end: usize,
+    pub deco: usize,
+    pub kind: Kind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
     pub anchor: Pos,
     pub head: Pos,
     /// The button is still down.
     pub dragging: bool,
+    /// The box the drag started in: it stays inside it.
+    pub region: Option<RegionRef>,
+    /// Columns of decoration left of the box, never painted nor copied.
+    pub deco: usize,
+    /// Made by a double or triple click: a drag does not move it.
+    pub fixed: bool,
+    /// Started with Alt or Ctrl: no box, no clamp.
+    pub free: bool,
 }
 
 impl Selection {
     pub fn new(anchor: Pos) -> Selection {
-        Selection { anchor, head: anchor, dragging: true }
+        Selection { anchor, head: anchor, dragging: true, region: None, deco: 0, fixed: false, free: false }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.anchor == self.head
+        self.anchor == self.head && !self.fixed
     }
 
     /// The two ends in order.
@@ -51,7 +71,7 @@ impl Selection {
         if line < s.line || line > e.line {
             return None;
         }
-        let from = if line == s.line { s.col } else { 0 };
+        let from = if line == s.line { s.col } else { 0 }.max(self.deco);
         let to = if line == e.line { e.col + 1 } else { usize::MAX };
         Some((from, to))
     }
@@ -74,6 +94,130 @@ impl Selection {
             out.push(slice_cols(&piece, from, to).trim_end().to_string());
         }
         strip_gutter(out).join("\n")
+    }
+}
+
+/// Display width of `s`.
+pub fn width_of(s: &str) -> usize {
+    width(s)
+}
+
+/// The columns `a..b` of the word under column `col` of `text`, not reaching left of `lo`:
+/// letters, digits and `_` make a word, any other glyph a run of its own kind. None on spaces.
+pub fn word_bounds(text: &str, col: usize, lo: usize) -> Option<(usize, usize)> {
+    fn class(g: &str) -> u8 {
+        let c = g.chars().next().unwrap_or(' ');
+        if c.is_whitespace() {
+            0
+        } else if c.is_alphanumeric() || c == '_' {
+            1
+        } else {
+            2
+        }
+    }
+    let mut cells: Vec<(usize, usize, u8)> = Vec::new();
+    let mut at = 0;
+    for g in text.graphemes(true) {
+        let w = width(g);
+        cells.push((at, at + w, class(g)));
+        at += w;
+    }
+    let i = cells.iter().position(|(a, b, _)| *a <= col && col < *b)?;
+    let k = cells[i].2;
+    if k == 0 || cells[i].0 < lo {
+        return None;
+    }
+    let mut a = i;
+    while a > 0 && cells[a - 1].2 == k && cells[a - 1].0 >= lo {
+        a -= 1;
+    }
+    let mut b = i;
+    while b + 1 < cells.len() && cells[b + 1].2 == k {
+        b += 1;
+    }
+    Some((cells[a].0, cells[b].1))
+}
+
+/// What the layout knows of one selected row, for a copy that takes the content and not the screen.
+#[derive(Debug, Clone, Default)]
+pub struct LineInfo {
+    pub text: String,
+    /// The row continues the one above (a wrap).
+    pub cont: Option<Cont>,
+    /// The box the row sits in: (block, region).
+    pub region: Option<(usize, usize)>,
+    pub deco: usize,
+    /// The row's original text, when the box keeps it.
+    pub src: Option<String>,
+    /// A heading of the box, not content.
+    pub skip: bool,
+    /// Blank columns before the row's rail.
+    pub margin: usize,
+}
+
+impl Selection {
+    /// The selected text from the rows' layout data (`infos[k]` is row `range().0.line + k`).
+    /// Inside a box only the box's content comes out, its decoration dropped and its indentation
+    /// kept; from prose, boxes crossed are taken whole and the rest as today; free, as today.
+    /// Rows the layout wrapped are joined back with the spaces the wrap took out.
+    pub fn extract_clean(&self, infos: &[LineInfo]) -> String {
+        let (s, _) = self.range();
+        let contained = self.region.map(|r| (r.block, r.idx)).filter(|_| !self.free);
+        let mut logical: Vec<String> = Vec::new();
+        for (k, info) in infos.iter().enumerate() {
+            let (from, to) = self.covers(s.line + k).unwrap_or((0, 0));
+            let boxed = info.region.is_some() && !self.free;
+            let piece = if let Some(own) = contained {
+                if info.region != Some(own) || info.skip {
+                    continue;
+                }
+                box_piece(info, from, to)
+            } else if boxed {
+                if info.skip {
+                    continue;
+                }
+                box_piece(info, from, to)
+            } else if let Some(c) = info.cont {
+                slice_cols(&info.text, from.max(c.deco as usize), to)
+            } else if from <= info.margin {
+                // the margin and the rail took their columns: the requested columns move with them
+                let body = slice_cols(&info.text, info.margin, usize::MAX);
+                let piece = strip_rail(&body);
+                let shift = width(&info.text) - width(&piece);
+                let to = if to == usize::MAX { to } else { to.saturating_sub(shift) };
+                slice_cols(&piece, 0, to)
+            } else {
+                slice_cols(&info.text, from, to)
+            };
+            match info.cont {
+                Some(c) if !logical.is_empty() && k > 0 => {
+                    if let Some(last) = logical.last_mut() {
+                        last.push_str(&" ".repeat(c.gap as usize));
+                        last.push_str(&piece);
+                    }
+                }
+                _ => logical.push(piece),
+            }
+        }
+        let logical: Vec<String> = logical.into_iter().map(|l| l.trim_end().to_string()).collect();
+        if self.free || (contained.is_none() && !infos.iter().any(|i| i.region.is_some())) {
+            strip_gutter(logical).join("\n")
+        } else {
+            logical.join("\n")
+        }
+    }
+}
+
+/// The content of a row of a box between columns `from` and `to` of the screen.
+fn box_piece(info: &LineInfo, from: usize, to: usize) -> String {
+    let deco = info.cont.map_or(info.deco, |c| info.deco.max(c.deco as usize));
+    let from = from.max(deco);
+    match &info.src {
+        Some(src) if info.cont.is_none() => {
+            let base = info.deco;
+            slice_cols(src, from - base, if to == usize::MAX { to } else { to.saturating_sub(base) })
+        }
+        _ => slice_cols(&info.text, from, to),
     }
 }
 

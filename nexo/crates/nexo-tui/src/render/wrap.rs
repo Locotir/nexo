@@ -5,6 +5,8 @@ use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::regions::Cont;
+
 /// Display width of a string.
 pub fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
@@ -119,6 +121,7 @@ pub fn clean_lines(lines: &mut [Line<'static>]) {
 
 struct Wrapper<'a> {
     lines: Vec<Line<'static>>,
+    conts: Vec<Cont>,
     cur: Vec<Span<'static>>,
     cur_w: usize,
     max_w: usize,
@@ -131,6 +134,21 @@ struct Wrapper<'a> {
 impl Wrapper<'_> {
     fn limit(&self) -> usize {
         self.max_w.max(self.prefix_len + 1)
+    }
+
+    /// A break the layout made: the next row continues this one.
+    fn soft(&mut self) {
+        let mut gap = 0usize;
+        'count: for s in self.cur.iter().rev() {
+            for c in s.content.chars().rev() {
+                if !c.is_whitespace() {
+                    break 'count;
+                }
+                gap += 1;
+            }
+        }
+        self.newline();
+        self.conts.push(Cont { line: self.lines.len() as u32, gap: gap.min(255) as u8, deco: self.rest_w as u16 });
     }
 
     fn newline(&mut self) {
@@ -148,7 +166,7 @@ impl Wrapper<'_> {
         }
         let w = width(word);
         if self.cur_w + w > self.limit() && !self.at_start {
-            self.newline();
+            self.soft();
         }
         if self.cur_w + w > self.limit() {
             // wider than a whole line: cut by graphemes
@@ -158,7 +176,7 @@ impl Wrapper<'_> {
                 let gw = width(g);
                 if self.cur_w + pw + gw > self.limit() && pw > 0 {
                     self.cur.push(Span::styled(std::mem::take(&mut piece), style));
-                    self.newline();
+                    self.soft();
                     pw = 0;
                 }
                 piece.push_str(g);
@@ -186,10 +204,21 @@ pub fn wrap_runs(
     first: &[Span<'static>],
     rest: &[Span<'static>],
 ) -> Vec<Line<'static>> {
+    wrap_runs_ex(runs, max_w, first, rest).0
+}
+
+/// [`wrap_runs`] and the rows that continue the one above (a break the layout made, not the text).
+pub fn wrap_runs_ex(
+    runs: &[(String, Style)],
+    max_w: usize,
+    first: &[Span<'static>],
+    rest: &[Span<'static>],
+) -> (Vec<Line<'static>>, Vec<Cont>) {
     let first_w: usize = first.iter().map(|s| width(&s.content)).sum();
     let rest_w: usize = rest.iter().map(|s| width(&s.content)).sum();
     let mut w = Wrapper {
         lines: Vec::new(),
+        conts: Vec::new(),
         cur: first.to_vec(),
         cur_w: first_w,
         max_w,
@@ -217,7 +246,7 @@ pub fn wrap_runs(
     }
     trim_end(&mut w.cur);
     w.lines.push(Line::from(w.cur));
-    w.lines
+    (w.lines, w.conts)
 }
 
 fn trim_end(spans: &mut Vec<Span<'static>>) {
@@ -234,12 +263,25 @@ fn trim_end(spans: &mut Vec<Span<'static>>) {
 
 /// Plain text wrapped at `max_w` with a prefix on every line.
 pub fn wrap_plain(text: &str, max_w: usize, style: Style, prefix: &[Span<'static>]) -> Vec<Line<'static>> {
+    wrap_plain_ex(text, max_w, style, prefix).0
+}
+
+/// [`wrap_plain`] and its continuation rows.
+pub fn wrap_plain_ex(
+    text: &str,
+    max_w: usize,
+    style: Style,
+    prefix: &[Span<'static>],
+) -> (Vec<Line<'static>>, Vec<Cont>) {
     let mut out = Vec::new();
+    let mut conts = Vec::new();
     for raw in text.split('\n') {
         let runs = [(raw.to_string(), style)];
-        out.extend(wrap_runs(&runs, max_w, prefix, prefix));
+        let (lines, cs) = wrap_runs_ex(&runs, max_w, prefix, prefix);
+        conts.extend(cs.into_iter().map(|c| Cont { line: c.line + out.len() as u32, ..c }));
+        out.extend(lines);
     }
-    out
+    (out, conts)
 }
 
 #[cfg(test)]
@@ -288,5 +330,24 @@ mod tests {
         assert_eq!(truncate("hello world", 6), "hello…");
         let lines = wrap_plain("", 10, Style::default(), &[]);
         assert_eq!(lines.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod cont_tests {
+    use super::*;
+
+    #[test]
+    fn marks_the_rows_the_layout_wrapped_and_the_spaces_it_trimmed() {
+        let runs = [("one  two three".to_string(), Style::default())];
+        let (lines, conts) = wrap_runs_ex(&runs, 8, &[], &[Span::raw("  ")]);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(conts, vec![Cont { line: 1, gap: 2, deco: 2 }, Cont { line: 2, gap: 1, deco: 2 }]);
+        let runs = [("abcdefghij".to_string(), Style::default())];
+        let (_, conts) = wrap_runs_ex(&runs, 5, &[], &[]);
+        assert_eq!(conts, vec![Cont { line: 1, gap: 0, deco: 0 }]);
+        let (lines, conts) = wrap_plain_ex("a\nb c d e", 3, Style::default(), &[]);
+        assert_eq!(lines.len(), 4);
+        assert!(conts.iter().all(|c| c.line >= 2), "a hard newline is not a wrap");
     }
 }

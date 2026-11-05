@@ -7,7 +7,8 @@ use ratatui::text::{Line, Span};
 use crate::theme::Theme;
 
 use super::code;
-use super::wrap::{truncate, width, wrap_runs};
+use super::wrap::{truncate, width, wrap_runs_ex};
+use crate::regions::{Kind, Meta, Region};
 
 struct ListCtx {
     /// Next number for an ordered list; None for bullets.
@@ -40,6 +41,7 @@ struct Renderer<'t> {
     list_sizes: std::collections::VecDeque<usize>,
     /// Code blocks shown for what they mean (Markdown rendered, JSON indented, tables).
     interpreted: bool,
+    meta: Meta,
 }
 
 struct TableCtx {
@@ -188,7 +190,9 @@ impl<'t> Renderer<'t> {
         }
         let runs = std::mem::take(&mut self.runs);
         let (first, rest) = self.prefixes();
-        let lines = wrap_runs(&runs, self.width, &first, &rest);
+        let (lines, conts) = wrap_runs_ex(&runs, self.width, &first, &rest);
+        let base = self.out.len() as u32;
+        self.meta.conts.extend(conts.into_iter().map(|c| crate::regions::Cont { line: c.line + base, ..c }));
         self.out.extend(lines);
     }
 
@@ -221,6 +225,7 @@ impl<'t> Renderer<'t> {
         head.push(Span::styled(format!("{bar} "), self.theme.dim2()));
         head.push(Span::styled(label, self.theme.dim()));
         self.out.push(Line::from(head));
+        let first_row = self.out.len();
         let bg = self.theme.code_block();
         let rail = self.theme.style(self.theme.border);
         for l in lines {
@@ -243,6 +248,14 @@ impl<'t> Renderer<'t> {
                 spans.push(Span::styled(" ".repeat(inner - used), bg));
             }
             self.out.push(Line::from(spans));
+        }
+        if self.out.len() > first_row {
+            let mut r = Region::new(Kind::Code, first_row, self.out.len() - 1, prefix_w + 2);
+            let src: Vec<String> = body.split('\n').map(str::to_string).collect();
+            if !shown && src.len() == self.out.len() - first_row {
+                r.src = Some(std::sync::Arc::new(src));
+            }
+            self.meta.regions.push(r);
         }
     }
 
@@ -276,6 +289,7 @@ impl<'t> Renderer<'t> {
             widths[i] -= 1;
         }
         let has_head = !t.head.is_empty();
+        let first_row = self.out.len();
         // a long cell wraps inside its column; the row grows to its tallest cell
         let wrapped: Vec<Vec<Vec<String>>> = rows
             .iter()
@@ -322,6 +336,9 @@ impl<'t> Renderer<'t> {
                 spans.push(Span::styled(line.join("─┼─"), self.theme.dim()));
                 self.out.push(Line::from(spans));
             }
+        }
+        if self.out.len() > first_row {
+            self.meta.regions.push(Region::new(Kind::Table, first_row, self.out.len() - 1, prefix_w));
         }
     }
 
@@ -515,6 +532,11 @@ pub fn render(md: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
 
 /// `md` rendered at `width` columns, its code blocks interpreted when `interpreted`.
 pub fn render_as(md: &str, width: usize, theme: &Theme, interpreted: bool) -> Vec<Line<'static>> {
+    render_as_meta(md, width, theme, interpreted).0
+}
+
+/// [`render_as`] and the boxes and wrapped rows of its lines.
+pub fn render_as_meta(md: &str, width: usize, theme: &Theme, interpreted: bool) -> (Vec<Line<'static>>, Meta) {
     // escapes cleaned before parsing: the parser splits "\x1b[31m" at the bracket, and a span
     // cleaned on its own would leave "[31m" behind
     let md = &*crate::render::wrap::clean(md);
@@ -537,6 +559,7 @@ pub fn render_as(md: &str, width: usize, theme: &Theme, interpreted: bool) -> Ve
         in_paragraph: false,
         list_sizes: Default::default(),
         interpreted,
+        meta: Meta::default(),
     };
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     r.list_sizes = list_sizes(md, opts);
@@ -547,7 +570,7 @@ pub fn render_as(md: &str, width: usize, theme: &Theme, interpreted: bool) -> Ve
     if let Some((lang, text)) = r.code.take() {
         r.code_block(&lang, &text);
     }
-    r.out
+    (r.out, r.meta)
 }
 
 /// How many items each list has, in document order (nested lists included, by their start).
@@ -591,13 +614,29 @@ pub fn md_lines(
     interpreted: bool,
     prefix: &[Span<'static>],
 ) -> Vec<Line<'static>> {
+    md_lines_meta(md, room, theme, base, interpreted, prefix).0
+}
+
+/// [`md_lines`] and its wrapped rows (the boxes inside are left to the caller, who boxes the whole).
+pub fn md_lines_meta(
+    md: &str,
+    room: usize,
+    theme: &Theme,
+    base: Style,
+    interpreted: bool,
+    prefix: &[Span<'static>],
+) -> (Vec<Line<'static>>, Meta) {
     let pw: usize = prefix.iter().map(|s| width(&s.content)).sum();
-    let mut lines = render_as(md, room.saturating_sub(pw), theme, interpreted);
+    let (mut lines, mut meta) = render_as_meta(md, room.saturating_sub(pw), theme, interpreted);
     while lines.last().is_some_and(|l| text_of(l).trim().is_empty()) {
         lines.pop();
     }
     let lead = lines.iter().take_while(|l| text_of(l).trim().is_empty()).count();
-    lines
+    meta.regions.clear();
+    meta.drop_front(lead);
+    meta.truncate(lines.len() - lead.min(lines.len()));
+    meta.add_deco(pw);
+    let lines = lines
         .into_iter()
         .skip(lead)
         .map(|l| {
@@ -605,7 +644,8 @@ pub fn md_lines(
             v.extend(l.spans.into_iter().map(|s| tint_plain(s, base)));
             Line::from(v)
         })
-        .collect()
+        .collect();
+    (lines, meta)
 }
 
 /// `s` without inline marks (backticks, `**`, `__`), for one-line places that cannot style.

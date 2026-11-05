@@ -427,6 +427,7 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                 return;
             }
             // a fold toggles when the button comes up without a drag (`release_at`)
+            app.press_free = m.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
             app.press_at(m.column, m.row);
         }
         MouseEventKind::Moved => {

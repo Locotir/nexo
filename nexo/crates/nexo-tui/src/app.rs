@@ -24,7 +24,7 @@ use crate::palette::{self, Palette, PaletteKind};
 use crate::render::blocks::{fmt_ms, Block, RenderOpts, ToolStatus};
 use crate::render::diff;
 use crate::scrollbar::{self, Bar, Hit};
-use crate::select::{Pos, Selection};
+use crate::select::{LineInfo, Pos, RegionRef, Selection};
 use crate::theme::Theme;
 use crate::TuiOptions;
 
@@ -102,7 +102,7 @@ pub struct Search {
 }
 
 /// A block's render: the width, the line count (kept), and the lines (dropped when far from the view).
-type Rendered = (usize, usize, Option<Vec<Line<'static>>>);
+type Rendered = (usize, usize, Option<Vec<Line<'static>>>, crate::regions::Meta);
 
 pub struct App {
     pub opts: TuiOptions,
@@ -246,6 +246,10 @@ pub struct App {
     pub editor_top: usize,
     /// The last click in the editor: when, where and how many in a row (a double click selects a word).
     editor_click: Option<(Instant, (usize, usize), u8)>,
+    /// The last click in the transcript: when, where, and how many in a row.
+    tclick: Option<(Instant, Pos, u8)>,
+    /// The button went down with Alt or Ctrl: the drag selects without box limits.
+    pub press_free: bool,
     /// The screen row of the status bar at the last draw (a click there opens the context window).
     pub status_row: u16,
     /// The terminal's width at the last draw.
@@ -475,6 +479,8 @@ impl App {
             editor_drag: false,
             editor_top: 0,
             editor_click: None,
+            tclick: None,
+            press_free: false,
             status_row: 0,
             term_width: 80,
             limits: None,
@@ -821,7 +827,7 @@ impl App {
     /// How many lines block `i` has at `width`; kept when its lines are evicted.
     pub fn height(&mut self, i: usize, width: usize) -> usize {
         match &self.cache[i] {
-            Some((w, h, _)) if *w == width => *h,
+            Some((w, h, _, _)) if *w == width => *h,
             _ => self.lines(i, width).len(),
         }
     }
@@ -834,7 +840,7 @@ impl App {
         let hi = top.max(self.scroll) + height + reach;
         let now = self.now();
         for i in 0..self.cache.len().min(self.offsets.len()) {
-            let Some((_, h, lines @ Some(_))) = self.cache[i].as_mut() else { continue };
+            let Some((_, h, lines @ Some(_), meta)) = self.cache[i].as_mut() else { continue };
             let (start, end) = (self.offsets[i], self.offsets[i] + *h);
             let busy = self.blocks[i].is_live()
                 || self.looks.get(i).is_some_and(|l| {
@@ -843,6 +849,7 @@ impl App {
                 });
             if (end < lo || start > hi) && !busy {
                 *lines = None;
+                *meta = Default::default();
             }
         }
     }
@@ -850,11 +857,12 @@ impl App {
     /// The lines of block `i` at `width`, rendered once per width.
     pub fn lines(&mut self, i: usize, width: usize) -> &[Line<'static>] {
         let fresh = match &self.cache[i] {
-            Some((w, _, l)) => *w != width || l.is_none(),
+            Some((w, _, l, _)) => *w != width || l.is_none(),
             None => true,
         };
         if fresh {
             let indent = indent_of(&self.blocks[i], width);
+            let mut meta = crate::regions::Meta::default();
             let mut lines = match &self.blocks[i] {
                 // a group's line is made from the calls it stands for
                 Block::Group { folded, len } => {
@@ -868,7 +876,11 @@ impl App {
                     );
                     vec![head]
                 }
-                b => b.render(width - indent, &self.theme, self.render_opts()),
+                b => {
+                    let (l, m) = b.render_meta(width - indent, &self.theme, self.render_opts());
+                    meta = m;
+                    l
+                }
             };
             crate::render::wrap::clean_lines(&mut lines);
             if let Block::Tool { id, output: Some(_), .. } = &self.blocks[i] {
@@ -895,17 +907,21 @@ impl App {
             if self.looks.get(i).is_some_and(|l| l.folded) && folds_alone(&self.blocks[i]) && lines.len() > 1 {
                 let hidden = lines.len() - 1;
                 lines.truncate(1);
+                meta.truncate(1);
                 lines.push(Line::from(Span::styled(format!("  ▸ {hidden} more lines"), self.theme.dim())));
             }
+            debug_assert!(meta.conts.iter().all(|c| (c.line as usize) < lines.len()));
             if indent > 0 {
+                meta.add_deco(indent);
+                meta.margin = indent as u16;
                 let margin = " ".repeat(indent);
                 for l in &mut lines {
                     l.spans.insert(0, Span::raw(margin.clone()));
                 }
             }
-            self.cache[i] = Some((width, lines.len(), Some(lines)));
+            self.cache[i] = Some((width, lines.len(), Some(lines), meta));
         }
-        self.cache[i].as_ref().and_then(|(_, _, l)| l.as_deref()).unwrap_or(&[])
+        self.cache[i].as_ref().and_then(|(_, _, l, _)| l.as_deref()).unwrap_or(&[])
     }
 
     /// Recomputes offsets at `width`. A blank line follows every non-empty block, two come
@@ -1028,7 +1044,7 @@ impl App {
             return None;
         }
         // the blank separator after a block belongs to nobody
-        let n = self.cache.get(i).and_then(|c| c.as_ref()).map(|(_, h, _)| *h).unwrap_or(0);
+        let n = self.cache.get(i).and_then(|c| c.as_ref()).map(|(_, h, _, _)| *h).unwrap_or(0);
         if line < self.offsets[i] + n {
             Some(i)
         } else {
@@ -2529,24 +2545,179 @@ impl App {
         Pos { line, col }
     }
 
-    /// The left button went down at `(x, y)`.
+    /// The left button went down at `(x, y)`. A second and a third click in the same place
+    /// select a word and a whole box or line.
     pub fn press_at(&mut self, x: u16, y: u16) {
         self.press = Some((x, y));
         if self.selection.as_ref().is_some_and(|s| !s.dragging) {
             self.selection = None;
             self.dirty = true;
         }
+        if !crate::modal::contains(self.transcript_area, x, y) {
+            self.tclick = None;
+            return;
+        }
+        let pos = self.pos_at(x, y);
+        let now = self.now();
+        let n = match self.tclick {
+            Some((t, p, n))
+                if now.duration_since(t) < Duration::from_millis(400)
+                    && p.line == pos.line
+                    && p.col.abs_diff(pos.col) <= 1 =>
+            {
+                n % 3 + 1
+            }
+            _ => 1,
+        };
+        self.tclick = Some((now, pos, n));
+        if n >= 2 {
+            self.multi_select(pos, n);
+        }
+    }
+
+    /// The box that holds absolute line `line`, if it sits in one.
+    pub fn region_at(&mut self, line: usize) -> Option<RegionRef> {
+        let i = self.block_at_line(line)?;
+        let w = self.last_width;
+        self.lines(i, w);
+        let meta = &self.cache[i].as_ref()?.3;
+        let idx = meta.region_of(line - self.offsets[i])?;
+        let r = &meta.regions[idx];
+        Some(RegionRef {
+            block: i,
+            idx,
+            start: r.start as usize,
+            end: r.end as usize,
+            deco: r.deco as usize,
+            kind: r.kind,
+        })
+    }
+
+    /// The first and last absolute lines of a box (read again from the layout, which may have
+    /// moved it since the press).
+    fn region_bounds(&self, r: &RegionRef) -> (usize, usize) {
+        let off = self.offsets.get(r.block).copied().unwrap_or(0);
+        let (s, e) = match self.cache.get(r.block).and_then(|c| c.as_ref()).and_then(|c| c.3.regions.get(r.idx)) {
+            Some(g) => (g.start as usize, g.end as usize),
+            None => (r.start, r.end),
+        };
+        (off + s, off + e)
+    }
+
+    /// `p` held inside the box `r`: past its ends it goes to the start or the end of it.
+    fn clamp_to(&self, r: &RegionRef, p: Pos) -> Pos {
+        let (first, last) = self.region_bounds(r);
+        if p.line < first {
+            Pos { line: first, col: r.deco }
+        } else if p.line > last {
+            Pos { line: last, col: usize::MAX - 1 }
+        } else {
+            Pos { line: p.line, col: p.col.max(r.deco) }
+        }
+    }
+
+    /// What the layout knows of absolute line `line`, for a clean copy.
+    fn line_info(&mut self, line: usize) -> LineInfo {
+        let Some(i) = self.block_at_line(line) else { return LineInfo::default() };
+        let w = self.last_width;
+        self.lines(i, w);
+        let j = line - self.offsets[i];
+        let Some((_, _, Some(lines), meta)) = self.cache[i].as_ref() else { return LineInfo::default() };
+        let Some(l) = lines.get(j) else { return LineInfo::default() };
+        let mut info = LineInfo {
+            text: crate::render::markdown::text_of(l),
+            cont: meta.cont_of(j),
+            margin: meta.margin as usize,
+            ..Default::default()
+        };
+        if let Some(idx) = meta.region_of(j) {
+            let r = &meta.regions[idx];
+            info.region = Some((i, idx));
+            info.deco = r.deco as usize;
+            info.skip = r.skip.contains(&(j as u32));
+            info.src = r.src.as_ref().and_then(|s| s.get(j - r.start as usize).cloned());
+        }
+        info
+    }
+
+    /// The text the selection copies.
+    pub fn selection_text(&mut self) -> Option<String> {
+        let sel = self.selection.clone()?;
+        let (s, e) = sel.range();
+        let infos: Vec<LineInfo> = (s.line..=e.line).map(|l| self.line_info(l)).collect();
+        Some(sel.extract_clean(&infos))
+    }
+
+    /// A double click (a word) or a triple click (the box, or the logical line) on `pos`.
+    /// Rows that are neither prose nor in a box (heads, summaries) are left to the click.
+    fn multi_select(&mut self, pos: Pos, n: u8) {
+        let free = self.press_free;
+        let region = if free { None } else { self.region_at(pos.line) };
+        let Some(block) = self.block_at_line(pos.line) else { return };
+        let prose = matches!(self.blocks[block], Block::User { .. } | Block::Assistant { .. } | Block::Notice { .. });
+        if region.is_none() && !prose {
+            return;
+        }
+        let info = self.line_info(pos.line);
+        let mut sel = Selection::new(pos);
+        sel.free = free;
+        sel.fixed = true;
+        if n == 2 {
+            let lo = match (&region, info.cont) {
+                (Some(r), _) => r.deco,
+                (None, Some(c)) => c.deco as usize,
+                (None, None) => {
+                    crate::select::width_of(&info.text)
+                        - crate::select::width_of(&crate::select::strip_rail(&info.text))
+                }
+            };
+            let Some((a, b)) = crate::select::word_bounds(&info.text, pos.col, lo) else { return };
+            sel.anchor = Pos { line: pos.line, col: a };
+            sel.head = Pos { line: pos.line, col: b - 1 };
+        } else if let Some(r) = region {
+            let (first, last) = self.region_bounds(&r);
+            sel.anchor = Pos { line: first, col: r.deco };
+            sel.head = Pos { line: last, col: usize::MAX - 1 };
+        } else {
+            let (mut a, mut b) = (pos.line, pos.line);
+            while a > 0 && self.line_info(a).cont.is_some() {
+                a -= 1;
+            }
+            while b + 1 < self.total_lines && self.line_info(b + 1).cont.is_some() {
+                b += 1;
+            }
+            sel.anchor = Pos { line: a, col: 0 };
+            sel.head = Pos { line: b, col: usize::MAX - 1 };
+        }
+        if let (Some(r), false) = (region, free) {
+            sel.deco = r.deco;
+            sel.region = Some(r);
+        }
+        self.selection = Some(sel);
+        self.dirty = true;
     }
 
     /// The pointer moved with the button down.
     pub fn drag_to(&mut self, x: u16, y: u16) {
         let Some((px, py)) = self.press else { return };
+        if self.selection.as_ref().is_some_and(|s| s.fixed) {
+            return;
+        }
         if self.selection.is_none() {
             if !crate::modal::contains(self.transcript_area, px, py) {
                 return;
             }
             let anchor = self.pos_at(px, py);
-            self.selection = Some(Selection::new(anchor));
+            let mut sel = Selection::new(anchor);
+            if self.press_free {
+                sel.free = true;
+            } else if let Some(r) = self.region_at(anchor.line) {
+                sel.anchor = self.clamp_to(&r, anchor);
+                sel.head = sel.anchor;
+                sel.deco = r.deco;
+                sel.region = Some(r);
+            }
+            self.selection = Some(sel);
         }
         let a = self.transcript_area;
         if y < a.y {
@@ -2555,7 +2726,10 @@ impl App {
             self.scroll_by(1);
         }
         self.drag_pos = Some((x, y));
-        let head = self.pos_at(x, y);
+        let mut head = self.pos_at(x, y);
+        if let Some(r) = self.selection.as_ref().and_then(|s| s.region) {
+            head = self.clamp_to(&r, head);
+        }
         if let Some(s) = &mut self.selection {
             s.head = head;
             s.dragging = true;
@@ -2565,8 +2739,11 @@ impl App {
 
     /// After a wheel scroll while dragging, the head follows the pointer.
     pub fn extend_after_scroll(&mut self) {
-        if let (Some((x, y)), true) = (self.drag_pos, self.selection.as_ref().is_some_and(|s| s.dragging)) {
-            let head = self.pos_at(x, y);
+        if let (Some((x, y)), true) = (self.drag_pos, self.selection.as_ref().is_some_and(|s| s.dragging && !s.fixed)) {
+            let mut head = self.pos_at(x, y);
+            if let Some(r) = self.selection.as_ref().and_then(|s| s.region) {
+                head = self.clamp_to(&r, head);
+            }
             if let Some(s) = &mut self.selection {
                 s.head = head;
             }
@@ -2849,12 +3026,7 @@ impl App {
 
     pub fn copy_selection(&mut self) {
         let Some(sel) = self.selection.clone() else { return };
-        let (s, e) = sel.range();
-        let mut texts = Vec::new();
-        for line in s.line..=e.line {
-            texts.push(self.line_text(line));
-        }
-        let text = sel.extract(|l| texts.get(l - s.line).cloned().flatten());
+        let text = self.selection_text().unwrap_or_default();
         let n = sel.lines();
         match crate::clipboard::copy(&text) {
             Ok(how) => self.flash_toast(&format!("copied {n} line{} ({how})", if n == 1 { "" } else { "s" })),
@@ -4662,7 +4834,7 @@ mod tests {
         }
         a.layout(80);
         a.layout(80);
-        let rendered = a.cache.iter().filter(|c| matches!(c, Some((_, _, Some(_))))).count();
+        let rendered = a.cache.iter().filter(|c| matches!(c, Some((_, _, Some(_), _)))).count();
         assert!(rendered <= 2, "hidden calls are not rendered: {rendered}");
         assert!(a.total_lines <= 2, "one line and its gap: {}", a.total_lines);
     }
@@ -6759,7 +6931,7 @@ mod tests {
     }
 
     fn cached(a: &App) -> usize {
-        a.cache.iter().filter(|c| matches!(c, Some((_, _, Some(_))))).count()
+        a.cache.iter().filter(|c| matches!(c, Some((_, _, Some(_), _)))).count()
     }
 
     #[test]

@@ -15,7 +15,8 @@ use crate::theme::{mix, Theme};
 use super::code;
 use super::diff;
 use super::markdown;
-use super::wrap::{truncate, width, wrap_plain};
+use super::wrap::{truncate, width, wrap_plain, wrap_plain_ex};
+use crate::regions::{Kind, Meta, Region};
 
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -185,12 +186,19 @@ impl Block {
     }
 
     pub fn render(&self, w: usize, theme: &Theme, o: RenderOpts) -> Vec<Line<'static>> {
+        self.render_meta(w, theme, o).0
+    }
+
+    /// The lines of the block and the boxes and wrapped rows among them.
+    pub fn render_meta(&self, w: usize, theme: &Theme, o: RenderOpts) -> (Vec<Line<'static>>, Meta) {
         let w = w.max(8);
-        match self {
+        let mut meta = Meta::default();
+        let lines = match self {
             Block::User { text, .. } if is_job_note(text) => job_card(text, w, theme),
             Block::User { text, at } => {
                 let bar = Span::styled("▌ ", theme.style(theme.user));
-                let mut lines = wrap_plain(text, w, Style::default(), &[bar]);
+                let (mut lines, conts) = wrap_plain_ex(text, w, Style::default(), &[bar]);
+                meta.conts = conts;
                 if let (true, Some(at), Some(first)) = (o.timestamps, at, lines.first_mut()) {
                     stamp_right(first, w, at, theme);
                 }
@@ -205,7 +213,9 @@ impl Block {
                 lines
             }
             Block::Assistant { text, streaming, at, took_ms, .. } => {
-                let mut lines = markdown::render_as(text, w.saturating_sub(2), theme, o.interpreted);
+                let (mut lines, m) = markdown::render_as_meta(text, w.saturating_sub(2), theme, o.interpreted);
+                meta = m;
+                meta.add_deco(2);
                 if lines.is_empty() {
                     lines.push(Line::default());
                 }
@@ -233,7 +243,7 @@ impl Block {
             }
             Block::Reasoning { text, streaming, started, elapsed_ms, folded } => {
                 if !o.show_reasoning {
-                    return Vec::new();
+                    return (Vec::new(), meta);
                 }
                 let n = text.lines().count();
                 let elapsed = match (elapsed_ms, started) {
@@ -257,7 +267,13 @@ impl Block {
                 if !*folded || *streaming {
                     let body = if *streaming && *folded { tail(text, 3) } else { text.clone() };
                     let guide = [Span::styled(GUIDE, theme.dim2())];
-                    lines.extend(super::markdown::md_lines(&body, w, theme, style, true, &guide));
+                    let (b, mut m) = markdown::md_lines_meta(&body, w, theme, style, true, &guide);
+                    if !b.is_empty() {
+                        m.shift(1);
+                        m.regions.push(Region::new(Kind::Think, 1, b.len(), 2));
+                        meta = m;
+                    }
+                    lines.extend(b);
                 }
                 close_guide(&mut lines);
                 lines
@@ -285,6 +301,7 @@ impl Block {
                 };
                 let body_w = w.saturating_sub(2);
                 let pad: Vec<Span<'static>> = vec![Span::styled("│ ", theme.style(rail_color))];
+                let mut body_meta = Meta::default();
                 let body: Vec<Line<'static>> = match (status, output) {
                     (ToolStatus::Running | ToolStatus::Pending, _) => {
                         // open, a running command shows itself whole above its output
@@ -296,14 +313,18 @@ impl Block {
                         }
                         let keep =
                             if *folded { progress.len().min(o.fold_after.clamp(1, LIVE_TAIL)) } else { progress.len() };
-                        lines.extend(
-                            progress[progress.len() - keep..]
-                                .iter()
-                                .flat_map(|l| wrap_plain(l, body_w, theme.dim(), &pad)),
-                        );
+                        let first = lines.len();
+                        for l in &progress[progress.len() - keep..] {
+                            push_plain(&mut lines, &mut body_meta, l, body_w, theme.dim(), &pad);
+                        }
+                        if lines.len() > first {
+                            body_meta.regions.push(Region::new(Kind::Output, first, lines.len() - 1, 2));
+                        }
                         lines
                     }
-                    (_, Some(out)) => render_output(out, name, args, body_w, theme, &pad, o.interpreted),
+                    (_, Some(out)) => {
+                        render_output(out, name, args, body_w, theme, &pad, o.interpreted, &mut body_meta)
+                    }
                     (_, None) => Vec::new(),
                 };
                 // folded, a card says only what matters: failures and edits show their start,
@@ -403,6 +424,8 @@ impl Block {
                 if body.len() > preview {
                     let hidden = body.len() - preview;
                     if preview > 0 {
+                        body_meta.truncate(preview);
+                        meta.append(body_meta, 1);
                         lines.extend(body.into_iter().take(preview));
                         lines.push(Line::from(vec![
                             Span::styled("│ ", theme.style(rail_color)),
@@ -410,6 +433,7 @@ impl Block {
                         ]));
                     }
                 } else {
+                    meta.append(body_meta, 1);
                     lines.extend(body);
                 }
                 close_guide(&mut lines);
@@ -517,8 +541,9 @@ impl Block {
                 let shown = limit.map_or(all.len(), |l| all.len().min(l));
                 for raw in &all[..shown] {
                     let style = if is_diff { diff_line_style(raw, theme) } else { Style::default() };
-                    lines.extend(wrap_plain(raw, w.saturating_sub(2), style, &pad));
+                    push_plain(&mut lines, &mut meta, raw, w.saturating_sub(2), style, &pad);
                 }
+                meta.regions.push(Region::new(Kind::Output, 1, lines.len() - 1, 2));
                 if shown < all.len() {
                     lines.push(Line::from(vec![
                         Span::styled(GUIDE, theme.style(theme.border)),
@@ -528,7 +553,8 @@ impl Block {
                 close_guide(&mut lines);
                 lines
             }
-        }
+        };
+        (lines, meta)
     }
 }
 
@@ -769,6 +795,7 @@ fn diff_line_style(line: &str, theme: &Theme) -> Style {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_output(
     out: &ToolOutput,
     name: &str,
@@ -777,17 +804,23 @@ fn render_output(
     theme: &Theme,
     pad: &[Span<'static>],
     interpreted: bool,
+    meta: &mut Meta,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     // a plan reads as the document it is, then what became of it
     if let Some(plan) = (name == "exit_plan").then(|| args.get("plan").and_then(Value::as_str)).flatten() {
-        for l in markdown::render_as(plan, w.saturating_sub(2), theme, true) {
+        let (plan_lines, mut m) = markdown::render_as_meta(plan, w.saturating_sub(2), theme, true);
+        m.regions.clear();
+        m.add_deco(2);
+        meta.append(m, 0);
+        for l in plan_lines {
             let mut spans = pad.to_vec();
             spans.extend(l.spans);
             lines.push(Line::from(spans).style(l.style));
         }
         lines.push(Line::from(pad.to_vec()));
-        lines.extend(wrap_plain(&out.content, w.saturating_sub(2), theme.dim(), pad));
+        push_plain(&mut lines, meta, &out.content, w.saturating_sub(2), theme.dim(), pad);
+        meta.regions.push(Region::new(Kind::Plan, 0, lines.len() - 1, 2));
         return lines;
     }
     match &out.display {
@@ -796,15 +829,27 @@ fn render_output(
                 let (icon, style) = todo_style(it.status, theme);
                 let mut prefix = pad.to_vec();
                 prefix.push(Span::styled(format!("{icon} "), style));
-                lines.extend(wrap_plain(&it.text, w.saturating_sub(2), style, &prefix));
+                push_plain(&mut lines, meta, &it.text, w.saturating_sub(2), style, &prefix);
             }
+            boxed(meta, Kind::Output, 0, lines.len(), 2);
         }
         ToolDisplay::Diff { old, new, start_line, .. } => {
-            for l in diff::unified(old, new, *start_line, theme) {
+            let mut region = Region::new(Kind::Diff, 0, 0, 2);
+            for (k, l) in diff::unified(old, new, *start_line, theme).into_iter().enumerate() {
+                // a row with a gutter and a sign is content; a hunk header or a rule is not
+                if l.spans.len() == 2 {
+                    if region.deco == 2 {
+                        region.deco += width(&l.spans[0].content) as u16;
+                    }
+                } else {
+                    region.skip.push(k as u32);
+                }
                 let mut spans = pad.to_vec();
                 spans.extend(l.spans);
                 lines.push(Line::from(spans));
             }
+            region.end = lines.len().saturating_sub(1) as u32;
+            meta.regions.push(region);
         }
         ToolDisplay::File { path, text, start_line } => {
             let lang = code::lang_of_path(path);
@@ -817,6 +862,7 @@ fn render_output(
                     spans.extend(l.spans);
                     lines.push(Line::from(spans).style(theme.code_block()));
                 }
+                boxed(meta, Kind::File, 0, lines.len(), 2);
                 return lines;
             }
             let digits = (start_line + text.lines().count()).max(1).to_string().len();
@@ -837,9 +883,18 @@ fn render_output(
                 // the file sits on the code background, like a fenced block
                 lines.push(Line::from(spans).style(theme.code_block()));
             }
+            if !lines.is_empty() {
+                let mut r = Region::new(Kind::File, 0, lines.len() - 1, 2 + digits + 2);
+                let src: Vec<String> = text.trim_end_matches('\n').split('\n').map(str::to_string).collect();
+                if src.len() == lines.len() {
+                    r.src = Some(std::sync::Arc::new(src));
+                }
+                meta.regions.push(r);
+            }
         }
         ToolDisplay::Shell { command, stdout, stderr, .. } => {
             lines.extend(command_lines(command, w, theme, pad));
+            let first = lines.len();
             let text = if stderr.trim().is_empty() {
                 stdout.clone()
             } else if stdout.trim().is_empty() {
@@ -847,12 +902,14 @@ fn render_output(
             } else {
                 format!("{stdout}\n{stderr}")
             };
-            lines.extend(wrap_plain(text.trim_end_matches('\n'), w, Style::default(), pad));
+            push_plain(&mut lines, meta, text.trim_end_matches('\n'), w, Style::default(), pad);
+            boxed(meta, Kind::Output, first, lines.len(), 2);
         }
         ToolDisplay::List { items } => {
             for it in items {
-                lines.extend(wrap_plain(it, w, Style::default(), pad));
+                push_plain(&mut lines, meta, it, w, Style::default(), pad);
             }
+            boxed(meta, Kind::Output, 0, lines.len(), 2);
         }
         ToolDisplay::Plain => {
             let style = if out.is_error { theme.style(theme.error) } else { Style::default() };
@@ -867,13 +924,39 @@ fn render_output(
             };
             let _ = (name, args);
             if !out.is_error && super::markdown::looks_markdown(&text) {
-                lines.extend(super::markdown::md_lines(&text, w, theme, style, false, pad));
+                let (b, mut m) = markdown::md_lines_meta(&text, w, theme, style, false, pad);
+                m.shift(lines.len());
+                meta.append(m, 0);
+                lines.extend(b);
             } else {
-                lines.extend(wrap_plain(&text, w, style, pad));
+                push_plain(&mut lines, meta, &text, w, style, pad);
             }
+            boxed(meta, Kind::Output, 0, lines.len(), 2);
         }
     }
     lines
+}
+
+/// Rows `from..to` of a body as one box of `kind`, `deco` columns of decoration deep.
+fn boxed(meta: &mut Meta, kind: Kind, from: usize, to: usize, deco: usize) {
+    if to > from {
+        meta.regions.push(Region::new(kind, from, to - 1, deco));
+    }
+}
+
+/// `text` wrapped under `prefix` and appended to `lines`, its wrapped rows noted in `meta`.
+fn push_plain(
+    lines: &mut Vec<Line<'static>>,
+    meta: &mut Meta,
+    text: &str,
+    w: usize,
+    style: Style,
+    prefix: &[Span<'static>],
+) {
+    let (l, conts) = wrap_plain_ex(text, w, style, prefix);
+    let base = lines.len() as u32;
+    meta.conts.extend(conts.into_iter().map(|c| crate::regions::Cont { line: c.line + base, ..c }));
+    lines.extend(l);
 }
 
 /// Lines of a folded running card's output that stay in sight.

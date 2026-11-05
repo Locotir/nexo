@@ -35,6 +35,7 @@ pub mod overlay;
 pub mod palette;
 pub mod palette_key;
 pub mod panel_fx;
+pub mod regions;
 pub mod render;
 pub mod replay;
 pub mod scrollbar;
