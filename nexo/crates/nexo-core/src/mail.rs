@@ -188,10 +188,11 @@ pub fn safe_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// A new mail id: `m-<ms>-<4hex>`.
+/// A new mail id: `m-<ms>-<8hex>`. Eight hex digits keep two mails sent in the same millisecond apart (with
+/// four, 50 in one millisecond shared a file name about once in 50 runs, and one mail overwrote the other).
 pub fn new_id(ms: i64) -> String {
     let r = uuid::Uuid::new_v4().simple().to_string();
-    format!("m-{ms}-{}", &r[..4])
+    format!("m-{ms}-{}", &r[..8])
 }
 
 /// The first `n` characters of `s`, with `…` when cut.
