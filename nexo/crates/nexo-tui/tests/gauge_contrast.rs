@@ -63,6 +63,21 @@ fn stacked_gauge_pieces_are_told_apart() {
 }
 
 #[test]
+fn the_light_themes_faint_text_borders_and_selection_can_be_seen() {
+    let t = Theme::by_name("light").unwrap();
+    for ground in [t.bg, t.modal_bg] {
+        for (name, c) in [("dim", t.dim), ("dim2", t.dim2)] {
+            let r = ratio(c, ground).unwrap();
+            assert!(r >= 4.5, "{name} on {ground:?}: {r:.2}");
+        }
+        let b = ratio(t.border, ground).unwrap();
+        assert!(b >= 2.3, "border on {ground:?}: {b:.2}");
+    }
+    let s = ratio(t.selection_bg, t.modal_bg).unwrap();
+    assert!(s >= 1.25, "selection on the dialog ground: {s:.2}");
+}
+
+#[test]
 fn kept_out_piece_passes_aa_on_the_bar() {
     for t in rgb_themes() {
         let r = ratio(t.info, t.bar_bg).unwrap_or(0.0);
