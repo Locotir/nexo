@@ -62,12 +62,17 @@ pub fn off(config: &nexo_core::Config) -> bool {
 
 /// The notice for the interface: none when up to date.
 pub async fn check() -> Result<Option<String>, String> {
+    Ok(behind().await?.and_then(notice))
+}
+
+/// How many commits behind `main` this build is: none when up to date.
+pub async fn behind() -> Result<Option<u32>, String> {
     let c = commit();
     if c == "unknown" {
         return Err("this build does not know its commit: run `nexo update` to rebuild from GitHub".into());
     }
     let behind = ask(c).await.ok_or_else(|| format!("cannot ask GitHub about commit {c}"))?;
-    Ok(notice(behind))
+    Ok((behind > 0).then_some(behind))
 }
 
 /// `nexo update`: `--check` only says; otherwise `cargo install` builds the latest `main`.

@@ -238,6 +238,8 @@ pub struct App {
     pub branch: Option<String>,
     /// nexo runs as root: the title bar says so.
     pub root: bool,
+    /// Commits `main` is ahead of this build, once the check found a newer nexo.
+    pub update_behind: Option<u32>,
     branch_read: Option<Instant>,
     /// The system prompt as last shown (`/prompt`), the seed of the prompt file.
     pub system_prompt: Option<String>,
@@ -447,6 +449,7 @@ impl App {
             turn_cost_start: 0.0,
             branch: None,
             root: nexo_core::paths::is_root(),
+            update_behind: None,
             branch_read: None,
             system_prompt: None,
             edit_after_prompt: false,
@@ -1172,6 +1175,17 @@ impl App {
         self.dirty = true;
     }
 
+    /// A newer nexo is on `main`: a card in the conversation, a toast, and a badge that stays
+    /// in the title bar until nexo restarts.
+    pub fn update_ready(&mut self, behind: u32) {
+        if behind == 0 || self.update_behind.is_some() {
+            return;
+        }
+        self.update_behind = Some(behind);
+        self.push(Block::Update { behind });
+        self.toast(crate::toast::Kind::Info, "nexo update ready: run `nexo update`");
+    }
+
     pub fn notice(&mut self, level: Level, text: impl Into<String>) {
         self.push(Block::Notice { level, text: text.into() });
     }
@@ -1682,6 +1696,7 @@ impl App {
                 self.map_at = Some(self.now());
             }
             AgentEvent::Notice { level, text } => self.notice(level, text),
+            AgentEvent::UpdateAvailable { behind } => self.update_ready(behind),
             AgentEvent::ModelChanged { provider, model } => {
                 self.flash(&format!("model: {provider}/{model}"));
                 self.provider = provider;

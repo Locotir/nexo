@@ -69,6 +69,10 @@ pub enum Block {
         level: Level,
         text: String,
     },
+    /// A newer nexo is waiting on `main`: a framed card that is hard to miss.
+    Update {
+        behind: u32,
+    },
     Usage {
         usage: Usage,
         cost_usd: f64,
@@ -405,6 +409,7 @@ impl Block {
                 }
                 lines
             }
+            Block::Update { behind } => update_card(*behind, theme, w),
             Block::Usage { usage, cost_usd, elapsed_ms, tally } => {
                 let line = super::summary::summary_line(theme, usage, *cost_usd, *elapsed_ms, tally, w);
                 let text = super::summary::plain(&line);
@@ -983,6 +988,42 @@ fn job_card(text: &str, w: usize, theme: &Theme) -> Vec<Line<'static>> {
 }
 
 /// A notice as the user reads it: the curator's name stays inside, the screen says what happened.
+/// The card for a newer nexo: a framed box in the accent colour, so it is not read past like a
+/// grey notice. Too narrow for a frame, it falls back to two bold lines.
+fn update_card(behind: u32, theme: &Theme, w: usize) -> Vec<Line<'static>> {
+    let edge = Style::default().fg(theme.accent2).add_modifier(Modifier::BOLD);
+    let text = Style::default().fg(theme.fg);
+    let cmd = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let s = if behind == 1 { "" } else { "s" };
+    let what = format!("{behind} new commit{s} on main.");
+    let run = [("Run ", text), ("nexo update", cmd), (", then restart nexo.", text)];
+    let run_w: usize = run.iter().map(|(t, _)| width(t)).sum();
+    let title = " ⬆ Update ready ";
+    let inner = width(&what).max(run_w).max(width(title) + 1);
+    if w < inner + 4 {
+        let mut lines = wrap_plain(&format!("⬆ Update ready · {what}"), w, edge, &[Span::raw("  ")]);
+        lines.extend(wrap_plain("Run `nexo update`, then restart nexo.", w, text, &[Span::raw("  ")]));
+        return lines;
+    }
+    let row = |spans: Vec<Span<'static>>, used: usize| {
+        let mut v = vec![Span::styled("│ ", edge)];
+        v.extend(spans);
+        v.push(Span::raw(" ".repeat(inner - used)));
+        v.push(Span::styled(" │", edge));
+        Line::from(v)
+    };
+    vec![
+        Line::from(vec![
+            Span::styled("╭─", edge),
+            Span::styled(title, edge),
+            Span::styled(format!("{}╮", "─".repeat(inner + 1 - width(title))), edge),
+        ]),
+        row(vec![Span::styled(what.clone(), text)], width(&what)),
+        row(run.iter().map(|(t, st)| Span::styled(t.to_string(), *st)).collect(), run_w),
+        Line::from(Span::styled(format!("╰{}╯", "─".repeat(inner + 2)), edge)),
+    ]
+}
+
 fn user_notice(text: &str) -> std::borrow::Cow<'_, str> {
     match text.strip_prefix("the curator kept the view at ") {
         Some(rest) => format!("context compacted to {rest}").into(),
@@ -1372,6 +1413,21 @@ mod tests {
         assert_eq!(t, vec!["▸ thinking · 3 lines · 2.1s"]);
         let hidden = b.render(40, &Theme::dark(), RenderOpts { show_reasoning: false, ..opts() });
         assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn a_newer_nexo_shows_as_a_framed_card() {
+        let t = texts(&Block::Update { behind: 4 }.render(70, &Theme::dark(), opts()));
+        let all = t.join("\n");
+        assert_eq!(t.len(), 4, "{all}");
+        assert!(t[0].starts_with("╭─ ⬆ Update ready ") && t[0].ends_with('╮'), "{all}");
+        assert_eq!(t[1].trim_end(), "│ 4 new commits on main.              │", "{all}");
+        assert!(t[2].contains("Run nexo update, then restart nexo.") && t[3].starts_with('╰'), "{all}");
+        assert!(t.iter().all(|l| width(l) == width(&t[0])), "{all}");
+        // too narrow for the frame: two plain lines that still say what to do
+        let n = texts(&Block::Update { behind: 1 }.render(30, &Theme::dark(), opts()));
+        assert!(n[0].trim_start().starts_with("⬆ Update ready · 1 new"), "{n:?}");
+        assert!(n.iter().all(|l| width(l) <= 30), "{n:?}");
     }
 
     #[test]

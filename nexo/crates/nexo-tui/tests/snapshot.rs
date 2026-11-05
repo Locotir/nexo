@@ -156,6 +156,16 @@ fn the_layout_at_100_by_30() {
         narrow_root[narrow_root.len() - 1]
     );
     a.root = false;
+    a.handle_agent(nexo_core::agent::AgentEvent::UpdateAvailable { behind: 3 });
+    let upd = draw(&mut a, 100, 30);
+    assert!(
+        upd[upd.len() - 1].starts_with(" nexo  ⬆ update  │ deepseek/deepseek-chat │ ask │"),
+        "the update badge sits by the brand: {}",
+        upd[upd.len() - 1]
+    );
+    assert!(upd.join("\n").contains("╭─ ⬆ Update ready"), "{}", upd.join("\n"));
+    assert!(upd.iter().all(|r| r.chars().count() <= 100));
+    a.update_behind = None;
     let wide = draw(&mut a, 170, 30);
     assert!(
         wide[wide.len() - 1].contains("│ /tmp/project │"),

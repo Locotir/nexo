@@ -368,6 +368,10 @@ pub enum AgentEvent {
         level: Level,
         text: String,
     },
+    /// A newer nexo is on `main`: how many commits ahead.
+    UpdateAvailable {
+        behind: u32,
+    },
     ModelChanged {
         provider: String,
         model: String,

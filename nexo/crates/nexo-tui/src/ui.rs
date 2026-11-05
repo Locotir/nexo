@@ -210,7 +210,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         .context
         .as_ref()
         .filter(|c| c.history_tokens > 0)
-        .map(|c| Seg { text: format!("mem {}", fmt_k(c.history_tokens)), style: base.fg(theme.accent2) });
+        .map(|c| Seg { text: format!("mem {}", fmt_k(c.history_tokens)), style: base.fg(theme.warn2) });
     // a glyph every common font has, not an icon font's
     let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: base.fg(theme.hunk) });
     let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: base.fg(theme.dim) };
@@ -414,9 +414,11 @@ pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
 
 /// " nexo", and " # root" after it when nexo runs as root, so that is never out of sight.
 const ROOT_MARK: &str = " # root";
+/// Shown after the brand while a newer nexo waits on `main`.
+const UPDATE_MARK: &str = "  ⬆ update ";
 
 fn brand_width(app: &App) -> usize {
-    5 + if app.root { width(ROOT_MARK) } else { 0 }
+    5 + if app.root { width(ROOT_MARK) } else { 0 } + if app.update_behind.is_some() { width(UPDATE_MARK) } else { 0 }
 }
 
 fn segs_width(app: &App, segs: &[Vec<Seg>]) -> usize {
@@ -515,8 +517,8 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 (format!("{}/{l:.2}", crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost))), c)
             }
-            // no limit, no meaning to colour: the bar's own text colour
-            None => (crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost)), theme.bar_fg),
+            // no limit: money reads in the soft green, never the plain text colour
+            None => (crate::motion::fixed(&format!("${shown:.4}"), &format!("${:.4}", app.cost)), theme.success),
         };
         // while it rolls the figure is lit
         let rolling = (app.cost - shown).abs() > 0.000_05;
@@ -538,6 +540,14 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     let mut spans = vec![Span::styled(" nexo", base.add_modifier(Modifier::BOLD))];
     if app.root {
         spans.push(Span::styled(ROOT_MARK, base.fg(theme.error).add_modifier(Modifier::BOLD)));
+    }
+    if app.update_behind.is_some() {
+        // a newer nexo waits: a filled badge that stays until restart, not a line that scrolls away
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            UPDATE_MARK[1..].to_string(),
+            Style::default().bg(theme.accent2).fg(theme.bg).add_modifier(Modifier::BOLD),
+        ));
     }
     let mut used = brand_width(app);
     let mut hits = Vec::new();
