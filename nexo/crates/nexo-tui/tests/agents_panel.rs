@@ -1,0 +1,482 @@
+//! `/panel` drawn at sizes from a split pane to a huge window: captures kept in `tests/captures/`
+//! (`NEXO_UPDATE_GOLDEN=1 cargo test` accepts a deliberate change), and the things that must hold at every size.
+
+use std::path::PathBuf;
+
+use nexo_agent::supervise::{AgentRow, SourceKind, State};
+use nexo_tui::agents_view::{cards_layout, AgentsView, Layout};
+use nexo_tui::commands::{lookup, parse, Command, COMMANDS};
+use nexo_tui::modal::Modal;
+use nexo_tui::ui::rows_of;
+use nexo_tui::{draw_frame, App, TuiOptions};
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
+use tokio::sync::mpsc;
+
+const SIZES: [(u16, u16); 5] = [(40, 12), (80, 24), (120, 40), (200, 60), (400, 120)];
+const NOW: i64 = 1_000_000;
+
+fn app() -> App {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let opts = TuiOptions {
+        cwd: PathBuf::from("/tmp/project"),
+        provider: "deepseek".into(),
+        model: "deepseek-chat".into(),
+        models: vec![("deepseek".into(), "deepseek-chat".into())],
+        providers: vec![],
+        theme: "dark".into(),
+        mouse: true,
+        show_reasoning: true,
+        timestamps: false,
+        fold_after: 4,
+        keys: Default::default(),
+        notify_after: 15,
+        animations: false,
+        status_line: vec![],
+        status_command: String::new(),
+        vim: false,
+        session_id: Some("20261102-100000-ef56".into()),
+        sessions: vec![],
+    };
+    let mut a = App::new(opts, tx);
+    a.root = false;
+    a
+}
+
+fn row(key: &str, name: &str, source: SourceKind, state: State, idle: Option<u64>, step: Option<&str>) -> AgentRow {
+    AgentRow {
+        key: key.into(),
+        name: name.into(),
+        source,
+        state,
+        since: NOW - 60,
+        last_step: step.map(Into::into),
+        idle_secs: idle,
+        cost_usd: None,
+        model: None,
+        cwd: Some(format!("/home/dev/{name}")),
+        permission_mode: Some("default".into()),
+        parent: None,
+        paused: false,
+        last_action: None,
+    }
+}
+
+fn rows() -> Vec<AgentRow> {
+    let mut v = vec![
+        row("this-session", "project", SourceKind::Nexo, State::Working, Some(2), Some("Edit  src/parser.rs")),
+        row(
+            "s-1",
+            "api-migration",
+            SourceKind::External,
+            State::WaitingPermission,
+            Some(95),
+            Some("Bash  cargo publish --dry-run"),
+        ),
+        row(
+            "s-2",
+            "docs",
+            SourceKind::External,
+            State::WaitingAnswer,
+            Some(400),
+            Some("which license should the README name?"),
+        ),
+        row(
+            "s-3",
+            "nightly-fixer",
+            SourceKind::External,
+            State::Stalled,
+            Some(2400),
+            Some("Read  tests/long_running.rs"),
+        ),
+        row("s-4", "scheduler", SourceKind::External, State::Looping, Some(30), Some("Bash  git pull")),
+        row("s-5", "refactor", SourceKind::External, State::Idle { min: 17 }, Some(1020), None),
+        row("s-6", "release", SourceKind::External, State::Done, Some(7300), Some("Bash  gh release create v1.4")),
+    ];
+    v[1].last_action = Some(("marked permission".into(), NOW - 90));
+    v[1].cost_usd = Some(1.25);
+    let mut sub =
+        row("this-session.7", "explore", SourceKind::Nexo, State::Working, Some(1), Some("Grep  fn classify"));
+    sub.parent = Some("this-session".into());
+    v.insert(1, sub);
+    v
+}
+
+fn scene(rows: Vec<AgentRow>) -> App {
+    let mut a = app();
+    a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows, NOW, true))));
+    a
+}
+
+fn capture(a: &mut App, w: u16, h: u16) -> Vec<String> {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    draw_frame(&mut t, a).unwrap();
+    rows_of(t.backend().buffer())
+}
+
+fn file_of(scene: &str, w: u16, h: u16) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/captures").join(format!("{scene}_{w}x{h}.txt"))
+}
+
+#[test]
+fn the_panel_matches_its_captures_from_40x12_to_400x120() {
+    let update = std::env::var("NEXO_UPDATE_GOLDEN").is_ok();
+    let mut wrong = Vec::new();
+    for (name, set) in [("panel", rows()), ("panel-empty", vec![])] {
+        for (w, h) in SIZES {
+            let text = capture(&mut scene(set.clone()), w, h).join("\n") + "\n";
+            let path = file_of(name, w, h);
+            if update {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, &text).unwrap();
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(kept) if kept == text => {}
+                Ok(_) => wrong.push(format!("{name} {w}x{h}: differs from {}", path.display())),
+                Err(_) => wrong.push(format!("{name} {w}x{h}: no capture, run with NEXO_UPDATE_GOLDEN=1")),
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn at_every_size_the_window_is_whole_and_says_what_each_state_is_in_words() {
+    for (w, h) in SIZES {
+        let out = capture(&mut scene(rows()), w, h);
+        assert_eq!(out.len(), h as usize);
+        let all = out.join("\n");
+        if w >= 80 {
+            assert!(all.contains("panel"), "{w}x{h}: no title\n{all}");
+            assert!(all.contains("only"), "{w}x{h}: no read-only note\n{all}");
+            for word in ["working", "permission"] {
+                assert!(all.contains(word), "{w}x{h}: no {word}\n{all}");
+            }
+        }
+        // no row is wider than the screen
+        assert!(out.iter().all(|r| r.chars().count() <= w as usize), "{w}x{h}");
+        if h >= 12 && w >= 40 {
+            assert!(all.contains("Esc"), "{w}x{h}: no footer\n{all}");
+        }
+    }
+}
+
+#[test]
+fn cards_flow_into_more_columns_as_the_window_widens() {
+    assert_eq!(cards_layout(30, 20), Layout::List);
+    assert_eq!(cards_layout(80, 3), Layout::List);
+    let cols = |w| match cards_layout(w, 30) {
+        Layout::Cards { cols, .. } => cols,
+        Layout::List => 0,
+        Layout::Blocks { .. } => unreachable!(),
+    };
+    assert_eq!((cols(44), cols(80), cols(120), cols(200), cols(400)), (1, 2, 3, 4, 4));
+    for w in 44..400u16 {
+        if let Layout::Cards { cols, card_w } = cards_layout(w, 30) {
+            assert!((34..=60).contains(&card_w) && card_w * cols + 2 * (cols - 1) <= w, "{w}");
+        }
+    }
+}
+
+#[test]
+fn keys_move_the_selection_and_escape_closes() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = scene(rows());
+    capture(&mut a, 120, 40);
+    let press = |a: &mut App, c: KeyCode| {
+        if let Some(Modal::Agents(v)) = &mut a.modal {
+            let _ = v.key(KeyEvent::new(c, KeyModifiers::NONE));
+        }
+    };
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Down);
+    let Some(Modal::Agents(v)) = &a.modal else { panic!() };
+    assert_eq!(v.selected, 4, "one right, one row down in three columns");
+    press(&mut a, KeyCode::End);
+    press(&mut a, KeyCode::Right);
+    let Some(Modal::Agents(v)) = &a.modal else { panic!() };
+    assert_eq!(v.selected, v.rows().len() - 1);
+}
+
+#[test]
+fn panel_is_a_command_and_agents_answers_without_being_listed() {
+    assert_eq!(parse("/panel"), Some(Command::Panel));
+    assert_eq!(parse("/agents"), Some(Command::Panel));
+    assert!(lookup("agents").is_some());
+    assert!(COMMANDS.iter().all(|s| s.name != "agents" && !s.aliases.contains(&"agents")));
+    // the palette does not offer it either
+    assert!(nexo_tui::commands::rank("agents").iter().all(|r| r.via_alias != Some("agents")));
+}
+
+#[test]
+fn the_command_opens_the_panel_and_a_session_event_shows_in_it() {
+    let mut a = app();
+    a.input.set_text("/panel");
+    a.run_command(parse("/panel").unwrap());
+    assert!(matches!(a.modal, Some(Modal::Agents(_))));
+}
+
+fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Panel>) {
+    use nexo_agent::supervise::{NexoSource, Panel, Policy, Setup};
+    let dir = tempfile::tempdir().unwrap();
+    let logs = dir.path().join("logs").join("proj");
+    std::fs::create_dir_all(&logs).unwrap();
+    let rec = r#"{"type":"assistant","timestamp":"2026-11-05T00:00:00Z","cwd":"/work/app","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Step one is done."}]}}"#;
+    std::fs::write(logs.join("sess-1.jsonl"), format!("{rec}\n")).unwrap();
+    let setup = Setup {
+        logs_root: Some(dir.path().join("logs")),
+        scan_hours: 12,
+        list_cmd: None,
+        list_every: 10,
+        poll_every_ms: 100,
+    };
+    let p = Panel::start(&setup, Policy::default(), NexoSource::default());
+    (dir, std::sync::Arc::new(p))
+}
+
+#[test]
+fn n_writes_a_nudge_p_pauses_and_enter_opens_the_details() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_d, panel) = live_panel();
+    let t = std::time::Instant::now();
+    let mut v = AgentsView::new(Some(panel.clone()), true);
+    while v.rows().is_empty() && t.elapsed().as_secs() < 6 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        v.refresh();
+    }
+    assert_eq!(v.rows().len(), 1);
+    let key = |v: &mut AgentsView, c: KeyCode| {
+        v.key(KeyEvent::new(c, KeyModifiers::NONE));
+    };
+    let mut a = app();
+    a.modal = Some(Modal::Agents(Box::new(v)));
+    let text = |a: &mut App| capture(a, 120, 30).join("\n");
+    assert!(text(&mut a).contains("n nudge"), "the keys are listed");
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    key(v, KeyCode::Char('n'));
+    for c in " now".chars() {
+        key(v, KeyCode::Char(c));
+    }
+    assert!(text(&mut a).contains("nudge ›"), "the field shows");
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    key(v, KeyCode::Enter);
+    let row = panel.rows(nexo_agent::supervise::run::now_secs()).remove(0);
+    assert_eq!(row.last_action.as_ref().map(|a| a.0.as_str()), Some("your nudge is queued"));
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    key(v, KeyCode::Char('p'));
+    assert!(panel.rows(nexo_agent::supervise::run::now_secs())[0].paused);
+    assert!(text(&mut a).contains("paused"), "{}", text(&mut a));
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    key(v, KeyCode::Char('P'));
+    assert!(panel.paused_all());
+    key(v, KeyCode::Char('P'));
+    assert!(!panel.paused_all());
+    // Enter opens the details instead of closing; Esc closes them first, then the window
+    key(v, KeyCode::Enter);
+    assert!(text(&mut a).contains("sess-1"));
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Nothing);
+    assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Close);
+}
+
+#[test]
+fn a_nudge_on_a_view_without_a_panel_or_on_this_session_does_nothing() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut v = AgentsView::with_rows(rows(), NOW, true);
+    v.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    v.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Close);
+}
+
+#[test]
+fn o_shows_the_policy_page_with_the_model_line_and_goes_back() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_d, panel) = live_panel();
+    let mut a = app();
+    a.modal = Some(Modal::Agents(Box::new(AgentsView::new(Some(panel), true))));
+    let text = |a: &mut App| capture(a, 120, 30).join("\n");
+    assert!(text(&mut a).contains("o policy"), "the key is listed");
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    v.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    let shown = text(&mut a);
+    assert!(shown.contains("panel · policy"), "{shown}");
+    assert!(shown.contains("model: none"), "{shown}");
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!text(&mut a).contains("panel · policy"));
+}
+
+/// The window itself: from its title row down (the conversation behind it moves on its own).
+fn panel_part(s: &str) -> String {
+    let from = s.find("╭ panel").unwrap_or(0);
+    s[from..].lines().take_while(|l| !l.starts_with("─ ask")).collect::<Vec<_>>().join("\n")
+}
+
+fn zoomed(rows: Vec<AgentRow>, keys: &str) -> App {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = scene(rows);
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    for c in keys.chars() {
+        v.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    a
+}
+
+#[test]
+fn the_zoomed_views_match_their_captures_at_every_size() {
+    let update = std::env::var("NEXO_UPDATE_GOLDEN").is_ok();
+    let mut wrong = Vec::new();
+    for (name, keys) in [("panel-lines", "-"), ("panel-blocks", "--")] {
+        for (w, h) in SIZES {
+            let text = capture(&mut zoomed(rows(), keys), w, h).join("\n") + "\n";
+            let path = file_of(name, w, h);
+            if update {
+                std::fs::write(&path, &text).unwrap();
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(kept) if kept == text => {}
+                Ok(_) => wrong.push(format!("{name} {w}x{h}: differs from {}", path.display())),
+                Err(_) => wrong.push(format!("{name} {w}x{h}: no capture")),
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn plus_and_minus_move_between_cards_lines_and_blocks() {
+    let mut a = zoomed(rows(), "");
+    let cards = capture(&mut a, 120, 40).join("\n");
+    assert!(cards.contains("▸ Edit"), "cards show the last step with a marker");
+    let mut a = zoomed(rows(), "-");
+    let lines = capture(&mut a, 120, 40).join("\n");
+    assert!(!panel_part(&lines).contains("╭───"), "lines have no card borders\n{lines}");
+    let mut a = zoomed(rows(), "--");
+    let blocks = capture(&mut a, 120, 40).join("\n");
+    assert!(blocks.contains('▌') && blocks.contains("api-migration"), "{blocks}");
+    let mut a = zoomed(rows(), "---+");
+    assert_eq!(capture(&mut a, 120, 40).join("\n"), lines, "+ goes back in one step; - stops at blocks");
+    let mut a = zoomed(rows(), "--++");
+    assert_eq!(capture(&mut a, 120, 40).join("\n"), cards);
+}
+
+mod motion {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn live_app() -> (App, Instant) {
+        let mut a = app();
+        a.opts.animations = true;
+        let t0 = Instant::now();
+        a.fx.clock = Some(t0);
+        (a, t0)
+    }
+
+    fn at(a: &mut App, t0: Instant, ms: u64) -> String {
+        a.fx.clock = Some(t0 + Duration::from_millis(ms));
+        capture(a, 120, 40).join("\n")
+    }
+
+    fn open(a: &mut App, rows: Vec<AgentRow>) {
+        a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(rows, NOW, false))));
+    }
+
+    #[test]
+    fn cards_come_in_one_after_the_other_and_settle_to_the_still_picture() {
+        let (mut a, t0) = live_app();
+        open(&mut a, rows());
+        let first = at(&mut a, t0, 0);
+        assert!(first.contains("project"), "the first card is already there\n{first}");
+        assert!(!first.contains("nightly-fixer"), "a later card has not started\n{first}");
+        let mid = at(&mut a, t0, 200);
+        assert!(mid.contains("api-migration") || mid.contains("explore"), "{mid}");
+        let end = at(&mut a, t0, 2000);
+        assert!(end.contains("nightly-fixer") && end.contains("release"), "{end}");
+        let mut still = scene(rows());
+        assert_eq!(
+            panel_part(&capture(&mut still, 120, 40).join("\n")),
+            panel_part(&end),
+            "after the entry it is the still picture"
+        );
+    }
+
+    #[test]
+    fn a_chip_changing_state_keeps_the_old_word_then_takes_the_new_one() {
+        let (mut a, t0) = live_app();
+        let mut r = rows();
+        open(&mut a, r.clone());
+        at(&mut a, t0, 0);
+        at(&mut a, t0, 2000);
+        r[0].state = State::Done;
+        let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+        v.set_rows(r);
+        let early = at(&mut a, t0, 2050);
+        let late = at(&mut a, t0, 2600);
+        let line = |s: &str| s.lines().find(|l| l.contains("◆ project")).unwrap_or_default().to_string();
+        assert!(line(&early).contains("working"), "{}", line(&early));
+        assert!(line(&late).contains("done"), "{}", line(&late));
+    }
+
+    #[test]
+    fn at_rest_nothing_asks_for_a_repaint_and_with_the_animations_off_nothing_moves() {
+        let (mut a, t0) = live_app();
+        let calm: Vec<AgentRow> = rows()
+            .into_iter()
+            .filter(|r| !matches!(r.state, State::WaitingPermission | State::WaitingAnswer | State::Stalled))
+            .collect();
+        open(&mut a, calm);
+        at(&mut a, t0, 0);
+        let Some(Modal::Agents(v)) = &a.modal else { panic!() };
+        assert!(v.animating(t0), "cards are entering");
+        at(&mut a, t0, 3000);
+        let Some(Modal::Agents(v)) = &a.modal else { panic!() };
+        assert!(!v.animating(t0 + Duration::from_millis(3000)), "settled: zero frames per second");
+        let still = AgentsView::with_rows(rows(), NOW, true);
+        assert!(!still.animating(t0));
+    }
+
+    #[test]
+    fn the_selection_glides_and_a_nudge_pulses_the_card() {
+        let (mut a, t0) = live_app();
+        open(&mut a, rows());
+        at(&mut a, t0, 0);
+        at(&mut a, t0, 2000);
+        let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+        v.selected = 2;
+        at(&mut a, t0, 2010);
+        let Some(Modal::Agents(v)) = &a.modal else { panic!() };
+        assert!(v.animating(t0 + Duration::from_millis(2050)), "gliding");
+    }
+}
+
+#[test]
+fn a_moving_frame_at_400x120_stays_cheap() {
+    use std::time::{Duration, Instant};
+    let mut a = app();
+    a.opts.animations = true;
+    let t0 = Instant::now();
+    let many: Vec<AgentRow> = (0..40)
+        .map(|i| {
+            row(
+                &format!("k{i}"),
+                &format!("s{i}"),
+                SourceKind::External,
+                State::WaitingAnswer,
+                Some(i),
+                Some("Bash  ls"),
+            )
+        })
+        .collect();
+    a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(many, NOW, false))));
+    let mut t = Terminal::new(TestBackend::new(400, 120)).unwrap();
+    let start = Instant::now();
+    for k in 0..30u64 {
+        a.fx.clock = Some(t0 + Duration::from_millis(k * 33));
+        draw_frame(&mut t, &mut a).unwrap();
+    }
+    let per = start.elapsed() / 30;
+    eprintln!("400x120, 40 sessions: {per:?} per frame (debug build)");
+    assert!(per < Duration::from_millis(100), "{per:?} per frame is too slow for 30 fps");
+}

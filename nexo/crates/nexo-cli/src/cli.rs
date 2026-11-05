@@ -148,8 +148,28 @@ pub enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// Watch long-running sessions (run with no argument), answer their hooks, or print the hook settings to add.
+    Supervise {
+        #[command(subcommand)]
+        what: Option<SuperviseCmd>,
+    },
     /// Measure the agent on the benchmark tasks with each context policy (see crates/nexo-bench/README.md).
     Bench(Box<BenchArgs>),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SuperviseCmd {
+    /// What a session's hook runs: reads the hook input on stdin, prints the answer (`{}` when no supervisor runs).
+    Hook {
+        #[arg(value_parser = ["stop", "permission", "notify"])]
+        kind: String,
+    },
+    /// Print the hook settings to add to the sessions' settings file. Nothing is written.
+    Install {
+        /// Print the snippet (the only mode).
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 /// `nexo bench`: every task done by the agent with every arm, graded, priced and summed up.
@@ -349,6 +369,23 @@ pub async fn main() -> i32 {
             Err(e) => eprintln!("nexo: cannot open log file {}: {e}", f.display()),
         }
     }
+    if let Some(Cmd::Supervise { what }) = &args.cmd {
+        return match what {
+            Some(SuperviseCmd::Hook { kind }) => crate::supervise::hook(kind),
+            Some(SuperviseCmd::Install { print: true }) => crate::supervise::install_print(),
+            Some(SuperviseCmd::Install { print: false }) => {
+                eprintln!("nexo: nothing is written; use `nexo supervise install --print` and add the text yourself");
+                2
+            }
+            None => match crate::supervise::daemon().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("nexo: {e:#}");
+                    1
+                }
+            },
+        };
+    }
     match run(args).await {
         Ok(code) => code,
         Err(e) => {
@@ -479,6 +516,8 @@ async fn run(args: Args) -> anyhow::Result<i32> {
             return setup::brief_cmd(&cwd, conversation, &task.join(" "), &cfg, *json).await;
         }
         None => {}
+        // handled before the configuration is read
+        Some(Cmd::Supervise { .. }) => return Ok(0),
     }
 
     let picked: Picked = setup::pick(&config, args.provider.as_deref(), args.model.as_deref())?;
@@ -534,6 +573,7 @@ async fn interactive(
         });
     }
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
+    nexo_tui::set_supervise_options(nexo_agent::supervise::Options::detect());
     let ui = nexo_tui::run(handle, opts).await;
     agent.abort();
     ui?;

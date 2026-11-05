@@ -5,6 +5,7 @@
 mod account;
 mod cli;
 mod setup;
+mod supervise;
 mod update;
 
 fn main() {

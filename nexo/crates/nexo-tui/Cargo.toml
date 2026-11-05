@@ -9,6 +9,7 @@ description = "nexo: the full-screen terminal interface (consumes AgentEvent, pr
 
 [dependencies]
 nexo-core = { workspace = true }
+nexo-agent = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tui-textarea = { workspace = true }

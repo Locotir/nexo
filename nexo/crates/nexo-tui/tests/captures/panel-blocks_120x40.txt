@@ -1,0 +1,40 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ ●─╮ ╭─●   nexo 0.1.0                                                     │
+│   ╰●╯     deepseek/deepseek-chat · ask                                   │
+│ ●─╯ ╰─●   /tmp/project                                                   │
+│                                                                          │
+│ /model sets up a model · /resume picks a session · ? help                │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+╭ panel ──────────────────────────────────────────────────────────────────────────────────────────────────────────[✗]──╮
+│ ◈ 1 permission  ◆ 1 question  ◐ 1 stalled  ↻ 1 looping  ● 2 working  ○ 1 idle  ✓ 1 done         watching · read-only │
+│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│      █ project         ▌ explore         ▌ api-migration   ▌ docs            ▌ nightly-fixer   ▌ scheduler           │
+│      █ ● 2s            ▌ ● 1s            ▌ ◈ 1m 35s        ▌ ◆ 6m 40s        ▌ ◐ 40m 00s       ▌ ↻ 30s               │
+│      █ Edit  src/pa…   ▌ Grep  fn cla…   ▌ Bash  cargo …   ▌ which licens…   ▌ Read  tests/…   ▌ Bash  git pu…       │
+│                                                                                                                      │
+│      ▌ refactor        ▌ release                                                                                     │
+│      ▌ ○ 17m 00s       ▌ ✓ 2h 01m                                                                                    │
+│      ▌                 ▌ Bash  gh rel…                                                                               │
+│ /home/dev/project · default · this-session                                                                           │
+│ ←↑↓→ move · +/- zoom · Esc close                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+›   ask anything
+ Esc close                                                                                         20261102-100000-ef56
+ nexo │ deepseek/deepseek-chat │ /tmp/project │ ask │ ━━━━━━━━ ~0% 0                                         Σ 0 billed

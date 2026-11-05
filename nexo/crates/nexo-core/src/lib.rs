@@ -21,6 +21,7 @@ pub mod paths;
 pub mod permission;
 pub mod pricing;
 pub mod provider;
+pub mod redact;
 pub mod shell;
 pub mod stream;
 pub mod tool;

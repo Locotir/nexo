@@ -7,6 +7,7 @@
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub mod agents_view;
 pub mod anim;
 pub mod app;
 pub mod app_fx;
@@ -412,6 +413,17 @@ fn edit_file(path: &std::path::Path) -> anyhow::Result<()> {
     anyhow::bail!(last.unwrap_or_else(|| "no editor found: set $EDITOR".into()))
 }
 
+static SUPERVISE: std::sync::OnceLock<nexo_agent::supervise::Options> = std::sync::OnceLock::new();
+
+/// Where `/panel` keeps its audit log and listens for hooks. Unset (as in tests), it writes nothing and
+/// listens nowhere.
+pub fn set_supervise_options(o: nexo_agent::supervise::Options) {
+    let _ = SUPERVISE.set(o);
+}
+
+pub(crate) fn supervise_options() -> nexo_agent::supervise::Options {
+    SUPERVISE.get().cloned().unwrap_or_default()
+}
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]

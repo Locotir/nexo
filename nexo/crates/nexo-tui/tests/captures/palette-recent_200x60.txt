@@ -53,7 +53,7 @@
  /rewind                                  go back to before an earlier message, files included (al…
  /undo                                    undo the last request: its messages and the files it wro…
  /undelete       [id]                     bring back a deleted session (the last one by default)
-                                           1/39                                           32 more ↓
+                                           1/40                                           33 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                 20261102-100000-ef56

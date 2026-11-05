@@ -74,6 +74,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("export", &["save"], "[path]", "write the conversation as markdown"),
     spec("rename", &["title", "name"], "<name>", "give this session a name"),
     spec("diff", &[], "", "browse staged, unstaged and new files"),
+    spec("panel", &[], "", "every agent session at a glance, read-only"),
     spec("cost", &["usage"], "", "window: tokens, cost, calls"),
     spec("context", &["ctx"], "", "window: what the next call sends"),
     spec("theme", &[], "[name]", "change the colours (a picker without a name)"),
@@ -99,6 +100,8 @@ pub enum Command {
     Budget(Option<String>),
     /// `/jobs` lists, `/jobs kill` stops every one, `/jobs kill 3` stops job 3.
     Jobs(Option<Option<u32>>),
+    /// The supervisor's panel: one card per agent session.
+    Panel,
     Permissions(Option<PermissionMode>),
     Yolo,
     /// `/plan` turns plan mode on, `/plan text` also sends the text, `/plan off` leaves it.
@@ -148,8 +151,12 @@ pub enum GoalArg {
     Clear,
 }
 
+/// Names that work but are listed nowhere (not in /help, not in the palette): `(alias, command)`.
+const HIDDEN: &[(&str, &str)] = &[("agents", "panel")];
+
 /// The spec a name or alias stands for.
 pub fn lookup(name: &str) -> Option<&'static Spec> {
+    let name = HIDDEN.iter().find(|(a, _)| *a == name).map_or(name, |(_, n)| n);
     COMMANDS.iter().find(|s| s.name == name || s.aliases.contains(&name))
 }
 
@@ -172,6 +179,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "tools" => Command::Tools,
         "vim" => Command::Vim,
         "budget" => Command::Budget(arg),
+        "panel" => Command::Panel,
         "jobs" => match arg.as_deref().map(|a| a.split_whitespace().collect::<Vec<_>>()) {
             None => Command::Jobs(None),
             Some(w) if w.first() == Some(&"kill") || w.first() == Some(&"stop") => match w.get(1) {
@@ -315,7 +323,10 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("model", &["model", "provider", "effort", "pricing", "prompt", "budget"]),
-    ("context and tools", &["context", "context-live", "cost", "tools", "jobs", "todo", "diff", "init", "status"]),
+    (
+        "context and tools",
+        &["context", "context-live", "cost", "tools", "jobs", "panel", "todo", "diff", "init", "status"],
+    ),
     ("settings", &["permissions", "yolo", "theme", "mouse", "timestamps", "vim", "keys"]),
     ("nexo", &["help", "copy", "quit"]),
 ];

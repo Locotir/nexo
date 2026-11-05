@@ -28,6 +28,7 @@ pub mod recall;
 pub mod session;
 pub mod setup;
 pub mod subagent;
+pub mod supervise;
 mod turn;
 
 use std::path::PathBuf;

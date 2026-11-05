@@ -1,0 +1,252 @@
+//! The nexo events adapter: turns this program's own [`AgentEvent`]s and background jobs into observations.
+//! The interface (or any host) feeds events in through a [`NexoSource`] handle; the supervisor drains the same
+//! handle as a [`Source`]. A sub-agent is keyed `parent.child`.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+
+use nexo_core::agent::{AgentEvent, TurnEnd};
+use nexo_core::jobs::{JobKind, JobStatus};
+use nexo_core::permission::PermissionMode;
+
+use super::source::{one_line, tail, tool_step, Source, SourceKind, STEP_CHARS};
+use super::{input_hash, ObsKind, Observation, Secs};
+
+const TAIL: usize = 300;
+/// Observations kept while nobody drains them.
+const QUEUE_MAX: usize = 4096;
+const OUTBOX_MAX: usize = 8;
+/// Key of the session before it says its id.
+pub const LOCAL_KEY: &str = "this-session";
+
+#[derive(Default)]
+struct Inner {
+    key: Option<String>,
+    queue: VecDeque<Observation>,
+    /// Tool calls waiting for their result: call id to (name, input hash).
+    calls: HashMap<String, (String, u64)>,
+    text: String,
+    cost: f64,
+    model: Option<String>,
+    /// Sub-agents still running, by key.
+    running: Vec<String>,
+    /// Nudges the supervisor wants delivered to this session: session key, text, moment.
+    outbox: VecDeque<(String, String, Secs)>,
+    /// The next turn starts from a supervisor nudge, not from the person.
+    nudge_turn: bool,
+}
+
+impl Inner {
+    fn key(&self) -> String {
+        self.key.clone().unwrap_or_else(|| LOCAL_KEY.to_string())
+    }
+}
+
+/// A handle shared by the host that feeds events and the supervisor that reads them.
+#[derive(Clone, Default)]
+pub struct NexoSource {
+    inner: Arc<Mutex<Inner>>,
+}
+
+impl NexoSource {
+    pub fn new() -> NexoSource {
+        NexoSource::default()
+    }
+
+    /// Fold one event in.
+    pub fn observe(&self, ev: &AgentEvent, now: Secs) {
+        let Ok(mut g) = self.inner.lock() else { return };
+        let obs = translate(&mut g, ev, now);
+        for o in obs {
+            // a stream of text deltas is one sign of life per second
+            let same = o.kind == ObsKind::Activity
+                && g.queue
+                    .back()
+                    .is_some_and(|b| b.kind == ObsKind::Activity && b.agent_key == o.agent_key && b.at == o.at);
+            if same {
+                continue;
+            }
+            if g.queue.len() >= QUEUE_MAX {
+                g.queue.pop_front();
+            }
+            g.queue.push_back(o);
+        }
+    }
+
+    /// The supervisor asks for a message to this session (the host delivers it).
+    pub fn send_nudge(&self, key: &str, text: &str, now: Secs) {
+        if let Ok(mut g) = self.inner.lock() {
+            if g.outbox.len() >= OUTBOX_MAX {
+                g.outbox.pop_front();
+            }
+            g.outbox.push_back((key.to_string(), text.to_string(), now));
+        }
+    }
+
+    /// What the supervisor wants said to this session; the host sends each as a message. Taking some marks
+    /// the next turn as started by the supervisor, not by the person.
+    pub fn take_nudges(&self) -> Vec<(String, String)> {
+        let Ok(mut g) = self.inner.lock() else { return Vec::new() };
+        let out: Vec<(String, String)> = g.outbox.drain(..).map(|(k, t, _)| (k, t)).collect();
+        if !out.is_empty() {
+            g.nudge_turn = true;
+        }
+        out
+    }
+
+    /// Whether a nudge waits for delivery.
+    pub fn has_nudges(&self) -> bool {
+        self.inner.lock().map(|g| !g.outbox.is_empty()).unwrap_or(false)
+    }
+}
+
+fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
+    let key = g.key();
+    let mk = |kind: ObsKind| Observation { agent_key: key.clone(), at: now, kind };
+    let mut out = Vec::new();
+    // a sub-agent is alive while its parent works
+    let busy = |g: &Inner, out: &mut Vec<Observation>| {
+        for k in &g.running {
+            out.push(Observation { agent_key: k.clone(), at: now, kind: ObsKind::Activity });
+        }
+    };
+    match ev {
+        AgentEvent::Ready { session_id, model, cwd, permission_mode, .. } => {
+            g.key = Some(session_id.clone());
+            g.model = Some(model.clone());
+            let k = session_id.clone();
+            let mk2 = |kind: ObsKind| Observation { agent_key: k.clone(), at: now, kind };
+            let mode = if *permission_mode == PermissionMode::Auto { "bypassPermissions" } else { "ask" };
+            out.push(mk2(ObsKind::Meta {
+                name: None,
+                cwd: Some(cwd.display().to_string()),
+                permission_mode: Some(mode.to_string()),
+            }));
+            out.push(mk2(ObsKind::Spend { usd: g.cost, model: g.model.clone() }));
+            out.push(mk2(ObsKind::Activity));
+        }
+        AgentEvent::SessionChanged { session_id, title } => {
+            g.key = Some(session_id.clone());
+            let name = (!title.is_empty()).then(|| title.clone());
+            out.push(Observation {
+                agent_key: session_id.clone(),
+                at: now,
+                kind: ObsKind::Meta { name, cwd: None, permission_mode: None },
+            });
+        }
+        AgentEvent::PermissionModeChanged { mode } => {
+            let m = if *mode == PermissionMode::Auto { "bypassPermissions" } else { "ask" };
+            out.push(mk(ObsKind::Meta { name: None, cwd: None, permission_mode: Some(m.to_string()) }));
+        }
+        AgentEvent::ModelChanged { model, .. } => {
+            g.model = Some(model.clone());
+            out.push(mk(ObsKind::Spend { usd: g.cost, model: g.model.clone() }));
+        }
+        AgentEvent::TurnStart { .. } => {
+            g.text.clear();
+            let by_supervisor = std::mem::take(&mut g.nudge_turn);
+            out.push(mk(if by_supervisor { ObsKind::Activity } else { ObsKind::UserInput }));
+        }
+        AgentEvent::TextDelta { text } => {
+            g.text.push_str(text);
+            if g.text.chars().count() > TAIL * 2 {
+                g.text = tail(&g.text, TAIL);
+            }
+            out.push(mk(ObsKind::Activity));
+        }
+        AgentEvent::ReasoningDelta { .. } | AgentEvent::AssistantStart | AgentEvent::ToolProgress { .. } => {
+            out.push(mk(ObsKind::Activity));
+        }
+        AgentEvent::ToolCall { id, name, args, summary } => {
+            g.calls.insert(id.clone(), (name.clone(), input_hash(&args.to_string())));
+            if g.calls.len() > 512 {
+                g.calls.clear();
+            }
+            let text = if summary.is_empty() {
+                tool_step(name, args)
+            } else {
+                format!("{name}  {}", one_line(summary, STEP_CHARS))
+            };
+            out.push(mk(ObsKind::Step { text }));
+            out.push(mk(ObsKind::ToolPending { name: name.clone() }));
+            busy(g, &mut out);
+        }
+        AgentEvent::ToolDone { id, output, .. } => {
+            let (name, hash) = g.calls.remove(id).unwrap_or_else(|| ("tool".to_string(), 0));
+            out.push(mk(ObsKind::ToolResult { name, input_hash: hash, is_error: output.is_error }));
+            busy(g, &mut out);
+        }
+        AgentEvent::PermissionAsk { request } => {
+            out.push(mk(ObsKind::PermissionPending { tool: request.tool.clone() }))
+        }
+        AgentEvent::PermissionResolved { .. } => out.push(mk(ObsKind::PermissionResolved)),
+        AgentEvent::Question { .. } => out.push(mk(ObsKind::AskPending)),
+        AgentEvent::QuestionResolved { .. } => out.push(mk(ObsKind::AskResolved)),
+        AgentEvent::Usage { cost_usd, .. } => {
+            g.cost = *cost_usd;
+            out.push(mk(ObsKind::Spend { usd: g.cost, model: g.model.clone() }));
+            out.push(mk(ObsKind::Activity));
+        }
+        AgentEvent::TurnEnd { reason } => {
+            let t = nexo_core::redact::redact(&tail(&g.text, TAIL)).into_owned();
+            if *reason == TurnEnd::Error {
+                out.push(mk(ObsKind::SystemError));
+            }
+            out.push(mk(ObsKind::TurnEnd { last_text_tail: t }));
+        }
+        AgentEvent::Jobs { jobs } => {
+            let parent = g.key();
+            for j in jobs.iter().filter(|j| j.kind == JobKind::Agent) {
+                let k = format!("{parent}.{}", j.id);
+                let mk3 = |kind: ObsKind| Observation { agent_key: k.clone(), at: now, kind };
+                out.push(mk3(ObsKind::Meta { name: Some(one_line(&j.label, 40)), cwd: None, permission_mode: None }));
+                if j.status == JobStatus::Running {
+                    out.push(mk3(ObsKind::Activity));
+                    if !g.running.contains(&k) {
+                        g.running.push(k.clone());
+                    }
+                } else {
+                    out.push(mk3(ObsKind::Done));
+                    g.running.retain(|r| r != &k);
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+impl Source for NexoSource {
+    fn id(&self) -> &str {
+        "nexo-events"
+    }
+
+    fn kind(&self) -> SourceKind {
+        SourceKind::Nexo
+    }
+
+    fn poll(&mut self, _now: Secs) -> Vec<Observation> {
+        self.inner.lock().map(|mut g| std::mem::take(&mut g.queue).into_iter().collect()).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod nudge_tests {
+    use super::*;
+
+    #[test]
+    fn a_nudge_is_taken_once_and_its_turn_is_not_the_persons() {
+        let s = NexoSource::new();
+        assert!(!s.has_nudges());
+        s.send_nudge("s1", "[supervisor] go on", 5);
+        assert!(s.has_nudges());
+        assert_eq!(s.take_nudges(), vec![("s1".to_string(), "[supervisor] go on".to_string())]);
+        assert!(s.take_nudges().is_empty());
+        let mut me = s.clone();
+        s.observe(&AgentEvent::TurnStart { turn: 1 }, 10);
+        let obs = me.poll(11);
+        assert!(obs.iter().all(|o| o.kind != ObsKind::UserInput), "{obs:?}");
+        s.observe(&AgentEvent::TurnStart { turn: 2 }, 20);
+        assert!(me.poll(21).iter().any(|o| o.kind == ObsKind::UserInput), "the person's turn counts again");
+    }
+}

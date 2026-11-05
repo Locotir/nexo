@@ -1,0 +1,12 @@
+╭ panel ──────────────────────────[✗]──╮
+│ no sessions     watching · read-only │
+│ ──────────────────────────────────── │
+│            no sessions yet           │
+│ this one shows up with your first me │
+│                                      │
+│ ←↑↓→ move · +/- zoom · Esc close     │
+╰──────────────────────────────────────╯
+─ ask ──────────────────────────────────
+›   ask anything
+ Esc close         20261102-100000-ef56
+ nexo │ deepseek-chat │ ask  Σ 0 billed

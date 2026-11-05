@@ -5,7 +5,7 @@
  session ──────────────────────────────
  /clear          start a new session h…
  /rewind         go back to before an …
-             1/39             34 more ↓
+             1/40             35 more ↓
 ─ ask ──────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run

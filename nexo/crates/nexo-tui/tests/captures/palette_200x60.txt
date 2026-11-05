@@ -53,7 +53,7 @@
  /undo                                    undo the last request: its messages and the files it wro…
  /undelete       [id]                     bring back a deleted session (the last one by default)
  /rename         <name>                   give this session a name
-                                           1/39                                           31 more ↓
+                                           1/40                                           32 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                 20261102-100000-ef56

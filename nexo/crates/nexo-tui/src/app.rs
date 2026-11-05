@@ -136,6 +136,10 @@ pub struct App {
     pub hint_hits: Vec<(Rect, HintHit)>,
     /// The background jobs, as the agent last listed them.
     pub jobs: Vec<nexo_core::jobs::JobInfo>,
+    /// What this session does, told to the `/panel` supervisor.
+    pub nexo_src: nexo_agent::supervise::NexoSource,
+    /// The `/panel` poller, started the first time the panel opens.
+    pub panel: Option<std::sync::Arc<nexo_agent::supervise::Panel>>,
     pub spinner: usize,
     pub session_usage: Usage,
     pub turn_usage: Usage,
@@ -377,6 +381,8 @@ impl App {
             queue_rows: Vec::new(),
             hint_hits: Vec::new(),
             jobs: Vec::new(),
+            nexo_src: nexo_agent::supervise::NexoSource::default(),
+            panel: None,
             spinner: 0,
             session_usage: Usage::default(),
             turn_usage: Usage::default(),
@@ -1217,8 +1223,57 @@ impl App {
         format!("{v}\n")
     }
 
+    /// The poller behind `/panel`, started on first use.
+    fn panel_handle(&mut self) -> std::sync::Arc<nexo_agent::supervise::Panel> {
+        if let Some(p) = &self.panel {
+            return p.clone();
+        }
+        use nexo_agent::supervise::{run::Setup, Policy};
+        let user = nexo_core::paths::config_dir().join("supervisor.toml");
+        let project = std::path::Path::new(".nexo/supervisor.toml");
+        let loaded = Policy::load(Some(&user), Some(project));
+        let mut notes: Vec<String> = loaded.errors.iter().map(|e| e.to_string()).collect();
+        let policy = loaded.policy;
+        let model = policy.model.clone();
+        let setup = Setup::detect(&policy);
+        let started = nexo_agent::supervise::Panel::start_with(
+            &setup,
+            policy.clone(),
+            self.nexo_src.clone(),
+            &crate::supervise_options(),
+        )
+        .unwrap_or_else(|_| nexo_agent::supervise::Panel::start(&setup, policy, self.nexo_src.clone()));
+        if let Some(m) = &model {
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) => {
+                    let client = nexo_agent::supervise::model::default_client();
+                    match nexo_agent::supervise::model::judge_for(m, &self.opts.providers, client, rt) {
+                        Ok(j) => started.set_judge(j),
+                        Err(e) => notes.push(e),
+                    }
+                }
+                Err(_) => notes.push("the model needs the async runtime, which is not running".into()),
+            }
+        }
+        started.set_notes(notes);
+        let p = std::sync::Arc::new(started);
+        self.panel = Some(p.clone());
+        p
+    }
+
     pub fn tick(&mut self) {
         self.tick_frame(true)
+    }
+
+    /// What the supervisor wants said to this session goes in as a message of its own, once no turn is running.
+    fn deliver_supervisor_nudges(&mut self) {
+        if self.busy || !self.nexo_src.has_nudges() {
+            return;
+        }
+        for (_, text) in self.nexo_src.take_nudges() {
+            self.send(AgentCommand::Submit { text, attachments: vec![] });
+            self.flash("supervisor: message sent to this session");
+        }
     }
 
     /// One tick of the clock; `beat` steps the spinner (the loop ticks faster while things glide).
@@ -1226,6 +1281,7 @@ impl App {
         if beat {
             self.spinner = self.spinner.wrapping_add(1);
         }
+        self.deliver_supervisor_nudges();
         self.poll_status_cmd();
         self.poll_diffview();
         if !self.branch_read.is_some_and(|t| t.elapsed().as_secs() < 5) {
@@ -1302,6 +1358,14 @@ impl App {
                 } else if look.done_at.take().is_some() {
                     self.cache[i] = None;
                 }
+            }
+        }
+        // the panel: new rows from the poller, and breathing chips
+        let at = self.now();
+        if let Some(Modal::Agents(v)) = &mut self.modal {
+            if v.refresh() || v.animating(at) {
+                any = true;
+                self.dirty = true;
             }
         }
         // the usage window grows open and its figures fill in
@@ -1387,6 +1451,7 @@ impl App {
 
     pub fn handle_agent(&mut self, ev: AgentEvent) {
         self.dirty = true;
+        self.nexo_src.observe(&ev, nexo_agent::supervise::run::now_secs());
         match ev {
             AgentEvent::Ready { session_id, provider, model, cwd, permission_mode } => {
                 self.session_id = Some(session_id);
@@ -2863,6 +2928,11 @@ impl App {
                 // nothing deleted in this run: show what the trash holds
                 None => self.send(AgentCommand::ListTrash),
             },
+            Command::Panel => {
+                let panel = self.panel_handle();
+                self.modal =
+                    Some(Modal::Agents(Box::new(crate::agents_view::AgentsView::new(Some(panel), !self.fx_on()))))
+            }
             Command::Cost => {
                 self.modal = Some(Modal::Info(Box::new(crate::overlay::Info::new(1).still(!self.opts.animations))))
             }

@@ -116,7 +116,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         // the /context window wants 8 rows: on a short screen it also takes the rule's row under the text
         let over = Rect { height: middle.height + sep.height, ..middle };
         let area_for = match app.modal {
-            Some(Modal::Info(_) | Modal::Question(_)) if middle.height < 8 && over.height >= 6 => over,
+            Some(Modal::Info(_) | Modal::Agents(_) | Modal::Question(_)) if middle.height < 8 && over.height >= 6 => {
+                over
+            }
             _ if middle.height >= 5 => middle,
             _ => area,
         };
@@ -2016,6 +2018,9 @@ fn draw_preview(f: &mut Frame, theme: &Theme, r: Rect, name: &str, pv: &crate::p
 fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     app.picker_rows.clear();
     app.modal_bar = None;
+    if matches!(app.modal, Some(Modal::Agents(_))) {
+        return draw_agents(f, app, area);
+    }
     if matches!(app.modal, Some(Modal::Info(_))) {
         return draw_info(f, app, area);
     }
@@ -2120,7 +2125,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             (title, lines, None)
         }
         Modal::Help { .. } => (" help ".to_string(), Modal::help_lines(&theme, inner_w), None),
-        Modal::Info(_) | Modal::Question(_) => return,
+        Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => return,
         Modal::Setup(s) => {
             let (lines, at) = s.lines(inner_w, &theme, app.spinner, max_h < 12);
             list_at = at;
@@ -2158,7 +2163,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             *scroll = (*scroll).min(body.len().saturating_sub(body_h));
             *scroll
         }
-        Modal::Info(_) | Modal::Question(_) => 0,
+        Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => 0,
         Modal::Picker(p) => {
             // keep the selection in view: two header lines, then the rows
             let row = p.selected + 2;
@@ -2196,7 +2201,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     let bar = match modal {
         Modal::Permission(_) | Modal::Help { .. } => Some(0),
         Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
-        Modal::Info(_) | Modal::Question(_) => None,
+        Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => None,
     };
     let bar = bar.map(|first| (r, body_area.y, body_h, body.len(), scroll, first));
     if let Some((first, n)) = rows {
@@ -2514,6 +2519,15 @@ fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
         let foot = Rect::new(inner.x + 1, inner.y + inner.height - 1, inner.width.saturating_sub(2), 1);
         f.render_widget(Paragraph::new(Span::styled(truncate(&hint, foot.width as usize), theme.dim2())), foot);
         modal_scrollbar(f, app, r, inner.y + 2, body_h, body_len, scroll, 0);
+    }
+}
+
+/// `/panel`: the agent sessions as cards.
+fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme.clone();
+    let (now, fx) = (app.now(), app.fx_on());
+    if let Some(Modal::Agents(v)) = &mut app.modal {
+        v.draw(f, area, &theme, now, fx);
     }
 }
 
