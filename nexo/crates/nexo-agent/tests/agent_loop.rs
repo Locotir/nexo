@@ -3615,3 +3615,67 @@ async fn the_history_keeps_the_full_checkpoint_reply() {
     let kept = serde_json::to_string(&client.requests()[3].messages).unwrap();
     assert!(kept.contains("CHECKPOINT CONTINUE: keep me. NEXT: x\\ngoing on"), "{kept}");
 }
+
+/// A reply cut mid-stream by the server, after some of it came through.
+fn broke_off(kind: ErrorKind) -> Vec<StreamEvent> {
+    let mut e =
+        ProviderError::new(kind, "server_error: non-completed responses with output cannot be synthesized safely");
+    e.retry_after = Some(std::time::Duration::from_millis(1));
+    vec![
+        StreamEvent::Start { response_id: None, model: None },
+        StreamEvent::TextDelta("Now the plane".into()),
+        StreamEvent::Error(e),
+        StreamEvent::Done,
+    ]
+}
+
+#[tokio::test]
+async fn a_sub_agent_round_cut_by_the_server_is_asked_again_and_its_work_kept() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "write x.txt"}))),
+        Reply::Events(call("s1", "write", json!({"path": "x.txt"}))),
+        Reply::Events(broke_off(ErrorKind::Server)),
+        Reply::Events(text("wrote x.txt")),
+        Reply::Events(text("all done")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(
+        |e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "t1" && output.content == "wrote x.txt")
+    ));
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5);
+    // the round asked again is the same request: the write before it is not done twice
+    assert_eq!(reqs[2].messages.len(), reqs[3].messages.len());
+    let writes = evs.iter().filter(|e| matches!(e, AgentEvent::ToolProgress { line, .. } if line == "→ write x.txt"));
+    assert_eq!(writes.count(), 1);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_sub_agent_that_fails_for_good_hands_back_what_it_did() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "write x.txt"}))),
+        Reply::Events(call("s1", "write", json!({"path": "x.txt"}))),
+        Reply::Events(broke_off(ErrorKind::BadRequest)),
+        Reply::Events(text("going on from x.txt")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let out = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(out.contains("in round 2/") && out.contains("- write x.txt") && out.contains("go on from there"), "{out}");
+    assert_eq!(client.requests().len(), 4, "not asked again: the error is not one a retry mends");
+    r.stop().await;
+}

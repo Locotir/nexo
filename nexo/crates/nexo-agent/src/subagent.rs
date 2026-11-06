@@ -15,10 +15,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use nexo_core::config::ProviderConfig;
+use nexo_core::error::ProviderError;
 use nexo_core::jobs::JobKind;
 use nexo_core::message::{Message, Part, Role};
 use nexo_core::pricing::Pricing;
@@ -394,6 +396,69 @@ fn real_path(p: &Path) -> PathBuf {
     }
 }
 
+/// Times a round whose model call broke off is asked again before the sub-agent gives up.
+const ROUND_RETRIES: u32 = 3;
+/// The longest wait before asking again, whatever the server said.
+const MAX_WAIT: Duration = Duration::from_secs(60);
+
+/// Why a request of a round gave no reply.
+enum Failure {
+    /// The person stopped the sub-agent.
+    Stopped,
+    Model(ProviderError),
+}
+
+fn stopped(messages: &[Message]) -> String {
+    format!("stopped{}", progress(messages, usize::MAX, 0))
+}
+
+/// What a sub-agent that ends without a report had done: its calls (their effects stay on disk) and
+/// its last words, so whoever started it goes on from there instead of doing it all again. Empty when
+/// it had done nothing.
+fn progress(messages: &[Message], round: usize, rounds: usize) -> String {
+    let mut did: Vec<String> = Vec::new();
+    let mut said = String::new();
+    for m in messages.iter().filter(|m| m.role == Role::Assistant) {
+        for p in &m.content {
+            match p {
+                Part::ToolCall { name, args, .. } => {
+                    let what = ["path", "command", "pattern", "url"]
+                        .iter()
+                        .find_map(|k| args.get(*k).and_then(Value::as_str))
+                        .map(|w| w.lines().next().unwrap_or("").chars().take(120).collect::<String>())
+                        .unwrap_or_default();
+                    did.push(if what.is_empty() { name.clone() } else { format!("{name} {what}") });
+                }
+                Part::Text { .. } => said = m.text(),
+                _ => {}
+            }
+        }
+    }
+    if did.is_empty() {
+        return String::new();
+    }
+    let at = if round == usize::MAX { String::new() } else { format!(" in round {}/{rounds}", round + 1) };
+    let mut out = format!(
+        "{at}. Before that it made {} calls; what they changed stays as they left it, so go on from there rather \
+         than start over:\n",
+        did.len()
+    );
+    const SHOWN: usize = 40;
+    let skip = did.len().saturating_sub(SHOWN);
+    if skip > 0 {
+        out.push_str(&format!("- ({skip} earlier calls)\n"));
+    }
+    for d in &did[skip..] {
+        out.push_str(&format!("- {d}\n"));
+    }
+    let said = said.trim();
+    if !said.is_empty() {
+        let tail: String = said.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+        out.push_str(&format!("Its last words: {tail}\n"));
+    }
+    out
+}
+
 /// One sub-agent at work.
 struct Run {
     client: Arc<dyn ModelClient>,
@@ -450,39 +515,43 @@ impl Run {
             let mut req = ModelRequest::new(model.clone(), system.clone(), messages.clone());
             req.tools = specs.clone();
             req.max_tokens = 4096;
-            let mut stream = self
-                .client
-                .stream(&cfg, &req, 2)
-                .await
-                .map_err(|e| format!("the sub-agent's model call failed: {}", e.message))?;
-            let mut text = String::new();
-            let mut calls: Vec<(String, String, Value)> = Vec::new();
-            let mut usage = Usage::default();
-            let failed = loop {
-                let ev = tokio::select! {
-                    ev = stream.next() => ev,
-                    _ = ctx.cancel.cancelled() => break Some("stopped".to_string()),
-                };
-                match ev {
-                    Some(StreamEvent::TextDelta(d)) => text.push_str(&d),
-                    Some(StreamEvent::ToolCallEnd { id, name, args }) => calls.push((id, name, args)),
-                    Some(StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u)) => usage += u,
-                    Some(StreamEvent::Error(e)) => break Some(format!("the sub-agent's model failed: {}", e.message)),
-                    Some(StreamEvent::Done) | None => break None,
-                    _ => {}
+            // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
+            // done twice, and the rounds before it (files written, commands run) are not thrown away
+            let mut tries = 0u32;
+            let (text, calls) = loop {
+                let (got, usage) = self.ask(&cfg, &req, ctx).await;
+                if let (Some(h), false) = (&self.host, usage.is_empty()) {
+                    h.spent(&model, usage, pricing).await;
+                }
+                match got {
+                    Ok(reply) => break reply,
+                    Err(Failure::Stopped) => return Err(stopped(&messages)),
+                    Err(Failure::Model(e)) if e.is_retryable() && tries < ROUND_RETRIES => {
+                        tries += 1;
+                        let wait = e.retry_after.unwrap_or(Duration::from_secs(2u64 << tries)).min(MAX_WAIT);
+                        say(format!("the model call broke off ({}); asking again in {}s", e.message, wait.as_secs()));
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = ctx.cancel.cancelled() => return Err(stopped(&messages)),
+                        }
+                    }
+                    Err(Failure::Model(e)) => {
+                        return Err(format!(
+                            "the sub-agent's model call failed: {}{}",
+                            e.message,
+                            progress(&messages, round, rounds)
+                        ))
+                    }
                 }
             };
-            if let (Some(h), false) = (&self.host, usage.is_empty()) {
-                h.spent(&model, usage, pricing).await;
-            }
-            if let Some(why) = failed {
-                return Err(why);
-            }
             if calls.is_empty() || last {
                 let report = text.trim();
                 return if report.is_empty() {
                     Err(if last {
-                        format!("the sub-agent took {rounds} rounds without an answer; ask it something narrower")
+                        format!(
+                            "the sub-agent took {rounds} rounds without an answer; ask it something narrower{}",
+                            progress(&messages, usize::MAX, 0)
+                        )
                     } else {
                         "the sub-agent answered nothing".into()
                     })
@@ -509,6 +578,36 @@ impl Run {
             messages.push(Message::tool_results(results));
         }
         unreachable!("the last round always returns")
+    }
+
+    /// One request of a round: its text and calls, and what it spent (also when it failed).
+    async fn ask(
+        &self,
+        cfg: &ProviderConfig,
+        req: &ModelRequest,
+        ctx: &ToolContext,
+    ) -> (Result<(String, Vec<(String, String, Value)>), Failure>, Usage) {
+        let mut usage = Usage::default();
+        let mut stream = match self.client.stream(cfg, req, 2).await {
+            Ok(s) => s,
+            Err(e) => return (Err(Failure::Model(e)), usage),
+        };
+        let mut text = String::new();
+        let mut calls: Vec<(String, String, Value)> = Vec::new();
+        loop {
+            let ev = tokio::select! {
+                ev = stream.next() => ev,
+                _ = ctx.cancel.cancelled() => return (Err(Failure::Stopped), usage),
+            };
+            match ev {
+                Some(StreamEvent::TextDelta(d)) => text.push_str(&d),
+                Some(StreamEvent::ToolCallEnd { id, name, args }) => calls.push((id, name, args)),
+                Some(StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u)) => usage += u,
+                Some(StreamEvent::Error(e)) => return (Err(Failure::Model(e)), usage),
+                Some(StreamEvent::Done) | None => return (Ok((text, calls)), usage),
+                _ => {}
+            }
+        }
     }
 
     async fn call(
