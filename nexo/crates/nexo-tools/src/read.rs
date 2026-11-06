@@ -48,7 +48,7 @@ impl Tool for Read {
         match str_arg(args, "path") {
             Some(p) => {
                 let range = match (int_arg(args, "offset"), int_arg(args, "limit")) {
-                    (Some(o), Some(l)) => format!(" [{o}..{}]", o + l - 1),
+                    (Some(o), Some(l)) => format!(" [{o}..{}]", o.saturating_add(l).saturating_sub(1)),
                     (Some(o), None) => format!(" [{o}..]"),
                     (None, Some(l)) => format!(" [..{l}]"),
                     _ => String::new(),
@@ -69,6 +69,9 @@ impl Tool for Read {
             return ToolOutput::error(format!("read: {shown} is a directory; use `ls` to list it"));
         }
         if let Ok(m) = tokio::fs::metadata(&path).await {
+            if !m.file_type().is_file() {
+                return ToolOutput::error(format!("read: {shown} is not a regular file (device, pipe or socket)"));
+            }
             if m.len() > MAX_FILE_BYTES {
                 return ToolOutput::error(format!(
                     "read: {shown} is {} MiB, too large to load; use `bash` with `head`, `tail`, `sed -n` or `grep` on it",
@@ -120,6 +123,7 @@ impl Tool for Read {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::write::Write;
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext::new(dir.to_path_buf())
@@ -167,5 +171,22 @@ mod tests {
         big.set_len(MAX_FILE_BYTES + 1).unwrap(); // sparse: no bytes are written
         let out = Read.run(json!({"path": "big.log"}), &c).await;
         assert!(out.is_error && out.content.contains("too large"), "{}", out.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_device_is_refused_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let out = Read.run(json!({"path": "/dev/zero"}), &ctx(d.path())).await;
+        assert!(out.is_error && out.content.contains("not a regular file"), "{}", out.content);
+        let out =
+            Write.run(json!({"path": "/dev/zero", "content": "x"}), &ToolContext::new(d.path().to_path_buf())).await;
+        assert!(out.is_error && out.content.contains("not a regular file"), "{}", out.content);
+    }
+
+    #[test]
+    fn a_zero_offset_and_limit_do_not_underflow_the_summary() {
+        let s = Read.summary(&json!({"path": "a", "offset": 0, "limit": 0}));
+        assert_eq!(s, "read a [0..0]");
     }
 }

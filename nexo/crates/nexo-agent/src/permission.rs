@@ -117,15 +117,8 @@ pub fn target_of(kind: ToolKind, args: &Value) -> Option<String> {
 
 /// `docs.rs` out of `https://user@docs.rs:443/tokio?x`, lower case; `None` for what has no host.
 pub fn host_of(url: &str) -> Option<String> {
-    let rest = url.trim().split_once("://").map(|(_, r)| r)?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
-    let host = if host.starts_with('[') {
-        host.split_inclusive(']').next().unwrap_or(host)
-    } else {
-        host.split(':').next().unwrap_or(host)
-    };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    // parsed as web_fetch parses it, so a rule and the fetch agree on the host
+    let host = url::Url::parse(url.trim()).ok()?.host_str()?.trim_end_matches('.').to_ascii_lowercase();
     (!host.is_empty()).then_some(host)
 }
 
@@ -138,7 +131,10 @@ fn path_forms(p: &str, cwd: &Path) -> Vec<String> {
     if let Ok(rel) = abs.strip_prefix(normalise(cwd)) {
         out.push(slash(rel.to_string_lossy().to_string()));
     }
-    out.push(slash(p.trim().to_string()));
+    // as written, unless it holds `..`: a glob crosses it, so `src/../.env` would pass as `src/**`
+    if !Path::new(p.trim()).components().any(|c| c == std::path::Component::ParentDir) {
+        out.push(slash(p.trim().to_string()));
+    }
     out
 }
 
@@ -926,6 +922,37 @@ mod tests {
             let args = json!({ "path": path });
             assert!(rule_matches("read(/etc/*)", "read", ToolKind::Read, &args, &c), "read(/etc/*) on {path}");
         }
+    }
+
+    #[test]
+    fn dot_dot_in_a_path_does_not_borrow_an_allow_rule() {
+        let c = cwd();
+        let p = Policy {
+            mode: PermissionMode::Ask,
+            allow: vec!["write(src/**)".into(), "read(src/**)".into()],
+            deny: vec![],
+        };
+        let w = |path: &str| p.decide("write", ToolKind::Write, &json!({ "path": path }), &c);
+        assert_eq!(w("src/a.rs"), Decision::Allow);
+        assert_eq!(w("src/../.git/hooks/pre-commit"), Decision::Ask);
+        assert_eq!(p.decide("read", ToolKind::Read, &json!({ "path": "src/../.env" }), &c), Decision::Ask);
+    }
+
+    #[test]
+    fn host_comes_from_the_same_parser_as_web_fetch() {
+        let c = cwd();
+        assert_eq!(host_of("https://evil.com\\@docs.rs/").as_deref(), Some("evil.com"));
+        assert_eq!(host_of("https://%65vil.com/").as_deref(), Some("evil.com"));
+        assert_eq!(host_of("https://\u{FF45}vil.com/").as_deref(), Some("evil.com"));
+        let p = Policy {
+            mode: PermissionMode::Ask,
+            allow: vec!["web_fetch(docs.rs)".into()],
+            deny: vec!["web_fetch(evil.com)".into()],
+        };
+        let d = |u: &str| p.decide("web_fetch", ToolKind::Network, &json!({ "url": u }), &c);
+        assert_eq!(d("https://evil.com\\@docs.rs/"), Decision::Deny("denied by rule `web_fetch(evil.com)`".into()));
+        assert!(matches!(d("https://%65vil.com/"), Decision::Deny(_)));
+        assert!(matches!(d("https://\u{FF45}vil.com/"), Decision::Deny(_)));
     }
 
     #[test]

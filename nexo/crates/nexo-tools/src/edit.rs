@@ -70,6 +70,9 @@ impl Tool for Edit {
         let path = resolve(&ctx.cwd, p);
         let shown = format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path));
         if let Ok(m) = tokio::fs::metadata(&path).await {
+            if !m.file_type().is_file() {
+                return ToolOutput::error(format!("edit: {shown} is not a regular file (device, pipe or socket)"));
+            }
             if m.len() > MAX_FILE_BYTES {
                 return ToolOutput::error(format!(
                     "edit: {shown} is too large to edit here ({} MiB); use `bash`",

@@ -109,7 +109,7 @@ impl Tool for Grep {
         let max = int_arg(&args, "max_results").unwrap_or(DEFAULT_MAX_RESULTS).max(1) as usize;
         let cwd = ctx.cwd.clone();
         let root2 = root.clone();
-        let (items, total, cut, kept_out, hit_files, too_big, unreadable) = tokio::task::spawn_blocking(move || {
+        let joined = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + TIME_CAP;
             let mut cut = false;
             // files that hold keys are searched only when named as `path` (the permission asks then)
@@ -212,8 +212,10 @@ impl Tool for Grep {
             }
             (items, total, cut, kept_out, hit_files, too_big, unreadable)
         })
-        .await
-        .unwrap_or_default();
+        .await;
+        let Ok((items, total, cut, kept_out, hit_files, too_big, unreadable)) = joined else {
+            return ToolOutput::error("grep: the search failed unexpectedly");
+        };
         let mut content = if total == 0 {
             format!("grep: no match for `{pattern}` in {shown_root}")
         } else if !files_only && total > max {

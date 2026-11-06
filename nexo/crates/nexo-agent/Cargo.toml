@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 globset = { workspace = true }
+url = { workspace = true }
 nexo-curator = { workspace = true }
 
 [dev-dependencies]

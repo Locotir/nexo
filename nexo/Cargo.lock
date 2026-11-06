@@ -1587,6 +1587,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracing",
+ "url",
  "uuid",
 ]
 

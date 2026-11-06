@@ -72,7 +72,7 @@ impl Tool for Glob {
         };
         let cwd = ctx.cwd.clone();
         let root2 = root.clone();
-        let (found, cut) = tokio::task::spawn_blocking(move || {
+        let joined = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + TIME_CAP;
             let mut cut = false;
             let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
@@ -102,8 +102,10 @@ impl Tool for Glob {
             found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
             (found.into_iter().map(|(_, p)| display_path(&cwd, &p)).collect::<Vec<_>>(), cut)
         })
-        .await
-        .unwrap_or_default();
+        .await;
+        let Ok((found, cut)) = joined else {
+            return ToolOutput::error("glob: the search failed unexpectedly");
+        };
         let total = found.len();
         let mut items = found;
         items.truncate(MAX_RESULTS);

@@ -153,7 +153,18 @@ pub async fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::AsyncWriteExt;
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let target = tokio::fs::canonicalize(path).await.unwrap_or_else(|_| path.to_path_buf());
+    // a link is followed by hand first, so a dangling one (canonicalize fails) is not replaced
+    let mut target = path.to_path_buf();
+    for _ in 0..40 {
+        match tokio::fs::symlink_metadata(&target).await {
+            Ok(m) if m.file_type().is_symlink() => {
+                let link = tokio::fs::read_link(&target).await?;
+                target = target.parent().map(|d| d.join(&link)).unwrap_or(link);
+            }
+            _ => break,
+        }
+    }
+    let target = tokio::fs::canonicalize(&target).await.unwrap_or(target);
     let perms = tokio::fs::metadata(&target).await.ok().map(|m| m.permissions());
     if perms.as_ref().is_some_and(|p| p.readonly()) {
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is read-only"));
@@ -251,5 +262,15 @@ mod tests {
         assert_eq!(int_arg(&a, "limit"), Some(5));
         assert_eq!(int_arg(&a, "n"), Some(3));
         assert!(bool_arg(&a, "all") && bool_arg(&a, "b") && !bool_arg(&a, "path"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_atomic_keeps_a_dangling_link_and_writes_its_target() {
+        let d = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("real.txt", d.path().join("link")).unwrap();
+        write_atomic(&d.path().join("link"), b"hi").await.unwrap();
+        assert!(std::fs::symlink_metadata(d.path().join("link")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(d.path().join("real.txt")).unwrap(), "hi");
     }
 }

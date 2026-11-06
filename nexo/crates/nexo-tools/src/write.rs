@@ -63,6 +63,9 @@ impl Tool for Write {
         if path.is_dir() {
             return ToolOutput::error(format!("write: {shown} is a directory"));
         }
+        if tokio::fs::metadata(&path).await.is_ok_and(|m| !m.file_type().is_file()) {
+            return ToolOutput::error(format!("write: {shown} is not a regular file (device, pipe or socket)"));
+        }
         // a file too large to load: only its head is read, for the binary check, and the diff starts empty
         let huge = tokio::fs::metadata(&path).await.map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false);
         let read = if huge { read_head(&path).await } else { tokio::fs::read(&path).await };
