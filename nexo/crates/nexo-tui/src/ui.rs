@@ -2309,7 +2309,15 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let pinned_h = pinned.len() as u16;
     // the size it took when it opened: a cursor, a filter or a longer line never stretches it
-    let want_h = ((body.len() as u16) + pinned_h + 2 + button_h).min(max_h).max(5);
+    // the first setup list asks for the room it would take with every fold open: what is opened
+    // later is not cut, and the own-server row never ends up behind a scrollbar
+    let open_extra = match modal {
+        Modal::Setup(s) if s.step == crate::modal::setup::Step::Provider => {
+            s.rows_if_open().saturating_sub(s.list.items.len())
+        }
+        _ => 0,
+    };
+    let want_h = ((body.len() + open_extra) as u16 + pinned_h + 2 + button_h).min(max_h).max(5);
     let room = Rect::new(0, 0, area.width, max_h.max(5));
     let (w, h) = app.dialog_size.modal.keep(key, f.area(), room, || (w, want_h));
     let h = h.max(5).min(area.height);

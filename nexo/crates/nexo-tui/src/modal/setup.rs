@@ -103,6 +103,8 @@ pub struct Setup {
     pub effort: Option<usize>,
     /// Local servers found running: `(preset, what answered)`.
     pub local: Vec<(String, String)>,
+    /// The scan for local servers has answered (empty or not): the "looking" line goes away.
+    pub scanned: bool,
     /// The folds of the first list, and which of them are open (by key).
     groups: Vec<Group>,
     open: std::collections::HashSet<String>,
@@ -181,6 +183,7 @@ impl Setup {
             efforts: Vec::new(),
             effort: None,
             local: Vec::new(),
+            scanned: false,
             groups: Vec::new(),
             open: current.split_once('/').map(|(p, _)| p.to_string()).into_iter().collect(),
             owner: Vec::new(),
@@ -389,9 +392,16 @@ impl Setup {
         }
     }
 
+    /// How many rows the first list would have with every fold open: the room the dialog asks
+    /// for, so what is opened later is not cut.
+    pub fn rows_if_open(&self) -> usize {
+        self.groups.iter().map(|g| 1 + g.rows.len()).sum::<usize>() + 1
+    }
+
     /// The local servers found running; they become folds of their own.
     pub fn found_local(&mut self, found: Vec<(String, String)>) {
         self.local = found;
+        self.scanned = true;
         if self.step == Step::Provider {
             let sel = self.list.current().map(|i| i.value.clone());
             self.fill_providers();
@@ -974,7 +984,7 @@ impl Setup {
             Step::Provider if short => {}
             Step::Provider => {
                 say(&mut lines, "Switch to a model you have, or set up a provider: nexo asks the server what it is and what it serves.", dim);
-                if self.local.is_empty() {
+                if !self.scanned {
                     say(&mut lines, "Looking for Ollama, LM Studio, vLLM and llama.cpp on this machine…", dim);
                 }
             }
