@@ -14,7 +14,6 @@ mod mechanical;
 mod msg;
 mod py;
 mod rules;
-mod telegraph;
 mod tools;
 
 use indexmap::IndexMap;
@@ -39,7 +38,7 @@ pub const MODEL_JSON: &str = include_str!("../data/model.json");
 /// taken up yet stays (`mission=1`): the task named it, and cutting it would only bring it back without
 /// the cache. An output an earlier call gave, line for line, goes as one line that points to it (and says
 /// nothing changed when the same call gave it; `asked=3`): it is decided as it arrives, so it breaks no cache, and the copy above stays whole.
-/// Every step stays in the history, a call made over and over too (`loops=0`): a view of the same shape as
+/// Every step stays in the history, a call made over and over too: a view of the same shape as
 /// one sent before (call ids and the counts in curator lines aside) is never sent again, since at a fixed
 /// temperature the model takes the same step again. Folding such a run kept the agent in it for 22 steps
 /// on the golden session. The output the agent has just asked for comes whole (`fresh=1`); its repeated runs go
@@ -50,7 +49,7 @@ pub const MODEL_JSON: &str = include_str!("../data/model.json");
 /// next one came in, and the agent read the same file again for 180 steps. Past the budget a guess may take
 /// the oldest, so a session where the agent never writes still has a bounded view.
 pub const D_SPEC: &str =
-    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1;pockets=0;life=3600";
+    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;stale=1;pockets=0;life=3600";
 
 const INTS: &[&str] = &[
     "protect",
@@ -107,8 +106,7 @@ enum Val {
     S(String),
 }
 
-/// The `key=value` pairs of a spec, in order. Only `;` separates them: a value may hold a comma
-/// (`birth=squeeze,telegraph`).
+/// The `key=value` pairs of a spec, in order. Only `;` separates them: a value may hold a comma.
 fn parse_params(spec: &str) -> Result<IndexMap<String, String>, String> {
     let mut out = IndexMap::new();
     for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
@@ -146,6 +144,15 @@ const ONLY: &[(&str, &str)] = &[
     ("leave", "oldest"),
     ("spill", ""),
     ("early", "0"),
+    ("settle", "0"),
+    ("topic", "0"),
+    ("noted", "0"),
+    ("sticky", "0"),
+    ("loops", "0"),
+    ("recite", "0"),
+    ("task", "0"),
+    ("reruns", "0"),
+    ("stall", "0"),
     ("trust", "1"),
     ("ttl", "0"),
 ];
@@ -210,7 +217,7 @@ fn params(spec: &str) -> Result<Params, String> {
         let mut v: Vec<String> = Vec::new();
         for p in s("birth")?.replace(',', "+").split('+').map(str::trim).filter(|p| !p.is_empty()) {
             // a stage the curator does not know would take the place of the default and run nothing
-            if !["squeeze", "telegraph", "telegraph-agent"].contains(&p) {
+            if !["squeeze"].contains(&p) {
                 return Err(format!("birth has no stage {p:?}"));
             }
             if !v.iter().any(|x| x == p) {
@@ -241,7 +248,6 @@ fn params(spec: &str) -> Result<Params, String> {
         nudge: i("nudge")?,
         directives: i("directives")?,
         recall: i("recall")?,
-        settle: i("settle")?,
         dedup: i("dedup")?,
         cut_need: cut == "need",
         cut_copies: cut == "copies",
@@ -249,12 +255,9 @@ fn params(spec: &str) -> Result<Params, String> {
         close: i("close")?,
         ahead: f("ahead")?,
         sup: i("sup")?,
-        topic: i("topic")?,
         apart: i("apart")?,
-        noted: i("noted")?,
         named: i("named")?,
         mission: i("mission")?,
-        sticky: i("sticky")?,
         live: i("live")?,
         lead: i("lead")?,
         aim: i("aim")?,
@@ -263,13 +266,8 @@ fn params(spec: &str) -> Result<Params, String> {
         digest: i("digest")?,
         hold: i("hold")?,
         still: i("still")?,
-        loops: i("loops")?,
         asked: i("asked")?,
         fresh: i("fresh")?,
-        recite: i("recite")?,
-        task: i("task")?,
-        reruns: i("reruns")?,
-        stall: i("stall")?,
         stale: i("stale")?,
         pockets: i("pockets")?,
         life: f("life")?,
@@ -819,8 +817,9 @@ mod tests {
 
     #[test]
     fn comma_is_not_a_pair_separator() {
-        let p = params("birth=squeeze,telegraph;eoq=9000").unwrap();
-        assert_eq!((p.birth.as_slice(), p.eoq), (&["squeeze".to_string(), "telegraph".to_string()][..], 9000));
+        let p = params("birth=squeeze,squeeze;eoq=9000").unwrap();
+        assert_eq!((p.birth.as_slice(), p.eoq), (&["squeeze".to_string()][..], 9000));
+        assert_eq!(refused("birth=squeeze,telegraph"), "birth has no stage \"telegraph\"");
         assert_eq!(refused("eoq=1,ledger=2"), "eoq takes a whole number of 0 or more, not \"1,ledger=2\"");
         // a cap without a view after the rewrite takes none
         assert_eq!(params("cap=9000").unwrap().eoq, 0);

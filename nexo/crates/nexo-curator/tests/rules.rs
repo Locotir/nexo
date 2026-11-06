@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 /// The settings these tests start from: the anchor, the nudges and the size cap as they ran before the pure
 /// default (cycle 50), so a change of the default spec does not move what they check.
-const BASE: &str = "directives=1;nudge=8;close=0;ahead=0;dedup=0;live=0;lead=0;aim=0;follow=0;brief=0;digest=0;hold=0;loops=0;asked=0;sup=0;named=0;margin=1;mission=0";
+const BASE: &str = "directives=1;nudge=8;close=0;ahead=0;dedup=0;live=0;lead=0;aim=0;follow=0;brief=0;digest=0;hold=0;asked=0;sup=0;named=0;margin=1;mission=0";
 
 fn user(text: &str) -> Value {
     json!({"role": "user", "content": text})

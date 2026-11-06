@@ -18,7 +18,6 @@ use crate::mechanical::{squeeze, MARK};
 use crate::msg::{blocks, get_str, key_of, py_str, text_block, text_of};
 use crate::py::{self, bisect_left, Re};
 use crate::rules::{clip, rules_in, Rules};
-use crate::telegraph::compress;
 use crate::tools::{
     classify, edit_size, full_write, heredoc_writes, partial_read, printed_files, prints_files, read_range,
     shell_writes, Kind,
@@ -116,10 +115,6 @@ const SMALL_RESULT: i64 = 100;
 /// The distinct calls a closed request names on its line.
 const CLOSED_SHOWN: usize = 8;
 const OUTCOME_CHARS: usize = 700;
-/// The most characters of the person's request that `recite` sends again.
-const RECITE_CHARS: usize = 2000;
-/// `Params.stall`: the share of new lines under which the last outputs count as going round.
-const STALL_NEW: f64 = 0.1;
 
 /// The settings of an engine (see the spec in `lib.rs`).
 #[derive(Clone, Debug)]
@@ -156,9 +151,6 @@ pub struct Params {
     /// The host offers the model the `recall` tool, which brings back a message the view left out as it
     /// was (0: it does not; the tool list is then the one without the curator).
     pub recall: i64,
-    /// A tool result of at least this many tokens asks for notes on the next step, and a result read before
-    /// a later note leaves the view once the next request begins (0: off).
-    pub settle: i64,
     /// A run of at least this many lines of a tool output that an earlier output holds too, and that
     /// earlier output is whole in the view, goes as one line that points to it; the run comes back whole
     /// once that output leaves the view or is cut (0: off). With `asked`, a range the agent asks for again goes
@@ -185,22 +177,9 @@ pub struct Params {
     /// the rent rule with the parts the model rules out: whoever reads the view loses nothing by them, and
     /// they go once keeping them has cost more than the cache they break (0: only past the cap, `cut`).
     pub sup: i64,
-    /// With `close`, the steps of an answered request leave only once the latest request is on another
-    /// topic (thread): while the requests go on with the same topic, what was read for one is what the next
-    /// works from, and a reply holds little of it (0: they leave as soon as the request is answered).
-    pub topic: i64,
     /// Tokens the other topics must hold together before they leave the view: leaving one out costs a
     /// step to bring it back when it was needed, and saves in proportion to its size (0: they always leave).
     pub apart: i64,
-    /// With `close`, a step of an answered request leaves once a `Finding:` or `Plan:` line the agent wrote
-    /// after it names its source (the part of a file name that sets it apart from the other files read),
-    /// and not before, whatever the topic: what was read leaves when its facts are noted (0: off). The
-    /// output of a call whose files later notes all name is not kept for a request that names its file,
-    /// once a later request on the file got its reply with no new read of it: the note proved it stands
-    /// in for the read. An agent that writes no notes keeps the steps `close_unused` lets go. Off by
-    /// default: in the golden sessions the proof comes when leaving already rewrites much of the cached
-    /// view, and leaving before the proof made the agent go back to a file its note did not cover.
-    pub noted: i64,
     /// With `close`, a step that read a file the latest request names stays, whatever else would let it go:
     /// the request is about that file (0: off).
     pub named: i64,
@@ -208,12 +187,6 @@ pub struct Params {
     /// of the thread names that file, once a later request took up another file of that list: the list is
     /// being worked through, and no request has yet been about this one (0: off).
     pub mission: i64,
-    /// With `close`, a step brought back leaves again only once its rent since it went idle pays for
-    /// bringing it back once more: it was needed after it left, so the guess of the calls to come does not
-    /// count for it (0: off). A step the agent brought back by itself counts as brought back too: a
-    /// `recall` of its output while the view left it out, or the same read or command made again then
-    /// (`asked_back`).
-    pub sticky: i64,
     /// With `close`, the outputs of the request still open go idle when no later agent message draws on
     /// them (`live_drop`), and leave when that pays (0: off).
     pub live: i64,
@@ -241,13 +214,6 @@ pub struct Params {
     /// does not change that. Older ones past the budget may go on a guess, so a session where the agent never
     /// writes still has a bounded view (0: a guess may take any).
     pub still: i64,
-    /// A call the agent makes again just as it made it the step before, that returns the same output again,
-    /// adds nothing: in a run of such steps the first and the latest stay, the ones between leave, and the
-    /// latest carries a line that counts the run. A history of the same step over and over is what keeps a
-    /// model repeating it, and it is sent again whole on every step (0: off, the default: the folded view
-    /// stays the same from one step to the next, call ids and the count aside, and a model at a fixed
-    /// temperature sent a view it was sent before takes the same step again; cycle 56).
-    pub loops: i64,
     /// With `dedup`, an output that is mostly lines already in the view goes whole: the agent asked for it again,
     /// as it did not find or trust the copy above (0: such an output goes as pointers too; 2: only when most of its
     /// lines went as a pointer once already, so the first copy asked again still goes as one; 3: as 1, but an
@@ -262,24 +228,6 @@ pub struct Params {
     /// The note that takes the place of an output left out says only that it left and how to bring it back:
     /// in a long open request every such note is sent again on each step, so its words add up (0: off).
     pub brief: i64,
-    /// A request still open after this many steps of the agent, then twice as many, four times…, has its own
-    /// words sent again at the end of the latest output, once each time: after a long run of reads the request
-    /// sits far above them, where a model attends to it least. The line is the person's request as written,
-    /// nothing added; it is put in as that output arrives and never moves, so the cache keeps it (0: off).
-    pub recite: i64,
-    /// The person's words are a new request wherever they come, alone or with the results of a step (a
-    /// host that adds the next request to them, a person who writes while the agent works); which topic it
-    /// belongs to stays the links' call. A request left for a newer one is over (0: off).
-    pub task: i64,
-    /// A call made again says how often it ran in the session and whether its output changed: "ran 3
-    /// times, the same output each time" tells the agent that reading it once more will not help, "changed"
-    /// that the thing it reads moves. Said as the output arrives, so the cache keeps it (0: off).
-    pub reruns: i64,
-    /// Over the last `stall` outputs of the open request, the share of their lines never seen before in the
-    /// session: under `STALL_NEW` the agent is going round what it has, and the request comes again in the
-    /// person's words with that fact (step, new lines of the last outputs). Then after twice the steps, and so
-    /// on. Takes the place of `recite`'s fixed count; needs `dedup` (it counts the lines) (0: off).
-    pub stall: i64,
     /// A read of a file that a later edit or write of it (one that did not fail) has changed is out of date:
     /// past the cap it leaves with the parts a later output holds line for line, before any part that would
     /// leave on a guess, and the note left in its place names the file and the message of the edit. Decided
@@ -328,22 +276,11 @@ fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<
         return None;
     }
     let content = m.get("content")?;
-    let prose =
-        p.stage("telegraph") && (m.get("role").and_then(Value::as_str) == Some("user") || p.stage("telegraph-agent"));
     let with = |c: Value| {
         let mut out = m.clone();
         out["content"] = c;
         out
     };
-    if let Value::String(s) = content {
-        if !prose {
-            return None;
-        }
-        return match compress(s) {
-            std::borrow::Cow::Owned(x) if x != *s => Some(with(Value::String(x))),
-            _ => None,
-        };
-    }
     let Value::Array(list) = content else { return None };
     let sq = p.stage("squeeze");
     let process = |o: &Map<String, Value>| {
@@ -391,15 +328,6 @@ fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<
                         }
                     }
                     _ => {}
-                }
-            } else if t == Some("text") && prose {
-                if let Some(tx) = o.get("text").and_then(Value::as_str) {
-                    let s = compress(tx);
-                    if *s != *tx {
-                        let mut x = o.clone();
-                        x.insert("text".into(), Value::String(s.into_owned()));
-                        nb = Some(Value::Object(x));
-                    }
                 }
             }
         }
@@ -469,9 +397,6 @@ pub struct Engine {
     pool: Vec<(usize, String, Set, f64)>,
     // what the anchor keeps of the messages that left the view, in their own words (`harvest`)
     findings: Vec<(usize, String)>,
-    /// The agent's note lines, as words, with the message each is in, and how many messages were scanned.
-    noted: Vec<(usize, FxHashSet<String>)>,
-    noted_upto: usize,
     plan: Option<(usize, String)>,
     /// The person's standing instructions: session state, kept for as long as the session lasts.
     rules: Rules,
@@ -493,8 +418,6 @@ pub struct Engine {
     /// Agent steps since the last one with a note line, and since the last nudge.
     since_note: usize,
     since_nudge: usize,
-    /// The last message with a note line.
-    last_note: Option<usize>,
     /// The messages whose last tool result carries the nudge (kept there, so the history stays as sent).
     nudged: FxHashSet<usize>,
     /// The oldest message a note put back to how it was sent before the request was nudged: the view changed
@@ -538,23 +461,6 @@ pub struct Engine {
     shut_out: FxHashSet<usize>,
     /// The requests looked at for closing so far.
     shut_done: usize,
-    /// The steps that repeat the step before them (`Params.loops`) and are out of the view, the line the
-    /// latest of each run carries, how far the messages were looked at, and the run going on: its first
-    /// call, its latest call and how many times it ran.
-    looped: FxHashSet<usize>,
-    loop_line: FxHashMap<usize, String>,
-    /// The person's request sent again at the end of an output (`Params.recite`), by message, and the request
-    /// the latest of them was for with the count of steps it was due at.
-    recited: FxHashMap<usize, String>,
-    /// `Params.reruns`: by call, how often it ran, how often its output differed from the run before and the
-    /// latest output's hash; and the lines that say so, by message.
-    reran: FxHashMap<String, (u32, u32, u64)>,
-    rerun_line: FxHashMap<usize, Vec<String>>,
-    /// `Params.stall`: by tool result, its message, its lines never seen before and its lines.
-    novel: Vec<(usize, usize, usize)>,
-    recite_next: (usize, usize),
-    loops_seen: usize,
-    run: Option<(usize, usize, usize)>,
     /// The steps of the answered requests, in the view or out of it.
     steps: Vec<Step>,
     /// The words of each request, and in how many requests and how many steps each word is: a word in
@@ -568,9 +474,6 @@ pub struct Engine {
     /// command: each call's unit and the lines it asked for, oldest first. A call that asks again for what an
     /// earlier one gave, while that output is out of the view, is the agent bringing it back (`asked_back`).
     reads_made: FxHashMap<String, Vec<ReadMade>>,
-    /// How many times the agent brought each message back while no step held it yet (its request still
-    /// open): the step made of it starts with the count (`Step::back`).
-    brought: FxHashMap<usize, u32>,
     /// The edits and writes of files, by a tool or a shell command: (path, message, call id), and whether
     /// each call's result came back without an error (`Params.stale`).
     edits: Vec<(String, usize, String)>,
@@ -699,9 +602,6 @@ struct Step {
     tokens: i64,
     /// The model call since which no request has used it (`None`: in use, or out).
     idle: Option<usize>,
-    /// How many times it was brought back: by the curator (`recall`, `named_keep`) or by the agent itself
-    /// (`asked_back`).
-    back: u32,
 }
 
 impl Step {
@@ -952,7 +852,6 @@ impl Engine {
     pub fn new(p: Params) -> Engine {
         let mut goal = Threads::default();
         goal.link = p.link;
-        goal.riders = p.task > 0;
         Engine {
             cap: p.cap,
             floor: p.floor,
@@ -987,8 +886,6 @@ impl Engine {
             names: None,
             pool: Vec::new(),
             findings: Vec::new(),
-            noted: Vec::new(),
-            noted_upto: 0,
             plan: None,
             rules: Rules::default(),
             base_map: String::new(),
@@ -1000,7 +897,6 @@ impl Engine {
             pending_writes: FxHashMap::default(),
             since_note: 0,
             since_nudge: usize::MAX,
-            last_note: None,
             nudged: FxHashSet::default(),
             unnudged: None,
             sent_vis: Arc::default(),
@@ -1026,22 +922,12 @@ impl Engine {
             shut: FxHashMap::default(),
             shut_out: FxHashSet::default(),
             shut_done: 0,
-            looped: FxHashSet::default(),
-            loop_line: FxHashMap::default(),
-            recited: FxHashMap::default(),
-            reran: FxHashMap::default(),
-            rerun_line: FxHashMap::default(),
-            novel: Vec::new(),
-            recite_next: (usize::MAX, 0),
-            loops_seen: 0,
-            run: None,
             steps: Vec::new(),
             requests: Vec::new(),
             requests_df: FxHashMap::default(),
             step_df: FxHashMap::default(),
             step_at: FxHashMap::default(),
             reads_made: FxHashMap::default(),
-            brought: FxHashMap::default(),
             edits: Vec::new(),
             edit_ok: FxHashMap::default(),
             shell_read: FxHashMap::default(),
@@ -1128,9 +1014,6 @@ impl Engine {
         if raw.get("role").and_then(Value::as_str) == Some("assistant") {
             let noted = blocks(raw.get("content")).iter().filter_map(note_text).any(|t| NOTE_LINE.is_match(&t));
             self.since_note = if noted { 0 } else { self.since_note + 1 };
-            if noted {
-                self.last_note = Some(self.tr.msgs.len());
-            }
             if noted {
                 // the request for notes was answered: the result that carried it goes back to how it was sent
                 for old in std::mem::take(&mut self.nudged) {
@@ -1340,36 +1223,7 @@ impl Engine {
             let mi = u.msg;
             let text = self.tr.unit_text(i).into_owned();
             let lines: Vec<&str> = text.split('\n').collect();
-            let before = self.line_ids.len() as u32;
             let ids: Vec<u32> = lines.iter().map(|l| self.line_id(l.trim_end())).collect();
-            if self.p.stall > 0 {
-                let full = lines.iter().zip(&ids).filter(|(l, _)| !l.trim().is_empty());
-                let (total, new) = full.fold((0, FxHashSet::default()), |(n, mut s), (_, &x)| {
-                    if x >= before {
-                        s.insert(x);
-                    }
-                    (n + 1, s)
-                });
-                self.novel.push((mi, new.len(), total));
-            }
-            // reruns: how often this call ran and how often its output changed
-            let rerun = (self.p.reruns > 0).then(|| {
-                let label = self.call_label(i);
-                let hash = {
-                    use std::hash::{Hash, Hasher};
-                    let mut h = rustc_hash::FxHasher::default();
-                    ids.hash(&mut h);
-                    h.finish()
-                };
-                let e = self.reran.entry(label.clone()).or_insert((0, 0, hash));
-                e.0 += 1;
-                let now = e.2 != hash;
-                if now {
-                    e.1 += 1;
-                    e.2 = hash;
-                }
-                (label, e.0, e.1, now)
-            });
             let mut found: Vec<Dup> = Vec::new();
             let mut saved = 0;
             let mut a = 0;
@@ -1430,23 +1284,6 @@ impl Engine {
             }
             let refused = !same
                 && (self.p.asked != 2 || 2 * found.iter().map(again).sum::<usize>() >= found.iter().map(len_of).sum());
-            if let Some((label, runs, changed, now)) = rerun.filter(|r| r.1 > 1) {
-                let fact = match (changed, now) {
-                    (0, _) => "the same output each time".to_string(),
-                    (c, true) => format!("its output changed {c} of those times, this time too"),
-                    (c, false) => format!("its output changed {c} of those times, not this time"),
-                };
-                let line = format!("{MARK} {label} ran {runs} times in this session: {fact}");
-                if same_call && now {
-                    // the same as an earlier run, though not as the one right before: it went back
-                    found[0].stub =
-                        format!("{MARK} the same {} lines as {label} gave above: back to that output", lines.len());
-                }
-                // on the message itself, so it goes too while the output is sent whole (the newest result is)
-                self.rerun_line.entry(mi).or_default().push(line);
-                self.built.remove(&mi);
-                self.bump("reruns", 1);
-            }
             if self.p.asked != 0 && mostly && refused {
                 if !found.is_empty() {
                     self.bump("dedup_asked", 1);
@@ -1697,20 +1534,14 @@ impl Engine {
         let g = &self.goal;
         let apart = self.apart();
         let out: Vec<usize> = if g.turns.is_empty() {
-            (0..key.0).filter(|mi| !self.looped.contains(mi)).collect()
+            (0..key.0).collect()
         } else if !apart {
-            (0..key.0)
-                .filter(|mi| {
-                    *mi == 0 || (*mi >= self.start && !self.shut_out.contains(mi) && !self.looped.contains(mi))
-                })
-                .collect()
+            (0..key.0).filter(|mi| *mi == 0 || (*mi >= self.start && !self.shut_out.contains(mi))).collect()
         } else {
             let mut out = vec![0];
             for &j in &g.members[g.active()] {
                 let (a, b) = g.span(j, key.0);
-                out.extend(
-                    (a.max(self.start).max(1)..b).filter(|mi| !self.shut_out.contains(mi) && !self.looped.contains(mi)),
-                );
+                out.extend((a.max(self.start).max(1)..b).filter(|mi| !self.shut_out.contains(mi)));
             }
             out
         };
@@ -1732,9 +1563,6 @@ impl Engine {
             && (mi != 0 || self.map_text.is_empty())
             && !self.frozen.contains_key(&mi)
             && !self.shut.contains_key(&mi)
-            && !self.loop_line.contains_key(&mi)
-            && !self.recited.contains_key(&mi)
-            && !self.rerun_line.contains_key(&mi)
             && !self.nudged.contains(&mi)
             && on.iter().all(Option::is_none);
         if plain {
@@ -1810,15 +1638,6 @@ impl Engine {
             add_blocks(&mut m2, [text_block(&self.map_text)]);
         }
         if let Some(lines) = self.shut.get(&mi) {
-            add_blocks(&mut m2, lines.iter().map(|l| text_block(l)));
-        }
-        if let Some(line) = self.loop_line.get(&mi) {
-            add_blocks(&mut m2, [text_block(line)]);
-        }
-        if let Some(line) = self.recited.get(&mi) {
-            add_blocks(&mut m2, [text_block(line)]);
-        }
-        if let Some(lines) = self.rerun_line.get(&mi) {
             add_blocks(&mut m2, lines.iter().map(|l| text_block(l)));
         }
         let mut size = est(&m2);
@@ -2126,11 +1945,6 @@ impl Engine {
                 quiet.push(("miss_fresh", mi));
             }
         }
-        if self.p.loops != 0 {
-            if let Some(mi) = self.fold_loops().filter(|&mi| was_sent(mi)) {
-                quiet.push(("miss_loops", mi));
-            }
-        }
         // the provider's cache holds the last view of each topic for a while (`Params.pockets`): where it
         // stops in the view as it stands, which cuts past it do not move
         let (warm, warm_all, cold) =
@@ -2150,17 +1964,6 @@ impl Engine {
                 }
                 self.shut_done += 1;
                 turned = true;
-            }
-            if self.p.topic != 0 {
-                // the steps of the topic the person is on stay: the next request on it works from them
-                let on = self.goal.active();
-                let thread: FxHashMap<usize, usize> = self.goal.turns.iter().map(|t| (t.start, t.thread)).collect();
-                for s in self.steps.iter_mut().filter(|s| thread.get(&s.a) == Some(&on)) {
-                    s.idle = None;
-                }
-            }
-            if self.p.noted != 0 {
-                self.noted_close(now);
             }
             if self.p.live != 0 {
                 if let Some(mi) = self.live_drop(now) {
@@ -2304,11 +2107,6 @@ impl Engine {
         // what settles and what fits is weighed as a view rewritten from message 1 on (`first`); the cache
         // misses from the oldest result settled, and from the anchor that `leave` writes again
         let mut missed = first;
-        if let Some(mi) = self.settle(t) {
-            first.get_or_insert(1);
-            self.miss("miss_settle", Some(mi), &sizes, t);
-            missed = Some(missed.map_or(mi, |f| f.min(mi)));
-        }
         if self.fit() {
             first.get_or_insert(1);
             self.miss("miss_fit", Some(0), &sizes, t);
@@ -2323,12 +2121,11 @@ impl Engine {
             first = Some(first.map_or(c, |f| f.min(c)));
             missed = Some(missed.map_or(c, |f| f.min(c)));
         }
-        if let Some(mi) = self.nudge(t, first.is_some()) {
+        if let Some(mi) = self.nudge(t) {
             self.miss("miss_nudge", Some(mi), &sizes, t);
             first = Some(first.map_or(mi, |f| f.min(mi)));
             missed = Some(missed.map_or(mi, |f| f.min(mi)));
         }
-        self.recite(t);
         // a view changed from message 1 on is read again nearly whole: the anchor can change with it, as it can
         // when no pocket that lives holds the anchor as it is (`Params.pockets`)
         if self.refresh_rules(first.is_some_and(|f| f <= 1) || warm == 0) {
@@ -2507,69 +2304,6 @@ impl Engine {
         }
     }
 
-    /// `Params.recite`: the open request, in the person's words, goes again at the end of the latest output
-    /// once the agent has taken `n`, `2n`, `4n`… steps on it without answering it.
-    fn recite(&mut self, t: usize) {
-        let stall = self.p.stall.max(0) as usize;
-        let n = if stall > 0 { stall as i64 } else { self.p.recite };
-        if n <= 0 || t < 2 {
-            return;
-        }
-        // the person's latest words, also when they ride on the results of a step (a host that adds the
-        // next request to them, a person who writes while the agent works): that is the request now open
-        let said = |mi: usize| -> Vec<String> {
-            self.fz
-                .by_msg(mi)
-                .iter()
-                .filter(|&&i| self.tr.units[i].kind == UKind::User)
-                .map(|&i| self.tr.unit_text(i).into_owned())
-                .filter(|s| crate::learn::is_request(s))
-                .collect()
-        };
-        let Some(start) = (0..t).rev().find(|&mi| !said(mi).is_empty()) else { return };
-        if start + 1 >= t {
-            return;
-        }
-        if self.recite_next.0 != start {
-            self.recite_next = (start, n as usize);
-        }
-        let last = t - 1;
-        let result = blocks(self.tr.msgs[last].get("content"))
-            .iter()
-            .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"));
-        // the agent's steps on the request: its messages since the request
-        let steps = (start + 1..t)
-            .filter(|&mi| self.tr.msgs[mi].get("role").and_then(Value::as_str) == Some("assistant"))
-            .count();
-        if !result || steps < self.recite_next.1 || self.recited.contains_key(&last) {
-            return;
-        }
-        // with `stall`: only once the last outputs brought next to nothing new
-        let mut fact = String::new();
-        if stall > 0 {
-            let mine: Vec<_> = self.novel.iter().filter(|x| x.0 > start && x.0 < t).collect();
-            let tail = &mine[mine.len().saturating_sub(stall)..];
-            let (new, total) = tail.iter().fold((0, 0), |(a, b), x| (a + x.1, b + x.2));
-            if tail.len() < stall || total == 0 || new as f64 >= STALL_NEW * total as f64 {
-                return;
-            }
-            fact = format!(
-                "{MARK} Step {steps} on this request: of the {total} lines the last {} outputs gave, {new} were new.\n",
-                tail.len()
-            );
-        }
-        let asked = said(start).join("\n");
-        if asked.trim().is_empty() {
-            return;
-        }
-        let asked = clipped(asked.trim(), RECITE_CHARS);
-        self.recited
-            .insert(last, format!("{fact}{MARK} The request this work is for, as the person wrote it:\n{asked}"));
-        self.built.remove(&last);
-        self.recite_next.1 *= 2;
-        self.bump("recited", 1);
-    }
-
     /// The calls and outputs of request `j` (the messages between the request and its reply), if the agent
     /// answered it: its last message holds text and no call. `None` for a request still open or with no
     /// calls.
@@ -2584,9 +2318,7 @@ impl Engine {
             && !has(last, "tool_use")
             && self.fz.by_msg(last).iter().any(|&i| self.tr.units[i].kind == UKind::Text);
         let work: Vec<usize> = (a + 1..last).filter(|&mi| has(mi, "tool_use") || has(mi, "tool_result")).collect();
-        // task=1: a request the person left for a newer one is over too, answered or not
-        let left = self.p.task > 0 && j + 1 < self.goal.turns.len();
-        ((answered || left) && !work.is_empty()).then_some((a, work))
+        (answered && !work.is_empty()).then_some((a, work))
     }
 
     /// The distinctive words of the units of `msgs` whose kind is one of `kinds`.
@@ -2639,41 +2371,6 @@ impl Engine {
             self.sf.push(s.did.iter().flat_map(|d| files_in(d)).collect());
         }
         self.sf.all()
-    }
-
-    /// `Params.noted`: a step of an answered request is idle once the agent's notes written after it name
-    /// every file it read (`step_files`), and only then; a step that read no file is named by any later
-    /// note. Short parts are matched with their case, so a file `A` is not named by the article «a». An
-    /// agent that has written no note yet keeps the idle steps `close_unused` found.
-    fn noted_close(&mut self, now: usize) {
-        let n = self.tr.msgs.len();
-        for mi in self.noted_upto..n {
-            for &i in self.fz.by_msg(mi) {
-                let u = &self.tr.units[i];
-                if u.kind != UKind::Text && !(u.kind == UKind::Call && u.tool == NOTE_TOOL) {
-                    continue;
-                }
-                let text = self.tr.unit_text(i);
-                for c in NOTE_LINE.captures_all(&text) {
-                    let line = c[2].map_or("", |(x, y)| &text[x..y]);
-                    self.noted.push((mi, name_parts(line).into_iter().collect()));
-                }
-            }
-        }
-        self.noted_upto = n;
-        // an agent that writes no notes is not judged by them: its steps go idle as `close_unused` says
-        if self.noted.is_empty() {
-            return;
-        }
-        let files = self.step_files();
-        let latest = self.goal.turns.last().map_or(0, |t| t.start);
-        for (i, s) in self.steps.iter_mut().enumerate().filter(|(_, s)| !s.out) {
-            let after: Vec<&FxHashSet<String>> =
-                self.noted.iter().filter(|(mi, _)| *mi > s.msgs[0]).map(|(_, w)| w).collect();
-            let named = |own: &Vec<String>| own.iter().all(|p| after.iter().any(|w| w.contains(p.as_str())));
-            let done = !after.is_empty() && files[i].iter().all(named);
-            s.idle = if s.a < latest && done { Some(s.idle.unwrap_or(now)) } else { None };
-        }
     }
 
     /// The outputs of the calls that read a file the latest request names, each file by the parts of its
@@ -2783,69 +2480,6 @@ impl Engine {
         self.calls_seen = self.tr.units.len();
     }
 
-    /// With `noted`, the outputs of the calls whose files the agent's notes written after them all name,
-    /// once the notes have shown they are enough (`note_holds`): what the agent wrote down stands in for
-    /// what it read, so the output is neither kept for a request that names its file nor held in use by
-    /// the words the notes took from it. A call that read no file is not covered: nothing tells which note
-    /// is about it.
-    fn noted_results(&self) -> FxHashSet<usize> {
-        let mut out = FxHashSet::default();
-        if self.p.noted == 0 {
-            return out;
-        }
-        for (mi, files) in self.call_files() {
-            // the message where the notes written after the call have named every part of its files
-            let mut need: FxHashSet<&str> = files.iter().flatten().map(String::as_str).collect();
-            let mut at = None;
-            for (m, w) in self.noted.iter().filter(|(m, _)| *m > mi) {
-                need.retain(|p| !w.contains(*p));
-                if need.is_empty() {
-                    at = Some(*m);
-                    break;
-                }
-            }
-            if let Some(at) = at {
-                if files.iter().all(|f| self.note_holds(at, f)) {
-                    out.extend(self.fz.by_msg(mi + 1).iter().copied());
-                }
-            }
-        }
-        out
-    }
-
-    /// Whether the notes written by message `from` were enough for file `f` (by the parts of its name the
-    /// other files do not share): a later request that names the file got its reply with no call that read
-    /// the file again. A note can hold only part of what was read (the path it took, not the one the next
-    /// request asks for); the agent going back to the file says so, and the read stays.
-    fn note_holds(&self, from: usize, f: &[String]) -> bool {
-        let starts: FxHashSet<usize> = self.goal.turns.iter().map(|t| t.start).collect();
-        let reads = |u: usize| files_in(&action(&self.tr, u)).iter().any(|g| f.iter().all(|p| g.contains(p)));
-        for t in self.goal.turns.iter().filter(|t| t.start > from) {
-            let asked: FxHashSet<String> = name_parts(&self.unit_text_at(t.start, UKind::User)).into_iter().collect();
-            if !f.iter().all(|p| asked.contains(p)) {
-                continue;
-            }
-            for mi in t.start + 1..self.tr.msgs.len() {
-                if starts.contains(&mi) {
-                    break;
-                }
-                let units = self.fz.by_msg(mi).iter().map(|&u| (u, &self.tr.units[u]));
-                let calls: Vec<usize> = units
-                    .clone()
-                    .filter(|(_, x)| x.kind == UKind::Call && x.tool != NOTE_TOOL)
-                    .map(|(u, _)| u)
-                    .collect();
-                if calls.into_iter().any(reads) {
-                    break;
-                }
-                if units.into_iter().any(|(_, x)| x.kind == UKind::Text) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// `Params.named`: a step that read a file the latest request names (`step_files`) is not idle. «Fix
     /// the login in auth» keeps `auth.rs` read; the next request, on the README, lets it go. When a request
     /// has just begun (`turned`), the steps out of the view that read a file it names come back, the way
@@ -2870,18 +2504,7 @@ impl Engine {
         let pending = |f: &Vec<String>| through && listed(f) && !taken(f);
         let mut back = 0;
         let mut named: Vec<(usize, Vec<usize>, bool)> = Vec::new();
-        let noted = self.noted_results();
         for (i, own) in files.iter().enumerate() {
-            // what the agent wrote down about the file, once it proved enough, stands in for its reads:
-            // they are not kept for the request that names it, nor brought back (`noted`)
-            let outs = self.steps[i]
-                .msgs
-                .iter()
-                .flat_map(|&m| self.fz.by_msg(m))
-                .filter(|&&u| self.tr.units[u].kind == UKind::Result);
-            if outs.clone().next().is_some() && outs.into_iter().all(|u| noted.contains(u)) {
-                continue;
-            }
             if !own.iter().any(|own| own.iter().all(|p| asked.contains(p))) {
                 if !self.steps[i].out && own.iter().any(pending) {
                     self.steps[i].idle = None;
@@ -2911,8 +2534,7 @@ impl Engine {
             } else if turned {
                 let text = self.step_text(i);
                 let s = &mut self.steps[i];
-                (s.out, s.at, s.tokens, s.idle, s.back) =
-                    (false, Some(last), est_str(&text), None, s.back.saturating_add(1));
+                (s.out, s.at, s.tokens, s.idle) = (false, Some(last), est_str(&text), None);
                 back += 1;
             }
         }
@@ -3000,9 +2622,7 @@ impl Engine {
         for &w in &about {
             *self.step_df.entry(w).or_default() += 1;
         }
-        // what the agent brought back of it while its request was open counts as the step brought back
-        let back = msgs.iter().filter_map(|m| self.brought.remove(m)).fold(0u32, u32::saturating_add);
-        Step { a, msgs, read, about, aimed, did, out: false, at: None, tokens: 0, idle: None, back }
+        Step { a, msgs, read, about, aimed, did, out: false, at: None, tokens: 0, idle: None }
     }
 
     /// The outputs of the request still open (`Params.live`), all but those after the agent's latest
@@ -3015,10 +2635,7 @@ impl Engine {
     fn live_drop(&mut self, now: usize) -> Option<usize> {
         let (n, nt) = (self.tr.msgs.len(), self.goal.turns.len());
         // with `named`, the outputs of a file the latest request names stay: the request is about that file
-        let mut kept = if self.p.named != 0 { self.named_results() } else { FxHashSet::default() };
-        // the outputs the agent's notes already cover are not kept for it, nor in use (`noted`)
-        let noted = self.noted_results();
-        kept.retain(|u| !noted.contains(u));
+        let kept = if self.p.named != 0 { self.named_results() } else { FxHashSet::default() };
         let (a, _) = self.goal.span(nt - 1, n);
         let asked = self.words_in(std::iter::once(0).chain(self.goal.turns.iter().map(|t| t.start)), &[UKind::User]);
         let (mut said, mut wrote, mut told) = (FxHashSet::default(), 0i64, false);
@@ -3051,7 +2668,7 @@ impl Engine {
                         // sends them, and with both gone they are lost
                         let carries = (0..self.fz.chunks[i].len()).any(|j| self.carrying.contains(&(i, j)));
                         if gone || carries || kept.contains(&i) {
-                        } else if !noted.contains(&i) && u.words.iter().any(|w| said.contains(w)) {
+                        } else if u.words.iter().any(|w| said.contains(w)) {
                             self.live_since.remove(&i);
                         } else {
                             idle.push((mi, i, u.tokens));
@@ -3224,20 +2841,10 @@ impl Engine {
                 let back: i64 = self.steps[i].msgs.iter().map(|m| moved.get(m).copied().unwrap_or(0)).sum();
                 let size = (self.step_size(i, &sizes) - back).max(0);
                 let since = now.saturating_sub(self.steps[i].idle.unwrap_or(now));
-                let s = &self.steps[i];
-                let paid = if self.p.sticky != 0 && s.back > 0 {
-                    let p = s.back as f64 / (s.back as f64 + 1.0);
-                    r * size as f64 * since as f64 - p * size as f64
-                } else {
-                    r * size as f64 * (since as f64 + self.p.ahead * now as f64)
-                };
+                let paid = r * size as f64 * (since as f64 + self.p.ahead * now as f64);
                 (i, paid, size)
             })
             .collect();
-        // a step brought back whose rent since it went idle does not yet pay for bringing it back once more
-        // (`sticky`) stays whatever leaves around it: leaving it gains less than nothing, whether or not the
-        // view behind it is read again anyway. The rent of any other step is never below zero.
-        cands.retain(|c| c.1 >= 0.0);
         cands.sort_by_key(|&(i, _, _)| self.steps[i].place());
         let mut after = vec![0i64; sizes.len() + 1];
         for mi in (0..sizes.len()).rev() {
@@ -3294,8 +2901,7 @@ impl Engine {
         for &i in &back {
             let text = self.step_text(i);
             let s = &mut self.steps[i];
-            (s.out, s.at, s.tokens, s.idle, s.back) =
-                (false, Some(last), est_str(&text), None, s.back.saturating_add(1));
+            (s.out, s.at, s.tokens, s.idle) = (false, Some(last), est_str(&text), None);
         }
         if !back.is_empty() {
             self.bump("recalled_steps", back.len() as i64);
@@ -3320,8 +2926,8 @@ impl Engine {
             let (msg, tool, b) = (u.msg, u.tool.clone(), self.tr.block(i));
             if tool == RECALL_TOOL {
                 let name = b.get("input").and_then(|x| x.get("message")).and_then(Value::as_str).unwrap_or("");
-                if let Some(mi) = message_named(name).filter(|&mi| judged && mi < msg && self.left_out(mi, None)) {
-                    self.wanted_back(mi);
+                if message_named(name).is_some_and(|mi| judged && mi < msg && self.left_out(mi, None)) {
+                    self.wanted_back();
                 }
                 continue;
             }
@@ -3351,7 +2957,7 @@ impl Engine {
                 if let Some(o) = copy {
                     let mi = self.tr.units[o].msg;
                     if self.left_out(mi, Some(o)) && !self.changed_since(mi, &key, path.as_deref()) {
-                        self.wanted_back(mi);
+                        self.wanted_back();
                     }
                 }
             }
@@ -3399,18 +3005,8 @@ impl Engine {
             || after.next().is_some()
     }
 
-    /// The agent brought message `mi` back by itself while the view had left it out (`asked_back`): the
-    /// step that holds it was needed after it went, as one the curator brings back is, so it counts as
-    /// brought back once more (`Step::back`, which `Params.sticky` weighs). While no step holds it yet
-    /// (its request is still open), the step made of it starts with the count.
-    fn wanted_back(&mut self, mi: usize) {
-        match self.step_at.get(&mi).copied() {
-            Some(k) => self.steps[k].back = self.steps[k].back.saturating_add(1),
-            None => {
-                let n = self.brought.entry(mi).or_insert(0);
-                *n = n.saturating_add(1);
-            }
-        }
+    /// The agent brought a message back by itself while the view had left it out (`asked_back`).
+    fn wanted_back(&mut self) {
         self.bump("agent_recalled_steps", 1);
     }
 
@@ -3430,8 +3026,8 @@ impl Engine {
     }
 
     /// The message the line that says step `i` left goes on (`gone`: the messages out of the view): the
-    /// last one before the step that the view still sends (a repeat folded by `loops`, or one before
-    /// `start`, is not sent either), so that all the cache holds up to it stays as it is. The steps of a request that left side by side share it. A message of the agent's there (a
+    /// last one before the step that the view still sends (one before
+    /// `start` is not sent either), so that all the cache holds up to it stays as it is. The steps of a request that left side by side share it. A message of the agent's there (a
     /// step that said something and called nothing) is no place for it: the request takes the line.
     /// When the request itself is no longer sent (it is before `start`; the first message always is), the
     /// line goes on the first message from `start` on that the view sends and that is not the agent's,
@@ -3441,7 +3037,7 @@ impl Engine {
         let s = &self.steps[i];
         let agent =
             |mi: usize| self.tr.msgs.get(mi).and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant");
-        let sent = |mi: usize| !gone.contains(&mi) && !self.looped.contains(&mi);
+        let sent = |mi: usize| !gone.contains(&mi);
         if s.a == 0 || s.a >= self.start {
             let mut mi = s.msgs[0].saturating_sub(1);
             while mi > s.a && (!sent(mi) || mi < self.start) {
@@ -3486,8 +3082,7 @@ impl Engine {
                 continue;
             }
             let at = self.line_at(i, &out);
-            // the reply follows only a line before the step, and only when the agent replied: a request left
-            // for a newer one (`task`) has none
+            // the reply follows only a line before the step, and only when the agent replied
             let next = s.msgs.last().map_or(0, |m| m + 1);
             let replied = self.tr.msgs.get(next).is_some_and(|m| {
                 m.get("role").and_then(Value::as_str) == Some("assistant")
@@ -3573,47 +3168,6 @@ impl Engine {
         changed
     }
 
-    /// The last message is a tool result of at least `settle` tokens: the agent has just read something
-    /// large, and that is when what it settled is cheapest to write down.
-    fn big_read(&self, t: usize) -> bool {
-        self.p.settle > 0
-            && t >= 1
-            && self.fz.by_msg(t - 1).iter().any(|&i| {
-                let u = &self.tr.units[i];
-                u.kind == UKind::Result && u.tokens >= self.p.settle
-            })
-    }
-
-    /// Read, noted, let go: once a new request has begun, a tool result of an earlier request that a later
-    /// note followed leaves the view whole. The note holds what the agent took from it; a result no note
-    /// followed stays, since without one the agent reads it again. All leave in the same rewrite, so the
-    /// cache breaks once per request rather than once per result. The oldest message one left from, if any.
-    fn settle(&mut self, t: usize) -> Option<usize> {
-        let n = self.goal.turns.len();
-        let noted = self.last_note.filter(|_| self.p.settle > 0 && n >= 2)?;
-        let end = noted.min(self.goal.turns[n - 1].start).min(t);
-        self.fz.context(&self.tr, t);
-        let mut settled = Vec::new();
-        for mi in 0..end {
-            for &i in self.fz.by_msg(mi) {
-                let u = &self.tr.units[i];
-                let all = self.fz.chunks[i].len();
-                if u.kind == UKind::Result
-                    && u.saving > 0
-                    && u.tokens >= SMALL_RESULT
-                    && self.dropped.get(&i).map_or(0, |d| d.len()) < all
-                {
-                    settled.push((mi, i, all));
-                }
-            }
-        }
-        for &(_, i, all) in &settled {
-            self.drop_as(i, 0..all, "settle");
-        }
-        self.bump("settled", settled.len() as i64);
-        settled.first().map(|s| s.0)
-    }
-
     /// Asks the agent for its findings and its plan (a `note` call, or the lines in its reply), at the end
     /// of the last tool result, once it has gone `nudge` steps without a note while the view loses what it
     /// read (it was rewritten, or the history is past the protected tail). At most once per `nudge` steps;
@@ -3625,17 +3179,14 @@ impl Engine {
     /// bounded: with `n` the `nudge` setting, the request comes when
     /// `since_note >= n && since_nudge >= n && (!mid_read || since_note >= 2n)`.
     ///
-    /// Returns the oldest earlier message it rebuilt, if any. With `nudge` off (only `settle` asks), the
-    /// earlier requests stay as they were sent until the view changes anyway (`rewriting`).
-    fn nudge(&mut self, t: usize, rewriting: bool) -> Option<usize> {
+    /// Returns the oldest earlier message it rebuilt, if any.
+    fn nudge(&mut self, t: usize) -> Option<usize> {
         let n = self.p.nudge;
-        if !self.big_read(t) {
-            if n <= 0 || self.since_note < n as usize || self.since_nudge < n as usize {
-                return None;
-            }
-            if self.start <= 1 && self.dropped.is_empty() && t as i64 <= self.p.protect {
-                return None;
-            }
+        if n <= 0 || self.since_note < n as usize || self.since_nudge < n as usize {
+            return None;
+        }
+        if self.start <= 1 && self.dropped.is_empty() && t as i64 <= self.p.protect {
+            return None;
         }
         if self.since_note < 2 * n.max(1) as usize && self.mid_read(t) {
             return None;
@@ -3649,11 +3200,9 @@ impl Engine {
         }
         // the earlier request leaves with its message rebuilt plain: one request in the view, not a pile
         let mut oldest = None;
-        if n > 0 || rewriting {
-            for old in std::mem::take(&mut self.nudged) {
-                self.built.remove(&old);
-                oldest = Some(oldest.map_or(old, |o: usize| o.min(old)));
-            }
+        for old in std::mem::take(&mut self.nudged) {
+            self.built.remove(&old);
+            oldest = Some(oldest.map_or(old, |o: usize| o.min(old)));
         }
         self.nudged.insert(last);
         self.built.remove(&last);
@@ -3707,86 +3256,6 @@ impl Engine {
             return 0;
         }
         (est_str(&self.rules.text(|_| true)) - self.p.rules).max(0)
-    }
-
-    /// The calls and outputs of the agent message `mi` and the message after it, when the one is only calls
-    /// and the other only their outputs: what a step that repeats it must match.
-    fn step_sig(&self, mi: usize) -> Option<String> {
-        let (a, r) = (self.tr.msgs.get(mi)?, self.tr.msgs.get(mi + 1)?);
-        if a.get("role").and_then(Value::as_str) != Some("assistant") {
-            return None;
-        }
-        let kind = |b: &Value| b.get("type").and_then(Value::as_str).unwrap_or("").to_string();
-        let thought = |b: &&Value| kind(b).ends_with("thinking");
-        let calls: Vec<Value> = blocks(a.get("content")).iter().filter(|b| !thought(b)).cloned().collect();
-        let outs = blocks(r.get("content"));
-        if calls.is_empty()
-            || calls.iter().any(|b| kind(b) != "tool_use")
-            || outs.iter().any(|b| kind(b) != "tool_result")
-        {
-            return None;
-        }
-        let calls = calls
-            .iter()
-            .map(|b| format!("{}{}", b.get("name").unwrap_or(&Value::Null), b.get("input").unwrap_or(&Value::Null)));
-        let outs = outs.iter().map(|b| text_of(b.get("content")).into_owned());
-        Some(calls.chain(outs).collect::<Vec<_>>().join("\n\u{0}"))
-    }
-
-    /// Takes in the steps that came since the last look (`Params.loops`): a step that repeats the one before
-    /// it extends the run; the latest of a run before it leaves, unless it is the first, and the line moves. The
-    /// oldest message it changed, if any.
-    fn fold_loops(&mut self) -> Option<usize> {
-        let n = self.tr.msgs.len();
-        let (mut changed, mut left) = (Vec::new(), None);
-        let mut mi = self.loops_seen.max(2);
-        while mi + 1 < n {
-            let same = match self.step_sig(mi) {
-                Some(s) => self.step_sig(mi - 2).as_ref() == Some(&s),
-                None => {
-                    if self.tr.msgs[mi].get("role").and_then(Value::as_str) == Some("assistant") {
-                        self.run = None;
-                    }
-                    mi += 1;
-                    continue;
-                }
-            };
-            if !same {
-                self.run = None;
-                mi += 2;
-                continue;
-            }
-            let (first, times) = match self.run {
-                Some((first, last, times)) if last + 2 == mi => {
-                    if last != first {
-                        left = Some(left.map_or(last, |l: usize| l.min(last)));
-                        self.looped.extend([last, last + 1]);
-                        self.tag_msgs([last, last + 1], true, "loops");
-                    }
-                    self.loop_line.remove(&(last + 1));
-                    changed.push(last + 1);
-                    (first, times + 1)
-                }
-                _ => (mi - 2, 2),
-            };
-            self.run = Some((first, mi, times));
-            self.loop_line.insert(
-                mi + 1,
-                format!("{MARK} This call has now run {times} times in a row with this same output; the runs between the first and this one are left out."),
-            );
-            changed.push(mi + 1);
-            mi += 2;
-        }
-        self.loops_seen = mi;
-        let oldest = changed.iter().copied().chain(left).min();
-        if !changed.is_empty() {
-            for c in changed {
-                self.built.remove(&c);
-            }
-            self.vis = None;
-            self.stats.insert("looped_steps", self.looped.len() as i64 / 2);
-        }
-        oldest
     }
 
     /// Tokens of the outputs after the agent's latest text or note: what it has read and not yet written about.
@@ -5052,7 +4521,7 @@ mod tests {
 
     /// The settings of the mechanism tests: each test turns on what it checks over this base, so a change of
     /// the default spec does not move them.
-    const BASE: &str = "directives=1;nudge=8;close=0;ahead=0;dedup=0;live=0;lead=0;aim=0;follow=0;brief=0;digest=0;hold=0;loops=0;asked=0;sup=0;named=0;margin=1;mission=0";
+    const BASE: &str = "directives=1;nudge=8;close=0;ahead=0;dedup=0;live=0;lead=0;aim=0;follow=0;brief=0;digest=0;hold=0;asked=0;sup=0;named=0;margin=1;mission=0";
 
     fn params(spec: &str) -> Result<Params, String> {
         crate::params(&format!("{BASE};{spec}"))
@@ -5103,81 +4572,6 @@ mod tests {
     /// The text of the tool result in message `mi` of the view.
     fn output(view: &[Value], mi: usize) -> String {
         text_of(blocks(view[mi].get("content"))[0].get("content")).into_owned()
-    }
-
-    #[test]
-    fn a_request_still_open_after_n_2n_4n_steps_comes_again_in_its_own_words_and_stays_where_it_went() {
-        let ask = "Read listing.txt and say what slot 50 holds.";
-        let mut msgs = vec![json!({"role": "user", "content": ask})];
-        for k in 0..20 {
-            msgs.extend(step(
-                k + 1,
-                &format!("sed -n '{},{}p' listing.txt", 10 * k + 1, 10 * k + 10),
-                &listing(10 * k + 1, 10 * k + 10),
-            ));
-        }
-        let lines = |spec: &str| {
-            let mut e = Engine::new(params(spec).unwrap());
-            let mut seen: Vec<(usize, String)> = Vec::new();
-            for t in (3..=msgs.len()).step_by(2) {
-                e.sync(&msgs[..t]);
-                let view = e.view();
-                for (mi, m) in view.iter().enumerate() {
-                    let said = blocks(m.get("content"))
-                        .iter()
-                        .filter_map(|b| b.get("text").and_then(Value::as_str))
-                        .filter(|s| s.contains("The request this work is for"))
-                        .map(str::to_string)
-                        .collect::<Vec<_>>();
-                    if let Some(s) = said.first() {
-                        // once in, the line stays as it went: the cache keeps the message
-                        match seen.iter().find(|(at, _)| *at == mi) {
-                            Some((_, before)) => assert_eq!(before, s),
-                            None => seen.push((mi, s.clone())),
-                        }
-                    }
-                }
-            }
-            seen
-        };
-        let seen = lines("nudge=0;recite=4");
-        // steps 4, 8 and 16 of 20: each on the output of that step (message 2k)
-        assert_eq!(seen.iter().map(|(mi, _)| *mi).collect::<Vec<_>>(), vec![8, 16, 32]);
-        assert!(seen.iter().all(|(_, s)| s.ends_with(ask)), "{seen:?}");
-        assert!(lines("nudge=0").is_empty());
-    }
-
-    #[test]
-    fn a_call_run_again_says_how_often_it_ran_and_whether_its_output_moved() {
-        let mut msgs = vec![json!({"role": "user", "content": "Find why the counter in status.txt is stuck."})];
-        let outs = [listing(1, 12), listing(1, 12), listing(1, 12), listing(5, 16), listing(1, 12)];
-        for (k, out) in outs.iter().enumerate() {
-            msgs.extend(step(k + 1, "cat status.txt", out));
-        }
-        let said = |spec: &str| {
-            let mut e = Engine::new(params(spec).unwrap());
-            e.sync(&msgs);
-            e.view()
-                .iter()
-                .flat_map(|m| blocks(m.get("content")).into_owned())
-                .filter_map(|b| {
-                    let t = b.get("text").and_then(Value::as_str).map(str::to_string).or_else(|| {
-                        blocks(b.get("content"))
-                            .iter()
-                            .find_map(|c| c.get("text").and_then(Value::as_str))
-                            .map(str::to_string)
-                    })?;
-                    t.contains(" times").then_some(t)
-                })
-                .collect::<Vec<_>>()
-        };
-        let lines = said("nudge=0;dedup=3;asked=3;reruns=1");
-        let has = |s: &str| lines.iter().any(|l| l.contains(s));
-        assert!(has("ran 2 times in this session: the same output each time"), "{lines:?}");
-        assert!(has("ran 3 times in this session: the same output each time"), "{lines:?}");
-        assert!(has("ran 4 times in this session: its output changed 1 of those times, this time too"), "{lines:?}");
-        assert!(has("ran 5 times in this session: its output changed 2 of those times, this time too"), "{lines:?}");
-        assert!(said("nudge=0;dedup=3;asked=3").is_empty());
     }
 
     /// What `fixes` says of a session that edits `src/calc.rs` between test runs, each run a command
@@ -5401,97 +4795,6 @@ mod tests {
             assert!(est_str(&text) <= budget, "{budget}: {} tokens\n{text}", est_str(&text));
         }
         assert!(some);
-    }
-
-    #[test]
-    fn with_stall_the_request_comes_again_only_once_the_outputs_stop_bringing_new_lines() {
-        let ask = "Read listing.txt and say what slot 50 holds.";
-        // reads that keep going over lines 1-12, and reads that move on to new lines each time
-        let round = |k: usize| listing(1 + k % 2, 12 + k % 2);
-        let ahead = |k: usize| listing(12 * k + 1, 12 * k + 12);
-        let said = |out: &dyn Fn(usize) -> String| {
-            let mut msgs = vec![json!({"role": "user", "content": ask})];
-            for k in 0..14 {
-                msgs.extend(step(k + 1, &format!("sed -n '{k}p' listing.txt"), &out(k)));
-            }
-            let mut e = Engine::new(params("nudge=0;dedup=3;stall=4").unwrap());
-            let mut lines = Vec::new();
-            for t in (3..=msgs.len()).step_by(2) {
-                e.sync(&msgs[..t]);
-                let view = e.view();
-                let last = blocks(view[view.len() - 1].get("content")).into_owned();
-                lines.extend(
-                    last.iter()
-                        .filter_map(|b| b.get("text").and_then(Value::as_str))
-                        .filter(|s| s.contains("The request this work is for"))
-                        .map(str::to_string),
-                );
-            }
-            lines
-        };
-        let going_round = said(&round);
-        assert!(!going_round.is_empty());
-        assert!(going_round[0].contains("were new.") && going_round[0].ends_with(ask), "{going_round:?}");
-        assert!(said(&ahead).is_empty());
-    }
-
-    #[test]
-    fn with_task_the_persons_words_on_the_results_of_a_step_open_a_new_request() {
-        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
-        for k in 0..3 {
-            msgs.extend(step(
-                k + 1,
-                &format!("sed -n '{},{}p' listing.txt", 10 * k + 1, 10 * k + 10),
-                &listing(10 * k + 1, 10 * k + 10),
-            ));
-        }
-        let last = msgs.len() - 1;
-        let mut bs = blocks(msgs[last].get("content")).into_owned();
-        bs.push(json!({"type": "text", "text": "Now say what slot 7 holds instead."}));
-        msgs[last]["content"] = Value::Array(bs);
-        let turns = |spec: &str| {
-            let mut e = Engine::new(params(spec).unwrap());
-            e.sync(&msgs);
-            e.goal.turns.iter().map(|t| t.start).collect::<Vec<_>>()
-        };
-        assert_eq!(turns("nudge=0"), vec![0]);
-        assert_eq!(turns("nudge=0;task=1"), vec![0, last]);
-    }
-
-    #[test]
-    fn a_request_that_rides_on_the_results_of_a_step_is_the_one_sent_again() {
-        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
-        for k in 0..4 {
-            msgs.extend(step(
-                k + 1,
-                &format!("sed -n '{},{}p' listing.txt", 10 * k + 1, 10 * k + 10),
-                &listing(10 * k + 1, 10 * k + 10),
-            ));
-        }
-        // the next request comes with the results of the last step, as a host or a person adds it
-        let next = "Now say what slot 7 holds instead.";
-        let last = msgs.len() - 1;
-        let mut bs = blocks(msgs[last].get("content")).into_owned();
-        bs.push(json!({"type": "text", "text": next}));
-        msgs[last]["content"] = Value::Array(bs);
-        for k in 4..9 {
-            msgs.extend(step(
-                k + 1,
-                &format!("sed -n '{},{}p' listing.txt", 10 * k + 1, 10 * k + 10),
-                &listing(10 * k + 1, 10 * k + 10),
-            ));
-        }
-        let mut e = Engine::new(params("nudge=0;recite=4").unwrap());
-        e.sync(&msgs);
-        let said: Vec<String> = e
-            .view()
-            .iter()
-            .flat_map(|m| blocks(m.get("content")).into_owned())
-            .filter_map(|b| b.get("text").and_then(Value::as_str).map(str::to_string))
-            .filter(|s| s.contains("The request this work is for"))
-            .collect();
-        assert!(!said.is_empty());
-        assert!(said.last().unwrap().ends_with(next), "{said:?}");
     }
 
     #[test]
@@ -5744,49 +5047,6 @@ mod tests {
         // the view is rewritten from its start anyway: the line goes with it
         assert!(e.refresh_rules(true));
         assert!(e.rules_shown.is_empty());
-    }
-
-    #[test]
-    fn with_nudge_off_an_earlier_request_for_notes_stays_until_the_view_changes() {
-        let mut e = Engine::new(params("nudge=0;settle=50;eoq=0;check=100000000;every=100000").unwrap());
-        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
-        msgs.extend(step(1, "cat part1.txt", &listing(1, 60)));
-        e.sync(&msgs);
-        e.decide();
-        assert!(e.nudged.contains(&2), "{:?}", e.nudged);
-        msgs.extend(step(2, "cat part2.txt", &listing(61, 120)));
-        e.sync(&msgs);
-        e.decide();
-        assert!(e.nudged.contains(&2) && e.nudged.contains(&4), "{:?}", e.nudged);
-        assert!(!e.stats.contains_key("miss_nudge"), "{:?}", e.stats);
-        // a view rewritten anyway takes the earlier one out
-        msgs.extend(step(3, "cat part3.txt", &listing(121, 180)));
-        e.sync(&msgs);
-        assert_eq!(e.nudge(e.tr.msgs.len(), true), Some(2));
-        assert_eq!(e.nudged.iter().copied().collect::<Vec<_>>(), vec![6]);
-    }
-
-    #[test]
-    fn a_note_that_puts_the_requests_for_notes_back_counts_the_miss() {
-        let mut e = Engine::new(params("nudge=0;settle=50;eoq=0;check=100000000;every=100000").unwrap());
-        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
-        for (k, (a, b)) in [(1, 60), (61, 120)].into_iter().enumerate() {
-            msgs.extend(step(k + 1, &format!("cat part{}.txt", k + 1), &listing(a, b)));
-            e.sync(&msgs);
-            e.decide();
-        }
-        assert!(e.nudged.contains(&2), "{:?}", e.nudged);
-        let before = e.view();
-        msgs.push(json!({"role": "assistant", "content": "Finding: slot 50 holds the longest name."}));
-        msgs.push(json!({"role": "user", "content": "Thanks."}));
-        e.sync(&msgs);
-        e.decide();
-        let after = e.view();
-        // message 2 goes back to how it was sent before its request for notes: the cache misses from it
-        assert_ne!(before[2], after[2]);
-        let behind: i64 = after[2..].iter().map(crate::json::est).sum();
-        assert!(e.stats.get("miss_note").is_some_and(|&m| m * 10 >= behind * 9), "{behind} {:?}", e.stats);
-        assert!(e.stats["miss"] >= e.stats["miss_note"], "{:?}", e.stats);
     }
 
     #[test]
@@ -6154,53 +5414,6 @@ mod tests {
         assert_eq!(text.lines().count(), 1 + 3 + 1, "{text}");
     }
 
-    /// Whether every tool result of `view` has its call in the view, and every call its result.
-    fn paired(view: &[Value]) -> bool {
-        let ids = |kind: &str, key: &str| -> Vec<String> {
-            let mut v: Vec<String> = view
-                .iter()
-                .flat_map(|m| blocks(m.get("content")).into_owned())
-                .filter(|b| b.get("type").and_then(Value::as_str) == Some(kind))
-                .filter_map(|b| b.get(key).and_then(Value::as_str).map(str::to_string))
-                .collect();
-            v.sort();
-            v
-        };
-        ids("tool_use", "id") == ids("tool_result", "tool_use_id")
-    }
-
-    #[test]
-    fn with_task_a_request_on_results_keeps_calls_and_results_together() {
-        // the person's next request rides on the results of a step, on another topic
-        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
-        for k in 0..3 {
-            msgs.extend(step(
-                k + 1,
-                &format!("sed -n '{},{}p' listing.txt", 10 * k + 1, 10 * k + 10),
-                &listing(10 * k + 1, 10 * k + 10),
-            ));
-        }
-        let last = msgs.len() - 1;
-        let mut bs = blocks(msgs[last].get("content")).into_owned();
-        bs.push(json!({"type": "text", "text": "Stop that. How many lines has notes.md?"}));
-        msgs[last]["content"] = Value::Array(bs);
-        msgs.extend(step(4, "wc -l notes.md", "12 notes.md"));
-        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
-        msgs.push(json!({"role": "user", "content": "And what does slot 7 of listing.txt hold?"}));
-        for spec in
-            ["nudge=0;eoq=0;task=1;link=1;apart=0", "nudge=0;eoq=0;task=1;link=1;apart=0;close=2;margin=0;ahead=1"]
-        {
-            let mut e = Engine::new(params(spec).unwrap());
-            for t in [last + 1, last + 3, msgs.len()] {
-                e.sync(&msgs[..t]);
-                let view = e.view();
-                assert!(paired(&view), "{spec}, {t} messages: {}", sent(&view));
-                let text = sent(&view);
-                // the request left for a newer one had no reply
-                assert!(!text.contains("The reply that closed the request follows"), "{spec}: {text}");
-            }
-        }
-    }
     #[test]
     fn a_pointer_points_to_lines_sent_whole_and_short_runs_stay() {
         let mut e = reads("dedup=3;nudge=0", &[(1, 40), (21, 60), (22, 38), (42, 58), (58, 70)]);
@@ -6330,38 +5543,6 @@ mod tests {
     }
 
     #[test]
-    fn a_step_made_again_with_the_same_output_keeps_its_first_and_latest_run_and_a_count() {
-        // the agent runs the same search again and again and gets the same nothing back; then something new
-        let mut msgs = vec![json!({"role": "user", "content": "Which blocks jump to the handler?"})];
-        msgs.extend(step(0, "sed -n 1,40p listing.txt", &listing(1, 40)));
-        for k in 1..=6 {
-            msgs.extend(step(k, "grep -n 'jmp handler' listing.txt", "(no output)"));
-        }
-        let runs = |view: &[Value]| sent(view).matches("jmp handler").count();
-        let mut e = Engine::new(params("nudge=0;loops=0").unwrap());
-        e.sync(&msgs);
-        assert_eq!(runs(&e.view()), 6);
-        let mut e = Engine::new(params("nudge=0;loops=1").unwrap());
-        for n in (3..=msgs.len()).step_by(2) {
-            e.sync(&msgs[..n]);
-            e.view();
-        }
-        let view = e.view();
-        assert_eq!(runs(&view), 2, "{view:?}");
-        assert!(sent(&view[view.len() - 1..]).contains("run 6 times in a row"), "{view:?}");
-        assert_eq!(sent(&view).matches("times in a row").count(), 1);
-        assert!(sent(&view).contains(&word(120)[..]));
-        // a step that differs ends the run: what left stays out, the new step comes whole
-        msgs.extend(step(7, "grep -n 'jmp' listing.txt", "12: jmp short loc_1F20"));
-        msgs.extend(step(8, "grep -n 'jmp handler' listing.txt", "(no output)"));
-        e.sync(&msgs);
-        let view = e.view();
-        assert_eq!(runs(&view), 3, "{view:?}");
-        assert!(!sent(&view[view.len() - 1..]).contains("times in a row"));
-        assert_eq!(e.stats.get("looped_steps"), Some(&4));
-    }
-
-    #[test]
     fn an_answered_request_lets_its_steps_go_and_a_request_about_them_brings_them_back() {
         let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1";
         let mut e = Engine::new(params(spec).unwrap());
@@ -6450,27 +5631,26 @@ mod tests {
         let mut msgs = sessions(&reply, None);
         feed(&mut e, &msgs);
         assert!(sent(&e.view()).contains("are left out of this context: bash cat report.txt"));
-        assert_eq!((e.steps[0].out, e.steps[0].back), (true, 0));
+        assert!(e.steps[0].out);
         // the agent asks for the read back by its name (message 3): the step was needed after it left
         msgs.extend(recall_step(1, 2, None, &report()));
         feed(&mut e, &msgs);
-        assert_eq!(e.steps[0].back, 1);
         assert_eq!(e.stats.get("agent_recalled_steps"), Some(&1));
         // a recall of a message the view sends (the reply, the open request) is the agent's own doing
         msgs.extend(recall_step(2, 3, None, &reply));
         feed(&mut e, &msgs);
         msgs.extend(recall_step(3, 4, None, "How many lines has notes.md?"));
         feed(&mut e, &msgs);
-        assert_eq!((e.steps[0].back, e.stats.get("agent_recalled_steps")), (1, Some(&1)));
+        assert_eq!(e.stats.get("agent_recalled_steps"), Some(&1));
         // the next request is on the report: the curator brings the read back; a recall of it then is the
         // agent's own doing too, since its text is in the view
         msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "3 lines came back."}]}));
         msgs.push(json!({"role": "user", "content": "And the smallest invoice total in the report?"}));
         feed(&mut e, &msgs);
-        assert_eq!((e.steps[0].out, e.steps[0].at.is_some(), e.steps[0].back), (false, true, 2));
+        assert_eq!((e.steps[0].out, e.steps[0].at.is_some()), (false, true));
         msgs.extend(recall_step(4, 2, None, &report()));
         feed(&mut e, &msgs);
-        assert_eq!((e.steps[0].back, e.stats.get("agent_recalled_steps")), (2, Some(&1)));
+        assert_eq!(e.stats.get("agent_recalled_steps"), Some(&1));
     }
 
     #[test]
@@ -6483,7 +5663,7 @@ mod tests {
         feed(&mut e, &msgs);
         msgs.extend(step(2, "cat  report.txt", &report()));
         feed(&mut e, &msgs);
-        assert_eq!((e.steps[0].back, e.stats.get("agent_recalled_steps")), (1, Some(&1)));
+        assert_eq!(e.stats.get("agent_recalled_steps"), Some(&1));
         // the read stays in the view (no closing): running it again is the agent's own doing
         let mut e = Engine::new(params("nudge=0;eoq=0;link=0").unwrap());
         let mut msgs = sessions(&reply, None);
@@ -6545,58 +5725,7 @@ mod tests {
         // lines of the two outputs that left: the latest of them is asked back
         msgs.extend(read_step(6, (20, 50)));
         feed(&mut e, &msgs);
-        assert_eq!((e.stats.get("agent_recalled_steps"), e.brought.get(&4)), (Some(&1), Some(&1)));
-        // the request is answered: the step made of the second read starts as brought back once
-        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Slot 50 holds nothing."}]}));
-        msgs.push(json!({"role": "user", "content": "How many lines has notes.md?"}));
-        feed(&mut e, &msgs);
-        assert_eq!(e.steps.iter().map(|s| s.back).collect::<Vec<_>>(), vec![0, 1, 0, 0, 0, 0]);
-        assert!(e.brought.is_empty());
-    }
-
-    #[test]
-    fn sticky_a_step_brought_back_leaves_again_later_and_one_the_agent_asked_back_later_still() {
-        let base = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1";
-        let reply = format!("The largest is client {}.", word(529));
-        // request 1 read the report and request 2 is on another file; on it the agent may ask three lines of
-        // the read back; request 3 is on the report again, so the curator brings the read back; request 4
-        // is on another file again, and the read goes idle
-        let session = |recalled: bool| {
-            let mut msgs = sessions(&reply, None);
-            if recalled {
-                msgs.extend(recall_step(1, 2, Some((1, 3)), &report()));
-            }
-            msgs.extend(step(3, "wc -l notes.md", "12 notes.md"));
-            msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
-            msgs.push(json!({"role": "user", "content": "And the smallest invoice total in the report?"}));
-            msgs
-        };
-        let low = report().lines().next().unwrap().rsplit(' ').next().unwrap().to_string();
-        // the steps the agent takes on request 4 before the read leaves again
-        let leaves_after = |spec: &str, recalled: bool| -> usize {
-            let mut e = Engine::new(params(spec).unwrap());
-            let mut msgs = session(recalled);
-            feed(&mut e, &msgs);
-            assert_eq!((e.steps[0].out, e.steps[0].at.is_some()), (false, true), "the read came back");
-            msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": format!("Client {low}.")}]}));
-            msgs.push(json!({"role": "user", "content": "How many words has notes.md?"}));
-            feed(&mut e, &msgs);
-            let mut k = 0;
-            while e.steps[0].at.is_some() && k < 20 {
-                k += 1;
-                msgs.extend(step(10 + k, "date", "Fri Oct 31 10:00:00 UTC 2026"));
-                feed(&mut e, &msgs);
-            }
-            assert!(e.steps[0].out, "{spec}: the read never left");
-            k
-        };
-        // without `sticky` an idle step leaves as soon as the rent to come pays; with it, once the rent paid
-        // since it went idle (a tenth of its size per step) pays for bringing it back once more: half its size
-        // for a step brought back once, two thirds for one the agent had asked back as well. The step of the
-        // agent's recall, idle on request 4 with it, leaves at once and does not take it along.
-        assert_eq!((leaves_after(base, false), leaves_after(base, true)), (0, 0));
-        let sticky = format!("{base};sticky=1");
-        assert_eq!((leaves_after(&sticky, false), leaves_after(&sticky, true)), (6, 7));
+        assert_eq!(e.stats.get("agent_recalled_steps"), Some(&1));
     }
 
     #[test]
@@ -6656,87 +5785,6 @@ mod tests {
         assert!(e.shut.keys().eq([&0]) && line(&e, 0).contains("4 tool calls"), "{:?}", e.shut);
         let view = sent(&e.view());
         assert!(!view.contains(&word(0)[..]) && view.contains("4 tool calls made for this request"), "{view}");
-    }
-
-    #[test]
-    fn by_topic_the_read_stays_while_the_requests_stay_on_it_and_leaves_when_they_move_on() {
-        let spec = "nudge=0;eoq=0;close=2;margin=0;ahead=1;topic=1";
-        let reply = format!("The largest is client {}.", word(529));
-        let mut msgs = sessions(&reply, None);
-        msgs.pop();
-        msgs.push(json!({"role": "user", "content": "And the smallest invoice total?"}));
-        let mut e = Engine::new(params(spec).unwrap());
-        e.sync(&msgs);
-        let view = sent(&e.view());
-        assert!(view.contains(&word(0)[..]) && !view.contains("left out of this context"), "{view}");
-        // without it the read stays too: the request names words ("invoice", "total") only that read holds
-        let mut e = Engine::new(params("nudge=0;eoq=0;close=2;margin=0;ahead=1").unwrap());
-        e.sync(&msgs);
-        assert!(!sent(&e.view()).contains("left out of this context: bash cat report.txt"));
-        // the next request is on something else: the read leaves with its topic
-        let mut e = Engine::new(params(spec).unwrap());
-        e.sync(&sessions(&reply, None));
-        let view = sent(&e.view());
-        assert!(!view.contains(&word(0)[..]), "{:?} {view}", e.stats);
-    }
-
-    #[test]
-    fn noted_the_read_leaves_once_a_note_names_its_file_and_not_before() {
-        let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;noted=1";
-        let largest = format!("The largest is client {}.", word(529));
-        // answered by an agent that writes no notes: it is not judged by them, and the read leaves as it
-        // does without `noted`
-        let mut e = Engine::new(params(spec).unwrap());
-        e.sync(&sessions(&largest, None));
-        let view = sent(&e.view());
-        assert!(!view.contains(&word(0)[..]) && view.contains("left out of this context"), "{view}");
-        // a note on something else names no file read: the read stays
-        let mut e = Engine::new(params(spec).unwrap());
-        e.sync(&sessions(&format!("{largest}\nFinding: a client is a person who buys."), None));
-        assert!(sent(&e.view()).contains(&word(0)[..]));
-        // the note names the file: its facts are kept, the read leaves
-        let mut e = Engine::new(params(spec).unwrap());
-        e.sync(&sessions(&format!("{largest}\nFinding: the report lists one invoice total per client."), None));
-        let view = sent(&e.view());
-        assert!(!view.contains(&word(0)[..]), "{view}");
-        assert!(view.contains("are left out of this context: bash cat report.txt"), "{view}");
-    }
-
-    #[test]
-    fn noted_a_read_leaves_once_a_note_names_its_file_and_a_later_request_on_it_needed_no_read() {
-        // a request on the file, a read, a note that names it, the reply; a second request on the file; a
-        // third one, still open, on the file again
-        let ask = |q: &str| json!({"role": "user", "content": q});
-        let say = |t: &str| json!({"role": "assistant", "content": [{"type": "text", "text": t}]});
-        let session = |again: bool| {
-            let mut msgs = vec![ask("Read listing.txt and say what slot 50 holds.")];
-            msgs.extend(step(1, "cat listing.txt", &listing(1, 120)));
-            msgs.push(json!({"role": "assistant", "content": [{"type": "tool_use", "id": "call_2", "name": NOTE_TOOL,
-                "input": {"text": format!("Finding: the listing holds {} at slot 50, {} at 51.", word(50), word(51))}}]}));
-            msgs.push(json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_2", "content": "noted"}]}));
-            msgs.push(say(&format!("Slot 50 holds {}.", word(50))));
-            msgs.push(ask("And slot 51 of listing.txt?"));
-            if again {
-                msgs.extend(step(3, "sed -n 51p listing.txt", &listing(51, 51)));
-            }
-            msgs.push(say(&format!("Slot 51 holds {}.", word(51))));
-            msgs.push(ask("And slot 52 of listing.txt?"));
-            msgs.extend(step(4, "date", "Sun Nov  1 10:00:00 UTC 2026"));
-            msgs
-        };
-        let base = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1;named=16000;fresh=0";
-        let read_left = |spec: &str, again: bool| {
-            let mut e = Engine::new(params(&format!("{base};{spec}")).unwrap());
-            e.sync(&session(again));
-            let view = sent(&e.view());
-            assert!(view.contains(&word(50)[..]), "the note stays: {view}");
-            !view.contains(&word(120)[..])
-        };
-        // the second request was answered from the note: the read leaves, though the request names its file
-        assert!(read_left("noted=1", false));
-        assert!(!read_left("noted=0", false));
-        // the agent went back to the file: the note was not enough, and the read stays
-        assert!(!read_left("noted=1", true));
     }
 
     #[test]

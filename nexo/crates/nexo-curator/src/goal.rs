@@ -24,7 +24,7 @@ pub struct Turn {
     pub units: Vec<usize>,
 }
 
-pub fn starts_turn(tr: &Tracer, fz: &Featurizer, mi: usize, riders: bool) -> bool {
+pub fn starts_turn(tr: &Tracer, fz: &Featurizer, mi: usize) -> bool {
     if mi == 0 {
         return true;
     }
@@ -37,7 +37,7 @@ pub fn starts_turn(tr: &Tracer, fz: &Featurizer, mi: usize, riders: bool) -> boo
         return false;
     }
     let us = fz.by_msg(mi);
-    (riders || !us.iter().any(|&i| tr.units[i].kind == UKind::Result))
+    !us.iter().any(|&i| tr.units[i].kind == UKind::Result)
         && us.iter().any(|&i| tr.units[i].kind == UKind::User && is_request(&tr.unit_text(i)))
 }
 
@@ -54,8 +54,6 @@ pub fn line(text: &str, n: usize) -> String {
 #[derive(Default)]
 pub struct Threads {
     pub link: f64,
-    /// The person's words open a new request also when they come with the results of a step (`Params.task`).
-    pub riders: bool,
     pub turns: Vec<Turn>,
     pub members: Vec<Vec<usize>>,
     pub last: Vec<usize>,
@@ -71,7 +69,7 @@ impl Threads {
             let mi = self.m;
             self.m += 1;
             let us = fz.by_msg(mi);
-            if starts_turn(tr, fz, mi, self.riders) {
+            if starts_turn(tr, fz, mi) {
                 self.open(tr, fz, mi, head, share);
             }
             let Some(t) = self.turns.last_mut() else { continue };

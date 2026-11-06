@@ -4,7 +4,7 @@
 //! can be read at the start and at the end of a very long session. Ignored by default (slow):
 //! `cargo test --release -p nexo-curator --test stress -- --ignored --nocapture`.
 //! `STRESS_STEPS` sets the steps of the agent (default 20000), `STRESS_SPEC` the settings over the defaults
-//! (`sticky=1`), `STRESS_SEED` the seed.
+//! (`pockets=1`), `STRESS_SEED` the seed.
 
 #[path = "support/scale_gen.rs"]
 mod scale_gen;

@@ -107,12 +107,12 @@ The line that replaces a closed request reads (`shut_lines`):
 
 Every message of the history gets the name `m` plus its 1-based index in five digits (`format!("m{:05}", mi + 1)`). When the host offers the `recall` tool, the line above also lists the output names, for example `The outputs are m00042, m00043; recall brings any of them back as it was`, and topic cards list their ranges (`m00010-m00031`).
 
-Important default: the `recall` tool is offered only with `directives=1` (`BuiltIn::recall` returns `Curator::directives`, `offered` in `turn.rs`). With the defaults, the names are not printed and the agent gets the data back by repeating the call or reading the file, as the line says.
+Important default: the `recall` tool is offered unless the spec says `recall=0` (`BuiltIn::recall` returns `Curator::recall`, `offered` in `turn.rs`). With `recall=0` the names are not printed and the agent gets the data back by repeating the call or reading the file, as the line says.
 
 ## Cache friendliness
 
 - A cut breaks the provider's cache **from the first changed message onward**. The engine counts this as `miss` and prices it before cutting (`Engine::miss`).
-- That is why cuts are batched and placed late, and why `loops=0`, `fresh=1`, `dedup`, `birth=squeeze` decide at birth rather than rewriting later.
+- That is why cuts are batched and placed late, and why `fresh=1`, `dedup`, `birth=squeeze` decide at birth rather than rewriting later.
 - With `pockets=1` or `2` (off by default) the curator also models a provider that keeps several views alive, and learns how long from the cached-token usage the provider reports (`Curator::cached`).
 
 ## Nudges and cards, briefly

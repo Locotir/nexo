@@ -76,7 +76,7 @@ The default spec (`D_SPEC` in the crate), with a default for every value; a test
 to it:
 
 ```
-threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1;pockets=0;life=3600
+threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;stale=1;pockets=0;life=3600
 ```
 
 | setting | default | what it sets |
@@ -94,7 +94,6 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `live=1` | on | outputs of the open request that no later message drew on go idle and leave when that pays |
 | `digest=1`, `hold=1` | on | what the agent has not yet written about is not idle and does not count toward the cap |
 | `dedup=3` | `3` | a run of 3+ lines already whole in the view goes as a pointer to it (`asked=3`: not when asked again, unless the same call gave the very same output: then one line says nothing changed) |
-| `loops=0` | off | folding a run of identical steps (first and latest stay) sends a view the model already saw, so at a fixed temperature it takes the same step again; off by default |
 | `fresh=1` | `1` | the output just asked for goes whole; its repeated runs go as pointers from the next request on (a pointer in a fresh output sends the agent looking for the lines) |
 | `still=32000` | `32000` | the latest outputs the agent has not written about yet (no text, no note since), up to this many tokens, leave only as an exact copy of a later output, never on a guess, cap or not; older ones past the budget may go on a guess, so the view stays bounded when the agent never writes |
 | `stale=1` | on | past the cap, a read of a file that a later edit or write of it (one that did not fail) changed leaves with the exact copies, before any guess; its note names the file and the message of the edit, and says to read the file again (or `recall`, when the host offers it); decided only at a cut, so the view between cuts stays as sent |
@@ -103,7 +102,7 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `directives=N` | `0` | 1 appends the efficiency directives to the system prompt |
 | `protect=M` | `12` | the last `M` messages never leave the view |
 
-A spec is `key=value` pairs separated by `;` (a value may hold a comma: `birth=squeeze,telegraph`), laid
+A spec is `key=value` pairs separated by `;` (a value may hold a comma), laid
 over the default; every number is 0 or more. A pair the curator cannot run (an unknown name, a value of
 the wrong kind, or a setting it does not support, such as `ttl=60`) is left out, the rest still applies,
 and a warning names it.
