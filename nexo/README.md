@@ -723,6 +723,14 @@ DeepSeek `deepseek-chat`, 2026-11-06, one run each, `plain` arm, measured
 before nexo left the calls of a reply cut at max_tokens out of its history
 (8 runs hit DeepSeek's 8192-token reply cap; their retries had looped):
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/polyglot-deepseek-dark.svg">
+  <img alt="Aider Polyglot with nexo and deepseek-chat: 49 % of 225 exercises pass on the first try, 75 % after one retry; C++ 62 then 96 %, Rust 70 then 77 %, Python 44 then 74 %, JavaScript 49 then 71 %, Java 23 then 70 %, Go 59 then 69 %" src="docs/polyglot-deepseek.svg" width="760">
+</picture>
+
+pass@1 is the share solved on the first try; pass@2 counts those solved after
+one retry that sees the output of the failing tests.
+
 | Language | Exercises | pass@1 | pass@2 | Cost |
 |---|---:|---:|---:|---:|
 | C++ | 26 | 61.5 % | 96.2 % | $0.18 |
