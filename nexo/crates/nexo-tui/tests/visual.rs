@@ -38,6 +38,7 @@ fn app(animations: bool) -> App {
         vim: false,
         session_id: Some("20261101-120000-cd34".into()),
         sessions: vec![],
+        skills: vec![],
     };
     let mut a = App::new(opts, tx);
     a.root = false;

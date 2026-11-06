@@ -94,6 +94,8 @@ pub struct TuiOptions {
     pub session_id: Option<String>,
     /// `(id, title)` of earlier sessions here, newest first.
     pub sessions: Vec<(String, String)>,
+    /// The Agent Skills found for the working directory; each answers to `/name`.
+    pub skills: Vec<nexo_core::skills::Skill>,
 }
 
 impl Default for TuiOptions {
@@ -120,6 +122,7 @@ impl Default for TuiOptions {
             status_command: String::new(),
             session_id: None,
             sessions: Vec::new(),
+            skills: Vec::new(),
         }
     }
 }

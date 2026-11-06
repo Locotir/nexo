@@ -25,6 +25,7 @@ pub mod pricing;
 pub mod provider;
 pub mod redact;
 pub mod shell;
+pub mod skills;
 pub mod stream;
 pub mod tool;
 pub mod version;

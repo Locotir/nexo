@@ -150,6 +150,17 @@ after the built-in ones, with the `description:` of a front matter block or the 
 description: review the change against our rules
 ---
 Review $ARGUMENTS against CONTRIBUTING.md and list what breaks a rule.
+
+**Agent Skills.** A folder with a `SKILL.md` (front matter `name`, `description`, optional `allowed-tools`)
+and any files it mentions is a skill, the same format Claude Code and Codex use. nexo looks in
+`.nexo/skills`, `.agents/skills` and `.claude/skills` of the project (the working directory up to the
+repository root), then in `~/.nexo/skills`, `~/.agents/skills` and `~/.claude/skills`; on a name clash the
+first wins, nexo's own folders first. The model only sees each skill's name and a short description (up to
+100, in the `skill` tool's description, fixed for the session so the prompt cache holds) and loads the body
+with the `skill` tool when a task matches; the files a skill mentions are read with `read`, relative to its
+folder. You can run one yourself with `/skill-name [args]`; `/skills` lists what was found and where from.
+`allowed-tools` is shown but not enforced: the permission rules still decide. Project skills are read like
+`AGENTS.md`, without the trust step that commands and agents need.
 ```
 
 **Sub-agents.** The model has a `task` tool: it hands a self-contained job to a sub-agent that works on

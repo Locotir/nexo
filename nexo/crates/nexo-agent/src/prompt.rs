@@ -110,6 +110,9 @@ fn tool_guidance(tools: &ToolSet) -> String {
     if has("task") {
         lines.push("- `task`: hand self-contained work to a sub-agent; only its short report comes back, so your own context stays small. Use it when a question needs reading across many files or a whole directory (`explore`, the default), when there are several independent searches or checks (one task call each, all in ONE message, so they run at the same time), for a long side job while you go on (`background: true`), and whenever the person asks for sub-agents or parallel work. `general` can also edit and run commands. Do it yourself when one or two reads or a single search will answer. The sub-agent sees nothing of this conversation: put all it needs in `prompt` (the goal, the files, what is ruled out, what to report).");
     }
+    if has("skill") {
+        lines.push("- `skill`: skills are folders of ready-made instructions; the tool's description lists them. When a task matches one, load it by name before you start and follow it.");
+    }
     if has("ask_user") {
         lines.push("- `ask_user`: when a choice is the person's to make (an approach, a name, which of several things), ask with a few options, the one you recommend first. Not for what you can find out yourself.");
     }

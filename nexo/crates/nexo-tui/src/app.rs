@@ -290,6 +290,8 @@ pub struct App {
     pub draft_edit_request: bool,
     /// Commands of one's own (`.nexo/commands/*.md`).
     pub custom_commands: Vec<crate::custom::CustomCommand>,
+    /// The Agent Skills found at start (`SKILL.md` folders); each also answers to `/name` as a command.
+    pub skills: Vec<nexo_core::skills::Skill>,
     /// A notification for the terminal (the bell), when a long turn ended.
     pub bell_request: Option<String>,
     pub mouse_on: bool,
@@ -514,6 +516,7 @@ impl App {
             edit_request: None,
             draft_edit_request: false,
             custom_commands: crate::custom::load(&opts.cwd),
+            skills: Vec::new(),
             bell_request: None,
             mouse_on: opts.mouse,
             mouse_request: None,
@@ -543,6 +546,8 @@ impl App {
             modal_was: false,
             opts,
         };
+        let found = std::mem::take(&mut app.opts.skills);
+        app.set_skills(found);
         app.input.set_placeholder_style(app.theme.dim());
         app.read_branch();
         app.push_welcome();
@@ -1476,6 +1481,39 @@ pub fn status_life(level: Level) -> u64 {
 }
 
 impl App {
+    fn set_skills(&mut self, skills: Vec<nexo_core::skills::Skill>) {
+        for s in &skills {
+            let name = s.name.to_ascii_lowercase();
+            if crate::commands::lookup(&name).is_some() || self.custom_commands.iter().any(|c| c.name == name) {
+                continue;
+            }
+            // the text is read when the command runs, so an edited skill is used as it is then
+            self.custom_commands.push(crate::custom::CustomCommand {
+                name,
+                description: s.description.clone(),
+                body: String::new(),
+                path: s.file(),
+            });
+        }
+        self.skills = skills;
+    }
+
+    /// `/skills`: what was found and where from.
+    fn show_skills(&mut self) {
+        if self.skills.is_empty() {
+            self.notice(
+                Level::Info,
+                "no skills found · put a folder with a SKILL.md in .nexo/skills, .agents/skills or .claude/skills (project or home)",
+            );
+            return;
+        }
+        let mut lines = vec![format!("{}:", nexo_core::count(self.skills.len(), "skill"))];
+        for s in &self.skills {
+            lines.push(format!("  /{}  ({})  {}", s.name, s.source, s.description));
+        }
+        self.notice(Level::Info, lines.join("\n"));
+    }
+
     pub fn flash(&mut self, text: &str) {
         self.flash_level(Level::Info, text);
     }
@@ -3349,6 +3387,22 @@ impl App {
         if let Some(rest) = trimmed.strip_prefix('/') {
             let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             let name = name.to_ascii_lowercase();
+            // a skill: its folder and instructions are the request (read now, so edits count)
+            if let Some(s) = self.skills.iter().find(|s| s.name.eq_ignore_ascii_case(&name)).cloned() {
+                if self.custom_commands.iter().any(|c| c.name == name && c.path == s.file()) {
+                    match s.instructions(args) {
+                        Ok(text) => {
+                            self.input.push_history(trimmed);
+                            self.input.set_text(&text);
+                            return self.submit();
+                        }
+                        Err(e) => {
+                            self.notice(Level::Warn, format!("cannot read skill {}: {e}", s.name));
+                            return;
+                        }
+                    }
+                }
+            }
             if let Some(c) = self.custom_commands.iter().find(|c| c.name == name).cloned() {
                 self.input.push_history(trimmed);
                 self.input.set_text(&c.expand(args));
@@ -3630,6 +3684,7 @@ impl App {
             Command::Pr(arg) => self.git_prompt("/pr", nexo_agent::gitcmds::pr_prompt(&self.cwd, arg.as_deref(), "gh")),
             Command::Status => self.send(AgentCommand::ShowStatus),
             Command::Tools => self.send(AgentCommand::ShowTools),
+            Command::Skills => self.show_skills(),
             Command::Jobs(None) => self.open_jobs(),
             Command::Jobs(Some(id)) => self.send(AgentCommand::KillJob { id }),
             Command::Budget(None) => self.send(AgentCommand::ShowBudget),
@@ -4778,6 +4833,7 @@ mod tests {
             vim: false,
             session_id: None,
             sessions: vec![],
+            skills: vec![],
         };
         let mut a = App::new(opts, tx);
         a.root = false;
@@ -6229,6 +6285,35 @@ mod tests {
         assert!(
             matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == "Review src/lib.rs against CONTRIBUTING.md.")
         );
+    }
+
+    #[test]
+    fn a_skill_is_a_command_that_sends_its_instructions_and_is_listed() {
+        let (mut a, mut rx) = app();
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("lint-fix");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: lint-fix\ndescription: fix lint\n---\nRun the linter.\n")
+            .unwrap();
+        let skills = vec![nexo_core::skills::Skill {
+            name: "lint-fix".into(),
+            description: "fix lint".into(),
+            dir,
+            allowed_tools: vec![],
+            source: ".claude/skills".into(),
+        }];
+        a.set_skills(skills);
+        a.input.set_text("/lint");
+        a.refresh_palette();
+        let (rows, _) = a.palette.as_ref().expect("the palette").rows(20);
+        assert!(rows.iter().any(|r| r.label == "lint-fix"));
+        a.input.set_text("/lint-fix src");
+        a.submit();
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. })
+            if text.contains("Run the linter.") && text.ends_with("Arguments: src")));
+        a.run_command(Command::Skills);
+        let shown = format!("{:?}", a.blocks.last());
+        assert!(shown.contains("/lint-fix") && shown.contains(".claude/skills"), "{shown}");
     }
 
     #[test]

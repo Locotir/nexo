@@ -40,6 +40,7 @@ fn app_with(group_tools: bool) -> App {
         vim: false,
         session_id: Some("20261102-100000-ef56".into()),
         sessions: vec![],
+        skills: vec![],
     };
     let mut a = App::new(opts, tx);
     a.root = false;

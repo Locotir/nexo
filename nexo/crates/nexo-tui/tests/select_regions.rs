@@ -36,6 +36,7 @@ fn app() -> App {
         vim: false,
         session_id: None,
         sessions: vec![],
+        skills: vec![],
     };
     let mut a = App::new(opts, tx);
     a.root = false;

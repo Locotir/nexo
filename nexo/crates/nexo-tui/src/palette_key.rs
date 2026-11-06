@@ -88,6 +88,7 @@ mod tests {
             vim: false,
             session_id: None,
             sessions: vec![],
+            skills: vec![],
             keys: Default::default(),
             status_line: vec![],
             status_command: String::new(),

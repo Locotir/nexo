@@ -74,6 +74,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("config", &["settings"], "", "where the configuration files are"),
     spec("doctor", &[], "", "check the setup: files, provider, model, key"),
     spec("tools", &["mcp"], "", "the tools the model has, by kind"),
+    spec("skills", &[], "", "the skills found (name, what it does, where from); /skill-name [args] runs one"),
     spec("vim", &[], "", "the vim keys in the editor on or off"),
     spec(
         "budget",
@@ -122,6 +123,8 @@ pub enum Command {
     Pr(Option<String>),
     Status,
     Tools,
+    /// `/skills`: the Agent Skills found, with their source.
+    Skills,
     Vim,
     Budget(Option<String>),
     /// `/jobs` opens the window, `/jobs kill` stops every one, `/jobs kill 3` stops job 3.
@@ -213,6 +216,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "pr" => Command::Pr(arg),
         "status" => Command::Status,
         "tools" => Command::Tools,
+        "skills" => Command::Skills,
         "vim" => Command::Vim,
         "budget" => Command::Budget(arg),
         "panel" => Command::Panel,
@@ -356,6 +360,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "context-live",
             "cost",
             "tools",
+            "skills",
             "jobs",
             "panel",
             "todo",

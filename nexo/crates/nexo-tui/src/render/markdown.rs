@@ -914,6 +914,7 @@ mod tests {
             vim: false,
             session_id: None,
             sessions: vec![],
+            skills: vec![],
         };
         let mut a = crate::App::new(opts, tx);
         let lead: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();

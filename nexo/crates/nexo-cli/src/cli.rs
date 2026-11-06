@@ -538,7 +538,10 @@ async fn run(args: Args) -> anyhow::Result<i32> {
             return Ok(setup::trash_sessions(ids, true))
         }
         Some(Cmd::Prompt { edit: false }) => {
-            let tools = nexo_tools::builtin_with(&config.web);
+            let mut tools = nexo_tools::builtin_with(&config.web);
+            if let Some(t) = nexo_tools::skill::tool(nexo_core::skills::discover(&cwd, !config.agent.hermetic)) {
+                tools.add(t);
+            }
             let base = nexo_agent::prompt::system_prompt(&cwd, &config.agent, &tools);
             // what the session would get: `auto` is the built-in curator, told which tools there are
             let specs = tools.specs();
@@ -684,6 +687,7 @@ async fn interactive(
         vim: config.ui.vim,
         session_id: resume,
         sessions,
+        skills: nexo_core::skills::discover(&cwd, !config.agent.hermetic),
     };
     if !crate::update::off(&config) {
         let events = ends.events.clone();

@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod note;
 pub mod read;
 pub mod recall;
+pub mod skill;
 pub mod todo;
 pub mod util;
 pub mod web;
