@@ -116,6 +116,10 @@ impl Tool for Fake {
             }
         }
         ctx.report("progress line");
+        let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+        if path.starts_with("missing") {
+            return ToolOutput::error(format!("{path}: No such file or directory (os error 2)"));
+        }
         ToolOutput::ok(format!(
             "{}:{}",
             self.name,
@@ -3778,11 +3782,9 @@ async fn a_suggestion_repeats_the_last_request_with_one_more_message() {
         assert_eq!(side.tools.len(), last.tools.len());
         assert_eq!(side.no_tool_call, last.no_tool_call);
         assert_eq!(side.model, last.model);
-        // the test model does not reason, so the short cap holds; one that reasons keeps the request's own
-        assert_eq!(
-            side.max_tokens,
-            if matches!(last.reasoning, Some(nexo_core::ReasoningConfig::Off)) { 200 } else { last.max_tokens }
-        );
+        // a guess of a dozen words: no thinking, a short cap
+        assert_eq!(side.max_tokens, 200);
+        assert!(matches!(side.reasoning, Some(nexo_core::ReasoningConfig::Off)));
         let n = last.messages.len();
         assert_eq!(side.messages.len(), n + 2);
         assert_eq!(side.messages[..n], last.messages[..], "the messages the last request sent come first");
@@ -3792,5 +3794,48 @@ async fn a_suggestion_repeats_the_last_request_with_one_more_message() {
         assert_eq!(ask.role, Role::User);
         assert!(ask.text().starts_with("Suggest the next message the user is most likely to send"), "{}", ask.text());
     }
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_failure_that_comes_back_is_tagged_and_the_loop_guard_still_stops_the_loop() {
+    // the guards weigh the outputs as they came: the line, new each time, must not hide the loop from them
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(
+        (0..8).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": "missing.txt"})))).collect(),
+    );
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.max_turns = 8;
+    cfg.agent.guard_answer = false;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "loop".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(client.requests().len() < 8, "stopped before max_turns: {}", client.requests().len());
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("agent.loop_guard"))));
+    let sent = serde_json::to_string(&client.requests()[2].messages).unwrap();
+    assert!(sent.contains("[the same failure on missing.txt (missing) for the second time"), "{sent}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_cleared_conversation_does_not_count_the_failures_of_the_last_one() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c0", "read", json!({"path": "missing.txt"}))),
+        Reply::Events(text("it is not there")),
+        Reply::Events(call("c1", "read", json!({"path": "missing.txt"}))),
+        Reply::Events(text("it is not there")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read it".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Clear);
+    r.until(|e| matches!(e, AgentEvent::SessionChanged { .. })).await;
+    r.send(AgentCommand::Submit { text: "read it".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = serde_json::to_string(&client.requests()[3].messages).unwrap();
+    assert!(sent.contains("No such file") && !sent.contains("[the same failure"), "{sent}");
     r.stop().await;
 }

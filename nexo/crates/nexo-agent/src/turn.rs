@@ -197,6 +197,8 @@ struct State {
     jobs: Jobs,
     /// Failures of the session kept by what they were on, to say when one comes back.
     repeats: crate::repeat::Repeats,
+    /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
+    epoch: u64,
     /// Plan mode: the mode to go back to and the switch an approved plan asks for.
     plan: crate::ask::PlanCell,
     /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
@@ -351,6 +353,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         digests: HashMap::new(),
         jobs: jobs.clone(),
         repeats: Default::default(),
+        epoch: 0,
         plan,
         last_prompt: None,
         est_sent: 0,
@@ -823,6 +826,8 @@ fn install_session(st: &mut State, session: Session) {
     st.policy.reset();
     st.last_prompt = None;
     st.last_request = None;
+    st.repeats = Default::default();
+    st.epoch += 1;
     st.turn_start = 0;
     st.turns = 0;
     st.goal = st.session.goal().map(String::from);
@@ -1148,6 +1153,8 @@ async fn rewind(state: &Shared, index: usize) {
     st.policy.reset();
     st.last_prompt = None;
     st.last_request = None;
+    st.repeats = Default::default();
+    st.epoch += 1;
     st.turn_start = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
@@ -1915,6 +1922,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             continue;
         }
         let asked = calls.iter().map(|(_, n, a)| (n.clone(), a.to_string())).collect::<Vec<_>>();
+        let kept = calls.clone();
         let (results, cancelled) = run_tools(&state, &events, calls, &cancel).await;
         seen.push(round_hash(&asked, &results));
         let (lines, new) = if stale_guard > 0 { fresh_count(&mut known, &results, false) } else { (0, 0) };
@@ -1923,6 +1931,11 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             ck.round(&asked, &results);
             note_writes(&state, &mut ck, &asked, &results).await;
         }
+        // the guards above weigh the outputs as they came; the line of a failure that came back is added after
+        let results = {
+            let mut st = state.lock().await;
+            st.repeats.round(&kept, results)
+        };
         if stale_guard > 0 {
             let wrote = {
                 let st = state.lock().await;
@@ -2644,11 +2657,8 @@ async fn run_tools(
             let futs = calls[i..end].iter().zip(verdicts[i..end].iter()).map(|((id, name, args), v)| {
                 run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, cancel)
             });
-            let done = futures::future::join_all(futs).await;
-            let mut st = state.lock().await;
-            for (k, (part, c)) in done.into_iter().enumerate() {
-                let (_, name, args) = &calls[i + k];
-                results[i + k] = Some(st.repeats.tag(name, args, part));
+            for (k, (part, c)) in futures::future::join_all(futs).await.into_iter().enumerate() {
+                results[i + k] = Some(part);
                 cancelled |= c;
             }
         }
@@ -2930,6 +2940,8 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
                 c.0 = if c.0 >= from { c.0 - from + shift } else { 0 };
             }
             st.history.replace(work);
+            // the failures it held are out of the history: a line pointing back at them would point at nothing
+            st.repeats = Default::default();
             add_usage(st, &events, &done.model, done.usage, Usage::default(), UsageKind::Compact);
             st.last_prompt = None;
             st.turn_start = 0;
@@ -3272,10 +3284,9 @@ fn suggest_request(last: &ModelRequest, reply: Message) -> ModelRequest {
     let mut req = last.clone();
     req.messages.push(reply);
     req.messages.push(Message::user(SUGGEST_ASK));
-    // a model that reasons first needs its own room: a short cap would cut the answer off before it starts
-    if matches!(req.reasoning, Some(ReasoningConfig::Off)) {
-        req.max_tokens = SUGGEST_TOKENS;
-    }
+    // a guess of a dozen words: no thinking first, and a cap that keeps it cheap on any model
+    req.reasoning = Some(ReasoningConfig::Off);
+    req.max_tokens = SUGGEST_TOKENS;
     req
 }
 
@@ -3302,11 +3313,13 @@ fn spawn_suggest(state: &Shared) {
                 return;
             };
             let (_, cfg, model) = st.target.get();
-            if last.model != model || !st.inbox.is_empty() {
+            // a model that always reasons first would spend the whole cap thinking and say nothing
+            let thinks = model.split(['/', '-', ':']).any(|w| matches!(w, "reasoner" | "o1" | "o3" | "o4"));
+            if last.model != model || !st.inbox.is_empty() || thinks {
                 return;
             }
             let req = suggest_request(last, reply.clone());
-            (req, cfg, st.client.clone(), st.config.agent.retries, st.turns, st.events.clone())
+            (req, cfg, st.client.clone(), st.config.agent.retries, (st.turns, st.epoch), st.events.clone())
         };
         let Ok(mut stream) = client.stream(&cfg, &req, retries).await else { return };
         let mut c = Collector::for_model(req.model.clone());
@@ -3322,7 +3335,7 @@ fn spawn_suggest(state: &Shared) {
         if !c.usage.is_empty() {
             add_usage(&mut st, &events, &req.model, c.usage, Usage::default(), UsageKind::Suggest);
         }
-        if c.error.is_some() || msg.tool_calls().next().is_some() || st.turns != turns {
+        if c.error.is_some() || msg.tool_calls().next().is_some() || (st.turns, st.epoch) != turns {
             return;
         }
         if let Some(text) = tidy_suggestion(&msg.text()) {
@@ -3499,6 +3512,8 @@ async fn clear(state: &Shared) {
     st.policy.reset();
     st.last_prompt = None;
     st.last_request = None;
+    st.repeats = Default::default();
+    st.epoch += 1;
     st.reads.clear();
     st.digests.clear();
     st.inbox.clear();
