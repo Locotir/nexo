@@ -209,7 +209,7 @@ fn with_animations_off_a_flash_message_keeps_its_colour_to_the_end() {
     for animations in [true, false] {
         let mut a = app(animations);
         // in the last 900 ms, where the message fades into the bar
-        let at = Instant::now().checked_sub(Duration::from_millis(3500)).unwrap();
+        let at = Instant::now().checked_sub(Duration::from_millis(2100)).unwrap();
         a.status = Some(("model switched".into(), at));
         let b = draw(&mut a);
         let rows = rows_of(&b);

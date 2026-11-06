@@ -77,7 +77,7 @@ pub struct Palette {
 }
 
 /// Rows the palette shows at most, section titles included.
-pub const MAX_ROWS: usize = 10;
+pub const MAX_ROWS: usize = 14;
 /// Recent commands shown on top.
 pub const MAX_RECENT: usize = 3;
 /// How much of a file the preview reads.
@@ -643,7 +643,7 @@ mod tests {
         let v = p.view(4);
         assert_eq!(v.entries[0], Entry::Header("recent".into()));
         assert!(matches!(&v.entries[1], Entry::Item(r, 0) if r.label == "theme"));
-        assert_eq!(v.entries[2], Entry::Header("session".into()));
+        assert_eq!(v.entries[2], Entry::Header("common".into()));
         assert_eq!(v.above, 0);
         assert_eq!(v.below, p.len() - 2);
         // the titles scroll with their rows; the last section is one's own
@@ -672,7 +672,7 @@ mod tests {
         p.up();
         assert_eq!(p.view(5).above, 1, "going back up inside the window does not move it");
         p.page(true);
-        assert_eq!(p.current(), Some("f12"));
+        assert_eq!(p.current(), Some("f16"));
         p.page(false);
         p.page(false);
         assert_eq!(p.current(), Some("f00"));

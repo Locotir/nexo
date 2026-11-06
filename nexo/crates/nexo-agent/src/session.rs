@@ -140,10 +140,21 @@ pub struct Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // opened and left without a word: nothing worth keeping in the list
+        let empty = self.file.is_some()
+            && self.locked
+            && self.meta.messages == 0
+            && self.meta.title.is_empty()
+            && self.meta.parent.is_none()
+            && self.goal.is_none()
+            && self.cost == 0.0;
         // only a lock still this process's: another nexo may have taken it over
         let lock = lock_path(&self.path);
         if self.locked && std::fs::read_to_string(&lock).is_ok_and(|t| t == stamp()) {
-            let _ = std::fs::remove_file(lock);
+            let _ = std::fs::remove_file(&lock);
+        }
+        if empty && std::fs::read_to_string(&lock).is_err() {
+            let _ = std::fs::remove_file(&self.path);
         }
     }
 }
@@ -1270,11 +1281,18 @@ mod tests {
         // 3000 ids drawn in a few seconds from 65536 per second: some draw the same one
         let d = tempfile::tempdir().unwrap();
         let mut ids = std::collections::HashSet::new();
+        let mut kept = Vec::new();
         for _ in 0..3000 {
             let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
             assert!(ids.insert(s.id().to_string()));
+            // an empty session is dropped with its file, so these stay open
+            kept.push(s);
         }
-        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 3000);
+        let files = std::fs::read_dir(d.path())
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "jsonl"))
+            .count();
+        assert_eq!(files, 3000);
     }
     #[test]
     fn a_cut_last_line_does_not_swallow_the_next_message() {
@@ -1564,7 +1582,8 @@ mod tests {
     #[test]
     fn a_second_writer_is_refused_and_a_stale_lock_taken_over() {
         let d = tempfile::tempdir().unwrap();
-        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("first")).unwrap();
         let p = s.path().to_path_buf();
         let lock = lock_path(&p);
         assert!(lock.is_file());
@@ -1619,7 +1638,8 @@ mod tests {
     #[test]
     fn a_live_writer_keeps_its_lock_however_old() {
         let d = tempfile::tempdir().unwrap();
-        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("first")).unwrap();
         let p = s.path().to_path_buf();
         let lock = lock_path(&p);
         drop(s);
@@ -1828,7 +1848,8 @@ mod tests {
     #[test]
     fn a_lock_whose_pid_now_names_another_process_is_stale() {
         let d = tempfile::tempdir().unwrap();
-        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("first")).unwrap();
         let p = s.path().to_path_buf();
         let lock = lock_path(&p);
         drop(s);
@@ -1869,7 +1890,8 @@ mod tests {
     #[test]
     fn a_lock_from_another_host_or_pid_namespace_is_judged_by_its_age() {
         let d = tempfile::tempdir().unwrap();
-        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("first")).unwrap();
         let p = s.path().to_path_buf();
         let lock = lock_path(&p);
         drop(s);

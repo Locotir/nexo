@@ -27,6 +27,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("help", &["h", "?"], "", "keys and commands"),
     spec("model", &["m"], "[name]", "switch model, or set one up step by step (checked against the server)"),
     spec("provider", &["providers"], "", "the same as /model"),
+    spec("login", &["signin"], "", "sign in or set a key: opens the model setup at the providers"),
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
     spec("permissions", &["permission", "mode"], "[ask|accept-edits|plan|auto|read-only]", "set the permission mode"),
     spec("yolo", &[], "", "never ask for permission (the auto mode)"),
@@ -67,6 +68,8 @@ pub const COMMANDS: &[Spec] = &[
     spec("undelete", &["restore"], "[id]", "bring back a deleted session (the last one by default)"),
     spec("init", &[], "", "have the agent study the project and write AGENTS.md"),
     spec("status", &["info"], "", "version, model, key, endpoint, session, configuration files"),
+    spec("config", &["settings"], "", "where the configuration files are"),
+    spec("doctor", &[], "", "check the setup: files, provider, model, key"),
     spec("tools", &["mcp"], "", "the tools the model has, by kind"),
     spec("vim", &[], "", "the vim keys in the editor on or off"),
     spec(
@@ -102,6 +105,9 @@ pub enum Command {
     Help,
     Model(Option<String>),
     Provider,
+    Login,
+    Config,
+    Doctor,
     Effort(Option<String>),
     Undo,
     Init,
@@ -187,6 +193,9 @@ pub fn parse(line: &str) -> Option<Command> {
         "help" => Command::Help,
         "model" => Command::Model(arg),
         "provider" => Command::Provider,
+        "login" => Command::Login,
+        "config" => Command::Config,
+        "doctor" => Command::Doctor,
         "effort" => Command::Effort(arg),
         "undo" => Command::Undo,
         "init" => Command::Init,
@@ -322,33 +331,18 @@ pub fn hits(q: &str, s: &str) -> Vec<usize> {
 
 /// The palette's sections when nothing is typed, each with its commands in order.
 pub const GROUPS: &[(&str, &[&str])] = &[
+    ("common", &["model", "permissions", "resume", "plan", "compact", "clear", "help", "effort"]),
     (
         "session",
-        &[
-            "clear",
-            "resume",
-            "fork",
-            "tree",
-            "rewind",
-            "undo",
-            "undelete",
-            "rename",
-            "msg",
-            "export",
-            "compact",
-            "goal",
-            "plan",
-            "shared-memory",
-            "queue",
-        ],
+        &["fork", "tree", "rewind", "undo", "undelete", "rename", "msg", "export", "goal", "shared-memory", "queue"],
     ),
-    ("model", &["model", "provider", "effort", "pricing", "prompt", "budget"]),
+    ("model", &["provider", "login", "pricing", "prompt", "budget"]),
     (
         "context and tools",
         &["context", "context-live", "cost", "tools", "jobs", "panel", "todo", "diff", "init", "status"],
     ),
-    ("settings", &["permissions", "yolo", "theme", "mouse", "timestamps", "vim", "keys"]),
-    ("nexo", &["help", "copy", "quit"]),
+    ("settings", &["yolo", "theme", "mouse", "timestamps", "vim", "keys", "config"]),
+    ("nexo", &["doctor", "copy", "quit"]),
 ];
 
 /// Every command once, by group: `(group, table index)`. A command no group
@@ -507,6 +501,9 @@ mod tests {
         assert_eq!(parse("/new"), Some(Command::Clear));
         assert_eq!(parse("/?"), Some(Command::Help));
         assert_eq!(parse("/nope"), Some(Command::Unknown("nope".into())));
+        assert_eq!(parse("/login"), Some(Command::Login));
+        assert_eq!(parse("/settings"), Some(Command::Config));
+        assert_eq!(parse("/doctor"), Some(Command::Doctor));
         assert_eq!(parse("hello"), None);
         assert!(names().contains(&"compact".to_string()));
         assert!(names().contains(&"resume".to_string()) && !names().contains(&"sessions".to_string()));
@@ -533,7 +530,10 @@ mod tests {
         assert_eq!(rank("cmpct")[0].hits, vec![0, 2, 3, 5, 6], "the letters it matched");
         assert_eq!(rank("ses")[0].hits, vec![0, 1, 2], "in the alias it matched through");
         let names: Vec<_> = rank("c").iter().map(|r| COMMANDS[r.index].name).collect();
-        assert!(names.starts_with(&["compact", "clear", "cost", "context", "copy"]), "{names:?}");
+        assert!(
+            names.starts_with(&["compact", "clear"]) && ["cost", "context", "copy"].iter().all(|n| names.contains(n)),
+            "{names:?}"
+        );
     }
 
     #[test]

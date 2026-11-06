@@ -3096,13 +3096,23 @@ fn status_text(st: &State) -> String {
             std::env::consts::OS,
             if nexo_core::paths::is_root() { " · running as root" } else { "" }
         ),
-        format!("shell        {} ({})", nexo_core::shell::shell().kind, nexo_core::shell::shell().program.display()),
+        {
+            let sh = nexo_core::shell::shell();
+            let program = sh.program.display().to_string();
+            // `sh (sh)` says the same thing twice
+            if program == sh.kind {
+                format!("shell        {program}")
+            } else {
+                format!("shell        {} ({program})", sh.kind)
+            }
+        },
         format!("model        {provider}/{model} · effort {effort}"),
         format!("endpoint     {} ({})", cfg.base_url, cfg.protocol),
         format!("key          {key}"),
         {
-            let (label, why) = crate::context::describe(st.policy.as_ref(), st.last_view.0, st.last_view.1);
-            format!("context      {label} · {} messages in memory\n             {why}", st.history.len())
+            // the long reason for the label is /context's to give
+            let (label, _why) = crate::context::describe(st.policy.as_ref(), st.last_view.0, st.last_view.1);
+            format!("context      {label} · {} messages in memory (/context says why)", st.history.len())
         },
         format!("permissions  {}", st.perm.mode.as_str()),
         format!("session      {} ({})", st.session.id(), short(st.session.path())),

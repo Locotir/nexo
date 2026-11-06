@@ -1447,7 +1447,7 @@ commands, which you should check by running them), the conventions the code foll
 Keep it under 150 lines; prefer facts you verified to guesses.";
 
 /// How long a flash message stays; it fades out over its last `STATUS_FADE_MS`.
-pub const STATUS_MS: u64 = 4000;
+pub const STATUS_MS: u64 = 2500;
 pub const STATUS_FADE_MS: u64 = 900;
 /// An error stays longer: it is not a confirmation to miss.
 pub const STATUS_ERR_MS: u64 = 8000;
@@ -1472,6 +1472,22 @@ impl App {
         self.status_level = level;
         self.status_toasted = false;
         self.dirty = true;
+    }
+
+    /// Drops the flash if it is a progress text ("exporting…", "compacting…").
+    pub fn clear_progress_flash(&mut self) {
+        if self.status.as_ref().is_some_and(|(t, _)| t.ends_with('…')) {
+            self.status = None;
+        }
+    }
+
+    /// Drops a flash whose time is up, even when no tick came to do it.
+    pub fn expire_status(&mut self) {
+        if let Some((_, t)) = &self.status {
+            if self.now().saturating_duration_since(*t).as_millis() >= status_life(self.status_level) as u128 {
+                self.status = None;
+            }
+        }
     }
 
     /// A newer nexo is on `main`: a card in the conversation, a toast, and a badge that stays
@@ -1847,6 +1863,16 @@ impl App {
 
     pub fn handle_agent(&mut self, ev: AgentEvent) {
         self.dirty = true;
+        // the work a "…" flash announced is over (or told its result in the transcript): drop it
+        if matches!(
+            ev,
+            AgentEvent::Notice { .. }
+                | AgentEvent::Compacted { .. }
+                | AgentEvent::TurnEnd { .. }
+                | AgentEvent::HistoryCleared
+        ) {
+            self.clear_progress_flash();
+        }
         self.nexo_src.observe(&ev, nexo_agent::supervise::run::now_secs());
         match ev {
             AgentEvent::Ready { session_id, provider, model, cwd, permission_mode } => {
@@ -3465,6 +3491,12 @@ impl App {
                 self.send(AgentCommand::SetModel { provider, model });
             }
             Command::Model(None) | Command::Provider => self.open_setup(),
+            Command::Login => {
+                self.open_setup();
+                self.flash("pick the provider to sign in or add its key");
+            }
+            Command::Config => self.show_config(),
+            Command::Doctor => self.run_doctor(),
             Command::Effort(Some(level)) => {
                 let level = level.trim().to_ascii_lowercase();
                 let effort = (level != "default" && level != "reset").then_some(level);
@@ -3550,6 +3582,9 @@ impl App {
                 self.modal =
                     Some(Modal::Picker(Picker::new(PickKind::PermissionMode, "Permission mode", items, Some(&cur))));
             }
+            Command::Compact if self.user_messages.is_empty() => {
+                self.notice(Level::Info, "nothing to compact");
+            }
             Command::Compact => {
                 self.send(AgentCommand::Compact);
                 self.flash("compacting…");
@@ -3563,6 +3598,10 @@ impl App {
             Command::Tree => self.send(AgentCommand::ShowTree),
             Command::Undo => self.undo(),
             Command::Init => {
+                // the session is named for the command, not for the long prompt it sends
+                if self.session_title.is_empty() {
+                    self.send(AgentCommand::Rename { title: "/init".into() });
+                }
                 self.input.set_text(INIT_PROMPT);
                 self.submit();
             }
@@ -3708,10 +3747,47 @@ impl App {
             }
             Command::Copy(what) => self.copy_last(what.as_deref() == Some("code")),
             Command::Quit => self.quit(),
-            Command::Unknown(name) => self.notice(Level::Warn, format!("unknown command /{name} (try /help)")),
+            Command::Unknown(name) => {
+                let hint = match crate::commands::closest(&name) {
+                    Some(s) => format!("did you mean /{s}? (/help lists the commands)"),
+                    None => "try /help".to_string(),
+                };
+                self.notice(Level::Warn, format!("unknown command /{name} ({hint})"));
+            }
             Command::BadArgument(cmd, arg) => self.notice(Level::Warn, format!("/{cmd}: cannot read '{arg}'")),
         }
         self.dirty = true;
+    }
+
+    /// `/config`: where the configuration files are.
+    fn show_config(&mut self) {
+        let user = nexo_core::paths::user_config_file();
+        let mut text =
+            format!("user config: {}{}", user.display(), if user.exists() { "" } else { " (not created yet)" });
+        if let Some(p) = nexo_core::paths::project_config_file(&self.cwd) {
+            text.push_str(&format!("\nproject config: {}", p.display()));
+        }
+        text.push_str("\n/theme, /vim, /permissions and /model save their choice there; edit it by hand for the rest");
+        self.notice(Level::Info, text);
+    }
+
+    /// `/doctor`: the checks of `nexo doctor --offline`, run by this same program and shown here.
+    /// The live call to the provider stays with the shell command.
+    fn run_doctor(&mut self) {
+        let exe = std::env::current_exe().ok().filter(|e| {
+            e.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s == "nexo" || s.starts_with("nexo-cli"))
+        });
+        let out = exe.and_then(|e| {
+            std::process::Command::new(e).args(["doctor", "--offline"]).current_dir(&self.cwd).output().ok()
+        });
+        match out {
+            Some(o) => {
+                let mut text = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
+                text.push_str("\n(`nexo doctor` in a shell also calls the provider)");
+                self.notice(if o.status.success() { Level::Info } else { Level::Warn }, text);
+            }
+            None => self.notice(Level::Warn, "/doctor: run `nexo doctor` in a shell"),
+        }
     }
 
     /// `/model`: the configured models to switch to, and the guided setup of a new one.
@@ -3999,6 +4075,10 @@ impl App {
             return;
         }
         if self.palette.take().is_some() {
+            // a lone "/" was only the way into the menu: leave nothing behind
+            if self.input.text().trim() == "/" {
+                self.input.clear();
+            }
             self.dirty = true;
             return;
         }
@@ -6087,6 +6167,8 @@ mod tests {
         assert_eq!(a.input.text(), "make it blue", "the request comes back to the editor");
         a.input.set_text("/init");
         a.submit();
+        // the session is named after the command first
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::Rename { .. })));
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text.contains("AGENTS.md")));
         a.input.set_text("/status");
         a.submit();

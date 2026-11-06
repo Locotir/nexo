@@ -105,6 +105,14 @@ pub fn handle(app: &mut App, ev: Event) {
                     st.paste(&s);
                     app.dirty = true;
                 }
+                // the filter of a picker is one line: line breaks become spaces, the words stay apart
+                Some(m @ crate::modal::Modal::Picker(_)) => {
+                    for c in s.chars().filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t')) {
+                        let c = if c.is_control() { ' ' } else { c };
+                        m.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+                    }
+                    app.dirty = true;
+                }
                 Some(_) => {}
             }
         }

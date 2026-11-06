@@ -227,3 +227,25 @@ fn nothing_set_up_says_so_in_the_words_of_doctor_and_names_no_provider() {
     assert!(err.contains("no provider chosen and no key found"), "{err}");
     assert!(!err.to_lowercase().contains("anthropic"), "{err}");
 }
+
+#[test]
+fn a_bad_theme_or_permission_mode_fails_early_and_lists_the_values() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["--theme", "foo", "-p", "hi"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("unknown theme") && err.contains("dark"), "{err}");
+    let out = nexo(d.path(), &["--permission-mode", "bad", "-p", "hi"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("read-only"), "{err}");
+}
+
+#[test]
+fn use_refuses_an_unknown_model_unless_forced() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["use", "mock", "nope"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("--force"), "{err}");
+    let out = nexo(d.path(), &["use", "mock", "nope", "--force"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}

@@ -186,9 +186,8 @@ fn multiline_second_line() {
     type_str(&mut a, "first line here");
     event::key(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
     type_str(&mut a, "see configu");
-    assert_eq!(a.complete_suffix().as_deref(), Some("ración"));
-    press(&mut a, KeyCode::Right);
-    assert_eq!(a.input.full_text(), "first line here\nsee configuración");
+    // no ghost in a draft of several lines: it would read as part of what was written
+    assert_eq!(a.complete_suffix(), None);
 }
 
 #[test]

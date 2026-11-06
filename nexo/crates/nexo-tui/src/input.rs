@@ -28,6 +28,8 @@ pub struct Input {
     history_file: Option<std::path::PathBuf>,
     /// Long pastes, shown in the draft as `[Pasted text #n +L lines]` and sent whole.
     pastes: Vec<(String, String)>,
+    /// The last change to the draft was a paste: no ghost completion until the next key.
+    after_paste: bool,
     /// The text width of the box at the last draw (0: not drawn yet); ↑ ↓ Home End follow its rows.
     pub wrap_width: usize,
     /// Where the last press in the box was, and whether the pointer then reached another cell (or the click was a double / triple one): only then is there a selection to copy.
@@ -169,6 +171,7 @@ impl Input {
             placeholder: placeholder.to_string(),
             history_file: None,
             pastes: Vec::new(),
+            after_paste: false,
             wrap_width: 0,
             press: None,
             dragged: false,
@@ -310,6 +313,7 @@ impl Input {
     /// Pasted text goes in as typed; a long one is folded to `[Pasted text #n +L lines]`,
     /// which [`Input::full_text`] puts back.
     pub fn insert_paste(&mut self, text: &str) {
+        self.after_paste = true;
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         // escapes and other control characters out, tabs as spaces: the box draws the text as is
         let text = crate::render::wrap::clean(&text).into_owned();
@@ -587,6 +591,7 @@ impl Input {
 
     /// Handles a key the editor owns.
     pub fn key(&mut self, key: KeyEvent) -> Edit {
+        self.after_paste = false;
         if self.vim == Some(VimMode::Normal) {
             return self.vim_normal(key);
         }
@@ -598,9 +603,11 @@ impl Input {
                 self.editor.insert_newline();
                 return Edit::Changed;
             }
-            // readline: Ctrl+U deletes from the cursor back to the start of the line
+            // Ctrl+U clears the whole draft (as in Claude Code); it stays in the undo history
             KeyCode::Char('u') if ctrl => {
-                self.editor.delete_line_by_head();
+                self.editor.cancel_selection();
+                self.editor.select_all();
+                self.editor.cut();
                 self.hist = None;
                 return Edit::Changed;
             }
@@ -660,12 +667,20 @@ impl Input {
     /// identifier) that ends at the cursor, when the cursor is at its end. None in vim's normal
     /// mode, with a selection, inside the first word of a command, or inside a paste chip.
     pub fn word_before_cursor(&self) -> Option<String> {
-        if self.vim == Some(VimMode::Normal) || self.editor.selection_range().is_some() {
+        if self.vim == Some(VimMode::Normal)
+            || self.editor.selection_range().is_some()
+            || self.after_paste
+            || self.editor.lines().len() > 1
+        {
             return None;
         }
         let (row, col) = self.editor.cursor();
         let chars: Vec<char> = self.editor.lines().get(row)?.chars().collect();
         let col = col.min(chars.len());
+        // the ghost is only for the end of the draft
+        if col < chars.len() {
+            return None;
+        }
         let unit = |c: char| c.is_alphanumeric() || "_-./\\:@~+%#=?&".contains(c);
         if chars.get(col).is_some_and(|c| unit(*c)) {
             return None;

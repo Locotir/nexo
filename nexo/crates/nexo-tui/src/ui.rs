@@ -1459,6 +1459,7 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
             Some(Modal::Question(_)) => " ↑↓ choose · 1-9 pick · Enter send · PgUp/PgDn scroll · Esc close".to_string(),
             Some(Modal::Picker(_)) => " type to filter · ↑↓ choose · Enter pick · Esc close".to_string(),
             Some(Modal::Setup(s)) => s.hints().to_string(),
+            Some(Modal::Help { .. }) => " ↑↓ PgUp/PgDn Home/End scroll · Esc close".to_string(),
             _ => " Esc close".to_string(),
         }
     } else if let Some(p) = &app.palette {
@@ -1912,7 +1913,7 @@ fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
         return;
     }
     let is_files = p.kind == PaletteKind::Files;
-    let tw = transcript.width.min(if is_files { 160 } else { 100 });
+    let tw = transcript.width.min(if is_files { 160 } else { 140 });
     // the file picker shows the head of the selected file beside the list when there is room
     let preview_w = if is_files && tw >= 90 && !p.is_empty() { tw / 2 } else { 0 };
     let list_w = tw - preview_w;
@@ -2837,7 +2838,13 @@ fn paint_complete(f: &mut Frame, app: &App, editor: Rect) {
     } else {
         s
     };
-    f.buffer_mut().set_stringn(x, editor.y + (crow - top) as u16, &shown, room, app.theme.dim());
+    f.buffer_mut().set_stringn(
+        x,
+        editor.y + (crow - top) as u16,
+        &shown,
+        room,
+        app.theme.dim().add_modifier(Modifier::ITALIC),
+    );
 }
 
 fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {

@@ -33,7 +33,7 @@ pub struct Args {
     #[arg(short = 'c', long = "continue")]
     pub continue_: bool,
     /// ask | accept-edits | plan | auto | read-only
-    #[arg(long, value_name = "MODE", env = "NEXO_PERMISSION_MODE")]
+    #[arg(long, value_name = "MODE", env = "NEXO_PERMISSION_MODE", value_parser = permission_mode_arg)]
     pub permission_mode: Option<String>,
     /// Never ask for permission (the same as --permission-mode auto).
     #[arg(long, conflicts_with = "permission_mode")]
@@ -45,7 +45,7 @@ pub struct Args {
     #[arg(long, value_name = "SPEC", env = "NEXO_CURATOR_SPEC")]
     pub curator_spec: Option<String>,
     /// Theme: dark, nexo, light, mono, catppuccin-mocha, gruvbox, nord, dracula, solarized-dark, tokyo-night
-    #[arg(long)]
+    #[arg(long, value_parser = theme_arg)]
     pub theme: Option<String>,
     /// Disable mouse capture (lets the terminal select text natively).
     #[arg(long)]
@@ -63,6 +63,24 @@ pub struct Args {
     pub cmd: Option<Cmd>,
 }
 
+/// `--permission-mode`: refused at once, with the values that work.
+fn permission_mode_arg(s: &str) -> Result<String, String> {
+    match PermissionMode::parse(s) {
+        Some(_) => Ok(s.to_string()),
+        None => Err(format!("unknown permission mode {s:?}; use one of: ask, accept-edits, plan, auto, read-only")),
+    }
+}
+
+/// `--theme`: refused at once, with the names that work.
+fn theme_arg(s: &str) -> Result<String, String> {
+    // "auto" is the config's own value for the terminal's background
+    if s == "auto" || nexo_tui::theme::Theme::by_name(s).is_some() {
+        Ok(s.to_string())
+    } else {
+        Err(format!("unknown theme {s:?}; use one of: auto, {}", nexo_tui::theme::NAMES.join(", ")))
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// List the providers in use and where each one's key comes from.
@@ -76,6 +94,7 @@ pub enum Cmd {
     },
     /// List the models of a provider with their limits and prices (configured, catalogue, and the vendor's list when reachable).
     Models {
+        /// Provider name (default: the one in use).
         provider: Option<String>,
         /// Fetch the models.dev catalogue again before listing.
         #[arg(long)]
@@ -90,7 +109,15 @@ pub enum Cmd {
         what: AuthCmd,
     },
     /// Make a provider (and model) the default, in the user configuration.
-    Use { provider: String, model: Option<String> },
+    Use {
+        /// Provider name (`nexo providers --all` lists them).
+        provider: String,
+        /// Model name (default: the provider's own default). A name nexo does not know is refused.
+        model: Option<String>,
+        /// Keep a model name that is not in the known list.
+        #[arg(long)]
+        force: bool,
+    },
     /// Check the setup: files, the provider and model a run would use, the key, and a live call.
     Doctor {
         /// Skip the live call.
@@ -123,6 +150,7 @@ pub enum Cmd {
         #[command(subcommand)]
         what: Option<ConfigCmd>,
     },
+    #[command(hide = true)]
     /// Print the briefing a sub-agent would get for a task from a conversation.
     Brief {
         /// A session id, or a file of messages (a JSON array, or one message per line).
@@ -145,6 +173,7 @@ pub enum Cmd {
     },
     /// Install the latest nexo from GitHub with cargo (`--check`: only say whether there is one).
     Update {
+        /// Only say whether a newer version exists; install nothing.
         #[arg(long)]
         check: bool,
     },
@@ -153,12 +182,14 @@ pub enum Cmd {
         #[command(subcommand)]
         what: Option<SuperviseCmd>,
     },
+    #[command(hide = true)]
     /// Measure the agent on the benchmark tasks with each context policy (see crates/nexo-bench/README.md).
     Bench(Box<BenchArgs>),
 }
 
 #[derive(Subcommand, Debug)]
 pub enum SuperviseCmd {
+    #[command(hide = true)]
     /// What a session's hook runs: reads the hook input on stdin, prints the answer (`{}` when no supervisor runs).
     Hook {
         #[arg(value_parser = ["stop", "permission", "notify"])]
@@ -464,7 +495,9 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         }
         Some(Cmd::Auth { what: AuthCmd::List }) => return Ok(crate::account::list_cmd()),
         Some(Cmd::Auth { what: AuthCmd::Logout { provider } }) => return crate::account::logout_cmd(&config, provider),
-        Some(Cmd::Use { provider, model }) => return crate::account::use_cmd(&mut config, provider, model.as_deref()),
+        Some(Cmd::Use { provider, model, force }) => {
+            return crate::account::use_cmd(&mut config, provider, model.as_deref(), *force)
+        }
         Some(Cmd::Doctor { offline }) => {
             if let Some(p) = &args.provider {
                 config.provider = Some(p.clone());

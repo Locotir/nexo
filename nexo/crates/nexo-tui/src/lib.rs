@@ -138,6 +138,7 @@ pub fn draw_frame<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyh
 /// the terminal cannot show them. (The tests use `draw_frame`: their captures do not depend on
 /// the environment.)
 pub fn draw_screen<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()> {
+    app.expire_status();
     if app.force_clear {
         terminal.clear()?;
         app.force_clear = false;

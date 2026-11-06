@@ -4,20 +4,20 @@
                                                                                │
    ────────────────────────────────────────────────────────────────────── rust │
    ▎ fn main() {}                                                              │
-                                                                               │
-   ✓ read tests/a.rs · 2 lines  12ms ▸                                         │
-   ✓ edit src/lib.rs · +1 −1  3ms                                              ┃
-   │ @@ -1,1 +1,1 @@                                                           ┃
  recent ───────────────────────────────────────────────────────────────────────
  /fork                               continue in a new session copied from an …
  /tree                               the sessions as a tree of forks; jump to …
  /resume         [session]           pick a session to resume; with an id or a…
- session ──────────────────────────────────────────────────────────────────────
+ common ───────────────────────────────────────────────────────────────────────
+ /model          [name]              switch model, or set one up step by step …
+ /permissions    [ask|accept-edits…  set the permission mode
+ /plan           [text|off]          plan mode: reads only, then a plan to app…
+ /compact                            replace the history with a summary
  /clear                              start a new session here
- /rewind                             go back to before an earlier message, fil…
- /undo                               undo the last request: its messages and t…
- /undelete       [id]                bring back a deleted session (the last on…
-                                 1/41                                 34 more ↓
+ /help                               keys and commands
+ /effort         [level|default]     how much the model reasons, among the lev…
+ session ──────────────────────────────────────────────────────────────────────
+                                 1/44                                 34 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close

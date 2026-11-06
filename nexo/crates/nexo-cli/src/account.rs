@@ -247,7 +247,7 @@ pub fn logout_cmd(cfg: &Config, name: &str) -> anyhow::Result<i32> {
 }
 
 /// `nexo use <provider> [model]`: written to the user's configuration.
-pub fn use_cmd(cfg: &mut Config, name: &str, model: Option<&str>) -> anyhow::Result<i32> {
+pub fn use_cmd(cfg: &mut Config, name: &str, model: Option<&str>, force: bool) -> anyhow::Result<i32> {
     if !adopt(cfg, name) {
         anyhow::bail!("unknown provider {name:?}; `nexo providers --all` lists them");
     }
@@ -257,6 +257,13 @@ pub fn use_cmd(cfg: &mut Config, name: &str, model: Option<&str>) -> anyhow::Res
         .or_else(|| p.default_model.clone())
         .or_else(|| p.models.first().cloned())
         .ok_or_else(|| anyhow::anyhow!("{name} lists no model; give one: nexo use {name} <model>"))?;
+    // a name no list knows is most likely a typo: say so, and keep it only when asked to
+    let known = known_models(name, p);
+    if !force && !known.is_empty() && !known.contains(&model) {
+        anyhow::bail!(
+            "{model:?} is not a model of {name} that nexo knows; `nexo models {name}` lists them (add --force to use it anyway)"
+        );
+    }
     let file = nexo_core::paths::user_config_file();
     nexo_agent::config_edit::set(&file, &[], "provider", Value::from(name))?;
     nexo_agent::config_edit::set(&file, &[], "model", Value::from(model.as_str()))?;
@@ -265,6 +272,16 @@ pub fn use_cmd(cfg: &mut Config, name: &str, model: Option<&str>) -> anyhow::Res
         println!("it has no key yet: {}", how_to_unlock(name, p));
     }
     Ok(0)
+}
+
+/// The models nexo knows without asking the vendor: the configured ones and the cached catalogue's.
+fn known_models(name: &str, p: &ProviderConfig) -> Vec<String> {
+    let mut out: Vec<String> = p.models.clone();
+    out.extend(p.default_model.clone());
+    if let Some(c) = nexo_providers::catalogue::cached() {
+        out.extend(c.model_names(name));
+    }
+    out
 }
 
 /// `nexo doctor [--offline]`: the configuration files, the provider and
@@ -284,16 +301,26 @@ pub async fn doctor(cwd: &std::path::Path, cfg: &Config, offline: bool) -> anyho
         println!("{} {n}", mark(false));
     }
 
-    let ready: Vec<&String> = cfg.providers.iter().filter(|(n, p)| p.ready(n)).map(|(n, _)| n).collect();
+    // a server that needs no key is "ready" only on paper: whether it runs is not checked here
+    let ready: Vec<&String> =
+        cfg.providers.iter().filter(|(n, p)| p.needs_key() && p.ready(n)).map(|(n, _)| n).collect();
+    let local: Vec<&String> = cfg.providers.iter().filter(|(_, p)| !p.needs_key()).map(|(n, _)| n).collect();
+    let chose_local = cfg.provider.as_ref().is_some_and(|n| local.contains(&n));
     println!(
         "{} ready providers  {}",
-        mark(!ready.is_empty()),
+        mark(!ready.is_empty() || chose_local),
         if ready.is_empty() {
             "none".to_string()
         } else {
             ready.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
         }
     );
+    if !local.is_empty() {
+        println!(
+            "     local servers (not checked): {}",
+            local.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        );
+    }
     let none = || {
         println!("FIX  no provider chosen and no key found: set one (e.g. {KEY_IN_ENV})");
         println!("     or `nexo auth login <provider>`, then `nexo use <provider>`; `nexo guide` explains every way");

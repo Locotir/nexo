@@ -288,8 +288,19 @@ impl From<SetupOut> for ModalOut {
     }
 }
 
+/// Rows one PageUp or PageDown moves the help.
+const HELP_PAGE: usize = 8;
+
 /// The keys, in groups, each line verb first (docs/READABLE-TEXT.md).
 pub const HELP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Stop",
+        &[
+            ("Esc", "stop the turn · again: clear the draft or close"),
+            ("Ctrl+C", "stop · twice in 2 s: quit"),
+            ("Esc Esc", "rewind to an earlier message (files too; empty draft, idle)"),
+        ],
+    ),
     (
         "Write",
         &[
@@ -301,6 +312,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Z / Alt+Z", "undo / redo"),
             ("Ctrl+A / E", "go to line start / end"),
             ("Ctrl+K / W", "delete to the end / the word before"),
+            ("Ctrl+U", "clear the whole draft (Ctrl+Z brings it back)"),
             ("Alt+B / F", "move one word back / forward"),
             ("Ctrl+V", "paste text, or attach a copied image"),
             ("Ctrl+G", "write in $EDITOR"),
@@ -317,14 +329,6 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+B", "show the side panel: goal, todo, changed files"),
             ("F4", "open or close the side diff panel (selected edit, else the latest)"),
             ("?  / F1", "show this help (empty draft)"),
-        ],
-    ),
-    (
-        "Stop",
-        &[
-            ("Esc", "stop the turn · again: clear the draft or close"),
-            ("Ctrl+C", "stop · twice in 2 s: quit"),
-            ("Esc Esc", "rewind to an earlier message (files too; empty draft, idle)"),
         ],
     ),
     (
@@ -549,6 +553,23 @@ impl Modal {
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     *scroll += 1;
+                    ModalOut::Nothing
+                }
+                KeyCode::PageUp => {
+                    *scroll = scroll.saturating_sub(HELP_PAGE);
+                    ModalOut::Nothing
+                }
+                KeyCode::PageDown => {
+                    *scroll += HELP_PAGE;
+                    ModalOut::Nothing
+                }
+                KeyCode::Home => {
+                    *scroll = 0;
+                    ModalOut::Nothing
+                }
+                // the painter cuts the offset to the end
+                KeyCode::End => {
+                    *scroll = usize::MAX / 2;
                     ModalOut::Nothing
                 }
                 _ => ModalOut::Nothing,
