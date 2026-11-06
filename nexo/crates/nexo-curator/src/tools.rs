@@ -101,6 +101,35 @@ pub fn partial_read(name: &str, args: Option<&Value>) -> bool {
     args.and_then(Value::as_object).is_some_and(|a| RANGE_KEYS.iter().any(|k| a.get(*k).is_some_and(|v| !v.is_null())))
 }
 
+/// The lines a read call asks for, from 1 (`u64::MAX`: to the end of the file), whatever the tool calls
+/// them: `offset` and `limit` (a first line and a count), a first and a last line, or a `view_range` pair. A
+/// call that gives none reads the whole file.
+pub fn read_range(args: Option<&Value>) -> (u64, u64) {
+    const WHOLE: (u64, u64) = (1, u64::MAX);
+    let Some(a) = args.and_then(Value::as_object) else { return WHOLE };
+    let line = |v: Option<&Value>| v.and_then(Value::as_i64).filter(|&x| x > 0).map(|x| x as u64);
+    let num = |k: &str| line(a.get(k));
+    if let Some(Value::Array(v)) = a.get("view_range") {
+        let s = line(v.first()).unwrap_or(1);
+        return (s, line(v.get(1)).unwrap_or(u64::MAX).max(s));
+    }
+    if let Some(limit) = num("limit") {
+        let s = num("offset").unwrap_or(1);
+        return (s, s.saturating_add(limit - 1));
+    }
+    if let Some(s) = num("offset") {
+        return (s, u64::MAX);
+    }
+    for (first, last) in [("start_line", "end_line"), ("line_start", "line_end"), ("start", "end")] {
+        let (s, e) = (num(first), num(last));
+        if s.is_some() || e.is_some() {
+            let s = s.unwrap_or(1);
+            return (s, e.unwrap_or(u64::MAX).max(s));
+        }
+    }
+    WHOLE
+}
+
 /// Programs that print a file, a part of it, the lines of it that match or the names of files, as they are on
 /// disk.
 const PRINTERS: [&str; 15] =
@@ -465,6 +494,22 @@ mod tests {
         ] {
             assert!(!prints_files(process), "{process}");
         }
+    }
+
+    #[test]
+    fn the_lines_a_read_asks_for_are_read_whatever_the_tool_calls_them() {
+        assert_eq!(read_range(Some(&json!({"path": "a.rs"}))), (1, u64::MAX));
+        assert_eq!(read_range(None), (1, u64::MAX));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "offset": 10, "limit": 5}))), (10, 14));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "limit": 40}))), (1, 40));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "offset": 7}))), (7, u64::MAX));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "start_line": 3, "end_line": 9}))), (3, 9));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "end_line": 9}))), (1, 9));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "view_range": [20, 30]}))), (20, 30));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "view_range": [20, -1]}))), (20, u64::MAX));
+        // a last line before the first, or a line of 0, reads as the first
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "start": 8, "end": 2}))), (8, 8));
+        assert_eq!(read_range(Some(&json!({"path": "a.rs", "offset": 0, "limit": 0}))), (1, u64::MAX));
     }
 
     #[test]

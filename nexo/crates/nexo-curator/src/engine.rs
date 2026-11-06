@@ -19,7 +19,9 @@ use crate::msg::{blocks, get_str, key_of, py_str, text_block, text_of};
 use crate::py::{self, bisect_left, Re};
 use crate::rules::{clip, rules_in, Rules};
 use crate::telegraph::compress;
-use crate::tools::{classify, edit_size, full_write, heredoc_writes, partial_read, prints_files, shell_writes, Kind};
+use crate::tools::{
+    classify, edit_size, full_write, heredoc_writes, partial_read, prints_files, read_range, shell_writes, Kind,
+};
 
 static TEST_COMMAND: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
@@ -84,6 +86,12 @@ pub const RECALL_TOOL: &str = "recall";
 const REPLACED_ARGS: &[&str] = &["old_string", "old_str", "old_text"];
 /// Output messages a closed request names by their `m#####` number before the rest are counted.
 const RECALL_NAMED: usize = 6;
+/// The latest calls for the same file or command `asked_back` looks through for the copy a call asks for
+/// again, and the latest edits it looks through for one that changed the file since: a copy further back
+/// is let be, and one with more edits after it is taken as changed. Both keep a request's work bounded
+/// however long the session.
+const ASKED_CALLS: usize = 32;
+const ASKED_EDITS: usize = 256;
 
 /// The text of a block that may carry note lines: a text block, or the input of a `note` tool call.
 fn note_text(b: &Value) -> Option<String> {
@@ -198,7 +206,9 @@ pub struct Params {
     pub mission: i64,
     /// With `close`, a step brought back leaves again only once its rent since it went idle pays for
     /// bringing it back once more: it was needed after it left, so the guess of the calls to come does not
-    /// count for it (0: off).
+    /// count for it (0: off). A step the agent brought back by itself counts as brought back too: a
+    /// `recall` of its output while the view left it out, or the same read or command made again then
+    /// (`asked_back`).
     pub sticky: i64,
     /// With `close`, the outputs of the request still open go idle when no later agent message draws on
     /// them (`live_drop`), and leave when that pays (0: off).
@@ -546,6 +556,15 @@ pub struct Engine {
     requests: Vec<FxHashSet<Sym>>,
     requests_df: FxHashMap<Sym, usize>,
     step_df: FxHashMap<Sym, usize>,
+    /// The step each message of the answered requests belongs to (an index into `steps`).
+    step_at: FxHashMap<usize, usize>,
+    /// The calls that read a file, by the file (`file_key`), and the commands that print files, by the
+    /// command: each call's unit and the lines it asked for, oldest first. A call that asks again for what an
+    /// earlier one gave, while that output is out of the view, is the agent bringing it back (`asked_back`).
+    reads_made: FxHashMap<String, Vec<ReadMade>>,
+    /// How many times the agent brought each message back while no step held it yet (its request still
+    /// open): the step made of it starts with the count (`Step::back`).
+    brought: FxHashMap<usize, u32>,
     /// The edits and writes of files, by a tool or a shell command: (path, message, call id), and whether
     /// each call's result came back without an error (`Params.stale`).
     edits: Vec<(String, usize, String)>,
@@ -571,6 +590,10 @@ pub struct Engine {
 }
 
 type Proposal = (usize, usize, Vec<usize>, i64);
+
+/// A call that read a file, as `Engine::reads_made` keeps it: its unit and the lines it asked for (from 1,
+/// `u64::MAX` to the end), the whole file for a command.
+type ReadMade = (usize, (u64, u64));
 
 /// The last view sent on a topic (`Params.pockets`): (message, hash of it as sent), and when.
 struct Pocket {
@@ -666,7 +689,8 @@ struct Step {
     tokens: i64,
     /// The model call since which no request has used it (`None`: in use, or out).
     idle: Option<usize>,
-    /// How many times it was brought back.
+    /// How many times it was brought back: by the curator (`recall`, `named_keep`) or by the agent itself
+    /// (`asked_back`).
     back: u32,
 }
 
@@ -1005,6 +1029,9 @@ impl Engine {
             requests: Vec::new(),
             requests_df: FxHashMap::default(),
             step_df: FxHashMap::default(),
+            step_at: FxHashMap::default(),
+            reads_made: FxHashMap::default(),
+            brought: FxHashMap::default(),
             edits: Vec::new(),
             edit_ok: FxHashMap::default(),
             stale_gone: FxHashMap::default(),
@@ -1107,6 +1134,7 @@ impl Engine {
         self.raw_tokens += it;
         let new = self.fz.extend(&self.tr, &mut self.int);
         self.track_edits(new.clone());
+        self.asked_back(new.clone());
         if self.p.pin != 0 {
             for i in new.clone() {
                 let u = &self.tr.units[i];
@@ -2778,7 +2806,8 @@ impl Engine {
             } else if turned {
                 let text = self.step_text(i);
                 let s = &mut self.steps[i];
-                (s.out, s.at, s.tokens, s.idle, s.back) = (false, Some(last), est_str(&text), None, s.back + 1);
+                (s.out, s.at, s.tokens, s.idle, s.back) =
+                    (false, Some(last), est_str(&text), None, s.back.saturating_add(1));
                 back += 1;
             }
         }
@@ -2823,6 +2852,9 @@ impl Engine {
                 if self.p.close >= 2 {
                     unused.insert(self.steps.len());
                 }
+                for &m in &s.msgs {
+                    self.step_at.insert(m, self.steps.len());
+                }
                 self.steps.push(s);
             }
         }
@@ -2863,7 +2895,9 @@ impl Engine {
         for &w in &about {
             *self.step_df.entry(w).or_default() += 1;
         }
-        Step { a, msgs, read, about, aimed, did, out: false, at: None, tokens: 0, idle: None, back: 0 }
+        // what the agent brought back of it while its request was open counts as the step brought back
+        let back = msgs.iter().filter_map(|m| self.brought.remove(m)).fold(0u32, u32::saturating_add);
+        Step { a, msgs, read, about, aimed, did, out: false, at: None, tokens: 0, idle: None, back }
     }
 
     /// The outputs of the request still open (`Params.live`), all but those after the agent's latest
@@ -3095,6 +3129,10 @@ impl Engine {
                 (i, paid, size)
             })
             .collect();
+        // a step brought back whose rent since it went idle does not yet pay for bringing it back once more
+        // (`sticky`) stays whatever leaves around it: leaving it gains less than nothing, whether or not the
+        // view behind it is read again anyway. The rent of any other step is never below zero.
+        cands.retain(|c| c.1 >= 0.0);
         cands.sort_by_key(|&(i, _, _)| self.steps[i].place());
         let mut after = vec![0i64; sizes.len() + 1];
         for mi in (0..sizes.len()).rev() {
@@ -3151,12 +3189,124 @@ impl Engine {
         for &i in &back {
             let text = self.step_text(i);
             let s = &mut self.steps[i];
-            (s.out, s.at, s.tokens, s.idle, s.back) = (false, Some(last), est_str(&text), None, s.back + 1);
+            (s.out, s.at, s.tokens, s.idle, s.back) =
+                (false, Some(last), est_str(&text), None, s.back.saturating_add(1));
         }
         if !back.is_empty() {
             self.bump("recalled_steps", back.len() as i64);
         }
         !back.is_empty()
+    }
+
+    /// The calls that just arrived (units `new`) that ask again for what the view last sent had left out:
+    /// a `recall` of a message the view did not send, or sent with an output taken out whole; a read of a
+    /// file over lines an earlier read gave, or a command that prints files run again, when the latest such
+    /// output that came back without an error is out of the view and no edit of the file came after it.
+    /// Each is the agent bringing an output back by itself (`wanted_back`). Only the reply to the view last
+    /// sent is weighed: a message that comes with it further on (a history taken in at once) was not
+    /// written from that view.
+    fn asked_back(&mut self, new: std::ops::Range<usize>) {
+        for i in new {
+            let u = &self.tr.units[i];
+            if u.kind != UKind::Call {
+                continue;
+            }
+            let judged = u.msg > 0 && self.sent_vis.last() == Some(&(u.msg - 1));
+            let (msg, tool, b) = (u.msg, u.tool.clone(), self.tr.block(i));
+            if tool == RECALL_TOOL {
+                let name = b.get("input").and_then(|x| x.get("message")).and_then(Value::as_str).unwrap_or("");
+                if let Some(mi) = message_named(name).filter(|&mi| judged && mi < msg && self.left_out(mi, None)) {
+                    self.wanted_back(mi);
+                }
+                continue;
+            }
+            let Some(info) = self.fz.info.get(&i) else { continue };
+            let (key, lines, path) = match (info.kind, &info.path) {
+                (Kind::Read, Some(p)) => (file_key(p), read_range(b.get("input")), Some(p.clone())),
+                (Kind::Exec, _) => {
+                    let c = py::squash_ws(&command_of(b));
+                    if c.is_empty() || !prints_files(&c) {
+                        continue;
+                    }
+                    (format!("$ {c}"), (1, u64::MAX), None)
+                }
+                _ => continue,
+            };
+            if judged {
+                // the latest earlier call for some of those lines whose output came without an error
+                let copy = self
+                    .reads_made
+                    .get(&key)
+                    .into_iter()
+                    .flatten()
+                    .rev()
+                    .take(ASKED_CALLS)
+                    .filter(|&&(_, (a, b))| a <= lines.1 && lines.0 <= b)
+                    .find_map(|&(c, _)| self.result_of(c).filter(|&o| !self.fz.info.get(&o).is_some_and(|x| x.error)));
+                if let Some(o) = copy {
+                    let mi = self.tr.units[o].msg;
+                    if self.left_out(mi, Some(o)) && !self.changed_since(mi, &key, path.as_deref()) {
+                        self.wanted_back(mi);
+                    }
+                }
+            }
+            self.reads_made.entry(key).or_default().push((i, lines));
+        }
+    }
+
+    /// The output of call unit `c`: the tool result that answers it in the messages after it, if it came.
+    fn result_of(&self, c: usize) -> Option<usize> {
+        let id = key_of(self.tr.block(c).get("id"));
+        let mi = self.tr.units[c].msg;
+        (mi + 1..=mi + 3)
+            .flat_map(|m| self.fz.by_msg(m).iter().copied())
+            .find(|&r| self.tr.units[r].kind == UKind::Result && key_of(self.tr.block(r).get("tool_use_id")) == id)
+    }
+
+    /// Whether the view last sent left message `mi` out: it did not send it (a step brought back as text
+    /// is sent, in the message it came back at), or an output of it went whole: output `i`, or any of them
+    /// when none is given.
+    fn left_out(&self, mi: usize, i: Option<usize>) -> bool {
+        if self.step_at.get(&mi).is_some_and(|&k| !self.steps[k].out && self.steps[k].at.is_some()) {
+            return false;
+        }
+        if self.sent_vis.binary_search(&mi).is_err() {
+            return true;
+        }
+        let gone = |i: usize| self.dropped.get(&i).is_some_and(|d| d.len() == self.fz.chunks[i].len());
+        match i {
+            Some(i) => gone(i),
+            None => self.fz.by_msg(mi).iter().any(|&i| self.tr.units[i].kind == UKind::Result && gone(i)),
+        }
+    }
+
+    /// Whether an edit or a write that did not fail came after message `since` to a file `call` may have
+    /// printed: `path` when the call read one file, else a file the command names (its name is in the
+    /// command), or any file when it names none (`ls`, `grep x src/`). As `Params.stale` keeps the edits.
+    fn changed_since(&self, since: usize, call: &str, path: Option<&str>) -> bool {
+        let any = path.is_none() && files_in(call).is_empty();
+        let names = |p: &str| match path {
+            Some(f) => same_file(p, f),
+            None => any || call.contains(basename(p)),
+        };
+        let mut after = self.edits.iter().rev().take_while(|e| e.1 > since);
+        after.by_ref().take(ASKED_EDITS).any(|(p, _, id)| self.edit_ok.get(id) == Some(&true) && names(p))
+            || after.next().is_some()
+    }
+
+    /// The agent brought message `mi` back by itself while the view had left it out (`asked_back`): the
+    /// step that holds it was needed after it went, as one the curator brings back is, so it counts as
+    /// brought back once more (`Step::back`, which `Params.sticky` weighs). While no step holds it yet
+    /// (its request is still open), the step made of it starts with the count.
+    fn wanted_back(&mut self, mi: usize) {
+        match self.step_at.get(&mi).copied() {
+            Some(k) => self.steps[k].back = self.steps[k].back.saturating_add(1),
+            None => {
+                let n = self.brought.entry(mi).or_insert(0);
+                *n = n.saturating_add(1);
+            }
+        }
+        self.bump("agent_recalled_steps", 1);
     }
 
     /// Step `i` as text: what each call did, and each output whole.
@@ -4628,6 +4778,12 @@ fn command_of(b: &Value) -> String {
         Some(Value::Object(o)) => o.get("command").map_or(String::new(), py_str),
         _ => String::new(),
     }
+}
+
+/// The message (from 0) a `recall` call names: `m00042`, `m42` or `42` is the 42nd.
+fn message_named(name: &str) -> Option<usize> {
+    let n = name.trim().trim_start_matches(['m', 'M', '#']);
+    n.parse::<usize>().ok().filter(|&k| k > 0).map(|k| k - 1)
 }
 
 /// The topic words of a text: its words of three letters or more, in lower case, digits apart, and its
@@ -6144,6 +6300,198 @@ mod tests {
         let view = e.view();
         let (was, now) = (blocks(before[mi].get("content")).into_owned(), blocks(view[mi].get("content")).into_owned());
         assert!(now.len() > was.len() && now[..was.len()] == was[..], "{was:?}\n{now:?}");
+    }
+
+    /// The agent's `recall` of message `mi` (lines `from`-`to` of it, when given) and the answer the host
+    /// gives it, `text`.
+    fn recall_step(k: usize, mi: usize, part: Option<(usize, usize)>, text: &str) -> [Value; 2] {
+        let id = format!("recall_{k}");
+        let mut input = json!({"message": format!("m{:05}", mi + 1)});
+        let lines = match part {
+            Some((from, to)) => {
+                input["from"] = json!(from);
+                input["to"] = json!(to);
+                format!(", lines {from}-{to} of {}", text.lines().count())
+            }
+            None => String::new(),
+        };
+        let body: String = match part {
+            Some((from, to)) => text.lines().skip(from - 1).take(to + 1 - from).collect::<Vec<_>>().join("\n"),
+            None => text.to_string(),
+        };
+        [
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "recall", "input": input}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": id,
+                "content": format!("m{:05} (the output of bash){lines}, as it was:\n{body}", mi + 1)}]}),
+        ]
+    }
+
+    /// Feeds `msgs` to `e` as a host does: a view before each call of the model (after each message of the
+    /// person, a request or the results of a step).
+    fn feed(e: &mut Engine, msgs: &[Value]) {
+        for t in 1..=msgs.len() {
+            if msgs[t - 1]["role"] == "user" && t > e.tr.msgs.len() {
+                e.sync(&msgs[..t]);
+                e.view();
+            }
+        }
+    }
+
+    #[test]
+    fn the_agent_recalling_an_output_the_view_left_out_counts_its_step_as_brought_back() {
+        let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1";
+        let reply = format!("The largest is client {}.", word(529));
+        let mut e = Engine::new(params(spec).unwrap());
+        let mut msgs = sessions(&reply, None);
+        feed(&mut e, &msgs);
+        assert!(sent(&e.view()).contains("are left out of this context: bash cat report.txt"));
+        assert_eq!((e.steps[0].out, e.steps[0].back), (true, 0));
+        // the agent asks for the read back by its name (message 3): the step was needed after it left
+        msgs.extend(recall_step(1, 2, None, &report()));
+        feed(&mut e, &msgs);
+        assert_eq!(e.steps[0].back, 1);
+        assert_eq!(e.stats.get("agent_recalled_steps"), Some(&1));
+        // a recall of a message the view sends (the reply, the open request) is the agent's own doing
+        msgs.extend(recall_step(2, 3, None, &reply));
+        feed(&mut e, &msgs);
+        msgs.extend(recall_step(3, 4, None, "How many lines has notes.md?"));
+        feed(&mut e, &msgs);
+        assert_eq!((e.steps[0].back, e.stats.get("agent_recalled_steps")), (1, Some(&1)));
+        // the next request is on the report: the curator brings the read back; a recall of it then is the
+        // agent's own doing too, since its text is in the view
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "3 lines came back."}]}));
+        msgs.push(json!({"role": "user", "content": "And the smallest invoice total in the report?"}));
+        feed(&mut e, &msgs);
+        assert_eq!((e.steps[0].out, e.steps[0].at.is_some(), e.steps[0].back), (false, true, 2));
+        msgs.extend(recall_step(4, 2, None, &report()));
+        feed(&mut e, &msgs);
+        assert_eq!((e.steps[0].back, e.stats.get("agent_recalled_steps")), (2, Some(&1)));
+    }
+
+    #[test]
+    fn a_read_made_again_counts_as_brought_back_only_when_its_earlier_output_was_left_out() {
+        let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1";
+        let reply = format!("The largest is client {}.", word(529));
+        // the read of the first request left: the agent runs it again on the second
+        let mut e = Engine::new(params(spec).unwrap());
+        let mut msgs = sessions(&reply, None);
+        feed(&mut e, &msgs);
+        msgs.extend(step(2, "cat  report.txt", &report()));
+        feed(&mut e, &msgs);
+        assert_eq!((e.steps[0].back, e.stats.get("agent_recalled_steps")), (1, Some(&1)));
+        // the read stays in the view (no closing): running it again is the agent's own doing
+        let mut e = Engine::new(params("nudge=0;eoq=0;link=0").unwrap());
+        let mut msgs = sessions(&reply, None);
+        feed(&mut e, &msgs);
+        msgs.extend(step(2, "cat report.txt", &report()));
+        feed(&mut e, &msgs);
+        assert_eq!(e.stats.get("agent_recalled_steps"), None);
+        // the file was edited since the read left: the agent reads what it holds now, not what left
+        let mut e = Engine::new(params(spec).unwrap());
+        let mut msgs = sessions(&reply, None);
+        feed(&mut e, &msgs);
+        msgs.extend(step(2, "sed -i 's/invoice/bill/' report.txt", ""));
+        feed(&mut e, &msgs);
+        msgs.extend(step(3, "cat report.txt", &report().replace("invoice", "bill")));
+        feed(&mut e, &msgs);
+        assert_eq!(e.stats.get("agent_recalled_steps"), None);
+        // a command that runs a process, not one that prints files, is no read of what left
+        let mut e = Engine::new(params(spec).unwrap());
+        let mut msgs = vec![json!({"role": "user", "content": "Do the tests pass?"})];
+        msgs.extend(step(1, "cargo test", &report()));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "They pass."}]}));
+        msgs.push(json!({"role": "user", "content": "How many lines has notes.md?"}));
+        feed(&mut e, &msgs);
+        assert!(e.steps[0].out);
+        msgs.extend(step(2, "cargo test", &report()));
+        feed(&mut e, &msgs);
+        assert_eq!(e.stats.get("agent_recalled_steps"), None);
+    }
+
+    /// A read of lines `a..=b` of `listing.txt` by a read tool, with its output.
+    fn read_step(k: usize, (a, b): (usize, usize)) -> [Value; 2] {
+        let id = format!("call_{k}");
+        [
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "read",
+                "input": {"path": "listing.txt", "offset": a, "limit": b + 1 - a}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": listing(a, b)}]}),
+        ]
+    }
+
+    #[test]
+    fn a_read_over_lines_an_output_that_left_gave_counts_and_the_step_made_of_it_later_starts_with_the_count() {
+        // the first two reads leave unused (`live`) while the request is open, the third stays
+        let spec = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1";
+        let mut e = Engine::new(params(spec).unwrap());
+        let mut msgs = vec![json!({"role": "user", "content": "Read listing.txt and say what slot 50 holds."})];
+        for (k, r) in [(1, 40), (41, 80), (81, 120)].into_iter().enumerate() {
+            msgs.extend(read_step(k + 1, r));
+        }
+        feed(&mut e, &msgs);
+        let view = e.view();
+        assert!(output(&view, 2).contains("left out here") && output(&view, 4).contains("left out here"));
+        assert_eq!(output(&view, 6), listing(81, 120));
+        // lines the view still sends, and lines nothing read yet, are no asking back
+        msgs.extend(read_step(4, (100, 110)));
+        feed(&mut e, &msgs);
+        msgs.extend(read_step(5, (121, 160)));
+        feed(&mut e, &msgs);
+        assert_eq!(e.stats.get("agent_recalled_steps"), None);
+        // lines of the two outputs that left: the latest of them is asked back
+        msgs.extend(read_step(6, (20, 50)));
+        feed(&mut e, &msgs);
+        assert_eq!((e.stats.get("agent_recalled_steps"), e.brought.get(&4)), (Some(&1), Some(&1)));
+        // the request is answered: the step made of the second read starts as brought back once
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Slot 50 holds nothing."}]}));
+        msgs.push(json!({"role": "user", "content": "How many lines has notes.md?"}));
+        feed(&mut e, &msgs);
+        assert_eq!(e.steps.iter().map(|s| s.back).collect::<Vec<_>>(), vec![0, 1, 0, 0, 0, 0]);
+        assert!(e.brought.is_empty());
+    }
+
+    #[test]
+    fn sticky_a_step_brought_back_leaves_again_later_and_one_the_agent_asked_back_later_still() {
+        let base = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1";
+        let reply = format!("The largest is client {}.", word(529));
+        // request 1 read the report and request 2 is on another file; on it the agent may ask three lines of
+        // the read back; request 3 is on the report again, so the curator brings the read back; request 4
+        // is on another file again, and the read goes idle
+        let session = |recalled: bool| {
+            let mut msgs = sessions(&reply, None);
+            if recalled {
+                msgs.extend(recall_step(1, 2, Some((1, 3)), &report()));
+            }
+            msgs.extend(step(3, "wc -l notes.md", "12 notes.md"));
+            msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+            msgs.push(json!({"role": "user", "content": "And the smallest invoice total in the report?"}));
+            msgs
+        };
+        let low = report().lines().next().unwrap().rsplit(' ').next().unwrap().to_string();
+        // the steps the agent takes on request 4 before the read leaves again
+        let leaves_after = |spec: &str, recalled: bool| -> usize {
+            let mut e = Engine::new(params(spec).unwrap());
+            let mut msgs = session(recalled);
+            feed(&mut e, &msgs);
+            assert_eq!((e.steps[0].out, e.steps[0].at.is_some()), (false, true), "the read came back");
+            msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": format!("Client {low}.")}]}));
+            msgs.push(json!({"role": "user", "content": "How many words has notes.md?"}));
+            feed(&mut e, &msgs);
+            let mut k = 0;
+            while e.steps[0].at.is_some() && k < 20 {
+                k += 1;
+                msgs.extend(step(10 + k, "date", "Fri Oct 31 10:00:00 UTC 2026"));
+                feed(&mut e, &msgs);
+            }
+            assert!(e.steps[0].out, "{spec}: the read never left");
+            k
+        };
+        // without `sticky` an idle step leaves as soon as the rent to come pays; with it, once the rent paid
+        // since it went idle (a tenth of its size per step) pays for bringing it back once more: half its size
+        // for a step brought back once, two thirds for one the agent had asked back as well. The step of the
+        // agent's recall, idle on request 4 with it, leaves at once and does not take it along.
+        assert_eq!((leaves_after(base, false), leaves_after(base, true)), (0, 0));
+        let sticky = format!("{base};sticky=1");
+        assert_eq!((leaves_after(&sticky, false), leaves_after(&sticky, true)), (6, 7));
     }
 
     #[test]
