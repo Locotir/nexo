@@ -168,26 +168,6 @@ pub fn holds_keys(p: &Path) -> bool {
         || p.extension().is_some_and(|e| EXTS.contains(&lower(e).as_str()))
 }
 
-/// The instructions file the agent reads at start, nearest first.
-pub fn project_instructions(cwd: &Path) -> Vec<PathBuf> {
-    let names = ["NEXO.md", "AGENTS.md"];
-    let mut out = Vec::new();
-    let mut p = Some(cwd);
-    while let Some(d) = p {
-        for n in names {
-            let f = d.join(n);
-            if f.is_file() {
-                out.push(f);
-            }
-        }
-        if d.join(".git").exists() {
-            break;
-        }
-        p = d.parent();
-    }
-    out
-}
-
 /// True when nexo runs as root (effective uid 0).
 pub fn is_root() -> bool {
     #[cfg(unix)]

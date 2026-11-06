@@ -1642,6 +1642,7 @@ dependencies = [
  "async-trait",
  "dirs",
  "futures",
+ "ignore",
  "libc",
  "regex",
  "serde",

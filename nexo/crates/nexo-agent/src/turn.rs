@@ -3123,7 +3123,50 @@ fn status_text(st: &State) -> String {
         lines.push(format!("             {}", file(&p)));
     }
     lines.push(format!("tools        {} (/tools lists them)", st.tools.specs().len()));
+    lines.extend(compat_lines(st));
     lines.join("\n")
+}
+
+/// Where the project instructions, custom commands and custom sub-agents were found, briefly.
+fn compat_lines(st: &State) -> Vec<String> {
+    use nexo_core::compat;
+    let short = nexo_core::paths::shown;
+    let home = compat::foreign_home();
+    let mut lines = Vec::new();
+    if !st.config.agent.hermetic {
+        let found = compat::instructions(&st.cwd, &nexo_core::paths::config_dir(), home.as_deref());
+        if !found.is_empty() {
+            let list: Vec<String> = found.iter().map(|i| format!("{} ({})", short(&i.path), i.origin)).collect();
+            lines.push(format!("instructions {}", list.join(", ")));
+        }
+    }
+    let trust = nexo_core::paths::trusted_projects_file();
+    let cfg = nexo_core::paths::config_dir();
+    let cmds = compat::commands(&st.cwd, &cfg, &trust, home.as_deref(), &|_| false);
+    if !cmds.is_empty() {
+        let mut by: Vec<(String, usize)> = Vec::new();
+        for c in &cmds {
+            match by.iter_mut().find(|(o, _)| *o == c.origin) {
+                Some(e) => e.1 += 1,
+                None => by.push((c.origin.clone(), 1)),
+            }
+        }
+        let list: Vec<String> = by.iter().map(|(o, n)| format!("{n} from {o}")).collect();
+        lines.push(format!("commands     {} ({})", cmds.len(), list.join(", ")));
+    }
+    let sources = compat::sources(&st.cwd, &cfg, &trust, home.as_deref(), "agents", Some("agents"), None);
+    let agents: Vec<String> = crate::subagent::load(&st.cwd)
+        .into_iter()
+        .filter_map(|p| {
+            let dir = p.source.as_deref()?.parent()?;
+            let o = sources.iter().find(|s| s.dir == dir).map_or("custom", |s| s.origin.as_str());
+            Some(format!("{} ({o})", p.name))
+        })
+        .collect();
+    if !agents.is_empty() {
+        lines.push(format!("sub-agents   {}", agents.join(", ")));
+    }
+    lines
 }
 
 /// `/tools`: the tools by kind.

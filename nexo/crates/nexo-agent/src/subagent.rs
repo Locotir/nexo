@@ -70,6 +70,8 @@ pub struct Profile {
     pub rounds: usize,
     /// The file it came from (none for the built-in ones).
     pub source: Option<PathBuf>,
+    /// The model comes from another tool's file: kept only when the provider offers it.
+    pub soft_model: bool,
 }
 
 pub fn builtin() -> Vec<Profile> {
@@ -83,6 +85,7 @@ pub fn builtin() -> Vec<Profile> {
             prompt: EXPLORE.into(),
             rounds: 16,
             source: None,
+            soft_model: false,
         },
         Profile {
             name: "general".into(),
@@ -95,6 +98,7 @@ pub fn builtin() -> Vec<Profile> {
             prompt: GENERAL.into(),
             rounds: 40,
             source: None,
+            soft_model: false,
         },
     ]
 }
@@ -103,19 +107,16 @@ pub fn builtin() -> Vec<Profile> {
 /// with the same name replaces the earlier. A project nobody trusted yet (`nexo config trust`) has
 /// its agents left out: their instructions come from the repository.
 pub fn load(cwd: &Path) -> Vec<Profile> {
-    load_from(cwd, &nexo_core::paths::config_dir(), &nexo_core::paths::trusted_projects_file())
+    let home = nexo_core::compat::foreign_home();
+    load_from(cwd, &nexo_core::paths::config_dir(), &nexo_core::paths::trusted_projects_file(), home.as_deref())
 }
 
-fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path) -> Vec<Profile> {
+fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path, foreign_home: Option<&Path>) -> Vec<Profile> {
     let mut out = builtin();
-    let mut dirs = vec![config_dir.join("agents")];
-    if let Some(p) = nexo_core::paths::project_dir(cwd) {
-        if p.parent().is_some_and(|root| nexo_core::config::is_trusted(root, trust_file)) {
-            dirs.push(p.join("agents"));
-        }
-    }
-    for dir in dirs {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+    // lowest priority first: the other tools' `.claude/agents`, then nexo's own folders
+    let sources = nexo_core::compat::sources(cwd, config_dir, trust_file, foreign_home, "agents", Some("agents"), None);
+    for s in sources {
+        let Ok(rd) = std::fs::read_dir(&s.dir) else { continue };
         let mut files: Vec<PathBuf> =
             rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).collect();
         files.sort();
@@ -123,6 +124,9 @@ fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path) -> Vec<Profile> {
             let Ok(text) = std::fs::read_to_string(&f) else { continue };
             let stem = f.file_stem().and_then(|s| s.to_str()).unwrap_or("agent").to_string();
             if let Some(mut p) = parse(&text, &stem) {
+                if s.foreign {
+                    adopt_foreign(&mut p);
+                }
                 p.source = Some(f.clone());
                 out.retain(|o| o.name != p.name);
                 out.push(p);
@@ -130,6 +134,47 @@ fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path) -> Vec<Profile> {
         }
     }
     out
+}
+
+/// A tool name of another tool's agent file as nexo calls it; none for one nexo has no use for.
+fn map_tool(t: &str) -> Option<String> {
+    let m = match t {
+        "Read" => "read",
+        "Write" => "write",
+        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+        "Bash" | "BashOutput" => "bash",
+        "Glob" => "glob",
+        "Grep" => "grep",
+        "LS" => "ls",
+        "WebFetch" => "web_fetch",
+        "WebSearch" => "web_search",
+        "TodoWrite" => "todo",
+        t if t.starts_with("mcp__") => t,
+        t if !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_') => t,
+        _ => return None,
+    };
+    Some(m.to_string())
+}
+
+/// Maps what a `.claude/agents` file says onto nexo: its tool names (a list that names none nexo
+/// has stays read-only, never all tools) and its model (checked when the sub-agent runs).
+fn adopt_foreign(p: &mut Profile) {
+    if let Some(list) = p.tools.take() {
+        let mut mapped: Vec<String> = Vec::new();
+        for t in list.iter().filter_map(|t| map_tool(t)) {
+            if !mapped.contains(&t) {
+                mapped.push(t);
+            }
+        }
+        if mapped.is_empty() {
+            mapped = ["read", "grep", "glob", "ls"].map(String::from).to_vec();
+        }
+        p.tools = Some(mapped);
+    }
+    if p.model.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("inherit")) {
+        p.model = None;
+    }
+    p.soft_model = p.model.is_some();
 }
 
 /// A custom sub-agent: an optional front matter between `---` lines
@@ -153,6 +198,7 @@ pub fn parse(text: &str, fallback_name: &str) -> Option<Profile> {
         prompt: body.to_string(),
         rounds: 30,
         source: None,
+        soft_model: false,
     };
     for line in head.lines() {
         let Some((k, v)) = line.split_once(':') else { continue };
@@ -484,7 +530,14 @@ impl Run {
         say: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
         let (main_provider, main_cfg, main_model) = self.target.get();
-        let model = self.model.clone().or_else(|| self.profile.model.clone()).unwrap_or(main_model);
+        let model = self
+            .model
+            .clone()
+            .or_else(|| {
+                let m = self.profile.model.clone()?;
+                (!self.profile.soft_model || m == main_model || main_cfg.models.contains(&m)).then_some(m)
+            })
+            .unwrap_or(main_model);
         // on another provider, its prices; the same model name there is the same model
         let (cfg, pricing) = match &self.provider {
             Some((name, cfg)) if *name != main_provider => {
@@ -931,15 +984,42 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let trust = home.path().join("trusted-projects");
         // not trusted yet: only the built-in kinds
-        let untrusted = load_from(dir.path(), home.path(), &trust);
+        let untrusted = load_from(dir.path(), home.path(), &trust, None);
         assert!(!untrusted.iter().any(|p| p.name == "docs"));
         assert!(untrusted.iter().any(|p| p.name == "explore" && p.source.is_none()));
         nexo_core::config::trust_project(dir.path(), &trust).unwrap();
-        let all = load_from(dir.path(), home.path(), &trust);
+        let all = load_from(dir.path(), home.path(), &trust, None);
         assert!(all.iter().any(|p| p.name == "docs" && p.description == "writes docs"));
         let ex: Vec<&Profile> = all.iter().filter(|p| p.name == "explore").collect();
         assert_eq!(ex.len(), 1);
         assert_eq!(ex[0].description, "mine");
         assert!(all.iter().any(|p| p.name == "general"));
+    }
+
+    #[test]
+    fn claude_agents_map_onto_nexo_and_nexo_files_win() {
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(proj.path().join(".git")).unwrap();
+        let (cfg, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = proj.path().join(".claude/agents");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(
+            a.join("rev.md"),
+            "---\nname: rev\ndescription: reviews\ntools: Read, Grep, Bash, Task\nmodel: sonnet\n---\nReview.",
+        )
+        .unwrap();
+        std::fs::write(a.join("odd.md"), "---\nname: odd\ntools: Foo\nmodel: inherit\n---\nX").unwrap();
+        std::fs::write(a.join("docs.md"), "---\nname: docs\n---\nclaude docs").unwrap();
+        std::fs::create_dir_all(cfg.path().join("agents")).unwrap();
+        std::fs::write(cfg.path().join("agents/docs.md"), "---\nname: docs\n---\nnexo docs").unwrap();
+        let trust = cfg.path().join("trusted-projects");
+        nexo_core::config::trust_project(proj.path(), &trust).unwrap();
+        let all = load_from(proj.path(), cfg.path(), &trust, Some(home.path()));
+        let get = |n: &str| all.iter().find(|p| p.name == n).unwrap();
+        assert_eq!(get("rev").tools, Some(vec!["read".into(), "grep".into(), "bash".into()]));
+        assert!(get("rev").soft_model && get("rev").model.as_deref() == Some("sonnet"));
+        assert_eq!(get("odd").tools, Some(vec!["read".into(), "grep".into(), "glob".into(), "ls".into()]));
+        assert_eq!(get("odd").model, None);
+        assert_eq!(get("docs").prompt, "nexo docs");
     }
 }

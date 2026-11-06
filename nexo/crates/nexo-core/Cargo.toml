@@ -17,6 +17,7 @@ futures = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 dirs = { workspace = true }
+ignore = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
 regex = { workspace = true }

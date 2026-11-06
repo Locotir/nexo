@@ -21,6 +21,8 @@ use tokio::sync::mpsc;
 const SIZES: [(u16, u16); 4] = [(40, 12), (80, 24), (120, 40), (200, 60)];
 
 fn app() -> App {
+    // the captures must not depend on the other tools' folders in this machine's home
+    std::env::set_var("NEXO_COMPAT_HOME", "");
     let (tx, _rx) = mpsc::unbounded_channel();
     let opts = TuiOptions {
         cwd: PathBuf::from("/tmp/project"),

@@ -1493,6 +1493,9 @@ impl App {
                 description: s.description.clone(),
                 body: String::new(),
                 path: s.file(),
+                hint: String::new(),
+                allowed_tools: String::new(),
+                origin: "skill".into(),
             });
         }
         self.skills = skills;
@@ -4333,7 +4336,17 @@ impl App {
                         PaletteKind::Commands => Palette::commands_full(
                             &query,
                             start,
-                            self.custom_commands.iter().map(|c| (c.name.clone(), c.description.clone())).collect(),
+                            self.custom_commands
+                                .iter()
+                                .map(|c| {
+                                    let d = if c.hint.is_empty() {
+                                        c.description.clone()
+                                    } else {
+                                        format!("{} {}", c.hint, c.description)
+                                    };
+                                    (c.name.clone(), d)
+                                })
+                                .collect(),
                             palette::recent_commands(self.input.history()),
                         ),
                         PaletteKind::Files => {
@@ -6273,6 +6286,9 @@ mod tests {
             description: "review against our rules".into(),
             body: "Review $ARGUMENTS against CONTRIBUTING.md.".into(),
             path: PathBuf::from("triage.md"),
+            hint: String::new(),
+            allowed_tools: String::new(),
+            origin: String::new(),
         }];
         a.input.set_text("/tri");
         a.refresh_palette();

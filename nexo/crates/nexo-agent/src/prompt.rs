@@ -1,8 +1,9 @@
 //! The system prompt: who the agent is, where it works, what its tools are
-//! for, and the project's own instructions (`NEXO.md`, `AGENTS.md`).
+//! for, and the project's own instructions (`NEXO.md`, `AGENTS.md`, `CLAUDE.md`).
 
 use std::path::{Path, PathBuf};
 
+use nexo_core::compat;
 use nexo_core::config::AgentConfig;
 use nexo_core::paths;
 use nexo_core::tool::ToolSet;
@@ -152,13 +153,18 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
     let date = time::OffsetDateTime::now_utc().date();
     let mut out = format!("{base}\n\nWorking directory: {}\nDate: {date}", cwd.display());
     out.push_str(&tool_guidance(tools));
-    let instructions = if cfg.hermetic { Vec::new() } else { paths::project_instructions(cwd) };
-    for f in instructions {
-        if let Ok(text) = std::fs::read_to_string(&f) {
-            let text = text.trim();
-            if !text.is_empty() {
-                out.push_str(&format!("\n\nInstructions from {}:\n{text}", f.display()));
-            }
+    if !cfg.hermetic {
+        let home = compat::foreign_home();
+        for i in compat::instructions(cwd, &paths::config_dir(), home.as_deref()) {
+            out.push_str(&format!("\n\nInstructions from {}:\n{}", i.path.display(), i.text));
+        }
+        let nested = compat::nested_instructions(cwd);
+        if !nested.is_empty() {
+            let list: Vec<String> = nested.iter().map(|p| format!("- {}", p.display())).collect();
+            out.push_str(&format!(
+                "\n\nMore instruction files, for folders you are not in (read one before you work there):\n{}",
+                list.join("\n")
+            ));
         }
     }
     if !prefs.is_empty() {
@@ -271,5 +277,22 @@ mod tests {
         let off = nexo_core::config::WebConfig { enabled: false, ..Default::default() };
         let without = tool_guidance(&nexo_tools::builtin_with(&off));
         assert!(!without.contains("web_"), "{without}");
+    }
+
+    #[test]
+    fn claude_md_and_nested_files_reach_the_prompt() {
+        let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_CONFIG_DIR", home.path());
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join(".git")).unwrap();
+        std::fs::write(d.path().join("CLAUDE.md"), "Use tabs. @style.md").unwrap();
+        std::fs::write(d.path().join("style.md"), "Tabs are four wide.").unwrap();
+        std::fs::create_dir(d.path().join("web")).unwrap();
+        std::fs::write(d.path().join("web/AGENTS.md"), "Web rules.").unwrap();
+        let p = system_prompt(d.path(), &AgentConfig::default(), &ToolSet::new());
+        std::env::remove_var("NEXO_CONFIG_DIR");
+        assert!(p.contains("Use tabs.") && p.contains("Tabs are four wide."), "{p}");
+        assert!(p.contains("- web/AGENTS.md") && !p.contains("Web rules."), "{p}");
     }
 }

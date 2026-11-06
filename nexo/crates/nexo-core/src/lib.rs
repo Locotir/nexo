@@ -12,6 +12,7 @@
 
 pub mod agent;
 pub mod auth;
+pub mod compat;
 pub mod config;
 pub mod error;
 pub mod jobs;

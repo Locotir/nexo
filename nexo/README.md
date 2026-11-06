@@ -140,6 +140,21 @@ max_cost = 1.0       # dollars per session
 max_cost_day = 5.0   # dollars per day, all sessions
 ```
 
+**Coming from another coding agent.** What a team already keeps for Claude Code or Codex CLI works on day one:
+
+- Instructions: `AGENTS.md`, `CLAUDE.md` (also `.claude/CLAUDE.md`) and `CLAUDE.local.md` in the project folders, nearest
+  first; `AGENTS.md` wins over `CLAUDE.md` in the same folder, `NEXO.md` comes before both. A word like `@docs/style.md`
+  places that file (relative path, up to 5 levels, no cycles, never a key file) after its line. Instruction files in
+  folders you are not working in are listed, to be read when you work there. For you: `~/.nexo/NEXO.md` or `AGENTS.md`,
+  and only when neither exists `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`.
+- Commands: `.claude/commands/**/*.md` (`git/sync.md` is `/git:sync`) and `.codex/prompts/*.md`, in the project (once
+  trusted) and in your home. `description:` and `argument-hint:` show in the palette; `$ARGUMENTS` and `$1` to `$9`
+  are filled in; `allowed-tools:` is read but not enforced. A command in nexo's own folders wins on a name clash.
+- Sub-agents: `.claude/agents/*.md` (`name`, `description`, `tools`, `model`), tool names mapped (`Read` to `read`,
+  `Bash` to `bash`...). A model nexo's provider does not offer, or `inherit`, uses the current model.
+- `/status` lists where each came from. `NEXO_COMPAT_HOME` points the home lookup elsewhere (empty: off); a custom
+  `NEXO_CONFIG_DIR` also turns off the other tools' home folders.
+
 **Commands of your own.** A markdown file in `~/.nexo/commands/` or in the project's `.nexo/commands/`
 (once the project is trusted: `nexo config trust`) is a command named after it: `.nexo/commands/review.md` is `/review`. Its text is sent as the request, with
 `$ARGUMENTS` replaced by what follows the name (appended when there is no `$ARGUMENTS`). The palette lists them
