@@ -35,8 +35,13 @@ pub struct Header {
     pub repro: Option<String>,
 }
 
-/// The columns after the arm or the run, in both tables.
-const COLUMNS: [&str; 18] = [
+/// The columns after the arm or the run, in both tables. What counts is what a solved task costs
+/// (every check passed): a cheap run that does not solve it saved nothing, so `$ / solved` and
+/// `steps / solved` come first and spread the cost of the failed runs over the solved ones.
+const COLUMNS: [&str; 21] = [
+    "solved",
+    "$ / solved",
+    "steps / solved",
     "score",
     "steps",
     "requests",
@@ -387,7 +392,12 @@ fn row(first: &[String], rest: &[String]) -> String {
 fn numbers(rows: &[&Record]) -> Vec<String> {
     let sum = |f: fn(&Record) -> f64| rows.iter().map(|r| f(r)).sum::<f64>();
     let mean = |f: fn(&Record) -> f64| sum(f) / rows.len().max(1) as f64;
+    let solved = rows.iter().filter(|r| r.ok).count();
+    let unknown = rows.iter().any(|r| r.estimated);
     vec![
+        format!("{solved}/{}", rows.len()),
+        if solved == 0 { "-".into() } else { usd(unknown, sum(|r| r.cost) / solved as f64, 4) },
+        if solved == 0 { "-".into() } else { format!("{:.1}", sum(|r| r.steps as f64) / solved as f64) },
         format!("{:.2}%", mean(|r| r.score) * 100.0),
         format!("{}", sum(|r| r.steps as f64)),
         format!("{}", sum(|r| r.requests as f64)),
@@ -491,11 +501,11 @@ mod tests {
         let s = summary(&head(1), &recs);
         assert!(s.contains("| `deepseek-chat` | `abc1234` | 100 | default | default | 1 | $5 | **$1.7500** |"), "{s}");
         assert!(!s.contains("## Parts"), "no task has parts: {s}");
-        assert!(s.contains("| plain | plain | 2 | 0 | 75.00% | 20 | 22 | 2000 | 10000 | 0 | 600 | 0.7500 | 25.0 | 4 | 6000 | 6000 | 0 | 0 |"), "{s}");
-        assert!(s.contains("| compact | compact at 100000 | 1 | 0 | 20.75% |"), "{s}");
+        assert!(s.contains("| plain | plain | 2 | 0 | 1/2 | 0.7500 | 20.0 | 75.00% | 20 | 22 | 2000 | 10000 | 0 | 600 | 0.7500 | 25.0 | 4 | 6000 | 6000 | 0 | 0 |"), "{s}");
+        assert!(s.contains("| compact | compact at 100000 | 1 | 0 | 0/1 | - | - | 20.75% |"), "{s}");
         assert!(
             s.contains(
-                "| a | compact | 20.75% | 10 | 11 | 1000 | 5000 | 0 | 300 | 1.0000 | 12.5 | 2 | 6000 | 6000 | 2 | 2 |"
+                "| a | compact | 0/1 | - | - | 20.75% | 10 | 11 | 1000 | 5000 | 0 | 300 | 1.0000 | 12.5 | 2 | 6000 | 6000 | 2 | 2 |"
             ),
             "{s}"
         );
@@ -678,7 +688,7 @@ mod tests {
         dirty.outside = vec!["/home/x/inventory.rs".into()];
         let recs = [record("a", "plain", 0.0, 0.5), record("a", "cur", 0.5, 0.5), dirty];
         let s = summary(&head(1), &recs);
-        assert!(s.contains("| cur | cur | 1 | 1 | 50.00% |"), "{s}");
+        assert!(s.contains("| cur | cur | 1 | 1 | 0/1 | - | - | 50.00% |"), "{s}");
         assert!(s.contains("Left out (contaminated): a cur #0."), "{s}");
         assert!(s.contains("| +50.0 "), "{s}");
         assert!(s.contains("## Contaminated runs") && s.contains("`/home/x/inventory.rs`"), "{s}");

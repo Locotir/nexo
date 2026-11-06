@@ -85,6 +85,14 @@ impl Totals {
     pub fn cost_per_point(&self) -> Option<f64> {
         (self.score > 0.0).then(|| self.cost / (self.score * 100.0))
     }
+    /// Dollars per solved run (every check passed), the failed runs' cost included; None without one.
+    pub fn cost_per_solved(&self) -> Option<f64> {
+        (self.ok > 0).then(|| self.cost / self.ok as f64)
+    }
+    /// Steps per solved run, the failed runs' steps included; None without one.
+    pub fn steps_per_solved(&self) -> Option<f64> {
+        (self.ok > 0).then(|| self.steps as f64 / self.ok as f64)
+    }
 }
 
 /// The arms in the order they first appear, with their policy.
@@ -351,7 +359,7 @@ pub fn render(records: &[Record], spent: Option<f64>) -> String {
             })
             .collect();
         let _ = write!(s, "<h3>{}</h3>", fam.map_or("All tasks".to_string(), |f| format!("Family {}", esc(f))));
-        s.push_str("<div class=\"scroll\"><table><tr><th>arm</th><th>policy</th><th>runs</th><th>score</th><th>all passed</th><th>steps</th><th>cost $</th><th>$ / point</th><th>input</th><th>cache</th><th>output</th><th>time s</th><th>tool errors</th></tr>");
+        s.push_str("<div class=\"scroll\"><table><tr><th>arm</th><th>policy</th><th>runs</th><th>solved</th><th>$ / solved</th><th>steps / solved</th><th>score</th><th>steps</th><th>cost $</th><th>$ / point</th><th>input</th><th>cache</th><th>output</th><th>time s</th><th>tool errors</th></tr>");
         let mut chart_score = Vec::new();
         let mut chart_tokens = Vec::new();
         let mut chart_cost = Vec::new();
@@ -362,12 +370,14 @@ pub fn render(records: &[Record], spent: Option<f64>) -> String {
             }
             let _ = write!(
                 s,
-                "<tr><td><b>{}</b></td><td>{}</td><td>{}</td><td><b>{:.1}%</b></td><td>{}</td><td>{}</td><td><b>{}</b></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0}</td><td>{}</td></tr>",
+                "<tr><td><b>{}</b></td><td>{}</td><td>{}</td><td><b>{}</b></td><td><b>{}</b></td><td>{}</td><td>{:.1}%</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0}</td><td>{}</td></tr>",
                 esc(a),
                 esc(p),
                 t.runs,
-                t.mean(),
                 t.ok,
+                t.cost_per_solved().map_or("-".into(), |c| usd(c, 4)),
+                t.steps_per_solved().map_or("-".into(), |x| format!("{x:.1}")),
+                t.mean(),
                 t.steps,
                 usd(t.cost, 4),
                 t.cost_per_point().map_or("-".into(), |c| usd(c, 5)),
@@ -489,7 +499,7 @@ mod tests {
         let html = std::fs::read_to_string(path).unwrap();
         assert!(!html.contains("<script"));
         assert!(html.contains("The best arm is <b>curator</b>"), "{html}");
-        assert!(html.contains("<b>62.5%</b>"), "curator's mean over its two runs");
+        assert!(html.contains("<td>62.5%</td>"), "curator's mean over its two runs");
         // curator vs plain on the one common run: 4,000 against 10,000 tokens, 60% saved
         assert!(html.contains("saves <b>60.0%</b>") && html.contains("<b>4,000</b> versus <b>10,000</b>"));
         assert!(html.contains("saves <b>50.0%</b>"), "against compact");
