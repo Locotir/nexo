@@ -17,6 +17,7 @@ pub mod config_edit;
 pub mod context;
 mod context_map;
 pub mod gate;
+pub mod gitcmds;
 pub mod goal_brief;
 mod history;
 pub mod hooks;

@@ -100,10 +100,10 @@ mod tests {
         let theirs = proj.path().join(".nexo/commands");
         std::fs::create_dir_all(&mine).unwrap();
         std::fs::create_dir_all(&theirs).unwrap();
-        std::fs::write(mine.join("review.md"), "Review the diff for bugs.").unwrap();
+        std::fs::write(mine.join("triage.md"), "Review the diff for bugs.").unwrap();
         std::fs::write(mine.join("help.md"), "a built-in name: left out").unwrap();
         std::fs::write(
-            theirs.join("review.md"),
+            theirs.join("triage.md"),
             "---\ndescription: review against our rules\n---\nReview $ARGUMENTS against CONTRIBUTING.md.",
         )
         .unwrap();
@@ -111,12 +111,12 @@ mod tests {
         let trust = home.path().join("trusted-projects");
         let untrusted = load_from(proj.path(), home.path(), &trust);
         let names: Vec<&str> = untrusted.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["review"], "an untrusted project's commands are left out");
+        assert_eq!(names, ["triage"], "an untrusted project's commands are left out");
         assert_eq!(untrusted[0].description, "Review the diff for bugs.");
         nexo_core::config::trust_project(proj.path(), &trust).unwrap();
         let cmds = load_from(proj.path(), home.path(), &trust);
         let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["explain", "review"]);
+        assert_eq!(names, ["explain", "triage"]);
         let review = &cmds[1];
         assert_eq!(review.description, "review against our rules");
         assert_eq!(review.expand("src/lib.rs"), "Review src/lib.rs against CONTRIBUTING.md.");

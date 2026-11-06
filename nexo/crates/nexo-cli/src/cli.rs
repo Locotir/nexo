@@ -171,6 +171,21 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Review the current diff for bugs, security and missing tests and print the findings; exits 1 on a high-severity one (for CI). Edits nothing.
+    Review {
+        /// Compare with the merge base of this branch (default: main or master).
+        #[arg(long, value_name = "BRANCH", conflicts_with_all = ["staged", "commit"])]
+        base: Option<String>,
+        /// Review one commit.
+        #[arg(long, value_name = "COMMIT", conflicts_with = "staged")]
+        commit: Option<String>,
+        /// Review only the staged changes.
+        #[arg(long)]
+        staged: bool,
+        /// Print the findings as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Install the latest nexo from GitHub with cargo (`--check`: only say whether there is one).
     Update {
         /// Only say whether a newer version exists; install nothing.
@@ -556,6 +571,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
             cfg.check_disk = !no_disk;
             return setup::brief_cmd(&cwd, conversation, &task.join(" "), &cfg, *json).await;
         }
+        Some(Cmd::Review { .. }) => {}
         None => {}
         // handled before the configuration is read
         Some(Cmd::Supervise { .. }) => return Ok(0),
@@ -574,6 +590,44 @@ async fn run(args: Args) -> anyhow::Result<i32> {
     let resume = if args.continue_ { nexo_agent::session::latest_for(&cwd).map(|m| m.id) } else { args.resume.clone() };
     if args.continue_ && resume.is_none() {
         eprintln!("nexo: no earlier session in {}; starting a new one", cwd.display());
+    }
+
+    if let Some(Cmd::Review { base, commit, staged, json }) = &args.cmd {
+        use nexo_agent::gitcmds as g;
+        let target = match (staged, commit, base) {
+            (true, _, _) => g::Target::Staged,
+            (_, Some(c), _) => g::Target::Commit(c.clone()),
+            (_, _, Some(b)) => g::Target::Base(b.clone()),
+            _ => g::Target::Default,
+        };
+        let prompt = match g::review_prompt_json(&cwd, &target) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("nexo review: {e}");
+                return Ok(2);
+            }
+        };
+        // a review reads and never writes
+        config.permissions.mode = PermissionMode::ReadOnly;
+        let (text, code) = headless_collect(config, cwd, picked, prompt).await?;
+        if code != 0 {
+            eprintln!("nexo review: the model did not finish the review");
+            return Ok(code);
+        }
+        return Ok(match g::parse_findings(&text) {
+            Ok(f) => {
+                if *json {
+                    println!("{}", g::findings_json(&f));
+                } else {
+                    print!("{}", g::render_findings(&f));
+                }
+                i32::from(g::has_high(&f))
+            }
+            Err(e) => {
+                eprintln!("nexo review: {e}; the reply was:\n{text}");
+                3
+            }
+        });
     }
 
     if let Some(prompt) = args.prompt.clone() {
@@ -725,6 +779,45 @@ async fn headless(
         return Ok(1);
     }
     Ok(code)
+}
+
+/// Runs one request without the interface and returns the reply text and the exit code (0 done, 2 not done, 1 agent failure).
+async fn headless_collect(
+    config: nexo_core::Config,
+    cwd: PathBuf,
+    picked: Picked,
+    prompt: String,
+) -> anyhow::Result<(String, i32)> {
+    nexo_agent::session::mark_headless();
+    let (mut handle, ends) = channels();
+    let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
+    let agent_setup = setup::agent_setup(&config, &cwd, &picked, None, Some(gate), None).await?;
+    let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
+    let sent = handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] }).is_ok();
+    let (mut text, mut code) = (String::new(), 0);
+    while let Some(ev) = handle.events.recv().await {
+        match &ev {
+            AgentEvent::TextDelta { text: t } => text.push_str(t),
+            AgentEvent::AssistantStart if !text.is_empty() => text.clear(),
+            AgentEvent::TurnEnd { reason } => {
+                code = if matches!(reason, nexo_core::agent::TurnEnd::Done) { 0 } else { 2 };
+            }
+            AgentEvent::Idle { .. } | AgentEvent::Shutdown => break,
+            _ => {}
+        }
+    }
+    let _ = handle.commands.send(AgentCommand::Shutdown);
+    let failed = match tokio::time::timeout(std::time::Duration::from_secs(2), agent).await {
+        Ok(Ok(Err(e))) => Some(format!("{e:#}")),
+        Ok(Err(e)) => Some(format!("the agent stopped: {e}")),
+        _ if !sent => Some("the agent stopped before the request".to_string()),
+        _ => None,
+    };
+    if let Some(e) = failed {
+        eprintln!("nexo: {e}");
+        return Ok((text, 1));
+    }
+    Ok((text, code))
 }
 
 #[cfg(test)]

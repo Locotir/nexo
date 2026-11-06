@@ -1437,6 +1437,20 @@ impl App {
         self.dirty = true;
     }
 
+    /// Sends a git command's prompt as the next request, or says why there is none.
+    fn git_prompt(&mut self, name: &str, prompt: Result<String, String>) {
+        match prompt {
+            Ok(p) => {
+                if self.session_title.is_empty() {
+                    self.send(AgentCommand::Rename { title: name.into() });
+                }
+                self.input.set_text(&p);
+                self.submit();
+            }
+            Err(e) => self.notice(Level::Warn, format!("{name}: {e}")),
+        }
+    }
+
     // ------------------------------------------------------------ status
 }
 
@@ -3605,6 +3619,15 @@ impl App {
                 self.input.set_text(INIT_PROMPT);
                 self.submit();
             }
+            Command::Review(arg) => self.git_prompt(
+                "/review",
+                nexo_agent::gitcmds::Target::parse(arg.as_deref(), &self.cwd)
+                    .and_then(|t| nexo_agent::gitcmds::review_prompt(&self.cwd, &t)),
+            ),
+            Command::Commit(arg) => {
+                self.git_prompt("/commit", nexo_agent::gitcmds::commit_prompt(&self.cwd, arg.as_deref()))
+            }
+            Command::Pr(arg) => self.git_prompt("/pr", nexo_agent::gitcmds::pr_prompt(&self.cwd, arg.as_deref(), "gh")),
             Command::Status => self.send(AgentCommand::ShowStatus),
             Command::Tools => self.send(AgentCommand::ShowTools),
             Command::Jobs(None) => self.open_jobs(),
@@ -6190,18 +6213,18 @@ mod tests {
     fn a_command_of_ones_own_is_offered_and_sends_its_text() {
         let (mut a, mut rx) = app();
         a.custom_commands = vec![crate::custom::CustomCommand {
-            name: "review".into(),
+            name: "triage".into(),
             description: "review against our rules".into(),
             body: "Review $ARGUMENTS against CONTRIBUTING.md.".into(),
-            path: PathBuf::from("review.md"),
+            path: PathBuf::from("triage.md"),
         }];
-        a.input.set_text("/rev");
+        a.input.set_text("/tri");
         a.refresh_palette();
         let p = a.palette.as_ref().expect("the palette");
         let (rows, _) = p.rows(20);
-        let row = rows.iter().find(|r| r.label == "review").expect("the command is offered");
+        let row = rows.iter().find(|r| r.label == "triage").expect("the command is offered");
         assert!(row.hint.contains("review against our rules") && row.hint.contains("yours"));
-        a.input.set_text("/review src/lib.rs");
+        a.input.set_text("/triage src/lib.rs");
         a.submit();
         assert!(
             matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == "Review src/lib.rs against CONTRIBUTING.md.")

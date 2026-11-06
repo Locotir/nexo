@@ -260,6 +260,17 @@ everything after it. Changes made by shell commands are not known, so they stay.
 project and write `AGENTS.md`; `/status` says what nexo runs with (model, endpoint, where the key comes from,
 context policy, session file, configuration files) and `/tools` lists the tools by kind.
 
+**Git commands.** nexo gathers the git facts first (status, diff, stat, log), so the model starts with them:
+`/review [base|commit|--staged]` reviews the uncommitted changes plus the branch since its merge base with
+main or master, and lists findings ranked by severity with `file:line` (it edits nothing); `/commit [hint]`
+commits what is staged, or everything after saying so, with a message in the style of the last ten subjects and
+never a trailer or co-author line; `/pr [base]` pushes the branch if needed and runs `gh pr create` with the
+title and body taken from the commits (without `gh`, or without `gh auth login`, it says so and stops). Commit,
+push and PR go through the normal permission prompts. A diff over 48 000 characters is cut by file, keeping the
+biggest hunks, and the cut is marked. For CI, `nexo review [--base main] [--commit SHA] [--staged] [--json]`
+prints the findings (read-only mode) and exits 1 on a high-severity finding, 3 when the reply is not parseable,
+2 when there is nothing to review.
+
 **Sessions.** In the `/resume` list, `Del` marks a session and a second `Del` moves it to the trash (a folder
 inside the sessions folder; nothing is erased): `/undelete` brings back the last one, `/undelete <id>` any of
 them, and `nexo sessions delete|restore <id>...` does the same from the shell. `/shared-memory` shares what another

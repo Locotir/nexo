@@ -249,3 +249,58 @@ fn use_refuses_an_unknown_model_unless_forced() {
     let out = nexo(d.path(), &["use", "mock", "nope", "--force"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let o = Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn review_says_when_there_is_nothing_to_review() {
+    let d = tempfile::tempdir().unwrap();
+    git(d.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(d.path().join("a.txt"), "x\n").unwrap();
+    git(d.path(), &["add", "a.txt"]);
+    git(d.path(), &["commit", "-qm", "first"]);
+    // config.toml lives in the directory too: keep it out of the way
+    std::fs::write(d.path().join(".gitignore"), "config.toml\ndata/\ncache/\n.gitignore\n").unwrap();
+    let out = nexo(d.path(), &["review"]);
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nothing to review"));
+}
+
+#[test]
+fn review_outside_a_repository_is_refused() {
+    let d = tempfile::tempdir().unwrap();
+    let out = nexo(d.path(), &["review", "--staged"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not in a git repository"));
+}
+
+#[test]
+fn review_prints_the_findings_the_model_returns_as_json() {
+    let d = tempfile::tempdir().unwrap();
+    git(d.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(d.path().join("a.txt"), "x\n").unwrap();
+    git(d.path(), &["add", "a.txt"]);
+    git(d.path(), &["commit", "-qm", "first"]);
+    std::fs::write(d.path().join("a.txt"), "x\ny\n").unwrap();
+    let out = nexo(d.path(), &["review", "--json"]);
+    // the mock echoes the prompt, whose example object is a well-formed answer without a high finding
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\"findings\""));
+}
