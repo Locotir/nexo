@@ -237,7 +237,12 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         .context
         .as_ref()
         .filter(|c| c.history_tokens > 0)
-        .map(|c| Seg { text: format!("mem {}", fmt_k(c.history_tokens)), style: base.fg(theme.warn2) });
+        .map(|c| Seg { text: format!("mem {}", fmt_k(c.history_tokens)), style: base.fg(theme.warn2) })
+        // a loaded conversation the curator is still counting
+        .or_else(|| {
+            (app.context.is_none() && app.context_wait)
+                .then(|| Seg { text: mem_waiting(app.spinner), style: base.fg(theme.dim) })
+        });
     // a glyph every common font has, not an icon font's
     let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: base.fg(theme.hunk) });
     let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: base.fg(theme.dim) };
@@ -1349,6 +1354,11 @@ pub fn hints_shown(app: &App) -> bool {
         && !app.search.as_ref().is_some_and(|s| s.focused);
     let urgent = app.queued > 0 || app.status.is_some() || app.input.vim.is_some();
     !typing || urgent
+}
+
+/// What the memory figure says while the curator is still counting a loaded conversation.
+fn mem_waiting(spinner: usize) -> String {
+    format!("mem {} computing…", SPINNER[(spinner / 2) % SPINNER.len()])
 }
 
 /// The right part of the hint bar with everything on it.

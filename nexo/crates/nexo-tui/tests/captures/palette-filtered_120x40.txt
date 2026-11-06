@@ -37,4 +37,4 @@
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56
- nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69% 6.2k/9.0k │  81% cached · 1 call            Σ 6.5k billed · $0.0031
+ nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69% 6.2k/9.0k │ mem ⠋ computing…                Σ 6.5k billed · $0.0031

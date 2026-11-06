@@ -168,6 +168,8 @@ pub struct App {
     /// Which sessions `/panel` lists (all, nexo only, external only); kept while this session runs.
     pub panel_filter: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pub spinner: usize,
+    /// A conversation was loaded and the curator has not yet said what it keeps: the footer shows a spinner.
+    pub context_wait: bool,
     pub session_usage: Usage,
     pub turn_usage: Usage,
     pub cost: f64,
@@ -425,6 +427,7 @@ impl App {
             panel: None,
             panel_filter: Default::default(),
             spinner: 0,
+            context_wait: false,
             session_usage: Usage::default(),
             turn_usage: Usage::default(),
             cost: 0.0,
@@ -671,6 +674,7 @@ impl App {
         self.turn_usage = Usage::default();
         self.cost = 0.0;
         self.context = None;
+        self.context_wait = false;
         self.map.clear();
         self.map_zones.clear();
         self.map_changed.clear();
@@ -1745,7 +1749,7 @@ impl App {
             self.dirty = true;
         }
         self.moving = any;
-        if any || live || self.busy {
+        if any || live || self.busy || self.context_wait {
             self.dirty = true;
         }
         if let Some((_, t)) = &self.status {
@@ -1768,6 +1772,8 @@ impl App {
             Load::Motion
         } else if self.busy
             || self.status.is_some()
+            // the memory figure waits on the curator: its spinner needs the beat
+            || self.context_wait
             // the answer of the /diff collection is taken on a tick: an idle clock would hold it for seconds
             || self.diffview.as_ref().is_some_and(|v| v.loading)
             || self.tail_is_live()
@@ -1824,7 +1830,11 @@ impl App {
                 self.read_branch();
                 self.refresh_welcome();
             }
-            AgentEvent::History { index, message } => self.history(index, message),
+            AgentEvent::History { index, message } => {
+                // the curator answers with a `Context` once the loaded history is counted
+                self.context_wait = self.context.is_none();
+                self.history(index, message)
+            }
             AgentEvent::TurnStart { .. } => {
                 self.busy = true;
                 self.turn_started = Some(self.now());
@@ -2022,6 +2032,7 @@ impl App {
                         self.fx.cut = Some((dropped, self.now()));
                     }
                 }
+                self.context_wait = false;
                 self.context = Some(ContextInfo {
                     view_tokens,
                     history_tokens,
@@ -6398,6 +6409,38 @@ mod tests {
         a.modal_out(ModalOut::Permission { id: "p1".into(), decision: PermissionDecision::Allow });
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::Permission { id, .. }) if id == "p1"));
         assert_eq!(a.modal.as_ref().and_then(Modal::id), Some("p2"));
+    }
+
+    #[test]
+    fn the_memory_figure_spins_while_the_curator_counts_a_loaded_session() {
+        use crate::ui::title_segments;
+        let (mut a, _rx) = app();
+        let texts = |a: &App| -> String {
+            title_segments(a, 400).iter().flat_map(|g| g.iter().map(|s| s.text.clone())).collect::<Vec<_>>().join("|")
+        };
+        assert!(!texts(&a).contains("computing"), "a new session has nothing to wait for");
+        a.handle_agent(AgentEvent::History { index: 0, message: Message::user("hello") });
+        assert!(a.context_wait);
+        assert!(a.load() != crate::frame::Load::Idle, "the spinner needs the beat");
+        let before = texts(&a);
+        assert!(before.contains("mem ⠋ computing…"), "{before}");
+        a.spinner += 2;
+        assert_ne!(texts(&a), before, "the frame advances with the beat");
+        a.handle_agent(AgentEvent::Context {
+            view_tokens: 400,
+            history_tokens: 1000,
+            history_bytes: 4000,
+            view_bytes: 1600,
+            messages_in_view: 1,
+            messages_total: 1,
+            policy: "curator".into(),
+            note: None,
+            label: "curator".into(),
+            detail: None,
+        });
+        assert!(!a.context_wait);
+        let after = texts(&a);
+        assert!(after.contains("mem 1.0k") && !after.contains("computing"), "{after}");
     }
 
     #[test]
