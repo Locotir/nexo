@@ -3,7 +3,7 @@
   <desc id="d">656 recorded sessions replayed. Three bars per class: the curator before closing was priced by need, the curator now, and a Belady oracle that keeps exactly what is used later. m (21 to 80 requests): 653, 609, 105. l (81 to 300): 1706, 1576, 100. xl (301 to 1000): 2610, 2409, 43. xxl (over 1000): 2948, 2731, 52. Sessions of 20 requests or fewer lose at most 18 replies in any arm.</desc>
   <rect width="760" height="330" fill="#ffffff"/>
   <text x="20" y="24" font-size="15" font-weight="600" fill="#202124">Replies that lost a word they needed, by session length</text>
-  <text x="20" y="42" fill="#5f6368">656 recorded sessions replayed offline. The oracle keeps exactly what a later reply uses; it costs 2.9 times more because it breaks the cache at every request.</text>
+  <text x="20" y="42" fill="#5f6368">656 sessions replayed offline. The oracle sees the future, so it breaks the cache and costs 2.9 times more.</text>
   <!-- axis -->
   <line x1="70" y1="270" x2="740" y2="270" stroke="#9aa0a6"/>
   <line x1="70" y1="70" x2="70" y2="270" stroke="#9aa0a6"/>
