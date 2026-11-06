@@ -20,12 +20,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use nexo_core::config::ProviderConfig;
-use nexo_core::error::ProviderError;
+use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::jobs::JobKind;
 use nexo_core::message::{Message, Part, Role};
 use nexo_core::pricing::Pricing;
 use nexo_core::provider::{ModelRequest, ToolSpec};
-use nexo_core::stream::{StreamEvent, Usage};
+use nexo_core::stream::{FinishReason, StreamEvent, Usage};
 use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -594,6 +594,8 @@ impl Run {
         };
         let mut text = String::new();
         let mut calls: Vec<(String, String, Value)> = Vec::new();
+        // the reply hit the output limit, and how many calls it opened without closing
+        let (mut cut, mut open) = (false, 0usize);
         loop {
             let ev = tokio::select! {
                 ev = stream.next() => ev,
@@ -601,10 +603,22 @@ impl Run {
             };
             match ev {
                 Some(StreamEvent::TextDelta(d)) => text.push_str(&d),
-                Some(StreamEvent::ToolCallEnd { id, name, args }) => calls.push((id, name, args)),
+                Some(StreamEvent::ToolCallStart { .. }) => open += 1,
+                Some(StreamEvent::Finish(FinishReason::Length)) => cut = true,
+                Some(StreamEvent::ToolCallEnd { id, name, args }) => {
+                    open = open.saturating_sub(1);
+                    calls.push((id, name, args));
+                }
                 Some(StreamEvent::Usage(u) | StreamEvent::RetriedUsage(u)) => usage += u,
                 Some(StreamEvent::Error(e)) => return (Err(Failure::Model(e)), usage),
-                Some(StreamEvent::Done) | None => return (Ok((text, calls)), usage),
+                Some(StreamEvent::Done) | None => {
+                    // a call cut off is dropped by the parser: what is left would pass as the report
+                    if cut && (calls.is_empty() || open > 0) {
+                        let e = ProviderError::new(ErrorKind::Parse, "the reply was cut off at the output limit");
+                        return (Err(Failure::Model(e)), usage);
+                    }
+                    return (Ok((text, calls)), usage);
+                }
                 _ => {}
             }
         }

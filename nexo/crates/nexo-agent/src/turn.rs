@@ -477,7 +477,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         }
                     }
                     AgentCommand::Clear => {
-                        if turn.is_some() {
+                        let was_running = turn.is_some();
+                        if was_running {
                             cancel.cancel();
                             chan_gate.deny_all("cleared");
                             asker.drop_all();
@@ -494,6 +495,15 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         }
                         jobs.kill_all();
                         clear(&state).await;
+                        // the killed jobs are not news for the new conversation
+                        jobs.take_ended();
+                        if was_running {
+                            // the cancelled turn never reaches the end-of-turn tail: the agent is idle now
+                            if let Some(m) = state.lock().await.mail.clone() {
+                                m.set_idle(true);
+                            }
+                            emit(&events, AgentEvent::Idle { running_jobs: jobs.running() });
+                        }
                     }
                     AgentCommand::Shell { command } => {
                         let cwd = state.lock().await.cwd.clone();
@@ -963,8 +973,13 @@ async fn goal_settle(state: &Shared, reason: TurnEnd) {
             ),
         },
         TurnEnd::Done => {
-            let last =
-                st.history.iter().rev().find(|m| m.role == Role::Assistant).map(Message::text).unwrap_or_default();
+            let from = st.turn_start.min(st.history.len());
+            let last = st.history[from..]
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::Assistant)
+                .map(Message::text)
+                .unwrap_or_default();
             if goal_done(&last) {
                 (GoalState::Done, "goal met · /goal resume reopens it, /goal off clears it".to_string())
             } else if goal_wait(&last) {
@@ -1337,9 +1352,16 @@ fn push_user(st: &mut State, text: String, attachments: &[Attachment]) {
     emit(&st.events, AgentEvent::History { index, message: m });
 }
 
+/// Bills the usage of an attempt the turn goes on from without keeping its reply.
+async fn bill_attempt(state: &Shared, events: &EventTx, model: &str, usage: Usage, call: Usage) {
+    if !usage.is_empty() {
+        add_usage(&mut *state.lock().await, events, model, usage, call, UsageKind::Main);
+    }
+}
+
 /// Messages the person sent while the turn ran join it now, right after the tool
-/// results, so the next model call already sees them.
-async fn take_inbox(state: &Shared) {
+/// results, so the next model call already sees them. Tells whether a message of the person joined.
+async fn take_inbox(state: &Shared) -> bool {
     let mut st = state.lock().await;
     // jobs that ended while the tools ran: the model hears of them now
     let ended = st.jobs.take_ended();
@@ -1347,7 +1369,7 @@ async fn take_inbox(state: &Shared) {
         push_user(&mut st, nexo_core::jobs::ended_note(&ended), &[]);
     }
     if st.inbox.is_empty() {
-        return;
+        return false;
     }
     while let Some((text, attachments)) = st.inbox.pop_front() {
         push_user(&mut st, text, &attachments);
@@ -1355,6 +1377,7 @@ async fn take_inbox(state: &Shared) {
     person_spoke(&mut st);
     // the message shows in the transcript where it joined: nothing else to say
     emit(&st.events, AgentEvent::Queued { pending: 0 });
+    true
 }
 
 /// The media type of an image file nexo attaches as an image, by its extension.
@@ -1699,7 +1722,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         };
         let mut stream = match started {
             Ok(s) => s,
-            Err(e) => match learn(&state, &e).await {
+            Err(e) => match learn(&state, &e, &req.model).await {
                 Lesson::Refit if !refitted => {
                     refitted = true;
                     continue;
@@ -1782,19 +1805,22 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         }
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
-                match learn(&state, e).await {
+                match learn(&state, e, &req.model).await {
                     Lesson::Refit if !refitted => {
+                        bill_attempt(&state, &events, &req.model, usage, call).await;
                         refitted = true;
                         continue;
                     }
                     Lesson::Context | Lesson::Refit if !compacted => {
                         compacted = true;
                         if compact_now(&state, &events, Some(()), &cancel).await {
+                            bill_attempt(&state, &events, &req.model, usage, call).await;
                             continue;
                         }
                     }
                     Lesson::Output if !capped => {
                         capped = true;
+                        bill_attempt(&state, &events, &req.model, usage, call).await;
                         continue;
                     }
                     _ => {}
@@ -1810,7 +1836,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
                 }
             }
             if !usage.is_empty() {
-                let model = st.target.model();
+                let model = req.model.clone();
                 add_usage(&mut st, &events, &model, usage, call, UsageKind::Main);
                 st.policy.usage(call.cache_read, call.total_input());
                 st.tok_ratio = learn_ratio(st.tok_ratio, st.est_sent, call.total_input());
@@ -1993,7 +2019,12 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
                 return TurnEnd::MaxTurns;
             }
         }
-        take_inbox(&state).await;
+        if take_inbox(&state).await {
+            // the person spoke: the new message is answered with tools on, and the guards start over
+            answer = Answer::No;
+            seen.clear();
+            stale = 0;
+        }
     }
 }
 
@@ -2939,12 +2970,13 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
             for c in &mut st.checkpoints {
                 c.0 = if c.0 >= from { c.0 - from + shift } else { 0 };
             }
+            // the turn in progress starts where its first kept message now sits
+            st.turn_start = if st.turn_start >= from { st.turn_start - from + shift } else { 0 };
             st.history.replace(work);
             // the failures it held are out of the history: a line pointing back at them would point at nothing
             st.repeats = Default::default();
             add_usage(st, &events, &done.model, done.usage, Usage::default(), UsageKind::Compact);
             st.last_prompt = None;
-            st.turn_start = 0;
             if let Err(e) = st.session.reset_with(&st.history.to_vec()) {
                 notice(&events, Level::Warn, format!("cannot save the session: {e}"));
             }
@@ -3444,13 +3476,13 @@ enum Lesson {
 
 /// Reads the error for what it says about the model and remembers it:
 /// the context window, the largest reply, or that the model does not exist.
-async fn learn(state: &Shared, e: &ProviderError) -> Lesson {
+async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Lesson {
     let mut guard = state.lock().await;
     let st = &mut *guard;
-    let (provider, mut cfg, model) = st.target.get();
+    let (provider, mut cfg, _) = st.target.get();
     if let Some(n) = hints::context_window(&e.message) {
         let before = st.limits.context_window;
-        remember(st, &provider, &mut cfg, &model, "context_window", n);
+        remember(st, &provider, &mut cfg, model, "context_window", n);
         if before.is_none_or(|b| n < b) && st.policy.fits_window() {
             return Lesson::Refit;
         }
@@ -3460,7 +3492,7 @@ async fn learn(state: &Shared, e: &ProviderError) -> Lesson {
         return Lesson::Context;
     }
     if let Some(n) = hints::max_output(&e.message) {
-        remember(st, &provider, &mut cfg, &model, "max_output", n);
+        remember(st, &provider, &mut cfg, model, "max_output", n);
         return Lesson::Output;
     }
     if hints::unknown_model(e) {
@@ -3468,7 +3500,7 @@ async fn learn(state: &Shared, e: &ProviderError) -> Lesson {
         if let Some(c) = catalogue::cached() {
             names.extend(c.model_names(&provider));
         }
-        let close = hints::closest(&model, names.iter().map(String::as_str), 5);
+        let close = hints::closest(model, names.iter().map(String::as_str), 5);
         let hint =
             if close.is_empty() { String::new() } else { format!("; closest: {} (`/model <name>`)", close.join(", ")) };
         notice(&st.events, Level::Warn, format!("{provider} does not know the model `{model}`{hint}"));

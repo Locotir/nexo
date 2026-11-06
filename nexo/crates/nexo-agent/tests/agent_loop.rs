@@ -8,7 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use nexo_agent::{AgentSetup, ModelClient};
-use nexo_core::agent::{channels, AgentCommand, AgentEvent, AgentHandle, GoalState, Level, TurnEnd};
+use nexo_core::agent::{channels, AgentCommand, AgentEvent, AgentHandle, CommandTx, GoalState, Level, TurnEnd};
 use nexo_core::config::{Config, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::message::{Message, Part, Role};
@@ -24,6 +24,8 @@ enum Reply {
     Err(ProviderError),
     /// Yields the events, then never ends (until dropped).
     Hang(Vec<StreamEvent>),
+    /// Sends the command as the request goes out, then yields the events slowly (a command that arrives mid-request).
+    Midway(CommandTx, Box<AgentCommand>, Vec<StreamEvent>),
 }
 
 struct Scripted {
@@ -62,6 +64,13 @@ impl ModelClient for Scripted {
             Reply::Events(evs) => Ok(Box::pin(futures::stream::iter(evs))),
             Reply::Err(e) => Err(e),
             Reply::Hang(evs) => Ok(Box::pin(futures::stream::iter(evs).chain(futures::stream::pending()))),
+            Reply::Midway(tx, c, evs) => {
+                tx.send(*c).unwrap();
+                Ok(Box::pin(futures::stream::iter(evs).then(|e| async move {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    e
+                })))
+            }
         }
     }
 }
@@ -3837,5 +3846,171 @@ async fn a_cleared_conversation_does_not_count_the_failures_of_the_last_one() {
     r.turn().await;
     let sent = serde_json::to_string(&client.requests()[3].messages).unwrap();
     assert!(sent.contains("No such file") && !sent.contains("[the same failure"), "{sent}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_clear_during_a_turn_leaves_the_agent_idle() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 30"}))),
+        Reply::Events(text("fresh answer")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::ToolStart { .. })).await;
+    r.send(AgentCommand::Clear);
+    // the cancelled turn never reaches its tail: the clear says the agent is idle (a headless run waits for it)
+    loop {
+        if matches!(r.raw().await, AgentEvent::Idle { .. }) {
+            break;
+        }
+    }
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "fresh answer");
+    let sent = serde_json::to_string(&client.requests()[1].messages).unwrap();
+    assert!(!sent.contains("background jobs ended"), "{sent}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_sub_agent_reply_cut_at_the_output_limit_is_a_failure_not_a_report() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"description": "map it", "prompt": "where is x kept?"}))),
+        Reply::Events(vec![
+            StreamEvent::TextDelta("x is kept in a.rs and the".into()),
+            StreamEvent::Finish(FinishReason::Length),
+            StreamEvent::Done,
+        ]),
+        Reply::Events(text("noted")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "where is x?".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let done = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolDone { id, output, .. } if id == "t1" => Some(output.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(done.is_error && done.content.contains("cut off"), "{done:?}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_model_changed_during_a_request_does_not_change_who_is_billed() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let tx = r.handle.commands.clone();
+    client.replies.lock().unwrap().push_back(Reply::Midway(
+        tx,
+        Box::new(AgentCommand::SetModel { provider: None, model: "m2".into() }),
+        text("answer from m1"),
+    ));
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let cost =
+        evs.iter().rev().find_map(|e| if let AgentEvent::Usage { cost_usd, .. } = e { Some(*cost_usd) } else { None });
+    assert!(cost.is_some_and(|c| c > 0.0), "m1 has a price: {cost:?}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn the_usage_of_a_failed_attempt_is_still_billed() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(vec![
+            StreamEvent::Usage(Usage { input: 5000, ..Default::default() }),
+            StreamEvent::Error(ProviderError::new(
+                ErrorKind::BadRequest,
+                "max_tokens: 65536 > 8192, which is the maximum allowed number of output tokens for m1",
+            )),
+        ]),
+        Reply::Events(text("fits now")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let session =
+        evs.iter().rev().find_map(|e| if let AgentEvent::Usage { session, .. } = e { Some(*session) } else { None });
+    assert_eq!(session.map(|u| u.input), Some(6000), "the failed attempt's 5000 count too");
+    r.stop().await;
+}
+
+/// A tool that sends a command to the agent when it runs the second time.
+struct Nudge {
+    tx: CommandTx,
+    runs: Mutex<u32>,
+}
+
+#[async_trait]
+impl Tool for Nudge {
+    fn name(&self) -> &str {
+        "nudge"
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "nudge".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+    }
+    fn kind(&self) -> ToolKind {
+        ToolKind::Read
+    }
+    fn summary(&self, _args: &Value) -> String {
+        "nudge".into()
+    }
+    async fn run(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {
+        let mut n = self.runs.lock().unwrap();
+        *n += 1;
+        if *n == 2 {
+            self.tx.send(AgentCommand::Submit { text: "and now read b".into(), attachments: vec![] }).unwrap();
+        }
+        ToolOutput::ok("same output")
+    }
+}
+
+#[tokio::test]
+async fn a_message_that_joins_after_a_guard_stop_is_answered_with_tools_on() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("n1", "nudge", json!({}))),
+        Reply::Events(call("n2", "nudge", json!({}))),
+        Reply::Events(call("c3", "read", json!({"path": "b"}))),
+        Reply::Events(text("read it")),
+    ]);
+    let (handle, ends) = channels();
+    let tools = tools().with(Arc::new(Nudge { tx: handle.commands.clone(), runs: Mutex::new(0) }));
+    data_dir();
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.loop_guard = 2;
+    cfg.agent.guard_answer = true;
+    let setup = AgentSetup {
+        config: cfg,
+        cwd: d.path().to_path_buf(),
+        provider: "mock".into(),
+        model: "m1".into(),
+        tools,
+        client: client.clone(),
+        resume: None,
+        gate: None,
+        mail: None,
+    };
+    let task = tokio::spawn(nexo_agent::run(ends, setup));
+    let mut r = Running { handle, task };
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "start".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let read = evs.iter().find_map(|e| match e {
+        AgentEvent::ToolDone { id, output, .. } if id == "c3" => Some(output.clone()),
+        _ => None,
+    });
+    assert!(read.as_ref().is_some_and(|o| !o.is_error), "the new message's call runs: {read:?}");
     r.stop().await;
 }
