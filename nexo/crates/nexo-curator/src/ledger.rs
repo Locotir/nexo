@@ -66,8 +66,9 @@ static BINARY_LINE: LazyLock<Re> = LazyLock::new(|| {
         0,
     )
 });
-// A number no one types back: an address or a pointer in decimal (fourteen digits or more).
-static BIG_NUMBER: LazyLock<Re> = LazyLock::new(|| Re::new(r"(?<![\w.])\d{14,}(?![\w.])", 0));
+// A number no one types back: an address or a pointer in decimal (fourteen digits or more). One with a zero in
+// front is an address in hex padded to sixteen digits, as `nm` and `readelf` print them, next to a name.
+static BIG_NUMBER: LazyLock<Re> = LazyLock::new(|| Re::new(r"(?<![\w.])[1-9]\d{13,}(?![\w.])", 0));
 // The line number a file viewer puts before each line (`cat -n`, `grep -n`, `nl`, a read tool's `  12│`,
 // `12→` or `12 | `): the number is not part of the line, and a line read from a binary dump must be judged
 // without it.
@@ -491,6 +492,20 @@ mod noise_tests {
         ] {
             assert!(!noise(s), "{s}");
         }
+    }
+
+    #[test]
+    fn a_symbol_of_the_binary_is_a_name_whatever_digits_its_address_has() {
+        // `nm` rows: an address of decimal digits only is still an address in hex, not a pointer
+        for s in [
+            "0000000000401136 T check_key",
+            "0000000000404048 B attempts_left",
+            "00000000004011d0 T _ZN5Vault7unlockEi",
+            "     5: 0000000000404040     8 OBJECT  GLOBAL DEFAULT   25 secret_flag",
+        ] {
+            assert!(!noise(s), "{s}");
+        }
+        assert!(noise("$1 = 140737488346688"));
     }
 }
 

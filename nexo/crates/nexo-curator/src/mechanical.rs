@@ -72,13 +72,41 @@ fn numbers(line: &str) -> Vec<f64> {
     DECIMAL.find_all(&t).iter().filter_map(|&(a, b)| t[a..b].parse().ok()).collect()
 }
 
+/// A number in hex as a dump writes one, on its own as a token: `0x…`, or four hex digits or more, maybe
+/// before a colon or a comma.
+static HEX_NUMBER: LazyLock<Re> = LazyLock::new(|| Re::new(r"^(?:0x[0-9a-f]+|[0-9a-f]{4,})[:,]?$", I));
+
+/// Whether `line` is a row of a memory or hex dump, as `x/8xg`, `od -x` or `xxd -g 4` print one: an address
+/// and the values at it, two or more numbers in hex that make at least half of its tokens.
+fn dump_row(line: &str) -> bool {
+    let tokens: Vec<&str> = py::split_ws(line).collect();
+    let hex = tokens.iter().filter(|t| HEX_NUMBER.is_match(t)).count();
+    hex >= 2 && 2 * hex >= tokens.len()
+}
+
+/// The numbers of a row of a dump: its address and the values at it, read as hex.
+fn hex_numbers(line: &str) -> Vec<f64> {
+    py::split_ws(line)
+        .filter(|t| HEX_NUMBER.is_match(t))
+        .filter_map(|t| {
+            let t = t.trim_end_matches([':', ',']);
+            let h = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+            u128::from_str_radix(h, 16).ok().map(|v| v as f64)
+        })
+        .collect()
+}
+
 /// Whether the `r` repeats of the `period`-line block at `i` carry measurements: a number that is neither the
 /// same in every repeat nor a counter (the same step each time). Lines that differ only in a counter, a
 /// timestamp or an address are a log and fold; lines whose numbers wander are a table, and the numbers are
-/// what the model asked for.
+/// what the model asked for. In a log a word in hex is an id and is masked; in the rows of a memory or hex
+/// dump (`dump_row`) the words in hex are the values asked for, and are the numbers weighed: rows that differ
+/// in them stay, rows of the same values (padding) fold.
 fn is_data(lines: &[String], i: usize, period: usize, r: usize) -> bool {
+    let dump = lines[i..i + period * r].iter().all(|l| dump_row(l));
+    let nums = |l: &str| if dump { hex_numbers(l) } else { numbers(l) };
     for k in 0..period {
-        let rows: Vec<Vec<f64>> = (0..r).map(|q| numbers(&lines[i + k + q * period])).collect();
+        let rows: Vec<Vec<f64>> = (0..r).map(|q| nums(&lines[i + k + q * period])).collect();
         let width = rows[0].len();
         if rows.iter().any(|row| row.len() != width) {
             return true;
@@ -688,6 +716,26 @@ mod tests {
             .collect();
         let text = format!("{pad}\n{cases}");
         assert_eq!(*squeeze(&text, true), text);
+    }
+
+    #[test]
+    fn a_memory_dump_keeps_its_values_and_its_padding_folds() {
+        let pad = "x".repeat(MIN_SAVING);
+        // what gdb prints for `x/16xg $rsp`: every row has its own values, which are what was asked for
+        let stack: String = (0..16)
+            .map(|i| {
+                let (a, b) = (0x7fff_ffff_e2b0u64 + 16 * i, 0x9c3b_0d5d_2a8f_4e00u64 ^ (0x3f1d_a7c9 * (i + 1)));
+                format!("0x{a:x}:\t0x{:016x}\t0x{b:016x}\n", 0x0000_7fff_ffff_e2d0u64 + 0x1234 * i * i)
+            })
+            .collect();
+        let text = format!("{pad}\n{stack}");
+        assert_eq!(*squeeze(&text, true), text);
+        // rows of zeros (`xxd` has no `*`), the address alone counting up, are padding and fold
+        let zeros: String = (0..10)
+            .map(|i| format!("{:08x}: 0000 0000 0000 0000 0000 0000 0000 0000  ................\n", 0x2000 + 16 * i))
+            .collect();
+        let s = squeeze(&format!("{pad}\n{zeros}"), true).into_owned();
+        assert!(s.contains("+7 more lines with the same pattern"), "{s}");
     }
 
     #[test]

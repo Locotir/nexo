@@ -50,7 +50,12 @@ pub fn set_of(mut v: Vec<Sym>) -> Set {
     v
 }
 
-static WORD: LazyLock<Re> = LazyLock::new(|| Re::new(r"[A-Za-z_$][\w$]*(?:[./-][\w$]+)*|\d+(?:\.\d+)+|\d{4,}", 0));
+/// A token: a number in hex with its prefix (`0x401140`, an AT&T immediate `$0x3039`), an identifier (with
+/// the dots, slashes and dashes that join a path or a name), a number with dots (a version), or a number
+/// of four digits or more, hex digits included (`401140`, `40114b`, as a disassembly writes addresses).
+static WORD: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(r"\$?0[xX][0-9a-fA-F]+|[A-Za-z_$][\w$]*(?:[./-][\w$]+)*|\d+(?:\.\d+)+|\d[0-9a-fA-F]{3,}", 0)
+});
 
 const FILE_EXT: [&str; 92] = [
     "py", "js", "mjs", "ts", "tsx", "jsx", "md", "json", "jsonl", "toml", "yaml", "yml", "txt", "cfg", "ini", "sh",
@@ -127,6 +132,22 @@ pub fn words(text: &str, int: &mut Interner) -> Set {
     for (a, b) in WORD.find_all(text) {
         let w = &text[a..b];
         let first = py::first(w).unwrap_or(' ');
+        // a number in hex, as each tool writes it (`0x401140`, `$0x3039`, `0x0000000000401140`, `00401140`,
+        // `41C64E6D`): its digits without the prefix and the zeros in front, in lower case, so that every
+        // spelling of an address or a value is one word, and the agent's words match the listing it read.
+        // A decimal number reads the same way; one of fewer than four digits is too common to be a name.
+        let bare = w.strip_prefix('$').unwrap_or(w);
+        let hex = bare
+            .strip_prefix("0x")
+            .or_else(|| bare.strip_prefix("0X"))
+            .or_else(|| (py::is_digit(first) && bare.bytes().all(|c| c.is_ascii_hexdigit())).then_some(bare));
+        if let Some(h) = hex {
+            let n = h.trim_start_matches('0').to_ascii_lowercase();
+            if py::len(&n) >= 4 && (!py::str_isdigit(&n) || distinctive(&n)) && !common.contains(n.as_str()) {
+                out.push(int.intern(&n));
+            }
+            continue;
+        }
         if w.contains('/') || py::is_digit(first) {
             let ok = py::len(w) >= 4 && (!py::str_isdigit(w) || distinctive(w));
             if ok && !common.contains(w) {
@@ -338,5 +359,59 @@ mod tests {
         for name in ["sales.xlsx", "schema.graphql", "index.astro", "logo.svg", "model.parquet"] {
             assert!(got.iter().any(|w| w == name), "{name}: {got:?}");
         }
+    }
+
+    fn words_of(text: &str) -> Vec<String> {
+        let mut int = Interner::default();
+        words(text, &mut int).into_iter().map(|k| int.get(k).to_string()).collect()
+    }
+
+    #[test]
+    fn every_spelling_of_an_address_is_one_word() {
+        // the same function, as objdump, gdb, radare2, nm, readelf and Ghidra print it, and as the agent writes it
+        for line in [
+            "  40114b:\t3d 7a 1d b6 2f       \tcmp    $0x2fb61d7a,%eax",
+            "   0x40114b <check_key+21>:\tcmp    $0x2fb61d7a,%eax",
+            "│           0x0040114b      3d7a1db62f     cmp eax, 0x2fb61d7a",
+            "000000000040114b T check_key",
+            "     1: 000000000040114b    34 FUNC    GLOBAL DEFAULT   14 check_key",
+            "  return param_1 * 0x41c64e6d + 0x3039 == 0x2FB61D7A;",
+            "the compare at 0x40114b is against 0x2fb61d7a, so key = (0x2fb61d7a - 0x3039) * inverse",
+            "at 40114b the key is compared with 2fb61d7a",
+        ] {
+            let got = words_of(line);
+            assert!(got.iter().any(|w| w == "40114b") || got.iter().any(|w| w == "2fb61d7a"), "{line:?}: {got:?}");
+            assert!(got.iter().all(|w| !w.starts_with('$') && !w.starts_with("0x") && !w.starts_with('x')), "{got:?}");
+        }
+        assert_eq!(words_of("0x40114b 40114b 0x000000000040114b $0x40114B 000000000040114b"), ["40114b"]);
+        // a short value, a year and a name's digits are what they were; a decimal number keeps its worth
+        assert!(words_of("rax 0x1c8 456 in 2024 for job_0042").iter().all(|w| w == "job_0042"));
+        assert_eq!(words_of("pointer 140737488348120 and 0xdeadbeef"), ["140737488348120", "deadbeef"]);
+        assert_eq!(words_of("version 1.2.3 of pkg_7f"), ["1.2.3", "pkg_7f"]);
+    }
+
+    #[test]
+    fn a_listing_is_used_when_the_agent_writes_an_address_it_printed() {
+        let mut int = Interner::default();
+        let mut tr = Tracer::default();
+        let listing = "0000000000401136 <check_key>:\n  401136:\t55                   \tpush   %rbp\n  40114b:\t3d 7a 1d b6 2f       \tcmp    $0x2fb61d7a,%eax\n  401150:\t0f 94 c0             \tsete   %al";
+        tr.add(serde_json::json!({"role": "user", "content": "Where is the key compared?"}), &mut int);
+        tr.add(
+            serde_json::json!({"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "bash", "input": {"command": "objdump -d realm"}}]}),
+            &mut int,
+        );
+        tr.add(
+            serde_json::json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": listing}]}),
+            &mut int,
+        );
+        tr.add(
+            serde_json::json!({"role": "assistant", "content": "The compare is at 0x40114b, against 0x2fb61d7a."}),
+            &mut int,
+        );
+        let mut used: Vec<&str> = tr.used[&3].iter().map(|&w| int.get(w)).collect();
+        used.sort_unstable();
+        assert_eq!(used, ["2fb61d7a", "40114b"]);
+        let result = tr.units.iter().find(|u| u.kind == UKind::Result).unwrap();
+        assert_eq!(result.uses, [3]);
     }
 }
