@@ -231,7 +231,7 @@ pub struct BenchArgs {
     /// The Polyglot benchmark checkout (for --tasks polyglot; default: the pinned commit is cloned into the cache).
     #[arg(long, value_name = "DIR")]
     pub polyglot: Option<PathBuf>,
-    /// Languages of polyglot, comma separated (default: python,rust,go,cpp,javascript).
+    /// Languages of polyglot, comma separated (default: python,rust,go,cpp,javascript,java).
     #[arg(long, value_name = "LANGS", value_delimiter = ',')]
     pub langs: Vec<String>,
     /// Instance ids of repoqa, canonstep and polyglot (lang/name), comma separated (default: all of them).
