@@ -50,7 +50,7 @@ pub const MODEL_JSON: &str = include_str!("../data/model.json");
 /// next one came in, and the agent read the same file again for 180 steps. Past the budget a guess may take
 /// the oldest, so a session where the agent never writes still has a bounded view.
 pub const D_SPEC: &str =
-    "threshold=0.02;head=turn;recall=0;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=1;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1;pockets=0;life=3600";
+    "threshold=0.02;head=turn;recall=0;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1;pockets=0;life=3600";
 
 const INTS: &[&str] = &[
     "protect",

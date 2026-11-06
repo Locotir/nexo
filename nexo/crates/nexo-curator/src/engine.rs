@@ -20,7 +20,8 @@ use crate::py::{self, bisect_left, Re};
 use crate::rules::{clip, rules_in, Rules};
 use crate::telegraph::compress;
 use crate::tools::{
-    classify, edit_size, full_write, heredoc_writes, partial_read, prints_files, read_range, shell_writes, Kind,
+    classify, edit_size, full_write, heredoc_writes, partial_read, printed_files, prints_files, read_range,
+    shell_writes, Kind,
 };
 
 static TEST_COMMAND: LazyLock<Re> = LazyLock::new(|| {
@@ -569,6 +570,10 @@ pub struct Engine {
     /// each call's result came back without an error (`Params.stale`).
     edits: Vec<(String, usize, String)>,
     edit_ok: FxHashMap<String, bool>,
+    /// The files a shell command that only prints files read (`cat`, `sed -n`): by call id while it waits for
+    /// its result, then by result unit, so a later edit of one makes the output out of date as a read's.
+    shell_read: FxHashMap<String, Vec<String>>,
+    shell_reads: FxHashMap<usize, Vec<String>>,
     /// The reads that left the view while a later edit had made them out of date: (path, message of the edit).
     stale_gone: FxHashMap<usize, (String, usize)>,
     /// Seconds, as the host gives them with each view (`Params.pockets`).
@@ -1034,6 +1039,8 @@ impl Engine {
             brought: FxHashMap::default(),
             edits: Vec::new(),
             edit_ok: FxHashMap::default(),
+            shell_read: FxHashMap::default(),
+            shell_reads: FxHashMap::default(),
             stale_gone: FxHashMap::default(),
             now: 0.0,
             pockets: FxHashMap::default(),
@@ -1268,28 +1275,49 @@ impl Engine {
                 for p in paths.into_iter().filter(|p| !p.is_empty()) {
                     self.edits.push((p, u.msg, id.clone()));
                 }
+                if info.is_some_and(|x| x.kind == Kind::Exec) {
+                    let read = printed_files(&command_of(b));
+                    if !read.is_empty() {
+                        self.shell_read.insert(id, read);
+                    }
+                }
             } else if u.kind == UKind::Result {
                 let id = key_of(b.get("tool_use_id"));
                 if self.edits.iter().any(|e| e.2 == id) {
-                    self.edit_ok.insert(id, !info.is_some_and(|x| x.error));
+                    self.edit_ok.insert(id.clone(), !info.is_some_and(|x| x.error));
+                }
+                if let Some(read) = self.shell_read.remove(&id) {
+                    self.shell_reads.insert(i, read);
                 }
             }
         }
     }
 
     /// The file a read result `i` holds and the message of the first later edit or write of it that did not
-    /// fail: the read no longer shows what the file holds (`None`: not a read, or not changed since).
+    /// fail: the read no longer shows what the file holds (`None`: not a read, or not changed since). A shell
+    /// command that only printed files (`shell_reads`) reads them as a read tool does.
     fn superseded_by(&self, i: usize) -> Option<(String, usize)> {
+        self.read_superseded(i, false)
+    }
+
+    /// As `superseded_by`; with `shell`, a shell command that only printed files counts as a read of them.
+    fn read_superseded(&self, i: usize, shell: bool) -> Option<(String, usize)> {
         let u = self.tr.units.get(i)?;
         let info = self.fz.info.get(&i)?;
-        if u.kind != UKind::Result || info.kind != Kind::Read || info.error {
+        if u.kind != UKind::Result || info.error {
             return None;
         }
-        let path = info.path.as_deref().filter(|p| !p.is_empty())?;
-        self.edits
-            .iter()
-            .find(|(p, mi, id)| *mi > u.msg && same_file(path, p) && self.edit_ok.get(id) == Some(&true))
-            .map(|(_, mi, _)| (path.to_string(), *mi))
+        let paths: Vec<&str> = match info.kind {
+            Kind::Read => info.path.as_deref().filter(|p| !p.is_empty()).into_iter().collect(),
+            Kind::Exec if shell => self.shell_reads.get(&i)?.iter().map(String::as_str).collect(),
+            _ => return None,
+        };
+        paths.into_iter().find_map(|path| {
+            self.edits
+                .iter()
+                .find(|(p, mi, id)| *mi > u.msg && same_file(path, p) && self.edit_ok.get(id) == Some(&true))
+                .map(|(_, mi, _)| (path.to_string(), *mi))
+        })
     }
 
     /// The runs of the tool results that just arrived (units `new`) that an earlier result, whole in the
@@ -2636,14 +2664,65 @@ impl Engine {
     /// The outputs of the calls that read a file the latest request names, each file by the parts of its
     /// name the other files read do not share (as in `step_files`): «and now Function C» names
     /// `assembly-C.txt` next to `assembly-A.txt`. It looks at every call, the request still open too.
+    /// Newest first, as `named_take` bounds them.
     fn named_results(&self) -> FxHashSet<usize> {
         let mut out = FxHashSet::default();
         let Some(start) = self.goal.turns.last().map(|t| t.start) else { return out };
         let asked: FxHashSet<String> = name_parts(&self.unit_text_at(start, UKind::User)).into_iter().collect();
-        for (mi, files) in self.call_files() {
-            if files.iter().any(|f| f.iter().all(|p| asked.contains(p))) {
-                out.extend(self.fz.by_msg(mi + 1).iter().copied());
+        let cands: Vec<(Vec<usize>, bool)> = self
+            .call_files()
+            .into_iter()
+            .rev()
+            .filter(|(_, files)| files.iter().any(|f| f.iter().all(|p| asked.contains(p))))
+            .map(|(mi, _)| {
+                let res = self.fz.by_msg(mi + 1).iter().copied().filter(|&u| self.tr.units[u].kind == UKind::Result);
+                (res.collect(), true)
+            })
+            .collect();
+        for ((units, _), take) in cands.iter().zip(self.named_take(&cands)) {
+            if take {
+                out.extend(units.iter().copied());
             }
+        }
+        out
+    }
+
+    /// The files result `i` holds as they were: a read tool's file, or those a shell command that only
+    /// printed files printed (`shell_reads`).
+    fn read_paths(&self, i: usize) -> Vec<&str> {
+        match self.fz.info.get(&i) {
+            Some(x) if x.kind == Kind::Read => x.path.as_deref().filter(|p| !p.is_empty()).into_iter().collect(),
+            _ => self.shell_reads.get(&i).map(|ps| ps.iter().map(String::as_str).collect()).unwrap_or_default(),
+        }
+    }
+
+    /// Of the reads a request names (`cands`: the result units of each, newest first), the ones `named`
+    /// keeps or brings back, newest first up to `Params.named` tokens: none a later edit of its file made
+    /// out of date once a newer read of that file is taken (it shows what the file no longer holds; with
+    /// no newer read, it is still the best picture of the file, the edits on top), and none whose words a
+    /// newer one taken holds already (a second read of the same lines). The newest one still in the view
+    /// stays whatever its size (`in_view`): keeping it adds nothing to send. Whether each is taken.
+    fn named_take(&self, cands: &[(Vec<usize>, bool)]) -> Vec<bool> {
+        let budget = self.p.named;
+        let (mut spent, mut covered, mut fresh) = (0i64, FxHashSet::default(), Vec::<&str>::new());
+        let mut out = Vec::with_capacity(cands.len());
+        for (units, in_view) in cands {
+            let paths: Vec<(usize, Vec<&str>)> =
+                units.iter().map(|&u| (u, self.read_paths(u))).filter(|(_, ps)| !ps.is_empty()).collect();
+            let newer = |p: &&str| fresh.iter().any(|f| same_file(f, p));
+            let stale = !paths.is_empty()
+                && paths.iter().all(|(u, ps)| ps.iter().all(newer) && self.read_superseded(*u, true).is_some());
+            let words: FxHashSet<Sym> = units.iter().flat_map(|&u| self.tr.units[u].words.iter().copied()).collect();
+            let copy = !words.is_empty() && words.iter().all(|w| covered.contains(w));
+            let tokens: i64 = units.iter().map(|&u| self.tr.units[u].tokens).sum();
+            let fits = spent + tokens <= budget || (*in_view && spent == 0);
+            let take = !stale && !copy && fits;
+            if take {
+                spent += tokens;
+                covered.extend(words);
+                fresh.extend(paths.into_iter().flat_map(|(_, ps)| ps));
+            }
+            out.push(take);
         }
         out
     }
@@ -2775,6 +2854,7 @@ impl Engine {
         let through = files.iter().flatten().any(|f| listed(f) && taken(f));
         let pending = |f: &Vec<String>| through && listed(f) && !taken(f);
         let mut back = 0;
+        let mut named: Vec<(usize, Vec<usize>, bool)> = Vec::new();
         let noted = self.noted_results();
         for (i, own) in files.iter().enumerate() {
             // what the agent wrote down about the file, once it proved enough, stands in for its reads:
@@ -2793,15 +2873,25 @@ impl Engine {
                 }
                 continue;
             }
-            // an output that left unused (`live_drop`) is gone from the view as much as a step that left:
-            // every read of the file comes back, since reads by parts (`sed -n 40,400p`, `400,800p`) are not
-            // copies of each other, and what two of them share leaves at birth (`dedup`)
-            let gone = self.steps[i].at.is_none() && {
-                let mut res = self.steps[i].msgs.iter().flat_map(|&mi| self.fz.by_msg(mi).iter().copied());
-                let res: Vec<usize> = res.by_ref().filter(|&u| self.tr.units[u].kind == UKind::Result).collect();
-                !res.is_empty() && res.iter().all(|u| self.led.contains(u))
-            };
-            if !self.steps[i].out && !gone {
+            // an output that left unused (`live_drop`) is gone from the view as much as a step that left
+            let res: Vec<usize> = self.steps[i]
+                .msgs
+                .iter()
+                .flat_map(|&mi| self.fz.by_msg(mi).iter().copied())
+                .filter(|&u| self.tr.units[u].kind == UKind::Result)
+                .collect();
+            let gone = self.steps[i].at.is_none() && !res.is_empty() && res.iter().all(|u| self.led.contains(u));
+            named.push((i, res, !self.steps[i].out && !gone));
+        }
+        // reads by parts (`sed -n 40,400p`, `400,800p`) are not copies of each other: each may stay or come
+        // back, newest first, within the budget (`named_take`)
+        named.reverse();
+        let cands: Vec<(Vec<usize>, bool)> = named.iter().map(|(_, res, in_view)| (res.clone(), *in_view)).collect();
+        for ((i, _, in_view), take) in named.into_iter().zip(self.named_take(&cands)) {
+            if !take {
+                continue;
+            }
+            if in_view {
                 self.steps[i].idle = None;
             } else if turned {
                 let text = self.step_text(i);
@@ -6505,7 +6595,7 @@ mod tests {
         let reply = format!("The largest is client {}.", word(529));
         msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": reply}]}));
         msgs.push(json!({"role": "user", "content": "And the smallest invoice total in report.txt?"}));
-        let spec = |margin: &str| format!("nudge=0;eoq=0;link=0;close=2;named=1;ahead=1;margin={margin}");
+        let spec = |margin: &str| format!("nudge=0;eoq=0;link=0;close=2;named=16000;ahead=1;margin={margin}");
         let mut e = Engine::new(params(&spec("0.05")).unwrap());
         e.sync(&msgs);
         let view = sent(&e.view());
@@ -6619,7 +6709,7 @@ mod tests {
             msgs.extend(step(4, "date", "Sun Nov  1 10:00:00 UTC 2026"));
             msgs
         };
-        let base = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1;named=1;fresh=0";
+        let base = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1;named=16000;fresh=0";
         let read_left = |spec: &str, again: bool| {
             let mut e = Engine::new(params(&format!("{base};{spec}")).unwrap());
             e.sync(&session(again));
@@ -6706,7 +6796,7 @@ mod tests {
 
     #[test]
     fn live_with_named_an_output_of_the_file_the_request_names_stays() {
-        let spec = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1;named=1";
+        let spec = "nudge=0;eoq=0;link=0;threshold=0;close=2;margin=0;ahead=1;live=1;named=16000";
         // the request names listing.txt: its reads are the material the answer needs, used or not yet
         let e = &mut reads(spec, &[(1, 40), (41, 80), (81, 120)]);
         assert_eq!(output(&e.view(), 2), listing(1, 40));
@@ -6849,7 +6939,7 @@ mod tests {
 
     #[test]
     fn named_a_read_stays_while_the_latest_request_names_its_file() {
-        let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=1";
+        let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=16000";
         // the next request is about the report: what was read of it stays
         let mut e = Engine::new(params(spec).unwrap());
         e.sync(&sessions("Done.", Some("Now sort the report by date, please.")));
@@ -6858,6 +6948,51 @@ mod tests {
         let mut e = Engine::new(params(spec).unwrap());
         e.sync(&sessions("Done.", Some("Rename notes.md to todo.md, please.")));
         assert!(!sent(&e.view()).contains(&word(0)[..]));
+    }
+
+    /// A request that names a file again after the talk moved away: what comes back of it.
+    fn named_again(reads: &[(usize, &str, String)], edit_after: Option<usize>) -> String {
+        let mut msgs =
+            vec![json!({"role": "user", "content": "Which client has the largest invoice total in report.txt?"})];
+        for (k, command, out) in reads {
+            msgs.extend(step(*k, command, out));
+            if edit_after == Some(*k) {
+                msgs.extend(step(900, "sed -i 's/client/customer/' report.txt", ""));
+            }
+        }
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+        msgs.push(json!({"role": "user", "content": "How many lines has notes.md?"}));
+        msgs.extend(step(901, "wc -l notes.md", "12 notes.md"));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "12"}]}));
+        msgs.push(json!({"role": "user", "content": "Now sort report.txt by date, please."}));
+        let mut e = Engine::new(params("nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=16000").unwrap());
+        e.sync(&msgs);
+        sent(&e.view())
+    }
+
+    #[test]
+    fn named_a_read_an_edit_made_out_of_date_does_not_come_back() {
+        let old = (0..30).map(|k| format!("row {} client {}", word(k), word(k + 700))).collect::<Vec<_>>().join("\n");
+        let new = (0..30).map(|k| format!("row {} customer {}", word(k), word(k + 900))).collect::<Vec<_>>().join("\n");
+        let view = named_again(&[(1, "cat report.txt", old), (2, "cat report.txt", new)], Some(1));
+        assert!(view.contains(&word(900)[..]), "the read after the edit comes back");
+        assert!(!view.contains(&word(700)[..]), "the read before the edit stays out: {view}");
+    }
+
+    #[test]
+    fn named_what_comes_back_of_a_file_read_in_many_parts_is_bounded() {
+        // 40 parts of 400 lines: far more than the request can use at once
+        let reads: Vec<(usize, String, String)> = (0..40)
+            .map(|k| {
+                (k + 1, format!("sed -n '{},{}p' report.txt", 400 * k, 400 * k + 399), listing(400 * k, 400 * k + 399))
+            })
+            .collect();
+        let reads: Vec<(usize, &str, String)> = reads.iter().map(|(k, c, o)| (*k, c.as_str(), o.clone())).collect();
+        let view = named_again(&reads, None);
+        let whole: usize = reads.iter().map(|r| r.2.len()).sum();
+        assert!(view.len() < whole / 2, "brought back {} of {} bytes", view.len(), whole);
+        // the newest part is among what came back
+        assert!(view.contains(&listing(400 * 39, 400 * 39 + 2)[..20]), "the newest part comes back");
     }
 
     #[test]
@@ -6875,7 +7010,7 @@ mod tests {
             msgs.push(json!({"role": "user", "content": last}));
             msgs
         };
-        let base = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=1";
+        let base = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;named=16000";
         let kept = |spec: &str, last: &str| {
             let mut e = Engine::new(params(spec).unwrap());
             e.sync(&session(last));

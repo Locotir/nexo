@@ -203,6 +203,78 @@ pub fn prints_files(command: &str) -> bool {
     prints
 }
 
+/// The words of a simple command as the shell splits them: a quoted run is one word, without its quotes.
+fn shell_words(cmd: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quote, mut any) = (Vec::new(), String::new(), None, false);
+    for c in cmd.chars() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => cur.push(c),
+            (None, '\'' | '"') => (quote, any) = (Some(c), true),
+            (None, c) if c.is_whitespace() => {
+                if any || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                any = false;
+            }
+            (None, c) => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+/// The files a shell command that only prints files (`prints_files`) prints, as they are on disk: the
+/// arguments of `cat`, `head`, `sed -n`, `grep`… that are no option, no option's value and no script or
+/// pattern. Empty for any other command, and for what reads a pipe.
+pub fn printed_files(command: &str) -> Vec<String> {
+    if !prints_files(command) {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (cmd, piped) in simple_commands(command) {
+        let words = shell_words(&cmd);
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let Some(&first) = words.first() else { continue };
+        if piped
+            || !matches!(
+                first,
+                "cat" | "head" | "tail" | "sed" | "nl" | "tac" | "less" | "more" | "grep" | "egrep" | "fgrep" | "rg"
+            )
+        {
+            continue;
+        }
+        // the first bare word of `sed` and of a search is its script or pattern, unless `-e` gave it
+        let mut skip = matches!(first, "sed" | "grep" | "egrep" | "fgrep" | "rg") && !words.contains(&"-e");
+        let mut value = false;
+        for w in &words[1..] {
+            if value {
+                value = false;
+                continue;
+            }
+            if w.starts_with('-') {
+                // `-n 40`, `-e 's/a/b/'`, `-A 3`: an option whose value is the next word
+                value = match first {
+                    "head" | "tail" => matches!(*w, "-n" | "-c"),
+                    "sed" => matches!(*w, "-e" | "-f"),
+                    "cat" | "nl" | "tac" | "less" | "more" => false,
+                    _ => matches!(*w, "-e" | "-f" | "-A" | "-B" | "-C" | "-m" | "-g" | "-t"),
+                };
+                continue;
+            }
+            if std::mem::replace(&mut skip, false) {
+                continue;
+            }
+            let p = *w;
+            if !p.is_empty() && !out.iter().any(|o| o == p) {
+                out.push(p.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Arguments that hold the whole new text of a file.
 const CONTENT_KEYS: [&str; 5] = ["content", "file_text", "contents", "new_content", "text"];
 /// Write tools that change a part of a file (unless asked to create it).
@@ -494,6 +566,19 @@ mod tests {
         ] {
             assert!(!prints_files(process), "{process}");
         }
+    }
+
+    #[test]
+    fn printed_files_are_the_files_a_print_command_reads() {
+        let files = |c: &str| printed_files(c);
+        assert_eq!(files("cat src/parser.rs"), ["src/parser.rs"]);
+        assert_eq!(files("sed -n '40,80p' src/parser.rs"), ["src/parser.rs"]);
+        assert_eq!(files("head -n 40 a.txt b.txt"), ["a.txt", "b.txt"]);
+        assert_eq!(files("grep -n 'fn parse' src/parser.rs"), ["src/parser.rs"]);
+        assert_eq!(files("grep -A 3 -e parse lib.rs"), ["lib.rs"]);
+        assert_eq!(files("cd src && nl -ba main.rs | tail -40"), ["main.rs"]);
+        assert!(files("sed -i 's/a/b/' a.txt").is_empty());
+        assert!(files("cargo test 2>&1 | tail -50").is_empty());
     }
 
     #[test]
