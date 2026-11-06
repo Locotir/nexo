@@ -1643,13 +1643,16 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
                 _ => {}
             }
         }
-        let (req, cfg, client, retries) = match prepare(&state, &cancel, answer == Answer::Forced).await {
+        let (mut req, cfg, client, retries) = match prepare(&state, &cancel, answer == Answer::Forced).await {
             Ok(x) => x,
             Err(e) => {
                 notice(&events, Level::Error, e.to_string());
                 return TurnEnd::Error;
             }
         };
+        if cut_calls > 0 {
+            req.temperature = retry_temperature(req.temperature);
+        }
         if cancel.is_cancelled() {
             return TurnEnd::Interrupted;
         }
@@ -1810,7 +1813,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             // calls before it belong to a plan cut short. None runs; the model is told why and asks again
             push_results(
                 &state,
-                cancelled_results(&calls, "the reply was cut at max_tokens before its calls were complete"),
+                cancelled_results(&calls, CUT_NOTE),
             )
             .await;
             cut_calls += 1;
@@ -1977,6 +1980,21 @@ enum Answer {
     Asked,
     /// The model called a tool all the same: the protocol is told that none may be called.
     Forced,
+}
+
+/// Why the calls of a reply cut at max_tokens did not run, and how to fit the next one in a reply: a model at a
+/// low temperature otherwise sends the same call again and is cut at the same place
+const CUT_NOTE: &str = "the reply was cut at max_tokens before its calls were complete. A call has to fit in one \
+    reply: write a long file in parts, keep test scripts short, and do not spell out long lists of data";
+
+/// The lowest temperature of the request that follows a reply cut at max_tokens while writing its calls
+const CUT_TEMPERATURE: f32 = 0.6;
+
+/// The temperature of the request after a cut: a low one is raised to `CUT_TEMPERATURE`, because a model at
+/// temperature 0 that looped into the cap loops the same way again from the same history; none (the provider's
+/// own) and a higher one stay
+fn retry_temperature(t: Option<f32>) -> Option<f32> {
+    t.map(|t| t.max(CUT_TEMPERATURE))
 }
 
 /// Sent when a reply held only reasoning (often cut at max_tokens while thinking): not a request of the person.

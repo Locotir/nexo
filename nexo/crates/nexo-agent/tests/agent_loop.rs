@@ -2535,6 +2535,26 @@ async fn a_call_cut_by_max_tokens_does_not_run() {
 }
 
 #[tokio::test]
+async fn the_request_after_a_cut_call_is_sampled_warmer_once() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("f"), "x").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(cut(call("c1", "read", json!({"path": "f"})))),
+        Reply::Events(call("c2", "read", json!({"path": "f"}))),
+        Reply::Events(text("read it")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.temperature = Some(0.0);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read f".into(), attachments: vec![] });
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
+    let temps: Vec<_> = client.requests().iter().map(|q| q.temperature).collect();
+    assert_eq!(temps, vec![Some(0.0), Some(0.6), Some(0.0)]);
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn two_replies_cut_in_a_row_stop_the_request() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![
