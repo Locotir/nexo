@@ -3280,14 +3280,39 @@ const SUGGEST_TOKENS: u32 = 200;
 /// The request of a prompt suggestion: the last request of the conversation as it was sent (the same system
 /// prompt, tools, tool choice and messages, so the provider's cache of it is hit), the reply it got, and one
 /// more message from the person that asks for the suggestion.
-fn suggest_request(last: &ModelRequest, reply: Message) -> ModelRequest {
+fn suggest_request(last: &ModelRequest, reply: Message, levels: &[String]) -> ModelRequest {
     let mut req = last.clone();
     req.messages.push(reply);
     req.messages.push(Message::user(SUGGEST_ASK));
-    // a guess of a dozen words: no thinking first, and a cap that keeps it cheap on any model
-    req.reasoning = Some(ReasoningConfig::Off);
+    // a guess of a dozen words: no thinking first (or the least the model takes, where off is not a level it
+    // has), and a cap that keeps it cheap on any model
+    let has = |l: &str| levels.iter().any(|x| x == l);
+    req.reasoning = Some(if has("minimal") && !has("off") && !has("none") {
+        ReasoningConfig::Effort(Effort::Minimal)
+    } else if has("low") && !has("off") && !has("none") {
+        ReasoningConfig::Effort(Effort::Low)
+    } else {
+        ReasoningConfig::Off
+    });
     req.max_tokens = SUGGEST_TOKENS;
     req
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    use super::*;
+
+    #[test]
+    fn the_suggestion_asks_for_the_least_thinking_the_model_takes() {
+        let last = ModelRequest::new("m", "", vec![]);
+        let lv = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let r = |l: &[&str]| suggest_request(&last, Message::assistant("ok"), &lv(l)).reasoning;
+        assert_eq!(r(&[]), Some(ReasoningConfig::Off));
+        assert_eq!(r(&["off", "low", "high"]), Some(ReasoningConfig::Off));
+        assert_eq!(r(&["minimal", "low", "medium", "high"]), Some(ReasoningConfig::Effort(Effort::Minimal)));
+        assert_eq!(r(&["low", "high"]), Some(ReasoningConfig::Effort(Effort::Low)));
+        assert_eq!(suggest_request(&last, Message::assistant("ok"), &[]).max_tokens, SUGGEST_TOKENS);
+    }
 }
 
 /// A suggestion as one line without the quotes a model puts round it; None when it holds nothing.
@@ -3314,11 +3339,12 @@ fn spawn_suggest(state: &Shared) {
             };
             let (_, cfg, model) = st.target.get();
             // a model that always reasons first would spend the whole cap thinking and say nothing
-            let thinks = model.split(['/', '-', ':']).any(|w| matches!(w, "reasoner" | "o1" | "o3" | "o4"));
+            let thinks = model.split(['/', '-', ':']).any(|w| matches!(w, "reasoner" | "r1" | "o1" | "o3" | "o4"))
+                || ["grok-4", "gpt-5", "codex"].iter().any(|m| model.contains(m));
             if last.model != model || !st.inbox.is_empty() || thinks {
                 return;
             }
-            let req = suggest_request(last, reply.clone());
+            let req = suggest_request(last, reply.clone(), cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]));
             (req, cfg, st.client.clone(), st.config.agent.retries, (st.turns, st.epoch), st.events.clone())
         };
         let Ok(mut stream) = client.stream(&cfg, &req, retries).await else { return };

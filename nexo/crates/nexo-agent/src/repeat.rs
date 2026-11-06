@@ -86,11 +86,14 @@ pub fn target(name: &str, args: &Value, text: &str, kind: &str) -> (String, bool
     static PATH: OnceLock<Regex> = OnceLock::new();
     static TOOL: OnceLock<Vec<Regex>> = OnceLock::new();
     if matches!(kind, "missing" | "no permission") {
-        let re = PATH.get_or_init(|| Regex::new(r#"(?:^|[\s'"`:(])((?:~|\.{1,2})?/[^\s'"`:,)]+)"#).unwrap());
+        let re = PATH.get_or_init(|| {
+            Regex::new(r#"(?:^|[\s'"`:(])((?:~|\.{1,2})?/[^\s'"`:,)]+|[\w.-]+/[^\s'"`:,)]+)"#).unwrap()
+        });
         let said = kinds().iter().find(|(k, _)| *k == kind).map(|(_, r)| r);
         // the path on the line that says the cause, not one from a line of progress before it
         let line = said.and_then(|r| ends(text).lines().find(|l| r.is_match(l)).map(str::to_string));
-        if let Some(c) = line.as_deref().and_then(|l| re.captures(l)) {
+        // and only a path the command named: `find /` warns about `/root` without trying to reach it
+        if let Some(c) = line.as_deref().and_then(|l| re.captures(l)).filter(|c| cmd.contains(&c[1])) {
             return (c[1].to_string(), false);
         }
     }
@@ -107,11 +110,21 @@ pub fn target(name: &str, args: &Value, text: &str, kind: &str) -> (String, bool
             .map(|p| Regex::new(p).unwrap())
             .collect()
         });
-        if let Some(c) = res.iter().find_map(|re| re.captures(text)) {
+        if let Some(c) = res.iter().find_map(|re| re.captures(text)).filter(|c| cmd.contains(&c[1])) {
             return (format!("the program `{}`", &c[1]), false);
         }
     }
     (format!("`{}`", one_line(cmd, 80)), true)
+}
+
+/// Whether two outputs of one command say the same thing. A timeout prints the pid, port or seconds it
+/// reached, which change on every run: there the numbers do not count.
+fn same(kind: &str, a: &str, b: &str) -> bool {
+    if kind != "timeout" {
+        return a == b;
+    }
+    let plain = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
+    plain(a) == plain(b)
 }
 
 fn one_line(s: &str, max: usize) -> String {
@@ -174,7 +187,7 @@ impl Repeats {
         let fresh = Fail { kind, first: now, round, times: 0, text: String::new() };
         let fail = self.last.entry(key.clone()).or_insert(fresh);
         // a command known only by its text is the same failure only when it says the same thing
-        let other = fail.kind != kind || (by_command && fail.times > 0 && fail.text != text);
+        let other = fail.kind != kind || (by_command && fail.times > 0 && !same(kind, &fail.text, &text));
         if other {
             *fail = Fail { kind, first: now, round, times: 0, text: String::new() };
         }
@@ -253,6 +266,33 @@ mod tests {
     }
 
     #[test]
+    fn a_path_the_command_did_not_name_is_not_its_failure() {
+        let mut r = Repeats::default();
+        let find = |n: &str| json!({"command": format!("find / -name {n} 2>&1 | head")});
+        one(&mut r, "bash", find("foo"), "find: '/root': Permission denied", false);
+        let t = one(&mut r, "bash", find("bar"), "find: '/root': Permission denied", false);
+        assert!(!tagged(&t), "{t}");
+    }
+
+    #[test]
+    fn a_timeout_that_prints_a_new_pid_is_the_same_timeout() {
+        let mut r = Repeats::default();
+        let cmd = json!({"command": "npm run dev"});
+        one(&mut r, "bash", cmd.clone(), "listening on :5173 (pid 4121)\ncommand timed out after 120s", true);
+        let t = one(&mut r, "bash", cmd, "listening on :5174 (pid 4388)\ncommand timed out after 120s", true);
+        assert!(tagged(&t), "{t}");
+    }
+
+    #[test]
+    fn a_relative_path_links_a_shell_failure_with_a_read() {
+        let mut r = Repeats::default();
+        one(&mut r, "read", json!({"path": "src/x.rs"}), "src/x.rs: No such file or directory", true);
+        let t =
+            one(&mut r, "bash", json!({"command": "cat src/x.rs"}), "cat: src/x.rs: No such file or directory", true);
+        assert!(tagged(&t), "{t}");
+    }
+
+    #[test]
     fn a_failure_that_comes_back_on_the_same_thing_says_so_and_keeps_its_output() {
         let mut r = Repeats::default();
         let w = json!({"path": "/etc/hosts", "content": "x"});
@@ -310,10 +350,10 @@ mod tests {
     #[test]
     fn a_command_known_only_by_its_text_repeats_only_when_it_says_the_same() {
         let mut r = Repeats::default();
-        let c = json!({"command": "curl -s https://example.com"});
-        one(&mut r, "bash", c.clone(), "connection timed out after 5s", true);
-        assert!(!tagged(&one(&mut r, "bash", c.clone(), "connection timed out after 9s", true)));
-        assert!(tagged(&one(&mut r, "bash", c, "connection timed out after 9s", true)));
+        let c = json!({"command": "ls $DIR"});
+        one(&mut r, "bash", c.clone(), "ls: cannot access 'one': No such file or directory", true);
+        assert!(!tagged(&one(&mut r, "bash", c.clone(), "ls: cannot access 'two': No such file or directory", true)));
+        assert!(tagged(&one(&mut r, "bash", c, "ls: cannot access 'two': No such file or directory", true)));
     }
 
     #[test]
