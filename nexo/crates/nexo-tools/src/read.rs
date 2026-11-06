@@ -123,6 +123,7 @@ impl Tool for Read {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::write::Write;
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
