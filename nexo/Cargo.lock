@@ -1576,6 +1576,7 @@ dependencies = [
  "nexo-curator",
  "nexo-providers",
  "nexo-tools",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

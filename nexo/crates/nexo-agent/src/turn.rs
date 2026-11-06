@@ -193,6 +193,8 @@ struct State {
     digests: HashMap<u64, String>,
     /// Commands and sub-agents running in the background.
     jobs: Jobs,
+    /// Failures of the session kept by what they were on, to say when one comes back.
+    repeats: crate::repeat::Repeats,
     /// Plan mode: the mode to go back to and the switch an approved plan asks for.
     plan: crate::ask::PlanCell,
     /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
@@ -345,6 +347,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         reads: Reads::default(),
         digests: HashMap::new(),
         jobs: jobs.clone(),
+        repeats: Default::default(),
         plan,
         last_prompt: None,
         est_sent: 0,
@@ -2629,8 +2632,11 @@ async fn run_tools(
             let futs = calls[i..end].iter().zip(verdicts[i..end].iter()).map(|((id, name, args), v)| {
                 run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, cancel)
             });
-            for (k, (part, c)) in futures::future::join_all(futs).await.into_iter().enumerate() {
-                results[i + k] = Some(part);
+            let done = futures::future::join_all(futs).await;
+            let mut st = state.lock().await;
+            for (k, (part, c)) in done.into_iter().enumerate() {
+                let (_, name, args) = &calls[i + k];
+                results[i + k] = Some(st.repeats.tag(name, args, part));
                 cancelled |= c;
             }
         }
