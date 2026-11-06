@@ -519,7 +519,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         if let Some(goal) = set_goal(&state, text).await {
                             let request = format!("{GOAL_SET_MARK} {goal}");
                             if turn.is_some() {
-                                let text = format!("goal set: {goal} · applies from now; checked when this turn ends");
+                                let text = format!("goal set: {goal} · checked when this turn ends; the model reads it from the next turn");
                                 notice(&events, Level::Info, text);
                             } else {
                                 turn = Some(start_turn(&state, request, Vec::new(), cancel.child_token()).await);
@@ -746,7 +746,11 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 // what is left came after the turn's last model call
                 let next = {
                     let mut st = state.lock().await;
-                    let next = st.inbox.pop_front();
+                    // after Esc the person wanted to stop: what was queued waits for them
+                    let next = if reason == TurnEnd::Interrupted { None } else { st.inbox.pop_front() };
+                    if reason == TurnEnd::Interrupted && !st.inbox.is_empty() {
+                        notice(&events, Level::Info, format!("{} queued request(s) kept; they join your next message", st.inbox.len()));
+                    }
                     if next.is_some() {
                         emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                         person_spoke(&mut st);
@@ -1197,6 +1201,16 @@ async fn rewind(state: &Shared, index: usize) {
         Level::Info,
         format!("rewound: {} dropped, {keep} kept{files}", nexo_core::count(dropped, "message")),
     );
+}
+
+/// A file as it is before a write, for a rewind: `Some(None)` when it did not exist, `Some(Some(bytes))`
+/// when it was read, and `None` when it could not be read (no checkpoint then: a rewind would delete it).
+fn pre_image(path: &Path) -> Option<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(b) => Some(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
 }
 
 /// Puts back every file the agent wrote after `keep` messages as it was before the first
@@ -2730,10 +2744,19 @@ async fn run_one(
             if tool.kind() == ToolKind::Write {
                 if let Some(p) = args.get("path").and_then(Value::as_str) {
                     let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) };
-                    let before = std::fs::read(&path).ok();
+                    let before = pre_image(&path);
                     let mut st = state.lock().await;
-                    let at = st.history.len();
-                    st.checkpoints.push((at, path, before));
+                    match before {
+                        Some(before) => {
+                            let at = st.history.len();
+                            st.checkpoints.push((at, path, before));
+                        }
+                        None => notice(
+                            &st.events,
+                            Level::Warn,
+                            format!("could not read {} before the edit; a rewind will not restore it", path.display()),
+                        ),
+                    }
                 }
             }
             // a pre_tool hook may stop the call, with a reason the model reads
@@ -3480,8 +3503,14 @@ async fn learn(state: &Shared, e: &ProviderError, model: &str) -> Lesson {
     let mut guard = state.lock().await;
     let st = &mut *guard;
     let (provider, mut cfg, _) = st.target.get();
-    if let Some(n) = hints::context_window(&e.message) {
+    // a 429 is a throttle (tokens per minute), never the window
+    let throttled = e.kind == ErrorKind::RateLimit || hints::is_rate_message(&e.message);
+    if let Some(n) = hints::context_window(&e.message).filter(|_| !throttled) {
         let before = st.limits.context_window;
+        // a smaller window the person set stays: only a lower number is learned
+        if before.is_some_and(|b| n >= b) {
+            return Lesson::Context;
+        }
         remember(st, &provider, &mut cfg, model, "context_window", n);
         if before.is_none_or(|b| n < b) && st.policy.fits_window() {
             return Lesson::Refit;
@@ -3636,6 +3665,16 @@ fn run_shell(cwd: PathBuf, command: String, events: EventTx) {
 #[cfg(test)]
 mod goal_tests {
     use super::*;
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_recorded_as_missing() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(pre_image(&d.path().join("nope")), Some(None));
+        std::fs::write(d.path().join("f"), "x").unwrap();
+        assert_eq!(pre_image(&d.path().join("f")), Some(Some(b"x".to_vec())));
+        // a folder where a file is expected: unreadable, not absent
+        assert_eq!(pre_image(d.path()), None);
+    }
 
     #[test]
     fn the_view_window_follows_the_providers_count() {

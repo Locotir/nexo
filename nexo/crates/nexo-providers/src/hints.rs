@@ -140,9 +140,23 @@ pub fn is_output_message(message: &str) -> bool {
         .any(|k| m.contains(k))
 }
 
+/// Whether the message names a rate limit (tokens or requests per minute or day): its number is a
+/// throttle that can change with the plan, not the model's window.
+pub fn is_rate_message(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    ["per minute", "per day", "per hour", "per min", "tpm", "rpm", "tpd", "rpd", "rate limit"].iter().any(|k| {
+        // short codes only as whole words ("tpm" is not in "attempt")
+        if k.len() <= 3 {
+            m.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == *k)
+        } else {
+            m.contains(k)
+        }
+    })
+}
+
 /// The context window the message names, when a request was too long.
 pub fn context_window(message: &str) -> Option<u32> {
-    if !is_context_message(message) {
+    if !is_context_message(message) || is_rate_message(message) {
         return None;
     }
     let nums = numbers(message);
@@ -234,7 +248,6 @@ mod tests {
             ("The input token count (300000) exceeds the maximum number of tokens allowed (262144).", 262144),
             ("Prompt contains 150000 tokens and 0 draft tokens, too large for model with 131072 maximum context length", 131072),
             ("This model's maximum prompt length is 131072 but the request contains 140000 tokens.", 131072),
-            ("Request too large for model `llama-3.3-70b-versatile` in organization `org` on tokens per minute. Limit 131072, Requested 150000, please reduce your message size", 131072),
             ("Your input exceeds the context window of this model (256k). Please adjust your input and try again.", 256000),
             ("{\"error\":{\"message\":\"Input is too long for requested model. maximum context length is 1,048,576 tokens\",\"type\":\"invalid_request_error\"}}", 1048576),
             ("context_length_exceeded: the request has 120500 tokens but the limit is 120000", 120000),
@@ -245,6 +258,11 @@ mod tests {
         }
         assert_eq!(context_window("Your input exceeds the context window of this model."), None);
         assert_eq!(context_window("invalid api key"), None);
+        // a throttle is not a window
+        assert_eq!(
+            context_window("Request too large for model `llama-3.3-70b-versatile` in organization `org` on tokens per minute (TPM): Limit 6000, Requested 9000, please reduce your message size"),
+            None
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@ mod update;
 
 fn main() {
     nexo_core::version::set(nexo_bench::run::VERSION);
+    // The local UTC offset can only be read while the process has one thread.
+    nexo_agent::budget::init_local_offset();
     // A closed pipe (`nexo providers | head`) ends the process quietly instead of panicking.
     #[cfg(unix)]
     unsafe {

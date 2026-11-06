@@ -14,24 +14,60 @@ fn file() -> PathBuf {
     nexo_core::paths::data_dir().join("spend.json")
 }
 
+/// The machine's UTC offset, read once. Reading it needs a single-threaded process, so
+/// [`init_local_offset`] runs first thing in `main`, before the async runtime starts.
+static OFFSET: std::sync::OnceLock<Option<time::UtcOffset>> = std::sync::OnceLock::new();
+
+/// Reads the local UTC offset while the process still has one thread. Without it the day
+/// rolls over at UTC midnight.
+pub fn init_local_offset() {
+    let _ = OFFSET.set(time::UtcOffset::current_local_offset().ok());
+}
+
 /// Today, as the file keys it (`2026-10-28`, local time where known).
 pub fn today() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let utc = time::OffsetDateTime::now_utc();
+    let now = match OFFSET.get().copied().flatten() {
+        Some(o) => utc.to_offset(o),
+        None => utc,
+    };
     format!("{:04}-{:02}-{:02}", now.year(), u8::from(now.month()), now.day())
 }
 
-fn load() -> BTreeMap<String, f64> {
-    std::fs::read_to_string(file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+/// The days on disk. A missing file is empty; a file that does not parse is an error, so
+/// it is never written over.
+fn load() -> std::io::Result<BTreeMap<String, f64>> {
+    match std::fs::read_to_string(file()) {
+        Ok(t) if t.trim().is_empty() => Ok(BTreeMap::new()),
+        Ok(t) => serde_json::from_str(&t).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Dollars spent today, every session together.
 pub fn spent_today() -> f64 {
-    load().get(&today()).copied().unwrap_or(0.0)
+    load().unwrap_or_default().get(&today()).copied().unwrap_or(0.0)
 }
 
-/// Adds `cost` to today's spending; returns the new total.
+/// Adds `cost` to today's spending; returns the new total. The read, change and write happen
+/// under a lock shared by every nexo process. A file that does not parse is kept as
+/// `spend.json.bak` before a fresh one is started, so the history is never silently lost.
 pub fn add(cost: f64) -> f64 {
-    let mut days = load();
+    let f = file();
+    if let Some(d) = f.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _lock = nexo_core::auth::lock_in(&f).ok();
+    let mut days = match load() {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            let _ = std::fs::copy(&f, f.with_extension("json.bak"));
+            BTreeMap::new()
+        }
+        // unreadable for another reason: count in memory only, write nothing
+        Err(_) => return cost.max(0.0),
+    };
     let total = {
         let t = days.entry(today()).or_insert(0.0);
         *t += cost.max(0.0);
@@ -43,14 +79,10 @@ pub fn add(cost: f64) -> f64 {
             days.remove(&k);
         }
     }
-    let f = file();
-    if let Some(d) = f.parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
     if let Ok(text) = serde_json::to_string_pretty(&days) {
-        let tmp = f.with_extension("json.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &f);
+        let tmp = f.with_extension(format!("json.{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &f).is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
     }
     total
@@ -122,6 +154,16 @@ mod tests {
         assert!((spent_today() - 0.75).abs() < 1e-12);
         let text = std::fs::read_to_string(d.path().join("spend.json")).unwrap();
         assert!(text.contains(&today()), "{text}");
+        // many writers at once lose nothing
+        let hs: Vec<_> = (0..8).map(|_| std::thread::spawn(|| (0..5).for_each(|_| _ = add(0.01)))).collect();
+        hs.into_iter().for_each(|h| h.join().unwrap());
+        assert!((spent_today() - 1.15).abs() < 1e-9, "{}", spent_today());
+        // a file that does not parse is kept as a backup, not wiped
+        std::fs::write(d.path().join("spend.json"), "{ not json").unwrap();
+        assert_eq!(spent_today(), 0.0);
+        assert!((add(0.1) - 0.1).abs() < 1e-12);
+        let bak = std::fs::read_to_string(d.path().join("spend.json.bak")).unwrap();
+        assert_eq!(bak, "{ not json");
         std::env::remove_var("NEXO_DATA_DIR");
     }
 }

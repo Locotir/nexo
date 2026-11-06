@@ -983,8 +983,14 @@ impl Session {
     /// The history was rewritten (compaction): what follows replaces it.
     pub fn reset_with(&mut self, messages: &[Message]) -> anyhow::Result<()> {
         // one atomic rewrite: a crash leaves the old file or the new one, never a half history
-        self.messages = messages.to_vec();
-        self.rewrite()
+        let (old, outputs) = (std::mem::replace(&mut self.messages, messages.to_vec()), self.outputs.clone());
+        let done = self.rewrite();
+        // as in `rewind`: when the file was not replaced, memory keeps matching it
+        if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
+            (self.messages, self.outputs) = (old, outputs);
+            self.meta.messages = self.messages.len();
+        }
+        done
     }
 
     /// The text of a tool result, for the parts of a message.
@@ -1665,6 +1671,21 @@ mod tests {
         assert_eq!(g.messages().iter().map(|m| m.text()).collect::<Vec<_>>(), ["one", "two"]);
     }
 
+    #[test]
+    fn a_failed_reset_keeps_memory_as_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        for t in ["one", "two", "three"] {
+            s.append(&Message::user(t)).unwrap();
+        }
+        let tmp = s.path().with_extension(format!("jsonl.{}.tmp", std::process::id()));
+        std::fs::create_dir(&tmp).unwrap();
+        assert!(s.reset_with(&[Message::user("summary")]).is_err());
+        assert_eq!(s.messages().iter().map(|m| m.text()).collect::<Vec<_>>(), ["one", "two", "three"]);
+        std::fs::remove_dir(&tmp).unwrap();
+        s.reset_with(&[Message::user("summary")]).unwrap();
+        assert_eq!(s.messages().len(), 1);
+    }
     #[test]
     fn a_file_replaced_but_not_reopened_keeps_memory_as_the_file_and_says_so() {
         let d = tempfile::tempdir().unwrap();

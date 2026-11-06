@@ -495,7 +495,7 @@ async fn a_write_asks_and_a_denial_reaches_the_model() {
 }
 
 #[tokio::test]
-async fn an_interrupt_keeps_the_partial_reply_and_runs_the_queue() {
+async fn an_interrupt_keeps_the_partial_reply_and_the_queue_waits() {
     let d = tempfile::tempdir().unwrap();
     let client =
         Scripted::new(vec![Reply::Hang(vec![StreamEvent::TextDelta("part".into())]), Reply::Events(text("second"))]);
@@ -509,9 +509,10 @@ async fn an_interrupt_keeps_the_partial_reply_and_runs_the_queue() {
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Interrupted);
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::AssistantDone { message } if message.text() == "part")));
+    // the queued request does not run on its own; the next message does
+    r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });
     let evs = r.turn().await;
-    assert!(matches!(evs[0], AgentEvent::Queued { pending: 0 }));
-    assert!(matches!(evs[2], AgentEvent::History { index: 2, .. }));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("kept"))));
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::TurnStart { turn: 2 })));
     assert_eq!(text_of(&evs), "second");
     assert_eq!(end_of(&evs), TurnEnd::Done);
@@ -1246,14 +1247,11 @@ async fn queued_requests_are_counted_as_events() {
     r.send(AgentCommand::Interrupt);
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Interrupted);
-    // the first queued request starts: one left waiting
+    // Esc: nothing queued runs on its own; only the next message starts a turn
+    r.send(AgentCommand::Submit { text: "4".into(), attachments: vec![] });
     let evs = r.turn().await;
-    assert!(matches!(evs[0], AgentEvent::Queued { pending: 1 }));
-    assert!(matches!(&evs[1], AgentEvent::Notice { text, .. } if text.contains("queued request")));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("kept"))));
     assert_eq!(text_of(&evs), "two");
-    let evs = r.turn().await;
-    assert!(matches!(evs[0], AgentEvent::Queued { pending: 0 }));
-    assert_eq!(text_of(&evs), "three");
     r.stop().await;
 }
 
@@ -1279,7 +1277,8 @@ async fn unqueue_takes_a_waiting_request_out_by_text() {
     r.send(AgentCommand::Interrupt);
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Interrupted);
-    // what runs next is "3": "2" never reaches the model
+    // nothing runs by itself after Esc; the next message does, and "2" was taken out
+    r.send(AgentCommand::Submit { text: "4".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(text_of(&evs), "three");
     r.stop().await;
@@ -1591,7 +1590,7 @@ async fn a_goal_set_while_a_turn_runs_only_pins_it() {
     r.send(AgentCommand::SetGoal { text: Some("finish it".into()) });
     let t1 = r.turn().await;
     assert_eq!(user_texts(&t1), vec!["go"], "no second request while the turn runs");
-    assert!(t1.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("applies from now"))));
+    assert!(t1.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("from the next turn"))));
     // the goal is checked when that turn ends: the first continuation runs
     let t2 = r.turn().await;
     assert!(user_texts(&t2).contains(&CONTINUE.to_string()));
