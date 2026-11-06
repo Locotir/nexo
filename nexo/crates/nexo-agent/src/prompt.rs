@@ -160,7 +160,9 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
         }
         let nested = compat::nested_instructions(cwd);
         if !nested.is_empty() {
-            let list: Vec<String> = nested.iter().map(|p| format!("- {}", p.display())).collect();
+            // forward slashes on every system: the model reads one path style
+            let list: Vec<String> =
+                nested.iter().map(|p| format!("- {}", p.display().to_string().replace('\\', "/"))).collect();
             out.push_str(&format!(
                 "\n\nMore instruction files, for folders you are not in (read one before you work there):\n{}",
                 list.join("\n")
