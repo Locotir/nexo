@@ -313,6 +313,11 @@ impl Tracer {
         }
     }
 
+    /// The unit that holds word `w` last, so far: the one a reply copying `w` next would be a use of.
+    pub fn latest_holder(&self, w: Sym) -> Option<usize> {
+        self.latest.get(&w).copied()
+    }
+
     /// The block a unit was made from.
     pub fn block(&self, i: usize) -> &Value {
         let u = &self.units[i];

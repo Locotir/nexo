@@ -1105,7 +1105,7 @@ fn belady(
 /// the replies took from the history that the way had not sent. Memory and time grow with the session,
 /// not with its square: each request is applied to what the one before left, as the file gives it.
 /// With `oracle`, a fourth way: the offline floor of `belady`, at the tokens the curator's view spent.
-fn bank(path: &str, spec: &str, recall: bool, oracle: bool) -> Result<Value, String> {
+fn bank(path: &str, spec: &str, recall: bool, oracle: bool, dump: Option<&str>) -> Result<Value, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file = std::path::Path::new(path);
     let sent_text = file
@@ -1114,6 +1114,13 @@ fn bank(path: &str, spec: &str, recall: bool, oracle: bool) -> Result<Value, Str
         .and_then(|(dir, name)| std::fs::read_to_string(dir.join("sent").join(name)).ok());
     let mut sent_lines = sent_text.as_deref().map(|t| t.lines().filter(|l| !l.trim().is_empty()));
     let mut cur = Curator::new(spec).map_err(|e| format!("bad spec: {e}"))?;
+    // `--dump DIR`: the features of what the view holds at 40 requests of the session, and what each unit
+    // was used by, for a fit of the need heads outside the replay
+    if let Some(dir) = dump {
+        let n = text.lines().filter(|l| !l.trim().is_empty()).count();
+        let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("session");
+        cur.dump_to(&format!("{dir}/{name}.tsv"), n.div_ceil(40)).map_err(|e| format!("dump: {e}"))?;
+    }
     // `--recall`: the host offers the `recall` tool, as nexo does by default
     let offer = |mut t: Vec<String>| {
         if recall && !t.iter().any(|n| n == "recall") {
@@ -1229,6 +1236,7 @@ fn bank(path: &str, spec: &str, recall: bool, oracle: bool) -> Result<Value, Str
         budgets.push(view.total());
         requests += 1;
     }
+    cur.dump_end();
     let floor = oracle.then(|| belady(&records, &said_at, &budgets, &system, system_tokens));
     Ok(json!({
         "file": file.file_name().and_then(|n| n.to_str()).unwrap_or(path),
@@ -1249,19 +1257,21 @@ fn main() {
     if args.iter().any(|a| a == "--bank") {
         let mut spec = String::new();
         let mut files = Vec::new();
-        let (mut recall, mut oracle) = (false, false);
+        let (mut recall, mut oracle, mut dump) = (false, false, None);
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--bank" => {}
                 "--recall" => recall = true,
                 "--oracle" => oracle = true,
+                "--dump" => dump = it.next().cloned(),
                 "--spec" => spec = it.next().cloned().unwrap_or_default(),
                 _ => files.push(a.clone()),
             }
         }
         for f in files {
-            let line = bank(&f, &spec, recall, oracle).unwrap_or_else(|e| json!({"file": f, "error": e}));
+            let line =
+                bank(&f, &spec, recall, oracle, dump.as_deref()).unwrap_or_else(|e| json!({"file": f, "error": e}));
             println!("{line}");
         }
         return;

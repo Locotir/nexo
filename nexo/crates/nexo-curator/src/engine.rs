@@ -366,6 +366,9 @@ pub struct Engine {
     sizes: Vec<i64>,
     raw_tokens: i64,
     dropped: FxHashMap<usize, FxHashSet<usize>>,
+    /// For measurement: where the features of what the view holds, and what each unit came to be used
+    /// by, are written (`Engine::dump_to`).
+    dump: Option<Dump>,
     own: own::Own,
     /// The outputs of the request still open that no later agent message drew on, and since when
     /// (`Params.live`).
@@ -580,6 +583,13 @@ struct Wrote {
     path: String,
     text: String,
     edited: Option<usize>,
+}
+
+/// Where `Engine::dump_to` writes, how often (every `stride` requests) and how many requests it saw.
+struct Dump {
+    out: std::io::BufWriter<std::fs::File>,
+    stride: usize,
+    count: usize,
 }
 
 /// A step of an answered request (`Params.close`): a call and its output.
@@ -864,6 +874,7 @@ impl Engine {
             sizes: Vec::new(),
             raw_tokens: 0,
             dropped: FxHashMap::default(),
+            dump: None,
             own: own::Own::default(),
             live_since: FxHashMap::default(),
             led: FxHashSet::default(),
@@ -1505,7 +1516,11 @@ impl Engine {
             // learned of the provider: it survives the restart
             let (budget, note_tool, recall_tool) = (self.budget, self.note_tool, self.recall_tool);
             let (now, life, read_seen) = (self.now, (self.life_lo, self.life_hi), self.read_seen);
+            // the units of the history so far are complete: what they were used by is written out
+            self.dump_uses();
+            let dump = self.dump.take();
             *self = Engine::new(self.p.clone());
+            self.dump = dump;
             self.rules = rules;
             self.budget = budget;
             self.note_tool = note_tool;
@@ -1932,6 +1947,9 @@ impl Engine {
     pub fn decide(&mut self) {
         self.own.clock += 1;
         self.index_calls();
+        if self.dump.is_some() {
+            self.dump_rows();
+        }
         // what the view sent before: a message of it that a step below changes without weighing the cache
         // (it changes what the view sends, not what is weighed) still counts in `miss`
         let sent = self.sent_vis.clone();
@@ -2815,6 +2833,136 @@ impl Engine {
         out
     }
 
+    /// How likely a reply within `hz` steps still draws on step `i`: the most likely of its units still in
+    /// the view, by the need heads (`learn::Model::need_prob`); without them, of the parts of its outputs
+    /// still in the view by the keep head, none for a step with no output left.
+    fn step_need(&self, i: usize, hz: f64) -> f64 {
+        let mut p: f64 = 0.0;
+        let heads = !MODEL.need.is_empty();
+        for &mi in &self.steps[i].msgs {
+            for &u in self.fz.by_msg(mi) {
+                let gone = self.dropped.get(&u);
+                if heads {
+                    if self.tr.units[u].kind == UKind::User || gone.is_some_and(|g| g.len() == self.fz.chunks[u].len())
+                    {
+                        continue;
+                    }
+                    let x = self.fz.unit_vector(&self.tr, u);
+                    p = p.max(MODEL.need_prob(&x, hz).unwrap_or(0.0));
+                    continue;
+                }
+                if self.tr.units[u].kind != UKind::Result {
+                    continue;
+                }
+                for j in 0..self.fz.chunks[u].len() {
+                    if !gone.is_some_and(|g| g.contains(&j)) {
+                        p = p.max(self.prob(&self.fz.vector(&self.tr, u, j)));
+                    }
+                }
+            }
+        }
+        p
+    }
+
+    /// The messages of the thread the latest request is on, as ranges, for the features that ask.
+    fn active_ranges(&self) -> Vec<(usize, usize)> {
+        let g = &self.goal;
+        if g.turns.is_empty() {
+            return Vec::new();
+        }
+        let n = self.tr.msgs.len();
+        g.members[g.active()].iter().map(|&j| g.span(j, n)).collect()
+    }
+
+    /// Sets the featurizer's context to the step after the history so far (`Featurizer::context`).
+    fn need_context(&mut self) {
+        let t = self.tr.msgs.len();
+        let active = self.active_ranges();
+        self.fz.set_active(active);
+        self.fz.context(&self.tr, t);
+    }
+
+    /// For measurement: writes to `path`, every `stride` requests, the features of each unit the view
+    /// holds and the shipped heads' guesses for it, and at the end what each unit came to be used by.
+    pub fn dump_to(&mut self, path: &str, stride: usize) -> std::io::Result<()> {
+        let out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        self.dump = Some(Dump { out, stride: stride.max(1), count: 0 });
+        Ok(())
+    }
+
+    /// Ends the dump: the uses of the units so far, then the file is closed.
+    pub fn dump_end(&mut self) {
+        self.dump_uses();
+        self.dump = None;
+    }
+
+    fn dump_rows(&mut self) {
+        use std::io::Write;
+        let Some(d) = self.dump.as_mut() else { return };
+        d.count += 1;
+        if (d.count - 1) % d.stride != 0 {
+            return;
+        }
+        let t = self.tr.msgs.len();
+        self.need_context();
+        let vis = self.visible();
+        let Some(d) = self.dump.as_mut() else { return };
+        let mut line = String::new();
+        for &mi in vis.iter() {
+            for &i in self.fz.by_msg(mi) {
+                let u = &self.tr.units[i];
+                let gone = self.dropped.get(&i);
+                if u.tokens < 8 || gone.is_some_and(|g| g.len() == self.fz.chunks[i].len()) {
+                    continue;
+                }
+                let (mut pt, mut pk) = (0.0f64, 0.0f64);
+                if u.kind == UKind::Result {
+                    for j in 0..self.fz.chunks[i].len() {
+                        if !gone.is_some_and(|g| g.contains(&j)) {
+                            let x = self.fz.vector(&self.tr, i, j);
+                            pt = pt.max(MODEL.turn_prob(&x));
+                            pk = pk.max(MODEL.prob(&x));
+                        }
+                    }
+                } else {
+                    let x = self.fz.vector(&self.tr, i, 0);
+                    pt = MODEL.turn_prob(&x);
+                    pk = MODEL.prob(&x);
+                }
+                let x = self.fz.unit_vector(&self.tr, i);
+                line.clear();
+                line.push_str(&format!("x\t{t}\t{i}\t{mi}\t{}\t{pt:.5}\t{pk:.5}", u.tokens));
+                for v in x {
+                    line.push_str(&format!("\t{v:.4}"));
+                }
+                line.push('\n');
+                let _ = d.out.write_all(line.as_bytes());
+            }
+        }
+    }
+
+    fn dump_uses(&mut self) {
+        use std::io::Write;
+        let Some(d) = self.dump.as_mut() else { return };
+        let mut line = String::new();
+        for (i, u) in self.tr.units.iter().enumerate() {
+            let kind = match u.kind {
+                UKind::User => 'U',
+                UKind::Result => 'R',
+                UKind::Text => 'T',
+                UKind::Thinking => 'K',
+                UKind::Call => 'C',
+            };
+            let uses: Vec<String> = u.uses.iter().map(|m| m.to_string()).collect();
+            line.clear();
+            line.push_str(&format!("u\t{i}\t{}\t{kind}\t{}\t{}\n", u.msg, u.tokens, uses.join(",")));
+            let _ = d.out.write_all(line.as_bytes());
+        }
+        let steps: Vec<String> = self.tr.steps.iter().map(|m| m.to_string()).collect();
+        let _ = d.out.write_all(format!("s\t{}\ne\n", steps.join(",")).as_bytes());
+        let _ = d.out.flush();
+    }
+
     /// The tokens step `i` takes in the view now (`sizes`: those of each message).
     fn step_size(&self, i: usize, sizes: &[i64]) -> i64 {
         let s = &self.steps[i];
@@ -2838,13 +2986,21 @@ impl Engine {
         let r = self.p.ratio;
         let going: FxHashSet<usize> = idle.iter().flat_map(|&i| self.steps[i].msgs.iter().copied()).collect();
         let moved = self.moved(|m| !going.contains(&m));
+        // a step is worth the chance a reply still copies its output (`step_need`) times the price of the call
+        // that would bring it back (the view read once more from the cache): one worth more than the rent it
+        // costs to the horizon stays, whatever the cut behind it would cost. On the 656 recorded sessions: in
+        // those over 20 requests 6.7 % fewer replies copy a word the view had lost, 2.9 % fewer tokens are read
+        // without the cache; the sessions of 5 requests or fewer are sent as before. The same rule with the
+        // mean of `step_need` for every step gets half of that: the prediction counts in the longest sessions.
+        self.need_context();
+        let call = r * sizes.iter().sum::<i64>() as f64;
         let mut cands: Vec<(usize, f64, i64)> = idle
             .into_iter()
-            .map(|i| {
+            .filter_map(|i| {
                 let back: i64 = self.steps[i].msgs.iter().map(|m| moved.get(m).copied().unwrap_or(0)).sum();
                 let size = (self.step_size(i, &sizes) - back).max(0);
-                let paid = r * size as f64 * hz;
-                (i, paid, size)
+                let paid = r * size as f64 * hz - self.step_need(i, hz) * call;
+                (paid > 0.0).then_some((i, paid, size))
             })
             .collect();
         cands.sort_by_key(|&(i, _, _)| self.steps[i].place());
@@ -3520,6 +3676,21 @@ impl Engine {
         self.fz.context(&self.tr, t);
         let vis = self.visible();
         let stale = self.stale_reads(&vis);
+        // with the need heads, a result is priced by the chance a reply to the horizon draws on it, per token
+        // it holds (its parts go together, the least needed per token first); without them, part by part by
+        // the keep head
+        let hz = self.horizon(self.tr.steps.len(), sizes.iter().sum());
+        let mut unit_need: FxHashMap<usize, f64> = FxHashMap::default();
+        if !MODEL.need.is_empty() && !only_copies {
+            self.need_context();
+            for &i in vis.iter().flat_map(|&mi| self.fz.by_msg(mi)) {
+                if self.tr.units[i].kind == UKind::Result {
+                    if let Some(p) = MODEL.need_prob(&self.fz.unit_vector(&self.tr, i), hz) {
+                        unit_need.insert(i, p / self.tr.units[i].tokens.max(1) as f64);
+                    }
+                }
+            }
+        }
         // the lines each visible output still sends, the latest first, with the part that sends them
         let mut later: FxHashMap<String, (usize, usize)> = FxHashMap::default();
         let mut carriers: FxHashMap<(usize, usize), Vec<(usize, usize)>> = FxHashMap::default();
@@ -3555,8 +3726,13 @@ impl Engine {
                             }
                             continue;
                         }
-                        let score =
-                            if copy || stale.contains(&i) { -1.0 } else { self.prob(&self.fz.vector(&self.tr, i, j)) };
+                        let score = if copy || stale.contains(&i) {
+                            -1.0
+                        } else if let Some(&p) = unit_need.get(&i) {
+                            p
+                        } else {
+                            self.prob(&self.fz.vector(&self.tr, i, j))
+                        };
                         parts.push((score, mi, i, j, c.tokens, copy));
                     }
                     for l in own.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {

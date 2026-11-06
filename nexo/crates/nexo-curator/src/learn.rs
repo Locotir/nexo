@@ -18,6 +18,56 @@ const MAX_MENTIONS: usize = 30;
 const RECENT: usize = 2;
 const MAX_CHUNK_LINES: usize = 30;
 pub const RARE_IDF: f64 = 1.5;
+/// Words of a unit looked up for `latest_share` (the first of its sorted set).
+const MAX_LATEST: usize = 64;
+/// The features the shipped `keep`, `turn` and `link` heads were trained on come first.
+pub const K_OLD: usize = 31;
+/// One name per feature of `Featurizer::vector`, in order.
+pub const NAMES: [&str; 43] = [
+    "result",
+    "call",
+    "thinking",
+    "read",
+    "write",
+    "exec",
+    "search",
+    "other",
+    "err",
+    "tokens",
+    "created",
+    "npast",
+    "since",
+    "stale",
+    "superseded",
+    "reqs_since",
+    "lines",
+    "words",
+    "position",
+    "share",
+    "used",
+    "cerror",
+    "in_request",
+    "in_recent",
+    "in_answer",
+    "rarest",
+    "echo",
+    "since_echo",
+    "novelty",
+    "actr",
+    "assoc",
+    "user",
+    "text",
+    "steps",
+    "latest_share",
+    "latest_n",
+    "same_key_n",
+    "err_resolved",
+    "since_key",
+    "key_in_request",
+    "key_in_talk",
+    "active",
+    "last_result",
+];
 /// What a word the current step does not ask about is worth, next to 1 for one it asks about (of the same
 /// rarity): what tells nothing of the step is kept only for what is left of the room.
 pub const UNASKED: f64 = 0.02;
@@ -156,10 +206,45 @@ pub struct Info {
     pub kind: Kind,
     pub path: Option<String>,
     pub error: bool,
+    /// What the call is keyed by: its path and the file's name, or the program a command runs. A request
+    /// or a reply that names one of them is about this call.
+    pub keys: Vec<Sym>,
+    /// The key the outcomes of the same thing are listed under (`Featurizer::outcomes`).
+    pub key: Option<String>,
+}
+
+/// The first program a shell command runs (`cargo` of `cd x && cargo build`), without the variables set
+/// in front of it.
+fn program_of(command: &str) -> Option<String> {
+    let mut after_cd = false;
+    for tok in command.split_whitespace() {
+        if tok.contains('=') && !tok.starts_with('-') {
+            continue;
+        }
+        if matches!(tok, "&&" | "||" | ";" | "|") {
+            after_cd = false;
+            continue;
+        }
+        if after_cd {
+            continue;
+        }
+        if tok == "cd" {
+            after_cd = true;
+            continue;
+        }
+        if matches!(tok, "sudo" | "nice" | "time" | "env" | "command" | "exec" | "timeout") {
+            continue;
+        }
+        let name = tok.rsplit('/').next().unwrap_or(tok);
+        return (!name.is_empty()).then(|| name.to_string());
+    }
+    None
 }
 
 pub struct Ctx {
     pub t: usize,
+    /// Steps (replies) so far.
+    k: usize,
     recent: FxHashSet<Sym>,
     request: FxHashSet<Sym>,
     answer: FxHashSet<Sym>,
@@ -180,8 +265,10 @@ type CoWrite = (usize, std::sync::Arc<Vec<Sym>>);
 #[derive(Default)]
 pub struct Featurizer {
     pub info: FxHashMap<usize, Info>,
-    calls: FxHashMap<String, (Kind, Option<String>)>,
+    calls: FxHashMap<String, Info>,
     pub chunks: Vec<Vec<Chunk>>,
+    /// Each unit as one chunk: its words, all its terms, its tokens.
+    pub whole: Vec<Chunk>,
     pub terms: Vec<Set>,
     pub by_msg: Vec<Vec<usize>>,
     pub requests: Vec<usize>,
@@ -193,6 +280,12 @@ pub struct Featurizer {
     amsg: Option<(usize, Vec<Sym>)>,
     reads: FxHashMap<String, Vec<usize>>,
     writes: FxHashMap<String, Vec<usize>>,
+    /// The results on one thing (a path, a program), in order: (message, whether it failed).
+    outcomes: FxHashMap<(u8, String), Vec<(usize, bool)>>,
+    /// Per request (as `requests` lists them), the last message with an output of its work.
+    req_last_result: Vec<usize>,
+    /// The messages of the thread the latest request is on, as ranges (set by the engine).
+    active: Vec<(usize, usize)>,
     seen: FxHashSet<Sym>,
     df: FxHashMap<Sym, u32>,
     df_pos: usize,
@@ -219,19 +312,40 @@ impl Featurizer {
                 let b = tr.block(i);
                 if u.kind == UKind::Call {
                     let input = b.get("input").filter(|v| crate::msg::truthy(Some(v)));
-                    let (kind, path, _) = classify(get_str(b, "name"), input);
+                    let (kind, path, command) = classify(get_str(b, "name"), input);
                     let path = path.filter(|p| !p.is_empty());
-                    self.info.insert(i, Info { kind, path: path.clone(), error: false });
-                    self.calls.insert(key_of(b.get("id")), (kind, path.clone()));
+                    let program = if kind == Kind::Exec { command.as_deref().and_then(program_of) } else { None };
+                    let mut keys = Vec::new();
+                    if let Some(p) = &path {
+                        keys.push(int.intern(p));
+                        if let Some((_, name)) = p.rsplit_once('/') {
+                            if py::len(name) >= 4 {
+                                keys.push(int.intern(name));
+                            }
+                        }
+                    }
+                    if let Some(pr) = &program {
+                        keys.push(int.intern(pr));
+                    }
+                    let key = path.clone().or(program);
+                    let info = Info { kind, path: path.clone(), error: false, keys: set_of(keys), key };
+                    self.info.insert(i, info.clone());
+                    self.calls.insert(key_of(b.get("id")), info);
                     if let (Some(p), Kind::Write) = (&path, kind) {
                         self.writes.entry(p.clone()).or_default().push(u.msg);
                     }
-                } else if let Some((kind, path)) = self.calls.get(&key_of(b.get("tool_use_id"))).cloned() {
+                } else if let Some(call) = self.calls.get(&key_of(b.get("tool_use_id"))).cloned() {
                     let error = crate::msg::truthy(b.get("is_error"));
-                    if let (Some(p), Kind::Read) = (&path, kind) {
+                    if let (Some(p), Kind::Read) = (&call.path, call.kind) {
                         self.reads.entry(p.clone()).or_default().push(u.msg);
                     }
-                    self.info.insert(i, Info { kind, path, error });
+                    if let Some(k) = &call.key {
+                        self.outcomes.entry((call.kind as u8, k.clone())).or_default().push((u.msg, error));
+                    }
+                    if let Some(last) = self.req_last_result.last_mut() {
+                        *last = u.msg;
+                    }
+                    self.info.insert(i, Info { error, ..call });
                 }
             }
             let cs = unit_chunks(tr, i, int);
@@ -240,10 +354,20 @@ impl Featurizer {
             } else {
                 cs[0].terms.clone()
             };
+            self.whole.push(Chunk {
+                start: -1,
+                end: -1,
+                words: u.words.clone(),
+                tokens: u.tokens,
+                position: 0.0,
+                error: cs.iter().any(|c| c.error),
+                terms: ts.clone(),
+            });
             self.chunks.push(cs);
             self.by_msg[u.msg].push(i);
             if u.kind == UKind::User && is_request(&tr.unit_text(i)) && self.requests.last() != Some(&u.msg) {
                 self.requests.push(u.msg);
+                self.req_last_result.push(u.msg);
                 let new = ts.iter().filter(|w| !self.seen.contains(w)).count();
                 self.novelty.insert(u.msg, new as f64 / ts.len().max(1) as f64);
             }
@@ -322,7 +446,30 @@ impl Featurizer {
         let k = bisect_left(&self.answers, &t);
         let answer = if k > 0 { self.terms_at(tr, self.answers[k - 1], UKind::Text) } else { FxHashSet::default() };
         let novelty = req.and_then(|r| self.novelty.get(&r).copied()).unwrap_or(0.0);
-        self.ctx = Some(Ctx { t, recent, request, answer, n: self.df_pos.max(1) as f64, novelty });
+        let k = bisect_left(&tr.steps, &t);
+        self.ctx = Some(Ctx { t, k, recent, request, answer, n: self.df_pos.max(1) as f64, novelty });
+    }
+
+    /// The messages of the thread the latest request is on, as ranges `a..b`.
+    pub fn set_active(&mut self, ranges: Vec<(usize, usize)>) {
+        self.active = ranges;
+    }
+
+    /// The results on the same thing as unit `i` (its path or program) after it and before `t`: how many,
+    /// whether one of them went well, and the message of the last one.
+    fn same_key_after(&self, i: usize, msg: usize, t: usize) -> (usize, bool, Option<usize>) {
+        let Some(info) = self.info.get(&i) else { return (0, false, None) };
+        let Some(key) = &info.key else { return (0, false, None) };
+        let Some(list) = self.outcomes.get(&(info.kind as u8, key.clone())) else { return (0, false, None) };
+        let (mut n, mut ok, mut last) = (0, false, None);
+        for &(m, err) in list {
+            if m > msg && m < t {
+                n += 1;
+                ok |= !err;
+                last = Some(m);
+            }
+        }
+        (n, ok, last)
     }
 
     /// What knowing ``w`` is worth at the step of the current context: its rarity, times 1 if the request,
@@ -362,8 +509,16 @@ impl Featurizer {
 
     /// The feature vector of chunk ``j`` of unit ``i`` in the current context.
     pub fn vector(&self, tr: &Tracer, i: usize, j: usize) -> Vec<f64> {
+        self.vector_of(tr, i, &self.chunks[i][j])
+    }
+
+    /// The feature vector of unit ``i`` as a whole in the current context.
+    pub fn unit_vector(&self, tr: &Tracer, i: usize) -> Vec<f64> {
+        self.vector_of(tr, i, &self.whole[i])
+    }
+
+    fn vector_of(&self, tr: &Tracer, i: usize, c: &Chunk) -> Vec<f64> {
         let ctx = self.ctx.as_ref().expect("context before vector");
-        let c = &self.chunks[i][j];
         let t = ctx.t;
         let u = &tr.units[i];
         let info = self.info.get(&i);
@@ -393,6 +548,25 @@ impl Featurizer {
         let f = |b: bool| if b { 1.0 } else { 0.0 };
         let l1 = |x: f64| x.ln_1p();
         let (actr, assoc) = self.memory(tr, c, t);
+        // the words this unit still holds last: a reply copying one of them next would be a use of it;
+        // a unit whose every word a later output holds too is never the one a reply draws on
+        let (mut held, mut seen) = (0usize, 0usize);
+        for &w in u.words.iter().take(MAX_LATEST) {
+            seen += 1;
+            held += usize::from(tr.latest_holder(w) == Some(i));
+        }
+        let latest_share = if seen > 0 { held as f64 / seen as f64 } else { 0.0 };
+        let (same_n, same_ok, same_last) = self.same_key_after(i, u.msg, t);
+        let since_key = match same_last {
+            Some(m) => Self::steps_between(tr, m as i64, t),
+            None => created,
+        };
+        let keys: &[Sym] = info.map_or(&[], |x| &x.keys[..]);
+        let key_in_request = keys.iter().any(|k| ctx.request.contains(k));
+        let key_in_talk = keys.iter().any(|k| ctx.recent.contains(k) || ctx.answer.contains(k));
+        let active = self.active.is_empty() || self.active.iter().any(|&(a, b)| a <= u.msg && u.msg < b);
+        let kreq = bisect_right(&self.requests, &u.msg);
+        let last_result = u.kind == UKind::Result && kreq > 0 && self.req_last_result[kreq - 1] == u.msg;
         vec![
             f(u.kind == UKind::Result),
             f(u.kind == UKind::Call),
@@ -425,6 +599,19 @@ impl Featurizer {
             ctx.novelty,
             actr,
             assoc,
+            // added for the need heads (`NAMES` from `K_OLD` on)
+            f(u.kind == UKind::User),
+            f(u.kind == UKind::Text),
+            l1(ctx.k as f64),
+            latest_share,
+            l1(held as f64),
+            l1(same_n as f64),
+            f(err && same_ok),
+            l1(since_key as f64),
+            f(key_in_request),
+            f(key_in_talk),
+            f(active),
+            f(last_result),
         ]
     }
 
@@ -529,6 +716,9 @@ pub struct Model {
     pub link: Option<Head>,
     turn_share: f64,
     pub link_share: Option<f64>,
+    /// The need heads: for a horizon in steps (0: ever), the chance a reply within it draws on a unit
+    /// (`Featurizer::unit_vector`), in order of horizon, the one for ever last.
+    pub need: Vec<(f64, Head)>,
 }
 
 fn correct(p: f64, pi: f64) -> f64 {
@@ -546,21 +736,55 @@ impl Model {
             None => self.prob(x),
         }
     }
+
+    /// The chance a reply within `h` steps (0 or past the longest head: ever) draws on the unit of `x`,
+    /// between the two heads around `h` in the log of the horizon; `None` without need heads.
+    pub fn need_prob(&self, x: &[f64], h: f64) -> Option<f64> {
+        let heads = &self.need;
+        let (ever, finite): (Vec<_>, Vec<_>) = heads.iter().partition(|(hz, _)| *hz <= 0.0);
+        let last = ever.first().or(finite.last())?;
+        if h <= 0.0 || finite.is_empty() || h >= finite[finite.len() - 1].0 {
+            return Some(last.1.prob(x));
+        }
+        let k = finite.partition_point(|(hz, _)| *hz < h);
+        if k == 0 {
+            return Some(finite[0].1.prob(x));
+        }
+        let (h0, p0) = (finite[k - 1].0, finite[k - 1].1.prob(x));
+        let (h1, p1) = (finite[k].0, finite[k].1.prob(x));
+        let a = (h.ln() - h0.ln()) / (h1.ln() - h0.ln());
+        Some(p0 + a * (p1 - p0))
+    }
+}
+
+/// A model read from its JSON (the shipped one, or one a fit wrote in the same shape).
+pub fn model_from(d: &Value) -> Option<Model> {
+    let on = d.get("trained_on");
+    let share = |k: &str| on.and_then(|o| o.get(k)).and_then(Value::as_f64);
+    let head = |k: &str| d.get(k).and_then(Head::from);
+    let mut need: Vec<(f64, Head)> = d
+        .get("need")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| Some((v.get("h")?.as_f64()?, Head::from(v)?))).collect())
+        .unwrap_or_default();
+    need.sort_by(|a, b| {
+        let key = |h: f64| if h <= 0.0 { f64::INFINITY } else { h };
+        key(a.0).total_cmp(&key(b.0))
+    });
+    Some(Model {
+        keep: head("keep")?,
+        turn: head("turn"),
+        link: head("link"),
+        turn_share: share("turn_share").unwrap_or(0.5),
+        link_share: share("link_share"),
+        need,
+    })
 }
 
 /// The model shipped with the crate.
 pub static MODEL: LazyLock<Model> = LazyLock::new(|| {
     let d: Value = serde_json::from_str(crate::MODEL_JSON).expect("bundled model");
-    let on = d.get("trained_on");
-    let share = |k: &str| on.and_then(|o| o.get(k)).and_then(Value::as_f64);
-    let head = |k: &str| d.get(k).and_then(Head::from);
-    Model {
-        keep: head("keep").expect("bundled model has a keep head"),
-        turn: head("turn"),
-        link: head("link"),
-        turn_share: share("turn_share").unwrap_or(0.5),
-        link_share: share("link_share"),
-    }
+    model_from(&d).expect("bundled model has a keep head")
 });
 
 pub fn correct_share(p: f64, pi: f64) -> f64 {

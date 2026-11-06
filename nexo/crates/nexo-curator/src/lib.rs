@@ -26,6 +26,9 @@ use mechanical::MARK;
 pub const GENERAL_WORDS: &str = include_str!("../data/general.txt");
 /// The curator's learnt model (JSON), bundled into the binary.
 pub const MODEL_JSON: &str = include_str!("../data/model.json");
+/// The names of the features the need heads see, in the order `Curator::dump_to` writes them, and how many
+/// of them the older heads see (for fits outside the curator).
+pub use learn::{K_OLD, NAMES as NEED_FEATURES};
 
 /// The settings every spec starts from (what is given replaces them). The view is pure (no directives in the
 /// system prompt, no requests for notes): an answered request keeps only its reply, outputs nothing drew on go
@@ -445,6 +448,17 @@ impl Curator {
     /// G0: the rule (and request) that took out the last place message `mi` held `word`, if none sends it.
     pub fn fate(&self, mi: usize, word: &str) -> Option<(u64, &'static str)> {
         self.eng.fate(mi, word)
+    }
+
+    /// For measurement: the features of what the view holds, every `stride` requests, and at the end what
+    /// each unit was used by, to `path` (`Engine::dump_to`).
+    pub fn dump_to(&mut self, path: &str, stride: usize) -> std::io::Result<()> {
+        self.eng.dump_to(path, stride)
+    }
+
+    /// Ends the dump of `dump_to`.
+    pub fn dump_end(&mut self) {
+        self.eng.dump_end();
     }
 
     /// G0: token-requests each rule saved so far.
