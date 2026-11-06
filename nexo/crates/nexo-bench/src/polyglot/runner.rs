@@ -64,9 +64,31 @@ pub fn run_tests(lang: Lang, wd: &Path, seal: &Seal) -> Result<Outcome, String> 
             seconds,
         });
     }
-    let summary = summarize(lang, &raw);
+    let summary = with_crash(summarize(lang, &raw), &raw);
     let output = prompts::cap_output(&prompts::cleanup_output(&raw, wd));
     Ok(Outcome { pass: code == Some(0), timed_out: false, output, summary, seconds })
+}
+
+/// Text a test run prints when the test process itself died (a signal, a stack overflow, a Go panic), not
+/// when a test failed.
+const CRASHES: [&str; 6] = [
+    "(signal: ",
+    "fatal runtime error",
+    "fatal error: stack overflow",
+    "\npanic: ",
+    "Segmentation fault",
+    "fatal error condition",
+];
+
+/// `summary` with a note when the test process crashed: the counts before it are not the whole run.
+pub fn with_crash(summary: String, output: &str) -> String {
+    let crashed = CRASHES.iter().any(|m| output.contains(m));
+    match summary.as_str() {
+        _ if !crashed => summary,
+        "did not compile" | "did not load" => summary,
+        "no test summary" => "crashed".into(),
+        _ => format!("{summary}, then crashed"),
+    }
 }
 
 fn count<'a>(re: &Regex, text: &'a str) -> Vec<regex::Captures<'a>> {
@@ -170,6 +192,21 @@ mod tests {
             summarize(Lang::Rust, "error[E0425]: cannot find value\nerror: could not compile `x`\n"),
             "did not compile"
         );
+    }
+
+    #[test]
+    fn a_crashed_test_process_is_said_so() {
+        // cargo: one binary reported, the next one died of a stack overflow
+        let rust = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n\
+                    fatal runtime error: stack overflow, aborting\nprocess didn't exit successfully: `x` (signal: 6, SIGABRT)\n";
+        assert_eq!(with_crash(summarize(Lang::Rust, rust), rust), "1 passed, 0 failed, then crashed");
+        let go =
+            "runtime: goroutine stack exceeds 1000000000-byte limit\nfatal error: stack overflow\nFAIL\tforth\t0.7s\n";
+        assert_eq!(with_crash(summarize(Lang::Go, go), go), "crashed");
+        let built = "x.cpp:1: fatal error: y.h: No such file\nmake: *** [all] Error 1\n";
+        assert_eq!(with_crash(summarize(Lang::Cpp, built), built), "did not compile");
+        let fail = "--- FAIL: TestX (0.00s)\nFAIL\n";
+        assert_eq!(with_crash(summarize(Lang::Go, fail), fail), "1 failed", "a failed test is no crash");
     }
 
     #[test]
