@@ -739,6 +739,11 @@ with tools in a sealed box, Aider sends whole-file or diff edits without running
 anything, and `deepseek-chat` is whatever DeepSeek serves on the day. The
 other differences are listed in each run's `summary.md`.
 
+On 16 of these exercises (two or three per language), `deepseek-reasoner` passed 12
+at pass@2 and 8 at pass@1, where three runs of `deepseek-chat` (one with the curator) passed 8, 9 and 10
+(5, 5 and 4 at pass@1), for 2.6 times the cost ($0.25 against $0.10). A sample
+that small says the gap is real but not how large it is.
+
 ## Layout of the code
 
 See `ARCHITECTURE.md`: the crates, one rule (`core ← providers, tools, agent,
