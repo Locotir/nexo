@@ -50,6 +50,8 @@ pub enum UsageKind {
     Reader,
     /// A compaction.
     Compact,
+    /// The look at a long background command (`job_review`).
+    Review,
     /// Everything spent so far, written in one line when the file is rewritten.
     Sum,
 }

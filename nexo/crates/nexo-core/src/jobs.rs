@@ -203,9 +203,9 @@ impl JobHandle {
         }
     }
 
-    /// The job ended by itself. A killed job stays killed.
+    /// The job ended by itself. A job killed or stopped stays so.
     pub fn finish(self, ok: bool, how: impl Into<String>) {
-        let killed = { *self.entry.status.lock().unwrap() == JobStatus::Killed };
+        let killed = { !self.entry.status.lock().unwrap().running() };
         if !killed {
             *self.entry.status.lock().unwrap() = JobStatus::Done { ok, how: how.into() };
         }
@@ -354,6 +354,20 @@ impl Jobs {
         drop(s);
         // the model asked for it: no notice
         *e.told.lock().unwrap() = true;
+        e.cancel.cancel();
+        true
+    }
+
+    /// Ends job `id` for a reason the model is told when it learns the job ended (unlike `kill`, which
+    /// the model asked for). False when there is no such job or it had ended.
+    pub fn stop(&self, id: u32, why: &str) -> bool {
+        let Some(e) = self.entry(id) else { return false };
+        let mut s = e.status.lock().unwrap();
+        if !s.running() {
+            return false;
+        }
+        *s = JobStatus::Done { ok: false, how: format!("stopped: {why}") };
+        drop(s);
         e.cancel.cancel();
         true
     }

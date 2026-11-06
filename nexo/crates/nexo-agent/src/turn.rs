@@ -373,6 +373,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     }
     catalogue::refresh_if_stale(None);
     spawn_vendor_fill(&state);
+    spawn_job_review(&state, jobs.clone());
     let mut turn: Option<JoinHandle<TurnEnd>> = None;
     // a sign-in waiting for the browser, so Esc in the setup can drop it
     let mut signing_in: Option<tokio::task::AbortHandle> = None;
@@ -3169,6 +3170,76 @@ async fn save_model(state: &Shared, name: String, cfg: ProviderConfig, model: St
 
 /// Asks the vendor for its model list in the background and fills what the
 /// limits still lack (context window, largest reply, prices).
+/// Weighs every background shell command that runs past `job_review` seconds with one tool-less request apart
+/// from the conversation, which never waits for it: STOP ends the job (the model learns why from its last
+/// line), anything else lets it run and looks again at twice the time. Ends with the session.
+fn spawn_job_review(state: &Shared, jobs: Jobs) {
+    let weak = Arc::downgrade(state);
+    tokio::spawn(async move {
+        // job -> (seconds of the next look, lines it had at the last one)
+        let mut due: HashMap<u32, (u64, usize)> = HashMap::new();
+        // the first look comes soon, to read the setting
+        let mut tick = 1;
+        loop {
+            tokio::time::sleep(Duration::from_secs(tick)).await;
+            let Some(state) = weak.upgrade() else { return };
+            let (first, client, target, retries, request, events) = {
+                let st = state.lock().await;
+                let a = &st.config.agent;
+                (
+                    a.job_review as u64,
+                    st.client.clone(),
+                    st.target.clone(),
+                    a.retries,
+                    crate::review::request_of(&st.history),
+                    st.events.clone(),
+                )
+            };
+            drop(state);
+            tick = crate::review::TICK_S.min(first.max(1));
+            let running: Vec<_> = jobs
+                .list()
+                .into_iter()
+                .filter(|j| j.kind == nexo_core::jobs::JobKind::Shell && j.status.running())
+                .collect();
+            due.retain(|id, _| running.iter().any(|j| j.id == *id));
+            if first == 0 {
+                continue;
+            }
+            let tails = jobs.tails();
+            for j in running {
+                let secs = j.elapsed_ms / 1000;
+                let (next, seen) = *due.entry(j.id).or_insert((first, 0));
+                if secs < next {
+                    continue;
+                }
+                let tail = tails.iter().find(|t| t.id == j.id).map(|t| t.text.as_str()).unwrap_or("");
+                let ask = crate::review::prompt(&j.label, secs, j.lines, j.lines.saturating_sub(seen), tail, &request);
+                match crate::review::ask(&*client, &target, retries, ask).await {
+                    Ok((stop, usage, model)) => {
+                        let Some(state) = weak.upgrade() else { return };
+                        add_usage(
+                            &mut *state.lock().await,
+                            &events,
+                            &model,
+                            usage,
+                            Usage::default(),
+                            UsageKind::Review,
+                        );
+                        if stop && jobs.stop(j.id, "a review judged it no longer worth waiting for") {
+                            let took = nexo_core::jobs::duration(j.elapsed_ms);
+                            notice(&events, Level::Info, format!("job {} stopped by the review after {took}", j.id));
+                            continue;
+                        }
+                    }
+                    Err(e) => notice(&events, Level::Warn, format!("the review of job {} failed: {e}", j.id)),
+                }
+                due.insert(j.id, (secs.max(1) * 2, j.lines));
+            }
+        }
+    });
+}
+
 fn spawn_vendor_fill(state: &Shared) {
     let state = state.clone();
     tokio::spawn(async move {

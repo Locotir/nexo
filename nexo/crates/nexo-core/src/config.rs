@@ -233,6 +233,12 @@ pub struct AgentConfig {
     /// the tool choice, so it finds the prompt cache; only if the model calls a tool all the same does one
     /// more call tell the protocol that none may be called.
     pub guard_answer: bool,
+    /// A background shell command still running after this many seconds is weighed by one request of its
+    /// own, apart from the conversation and with no tools: the command, how long it has run, how much it
+    /// printed since the last look, the end of its output and the request in progress. The answer is one
+    /// word: STOP ends the job and the model is told why; CONTINUE, or no clear answer, leaves it running
+    /// and the next look comes twice as late (0: never).
+    pub job_review: u32,
 }
 
 impl Default for AgentConfig {
@@ -257,6 +263,7 @@ impl Default for AgentConfig {
             loop_guard: 3,
             stale_guard: 6,
             guard_answer: true,
+            job_review: 600,
         }
     }
 }

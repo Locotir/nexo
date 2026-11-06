@@ -39,7 +39,7 @@ impl Tool for Bash {
                  seconds (default 120, at most 600); long output is cut in the middle, keeping \
                  the head and the tail. Avoid interactive commands. With `background: true` the \
                  command runs as a job while you go on working (servers, watchers, long builds and \
-                 test suites): the call returns its job id at once, there is no timeout, you are told \
+                 test suites): the call returns its job id at once, a job that runs long may be stopped if it looks stuck, you are told \
                  when it ends, and the `jobs` tool reads its output or stops it.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
@@ -209,7 +209,7 @@ fn background(command: &str, ctx: &ToolContext) -> ToolOutput {
         }
     });
     let content = format!(
-        "Started background job {id}: `{}`. It runs on while you work, with no timeout; you will be told \
+        "Started background job {id}: `{}`. It runs on while you work; you will be told \
          when it ends. Read its output with jobs {{\"action\": \"output\", \"id\": {id}}} (add \"wait\" \
          to wait for it), stop it with {{\"action\": \"kill\", \"id\": {id}}}.",
         one_line(command, 100)

@@ -27,6 +27,7 @@ pub mod providers;
 mod reader;
 mod reads;
 pub mod recall;
+mod review;
 pub mod session;
 pub mod session_scan;
 pub mod setup;

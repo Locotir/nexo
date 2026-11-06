@@ -3681,3 +3681,66 @@ async fn a_sub_agent_that_fails_for_good_hands_back_what_it_did() {
     assert_eq!(client.requests().len(), 4, "not asked again: the error is not one a retry mends");
     r.stop().await;
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_background_command_past_its_time_is_weighed_apart_and_stopped_when_the_review_says_stop() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "echo waiting; sleep 30", "background": true}))),
+        Reply::Events(text("started")),
+        Reply::Events(text("STOP")),
+        Reply::Events(text("it hung, so it was stopped")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.job_review = 1;
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run it in the background".into(), attachments: vec![] });
+    r.turn().await;
+    // the job's end, told to the idle agent, starts a turn of its own
+    let evs = r.turn().await;
+    assert_eq!(text_of(&evs), "it hung, so it was stopped");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 4);
+    let review = &reqs[2];
+    assert!(review.tools.is_empty() && review.system.contains("CONTINUE or STOP"), "a tool-less request of its own");
+    assert!(review.messages.len() == 1 && review.messages[0].text().contains("echo waiting; sleep 30"));
+    assert!(review.messages[0].text().contains("run it in the background"));
+    let told = reqs[3].messages.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n");
+    assert!(told.contains("[background jobs ended]") && told.contains("stopped: a review judged it"), "{told}");
+    assert!(
+        !reqs[3].messages.iter().any(|m| m.text().contains("CONTINUE or STOP")),
+        "the review stays out of the conversation"
+    );
+    r.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_review_that_says_continue_leaves_the_command_running() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "sleep 3", "background": true}))),
+        Reply::Events(text("started")),
+        // every request from here on, the looks and the turn the job's end starts, hears CONTINUE
+        Reply::Events(text("CONTINUE")),
+        Reply::Events(text("CONTINUE")),
+        Reply::Events(text("CONTINUE")),
+        Reply::Events(text("CONTINUE")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.job_review = 1;
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "run it in the background".into(), attachments: vec![] });
+    r.turn().await;
+    r.turn().await;
+    let reqs = client.requests();
+    assert!(reqs.iter().any(|q| q.system.contains("CONTINUE or STOP")), "it was looked at");
+    let told = reqs.last().unwrap().messages.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n");
+    assert!(told.contains("done (exit 0)"), "{told}");
+    r.stop().await;
+}
