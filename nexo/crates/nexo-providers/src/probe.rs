@@ -89,7 +89,8 @@ fn bearer(cfg: &ProviderConfig, key: Option<&str>) -> HeaderMap {
 /// `(preset, what answered)` for each one that is running.
 pub async fn scan_local() -> Vec<(String, String)> {
     let asks = LOCAL.iter().map(|(name, root)| async move {
-        let found = local_kind(root, SCAN).await?;
+        // each port ends within 2 s whatever it does, so the scan always ends
+        let found = tokio::time::timeout(Duration::from_secs(2), local_kind(root, SCAN)).await.ok()??;
         let mut what = found.label();
         if let Some(v) = &found.version {
             what.push_str(&format!(" {v}"));

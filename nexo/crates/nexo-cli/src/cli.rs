@@ -534,7 +534,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         anyhow::bail!(setup::nothing_chosen_message());
     }
     let picked: Picked = if unset {
-        Picked { provider: String::new(), model: String::new() }
+        setup::placeholder(&config)
     } else {
         setup::pick(&config, args.provider.as_deref(), args.model.as_deref())?
     };
@@ -546,7 +546,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
     if let Some(prompt) = args.prompt.clone() {
         return headless(config, cwd, picked, resume, prompt, args.json).await;
     }
-    interactive(config, cwd, picked, resume).await
+    interactive(config, cwd, picked, resume, unset).await
 }
 
 async fn interactive(
@@ -554,6 +554,7 @@ async fn interactive(
     cwd: PathBuf,
     picked: Picked,
     resume: Option<String>,
+    unset: bool,
 ) -> anyhow::Result<i32> {
     let (handle, ends) = channels();
     let models = setup::model_choices(&config);
@@ -575,8 +576,9 @@ async fn interactive(
     let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume.clone(), None, mailbox.clone()).await?;
     let opts = nexo_tui::TuiOptions {
         cwd: cwd.clone(),
-        provider: picked.provider.clone(),
-        model: picked.model.clone(),
+        // nothing chosen: the interface names none and opens on the locked home
+        provider: if unset { String::new() } else { picked.provider.clone() },
+        model: if unset { String::new() } else { picked.model.clone() },
         models,
         providers: config.providers.iter().map(|(n, c)| (n.clone(), c.clone())).collect(),
         theme: config.ui.theme.clone(),

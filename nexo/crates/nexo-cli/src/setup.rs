@@ -71,6 +71,14 @@ pub fn nothing_chosen(cfg: &Config) -> bool {
 }
 
 /// The wording of `nexo doctor`, for a run that cannot ask.
+/// What the agent starts on while the person has not chosen: the fallback `pick` makes, never shown.
+pub fn placeholder(cfg: &Config) -> Picked {
+    if let Some((provider, model)) = cfg.pick() {
+        return Picked { provider, model };
+    }
+    Picked { provider: cfg.providers.keys().next().cloned().unwrap_or_default(), model: String::new() }
+}
+
 pub fn nothing_chosen_message() -> String {
     format!(
         "no provider chosen and no key found: set one (e.g. {}) or run `nexo auth login <provider>`, then `nexo use <provider>`; `nexo guide` explains every way",

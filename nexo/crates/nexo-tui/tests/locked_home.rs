@@ -86,10 +86,10 @@ fn leaving_the_setup_with_esc_keeps_the_card() {
 #[test]
 fn the_home_opens_when_a_model_works() {
     let mut a = app("codex", codex());
-    // a failed try is no reason to open
-    a.handle_agent(limits("codex", "error"));
-    assert!(a.locked);
+    // the agent starting up on the provider is no choice; a model chosen in the setup is
     a.handle_agent(limits("codex", "catalogue"));
+    assert!(a.locked);
+    a.handle_agent(AgentEvent::ModelChanged { provider: "codex".into(), model: "m".into() });
     assert!(!a.locked);
     assert!(!screen(&mut a).contains("Set up a model to start"));
     press(&mut a, KeyCode::Char('h'));
@@ -170,4 +170,24 @@ fn no_provider_chosen_opens_on_the_card_without_naming_one() {
     assert!(s.contains("Set up a model to start") && !s.to_lowercase().contains("anthropic"), "{s}");
     press(&mut a, KeyCode::Enter);
     assert!(matches!(a.modal, Some(Modal::Setup(_))));
+}
+
+#[test]
+fn an_agent_on_a_placeholder_neither_names_it_nor_opens_the_home() {
+    let mut a = app("codex", codex());
+    a.opts.provider = String::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut a = App::new(a.opts.clone(), tx);
+    a.handle_agent(limits("anthropic", "catalogue"));
+    assert!(a.locked && a.provider.is_empty());
+    assert!(!screen(&mut a).to_lowercase().contains("anthropic"));
+}
+
+#[test]
+fn a_scan_that_answered_before_the_dialog_opened_leaves_no_note() {
+    let mut a = app("codex", codex());
+    a.handle_agent(AgentEvent::LocalServers { found: vec![] });
+    press(&mut a, KeyCode::Enter);
+    assert!(matches!(a.modal, Some(Modal::Setup(_))));
+    assert!(!screen(&mut a).contains("Looking for Ollama"));
 }

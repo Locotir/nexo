@@ -180,6 +180,8 @@ pub struct App {
     pub context: Option<ContextInfo>,
     /// Nothing can be asked until a model works: the home shows a card to set one up (see `ui::draw_lock`).
     pub locked: bool,
+    /// What the last scan for local servers found; `None` until one has answered.
+    pub scan: Option<Vec<(String, String)>>,
     pub provider: String,
     pub model: String,
     pub permission_mode: PermissionMode,
@@ -444,6 +446,7 @@ impl App {
             call_inputs: Vec::new(),
             context: None,
             locked: false,
+            scan: None,
             provider: opts.provider.clone(),
             model: opts.model.clone(),
             permission_mode: PermissionMode::Ask,
@@ -1848,8 +1851,11 @@ impl App {
         match ev {
             AgentEvent::Ready { session_id, provider, model, cwd, permission_mode } => {
                 self.session_id = Some(session_id);
-                self.provider = provider;
-                self.model = model;
+                // nothing chosen yet: the agent runs on a placeholder that the person is never shown
+                if !self.nothing_chosen() {
+                    self.provider = provider;
+                    self.model = model;
+                }
                 self.cwd = cwd;
                 self.permission_mode = permission_mode;
                 self.read_branch();
@@ -2098,6 +2104,8 @@ impl App {
             AgentEvent::Notice { level, text } => self.notice(level, text),
             AgentEvent::UpdateAvailable { behind } => self.update_ready(behind),
             AgentEvent::ModelChanged { provider, model } => {
+                // a model was chosen in the setup: the home opens
+                self.unlock();
                 self.flash(&format!("model: {provider}/{model}"));
                 self.provider = provider;
                 self.model = model;
@@ -2122,9 +2130,8 @@ impl App {
                 self.push(Block::Shell { command, output, exit_code });
             }
             AgentEvent::ModelLimits { provider, model, pricing, context_window, max_output, source } => {
-                // a model answered for the setup: the home opens
-                if source != "error" {
-                    self.unlock();
+                if self.nothing_chosen() {
+                    return;
                 }
                 self.provider = provider.clone();
                 self.model = model.clone();
@@ -2140,6 +2147,7 @@ impl App {
                 self.budget = Some((session_cost, day_cost, session_limit, day_limit));
             }
             AgentEvent::LocalServers { found } => {
+                self.scan = Some(found.clone());
                 if self.locked && found.iter().any(|(p, _)| *p == self.provider) {
                     self.unlock();
                 }
@@ -3708,6 +3716,11 @@ impl App {
 
     /// `/model`: the configured models to switch to, and the guided setup of a new one.
     /// The provider in use is a subscription (a login): its prices are API value, not money spent.
+    /// The interface started with no provider chosen and none has been since.
+    fn nothing_chosen(&self) -> bool {
+        self.locked && self.opts.provider.is_empty()
+    }
+
     pub fn on_plan(&self) -> bool {
         self.opts.providers.iter().any(|(n, c)| *n == self.provider && c.login.is_some())
     }
@@ -3725,7 +3738,11 @@ impl App {
 
     pub fn open_setup(&mut self) {
         let cur = format!("{}/{}", self.provider, self.model);
-        let setup = Setup::new(self.opts.providers.clone(), self.opts.models.clone(), &cur);
+        let mut setup = Setup::new(self.opts.providers.clone(), self.opts.models.clone(), &cur);
+        // a scan that answered before the dialog opened is not waited for again
+        if let Some(found) = self.scan.clone() {
+            setup.found_local(found);
+        }
         self.modal = Some(Modal::Setup(Box::new(setup)));
         self.send(AgentCommand::ScanLocal);
     }
