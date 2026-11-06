@@ -383,6 +383,11 @@ pub enum Hover {
     Head(usize),
 }
 
+/// What a subscription's usage would have cost on the API, worded as included in the plan.
+pub fn plan_value(usd: f64) -> String {
+    format!("≈${usd:.4} API value · included in plan")
+}
+
 impl App {
     pub fn new(opts: TuiOptions, commands: CommandTx) -> App {
         let theme = Theme::pick(&opts.theme);
@@ -2212,7 +2217,8 @@ impl App {
                     let usage = self.turn_usage;
                     let cost_usd = (self.cost - self.turn_cost_start).max(0.0);
                     let tally = std::mem::take(&mut self.turn_tally);
-                    self.push(Block::Usage { usage, cost_usd, elapsed_ms, tally });
+                    let plan = self.on_plan();
+                    self.push(Block::Usage { usage, cost_usd, elapsed_ms, tally, plan });
                 }
                 match reason {
                     TurnEnd::Done => {}
@@ -3699,6 +3705,11 @@ impl App {
     }
 
     /// `/model`: the configured models to switch to, and the guided setup of a new one.
+    /// The provider in use is a subscription (a login): its prices are API value, not money spent.
+    pub fn on_plan(&self) -> bool {
+        self.opts.providers.iter().any(|(n, c)| *n == self.provider && c.login.is_some())
+    }
+
     /// A model works: the locked home gives way to the normal one (at once without animations).
     pub fn unlock(&mut self) {
         if self.locked {

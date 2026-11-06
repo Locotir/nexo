@@ -83,7 +83,7 @@ pub fn cache_pct(u: &Usage) -> Option<u64> {
 }
 
 /// The pieces of the line as `(text, style)`, in display order, widest form.
-fn pieces(theme: &Theme, u: &Usage, cost: f64, ms: u64, t: &TurnTally) -> Vec<(String, Style)> {
+fn pieces(theme: &Theme, u: &Usage, cost: f64, ms: u64, t: &TurnTally, plan: bool) -> Vec<(String, Style)> {
     let dim = theme.dim();
     let mut out = vec![(format!("{:>6}", fmt_ms(ms)), dim)];
     out.push((format!("{:>2} {}", t.steps.min(99), if t.steps == 1 { "step " } else { "steps" }), dim));
@@ -103,8 +103,14 @@ fn pieces(theme: &Theme, u: &Usage, cost: f64, ms: u64, t: &TurnTally) -> Vec<(S
         None => ("      ".to_string(), theme.dim),
     };
     out.push((txt, theme.style(col)));
-    let cost_txt = if cost > 0.0 { format!("${:<6.4}", cost.min(99.0)) } else { " ".repeat(7) };
-    out.push((cost_txt, theme.style(theme.money)));
+    if plan {
+        // a subscription: what the API would have charged, not money spent
+        let txt = if cost > 0.0 { crate::app::plan_value(cost) } else { " ".repeat(7) };
+        out.push((txt, dim));
+    } else {
+        let cost_txt = if cost > 0.0 { format!("${:<6.4}", cost.min(99.0)) } else { " ".repeat(7) };
+        out.push((cost_txt, theme.style(theme.money)));
+    }
     if !t.calls.is_empty() {
         out.push((calls_text(&t.calls), theme.style(theme.accent2)));
     }
@@ -116,7 +122,20 @@ const TIERS: [&[usize]; 4] = [&[0, 1, 2, 3, 4, 5, 6], &[0, 1, 2, 3, 4, 5], &[0, 
 
 /// The summary line for a width of `w` cells.
 pub fn summary_line(theme: &Theme, u: &Usage, cost: f64, ms: u64, t: &TurnTally, w: usize) -> Line<'static> {
-    let all = pieces(theme, u, cost, ms, t);
+    summary_line_for(theme, u, cost, ms, t, w, false)
+}
+
+/// The same line; on a plan the cost reads as API value that the plan includes.
+pub fn summary_line_for(
+    theme: &Theme,
+    u: &Usage,
+    cost: f64,
+    ms: u64,
+    t: &TurnTally,
+    w: usize,
+    plan: bool,
+) -> Line<'static> {
+    let all = pieces(theme, u, cost, ms, t, plan);
     let gap = 2;
     let mut chosen: Vec<usize> = Vec::new();
     for tier in TIERS {

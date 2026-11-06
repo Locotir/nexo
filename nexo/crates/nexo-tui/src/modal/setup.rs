@@ -497,7 +497,10 @@ impl Setup {
                         if let Some(n) = m.context_window {
                             hint.push(format!("{} ctx", fmt_k(n as u64)));
                         }
-                        if let Some(pr) = m.pricing {
+                        if self.cfg.login.is_some() {
+                            // a subscription: there is no per-token price to compare
+                            hint.push("plan".into());
+                        } else if let Some(pr) = m.pricing {
                             hint.push(format!("${} / ${}", fmt_price(pr.input), fmt_price(pr.output)));
                         }
                         if m.reasoning {

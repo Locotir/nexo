@@ -121,6 +121,8 @@ pub enum Block {
         cost_usd: f64,
         elapsed_ms: u64,
         tally: super::summary::TurnTally,
+        /// The provider is a subscription: the cost is API value, included in the plan.
+        plan: bool,
     },
     Shell {
         command: String,
@@ -518,8 +520,8 @@ impl Block {
                 lines
             }
             Block::Update { behind } => update_card(*behind, theme, w),
-            Block::Usage { usage, cost_usd, elapsed_ms, tally } => {
-                let line = super::summary::summary_line(theme, usage, *cost_usd, *elapsed_ms, tally, w);
+            Block::Usage { usage, cost_usd, elapsed_ms, tally, plan } => {
+                let line = super::summary::summary_line_for(theme, usage, *cost_usd, *elapsed_ms, tally, w, *plan);
                 let text = super::summary::plain(&line);
                 if width(&text) <= w {
                     vec![line]
@@ -1308,7 +1310,7 @@ mod tests {
     #[test]
     fn the_usage_line_never_cuts_a_figure_in_a_narrow_pane() {
         let usage = nexo_core::stream::Usage { input: 1800, output: 412, cache_read: 12300, ..Default::default() };
-        let b = Block::Usage { usage, cost_usd: 0.0042, elapsed_ms: 14300, tally: Default::default() };
+        let b = Block::Usage { usage, cost_usd: 0.0042, elapsed_ms: 14300, tally: Default::default(), plan: false };
         // the line drops its least useful pieces first and stays on one row
         let rows = texts(&b.render(28, &Theme::dark(), opts()));
         assert!(rows.len() == 1 && width(&rows[0]) <= 28, "{rows:?}");

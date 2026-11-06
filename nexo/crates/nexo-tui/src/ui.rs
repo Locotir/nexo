@@ -591,7 +591,12 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     // the cost, against the session's limit when there is one, coloured as it nears it
     let limit = app.budget.and_then(|(_, _, l, _)| l);
     let shown = if app.opts.animations { app.cost_shown } else { app.cost };
-    if pieces.contains(&"cost") && (app.cost > 0.0 || limit.is_some()) {
+    if pieces.contains(&"cost") && app.on_plan() && app.cost > 0.0 {
+        // a subscription: the price is what the API would have charged, not money spent
+        let sep = if right.is_empty() { " " } else { " · " };
+        right.push(Seg { text: sep.to_string(), style: base });
+        right.push(Seg { text: crate::app::plan_value(app.cost), style: base.fg(theme.dim) });
+    } else if pieces.contains(&"cost") && (app.cost > 0.0 || limit.is_some()) {
         let sep = if right.is_empty() { " " } else { " · " };
         right.push(Seg { text: sep.to_string(), style: base });
         let (text, colour) = match limit {

@@ -295,10 +295,15 @@ fn usage_lines(app: &App, w: usize, t: f64, period: Period) -> Vec<Line<'static>
     let theme = &app.theme;
     let u = app.session_usage;
     let mut out = Vec::new();
-    out.push(Line::from(vec![
-        Span::styled(format!("${:.4}", app.cost * t), theme.bold(theme.money)),
-        Span::styled("  this session".to_string(), theme.dim()),
-    ]));
+    if app.on_plan() {
+        out.push(Line::from(Span::styled(crate::app::plan_value(app.cost * t), theme.dim())));
+        out.push(Line::from(Span::styled("this session".to_string(), theme.dim())));
+    } else {
+        out.push(Line::from(vec![
+            Span::styled(format!("${:.4}", app.cost * t), theme.bold(theme.money)),
+            Span::styled("  this session".to_string(), theme.dim()),
+        ]));
+    }
     out.push(Line::default());
     let input = u.total_input();
     let rows = [
@@ -341,8 +346,14 @@ fn usage_lines(app: &App, w: usize, t: f64, period: Period) -> Vec<Line<'static>
     if let Some((s, d, sl, dl)) = app.budget {
         out.push(Line::default());
         for (label, spent, limit) in [("session", s, sl), ("today", d, dl)] {
-            let mut spans =
-                vec![Span::raw(format!("{label:<9}")), Span::styled(format!("${spent:.4}"), theme.style(theme.money))];
+            let mut spans = vec![
+                Span::raw(format!("{label:<9}")),
+                if app.on_plan() {
+                    Span::styled(format!("≈${spent:.4} API value"), theme.dim())
+                } else {
+                    Span::styled(format!("${spent:.4}"), theme.style(theme.money))
+                },
+            ];
             if let Some(l) = limit.filter(|l| *l > 0.0) {
                 let share = (spent / l).min(1.0);
                 let (fill, rest) = bar(share * t, 12);
