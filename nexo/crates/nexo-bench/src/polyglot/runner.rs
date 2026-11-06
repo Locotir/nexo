@@ -26,6 +26,8 @@ pub fn command(lang: Lang) -> &'static str {
         Lang::Go => "GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=mod go test ./...",
         Lang::Cpp => "set -e; [ ! -d build ] && mkdir build; cd build; cmake -DEXERCISM_RUN_ALL_TESTS=1 -G \"Unix Makefiles\" ..; make",
         Lang::Javascript => "npm run test",
+        // the exercises' `./gradlew test`, with the gradle it names, fetched beforehand (the box has no network)
+        Lang::Java => "gradle test --offline",
     }
 }
 
@@ -110,6 +112,23 @@ pub fn summarize(lang: Lang, output: &str) -> String {
             match count(&re, output).last() {
                 Some(c) => c[1].to_string(),
                 None => "no test summary".into(),
+            }
+        }
+        Lang::Java => {
+            // "31 tests completed, 2 failed, 1 skipped" on a failure; each test's "PASSED" line on a pass
+            if output.contains("Compilation failed") || output.contains("compileJava FAILED") {
+                return "did not compile".into();
+            }
+            let re = Regex::new(r"(\d+) tests? completed, (\d+) failed(?:, (\d+) skipped)?").unwrap();
+            if let Some(c) = re.captures(output) {
+                let (all, failed) = (n(&c, 1), n(&c, 2));
+                return tally(all.saturating_sub(failed + n(&c, 3)), failed);
+            }
+            let passed = output.lines().filter(|l| l.trim_end().ends_with(" PASSED")).count() as u32;
+            if output.contains("BUILD SUCCESSFUL") {
+                tally(passed, 0)
+            } else {
+                "no test summary".into()
             }
         }
         Lang::Rust => {
@@ -219,6 +238,16 @@ mod tests {
     }
 
     #[test]
+    fn gradle_summaries_cover_a_pass_a_fail_and_a_compile_error() {
+        let ok = "BobTest > a() PASSED\nBobTest > b() PASSED\n\nBUILD SUCCESSFUL in 4s\n";
+        assert_eq!(summarize(Lang::Java, ok), "2 passed, 0 failed");
+        let bad = "BobTest > a() FAILED\n    org.opentest4j.AssertionFailedError\n\n7 tests completed, 2 failed, 1 skipped\n\nFAILURE: Build failed with an exception.\n";
+        assert_eq!(summarize(Lang::Java, bad), "4 passed, 2 failed");
+        let broken = "> Task :compileJava FAILED\nBob.java:3: error: ';' expected\nCompilation failed; see the compiler error output for details.\n";
+        assert_eq!(summarize(Lang::Java, broken), "did not compile");
+    }
+
+    #[test]
     fn catch_summaries_cover_a_pass_a_fail_and_a_compile_error() {
         assert_eq!(summarize(Lang::Cpp, "All tests passed (41 assertions in 7 test cases)\n"), "7 passed, 0 failed");
         assert_eq!(
@@ -248,6 +277,7 @@ mod tests {
                 && command(Lang::Cpp).ends_with("make")
         );
         assert_eq!(command(Lang::Javascript), "npm run test");
+        assert_eq!(command(Lang::Java), "gradle test --offline");
     }
 
     #[test]

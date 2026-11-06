@@ -1,5 +1,5 @@
 //! The Aider Polyglot benchmark (`--tasks polyglot`): Exercism practice exercises in Python, Rust, Go,
-//! C++ and JavaScript (Java needs gradle and is not run), solved by nexo's agent and scored by the
+//! C++, JavaScript and Java, solved by nexo's agent and scored by the
 //! benchmark's own protocol: the model edits the stubs, the hidden tests run, and when they fail the model
 //! gets the test output once and tries again in the same conversation. `pass@1` is solved at the first
 //! try, `pass@2` at either. See [`prompts`] for the ported texts and [`runner`] for the test commands.
@@ -158,6 +158,97 @@ fn install_npm(root: &Path, cache: &Path) -> Result<(), String> {
     sh(&dir, "npm install --no-audit --no-fund --no-package-lock --loglevel=error")
 }
 
+/// Where Java's build is fetched, once: gradle 8.7 (the version the exercises' wrapper names) and the
+/// exercises' packages, in a gradle home kept read-only in the box. There gradle's own folder is the run's
+/// `/tmp/.gradle` and the packages are read from this home's `caches` (`GRADLE_RO_DEP_CACHE`).
+fn java_dir(cache: &Path) -> PathBuf {
+    cache.join("polyglot-java")
+}
+
+/// A JDK gradle 8.7 runs on (17 to 21): `NEXO_BENCH_JAVA_HOME`, else one in the usual places.
+fn java_home() -> Result<PathBuf, String> {
+    if let Some(h) = std::env::var_os("NEXO_BENCH_JAVA_HOME") {
+        return Ok(PathBuf::from(h));
+    }
+    let found = ["21", "17"]
+        .iter()
+        .flat_map(|v| [format!("/usr/lib/jvm/java-{v}-openjdk"), format!("/usr/lib/jvm/java-{v}-openjdk-amd64")])
+        .map(PathBuf::from)
+        .find(|p| p.join("bin/java").is_file());
+    found.ok_or_else(|| "java: gradle 8.7 needs a JDK 17 or 21 (set NEXO_BENCH_JAVA_HOME)".into())
+}
+
+/// The `bin` folder of the gradle fetched into the cache.
+fn gradle_bin(cache: &Path) -> Option<PathBuf> {
+    let dists = java_dir(cache).join("home/wrapper/dists/gradle-8.7-bin");
+    std::fs::read_dir(dists)
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("gradle-8.7/bin"))
+        .find(|b| b.join("gradle").is_file())
+}
+
+/// Fetches gradle and the packages of every distinct `build.gradle` once, by running each such exercise's
+/// tests on its example solution with the wrapper, outside the box.
+fn install_gradle(root: &Path, cache: &Path) -> Result<(), String> {
+    let dir = java_dir(cache);
+    if dir.join("ready").is_file() && gradle_bin(cache).is_some() {
+        return Ok(());
+    }
+    let jdk = java_home()?;
+    let home = dir.join("home");
+    let mut seen: Vec<String> = Vec::new();
+    for ex in exercise::list(root, Lang::Java)? {
+        let build = std::fs::read_to_string(ex.dir.join("build.gradle")).unwrap_or_default();
+        if seen.contains(&build) {
+            continue;
+        }
+        seen.push(build);
+        let work = dir.join("warm");
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+        ex.stage(&work)?;
+        ex.install_tests(&work)?;
+        for rel in &ex.files.example {
+            let to = work.join("src/main").join(rel.trim_start_matches(".meta/src/reference/"));
+            std::fs::copy(ex.dir.join(rel), &to).map_err(|e| format!("{}: {e}", to.display()))?;
+        }
+        eprintln!("bench: fetching gradle and the packages of {} once into {}", ex.id(), home.display());
+        let cmd = format!(
+            "GRADLE_USER_HOME={} JAVA_HOME={} ./gradlew test --no-daemon -q",
+            crate::seal::quote(&home.to_string_lossy()),
+            crate::seal::quote(&jdk.to_string_lossy())
+        );
+        sh(&work, &cmd)?;
+        let _ = std::fs::remove_dir_all(&work);
+    }
+    std::fs::write(dir.join("ready"), "").map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+/// `seal` with what `lang`'s tools need inside the box: JavaScript's packages, Java's gradle and JDK.
+fn for_lang(cache: &Path, lang: Lang, seal: Seal) -> Seal {
+    match lang {
+        Lang::Javascript => seal.with_keep(&npm_dir(cache)),
+        Lang::Java => {
+            let dir = java_dir(cache);
+            let ro = dir.join("home/caches");
+            let mut seal = seal
+                .with_keep(&dir)
+                .with_env("GRADLE_USER_HOME", "/tmp/.gradle")
+                .with_env("GRADLE_OPTS", "-Dorg.gradle.welcome=never")
+                .with_env("GRADLE_RO_DEP_CACHE", &ro.to_string_lossy());
+            if let Ok(jdk) = java_home() {
+                seal = seal.with_env("JAVA_HOME", &jdk.to_string_lossy());
+            }
+            match gradle_bin(cache) {
+                Some(bin) => seal.with_bin(&bin),
+                None => seal,
+            }
+        }
+        _ => seal,
+    }
+}
+
 /// Whether a `Cargo.toml` lists dependencies.
 fn has_dependencies(cargo_toml: &str) -> bool {
     let re = regex::Regex::new(r"(?m)^\[(?:dev-|build-)?dependencies\]\s*\n\s*[A-Za-z_]").expect("a fixed pattern");
@@ -189,6 +280,9 @@ fn vendor_crates(cache: &Path, ex: &Exercise) -> Result<(), String> {
 pub fn prepare(ctx: &Ctx, jobs: &[Job]) -> Result<(), String> {
     if jobs.iter().any(|j| j.ex.lang == Lang::Javascript) {
         install_npm(&ctx.root, &ctx.cache)?;
+    }
+    if jobs.iter().any(|j| j.ex.lang == Lang::Java) {
+        install_gradle(&ctx.root, &ctx.cache)?;
     }
     for j in jobs.iter().filter(|j| j.ex.lang == Lang::Rust) {
         vendor_crates(&ctx.cache, &j.ex)?;
@@ -338,10 +432,7 @@ async fn attempt(
     let mut hide: Vec<PathBuf> = bench.hide.clone();
     hide.push(ctx.root.canonicalize().unwrap_or_else(|_| ctx.root.clone()));
     hide.push(ctx.cache.canonicalize().unwrap_or_else(|_| ctx.cache.clone()));
-    let mut seal = Seal::new(wd, hide, vec![])?.with_tmp(tmp);
-    if ex.lang == Lang::Javascript {
-        seal = seal.with_keep(&npm_dir(&ctx.cache));
-    }
+    let seal = for_lang(&ctx.cache, ex.lang, Seal::new(wd, hide, vec![])?.with_tmp(tmp));
     let tries = Arc::new(Mutex::new(Tries::default()));
     let file_list = ex.file_list();
     let followup: Followup = {
@@ -473,6 +564,7 @@ mod tests {
             Lang::Go => "sublist",
             Lang::Cpp => "gigasecond",
             Lang::Javascript => "beer-song",
+            Lang::Java => "resistor-color-trio",
         }
     }
 
@@ -501,10 +593,7 @@ mod tests {
             let (wd, tmp) = (wd.canonicalize().unwrap(), tmp.canonicalize().unwrap());
             ex.stage(&wd).unwrap();
             provision(&ctx, &ex, &wd).unwrap();
-            let mut seal = Seal::new(&wd, vec![], vec![]).unwrap().with_tmp(&tmp);
-            if lang == Lang::Javascript {
-                seal = seal.with_keep(&npm_dir(&ctx.cache));
-            }
+            let seal = for_lang(&ctx.cache, lang, Seal::new(&wd, vec![], vec![]).unwrap().with_tmp(&tmp));
             let gt = work.path().join("grade-tmp");
             let stub = grade(&ex, &wd, &seal, &gt).unwrap();
             eprintln!(
@@ -606,10 +695,10 @@ mod tests {
     }
 
     #[test]
-    fn languages_default_to_the_five_and_java_is_refused() {
-        assert_eq!(parse_langs(&[]).unwrap().len(), 5);
+    fn languages_default_to_all_six() {
+        assert_eq!(parse_langs(&[]).unwrap().len(), 6);
         assert_eq!(parse_langs(&["go,rust".into(), "go".into()]).unwrap(), [Lang::Go, Lang::Rust]);
-        assert!(parse_langs(&["java".into()]).unwrap_err().contains("gradle"));
+        assert_eq!(parse_langs(&["java".into()]).unwrap(), [Lang::Java]);
     }
 
     #[test]

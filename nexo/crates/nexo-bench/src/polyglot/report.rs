@@ -11,7 +11,7 @@ pub const DEVIATIONS: [&str; 7] = [
     "The model is an agent with tools (read, write, edit, bash, grep, glob, ls) and may run code in a sealed box (no network) while it works; aider's model replies with edits and cannot run anything. Scores are therefore not comparable with aider's leaderboard.",
     "The working directory holds the stubs and the files a build needs, never the tests, examples, `.meta`, `.docs` or other exercises; the tests are copied in after each attempt and removed again before the second one (aider leaves them in the directory, outside the chat). Before grading, the files the agent was given that are not solution files (`Cargo.toml`, `go.mod`, `package.json`...) are restored and test files it left behind are removed, and the tests run in a fresh `/tmp`. The instructions are in the first message, as aider's.",
     "The second message is the benchmark's, with the cleaned test output (timing and the directory's full path removed), sent in the same conversation. Output beyond 200000 bytes is cut in the middle; aider cuts nothing.",
-    "Java (47 of 225 exercises) is not run: it needs gradle.",
+    "Java runs `gradle test --offline` with gradle 8.7 (the version the exercises' `./gradlew` fetches) on a JDK 17 or 21, its packages fetched beforehand; aider runs `./gradlew test`. The `@Disabled(...)` lines are taken out of the tests, as aider does.",
     "Tests and the agent's commands run in a sealed box without network; Rust exercises with dependencies (gigasecond, grep, simple-cipher) get their crates vendored beforehand and JavaScript exercises a shared `node_modules`.",
     "Each attempt may take --max-steps model requests. The solution files are listed in the config's order (aider's order is arbitrary).",
     "The tests run on this machine's toolchains (not aider's docker image); an exercise that fails to build here for a reason of the toolchain counts as not solved.",
@@ -143,7 +143,7 @@ mod tests {
         assert!(s.contains("| rust | 1 | 0.0% (0/1) | 0.0% (0/1) | $0.0200 |"), "{s}");
         assert!(s.contains("| **total** | 3 | 33.3% (1/3) | 66.7% (2/3) | $0.0600 |"), "{s}");
         assert!(s.contains("python 34 x $0.0200 = $0.68") && s.contains("rust 30 x $0.0200 = $0.60"), "{s}");
-        assert!(s.contains("```\nnexo bench --tasks polyglot\n```") && s.contains("Java (47 of 225"));
+        assert!(s.contains("```\nnexo bench --tasks polyglot\n```") && s.contains("gradle 8.7"));
         assert!(!s.contains("$5.0000"), "other tasks are not counted");
         assert!(section(None, &[sample("other/task", "plain", 1.0, 1.0)]).is_none());
     }

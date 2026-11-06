@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 /// first on PATH and bound over the real file (and its versioned names, `python3.12`) in every PATH
 /// folder and the system's `bin` folders, so a full path finds the stub too.
 /// A non-empty TMP is a folder of the run put at /tmp, so what a command leaves there is still there for the next.
+/// The loopback interface is up (it leads nowhere outside; gradle talks to its own worker over it).
 pub const SCRIPT: &str = r#"set -e
 wd="$1"; keep="$2"; mask="$3"; tmp="$4"; cmd="$5"; shift 5
 for d in /usr /etc /bin /sbin /lib /lib32 /lib64 /boot /var /nix; do
@@ -69,6 +70,7 @@ if [ -n "$mask" ]; then
   done
   unset IFS; export PATH="/tmp/.mask:$PATH"
 fi
+ip link set lo up 2>/dev/null || true
 cd "$wd"
 exec sh -c "$cmd"
 "#;
@@ -92,13 +94,38 @@ pub struct Seal {
     pub tmp: Option<PathBuf>,
     /// Further folders kept visible read-only at their own paths, besides the Rust toolchain.
     pub keep: Vec<PathBuf>,
+    /// Folders put first on PATH (a build tool fetched for the task, such as gradle).
+    pub bin: Vec<PathBuf>,
+    /// Further environment variables of every command.
+    pub env: Vec<(String, String)>,
 }
 
 impl Seal {
     /// The seal for `wd`, or why commands cannot be sealed on this machine.
     pub fn new(wd: &Path, hide: Vec<PathBuf>, mask: Vec<String>) -> Result<Seal, String> {
         available()?;
-        Ok(Seal { wd: wd.to_path_buf(), hide, sysroot: sysroot(), mask, tmp: None, keep: Vec::new() })
+        Ok(Seal {
+            wd: wd.to_path_buf(),
+            hide,
+            sysroot: sysroot(),
+            mask,
+            tmp: None,
+            keep: Vec::new(),
+            bin: Vec::new(),
+            env: Vec::new(),
+        })
+    }
+
+    /// The same seal with `dir` first on every command's PATH (kept visible read-only with `with_keep`).
+    pub fn with_bin(mut self, dir: &Path) -> Seal {
+        self.bin.push(dir.to_path_buf());
+        self
+    }
+
+    /// The same seal with `key=value` in every command's environment.
+    pub fn with_env(mut self, key: &str, value: &str) -> Seal {
+        self.env.push((key.to_string(), value.to_string()));
+        self
     }
 
     /// The same seal with `tmp` as every command's /tmp.
@@ -120,16 +147,17 @@ impl Seal {
         let tmp = Path::new("/tmp");
         for (k, v) in crate::env::clean(tmp, tmp) {
             let v = match k.as_str() {
-                "PATH" => match &self.sysroot {
-                    Some(s) => format!("{}:{v}", s.join("bin").to_string_lossy()),
-                    None => v,
-                },
+                "PATH" => {
+                    let front = self.bin.iter().cloned().chain(self.sysroot.iter().map(|s| s.join("bin")));
+                    front.map(|p| p.to_string_lossy().into_owned()).chain([v]).collect::<Vec<_>>().join(":")
+                }
                 "CARGO_HOME" => continue,
                 _ => v,
             };
             parts.push(quote(&format!("{k}={v}")));
         }
         parts.push("CARGO_HOME=/tmp/.cargo-home".into());
+        parts.extend(self.env.iter().map(|(k, v)| quote(&format!("{k}={v}"))));
         parts.push("unshare".into());
         parts.extend(UNSHARE.iter().map(|s| s.to_string()));
         parts.extend(["sh".into(), "-c".into(), quote(SCRIPT), "seal".into()]);

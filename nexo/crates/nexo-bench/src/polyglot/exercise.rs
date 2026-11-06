@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use super::prompts;
 
-/// The languages this bench runs. Java is the benchmark's sixth; it needs gradle, which a plain machine
-/// lacks, so it is not run.
+/// The benchmark's six languages. Java builds with gradle 8.7 (the exercises' wrapper version), fetched once
+/// and run on a JDK 17 or 21.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Lang {
     Python,
@@ -18,9 +18,10 @@ pub enum Lang {
     Go,
     Cpp,
     Javascript,
+    Java,
 }
 
-pub const LANGS: [Lang; 5] = [Lang::Python, Lang::Rust, Lang::Go, Lang::Cpp, Lang::Javascript];
+pub const LANGS: [Lang; 6] = [Lang::Python, Lang::Rust, Lang::Go, Lang::Cpp, Lang::Javascript, Lang::Java];
 
 impl Lang {
     /// The folder of the language in the benchmark, and the name used on the command line.
@@ -31,19 +32,17 @@ impl Lang {
             Lang::Go => "go",
             Lang::Cpp => "cpp",
             Lang::Javascript => "javascript",
+            Lang::Java => "java",
         }
     }
 
     pub fn parse(s: &str) -> Result<Lang, String> {
         let s = s.trim().to_ascii_lowercase();
-        if s == "java" {
-            return Err("java needs gradle, which this bench does not run".into());
-        }
         LANGS
             .iter()
             .copied()
             .find(|l| l.name() == s)
-            .ok_or_else(|| format!("unknown language {s:?} (python, rust, go, cpp, javascript)"))
+            .ok_or_else(|| format!("unknown language {s:?} (python, rust, go, cpp, javascript, java)"))
     }
 
     /// Whether `rel` (a `/`-joined path inside the exercise) is a test file of the language's layout, besides
@@ -57,6 +56,7 @@ impl Lang {
             Lang::Go => file.ends_with("_test.go"),
             Lang::Cpp => rel.starts_with("test/") || file.ends_with("_test.cpp"),
             Lang::Javascript => file.ends_with(".spec.js"),
+            Lang::Java => rel.starts_with("src/test/"),
         }
     }
 }
@@ -200,7 +200,8 @@ impl Exercise {
     }
 
     /// Copies the test files into `wd`, as the benchmark does after the model has answered. JavaScript
-    /// `xtest(` (skipped) becomes `test(`, as the benchmark's `npm-test.sh` does.
+    /// `xtest(` (skipped) becomes `test(`, as the benchmark's `npm-test.sh` does; Java's `@Disabled(...)` lines
+    /// go, as Aider's harness does.
     pub fn install_tests(&self, wd: &Path) -> Result<(), String> {
         for rel in self.tests() {
             copy_file(&self.dir.join(&rel), &wd.join(&rel))?;
@@ -209,6 +210,11 @@ impl Exercise {
                 let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
                 let fixed = text.replace("xtest(", "test(");
                 std::fs::write(&p, fixed).map_err(|e| format!("{}: {e}", p.display()))?;
+            }
+            if self.lang == Lang::Java && rel.ends_with(".java") {
+                let p = wd.join(&rel);
+                let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+                std::fs::write(&p, enable_java_tests(&text)).map_err(|e| format!("{}: {e}", p.display()))?;
             }
         }
         Ok(())
@@ -223,7 +229,7 @@ impl Exercise {
                 let _ = std::fs::remove_dir(wd.join(dir));
             }
         }
-        for d in ["target", "build", "__pycache__", ".pytest_cache", ".cargo-lock"] {
+        for d in ["target", "build", ".gradle", "__pycache__", ".pytest_cache", ".cargo-lock"] {
             let _ = std::fs::remove_dir_all(wd.join(d));
         }
     }
@@ -283,6 +289,13 @@ impl Exercise {
         go(self, wd, "", &given, &solution);
         Ok(())
     }
+}
+
+/// A Java test file with its `@Disabled(...)` lines taken out, the pattern Aider's harness removes
+/// (`@Disabled\([^)]*\)\s*\n`).
+pub fn enable_java_tests(text: &str) -> String {
+    let re = regex::Regex::new(r"@Disabled\([^)]*\)\s*\n").expect("a fixed pattern");
+    re.replace_all(text, "").into_owned()
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
@@ -523,9 +536,18 @@ mod tests {
     }
 
     #[test]
-    fn languages_parse_and_java_is_refused_with_its_reason() {
+    fn java_disabled_tests_are_enabled_as_aider_does() {
+        let text =
+            "    @Test\n    @Disabled(\"Remove to run test\")\n    void b() {}\n    @Disabled\n    void c() {}\n";
+        // the bare `@Disabled` stays: Aider's pattern needs the parentheses
+        assert_eq!(enable_java_tests(text), "    @Test\n        void b() {}\n    @Disabled\n    void c() {}\n");
+    }
+
+    #[test]
+    fn languages_parse() {
         assert_eq!(Lang::parse(" Rust ").unwrap(), Lang::Rust);
-        assert!(Lang::parse("java").unwrap_err().contains("gradle"));
+        assert_eq!(Lang::parse("Java").unwrap(), Lang::Java);
+        assert!(Lang::Java.is_test("src/test/java/BobTest.java") && !Lang::Java.is_test("src/main/java/Bob.java"));
         assert!(Lang::parse("cobol").is_err());
     }
 }
