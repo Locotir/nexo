@@ -98,7 +98,19 @@ pub async fn login_at(
         "codex" => {
             let file = at.codex_auth.clone().unwrap_or_else(crate::codex::cli_file);
             if crate::codex::cli_login_in(&file) {
-                crate::codex::from_cli(&file)
+                // a CLI login that ended long ago may hold a refresh token the server no longer takes:
+                // it is renewed now, and when that fails the browser sign-in runs instead of keeping it
+                let cred = crate::codex::from_cli(&file)?;
+                if !cred.expiring(auth::now(), 60) {
+                    return Ok(cred);
+                }
+                match crate::codex::renew_shared(at, &cred, &file).await {
+                    Ok(renewed) => Ok(renewed),
+                    Err(e) => {
+                        tracing::warn!("the Codex CLI login could not be renewed ({e}): signing in in the browser");
+                        crate::codex::browser(at, show).await
+                    }
+                }
             } else {
                 crate::codex::browser(at, show).await
             }

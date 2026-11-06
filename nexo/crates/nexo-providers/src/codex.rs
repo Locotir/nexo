@@ -574,6 +574,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stale_cli_login_the_server_refuses_falls_back_to_the_browser() {
+        let d = tempfile::tempdir().unwrap();
+        let f = cli_file(d.path(), &jwt(json!({"exp": auth::now() - 86_400})), "rt-dead");
+        let s = MockServer::start();
+        let refused = s.mock(|w, t| {
+            w.method(POST).path("/oauth/token").body_includes("grant_type=refresh_token");
+            t.status(401).body("");
+        });
+        let shown = Mutex::new(false);
+        let _ = tokio::time::timeout(
+            Duration::from_millis(500),
+            crate::login::login_at(&endpoints(&s, Some(f)), "codex", &|dc| {
+                assert!(dc.url.contains("/oauth/authorize"));
+                *shown.lock().unwrap() = true;
+            }),
+        )
+        .await;
+        refused.assert();
+        assert!(*shown.lock().unwrap(), "the browser sign-in was offered");
+    }
+
+    #[tokio::test]
     async fn a_login_from_the_cli_follows_the_file_and_writes_its_renewal_back() {
         let d = tempfile::tempdir().unwrap();
         let old = jwt(json!({"exp": auth::now() - 10}));
