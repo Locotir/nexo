@@ -585,9 +585,16 @@ async fn interactive(
     };
     if !crate::update::off(&config) {
         let events = ends.events.clone();
+        // at start, then every hour while nexo runs (two GitHub requests a check, well under its limit
+        // of 60 an hour without a key); the interface says each time more commits are out
         tokio::spawn(async move {
-            if let Ok(Some(behind)) = crate::update::behind().await {
-                let _ = events.send(AgentEvent::UpdateAvailable { behind });
+            loop {
+                if let Ok(Some(behind)) = crate::update::behind().await {
+                    if events.send(AgentEvent::UpdateAvailable { behind }).is_err() {
+                        return;
+                    }
+                }
+                tokio::time::sleep(crate::update::EVERY).await;
             }
         });
     }

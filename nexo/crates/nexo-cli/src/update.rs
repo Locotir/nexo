@@ -1,8 +1,11 @@
-//! Updates: each time the interface starts, nexo asks GitHub (in the background) how many commits
+//! Updates: when the interface starts and every [`EVERY`] after, nexo asks GitHub (in the background) how many commits
 //! `main` has past the one it was built from, and says so; `nexo update` builds the latest with cargo.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// How often a running interface asks again whether a newer nexo is out.
+pub const EVERY: Duration = Duration::from_secs(60 * 60);
 
 pub const REPO: &str = "https://github.com/Locotir/nexo";
 const API: &str = "https://api.github.com/repos/Locotir/nexo";

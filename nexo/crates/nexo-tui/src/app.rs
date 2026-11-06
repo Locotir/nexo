@@ -1444,13 +1444,21 @@ impl App {
 
     /// A newer nexo is on `main`: a card in the conversation, a toast, and a badge that stays
     /// in the title bar until nexo restarts.
+    /// nexo checks for a newer release at start and then every hour: the card is shown once, and a
+    /// later check that finds still more commits only says so in a toast.
     pub fn update_ready(&mut self, behind: u32) {
-        if behind == 0 || self.update_behind.is_some() {
+        if behind == 0 || self.update_behind.is_some_and(|b| b >= behind) {
             return;
         }
+        let first = self.update_behind.is_none();
         self.update_behind = Some(behind);
-        self.push(Block::Update { behind });
-        self.toast(crate::toast::Kind::Info, "nexo update ready: run `nexo update`");
+        if first {
+            self.push(Block::Update { behind });
+            self.toast(crate::toast::Kind::Info, "nexo update ready: run `nexo update`");
+        } else {
+            let s = if behind == 1 { "" } else { "s" };
+            self.toast(crate::toast::Kind::Info, &format!("nexo update ready: {behind} new commit{s} · `nexo update`"));
+        }
     }
 
     pub fn notice(&mut self, level: Level, text: impl Into<String>) {
@@ -4511,6 +4519,18 @@ mod tests {
         let mut l = head();
         mark_head(&mut l, CallMark::Cached, Some(0.00012), 20, &theme);
         assert_eq!(text(&l), text(&head()));
+    }
+
+    #[test]
+    fn an_update_shows_its_card_once_and_a_later_check_only_when_more_came_out() {
+        let (mut a, _rx) = app();
+        let cards = |a: &App| a.blocks.iter().filter(|b| matches!(b, Block::Update { .. })).count();
+        a.update_ready(2);
+        a.update_ready(2);
+        a.update_ready(1);
+        assert_eq!((cards(&a), a.update_behind), (1, Some(2)));
+        a.update_ready(5);
+        assert_eq!((cards(&a), a.update_behind), (1, Some(5)), "a toast, not a second card");
     }
 
     fn app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
