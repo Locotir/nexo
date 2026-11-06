@@ -33,8 +33,9 @@ pub const NAME: &str = "polyglot";
 pub const REPO: &str = "https://github.com/Aider-AI/polyglot-benchmark";
 pub const COMMIT: &str = "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f";
 
-/// The tools of an exercise: the files are read and edited and programs run.
-pub const TOOLS: [&str; 7] = ["read", "write", "edit", "bash", "grep", "glob", "ls"];
+/// The tools of an exercise: the files are read and edited and programs run. `recall` reaches the model
+/// only in an arm whose policy offers it (the curator, unless `recall=0`); the other arms never see it.
+pub const TOOLS: [&str; 8] = ["read", "write", "edit", "bash", "grep", "glob", "ls", "recall"];
 
 /// One exercise to run with every arm.
 pub struct Job {
