@@ -31,6 +31,9 @@ pub struct StatusCommand {
     /// The state the last run was asked for; a different one asks for a new run.
     key: Option<String>,
     wanted: bool,
+    /// A run for this key already failed once and was asked again: a slow machine gets one more
+    /// try, a broken script does not run on every tick.
+    retried: bool,
     logged: bool,
     /// The last good line, as the script printed it (escapes included).
     pub line: Option<String>,
@@ -49,6 +52,7 @@ impl StatusCommand {
             started: None,
             key: None,
             wanted: true,
+            retried: false,
             logged: false,
             line: None,
             error: None,
@@ -65,6 +69,7 @@ impl StatusCommand {
                     changed = self.line.as_deref() != Some(line.as_str());
                     self.line = Some(line);
                     self.running = None;
+                    self.retried = false;
                 }
                 Ok(Err(why)) => {
                     if !self.logged {
@@ -73,6 +78,10 @@ impl StatusCommand {
                     }
                     self.error = Some(why);
                     self.running = None;
+                    if !self.retried {
+                        self.retried = true;
+                        self.wanted = true;
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => self.running = None,
@@ -81,6 +90,7 @@ impl StatusCommand {
         if self.key.as_deref() != Some(key) {
             self.key = Some(key.to_string());
             self.wanted = true;
+            self.retried = false;
         }
         if self.wanted && self.running.is_none() && !self.started.is_some_and(|t| t.elapsed() < GAP) {
             self.wanted = false;
@@ -381,5 +391,37 @@ mod tests {
         // a loop of the shell itself: tests next door change PATH, so no `sleep`
         assert!(run("while :; do :; done", &dir, "", TIMEOUT).unwrap_err().contains("500 ms"));
         assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_that_fails_once_is_tried_again_without_a_new_state_and_a_broken_one_only_once() {
+        let d = tempfile::tempdir().unwrap();
+        let mark = d.path().join("ran");
+        // fails the first time (as a run cut by a busy machine), prints its line the second
+        let cmd = format!("if [ -e '{0}' ]; then echo ok; else : > '{0}'; exit 1; fi", mark.display());
+        let wait = |s: &mut StatusCommand, key: &str| {
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_secs(20) {
+                s.poll(key, String::new);
+                if s.line.is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let mut s = StatusCommand::new(&cmd, d.path()).unwrap();
+        wait(&mut s, "k");
+        assert_eq!(s.line.as_deref(), Some("ok"), "{:?}", s.error);
+        // a script that always fails runs twice for a state, then waits for the next one
+        let count = d.path().join("count");
+        let cmd = format!("echo x >> '{}'; exit 1", count.display());
+        let mut s = StatusCommand::new(&cmd, d.path()).unwrap();
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(3500) {
+            s.poll("k", String::new);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2);
     }
 }
