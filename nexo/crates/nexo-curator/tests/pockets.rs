@@ -73,16 +73,17 @@ fn a_pocket_dies_with_its_life() {
 
 #[test]
 fn only_2_cuts_a_view_whose_pocket_is_gone() {
-    // a request every 4000 s: each view is read whole, and only `pockets=2` cuts it down then
+    // a request every 4000 s: each view is read whole, and only `pockets=2` cuts it down then. `pockets=1`
+    // weighs the cuts there too (the view is read again whatever is cut), so it may send less, never more
     let tokens = |rs: &[Reply]| rs.iter().map(|r| r.tokens).sum::<i64>();
     let f = "synthetic-g8-t40-s7.jsonl";
     let off = replay(f, "", |_| 4000.0, |_, _| None);
     let one = replay(f, "pockets=1", |_| 4000.0, |_, _| None);
     let two = replay(f, "pockets=2", |_| 4000.0, |_, _| None);
     assert_eq!(last(&one, "pocket_squeeze"), 0);
-    assert_eq!(tokens(&one), tokens(&off));
+    assert!(tokens(&one) <= tokens(&off));
     assert!(last(&two, "pocket_squeeze") >= 1);
-    assert!(tokens(&two) < tokens(&off));
+    assert!(tokens(&two) < tokens(&one));
 }
 
 #[test]

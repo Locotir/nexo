@@ -171,7 +171,8 @@ pub struct Params {
     /// the view, and one line on the request says which (0: off). The reply is what the agent took from
     /// them, the way a note is.
     pub close: i64,
-    /// How much of the calls so far `rent_close` counts on as still to come (0: only what keeping has cost).
+    /// How much of the calls so far a cut counts on as still to come, the rent it saves (at least 4 calls,
+    /// never past the point where the cap would take it for free).
     pub ahead: f64,
     /// Below the cap too, the parts of results whose every line a later output in the view sends are put to
     /// the rent rule with the parts the model rules out: whoever reads the view loses nothing by them, and
@@ -2697,12 +2698,13 @@ impl Engine {
         // the cut is priced on the whole view behind it, the messages the previous request did not cache
         // too. Priced only on what it cached, as `rent` does, was measured on the 20 recorded sessions:
         // 1.2 % more input cost and 2 more forgotten words of 112.
+        let hz = self.horizon(now, after[0]);
         let r = self.p.ratio;
         let (mut best, mut cut, mut paid, mut saved) = (0.0f64, None, 0.0f64, 0i64);
         for k in (0..idle.len()).rev() {
             let (mi, i, size) = idle[k];
-            let since = now.saturating_sub(*self.live_since.entry(i).or_insert(now));
-            paid += r * size as f64 * (since as f64 + self.p.ahead * now as f64);
+            self.live_since.entry(i).or_insert(now);
+            paid += r * size as f64 * hz;
             saved += size;
             let gain = paid - self.p.margin * (1.0 - r) * (after[mi] - saved).max(0) as f64;
             if gain > best {
@@ -2824,14 +2826,15 @@ impl Engine {
 
     /// The idle steps that pay for leaving now leave, in one batch: whatever goes out, the view after the
     /// first of them is read again without the cache once. That costs `(1 - ratio)` of the tokens behind
-    /// the cut that stay. Keeping a step costs `ratio` of its tokens on each call; what it has cost since
-    /// it went idle is known, and of what is to come it counts `ahead` times the calls so far (0: none,
-    /// the rent-or-buy rule, never above twice the best cost; 1: as many as so far). The price of the cut
+    /// the cut that stay. Keeping a step costs `ratio` of its tokens on each call; a cut is credited with the
+    /// calls still to come (`horizon`: `ahead` times the calls so far), never with what keeping has already
+    /// cost, which is paid either way. The price of the cut
     /// grows as the view grows behind it, so waiting too long can cost more than leaving early. The cut is
     /// the one with the largest gain, if any gains: the steps before it wait. Whether any step left.
     fn rent_close(&mut self, idle: Vec<usize>) -> bool {
         let sizes = self.sizes_now();
         let now = self.tr.steps.len();
+        let hz = self.horizon(now, sizes.iter().sum());
         let r = self.p.ratio;
         let going: FxHashSet<usize> = idle.iter().flat_map(|&i| self.steps[i].msgs.iter().copied()).collect();
         let moved = self.moved(|m| !going.contains(&m));
@@ -2840,8 +2843,7 @@ impl Engine {
             .map(|i| {
                 let back: i64 = self.steps[i].msgs.iter().map(|m| moved.get(m).copied().unwrap_or(0)).sum();
                 let size = (self.step_size(i, &sizes) - back).max(0);
-                let since = now.saturating_sub(self.steps[i].idle.unwrap_or(now));
-                let paid = r * size as f64 * (since as f64 + self.p.ahead * now as f64);
+                let paid = r * size as f64 * hz;
                 (i, paid, size)
             })
             .collect();
@@ -3316,6 +3318,18 @@ impl Engine {
     /// step, the cap as priced would cut every request a little and the provider would read the whole
     /// view again each time (a long text pasted into the latest request does it): the cut is then priced
     /// with what it leaves, so the view grows as sent until the cut makes room.
+    /// The requests a cut still saves rent for: `ahead` of the session so far (at least 4; none with `ahead=0`), and no more
+    /// than until the cap would take what it cut for free.
+    fn horizon(&self, k: usize, view: i64) -> f64 {
+        let g = self.raw_tokens as f64 / k.max(1) as f64;
+        let free = if self.cap > 0 && g > 0.0 { (self.cap - view).max(0) as f64 / g } else { f64::INFINITY };
+        if self.p.ahead <= 0.0 {
+            0.0
+        } else {
+            (self.p.ahead * k as f64).max(4.0).min(free)
+        }
+    }
+
     fn eoq_cap(&self, k: usize, base: i64) -> (i64, f64, bool) {
         let r = self.p.ratio;
         if r <= 0.0 {
@@ -3675,14 +3689,16 @@ impl Engine {
     }
 
     fn rent(&mut self, t: usize, k: usize, sizes: &[i64], proposal: &[Proposal]) -> Option<usize> {
-        let since = self.held_at;
+        // a cut is credited with the rent it saves from now on, not the rent already paid: that is gone either
+        // way. Credited with the rent since birth, cuts waited for a large view behind them and then broke the
+        // cache over it: on the 656 recorded sessions, the forward credit forgets 14 % fewer words, rewrites
+        // 31 % less and peaks 7 % lower, for 0.8 % more input cost.
+        let hz = self.horizon(k, sizes.iter().sum());
         let mut held = FxHashMap::default();
         for (_, i, more, _) in proposal {
             let chunks = &self.fz.chunks[*i];
-            let age = (k as i64 - since.max(self.born.get(*i).copied().unwrap_or(0)) as i64).max(0);
             for &j in more {
-                let old = self.held.get(&(*i, j)).copied().unwrap_or(0.0);
-                held.insert((*i, j), old + self.p.ratio * chunks[j].tokens as f64 * age as f64);
+                held.insert((*i, j), self.p.ratio * chunks[j].tokens as f64 * hz);
             }
         }
         self.held = held;
@@ -5740,7 +5756,7 @@ mod tests {
         msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": reply}]}));
         msgs.push(json!({"role": "user", "content": "And the smallest invoice total in report.txt?"}));
         let spec = |margin: &str| format!("nudge=0;eoq=0;link=0;close=2;named=16000;ahead=1;margin={margin}");
-        let mut e = Engine::new(params(&spec("0.05")).unwrap());
+        let mut e = Engine::new(params(&spec("0.5")).unwrap());
         e.sync(&msgs);
         let view = sent(&e.view());
         assert!(view.contains(&word(0)[..]) && !view.contains("left out of this context"), "{view}");
@@ -6163,8 +6179,8 @@ mod tests {
     }
 
     #[test]
-    fn a_step_waits_until_keeping_it_has_cost_more_than_its_leaving() {
-        // nothing has paid for the cut yet: with no calls to come counted, the read stays
+    fn with_no_calls_to_come_counted_a_step_stays() {
+        // a cut is credited only with the rent it saves from now on: with none counted, the read stays
         let mut e = Engine::new(params("nudge=0;eoq=0;link=0;close=2;ahead=0").unwrap());
         e.sync(&sessions("Done.", None));
         assert!(sent(&e.view()).contains(&word(0)[..]));

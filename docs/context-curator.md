@@ -69,7 +69,7 @@ flowchart TD
 
 The rent rule (`rent_close`, `engine.rs`):
 
-- **Keeping costs rent.** An idle step costs `ratio` of its tokens on every call: 0.1, or the model's cached read price over its uncached price when that is lower (0.02 for a 2 % cache). At the boundary the credit is `ratio x size x (since + ahead x calls)`, with `ahead=0.25`.
+- **Keeping costs rent.** An idle step costs `ratio` of its tokens on every call: 0.1, or the model's cached read price over its uncached price when that is lower (0.02 for a 2 % cache). A cut is credited with the rent it saves from now on, `ratio x size x horizon`, where the horizon is `ahead=0.25` times the calls so far (at least 4) and never past the point where the cap would take the step for free; the rent already paid is not counted, since it is paid either way.
 - **Cutting costs a purchase.** Everything after the cut is re-read without the cache once, `margin x (1 - ratio) x tokens behind the cut`, with `margin=2.25`.
 - The cut is chosen with the largest gain. Because the closed request is the **last** thing before your new message, almost nothing sits behind the cut, so the price is small and the cut is approved in one batch.
 
