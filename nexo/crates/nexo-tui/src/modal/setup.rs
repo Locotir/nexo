@@ -13,6 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::{PickItem, PickKind, Picker};
+use crate::fuzzy;
 use crate::render::blocks::{fmt_k, fmt_price, SPINNER};
 use crate::render::wrap::{truncate, wrap_plain};
 use crate::theme::Theme;
@@ -98,12 +99,29 @@ pub struct Setup {
     pub effort: Option<usize>,
     /// Local servers found running: `(preset, what answered)`.
     pub local: Vec<(String, String)>,
+    /// The folds of the first list, and which of them are open (by key).
+    groups: Vec<Group>,
+    open: std::collections::HashSet<String>,
+    /// The fold each visible row of the first list belongs to (`None`: the row of one's own server).
+    owner: Vec<Option<usize>>,
     providers: Vec<(String, ProviderConfig)>,
     models: Vec<(String, String)>,
     current: String,
 }
 
-/// The value of the "set up any other server" row.
+/// A fold of the first list: a header and the rows under it, each with the text the filter reads.
+#[derive(Debug, Clone)]
+struct Group {
+    key: String,
+    label: String,
+    hint: String,
+    rows: Vec<(PickItem, String)>,
+}
+
+/// The key of the fold of providers not ready yet.
+const OTHERS: &str = "@others";
+
+/// The value of the "set up your own server" row.
 const CUSTOM: &str = "new:";
 
 impl Setup {
@@ -126,6 +144,9 @@ impl Setup {
             efforts: Vec::new(),
             effort: None,
             local: Vec::new(),
+            groups: Vec::new(),
+            open: current.split_once('/').map(|(p, _)| p.to_string()).into_iter().collect(),
+            owner: Vec::new(),
             providers,
             models,
             current: current.to_string(),
@@ -134,65 +155,210 @@ impl Setup {
         s
     }
 
-    /// The first list: configured models to switch to, then providers to set up
-    /// (those found running on this machine first), then any other address.
+    /// The first list: one fold per provider that is ready (signed in, key found, or a local
+    /// server running), then one fold of the providers still to set up, then the row for a
+    /// server of one's own. A fold shows its rows only when open (or while filtering).
     fn fill_providers(&mut self) {
-        let mut items: Vec<PickItem> = self
-            .models
-            .iter()
-            .map(|(p, m)| {
-                let v = format!("{p}/{m}");
-                let hint = if v == self.current { "● in use".to_string() } else { "switch".to_string() };
-                PickItem { label: v.clone(), value: format!("use:{v}"), hint }
-            })
-            .collect();
-        let mut setups: Vec<(bool, PickItem)> = self
+        let in_use = self.current.split_once('/').map(|(p, _)| p.to_string());
+        let count = |name: &str| self.models.iter().filter(|(p, _)| p == name).count();
+        // key and sign-in facts of a provider: (ready, what to say about it, hint of its set-up row)
+        let facts = |name: &str, c: &ProviderConfig| {
+            let running = self.local.iter().find(|(p, _)| p == name).map(|(_, w)| w.clone());
+            // a key kept with `nexo auth login` counts too; a command is not run just to list
+            let stored = || nexo_core::auth::get(c.auth.as_deref().unwrap_or(name)).is_some();
+            let (key, ok) = match &c.api_key_env {
+                _ if c.login.is_some() => {
+                    if stored() {
+                        ("signed in ✓", true)
+                    } else {
+                        ("sign in", false)
+                    }
+                }
+                _ if c.api_key_cmd.is_some() || stored() => ("key ✓", true),
+                Some(v) if std::env::var(v).is_ok_and(|k| !k.trim().is_empty()) => ("key ✓", true),
+                _ => ("", false),
+            };
+            let need = match &c.api_key_env {
+                _ if !key.is_empty() => key.to_string(),
+                Some(v) if c.login.is_none() => format!("needs {v}"),
+                _ => String::new(),
+            };
+            let mut hint = running.clone().map(|w| format!("● running · {w}")).unwrap_or_else(|| c.base_url.clone());
+            if !need.is_empty() {
+                hint.push_str(&format!(" · {need}"));
+            }
+            let status = if running.is_some() {
+                "running"
+            } else if c.login.is_some() && ok {
+                "signed in"
+            } else if ok {
+                "key found"
+            } else {
+                "configured"
+            };
+            (running.is_some() || ok, status, hint)
+        };
+        // the providers with a model of their own first (the one in use at the top), then the
+        // other ready ones, running servers before the rest
+        let mut order: Vec<String> = Vec::new();
+        for (p, _) in &self.models {
+            if !order.contains(p) {
+                order.push(p.clone());
+            }
+        }
+        if let Some(pos) = in_use.as_ref().and_then(|u| order.iter().position(|p| p == u)) {
+            let p = order.remove(pos);
+            order.insert(0, p);
+        }
+        let mut extra: Vec<(bool, String)> = self
             .providers
             .iter()
-            .map(|(name, c)| {
-                let running = self.local.iter().find(|(p, _)| p == name).map(|(_, w)| w.clone());
-                // a key kept with `nexo auth login` counts too; a command is not run just to list
-                let stored = || nexo_core::auth::get(c.auth.as_deref().unwrap_or(name)).is_some();
-                let key = match &c.api_key_env {
-                    _ if c.login.is_some() => if stored() { "signed in ✓" } else { "sign in" }.to_string(),
-                    _ if c.api_key_cmd.is_some() || stored() => "key ✓".to_string(),
-                    Some(v) if std::env::var(v).is_ok_and(|k| !k.trim().is_empty()) => "key ✓".to_string(),
-                    Some(v) => format!("needs {v}"),
-                    None => String::new(),
-                };
-                let mut hint = running.map(|w| format!("● running · {w}")).unwrap_or_else(|| c.base_url.clone());
-                if !key.is_empty() {
-                    hint.push_str(&format!(" · {key}"));
-                }
+            .filter(|(n, c)| !order.contains(n) && facts(n, c).0)
+            .map(|(n, _)| (!self.local.iter().any(|(l, _)| l == n), n.clone()))
+            .collect();
+        extra.sort_by_key(|(not_running, _)| *not_running);
+        order.extend(extra.into_iter().map(|(_, n)| n));
+
+        let mut groups: Vec<Group> = Vec::new();
+        for name in &order {
+            let cfg = self.providers.iter().find(|(n, _)| n == name).map(|(_, c)| c);
+            let status = match self.local.iter().find(|(p, _)| p == name) {
+                Some((_, w)) => format!("● running · {w}"),
+                None => cfg.map_or("configured", |c| facts(name, c).1).to_string(),
+            };
+            let n = count(name);
+            let used = in_use.as_deref() == Some(name.as_str());
+            let mut parts: Vec<String> = Vec::new();
+            if n > 0 {
+                parts.push(format!("{n} model{}", if n == 1 { "" } else { "s" }));
+            }
+            parts.push(if used { "● in use".to_string() } else { status });
+            let mut rows: Vec<(PickItem, String)> = self
+                .models
+                .iter()
+                .filter(|(p, _)| p == name)
+                .map(|(p, m)| {
+                    let v = format!("{p}/{m}");
+                    let hint = if v == self.current { "● in use" } else { "switch" };
+                    (PickItem { label: format!("   {m}"), value: format!("use:{v}"), hint: hint.into() }, v)
+                })
+                .collect();
+            if let Some(c) = cfg {
+                let again = if c.login.is_some() { "sign in again" } else { "set up again" };
+                rows.push((
+                    PickItem { label: format!("   {again}"), value: format!("new:{name}"), hint: facts(name, c).2 },
+                    format!("set up {name} {again}"),
+                ));
+            }
+            groups.push(Group { key: name.clone(), label: name.clone(), hint: parts.join(" · "), rows });
+        }
+        let rest: Vec<(PickItem, String)> = self
+            .providers
+            .iter()
+            .filter(|(n, _)| !order.contains(n))
+            .map(|(n, c)| {
                 (
-                    self.local.iter().any(|(p, _)| p == name),
-                    PickItem { label: format!("set up {name}"), value: format!("new:{name}"), hint },
+                    PickItem { label: format!("   set up {n}"), value: format!("new:{n}"), hint: facts(n, c).2 },
+                    format!("set up {n}"),
                 )
             })
             .collect();
-        setups.sort_by_key(|(running, _)| !running);
-        items.extend(setups.into_iter().map(|(_, it)| it));
-        items.push(PickItem {
-            label: "set up any other server".into(),
+        if !rest.is_empty() {
+            let hint = format!("{} provider{}", rest.len(), if rest.len() == 1 { "" } else { "s" });
+            groups.push(Group { key: OTHERS.into(), label: "others".into(), hint, rows: rest });
+        }
+        self.groups = groups;
+        let keep = format!("use:{}", self.current);
+        self.rebuild(Some(&keep));
+    }
+
+    /// The visible rows of the first list from the folds: the open ones show their rows, and
+    /// while something is typed every fold with a match is open and shows only what matches.
+    fn rebuild(&mut self, keep: Option<&str>) {
+        let q = self.list.query.trim().to_string();
+        let filtering = !q.is_empty();
+        let flat: Vec<(usize, usize)> =
+            self.groups.iter().enumerate().flat_map(|(g, grp)| (0..grp.rows.len()).map(move |r| (g, r))).collect();
+        let searches: Vec<String> = flat.iter().map(|&(g, r)| self.groups[g].rows[r].1.clone()).collect();
+        let order = fuzzy::rank(&q, &searches);
+        let mut items: Vec<PickItem> = Vec::new();
+        let mut owner: Vec<Option<usize>> = Vec::new();
+        for (g, grp) in self.groups.iter().enumerate() {
+            let kids: Vec<usize> = order.iter().filter(|&&f| flat[f].0 == g).map(|&f| flat[f].1).collect();
+            if filtering && kids.is_empty() {
+                continue;
+            }
+            let open = filtering || self.open.contains(&grp.key);
+            items.push(PickItem {
+                label: format!("{} {}", if open { "▾" } else { "▸" }, grp.label),
+                value: format!("group:{}", grp.key),
+                hint: grp.hint.clone(),
+            });
+            owner.push(Some(g));
+            if open {
+                for r in kids {
+                    items.push(grp.rows[r].0.clone());
+                    owner.push(Some(g));
+                }
+            }
+        }
+        let own = PickItem {
+            label: "set up your own server".into(),
             value: CUSTOM.into(),
-            hint: "type its address: Ollama, vLLM, llama.cpp, LM Studio, any OpenAI-compatible API".into(),
-        });
-        let query = self.list.query.clone();
-        self.list = Picker::new(PickKind::Model, "", items, Some(&format!("use:{}", self.current)));
-        if !query.is_empty() {
-            self.list.query = query;
+            hint: "Ollama, vLLM, llama.cpp, LM Studio, any OpenAI-compatible address".into(),
+        };
+        if !filtering || !fuzzy::rank(&q, &[format!("{} {}", own.label, own.hint)]).is_empty() {
+            items.push(own);
+            owner.push(None);
+        }
+        // typing lands on the best match, so Enter picks it; else on the row asked to keep
+        let want = if filtering {
+            order.first().map(|&f| self.groups[flat[f].0].rows[flat[f].1].0.value.clone())
+        } else {
+            keep.map(str::to_string)
+        };
+        self.list.selected = want.and_then(|v| items.iter().position(|i| i.value == v)).unwrap_or(0);
+        self.list.ranked = (0..items.len()).collect();
+        self.list.items = items;
+        self.owner = owner;
+    }
+
+    /// Opens or closes the fold of the row under the cursor (the fold a model or set-up row is in).
+    fn fold(&mut self, open: bool) {
+        if self.step != Step::Provider || !self.list.query.trim().is_empty() {
+            return;
+        }
+        let Some(g) = self.owner.get(self.list.selected).copied().flatten() else { return };
+        let on_header = self.list.current().is_some_and(|i| i.value.starts_with("group:"));
+        let key = self.groups[g].key.clone();
+        if open {
+            if !on_header {
+                return;
+            }
+            self.open.insert(key.clone());
+        } else {
+            self.open.remove(&key);
+        }
+        self.rebuild(Some(&format!("group:{key}")));
+    }
+
+    /// The first list is rebuilt from its folds; the others are filtered as they are.
+    fn refilter(&mut self) {
+        if self.step == Step::Provider {
+            self.rebuild(None);
+        } else {
             self.list.refilter();
         }
     }
 
-    /// The local servers found running; they are marked and moved up.
+    /// The local servers found running; they become folds of their own.
     pub fn found_local(&mut self, found: Vec<(String, String)>) {
         self.local = found;
         if self.step == Step::Provider {
             let sel = self.list.current().map(|i| i.value.clone());
             self.fill_providers();
             if let Some(v) = sel {
-                if let Some(pos) = self.list.ranked.iter().position(|&i| self.list.items[i].value == v) {
+                if let Some(pos) = self.list.items.iter().position(|i| i.value == v) {
                     self.list.selected = pos;
                 }
             }
@@ -428,19 +594,52 @@ impl Setup {
                     self.move_list(1);
                     SetupOut::Nothing
                 }
+                KeyCode::PageUp => {
+                    self.move_list_clamped(-8);
+                    SetupOut::Nothing
+                }
+                KeyCode::PageDown => {
+                    self.move_list_clamped(8);
+                    SetupOut::Nothing
+                }
+                KeyCode::Home => {
+                    self.list.selected = 0;
+                    SetupOut::Nothing
+                }
+                KeyCode::End => {
+                    self.list.selected = self.list.ranked.len().saturating_sub(1);
+                    SetupOut::Nothing
+                }
+                // the folds of the first list
+                KeyCode::Right if self.step == Step::Provider => {
+                    self.fold(true);
+                    SetupOut::Nothing
+                }
+                KeyCode::Left if self.step == Step::Provider => {
+                    self.fold(false);
+                    SetupOut::Nothing
+                }
+                KeyCode::Char(' ')
+                    if self.step == Step::Provider
+                        && self.list.query.is_empty()
+                        && self.list.current().is_some_and(|i| i.value.starts_with("group:")) =>
+                {
+                    self.toggle_current();
+                    SetupOut::Nothing
+                }
                 KeyCode::Backspace => {
                     self.list.query.pop();
-                    self.list.refilter();
+                    self.refilter();
                     SetupOut::Nothing
                 }
                 KeyCode::Char('u') if ctrl => {
                     self.list.query.clear();
-                    self.list.refilter();
+                    self.refilter();
                     SetupOut::Nothing
                 }
                 KeyCode::Char(c) if !ctrl => {
                     self.list.query.push(c);
-                    self.list.refilter();
+                    self.refilter();
                     SetupOut::Nothing
                 }
                 _ => SetupOut::Nothing,
@@ -474,7 +673,7 @@ impl Setup {
             Step::Address | Step::Key => self.field.push_str(text),
             Step::Provider | Step::Model | Step::Login => {
                 self.list.query.push_str(text);
-                self.list.refilter();
+                self.refilter();
             }
             Step::Review => {
                 if let Some(f) = self.fields.get_mut(self.selected) {
@@ -491,10 +690,28 @@ impl Setup {
         }
     }
 
+    /// A page up or down: stops at the ends instead of wrapping round.
+    fn move_list_clamped(&mut self, d: i32) {
+        let last = self.list.ranked.len().saturating_sub(1) as i32;
+        self.list.selected = (self.list.selected as i32 + d).clamp(0, last) as usize;
+    }
+
+    /// Opens a closed fold under the cursor, closes an open one.
+    fn toggle_current(&mut self) {
+        let Some(g) = self.owner.get(self.list.selected).copied().flatten() else { return };
+        let key = self.groups[g].key.clone();
+        self.fold(!self.open.contains(&key));
+    }
+
     fn pick(&mut self) -> SetupOut {
         match self.step {
             Step::Provider => {
                 let Some(it) = self.list.current().cloned() else { return SetupOut::Nothing };
+                // a header opens or closes (while filtering every fold with a match is open)
+                if it.value.starts_with("group:") {
+                    self.toggle_current();
+                    return SetupOut::Nothing;
+                }
                 if let Some(pm) = it.value.strip_prefix("use:") {
                     let (provider, model) = match pm.split_once('/') {
                         Some((p, m)) => (Some(p.to_string()), m.to_string()),
@@ -677,7 +894,7 @@ impl Setup {
 
     pub fn hints(&self) -> &'static str {
         match self.step {
-            Step::Provider => " type to filter · ↑↓ choose · Enter pick · Esc close",
+            Step::Provider => " type to filter · ↑↓ choose · ←→ fold · Enter open or pick · Esc close",
             Step::Login if self.busy.is_some() => " finish in the browser · Esc cancel",
             Step::Login => " ↑↓ choose · Enter sign in · Esc back",
             Step::Model => " type to filter (or a name not listed) · ↑↓ choose · Enter try it · Esc back",
@@ -849,13 +1066,25 @@ impl Setup {
             for (i, &idx) in self.list.ranked.iter().enumerate() {
                 let it = &self.list.items[idx];
                 let label = truncate(&it.label, w.saturating_sub(2));
-                let hint = truncate(&it.hint, w.saturating_sub(crate::render::wrap::width(&label) + 4));
-                let pad = w.saturating_sub(crate::render::wrap::width(&label) + crate::render::wrap::width(&hint) + 2);
                 let style = if i == self.list.selected {
                     theme.selection().add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
+                // a header and the row of one's own server: the name, then its facts after it
+                if self.step == Step::Provider && (it.value.starts_with("group:") || it.value == CUSTOM) {
+                    let used = crate::render::wrap::width(&label) + 5;
+                    let hint = truncate(&it.hint, w.saturating_sub(used));
+                    let pad = w.saturating_sub(used + crate::render::wrap::width(&hint));
+                    lines.push(Line::from(vec![
+                        Span::styled(format!(" {label}"), style.patch(theme.bold(theme.accent)).patch(style)),
+                        Span::styled(format!("  · {hint}"), style.patch(theme.dim())),
+                        Span::styled(" ".repeat(pad), style),
+                    ]));
+                    continue;
+                }
+                let hint = truncate(&it.hint, w.saturating_sub(crate::render::wrap::width(&label) + 4));
+                let pad = w.saturating_sub(crate::render::wrap::width(&label) + crate::render::wrap::width(&hint) + 2);
                 lines.push(Line::from(vec![
                     Span::styled(format!(" {label}"), style),
                     Span::styled(" ".repeat(pad), style),
@@ -985,8 +1214,12 @@ mod tests {
         let mut s = setup();
         s.found_local(vec![("ollama".into(), "Ollama 0.12.6".into())]);
         let labels: Vec<&str> = s.list.ranked.iter().map(|&i| s.list.items[i].label.as_str()).collect();
-        assert_eq!(labels[1], "set up ollama", "{labels:?}");
-        assert!(s.list.items[s.list.ranked[1]].hint.contains("● running · Ollama 0.12.6"));
+        assert_eq!(
+            labels,
+            ["▾ deepseek", "   deepseek-chat", "   set up again", "▸ ollama", "set up your own server"],
+            "{labels:?}"
+        );
+        assert!(s.list.items[3].hint.contains("● running · Ollama 0.12.6"));
         typing(&mut s, "set up oll");
         let out = press(&mut s, KeyCode::Enter);
         assert!(matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, .. }) if name == "ollama"), "{out:?}");
@@ -1079,7 +1312,7 @@ mod tests {
     #[test]
     fn a_dead_address_stays_with_its_reason_and_esc_walks_back() {
         let mut s = setup();
-        typing(&mut s, "any other");
+        typing(&mut s, "your own");
         press(&mut s, KeyCode::Enter);
         assert_eq!((s.step, s.name.as_str()), (Step::Address, "custom"));
         typing(&mut s, "localhost:9");

@@ -5122,8 +5122,9 @@ mod tests {
         a.submit();
         let _ = rx.try_recv();
         a.handle_agent(AgentEvent::LocalServers { found: vec![("ollama".into(), "Ollama 0.12.6".into())] });
-        key(&mut a, KeyCode::Down);
-        key(&mut a, KeyCode::Down);
+        for c in "set up oll".chars() {
+            key(&mut a, KeyCode::Char(c));
+        }
         key(&mut a, KeyCode::Enter);
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::Probe { name, .. }) if name == "ollama"));
         a.handle_agent(AgentEvent::Probed {

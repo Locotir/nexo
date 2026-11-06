@@ -331,11 +331,11 @@ fn the_provider_list_comes_before_the_intro_on_a_short_screen() {
         let rows = draw(&mut a, w, h);
         let dump = rows.join("\n");
         let intro = rows.iter().position(|r| r.contains("Switch to a model"));
-        let first = rows.iter().position(|r| r.contains("mock/m"));
+        let first = rows.iter().position(|r| r.contains("switch"));
         assert!(first.is_some(), "{w}x{h}: no model listed\n{dump}");
         if h <= 12 {
             assert!(intro.is_none(), "{w}x{h}: the intro takes rows from the list\n{dump}");
-            let n = rows.iter().filter(|r| r.contains("mock/m")).count();
+            let n = rows.iter().filter(|r| r.contains("switch") || r.contains("in use")).count();
             assert!(n >= 3, "{w}x{h}: only {n} models in view\n{dump}");
         } else {
             assert!(intro.is_some() && intro < first, "{w}x{h}: intro then list\n{dump}");
