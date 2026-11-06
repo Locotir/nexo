@@ -44,6 +44,8 @@ pub struct Fx {
     /// closing draws the reverse of the pop.
     pub ghost: Option<(ratatui::layout::Rect, Vec<ratatui::buffer::Cell>)>,
     pub ghost_at: Option<Instant>,
+    /// When the locked home opened: the welcome card slides away.
+    pub unlock_at: Option<Instant>,
 }
 
 impl App {
@@ -94,6 +96,7 @@ impl App {
                 || motion::within(fx.search_at, now, motion::GLOW_MS)
                 || motion::within(fx.turn_start, now, motion::MODE_MS)
                 || motion::within(fx.ghost_at, now, crate::anim::POP_MS)
+                || motion::within(fx.unlock_at, now, crate::ui::UNLOCK_MS)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
         t_moving || c_moving || glow || mode || cmd || cut || still || self.toasts.alive(now)
     }

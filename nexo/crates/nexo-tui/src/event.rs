@@ -94,6 +94,9 @@ pub fn handle(app: &mut App, ev: Event) {
             }
             match &mut app.modal {
                 None => {
+                    if app.locked {
+                        return app.open_setup();
+                    }
                     app.input.insert_paste(&s);
                     app.refresh_palette();
                 }
@@ -146,6 +149,14 @@ pub fn key(app: &mut App, k: KeyEvent) {
     }
     if crate::palette_key::is_palette_key(&k) {
         return app.palette_key();
+    }
+    // no model works yet: Enter or any text opens the setup instead of filling the draft
+    if app.locked {
+        let text =
+            matches!(k.code, KeyCode::Char(_)) && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        if text || k.code == KeyCode::Enter {
+            return app.open_setup();
+        }
     }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);

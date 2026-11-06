@@ -178,6 +178,8 @@ pub struct App {
     /// Input of each model call this session, for the usage window's sparkline.
     pub call_inputs: Vec<u64>,
     pub context: Option<ContextInfo>,
+    /// Nothing can be asked until a model works: the home shows a card to set one up (see `ui::draw_lock`).
+    pub locked: bool,
     pub provider: String,
     pub model: String,
     pub permission_mode: PermissionMode,
@@ -436,6 +438,7 @@ impl App {
             cost: 0.0,
             call_inputs: Vec::new(),
             context: None,
+            locked: false,
             provider: opts.provider.clone(),
             model: opts.model.clone(),
             permission_mode: PermissionMode::Ask,
@@ -535,6 +538,17 @@ impl App {
         app.input.set_placeholder_style(app.theme.dim());
         app.read_branch();
         app.push_welcome();
+        // a provider that cannot be used yet (no key, no login, no server found): the home asks for a setup
+        app.locked = app
+            .opts
+            .providers
+            .iter()
+            .find(|(n, _)| *n == app.opts.provider)
+            .is_some_and(|(n, c)| !crate::modal::setup::provider_ready(n, c, &[]));
+        if app.locked {
+            // a local server may answer: that unlocks it
+            app.send(AgentCommand::ScanLocal);
+        }
         for w in crate::keymap::Keymap::from_config(&app.opts.keys.clone()).1 {
             app.flash(&w);
             app.notice(Level::Warn, w);
@@ -2101,6 +2115,10 @@ impl App {
                 self.push(Block::Shell { command, output, exit_code });
             }
             AgentEvent::ModelLimits { provider, model, pricing, context_window, max_output, source } => {
+                // a model answered for the setup: the home opens
+                if source != "error" {
+                    self.unlock();
+                }
                 self.provider = provider.clone();
                 self.model = model.clone();
                 self.limits = Some(Limits { pricing, context_window, max_output, source: source.clone() });
@@ -2115,6 +2133,9 @@ impl App {
                 self.budget = Some((session_cost, day_cost, session_limit, day_limit));
             }
             AgentEvent::LocalServers { found } => {
+                if self.locked && found.iter().any(|(p, _)| *p == self.provider) {
+                    self.unlock();
+                }
                 if let Some(Modal::Setup(s)) = &mut self.modal {
                     s.found_local(found);
                 }
@@ -3678,7 +3699,18 @@ impl App {
     }
 
     /// `/model`: the configured models to switch to, and the guided setup of a new one.
-    fn open_setup(&mut self) {
+    /// A model works: the locked home gives way to the normal one (at once without animations).
+    pub fn unlock(&mut self) {
+        if self.locked {
+            self.locked = false;
+            if self.fx_on() {
+                self.fx.unlock_at = Some(self.now());
+            }
+            self.dirty = true;
+        }
+    }
+
+    pub fn open_setup(&mut self) {
         let cur = format!("{}/{}", self.provider, self.model);
         let setup = Setup::new(self.opts.providers.clone(), self.opts.models.clone(), &cur);
         self.modal = Some(Modal::Setup(Box::new(setup)));

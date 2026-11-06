@@ -70,6 +70,8 @@ pub enum SetupOut {
     Send(AgentCommand),
     /// Send and close (a switch to a configured model, the final save).
     SendAndClose(AgentCommand),
+    /// Text for the clipboard (the full sign-in link).
+    Copy(String),
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,8 @@ pub struct Setup {
     pub probe: Option<ServerProbe>,
     /// The page a sign-in waits on and the code to type there (empty: none).
     pub prompt: Option<(String, String)>,
+    /// A sign-in that just worked: shown as one line until the setup moves on.
+    pub signed: Option<String>,
     pub model: String,
     pub check: Option<ModelCheck>,
     pub fields: Vec<Field>,
@@ -107,6 +111,38 @@ pub struct Setup {
     providers: Vec<(String, ProviderConfig)>,
     models: Vec<(String, String)>,
     current: String,
+}
+
+/// Whether a provider can be used as it is: a login saved, a key found, a local server that
+/// answered, or a remote server that asks for nothing. The picker and the home screen share it.
+pub fn provider_ready(name: &str, c: &ProviderConfig, local: &[(String, String)]) -> bool {
+    if local.iter().any(|(p, _)| p == name) {
+        return true;
+    }
+    // a key kept with `nexo auth login` counts too; a command is not run just to ask
+    let stored = nexo_core::auth::get(c.auth.as_deref().unwrap_or(name)).is_some();
+    if c.login.is_some() {
+        return stored;
+    }
+    if c.api_key_cmd.is_some() || c.api_key_file.is_some() || stored {
+        return true;
+    }
+    match &c.api_key_env {
+        Some(v) => std::env::var(v).is_ok_and(|k| !k.trim().is_empty()),
+        None => {
+            // no key wanted: a server on this machine has to be found running first
+            let url = c.base_url.to_ascii_lowercase();
+            let host = url.split("://").last().unwrap_or("");
+            let on_this_machine = ["localhost", "127.", "[::1]", "0.0.0.0"].iter().any(|h| host.starts_with(h));
+            !url.is_empty() && !on_this_machine
+        }
+    }
+}
+
+/// The host of an address: `https://auth.openai.com/oauth?x=1` is `auth.openai.com`.
+fn host_of(url: &str) -> &str {
+    let rest = url.split("://").last().unwrap_or(url);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
 }
 
 /// A fold of the first list: a header and the rows under it, each with the text the filter reads.
@@ -137,6 +173,7 @@ impl Setup {
             key: None,
             probe: None,
             prompt: None,
+            signed: None,
             model: String::new(),
             check: None,
             fields: Vec::new(),
@@ -159,6 +196,7 @@ impl Setup {
     /// server running), then one fold of the providers still to set up, then the row for a
     /// server of one's own. A fold shows its rows only when open (or while filtering).
     fn fill_providers(&mut self) {
+        self.signed = None;
         let in_use = self.current.split_once('/').map(|(p, _)| p.to_string());
         let count = |name: &str| self.models.iter().filter(|(p, _)| p == name).count();
         // key and sign-in facts of a provider: (ready, what to say about it, hint of its set-up row)
@@ -196,7 +234,7 @@ impl Setup {
             } else {
                 "configured"
             };
-            (running.is_some() || ok, status, hint)
+            (provider_ready(name, c, &self.local), status, hint)
         };
         // the providers with a model of their own first (the one in use at the top), then the
         // other ready ones, running servers before the rest
@@ -373,6 +411,7 @@ impl Setup {
 
     /// The list of the sign-in step: the saved login (when there is one), then the ways to sign in.
     fn fill_login(&mut self) {
+        self.signed = None;
         let flow = self.cfg.login.clone().unwrap_or_default();
         let mut items = Vec::new();
         if nexo_core::auth::get(self.cfg.auth.as_deref().unwrap_or(&self.name)).is_some() {
@@ -408,6 +447,7 @@ impl Setup {
         self.prompt = None;
         match result {
             Ok(()) => {
+                self.signed = Some(format!("signed in to {}", self.name));
                 self.step = Step::Address;
                 self.field = self.cfg.base_url.clone();
                 self.probe_cmd()
@@ -579,6 +619,12 @@ impl Setup {
         if key.code == KeyCode::Esc {
             return self.back();
         }
+        // while the browser is waited for, `c` copies the whole link
+        if self.step == Step::Login && key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::NONE {
+            if let Some((url, _)) = &self.prompt {
+                return SetupOut::Copy(url.clone());
+            }
+        }
         if self.busy.is_some() {
             return SetupOut::Nothing;
         }
@@ -719,6 +765,7 @@ impl Setup {
                     };
                     return SetupOut::SendAndClose(AgentCommand::SetModel { provider, model });
                 }
+                self.signed = None;
                 let name = it.value.trim_start_matches("new:").to_string();
                 self.cfg = self
                     .providers
@@ -759,7 +806,7 @@ impl Setup {
                     self.field = self.cfg.base_url.clone();
                     return self.probe_cmd();
                 }
-                self.busy = Some(format!("{}: waiting for you to finish in the browser", it.label));
+                self.busy = Some("waiting for the browser".to_string());
                 if it.value == "codex-cli" {
                     self.busy = Some("reading the Codex CLI login".into());
                 }
@@ -940,12 +987,18 @@ impl Setup {
                 );
                 if let Some((url, code)) = &self.prompt {
                     lines.push(Line::default());
-                    say(&mut lines, "If the browser did not open, open this page:", dim);
-                    say(&mut lines, url, theme.style(theme.accent));
+                    // the host only; the whole link is long, and `c` copies it
+                    lines.push(Line::from(vec![
+                        Span::styled("opened ", dim),
+                        Span::styled(host_of(url).to_string(), theme.style(theme.accent)),
+                        Span::styled(" in your browser · c copies the link", dim),
+                    ]));
                     if !code.is_empty() {
+                        let spaced = code.chars().map(String::from).collect::<Vec<_>>().join(" ");
+                        lines.push(Line::default());
                         lines.push(Line::from(vec![
-                            Span::styled("and type the code ", dim),
-                            Span::styled(code.clone(), theme.bold(theme.accent)),
+                            Span::styled("type this code  ", dim),
+                            Span::styled(spaced, theme.bold(theme.accent)),
                         ]));
                     }
                 }
@@ -955,6 +1008,9 @@ impl Setup {
                     Span::styled(format!("{} ", self.name), theme.bold(theme.accent)),
                     Span::styled("address of the server", dim),
                 ]));
+                if let Some(s) = &self.signed {
+                    lines.push(Line::from(Span::styled(format!("✓ {s}"), theme.style(theme.success))));
+                }
                 say(
                     &mut lines,
                     "e.g. localhost:11434 (Ollama), localhost:8000/v1 (vLLM), https://api.deepseek.com",
@@ -982,6 +1038,9 @@ impl Setup {
                 lines.push(prompt(self.field.clone(), masked));
             }
             Step::Model => {
+                if let Some(s) = &self.signed {
+                    lines.push(Line::from(Span::styled(format!("✓ {s}"), theme.style(theme.success))));
+                }
                 if let Some(p) = &self.probe {
                     let mut head = format!("✓ {}", kind_label(&p.kind));
                     if let Some(v) = &p.version {
@@ -1048,7 +1107,14 @@ impl Setup {
         }
         if let Some(e) = &self.error {
             lines.push(Line::default());
-            say(&mut lines, &format!("✗ {e}"), theme.style(theme.error));
+            if self.step == Step::Login {
+                // the sign-in failed: one line for the reason, then what the keys do
+                let one = e.lines().next().unwrap_or("");
+                lines.push(Line::from(Span::styled(truncate(&format!("✗ {one}"), w.max(8)), theme.style(theme.error))));
+                lines.push(Line::from(Span::styled("Enter tries again, Esc goes back", dim)));
+            } else {
+                say(&mut lines, &format!("✗ {e}"), theme.style(theme.error));
+            }
         }
         let list_at = matches!(self.step, Step::Provider | Step::Model | Step::Login).then(|| {
             lines.push(Line::default());
@@ -1362,7 +1428,11 @@ mod tests {
         s.login_prompt("https://auth.example/oauth/authorize?state=abc".into(), String::new());
         let (lines, _) = s.lines(80, &Theme::nexo(), 0, false);
         let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|sp| sp.content.to_string())).collect();
-        assert!(text.contains("https://auth.example/oauth/authorize?state=abc"), "{text}");
+        assert!(text.contains("auth.example") && !text.contains("oauth/authorize"), "{text}");
+        assert_eq!(
+            press(&mut s, KeyCode::Char('c')),
+            SetupOut::Copy("https://auth.example/oauth/authorize?state=abc".into())
+        );
         assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Send(AgentCommand::CancelLogin));
         assert!(s.busy.is_none() && s.prompt.is_none() && s.step == Step::Login);
 

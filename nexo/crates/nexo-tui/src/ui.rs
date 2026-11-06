@@ -104,14 +104,32 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     }
     app.status_row = title.y;
     draw_title(f, app, title);
-    draw_transcript(f, app, transcript);
+    if app.locked {
+        app.transcript_area = transcript;
+        draw_lock(f, app, transcript, 0.0);
+    } else {
+        draw_transcript(f, app, transcript);
+        // the card slides away over the text for a moment after a model works
+        if let Some(at) = app.fx.unlock_at {
+            let t = anim::progress(Some(at), app.now(), UNLOCK_MS);
+            if t < 1.0 {
+                draw_lock(f, app, transcript, anim::ease_out(t));
+            } else {
+                app.fx.unlock_at = None;
+            }
+        }
+    }
     if files_w > 0 {
         draw_panel(f, app, files);
     }
     draw_queue(f, app, queue);
     draw_separator(f, app, sep);
-    draw_input(f, app, input);
-    if !matches!(app.modal, Some(Modal::Permission(_))) {
+    if app.locked {
+        draw_lock_input(f, app, input);
+    } else {
+        draw_input(f, app, input);
+    }
+    if !app.locked && !matches!(app.modal, Some(Modal::Permission(_))) {
         draw_hints(f, app, hints);
     }
     // toasts: one row each, top right of the transcript, under every dialog and off the scrollbar column
@@ -460,6 +478,45 @@ fn segs_width(app: &App, segs: &[Vec<Seg>]) -> usize {
 
 fn share(num: u64, den: u64) -> u64 {
     ((num as f64 / den.max(1) as f64) * 100.0).round().clamp(0.0, 999.0) as u64
+}
+/// The draft row while no model works: it cannot be typed into, it says what to do.
+fn draw_lock_input(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width < 3 {
+        return;
+    }
+    let theme = &app.theme;
+    let text = truncate(&format!("{LOCK_TITLE} · press Enter"), area.width.saturating_sub(2) as usize);
+    let line = Line::from(vec![Span::styled("› ", theme.bold(theme.accent)), Span::styled(text, theme.dim())]);
+    f.render_widget(Paragraph::new(line), Rect { height: 1, ..area });
+}
+
+/// How long the welcome card takes to slide away once a model works.
+pub const UNLOCK_MS: u64 = 280;
+
+/// The text of the card shown while no model works yet.
+pub const LOCK_TITLE: &str = "Set up a model to start";
+
+/// The welcome card of a locked home, centred in `area`. `away` (0 to 1) slides it up and fades it.
+fn draw_lock(f: &mut Frame, app: &App, area: Rect, away: f64) {
+    let theme = &app.theme;
+    let lines: Vec<(String, Style)> = vec![
+        ("n e x o".to_string(), theme.bold(theme.accent)),
+        (String::new(), Style::default()),
+        (LOCK_TITLE.to_string(), if away > 0.5 { theme.dim() } else { theme.bold(theme.fg) }),
+        ("Enter opens the setup · any key does too".to_string(), theme.dim()),
+    ];
+    let h = lines.len() as u16;
+    let slide = (away * 4.0).round() as u16;
+    let top = area.y + area.height.saturating_sub(h) / 2;
+    for (i, (text, style)) in lines.iter().enumerate() {
+        let Some(y) = (top + i as u16).checked_sub(slide) else { continue };
+        if y < area.y || y >= area.bottom() || text.is_empty() {
+            continue;
+        }
+        let w = (crate::render::wrap::width(text) as u16).min(area.width);
+        let r = Rect { x: area.x + (area.width - w) / 2, y, width: w, height: 1 };
+        f.render_widget(Paragraph::new(Line::from(Span::styled(truncate(text, w as usize), *style))), r);
+    }
 }
 
 fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {

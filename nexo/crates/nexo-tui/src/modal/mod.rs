@@ -283,6 +283,7 @@ impl From<SetupOut> for ModalOut {
             SetupOut::Close => ModalOut::Close,
             SetupOut::Send(c) => ModalOut::Send(c),
             SetupOut::SendAndClose(c) => ModalOut::SendAndClose(c),
+            SetupOut::Copy(t) => ModalOut::Copy(t),
         }
     }
 }
