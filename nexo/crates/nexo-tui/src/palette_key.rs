@@ -82,6 +82,7 @@ mod tests {
             fold_after: 3,
             group_tools: true,
             complete_words: true,
+            suggest: false,
             notify_after: 15,
             animations: false,
             vim: false,

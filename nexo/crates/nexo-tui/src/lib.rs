@@ -81,6 +81,8 @@ pub struct TuiOptions {
     pub group_tools: bool,
     /// Grey ghost text finishes the word being typed from the session's words; → takes it (`[ui] complete_words`).
     pub complete_words: bool,
+    /// Ask the agent for a suggested next message when a turn ends and show it as ghost text (`[ui] suggest`).
+    pub suggest: bool,
     /// `[ui.keys]`: action name -> key, over the default keys.
     pub keys: std::collections::BTreeMap<String, String>,
     /// Smooth scrolling, fades, pulses and the other motion (`[ui] animations`).
@@ -111,6 +113,7 @@ impl Default for TuiOptions {
             fold_after: 12,
             group_tools: true,
             complete_words: true,
+            suggest: true,
             keys: Default::default(),
             animations: true,
             status_line: Vec::new(),

@@ -25,6 +25,7 @@ fn app() -> App {
         fold_after: 4,
         group_tools: true,
         complete_words: true,
+        suggest: false,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

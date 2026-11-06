@@ -352,6 +352,9 @@ pub struct UiConfig {
     /// At each start of the interface, ask GitHub whether `main` has commits past the one nexo was built from, and say so
     /// (`NEXO_NO_UPDATE_CHECK` also turns it off).
     pub update_check: bool,
+    /// When a turn ends, a dim suggestion of your next message shows in the empty input; Tab or → takes it and typing
+    /// hides it. It costs one short model call per turn, which reuses the conversation's cached prompt.
+    pub suggest: bool,
 }
 
 impl Default for UiConfig {
@@ -372,6 +375,7 @@ impl Default for UiConfig {
             status_command: String::new(),
             timestamps: true,
             update_check: true,
+            suggest: true,
         }
     }
 }

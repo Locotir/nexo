@@ -2772,6 +2772,26 @@ fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
     app.editor_area = editor;
     app.input.wrap_width = editor.width as usize;
     if app.input.is_empty() {
+        // a suggested message in the dim of the placeholder, cut to the row (Tab or → takes it whole)
+        if let Some(s) = app.suggestion_shown() {
+            let room = editor.width as usize;
+            let shown = if crate::render::wrap::width(s) > room {
+                let mut t = String::new();
+                for c in s.chars() {
+                    if crate::render::wrap::width(&t) + crate::render::wrap::width(c.encode_utf8(&mut [0; 4])) + 1
+                        > room
+                    {
+                        break;
+                    }
+                    t.push(c);
+                }
+                t.push('…');
+                t
+            } else {
+                s.to_string()
+            };
+            f.buffer_mut().set_stringn(editor.x, editor.y, &shown, room, app.theme.dim());
+        }
         // the placeholder takes the box; the caret sits on its first cell
         let cell = f.buffer_mut().cell_mut((editor.x, editor.y));
         if let Some(c) = cell {

@@ -154,6 +154,8 @@ struct State {
     last_view: (u64, u64),
     /// The messages of the last request, to tell which part of the next one repeats it (the cache).
     last_sent: Vec<Message>,
+    /// The last request the conversation sent, which a prompt suggestion repeats (the provider's cache) with one message more.
+    last_request: Option<ModelRequest>,
     /// The mends of a broken history already said (each is said once).
     mended: HashSet<String>,
     perm: Policy,
@@ -324,6 +326,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         policy,
         last_view: (0, 0),
         last_sent: Vec::new(),
+        last_request: None,
         mended: HashSet::new(),
         perm,
         gate,
@@ -686,6 +689,12 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         notice(&events, Level::Info, jobs_text(&jobs));
                         emit(&events, AgentEvent::Jobs { jobs: jobs.list() });
                     }
+                    AgentCommand::Suggest => {
+                        // only between requests: a running one makes the suggestion stale
+                        if turn.is_none() {
+                            spawn_suggest(&state);
+                        }
+                    }
                     AgentCommand::Shutdown => break,
                 }
             }
@@ -813,6 +822,7 @@ fn install_session(st: &mut State, session: Session) {
     st.cost = st.session.cost();
     st.policy.reset();
     st.last_prompt = None;
+    st.last_request = None;
     st.turn_start = 0;
     st.turns = 0;
     st.goal = st.session.goal().map(String::from);
@@ -1137,6 +1147,7 @@ async fn rewind(state: &Shared, index: usize) {
     let restored = restore_files(&mut st, keep);
     st.policy.reset();
     st.last_prompt = None;
+    st.last_request = None;
     st.turn_start = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
@@ -1461,6 +1472,7 @@ async fn prepare(
     req.max_tokens = st.limits.max_tokens(st.config.agent.max_tokens);
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
+    st.last_request = Some(req.clone());
     Ok((req, cfg, st.client.clone(), st.config.agent.retries))
 }
 
@@ -3246,6 +3258,79 @@ fn spawn_job_review(state: &Shared, jobs: Jobs) {
     });
 }
 
+/// Sent after the last request of the conversation and its reply, to ask for a prompt suggestion.
+const SUGGEST_ASK: &str = "Suggest the next message the user is most likely to send, in their language and voice, \
+     at most 12 words. Reply with only that message, or with nothing if unclear.";
+
+/// The longest reply of a prompt suggestion's request.
+const SUGGEST_TOKENS: u32 = 200;
+
+/// The request of a prompt suggestion: the last request of the conversation as it was sent (the same system
+/// prompt, tools, tool choice and messages, so the provider's cache of it is hit), the reply it got, and one
+/// more message from the person that asks for the suggestion.
+fn suggest_request(last: &ModelRequest, reply: Message) -> ModelRequest {
+    let mut req = last.clone();
+    req.messages.push(reply);
+    req.messages.push(Message::user(SUGGEST_ASK));
+    // a model that reasons first needs its own room: a short cap would cut the answer off before it starts
+    if matches!(req.reasoning, Some(ReasoningConfig::Off)) {
+        req.max_tokens = SUGGEST_TOKENS;
+    }
+    req
+}
+
+/// A suggestion as one line without the quotes a model puts round it; None when it holds nothing.
+fn tidy_suggestion(text: &str) -> Option<String> {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = line.trim_matches(|c| matches!(c, '"' | '\'' | '`' | '“' | '”')).trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// `AgentCommand::Suggest`: a guess at the person's next message, in a task of its own so the chat never waits
+/// for it. It is let go when the reply calls a tool or holds nothing, or when a new request started (or the
+/// conversation changed) while the call ran.
+fn spawn_suggest(state: &Shared) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let (req, cfg, client, retries, turns, events) = {
+            let st = state.lock().await;
+            let Some(last) = st.last_request.as_ref() else { return };
+            // the conversation ends on a reply that is words only, from the model that got that request
+            let Some(reply) =
+                st.history.last().filter(|m| m.role == Role::Assistant && m.tool_calls().next().is_none())
+            else {
+                return;
+            };
+            let (_, cfg, model) = st.target.get();
+            if last.model != model || !st.inbox.is_empty() {
+                return;
+            }
+            let req = suggest_request(last, reply.clone());
+            (req, cfg, st.client.clone(), st.config.agent.retries, st.turns, st.events.clone())
+        };
+        let Ok(mut stream) = client.stream(&cfg, &req, retries).await else { return };
+        let mut c = Collector::for_model(req.model.clone());
+        while let Some(ev) = stream.next().await {
+            let failed = matches!(ev, StreamEvent::Error(_));
+            c.push(ev);
+            if failed {
+                break;
+            }
+        }
+        let msg = c.message();
+        let mut st = state.lock().await;
+        if !c.usage.is_empty() {
+            add_usage(&mut st, &events, &req.model, c.usage, Usage::default(), UsageKind::Suggest);
+        }
+        if c.error.is_some() || msg.tool_calls().next().is_some() || st.turns != turns {
+            return;
+        }
+        if let Some(text) = tidy_suggestion(&msg.text()) {
+            emit(&events, AgentEvent::Suggestion { text });
+        }
+    });
+}
+
 fn spawn_vendor_fill(state: &Shared) {
     let state = state.clone();
     tokio::spawn(async move {
@@ -3413,6 +3498,7 @@ async fn clear(state: &Shared) {
     st.checkpoints.clear();
     st.policy.reset();
     st.last_prompt = None;
+    st.last_request = None;
     st.reads.clear();
     st.digests.clear();
     st.inbox.clear();

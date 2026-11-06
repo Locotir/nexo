@@ -574,6 +574,7 @@ async fn interactive(
         fold_after: config.ui.fold_after,
         group_tools: config.ui.group_tools,
         complete_words: config.ui.complete_words,
+        suggest: config.ui.suggest,
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,
         status_line: config.ui.status_line.clone(),

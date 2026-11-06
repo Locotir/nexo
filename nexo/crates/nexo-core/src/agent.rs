@@ -198,6 +198,9 @@ pub enum AgentCommand {
     ListPeers,
     /// Ask for the end of the output of every background job; answered with `JobTails`.
     JobTails,
+    /// Ask for a suggestion of the person's next message, made from the last request of the conversation; answered
+    /// with `Suggestion`, or with nothing when there is none. The interface sends it when a turn ends.
+    Suggest,
     Shutdown,
 }
 
@@ -494,6 +497,10 @@ pub enum AgentEvent {
     /// The end of the output of each background job, answering `JobTails`.
     JobTails {
         tails: Vec<crate::jobs::JobTail>,
+    },
+    /// The next message the person is likely to send, answering `Suggest`.
+    Suggestion {
+        text: String,
     },
     /// The system prompt of this session, as the model receives it.
     SystemPrompt {

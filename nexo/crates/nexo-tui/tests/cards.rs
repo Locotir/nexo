@@ -31,6 +31,7 @@ fn app_with(group_tools: bool) -> App {
         fold_after: 3,
         group_tools,
         complete_words: true,
+        suggest: false,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

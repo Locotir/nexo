@@ -230,6 +230,15 @@ pub fn key(app: &mut App, k: KeyEvent) {
             _ => {}
         }
     }
+    // Tab or → on an empty draft that shows a suggested message takes it; with none shown each keeps its own use
+    if matches!(k.code, KeyCode::Right | KeyCode::Tab)
+        && !ctrl
+        && !shift
+        && !k.modifiers.contains(KeyModifiers::ALT)
+        && app.accept_suggestion()
+    {
+        return;
+    }
     if app.input.is_empty() {
         match k.code {
             KeyCode::Home => return app.scroll_to_top(),

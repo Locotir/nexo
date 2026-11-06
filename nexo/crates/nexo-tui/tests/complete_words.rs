@@ -29,6 +29,7 @@ fn app_with(theme: &str, complete: bool) -> App {
         fold_after: 3,
         group_tools: false,
         complete_words: complete,
+        suggest: false,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

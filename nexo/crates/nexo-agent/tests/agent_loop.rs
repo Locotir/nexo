@@ -3744,3 +3744,53 @@ async fn a_review_that_says_continue_leaves_the_command_running() {
     assert!(told.contains("done (exit 0)"), "{told}");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_suggestion_repeats_the_last_request_with_one_more_message() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("c1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(text("done")),
+        // the first suggestion calls a tool: let go
+        Reply::Events(call("c2", "read", json!({"path": "b.rs"}))),
+        Reply::Events(text("\"now run the tests\"")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read a".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Suggestion { .. })), "nothing asks for it on its own");
+
+    r.send(AgentCommand::Suggest);
+    let evs = r.until(|e| matches!(e, AgentEvent::Usage { .. })).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Suggestion { .. })), "a reply that calls a tool is dropped");
+
+    r.send(AgentCommand::Suggest);
+    let evs = r.until(|e| matches!(e, AgentEvent::Suggestion { .. })).await;
+    assert!(matches!(evs.last(), Some(AgentEvent::Suggestion { text }) if text == "now run the tests"));
+
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 4);
+    for side in &reqs[2..] {
+        let last = &reqs[1];
+        assert_eq!(side.system, last.system);
+        assert_eq!(side.tools.len(), last.tools.len());
+        assert_eq!(side.no_tool_call, last.no_tool_call);
+        assert_eq!(side.model, last.model);
+        // the test model does not reason, so the short cap holds; one that reasons keeps the request's own
+        assert_eq!(
+            side.max_tokens,
+            if matches!(last.reasoning, Some(nexo_core::ReasoningConfig::Off)) { 200 } else { last.max_tokens }
+        );
+        let n = last.messages.len();
+        assert_eq!(side.messages.len(), n + 2);
+        assert_eq!(side.messages[..n], last.messages[..], "the messages the last request sent come first");
+        assert_eq!(side.messages[n].role, Role::Assistant);
+        assert_eq!(side.messages[n].text(), "done", "then the reply it got");
+        let ask = &side.messages[n + 1];
+        assert_eq!(ask.role, Role::User);
+        assert!(ask.text().starts_with("Suggest the next message the user is most likely to send"), "{}", ask.text());
+    }
+    r.stop().await;
+}

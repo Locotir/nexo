@@ -125,6 +125,8 @@ pub struct App {
     pub input: Input,
     /// Every word of the session, for the ghost text of the draft.
     pub words: crate::complete::WordIndex,
+    /// The next message the agent suggests, dim in the empty draft; Tab or → takes it, any edit drops it.
+    pub suggestion: Option<String>,
     pub palette: Option<Palette>,
     /// The draft set aside while the commands window opened by its key has the box.
     pub kept_draft: Option<crate::input::Draft>,
@@ -402,6 +404,7 @@ impl App {
                 i
             },
             words: crate::complete::WordIndex::new(opts.complete_words),
+            suggestion: None,
             palette: None,
             modal: None,
             diffview: None,
@@ -648,6 +651,7 @@ impl App {
 
     /// Forgets the transcript (a resume, a rewind, a new session).
     pub fn clear_transcript(&mut self) {
+        self.suggestion = None;
         self.words.clear();
         self.blocks.clear();
         self.cache.clear();
@@ -1836,6 +1840,7 @@ impl App {
                 self.history(index, message)
             }
             AgentEvent::TurnStart { .. } => {
+                self.suggestion = None;
                 self.busy = true;
                 self.turn_started = Some(self.now());
                 self.streamed_chars = 0;
@@ -2204,6 +2209,18 @@ impl App {
                     }
                 }
                 self.invalidate_all();
+                // a turn that ended normally asks for a guess at the next message (nothing waits in the queue)
+                if matches!(reason, TurnEnd::Done) && self.opts.suggest && self.queued == 0 {
+                    self.send(AgentCommand::Suggest);
+                }
+            }
+            AgentEvent::Suggestion { text } => {
+                // only into an empty box, between turns; a reply that comes late is let go
+                let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if self.opts.suggest && !self.busy && self.input.is_empty() && !text.is_empty() {
+                    self.suggestion = Some(text);
+                    self.dirty = true;
+                }
             }
             AgentEvent::HistoryCleared => self.clear_transcript(),
             AgentEvent::SessionChanged { session_id, title } => {
@@ -3213,6 +3230,26 @@ impl App {
         self.words.suggest(&typed)
     }
 
+    /// The suggested next message as it shows now: only in an empty draft, with no window, palette
+    /// or picked block holding the keys.
+    pub fn suggestion_shown(&self) -> Option<&str> {
+        if self.palette.is_some() || self.modal.is_some() || self.selected.is_some() || !self.input.is_empty() {
+            return None;
+        }
+        self.suggestion.as_deref()
+    }
+
+    /// Tab or → on an empty draft that shows a suggestion: the whole suggestion becomes the draft.
+    /// False (and nothing changes) when none shows, so the key keeps its other use.
+    pub fn accept_suggestion(&mut self) -> bool {
+        let Some(text) = self.suggestion_shown().map(str::to_string) else { return false };
+        self.suggestion = None;
+        self.input.set_text(&text);
+        self.refresh_palette();
+        self.dirty = true;
+        true
+    }
+
     /// Enter on the draft.
     pub fn submit(&mut self) {
         let text = self.input.full_text();
@@ -3229,6 +3266,7 @@ impl App {
             }
             return;
         }
+        self.suggestion = None;
         self.palette = None;
         // a command of one's own sends its text as the request
         if let Some(rest) = trimmed.strip_prefix('/') {
@@ -4057,6 +4095,10 @@ impl App {
 
     /// After the draft changed: open, update or close the palette.
     pub fn refresh_palette(&mut self) {
+        // a draft that has text is no longer the empty box the suggestion belongs to
+        if !self.input.is_empty() {
+            self.suggestion = None;
+        }
         let draft = self.input.text();
         let cursor = self.input.cursor_offset();
         match palette::wanted(&draft, cursor) {
@@ -4562,6 +4604,7 @@ mod tests {
             fold_after: 3,
             group_tools: true,
             complete_words: true,
+            suggest: false,
             keys: Default::default(),
             notify_after: 15,
             animations: true,
@@ -6364,6 +6407,72 @@ mod tests {
         a.submit();
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(PermissionMode::Plan))));
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == "add a cache"));
+    }
+
+    #[test]
+    fn a_suggestion_is_asked_for_at_a_normal_end_and_taken_whole_by_tab_or_right() {
+        let (mut a, mut rx) = app();
+        // off: a turn's end asks for nothing
+        a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+        assert!(!drain(&mut rx).contains(&AgentCommand::Suggest));
+        a.opts.suggest = true;
+        for reason in [TurnEnd::Interrupted, TurnEnd::Error, TurnEnd::MaxTurns] {
+            a.handle_agent(AgentEvent::TurnEnd { reason });
+        }
+        assert!(!drain(&mut rx).contains(&AgentCommand::Suggest), "only a normal end asks");
+        a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+        assert!(drain(&mut rx).contains(&AgentCommand::Suggest));
+
+        // Tab takes the whole suggestion; the suggestion is gone and the draft is its text
+        a.handle_agent(AgentEvent::Suggestion { text: "  run the\ntests ".into() });
+        assert_eq!(a.suggestion_shown(), Some("run the tests"));
+        press(&mut a, KeyCode::Tab);
+        assert_eq!(a.input.text(), "run the tests");
+        assert_eq!(a.suggestion, None);
+
+        // Right does the same
+        a.input.clear();
+        a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
+        press(&mut a, KeyCode::Right);
+        assert_eq!(a.input.text(), "commit it");
+
+        // typing anything hides it for good, even when the draft is emptied again
+        a.input.clear();
+        a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
+        press(&mut a, KeyCode::Char('x'));
+        assert_eq!(a.input.text(), "x");
+        assert_eq!(a.suggestion_shown(), None);
+        a.input.clear();
+        assert_eq!(a.suggestion, None);
+
+        // a late suggestion is let go: a draft with text, a turn in progress
+        a.input.set_text("hello");
+        a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
+        assert_eq!(a.suggestion, None);
+        a.input.clear();
+        a.busy = true;
+        a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
+        assert_eq!(a.suggestion, None);
+        a.busy = false;
+
+        // a new turn clears it, and so does a submit
+        a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
+        a.handle_agent(AgentEvent::TurnStart { turn: 2 });
+        assert_eq!(a.suggestion, None);
+        a.busy = false;
+        a.handle_agent(AgentEvent::Suggestion { text: "commit it".into() });
+        a.input.set_text("go");
+        a.suggestion = Some("commit it".into());
+        a.submit();
+        assert_eq!(a.suggestion, None);
+
+        // Tab keeps its own use when the draft has text: the word is completed, here a command
+        a.input.set_text("/he");
+        a.suggestion = Some("commit it".into());
+        a.refresh_palette();
+        assert_eq!(a.suggestion, None);
+        press(&mut a, KeyCode::Tab);
+        assert!(a.input.text().starts_with("/help"), "{}", a.input.text());
     }
 
     #[test]
