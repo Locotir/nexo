@@ -1814,11 +1814,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         if cut && !calls.is_empty() {
             // the last call stopped half written: its arguments are not what the model meant, and the
             // calls before it belong to a plan cut short. None runs; the model is told why and asks again
-            push_results(
-                &state,
-                cancelled_results(&calls, CUT_NOTE),
-            )
-            .await;
+            push_results(&state, cancelled_results(&calls, CUT_NOTE)).await;
             cut_calls += 1;
             if cut_calls >= 2 {
                 notice(&events, Level::Error, "two replies in a row were cut at max_tokens while writing their calls; stopped (raise agent.max_tokens or ask for smaller steps)");
