@@ -36,6 +36,9 @@ pub struct SessionMeta {
     /// How many of the parent's messages the fork kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_at: Option<usize>,
+    /// Started by `nexo -p` (a script or another program), not by the person: left out of `/resume`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub headless: bool,
 }
 
 /// Whose model call a `usage` line pays for.
@@ -158,6 +161,14 @@ fn new_id() -> String {
     let f = time::macros::format_description!("[year][month][day]-[hour][minute][second]");
     let bytes = uuid::Uuid::new_v4();
     format!("{}-{}", t.format(&f).unwrap_or_default(), &bytes.simple().to_string()[..4])
+}
+
+/// Set once by `nexo -p`: the sessions this process starts are marked as not the person's own.
+static HEADLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks the sessions this process starts from now on as run by a program (`nexo -p`).
+pub fn mark_headless() {
+    HEADLESS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Where sessions live.
@@ -641,6 +652,7 @@ impl Session {
             messages: 0,
             parent,
             fork_at,
+            headless: HEADLESS.load(std::sync::atomic::Ordering::Relaxed),
         };
         take_lock(&lock_path(&path))?;
         write_line(&mut file, &Line::Meta(meta.clone()))?;
@@ -676,6 +688,7 @@ impl Session {
             messages: 0,
             parent: None,
             fork_at: None,
+            headless: false,
         };
         Session {
             meta,
@@ -1317,6 +1330,18 @@ mod tests {
     }
 
     #[test]
+    fn a_session_run_by_a_program_says_so_and_old_ones_read_as_the_persons() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+        let first = std::fs::read_to_string(d.path().join(format!("{}.jsonl", s.meta().id))).unwrap();
+        assert!(!first.contains("headless"), "the person's sessions keep the old meta line: {first}");
+        let mut m = s.meta().clone();
+        m.headless = true;
+        let back: SessionMeta = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert!(back.headless);
+    }
+
+    #[test]
     fn the_tree_puts_children_under_their_parent() {
         let mk = |id: &str, parent: Option<&str>, updated: &str| SessionMeta {
             id: id.into(),
@@ -1329,6 +1354,7 @@ mod tests {
             messages: 0,
             parent: parent.map(String::from),
             fork_at: None,
+            headless: false,
         };
         let metas =
             vec![mk("a", None, "1"), mk("c", Some("a"), "3"), mk("b", Some("a"), "2"), mk("z", Some("gone"), "9")];

@@ -549,8 +549,11 @@ async fn interactive(
     let (handle, ends) = channels();
     let models = setup::model_choices(&config);
     // A session nothing was said in has nothing to resume.
-    let sessions =
-        nexo_agent::session::list().into_iter().filter(|m| m.messages > 0).map(|m| (m.id, m.title)).collect();
+    let sessions = nexo_agent::session::list()
+        .into_iter()
+        .filter(|m| m.messages > 0 && !m.headless)
+        .map(|m| (m.id, m.title))
+        .collect();
     // sessions write to each other through the mailbox; it takes its session when the agent has one
     let mailbox = config.mail.enabled.then(|| {
         nexo_core::mailbox::Mailbox::unbound(
@@ -619,6 +622,8 @@ async fn headless(
     json: bool,
 ) -> anyhow::Result<i32> {
     use std::io::Write;
+    // what a script or another program runs is not one of the person's conversations
+    nexo_agent::session::mark_headless();
     let (mut handle, ends) = channels();
     let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
     let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume, Some(gate), None).await?;
