@@ -91,3 +91,9 @@ jobs:
               --title "nexo ${SHA::7}" --latest \
               --notes "Ready-built nexo for commit $SHA. Install or update: see the README (the install scripts and \`nexo update\` download these files and check them against SHA256SUMS)."
           fi
+      - name: keep the last 5 builds
+        # install.sh and `nexo update` only read releases/latest; the last few stay for going back
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" -L 500 --json tagName,createdAt \
+            -q '[.[] | select(.tagName | startswith("build-"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+            while read -r old; do gh release delete "$old" --cleanup-tag -y --repo "$GITHUB_REPOSITORY"; done
