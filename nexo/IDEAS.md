@@ -28,3 +28,10 @@ names 25% of the files they went on to read (40% when the same work is handed ov
 for the last 3000 tokens of the conversation and 53-63% for the whole conversation; no sub-agent tool call
 there would have been answered whole by what its parent held (2%). Ideas 1-4 and 8 act on every session,
 not only those that delegate, and are where the recorded sessions spend their tokens.
+
+## Pending: `/panel` as a phone-style board (not started)
+
+Make `/panel` read like a mobile agent dashboard: one card per live session with its state at a glance
+(working, waiting for you, done, blocked), the latest conclusion in one line, a progress mark, and the
+requests pinned to it; open a card for its events, todo and mail; message, pause or resume from the card.
+Conclusions first, no step-by-step log on the card. To be designed before any code.
