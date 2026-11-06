@@ -18,6 +18,34 @@ use super::markdown;
 use super::wrap::{truncate, width, wrap_plain, wrap_plain_ex};
 use crate::regions::{Kind, Meta, Region};
 
+/// The goal loop's closing line of a reply (`GOAL DONE`, `GOAL WAIT`), read as the agent loop reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalSignal {
+    Done,
+    Wait,
+}
+
+/// A reply without its closing `GOAL DONE` / `GOAL WAIT` line, and which one it was. While the reply
+/// streams in, a last line that is still on its way to one of them (`GOAL`, `GOAL W`) is held back too,
+/// so the bare words never flash on screen.
+pub fn goal_signal(text: &str, streaming: bool) -> (&str, Option<GoalSignal>) {
+    let body = text.trim_end();
+    let cut = body.rfind('\n').map_or(0, |i| i + 1);
+    let last = body[cut..].trim().trim_end_matches(['.', '!', '*', '`', '_']).trim_start_matches(['*', '`', '_']);
+    let up = last.to_ascii_uppercase();
+    let sig = match up.as_str() {
+        "GOAL DONE" => Some(GoalSignal::Done),
+        "GOAL WAIT" => Some(GoalSignal::Wait),
+        _ => None,
+    };
+    let partial = streaming && !up.is_empty() && ("GOAL DONE".starts_with(&up) || "GOAL WAIT".starts_with(&up));
+    if sig.is_some() || partial {
+        (body[..cut].trim_end(), sig)
+    } else {
+        (text, None)
+    }
+}
+
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +241,9 @@ impl Block {
                 lines
             }
             Block::Assistant { text, streaming, at, took_ms, .. } => {
+                // the loop's `GOAL DONE` / `GOAL WAIT` line is for the agent loop, not the person: it is
+                // shown as a badge in the goal's colours instead of the bare words
+                let (text, signal) = goal_signal(text, *streaming);
                 let (mut lines, m) = markdown::render_as_meta(text, w.saturating_sub(2), theme, o.interpreted);
                 meta = m;
                 meta.add_deco(2);
@@ -226,6 +257,19 @@ impl Block {
                     if let Some(last) = lines.last_mut() {
                         last.spans.push(Span::styled("▍", caret));
                     }
+                }
+                if let Some(sig) = signal {
+                    let (icon, label, colour) = match sig {
+                        GoalSignal::Done => ("✓", "goal met", theme.success),
+                        GoalSignal::Wait => ("⏸", "goal paused · waiting for your answer", theme.warn),
+                    };
+                    if lines.last().is_some_and(|l| l.spans.iter().any(|s| !s.content.trim().is_empty())) {
+                        lines.push(Line::default());
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{icon} "), theme.bold(colour)),
+                        Span::styled(label, theme.style(colour)),
+                    ]));
                 }
                 for (i, l) in lines.iter_mut().enumerate() {
                     let marker =
@@ -1192,6 +1236,25 @@ pub fn fmt_k(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_goal_lines_become_a_badge_and_never_show_bare() {
+        assert_eq!(goal_signal("All set.\n\nGOAL DONE\n", false), ("All set.", Some(GoalSignal::Done)));
+        assert_eq!(goal_signal("Waiting on you.\n**GOAL WAIT**", false), ("Waiting on you.", Some(GoalSignal::Wait)));
+        assert_eq!(goal_signal("GOAL WAIT", false), ("", Some(GoalSignal::Wait)));
+        assert_eq!(goal_signal("text\nGOAL W", true), ("text", None), "held back while it streams");
+        assert_eq!(goal_signal("text\nGOAL W", false), ("text\nGOAL W", None), "a finished reply keeps it");
+        assert_eq!(goal_signal("the GOAL DONE marker", false), ("the GOAL DONE marker", None));
+        let b = Block::Assistant {
+            text: "Ok.\n\nGOAL WAIT".into(),
+            streaming: false,
+            at: None,
+            started: None,
+            took_ms: None,
+        };
+        let shown = texts(&b.render(80, &Theme::nexo(), opts())).join("\n");
+        assert!(!shown.contains("GOAL WAIT") && shown.contains("goal paused"), "{shown}");
+    }
 
     fn texts(lines: &[Line]) -> Vec<String> {
         lines.iter().map(markdown::text_of).collect()
