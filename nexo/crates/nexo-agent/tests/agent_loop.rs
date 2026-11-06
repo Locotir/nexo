@@ -225,7 +225,12 @@ impl Running {
     }
 
     async fn raw(&mut self) -> AgentEvent {
-        tokio::time::timeout(Duration::from_secs(10), self.handle.events.recv())
+        self.raw_within(Duration::from_secs(10)).await
+    }
+
+    /// As `raw`, waiting up to `wait`: a Windows runner can take seconds to start a shell.
+    async fn raw_within(&mut self, wait: Duration) -> AgentEvent {
+        tokio::time::timeout(wait, self.handle.events.recv())
             .await
             .expect("an event in time")
             .expect("the agent is alive")
@@ -2241,7 +2246,7 @@ async fn a_background_command_lets_the_turn_end_and_its_end_reaches_the_model() 
     r.send(AgentCommand::Submit { text: "run it in the background".into(), attachments: vec![] });
     let mut evs = Vec::new();
     loop {
-        let ev = r.raw().await;
+        let ev = r.raw_within(Duration::from_secs(30)).await;
         let idle = matches!(ev, AgentEvent::Idle { running_jobs: 0 });
         evs.push(ev);
         if idle {

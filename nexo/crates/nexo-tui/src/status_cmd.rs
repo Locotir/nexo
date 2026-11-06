@@ -20,6 +20,9 @@ use unicode_width::UnicodeWidthChar;
 pub const TIMEOUT: Duration = Duration::from_millis(500);
 /// The least time between two runs.
 pub const GAP: Duration = Duration::from_secs(1);
+/// How long a failed run waits before its one more try: a busy machine has calmed down, and a run
+/// cut at the timeout is not started again straight away.
+pub const RETRY_AFTER: Duration = Duration::from_secs(3);
 
 type Outcome = Result<String, String>;
 
@@ -34,6 +37,8 @@ pub struct StatusCommand {
     /// A run for this key already failed once and was asked again: a slow machine gets one more
     /// try, a broken script does not run on every tick.
     retried: bool,
+    /// When the one more try may start.
+    retry_at: Option<Instant>,
     logged: bool,
     /// The last good line, as the script printed it (escapes included).
     pub line: Option<String>,
@@ -53,6 +58,7 @@ impl StatusCommand {
             key: None,
             wanted: true,
             retried: false,
+            retry_at: None,
             logged: false,
             line: None,
             error: None,
@@ -81,6 +87,7 @@ impl StatusCommand {
                     if !self.retried {
                         self.retried = true;
                         self.wanted = true;
+                        self.retry_at = Some(Instant::now() + RETRY_AFTER);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -91,8 +98,13 @@ impl StatusCommand {
             self.key = Some(key.to_string());
             self.wanted = true;
             self.retried = false;
+            self.retry_at = None;
         }
-        if self.wanted && self.running.is_none() && !self.started.is_some_and(|t| t.elapsed() < GAP) {
+        if self.wanted
+            && self.running.is_none()
+            && !self.started.is_some_and(|t| t.elapsed() < GAP)
+            && !self.retry_at.is_some_and(|t| Instant::now() < t)
+        {
             self.wanted = false;
             self.started = Some(Instant::now());
             let (tx, rx) = mpsc::channel();
@@ -418,7 +430,7 @@ mod tests {
         let cmd = format!("echo x >> '{}'; exit 1", count.display());
         let mut s = StatusCommand::new(&cmd, d.path()).unwrap();
         let t = Instant::now();
-        while t.elapsed() < Duration::from_millis(3500) {
+        while t.elapsed() < Duration::from_millis(6000) {
             s.poll("k", String::new);
             std::thread::sleep(Duration::from_millis(20));
         }
