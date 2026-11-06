@@ -2473,21 +2473,23 @@ async fn a_sub_agent_out_of_rounds_still_reports_what_it_found() {
 }
 
 #[tokio::test]
-async fn the_curator_without_directives_offers_the_same_tools_as_the_other_policies() {
-    let d = tempfile::tempdir().unwrap();
-    let client = Scripted::new(vec![Reply::Events(text("done"))]);
-    let mut cfg = config(PermissionMode::Ask);
-    cfg.context.policy = "curator".into();
-    // `directives=0` is the default: a pure view, so the model gets no tool it would not get without the curator
-    let set = tools().with(Arc::new(nexo_tools::recall::Recall));
-    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
-    r.next().await;
-    r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
-    let evs = r.turn().await;
-    assert_eq!(end_of(&evs), TurnEnd::Done);
-    let reqs = client.requests();
-    assert!(!reqs[0].tools.iter().any(|t| t.name == "recall"), "no recall without the directives");
-    r.stop().await;
+async fn the_curator_offers_recall_and_recall_0_offers_the_tools_of_the_other_policies() {
+    for (spec, offered) in [("", true), ("recall=0", false)] {
+        let d = tempfile::tempdir().unwrap();
+        let client = Scripted::new(vec![Reply::Events(text("done"))]);
+        let mut cfg = config(PermissionMode::Ask);
+        cfg.context.policy = "curator".into();
+        cfg.context.curator_spec = spec.into();
+        let set = tools().with(Arc::new(nexo_tools::recall::Recall));
+        let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "hi".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Done);
+        let reqs = client.requests();
+        assert_eq!(reqs[0].tools.iter().any(|t| t.name == "recall"), offered, "spec {spec:?}");
+        r.stop().await;
+    }
 }
 
 fn notices(evs: &[AgentEvent]) -> Vec<String> {

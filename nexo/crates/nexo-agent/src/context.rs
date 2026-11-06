@@ -59,8 +59,6 @@ pub trait ContextPolicy: Send {
         None
     }
     /// Whether the model is offered the `recall` tool (a message the view left out, back as it was).
-    /// Its description is an instruction the model gets only with this policy, so it goes with the
-    /// directives: off by default, so that the view alone is what the policy changes.
     fn recall(&self) -> bool {
         false
     }
@@ -371,7 +369,7 @@ impl ContextPolicy for BuiltIn {
     }
 
     fn recall(&self) -> bool {
-        self.cur.directives()
+        self.cur.recall()
     }
 
     fn tools(&mut self, names: &[String]) {
@@ -515,13 +513,12 @@ mod tests {
     }
 
     #[test]
-    fn recall_goes_with_the_directives() {
-        // the tool list is part of what the model gets: with the directives off (the default) the
-        // curator offers the same tools as the other policies, so the view is all that differs
+    fn the_curator_offers_recall_unless_told_not_to() {
+        // only the curator leaves anything out; `recall=0` keeps the tool list of the other policies
         assert!(!Plain::default().recall());
-        assert!(!BuiltIn::new("").unwrap().recall());
-        assert!(!BuiltIn::new("directives=0").unwrap().recall());
-        assert!(BuiltIn::new("directives=1").unwrap().recall());
+        assert!(BuiltIn::new("").unwrap().recall());
+        assert!(BuiltIn::new("directives=0").unwrap().recall());
+        assert!(!BuiltIn::new("recall=0").unwrap().recall());
     }
 
     #[test]

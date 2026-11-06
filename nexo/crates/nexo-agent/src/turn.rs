@@ -1412,8 +1412,8 @@ fn reasoning_of(s: &Option<String>) -> Option<ReasoningConfig> {
 fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     let plan = st.perm.mode == PermissionMode::Plan;
     // `recall` answers from the whole history what the curator left out: only the curator leaves anything
-    // out, and it offers the tool only with its directives on (`directives=0`, the default, keeps the
-    // tool list the same as without the curator, so the view is all that differs)
+    // out, and it offers the tool unless `recall=0` (which keeps the tool list the same as without the
+    // curator, so that a comparison measures the view alone)
     let curator = st.policy.recall();
     st.tools
         .specs()

@@ -50,7 +50,7 @@ pub const MODEL_JSON: &str = include_str!("../data/model.json");
 /// next one came in, and the agent read the same file again for 180 steps. Past the budget a guess may take
 /// the oldest, so a session where the agent never writes still has a bounded view.
 pub const D_SPEC: &str =
-    "threshold=0.02;head=turn;recall=0;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1;pockets=0;life=3600";
+    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;loops=0;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;settle=0;topic=0;noted=0;sticky=0;recite=0;task=0;reruns=0;stall=0;stale=1;pockets=0;life=3600";
 
 const INTS: &[&str] = &[
     "protect",
@@ -67,6 +67,7 @@ const INTS: &[&str] = &[
     "pin",
     "nudge",
     "directives",
+    "recall",
     "settle",
     "dedup",
     "close",
@@ -96,21 +97,8 @@ const INTS: &[&str] = &[
     "pockets",
 ];
 const STRS: &[&str] = &["rule", "birth", "stub", "head", "leave", "spill", "outcome", "cut"];
-const FLOATS: &[&str] = &[
-    "threshold",
-    "ratio",
-    "margin",
-    "floor",
-    "least",
-    "link",
-    "recall",
-    "early",
-    "trust",
-    "ttl",
-    "lerr",
-    "ahead",
-    "life",
-];
+const FLOATS: &[&str] =
+    &["threshold", "ratio", "margin", "floor", "least", "link", "early", "trust", "ttl", "lerr", "ahead", "life"];
 
 #[derive(Clone, Debug, PartialEq)]
 enum Val {
@@ -157,7 +145,6 @@ const ONLY: &[(&str, &str)] = &[
     ("stub", "plain"),
     ("leave", "oldest"),
     ("spill", ""),
-    ("recall", "0"),
     ("early", "0"),
     ("trust", "1"),
     ("ttl", "0"),
@@ -253,6 +240,7 @@ fn params(spec: &str) -> Result<Params, String> {
         pin: i("pin")?,
         nudge: i("nudge")?,
         directives: i("directives")?,
+        recall: i("recall")?,
         settle: i("settle")?,
         dedup: i("dedup")?,
         cut_need: cut == "need",
@@ -349,6 +337,12 @@ impl Curator {
     /// a comparison with another policy measures only what the curator does to the view).
     pub fn directives(&self) -> bool {
         params(&self.spec).is_ok_and(|p| p.directives != 0)
+    }
+
+    /// Whether the host offers the model the `recall` tool (`recall=1`, the default): a message the view
+    /// left out comes back as it was when the model asks for it, so what a cut guessed wrong is not lost.
+    pub fn recall(&self) -> bool {
+        params(&self.spec).is_ok_and(|p| p.recall != 0)
     }
 
     /// Forgets the conversation.
@@ -743,7 +737,6 @@ mod tests {
             assert_eq!(refused(&format!("{k}=1")), format!("unknown setting {k:?}"));
         }
         assert_eq!(refused("rule=lru"), "rule is not supported by the built-in curator");
-        assert_eq!(refused("recall=0.5"), "recall is not supported by the built-in curator");
         assert_eq!(refused("cap=9000;floor=0"), "cap needs a floor above 0");
         assert_eq!(refused("birth=squeez"), "birth has no stage \"squeez\"");
         assert_eq!(refused("birth=squeeze+telegraf"), "birth has no stage \"telegraf\"");

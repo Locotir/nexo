@@ -801,7 +801,7 @@ impl Way {
 /// with a prefix cache, the largest request, the requests that rewrote the past, and the distinctive words
 /// the replies took from the history that the way had not sent. Memory and time grow with the session,
 /// not with its square: each request is applied to what the one before left, as the file gives it.
-fn bank(path: &str, spec: &str) -> Result<Value, String> {
+fn bank(path: &str, spec: &str, recall: bool) -> Result<Value, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file = std::path::Path::new(path);
     let sent_text = file
@@ -810,6 +810,14 @@ fn bank(path: &str, spec: &str) -> Result<Value, String> {
         .and_then(|(dir, name)| std::fs::read_to_string(dir.join("sent").join(name)).ok());
     let mut sent_lines = sent_text.as_deref().map(|t| t.lines().filter(|l| !l.trim().is_empty()));
     let mut cur = Curator::new(spec).map_err(|e| format!("bad spec: {e}"))?;
+    // `--recall`: the host offers the `recall` tool, as nexo does by default
+    let offer = |mut t: Vec<String>| {
+        if recall && !t.iter().any(|n| n == "recall") {
+            t.push("recall".into());
+        }
+        t
+    };
+    cur.tools(&offer(vec!["note".into()]));
     let (mut whole, mut sent, mut view) = (Sending::default(), Sending::default(), Sending::default());
     let (mut plain, mut agent, mut curated) = (Way::default(), Way::default(), Way::default());
     let (mut system, mut system_tokens) = (HashSet::<String>::new(), 0i64);
@@ -834,7 +842,7 @@ fn bank(path: &str, spec: &str) -> Result<Value, String> {
             system_tokens = req["system_tokens"].as_i64().unwrap_or(0);
             system.extend(distinctive_words(req["system"].as_str().unwrap_or("")));
             if let Some(t) = names(&req["tools"]) {
-                cur.tools(&t);
+                cur.tools(&offer(t));
             }
         }
         // the reply to the request before, when this one goes on from it
@@ -912,16 +920,18 @@ fn main() {
     if args.iter().any(|a| a == "--bank") {
         let mut spec = String::new();
         let mut files = Vec::new();
+        let mut recall = false;
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--bank" => {}
+                "--recall" => recall = true,
                 "--spec" => spec = it.next().cloned().unwrap_or_default(),
                 _ => files.push(a.clone()),
             }
         }
         for f in files {
-            let line = bank(&f, &spec).unwrap_or_else(|e| json!({"file": f, "error": e}));
+            let line = bank(&f, &spec, recall).unwrap_or_else(|e| json!({"file": f, "error": e}));
             println!("{line}");
         }
         return;

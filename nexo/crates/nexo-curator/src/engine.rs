@@ -153,6 +153,9 @@ pub struct Params {
     pub nudge: i64,
     /// The host adds the curator's directives to the system prompt (0: it does not).
     pub directives: i64,
+    /// The host offers the model the `recall` tool, which brings back a message the view left out as it
+    /// was (0: it does not; the tool list is then the one without the curator).
+    pub recall: i64,
     /// A tool result of at least this many tokens asks for notes on the next step, and a result read before
     /// a later note leaves the view once the next request begins (0: off).
     pub settle: i64,
@@ -308,7 +311,9 @@ impl Params {
 /// and it stays as it came: in a measured run, folded repeats in a read of an assembly file cost the
 /// answers that depended on them.
 /// With `name` (the message's `m#####` number, when the host offers `recall`), a shortened output ends with
-/// a line that says how long it was and how to have it back whole: no fold is left without a way back.
+/// a line that says how long it was and how to have it back whole. The folds stay the lossless ones either
+/// way: with `recall` offered, lossy folds at birth cost 26 % more forgotten words over 656 recorded sessions
+/// (a reply copies what the fold dropped before the model thinks to ask for it), for 8 % of the cost.
 fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<usize>) -> Option<Value> {
     let back = |whole: &str, s: std::borrow::Cow<'_, str>| -> String {
         match name {
@@ -353,7 +358,7 @@ fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<
             if t == Some("tool_result") && sq && process(o) {
                 match o.get("content") {
                     Some(Value::String(c)) => {
-                        let s = squeeze(c, name.is_some());
+                        let s = squeeze(c, false);
                         if *s != **c {
                             let mut x = o.clone();
                             x.insert("content".into(), Value::String(back(c, s)));
@@ -367,7 +372,7 @@ fn at_birth(m: &Value, p: &Params, kind_of: &dyn Fn(&str) -> Kind, name: Option<
                             .map(|x| {
                                 if x.get("type").and_then(Value::as_str) == Some("text") {
                                     if let Some(tx) = x.get("text").and_then(Value::as_str) {
-                                        let s = squeeze(tx, name.is_some());
+                                        let s = squeeze(tx, false);
                                         if *s != *tx {
                                             any = true;
                                             let mut y = x.clone();
@@ -5490,26 +5495,26 @@ mod tests {
     }
 
     #[test]
-    fn what_a_command_prints_of_a_file_comes_whole_and_the_output_of_a_process_folds() {
-        // lines of one form whose numbers count up: the output of a process folds them, a file holds them
+    fn what_a_command_prints_of_a_file_comes_whole_and_a_process_folds_without_loss() {
+        // lines of one form whose numbers count up: a file holds them, and a process loses none of them
         let rows = (0..60).map(|k| format!("movdqa xmm0, cs:xmmword_{}", 4340 + 10 * k)).collect::<Vec<_>>().join("\n");
         let mut msgs = vec![json!({"role": "user", "content": "What does the listing load?"})];
         msgs.extend(step(1, "cd material; sed -n 1,60p listing.txt", &rows));
         msgs.extend(step(2, "./gen.sh", &rows));
-        let mut e = Engine::new(params("nudge=0").unwrap());
-        // with a way back (the host offers `recall`) the output of a process folds with a loss
-        e.tools(&[RECALL_TOOL.to_string()]);
-        e.sync(&msgs);
-        let view = e.view();
-        assert_eq!(output(&view, 2), rows);
-        assert!(output(&view, 4).contains("more lines with the same pattern"), "{view:?}");
-        // without one it folds only what comes back whole: every value is still there
-        let mut e = Engine::new(params("nudge=0").unwrap());
-        e.sync(&msgs);
-        let view = e.view();
-        let out = output(&view, 4);
-        assert!(!out.contains("more lines with the same pattern"), "{out}");
-        assert!((0..60).all(|k| out.contains(&(4340 + 10 * k).to_string())), "{out}");
+        // with a way back (the host offers `recall`) or without, the output of a process folds only what
+        // comes back whole: every value is still there
+        for offer in [true, false] {
+            let mut e = Engine::new(params("nudge=0").unwrap());
+            if offer {
+                e.tools(&[RECALL_TOOL.to_string()]);
+            }
+            e.sync(&msgs);
+            let view = e.view();
+            assert_eq!(output(&view, 2), rows);
+            let out = output(&view, 4);
+            assert!(!out.contains("more lines with the same pattern"), "{out}");
+            assert!((0..60).all(|k| out.contains(&(4340 + 10 * k).to_string())), "{out}");
+        }
     }
 
     #[test]
