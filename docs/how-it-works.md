@@ -29,6 +29,25 @@ Each message is processed once, when it arrives, and nothing is recomputed per c
   re-reading pays for sending the rest again uncached. The check runs only when it is due (every 4,000
   new tokens or every 4 steps, `check` and `every`), so cuts come in batches instead of breaking the
   cache a little at every call.
+- **Closing by need** (`close=2`, `rent_close` in `engine.rs`). Once the person's next request arrives,
+  the answered one keeps its request and its reply; each tool step made for it (a call and its output)
+  is weighed on its own. Keeping a step costs rent, `ratio × its tokens` on every call to the horizon
+  (`ahead=0.25` times the calls so far, at least 4, never past the point where the cap would take it for
+  free). Against that stands what the step is worth: the chance a later reply still draws on it, times the
+  price of the call that would bring it back. A step worth more than its rent stays; the others leave in
+  one batch, the cut priced as in the rent rule. The chance comes from the need predictor in
+  `data/model.json`: five logistic heads, one per horizon (used again within 1, 4, 16 or 64 calls, or
+  ever), over 43 features of the step's output (its size, age, how many of its words no later output
+  holds, whether the same file or program was read or run again and how that went, whether the request
+  names it, whether its thread is active), fit on 452 recorded sessions (364,786 rows) and tested on 204
+  others: at the 4-call horizon log loss 0.205 against 0.325 for the base rate, AUC 0.90. What a step came
+  to be used for is traced lexically in hindsight (a reply that repeats one of its distinctive words). The
+  predictor governs closing only. The window that drops the oldest messages when the view is past the cap
+  stays first in, first out: pricing the steps at the window by the same rule was measured on the 19
+  longest recorded sessions and changed nothing (replies that lost a word +0.9% and −0.2%, cost and
+  uncached tokens within 0.3%). At the front of the window a step's chance of reuse is at most 0.45, and
+  four calls of rent already outweigh that for anything over a few hundred tokens. Figures in
+  [`results.md`](results.md#the-need-predictor-and-the-hindsight-floor).
 - **The anchor.** After a rewrite the anchor holds, in `[curator]` blocks, what left the view, each block
   within its budget in tokens (0 turns it off):
   - **rules** (`rules=2000`): the person's standing instructions, whole, from lines with cues such as

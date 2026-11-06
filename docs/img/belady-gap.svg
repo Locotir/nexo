@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="330" viewBox="0 0 760 330" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" role="img" aria-labelledby="t d">
+  <title id="t">Replies that lost a word they needed, by session length: curator against a hindsight oracle</title>
+  <desc id="d">656 recorded sessions replayed. Three bars per class: the curator before closing was priced by need, the curator now, and a Belady oracle that keeps exactly what is used later. m (21 to 80 requests): 653, 609, 105. l (81 to 300): 1706, 1576, 100. xl (301 to 1000): 2610, 2409, 43. xxl (over 1000): 2948, 2731, 52. Sessions of 20 requests or fewer lose at most 18 replies in any arm.</desc>
+  <rect width="760" height="330" fill="#ffffff"/>
+  <text x="20" y="24" font-size="15" font-weight="600" fill="#202124">Replies that lost a word they needed, by session length</text>
+  <text x="20" y="42" fill="#5f6368">656 recorded sessions replayed offline. The oracle keeps exactly what a later reply uses; it costs 2.9 times more because it breaks the cache at every request.</text>
+  <!-- axis -->
+  <line x1="70" y1="270" x2="740" y2="270" stroke="#9aa0a6"/>
+  <line x1="70" y1="70" x2="70" y2="270" stroke="#9aa0a6"/>
+  <g fill="#5f6368" text-anchor="end">
+    <text x="64" y="274">0</text>
+    <text x="64" y="207">1000</text>
+    <text x="64" y="140">2000</text>
+    <text x="64" y="74">3000</text>
+  </g>
+  <g stroke="#e8eaed">
+    <line x1="70" y1="203.3" x2="740" y2="203.3"/>
+    <line x1="70" y1="136.7" x2="740" y2="136.7"/>
+    <line x1="70" y1="70" x2="740" y2="70"/>
+  </g>
+  <!-- m: 653 / 609 / 105 -->
+  <rect x="100" y="226.5" width="40" height="43.5" fill="#9aa0a6"/>
+  <rect x="145" y="229.4" width="40" height="40.6" fill="#1a73e8"/>
+  <rect x="190" y="263" width="40" height="7" fill="#188038"/>
+  <g fill="#202124" text-anchor="middle">
+    <text x="120" y="221">653</text>
+    <text x="165" y="224">609</text>
+    <text x="210" y="258">105</text>
+    <text x="165" y="290" font-weight="600">m</text>
+    <text x="165" y="305" fill="#5f6368">21 to 80 requests, 185 sessions</text>
+  </g>
+  <!-- l: 1706 / 1576 / 100 -->
+  <rect x="260" y="156.3" width="40" height="113.7" fill="#9aa0a6"/>
+  <rect x="305" y="164.9" width="40" height="105.1" fill="#1a73e8"/>
+  <rect x="350" y="263.3" width="40" height="6.7" fill="#188038"/>
+  <g fill="#202124" text-anchor="middle">
+    <text x="280" y="151">1706</text>
+    <text x="325" y="160">1576</text>
+    <text x="370" y="258">100</text>
+    <text x="325" y="290" font-weight="600">l</text>
+    <text x="325" y="305" fill="#5f6368">81 to 300, 63 sessions</text>
+  </g>
+  <!-- xl: 2610 / 2409 / 43 -->
+  <rect x="420" y="96" width="40" height="174" fill="#9aa0a6"/>
+  <rect x="465" y="109.4" width="40" height="160.6" fill="#1a73e8"/>
+  <rect x="510" y="267.1" width="40" height="2.9" fill="#188038"/>
+  <g fill="#202124" text-anchor="middle">
+    <text x="440" y="91">2610</text>
+    <text x="485" y="104">2409</text>
+    <text x="530" y="262">43</text>
+    <text x="485" y="290" font-weight="600">xl</text>
+    <text x="485" y="305" fill="#5f6368">301 to 1000, 14 sessions</text>
+  </g>
+  <!-- xxl: 2948 / 2731 / 52 -->
+  <rect x="580" y="73.5" width="40" height="196.5" fill="#9aa0a6"/>
+  <rect x="625" y="87.9" width="40" height="182.1" fill="#1a73e8"/>
+  <rect x="670" y="266.5" width="40" height="3.5" fill="#188038"/>
+  <g fill="#202124" text-anchor="middle">
+    <text x="600" y="68">2948</text>
+    <text x="645" y="83">2731</text>
+    <text x="690" y="262">52</text>
+    <text x="645" y="290" font-weight="600">xxl</text>
+    <text x="645" y="305" fill="#5f6368">over 1000, 5 sessions</text>
+  </g>
+  <!-- legend -->
+  <g font-size="11">
+    <rect x="70" y="318" width="10" height="10" fill="#9aa0a6"/><text x="85" y="327" fill="#202124">before closing was priced by need</text>
+    <rect x="280" y="318" width="10" height="10" fill="#1a73e8"/><text x="295" y="327" fill="#202124">curator now</text>
+    <rect x="380" y="318" width="10" height="10" fill="#188038"/><text x="395" y="327" fill="#202124">hindsight oracle (Belady)</text>
+  </g>
+</svg>

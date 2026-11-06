@@ -61,7 +61,7 @@ Each fall is a request being closed. Each climb is the next request's calls and 
 flowchart TD
     A[You send message N+1] --> B["decide(): shut_done + 1 < number of requests"]
     B --> C["close_unused: with close=2 every step of request N is marked idle"]
-    C --> D{"rent_close: paid > margin x (1 - ratio) x tokens behind the cut ?"}
+    C --> D{"rent_close: rent saved minus p_need x call price > margin x (1 - ratio) x tokens behind the cut ?"}
     D -- "yes, the cut is at the tail" --> E["steps leave, one line says what left"]
     D -- no --> F[steps stay, re-checked on later calls]
     E --> G["view = anchor + earlier requests with their replies + request N and its reply + request N+1"]
@@ -70,6 +70,7 @@ flowchart TD
 The rent rule (`rent_close`, `engine.rs`):
 
 - **Keeping costs rent.** An idle step costs `ratio` of its tokens on every call: 0.1, or the model's cached read price over its uncached price when that is lower (0.02 for a 2 % cache). A cut is credited with the rent it saves from now on, `ratio x size x horizon`, where the horizon is `ahead=0.25` times the calls so far (at least 4) and never past the point where the cap would take the step for free; the rent already paid is not counted, since it is paid either way.
+- **A step that may be needed again is worth keeping.** The rent a step saves is reduced by `p_need x call price`: the chance that a later reply still draws on its output (the need predictor in `data/model.json`, five horizons over 43 features, read at the same horizon as the rent) times the price of the cached call that would bring it back. A step whose worth exceeds its rent is not a candidate: it stays until a later check finds it idle and cheap enough. Measured on 656 recorded sessions, this leaves 7% fewer replies without a word they needed in sessions over 20 requests, at about 0.5% less cost.
 - **Cutting costs a purchase.** Everything after the cut is re-read without the cache once, `margin x (1 - ratio) x tokens behind the cut`, with `margin=2.25`.
 - The cut is chosen with the largest gain. Because the closed request is the **last** thing before your new message, almost nothing sits behind the cut, so the price is small and the cut is approved in one batch.
 

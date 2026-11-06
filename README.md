@@ -78,6 +78,10 @@ Every figure, its data and its limits (mostly one model, one author's tasks):
 - **One thread per goal.** A finished goal becomes a frozen card, so each goal keeps its cached prefix.
 - **Cut in batches, only when it pays.** An economic-order-quantity rule: old material leaves when the
   tokens saved over the next requests outweigh one cache rewrite.
+- **Closing priced by need.** When a request is answered, each tool step it made is kept or set aside by
+  a learned guess of whether a later reply will draw on it (five horizons, 43 features, fit on 452
+  recorded sessions) against the rent it costs to keep. On 656 recorded sessions this cut the replies
+  that lost a word they needed by 7% in sessions over 20 requests, at about 0.5% less cost.
 - **An anchor that never drops.** Your rules, the agent's notes, pinned files, a ledger of what left
   and a map of the work.
 - **Stale reads go first.** A file read before the agent edited it leaves before anything else, with a

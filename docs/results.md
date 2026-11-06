@@ -140,8 +140,10 @@ deterministic online paging algorithm is at least `k`-competitive (Sleator and T
 decision is rent or buy, where no deterministic rule beats a factor 2 (Karlin, Manasse, Rudolph and
 Sleator, 1988). On these recordings the value of foresight is all-or-nothing per request: an oracle that
 knows the future of 25%, 50%, 75% or 100% of the names gives 61.8%, 63.1%, 65.7% and 71.4% against D's
-60.8% in the same run (`experiments/foresight.json`), and no model of any shape ranks the names better
-than the fixed rule (k-nearest neighbours 0.749, logistic regression 0.736, the rule 0.775). Recalling,
+60.8% in the same run (`experiments/foresight.json`), and in that engine no model of any shape ranked the
+names better than its fixed rule (k-nearest neighbours 0.749, logistic regression 0.736, the rule 0.775);
+nexo's shipped predictor ranks whole tool steps instead of names, on more data, and does better (next
+section). Recalling,
 just in time, lines that share a name with what has just arrived lost at every budget (unseen data,
 61.8% without, 58.4% and 51.2% with 300 and 1,200 tokens per request).
 
@@ -149,6 +151,78 @@ just in time, lines that share a name with what has just arrived lost at every b
 1k cached + 2.98 s per 1k output tokens. Input is 8–9% of the model's time, so with the same calls no
 curator makes the agent more than ×1.09 faster (Amdahl); finishing sooner needs fewer calls and shorter
 answers.
+
+## The need predictor and the hindsight floor
+
+These figures are from nexo as shipped (`nexo-curator` at the commit that added the predictor), not
+from the earlier engine. The data is 656 nexo sessions recorded whole and replayed cold through the
+curator with its default settings and a 40-step limit per request (`examples/replay.rs --bank`), split
+by length: xs up to 5 requests (222 sessions), s up to 20 (167), m up to 80 (185), l up to 300 (63),
+xl up to 1000 (14), xxl over 1000 (5). The recordings are not published. The measure of harm is a
+**lost reply**: a reply of the recorded session that repeats a distinctive word which the curated view
+no longer held at that call. The dollar figure prices every call at the cached and uncached rates the
+recording was billed at.
+
+**The predictor.** For every tool step (a call and its output) at every call of a session, hindsight
+says whether a later reply drew on it within 1, 4, 16 or 64 calls, or ever. Five logistic heads, one per
+horizon, are fit on 43 features of the step: size and age, the share of its words no later output
+holds, whether the same file or program was read or run again and how that went, whether the open
+request names it, whether its thread is active, who last held each of its words. Fit on 452 sessions
+(364,786 step-call rows), tested on 204 other sessions (147,427 rows), split by file name so no session
+is on both sides. At the 4-call horizon: log loss 0.205 (base rate 0.325; the heuristic it replaced
+1.46), AUC 0.904 (0.824 for that heuristic). At the ever horizon: 0.290 and 0.896 (1.04 and 0.799). An
+ablation puts half of the gain on the extra data and half on the last-holder features. The weights ship
+in `nexo-curator/data/model.json`; `examples/needfit.rs` refits them.
+
+**Closing priced by need.** The predictor enters the rent rule when a request is closed: a step is
+worth its chance of reuse at the rent horizon times the price of the call that would bring it back,
+and only steps worth less than their rent leave. Replies that lost a word, by class, before and after:
+
+| class | sessions | before | after | change |
+|---|---|---|---|---|
+| xs | 222 | 0 | 0 | |
+| s | 167 | 18 | 14 | |
+| m | 185 | 653 | 609 | −6.7% |
+| l | 63 | 1706 | 1576 | −7.6% |
+| xl | 14 | 2610 | 2409 | −7.7% |
+| xxl | 5 | 2948 | 2731 | −7.4% |
+
+Cost over the sessions of more than 20 requests fell about 0.5%, tokens read without the cache about
+2.8%, and the largest view in an xxl session from 290k to 182k tokens. On the 204 test sessions the
+judged cost (dollars plus one call per lost reply) went from 21.68 to 21.22, better in 12 sessions and
+worse in 8; the first step alone, a fixed price for every closed step, had given 20.95 to 20.49 on the
+test sessions of more than 20 requests with a sign test at p = 0.032, and the heads on top of it moved
+the judged cost by 0.01.
+
+**Regret against hindsight.** On the test sessions with the view capped at half its default, the
+number of steps dropped that a later reply then used is, per class, 1827 / 2356 / 2680 for the
+predictor, the heuristic it replaced and plain first in, first out in m, against 928 for a Belady
+oracle that keeps exactly the steps used later; 936 / 1279 / 1644 against 568 in l; 256 / 353 / 509
+against 193 in xl; 72 / 173 / 174 against 42 in xxl. At a quarter of the cap the predictor is level with
+the oracle in xl and xxl (505 against 540, 166 against 164).
+
+**The floor.** At the default cap the same oracle loses 0 / 11 / 105 / 100 / 43 / 52 replies in xs to
+xxl, for 229.3 $ against the curator's 78.8 $: it breaks the cache at every request. What separates the
+curator from it after the change is almost all in the first-in-first-out window that drops the oldest
+material when the view passes the cap: of the words lost in xl and xxl sessions, 4673 and 5834 leave
+through that window against 567 and 564 through closing (1890 and 2992 before the change). Half of the
+window's losses are the assistant's own earlier messages, half are tool results.
+
+![Replies that lost a word they needed, by session length: before, now, and the hindsight oracle](img/belady-gap.svg)
+
+**Pricing the window by need did not help.** The next step was obvious: weigh the steps at the front of
+the window with the same predictor and keep the ones worth their rent. It was pre-registered as neutral
+and measured on the 19 xl and xxl sessions against the shipped build: lost replies +0.9% in xl and
+−0.2% in xxl, cost and uncached tokens within 0.3%, better in 3 sessions, worse in 11, the same in 5;
+with the ever horizon instead, +1.2% and +0.5% lost at +0.4% cost. The 4-parallel replay of the xxl
+sessions took 265 s against 282 s. What the rule kept, `live` or the next close dropped a few calls
+later (words lost by the window fell from 5596 to 5549, by the live rule rose from 911 to 1011). The
+reason is the price: at the window's front a step's chance of reuse is at most 0.45, its mean size
+about 900 tokens, and four calls of rent already exceed what one recovery call would cost. The change
+was not kept. Where the remaining gap sits is now the window itself: the oracle keeps 2.9 times the
+dollars' worth of text to lose 50 replies where the curator loses 2700 in xxl, so under the price of
+one call per lost reply the window is close to the best a curator can do without knowing the next
+request.
 
 ## Live on DeepSeek
 
