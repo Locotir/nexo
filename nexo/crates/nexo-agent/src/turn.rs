@@ -1520,6 +1520,10 @@ async fn view_now(st: &mut State) -> View {
     if let Some(w) = st.limits.context_window.filter(|w| *w > reply) {
         st.policy.window(view_window(w - reply, st.tok_ratio));
     }
+    let (_, cfg, model) = st.target.get();
+    if let Some(p) = st.limits.pricing.or_else(|| cfg.pricing_for(&model)) {
+        st.policy.prices(p.input, p.cache_read);
+    }
     st.policy.history_version(st.history.version());
     let mut view = match st.policy.view(system_tokens, &st.history).await {
         Ok(v) => v,

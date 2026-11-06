@@ -2449,6 +2449,16 @@ impl Engine {
     /// so how long it keeps a view: a pocket it gave sets the least lifetime, one it did not give the most,
     /// unless that age is too young to tell (`LIFE_LEAST`) or below one it gave. A provider that never says
     /// it read from its cache teaches nothing.
+    /// What a cached input token costs against an uncached one, from the provider's prices.
+    pub fn set_ratio(&mut self, ratio: f64) {
+        self.p.ratio = ratio;
+    }
+
+    #[cfg(test)]
+    pub fn ratio(&self) -> f64 {
+        self.p.ratio
+    }
+
     pub fn learn(&mut self, sys: u64, read: u64, input: u64) {
         let Some(probe) = self.probe.take() else { return };
         self.read_seen |= read > 0;

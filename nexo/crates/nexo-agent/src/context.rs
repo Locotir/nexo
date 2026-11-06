@@ -69,6 +69,9 @@ pub trait ContextPolicy: Send {
     /// The tokens the model takes in one call, less its reply, before each view (the curator keeps
     /// the view under it).
     fn window(&mut self, _tokens: u64) {}
+    /// The model's prices per million input tokens, uncached and read from the cache, before each view
+    /// (the curator weighs what a cut saves against what it costs the cache at their ratio).
+    fn prices(&mut self, _input: f64, _cache_read: f64) {}
     /// What the provider said of the call made with the last view: the input tokens it read from its
     /// cache, and all of them, from which the curator learns how long the cache keeps a view.
     fn usage(&mut self, _read: u64, _input: u64) {}
@@ -377,6 +380,10 @@ impl ContextPolicy for BuiltIn {
 
     fn window(&mut self, tokens: u64) {
         self.cur.window(tokens);
+    }
+
+    fn prices(&mut self, input: f64, cache_read: f64) {
+        self.cur.prices(input, cache_read);
     }
 
     fn usage(&mut self, read: u64, input: u64) {
