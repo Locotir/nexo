@@ -744,6 +744,13 @@ at pass@2 and 8 at pass@1, where three runs of `deepseek-chat` (one with the cur
 (5, 5 and 4 at pass@1), for 2.6 times the cost ($0.25 against $0.10). A sample
 that small says the gap is real but not how large it is.
 
+DeepSeek's model list now names `deepseek-flash` (V4.1 Flash) and
+`deepseek-v4-pro`, with a 1M-token window and replies up to 384K tokens;
+`deepseek-chat` is the older name, and its replies still stop at 8192 tokens.
+nexo's DeepSeek preset starts on `deepseek-flash`. One exercise is not a
+measure: on Go's forth, the one where `deepseek-chat` failed after two cut
+replies, `deepseek-flash` passed at pass@1 in 10 steps for $0.0095.
+
 ## Layout of the code
 
 See `ARCHITECTURE.md`: the crates, one rule (`core ← providers, tools, agent,

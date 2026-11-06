@@ -62,7 +62,11 @@ const PRESETS: &[Preset] = &[
         protocol: openai_chat::ID,
         base_url: "https://api.deepseek.com",
         key: Some("DEEPSEEK_API_KEY"),
+        // List prices outside DeepSeek's off-peak hours (off-peak is half). `deepseek-chat` and
+        // `deepseek-reasoner` are the older names: their replies stop at 8192 tokens.
         models: &[
+            ("deepseek-flash", Pricing { input: 0.3, output: 1.2, cache_read: 0.006, cache_write: 0.0 }, 1_048_576),
+            ("deepseek-v4-pro", Pricing { input: 1.32, output: 3.96, cache_read: 0.044, cache_write: 0.0 }, 1_048_576),
             ("deepseek-chat", Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 }, 128_000),
             ("deepseek-reasoner", Pricing { input: 0.28, output: 0.42, cache_read: 0.028, cache_write: 0.0 }, 128_000),
         ],
@@ -389,7 +393,8 @@ mod tests {
             assert!(!cfg.base_url.ends_with('/'), "{name}");
         }
         assert_eq!(all["deepseek"].api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
-        assert_eq!(all["deepseek"].default_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(all["deepseek"].default_model.as_deref(), Some("deepseek-flash"));
+        assert_eq!(all["deepseek"].context_window["deepseek-flash"], 1_048_576);
         assert_eq!(all["deepseek"].pricing_for("deepseek-chat").unwrap().cache_read, 0.028);
         assert_eq!(all["ollama"].api_key_env, None);
         assert_eq!(all["openrouter"].headers["X-Title"], "nexo");
@@ -405,7 +410,7 @@ mod tests {
 
     #[test]
     fn a_name_finds_a_preset_an_alias_or_a_directory_entry() {
-        assert_eq!(find("deepseek").unwrap().default_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(find("deepseek").unwrap().default_model.as_deref(), Some("deepseek-flash"));
         assert_eq!(find("google").unwrap().protocol, "gemini");
         let d = directory::all()
             .into_iter()
