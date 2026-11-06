@@ -1,61 +1,80 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="454" viewBox="0 0 760 454" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="nexo with DeepSeek on Aider Polyglot: exercises solved on the first try and after one retry, per language">
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="624" viewBox="0 0 780 624" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Aider Polyglot: nexo with deepseek-chat per language, and DeepSeek V3.2 in Aider from the public leaderboard">
 <rect width="100%" height="100%" rx="8" fill="#1a1a19"/>
-<text x="24" y="38" font-size="19" font-weight="600" fill="#f0efec">nexo + DeepSeek on Aider Polyglot: 225 exercises</text>
-<text x="24" y="62" font-size="13" fill="#c3c2b7">Share of exercises whose hidden tests pass. deepseek-chat, temperature 0, one run, 2026-11-06.</text>
-<rect x="24" y="80" width="12" height="12" rx="2" fill="#3987e5"/><text x="42" y="91" font-size="13" fill="#f0efec">First try (pass@1)</text>
-<rect x="190" y="80" width="12" height="12" rx="2" fill="#d95926"/><text x="208" y="91" font-size="13" fill="#f0efec">Added by one retry that sees the failing tests (pass@2 total)</text>
-<line x1="150.0" y1="112" x2="150.0" y2="388" stroke="#2c2c2a" stroke-width="1"/>
-<text x="150.0" y="404" font-size="11" fill="#c3c2b7" text-anchor="middle">0 %</text>
-<line x1="280.0" y1="112" x2="280.0" y2="388" stroke="#2c2c2a" stroke-width="1"/>
-<text x="280.0" y="404" font-size="11" fill="#c3c2b7" text-anchor="middle">25 %</text>
-<line x1="410.0" y1="112" x2="410.0" y2="388" stroke="#2c2c2a" stroke-width="1"/>
-<text x="410.0" y="404" font-size="11" fill="#c3c2b7" text-anchor="middle">50 %</text>
-<line x1="540.0" y1="112" x2="540.0" y2="388" stroke="#2c2c2a" stroke-width="1"/>
-<text x="540.0" y="404" font-size="11" fill="#c3c2b7" text-anchor="middle">75 %</text>
-<line x1="670.0" y1="112" x2="670.0" y2="388" stroke="#2c2c2a" stroke-width="1"/>
-<text x="670.0" y="404" font-size="11" fill="#c3c2b7" text-anchor="middle">100 %</text>
-<text x="24" y="133" font-size="13" fill="#f0efec">C++</text>
-<text x="140" y="133" font-size="11" fill="#c3c2b7" text-anchor="end">26 ex.</text>
-<g><title>C++: 16 of 26 on the first try (61.5 %)</title><rect x="150" y="118" width="318.8" height="22" fill="#3987e5"/></g>
-<text x="156" y="133" font-size="12" fill="#ffffff">62 %</text>
-<g><title>C++: 25 of 26 after one retry (96.2 %)</title><rect x="470.8" y="118" width="179.4" height="22" rx="4" fill="#d95926"/><rect x="470.8" y="118" width="4" height="22" fill="#d95926"/></g>
-<text x="658.2" y="133" font-size="13" fill="#f0efec">96 %</text>
-<text x="24" y="173" font-size="13" fill="#f0efec">Rust</text>
-<text x="140" y="173" font-size="11" fill="#c3c2b7" text-anchor="end">30 ex.</text>
-<g><title>Rust: 21 of 30 on the first try (70.0 %)</title><rect x="150" y="158" width="363.0" height="22" fill="#3987e5"/></g>
-<text x="156" y="173" font-size="12" fill="#ffffff">70 %</text>
-<g><title>Rust: 23 of 30 after one retry (76.7 %)</title><rect x="515.0" y="158" width="33.8" height="22" rx="4" fill="#d95926"/><rect x="515.0" y="158" width="4" height="22" fill="#d95926"/></g>
-<text x="556.8" y="173" font-size="13" fill="#f0efec">77 %</text>
-<text x="24" y="213" font-size="13" fill="#f0efec">Python</text>
-<text x="140" y="213" font-size="11" fill="#c3c2b7" text-anchor="end">34 ex.</text>
-<g><title>Python: 15 of 34 on the first try (44.1 %)</title><rect x="150" y="198" width="228.3" height="22" fill="#3987e5"/></g>
-<text x="156" y="213" font-size="12" fill="#ffffff">44 %</text>
-<g><title>Python: 25 of 34 after one retry (73.5 %)</title><rect x="380.3" y="198" width="151.9" height="22" rx="4" fill="#d95926"/><rect x="380.3" y="198" width="4" height="22" fill="#d95926"/></g>
-<text x="540.2" y="213" font-size="13" fill="#f0efec">74 %</text>
-<text x="24" y="253" font-size="13" fill="#f0efec">JavaScript</text>
-<text x="140" y="253" font-size="11" fill="#c3c2b7" text-anchor="end">49 ex.</text>
-<g><title>JavaScript: 24 of 49 on the first try (49.0 %)</title><rect x="150" y="238" width="253.8" height="22" fill="#3987e5"/></g>
-<text x="156" y="253" font-size="12" fill="#ffffff">49 %</text>
-<g><title>JavaScript: 35 of 49 after one retry (71.4 %)</title><rect x="405.8" y="238" width="115.5" height="22" rx="4" fill="#d95926"/><rect x="405.8" y="238" width="4" height="22" fill="#d95926"/></g>
-<text x="529.3" y="253" font-size="13" fill="#f0efec">71 %</text>
-<text x="24" y="293" font-size="13" fill="#f0efec">Java</text>
-<text x="140" y="293" font-size="11" fill="#c3c2b7" text-anchor="end">47 ex.</text>
-<g><title>Java: 11 of 47 on the first try (23.4 %)</title><rect x="150" y="278" width="120.7" height="22" fill="#3987e5"/></g>
-<text x="156" y="293" font-size="12" fill="#ffffff">23 %</text>
-<g><title>Java: 33 of 47 after one retry (70.2 %)</title><rect x="272.7" y="278" width="242.4" height="22" rx="4" fill="#d95926"/><rect x="272.7" y="278" width="4" height="22" fill="#d95926"/></g>
-<text x="523.0" y="293" font-size="13" fill="#f0efec">70 %</text>
-<text x="24" y="333" font-size="13" fill="#f0efec">Go</text>
-<text x="140" y="333" font-size="11" fill="#c3c2b7" text-anchor="end">39 ex.</text>
-<g><title>Go: 23 of 39 on the first try (59.0 %)</title><rect x="150" y="318" width="305.8" height="22" fill="#3987e5"/></g>
-<text x="156" y="333" font-size="12" fill="#ffffff">59 %</text>
-<g><title>Go: 27 of 39 after one retry (69.2 %)</title><rect x="457.8" y="318" width="52.0" height="22" rx="4" fill="#d95926"/><rect x="457.8" y="318" width="4" height="22" fill="#d95926"/></g>
-<text x="517.8" y="333" font-size="13" fill="#f0efec">69 %</text>
-<line x1="24" y1="349" x2="736" y2="349" stroke="#2c2c2a" stroke-width="1"/>
-<text x="24" y="373" font-size="13" fill="#f0efec" font-weight="600">All</text>
-<text x="140" y="373" font-size="11" fill="#c3c2b7" text-anchor="end">225 ex.</text>
-<g><title>All: 110 of 225 on the first try (48.9 %)</title><rect x="150" y="358" width="253.3" height="22" fill="#3987e5"/></g>
-<text x="156" y="373" font-size="12" fill="#ffffff">49 %</text>
-<g><title>All: 168 of 225 after one retry (74.7 %)</title><rect x="405.3" y="358" width="133.2" height="22" rx="4" fill="#d95926"/><rect x="405.3" y="358" width="4" height="22" fill="#d95926"/></g>
-<text x="546.4" y="373" font-size="13" fill="#f0efec" font-weight="600">75 %</text>
-<text x="24" y="440" font-size="11" fill="#c3c2b7">Each exercise: the agent works with its tools in a sealed box, then hidden tests run. A failure gets one retry with the test output, as Aider does.</text>
+<text x="24" y="38" font-size="19" font-weight="600" fill="#f0efec">Aider Polyglot: 225 exercises, share whose hidden tests pass</text>
+<text x="24" y="62" font-size="13" fill="#c3c2b7">nexo: deepseek-chat, temperature 0, one run, 2026-11-06.</text>
+<text x="24" y="80" font-size="13" fill="#c3c2b7">Aider: DeepSeek V3.2-Exp with Aider itself, public leaderboard, 2025-10-03.</text>
+<rect x="24" y="96" width="12" height="12" rx="2" fill="#3987e5"/><text x="42" y="107" font-size="13" fill="#f0efec">First try (pass@1)</text>
+<rect x="190" y="96" width="12" height="12" rx="2" fill="#d95926"/><text x="208" y="107" font-size="13" fill="#f0efec">Added by one retry that sees the failing tests (pass@2 total)</text>
+<line x1="220.0" y1="124" x2="220.0" y2="548" stroke="#2c2c2a" stroke-width="1"/>
+<text x="220.0" y="564" font-size="11" fill="#c3c2b7" text-anchor="middle">0 %</text>
+<line x1="340.0" y1="124" x2="340.0" y2="548" stroke="#2c2c2a" stroke-width="1"/>
+<text x="340.0" y="564" font-size="11" fill="#c3c2b7" text-anchor="middle">25 %</text>
+<line x1="460.0" y1="124" x2="460.0" y2="548" stroke="#2c2c2a" stroke-width="1"/>
+<text x="460.0" y="564" font-size="11" fill="#c3c2b7" text-anchor="middle">50 %</text>
+<line x1="580.0" y1="124" x2="580.0" y2="548" stroke="#2c2c2a" stroke-width="1"/>
+<text x="580.0" y="564" font-size="11" fill="#c3c2b7" text-anchor="middle">75 %</text>
+<line x1="700.0" y1="124" x2="700.0" y2="548" stroke="#2c2c2a" stroke-width="1"/>
+<text x="700.0" y="564" font-size="11" fill="#c3c2b7" text-anchor="middle">100 %</text>
+<line x1="24" y1="121" x2="756" y2="121" stroke="#2c2c2a" stroke-width="1"/>
+<rect x="24" y="132" width="732" height="18" fill="#1a1a19"/>
+<text x="24" y="145" font-size="12" font-weight="600" fill="#c3c2b7">nexo + deepseek-chat (per language)</text>
+<text x="24" y="179" font-size="13" fill="#f0efec">C++</text>
+<text x="210" y="179" font-size="11" fill="#c3c2b7" text-anchor="end">26 ex.</text>
+<g><title>C++: 61.5 % on the first try</title><rect x="220" y="164" width="294.2" height="22" fill="#3987e5"/></g>
+<text x="226" y="179" font-size="12" fill="#ffffff">62 %</text>
+<g><title>C++: 96.2 % after one retry</title><rect x="516.2" y="164" width="165.6" height="22" rx="4" fill="#d95926"/><rect x="516.2" y="164" width="4" height="22" fill="#d95926"/></g>
+<text x="689.8" y="179" font-size="13" fill="#f0efec">96 %</text>
+<text x="24" y="219" font-size="13" fill="#f0efec">Rust</text>
+<text x="210" y="219" font-size="11" fill="#c3c2b7" text-anchor="end">30 ex.</text>
+<g><title>Rust: 70.0 % on the first try</title><rect x="220" y="204" width="335.0" height="22" fill="#3987e5"/></g>
+<text x="226" y="219" font-size="12" fill="#ffffff">70 %</text>
+<g><title>Rust: 76.7 % after one retry</title><rect x="557.0" y="204" width="31.2" height="22" rx="4" fill="#d95926"/><rect x="557.0" y="204" width="4" height="22" fill="#d95926"/></g>
+<text x="596.2" y="219" font-size="13" fill="#f0efec">77 %</text>
+<text x="24" y="259" font-size="13" fill="#f0efec">Python</text>
+<text x="210" y="259" font-size="11" fill="#c3c2b7" text-anchor="end">34 ex.</text>
+<g><title>Python: 44.1 % on the first try</title><rect x="220" y="244" width="210.7" height="22" fill="#3987e5"/></g>
+<text x="226" y="259" font-size="12" fill="#ffffff">44 %</text>
+<g><title>Python: 73.5 % after one retry</title><rect x="432.7" y="244" width="140.1" height="22" rx="4" fill="#d95926"/><rect x="432.7" y="244" width="4" height="22" fill="#d95926"/></g>
+<text x="580.8" y="259" font-size="13" fill="#f0efec">74 %</text>
+<text x="24" y="299" font-size="13" fill="#f0efec">JavaScript</text>
+<text x="210" y="299" font-size="11" fill="#c3c2b7" text-anchor="end">49 ex.</text>
+<g><title>JavaScript: 49.0 % on the first try</title><rect x="220" y="284" width="234.2" height="22" fill="#3987e5"/></g>
+<text x="226" y="299" font-size="12" fill="#ffffff">49 %</text>
+<g><title>JavaScript: 71.4 % after one retry</title><rect x="456.2" y="284" width="106.5" height="22" rx="4" fill="#d95926"/><rect x="456.2" y="284" width="4" height="22" fill="#d95926"/></g>
+<text x="570.7" y="299" font-size="13" fill="#f0efec">71 %</text>
+<text x="24" y="339" font-size="13" fill="#f0efec">Java</text>
+<text x="210" y="339" font-size="11" fill="#c3c2b7" text-anchor="end">47 ex.</text>
+<g><title>Java: 23.4 % on the first try</title><rect x="220" y="324" width="111.3" height="22" fill="#3987e5"/></g>
+<text x="226" y="339" font-size="12" fill="#ffffff">23 %</text>
+<g><title>Java: 70.2 % after one retry</title><rect x="333.3" y="324" width="223.6" height="22" rx="4" fill="#d95926"/><rect x="333.3" y="324" width="4" height="22" fill="#d95926"/></g>
+<text x="565.0" y="339" font-size="13" fill="#f0efec">70 %</text>
+<text x="24" y="379" font-size="13" fill="#f0efec">Go</text>
+<text x="210" y="379" font-size="11" fill="#c3c2b7" text-anchor="end">39 ex.</text>
+<g><title>Go: 59.0 % on the first try</title><rect x="220" y="364" width="282.2" height="22" fill="#3987e5"/></g>
+<text x="226" y="379" font-size="12" fill="#ffffff">59 %</text>
+<g><title>Go: 69.2 % after one retry</title><rect x="504.2" y="364" width="48.0" height="22" rx="4" fill="#d95926"/><rect x="504.2" y="364" width="4" height="22" fill="#d95926"/></g>
+<text x="560.2" y="379" font-size="13" fill="#f0efec">69 %</text>
+<line x1="24" y1="395" x2="756" y2="395" stroke="#2c2c2a" stroke-width="1"/>
+<rect x="24" y="406" width="732" height="18" fill="#1a1a19"/>
+<text x="24" y="419" font-size="12" font-weight="600" fill="#c3c2b7">All 225 exercises (cost of the run on the left)</text>
+<text x="24" y="453" font-size="13" fill="#f0efec" font-weight="600">nexo + deepseek-chat</text>
+<text x="210" y="453" font-size="11" fill="#c3c2b7" text-anchor="end">$1.49</text>
+<g><title>nexo + deepseek-chat: 48.9 % on the first try</title><rect x="220" y="438" width="233.7" height="22" fill="#3987e5"/></g>
+<text x="226" y="453" font-size="12" fill="#ffffff">49 %</text>
+<g><title>nexo + deepseek-chat: 74.7 % after one retry</title><rect x="455.7" y="438" width="122.8" height="22" rx="4" fill="#d95926"/><rect x="455.7" y="438" width="4" height="22" fill="#d95926"/></g>
+<text x="586.6" y="453" font-size="13" fill="#f0efec" font-weight="600">75 %</text>
+<text x="24" y="493" font-size="13" fill="#f0efec" font-weight="600">Aider + V3.2 Chat</text>
+<text x="210" y="493" font-size="11" fill="#c3c2b7" text-anchor="end">$0.88</text>
+<g><title>Aider + V3.2 Chat: 38.7 % on the first try</title><rect x="220" y="478" width="184.8" height="22" fill="#3987e5"/></g>
+<text x="226" y="493" font-size="12" fill="#ffffff">39 %</text>
+<g><title>Aider + V3.2 Chat: 70.2 % after one retry</title><rect x="406.8" y="478" width="150.2" height="22" rx="4" fill="#d95926"/><rect x="406.8" y="478" width="4" height="22" fill="#d95926"/></g>
+<text x="565.0" y="493" font-size="13" fill="#f0efec" font-weight="600">70 %</text>
+<text x="24" y="533" font-size="13" fill="#f0efec" font-weight="600">Aider + V3.2 Reasoner</text>
+<text x="210" y="533" font-size="11" fill="#c3c2b7" text-anchor="end">$1.30</text>
+<g><title>Aider + V3.2 Reasoner: 39.6 % on the first try</title><rect x="220" y="518" width="189.1" height="22" fill="#3987e5"/></g>
+<text x="226" y="533" font-size="12" fill="#ffffff">40 %</text>
+<g><title>Aider + V3.2 Reasoner: 74.2 % after one retry</title><rect x="411.1" y="518" width="165.1" height="22" rx="4" fill="#d95926"/><rect x="411.1" y="518" width="4" height="22" fill="#d95926"/></g>
+<text x="584.2" y="533" font-size="13" fill="#f0efec" font-weight="600">74 %</text>
+<text x="24" y="594" font-size="11" fill="#c3c2b7">Not like for like: nexo runs and tests its code in a sealed box, Aider edits files without running them,</text>
+<text x="24" y="610" font-size="11" fill="#c3c2b7">and the model DeepSeek serves under a name changes over time. Same exercises, same hidden tests, same one retry.</text>
 </svg>

@@ -725,7 +725,7 @@ before nexo left the calls of a reply cut at max_tokens out of its history
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/polyglot-deepseek-dark.svg">
-  <img alt="Aider Polyglot with nexo and deepseek-chat: 49 % of 225 exercises pass on the first try, 75 % after one retry; C++ 62 then 96 %, Rust 70 then 77 %, Python 44 then 74 %, JavaScript 49 then 71 %, Java 23 then 70 %, Go 59 then 69 %" src="docs/polyglot-deepseek.svg" width="760">
+  <img alt="Aider Polyglot, 225 exercises: nexo with deepseek-chat passes 49 % on the first try and 75 % after one retry (.49); DeepSeek V3.2-Exp in Aider, from the public leaderboard: Chat 39 % and 70 % (-e.88), Reasoner 40 % and 74 % (.30). Per language for nexo: C++ 62 then 96 %, Rust 70 then 77 %, Python 44 then 74 %, JavaScript 49 then 71 %, Java 23 then 70 %, Go 59 then 69 %" src="docs/polyglot-deepseek.svg" width="760">
 </picture>
 
 pass@1 is the share solved on the first try; pass@2 counts those solved after

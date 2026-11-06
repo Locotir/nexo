@@ -60,11 +60,11 @@ What the model is sent, request by request, replaying a recorded 81-request sess
 ![Tokens per request: the whole history grows to 60k, the curated view is 30k at request 81](docs/img/tokens-per-step.svg)
 
 nexo as a coding agent on [Aider's Polyglot benchmark](https://github.com/Aider-AI/polyglot-benchmark)
-(225 hard exercises in six languages, hidden tests, one retry that sees the failing tests):
+(225 hard exercises in six languages, hidden tests, one retry that sees the failing tests), next to DeepSeek in Aider itself from [its public leaderboard](https://aider.chat/docs/leaderboards/):
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="nexo/docs/polyglot-deepseek-dark.svg">
-  <img alt="Aider Polyglot with nexo and deepseek-chat: 49 % of 225 exercises pass on the first try, 75 % after one retry" src="nexo/docs/polyglot-deepseek.svg" width="760">
+  <img alt="Aider Polyglot, 225 exercises: nexo with deepseek-chat passes 49 % on the first try and 75 % after one retry (.49); DeepSeek V3.2-Exp in Aider, from the public leaderboard: Chat 39 % and 70 % (-e.88), Reasoner 40 % and 74 % (.30). Per language for nexo: C++ 62 then 96 %, Rust 70 then 77 %, Python 44 then 74 %, JavaScript 49 then 71 %, Java 23 then 70 %, Go 59 then 69 %" src="nexo/docs/polyglot-deepseek.svg" width="760">
 </picture>
 
 Every figure, its data and its limits (mostly one model, one author's tasks):
