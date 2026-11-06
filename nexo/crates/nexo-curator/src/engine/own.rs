@@ -46,12 +46,15 @@ impl Engine {
         }
     }
 
-    /// Messages that go out (`on`) or come back (`!on`) as a whole, for `rule`.
+    /// Messages that go out (`on`) or come back (`!on`) as a whole, for `rule`. A message already out
+    /// keeps the rule that took it: the oldest messages leaving (`leave`) pass over steps closed before,
+    /// which the view had not sent since they closed.
     pub(crate) fn tag_msgs(&mut self, msgs: impl IntoIterator<Item = usize>, on: bool, rule: &'static str) {
         for mi in msgs {
             let tokens = self.sizes.get(mi).copied().unwrap_or(0);
             if on {
-                if self.own.msgs.insert(mi, (self.own.clock, rule)).is_none() {
+                if let std::collections::hash_map::Entry::Vacant(e) = self.own.msgs.entry(mi) {
+                    e.insert((self.own.clock, rule));
                     self.own.events.push((rule, self.own.clock, tokens));
                 }
             } else if let Some((_, r)) = self.own.msgs.remove(&mi) {

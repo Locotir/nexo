@@ -1006,13 +1006,106 @@ impl Errs {
     }
 }
 
+/// `--oracle`: the floor an offline policy sets under the view. It knows the replies to come (the words
+/// each reply copies from the history) and at each request keeps, within the tokens the curator's view
+/// spent on that request, the messages of the request itself, the smallest message holding each word
+/// the next reply copies (small ones first when they do not all fit), then the messages with the nearest
+/// use ahead, the small ones first (Belady's rule weighed by size); a message never copied from again
+/// goes. A reply loses a word only when what it needs does not fit. The views are priced with the same
+/// prefix cache, so each change behind the start breaks it: the cost says what the floor would pay, the
+/// floor is on what is lost. A history the host rewound is indexed by its final shape.
+fn belady(
+    records: &[(usize, Vec<Value>)],
+    said: &[Option<Vec<String>>],
+    budgets: &[i64],
+    system: &HashSet<String>,
+    system_tokens: i64,
+) -> Way {
+    let mut fin = Sending::default();
+    let mut len_at = Vec::with_capacity(records.len());
+    for (base, new) in records {
+        fin.extend(*base, new.clone());
+        len_at.push(fin.msgs.len());
+    }
+    let mut holders: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (j, ws) in fin.words.iter().enumerate() {
+        for w in ws {
+            holders.entry(w).or_default().push(j);
+        }
+    }
+    // per message, the requests whose reply copies one of its words, in order
+    let mut uses: Vec<Vec<usize>> = vec![Vec::new(); fin.msgs.len()];
+    for (r, ws) in said.iter().enumerate() {
+        for w in ws.iter().flatten() {
+            for &j in holders.get(w.as_str()).map_or(&[][..], Vec::as_slice) {
+                if j < len_at[r] && uses[j].last() != Some(&r) {
+                    uses[j].push(r);
+                }
+            }
+        }
+    }
+    let (mut whole, mut view, mut way) = (Sending::default(), Sending::default(), Way::default());
+    for (r, (base, new)) in records.iter().enumerate() {
+        if let Some(ws) = r.checked_sub(1).and_then(|p| said[p].as_ref()) {
+            let lost = ws.iter().filter(|w| !view.bag.has(w) && !system.contains(*w)).count();
+            way.lost += lost;
+            way.lost_replies += usize::from(lost > 0);
+        }
+        whole.extend(*base, new.clone());
+        let n = whole.msgs.len();
+        let base = (*base).min(n);
+        let mut keep: Vec<bool> = (0..n).map(|j| j >= base).collect();
+        let mut total: i64 = whole.tokens[base..].iter().sum();
+        let budget = budgets.get(r).copied().unwrap_or(0).max(total);
+        let mut needed: Vec<usize> = said
+            .get(r)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|w| {
+                holders.get(w.as_str())?.iter().filter(|&&j| j < n).min_by_key(|&&j| (fin.tokens[j], j)).copied()
+            })
+            .collect();
+        needed.sort_unstable();
+        needed.dedup();
+        needed.sort_by_key(|&j| fin.tokens[j]);
+        for j in needed {
+            if !keep[j] && total + whole.tokens[j] <= budget {
+                keep[j] = true;
+                total += whole.tokens[j];
+            }
+        }
+        let mut ahead: Vec<(i64, usize)> = (0..base)
+            .filter(|&j| !keep[j])
+            .filter_map(|j| {
+                let next = *uses[j].iter().find(|&&u| u > r)?;
+                Some(((next - r) as i64 * whole.tokens[j].max(1), j))
+            })
+            .collect();
+        ahead.sort_unstable();
+        for (_, j) in ahead {
+            if total + whole.tokens[j] <= budget {
+                keep[j] = true;
+                total += whole.tokens[j];
+            }
+        }
+        let msgs: Vec<Value> = (0..n).filter(|&j| keep[j]).map(|j| whole.msgs[j].clone()).collect();
+        let (hit, rewrote) = view.send(msgs);
+        way.rewrites += usize::from(rewrote);
+        let head = if r > 0 { system_tokens } else { 0 };
+        way.count(view.total() + system_tokens, hit + head);
+    }
+    way
+}
+
 /// `--bank`: one session of the corpus (`examples/corpus.rs`) sent three ways, as one JSON line: the whole
 /// history each time (no curator), the requests as the agent sent them, with its own compaction (when the
 /// corpus wrote them, in `sent/` next to the file), and the curator's view. For each way: the input cost
 /// with a prefix cache, the largest request, the requests that rewrote the past, and the distinctive words
 /// the replies took from the history that the way had not sent. Memory and time grow with the session,
 /// not with its square: each request is applied to what the one before left, as the file gives it.
-fn bank(path: &str, spec: &str, recall: bool) -> Result<Value, String> {
+/// With `oracle`, a fourth way: the offline floor of `belady`, at the tokens the curator's view spent.
+fn bank(path: &str, spec: &str, recall: bool, oracle: bool) -> Result<Value, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file = std::path::Path::new(path);
     let sent_text = file
@@ -1034,6 +1127,8 @@ fn bank(path: &str, spec: &str, recall: bool) -> Result<Value, String> {
     let (mut system, mut system_tokens) = (HashSet::<String>::new(), 0i64);
     let (mut requests, mut replies, mut copied) = (0usize, 0usize, 0usize);
     let mut owned: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    // the same, by the rule and the kind of the message (user, assistant, result) that held the word last
+    let mut owned_by: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let parse = |line: &str| -> Result<(usize, Vec<Value>, Value), String> {
         let mut rec: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
         let base = rec["req"]["base"].as_u64().unwrap_or(0) as usize;
@@ -1046,9 +1141,15 @@ fn bank(path: &str, spec: &str, recall: bool) -> Result<Value, String> {
     // G12: result texts (200 bytes or more) the history held before, to size the re-reads that follow a compaction
     let (mut seen, mut reread_after, mut reread_before, mut new_after) = (HashSet::<String>::new(), 0i64, 0i64, 0i64);
     let mut errs = Errs::default();
+    // for the oracle: each request as given, the words the reply to each copied, and the view's tokens
+    let (mut records, mut said_at, mut budgets) =
+        (Vec::<(usize, Vec<Value>)>::new(), Vec::<Option<Vec<String>>>::new(), Vec::<i64>::new());
     let started = std::time::Instant::now();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let (base, new, rec) = parse(line)?;
+        if oracle {
+            records.push((base, new.clone()));
+        }
         errs.see(&new, &view, sent_text.is_some().then_some(&sent));
         let req = &rec["req"];
         if requests == 0 {
@@ -1069,18 +1170,28 @@ fn bank(path: &str, spec: &str, recall: bool) -> Result<Value, String> {
                 way.lost += lost;
                 if std::ptr::eq(sending, &view) {
                     for w in said.iter().filter(|w| !sending.bag.has(w) && !system.contains(*w)) {
-                        let mut best: Option<(u64, &str)> = None;
+                        let mut best: Option<((u64, &str), usize)> = None;
                         for (mi, ws) in whole.words.iter().enumerate() {
                             if ws.iter().any(|x| x == w) {
                                 if let Some(f) = cur.fate(mi, w) {
-                                    best = Some(best.map_or(f, |b| b.max(f)));
+                                    best = Some(best.map_or((f, mi), |b| b.max((f, mi))));
                                 }
                             }
                         }
-                        *owned.entry(best.map_or("unowned", |b| b.1).to_string()).or_default() += 1;
+                        let rule = best.map_or("unowned", |b| b.0 .1);
+                        *owned.entry(rule.to_string()).or_default() += 1;
+                        let kind = best.map_or("none", |(_, mi)| match &whole.msgs[mi] {
+                            m if has_result(m) => "result",
+                            m if m["role"] == "user" => "user",
+                            _ => "assistant",
+                        });
+                        *owned_by.entry(format!("{rule}/{kind}")).or_default() += 1;
                     }
                 }
                 way.lost_replies += usize::from(lost > 0);
+            }
+            if let Some(last) = said_at.last_mut() {
+                *last = Some(said);
             }
         }
         let head = if requests > 0 { system_tokens } else { 0 };
@@ -1114,8 +1225,11 @@ fn bank(path: &str, spec: &str, recall: bool) -> Result<Value, String> {
         let (hit, rewrote) = view.send(reply.view);
         curated.rewrites += usize::from(rewrote);
         curated.count(view.total() + system_tokens, hit + head);
+        said_at.push(None);
+        budgets.push(view.total());
         requests += 1;
     }
+    let floor = oracle.then(|| belady(&records, &said_at, &budgets, &system, system_tokens));
     Ok(json!({
         "file": file.file_name().and_then(|n| n.to_str()).unwrap_or(path),
         "requests": requests, "messages": whole.msgs.len(), "replies": replies, "copied": copied,
@@ -1124,8 +1238,9 @@ fn bank(path: &str, spec: &str, recall: bool) -> Result<Value, String> {
         "plain": plain.json(),
         "sent": if sent_text.is_some() { agent.json() } else { Value::Null },
         "view": curated.json(),
+        "oracle": floor.map_or(Value::Null, |w| w.json()),
         "errs": errs.json(),
-        "own": {"lost": owned, "saved": cur.savings().into_iter().collect::<std::collections::BTreeMap<_, _>>()},
+        "own": {"lost": owned, "lost_by": owned_by, "saved": cur.savings().into_iter().collect::<std::collections::BTreeMap<_, _>>()},
     }))
 }
 
@@ -1134,18 +1249,19 @@ fn main() {
     if args.iter().any(|a| a == "--bank") {
         let mut spec = String::new();
         let mut files = Vec::new();
-        let mut recall = false;
+        let (mut recall, mut oracle) = (false, false);
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--bank" => {}
                 "--recall" => recall = true,
+                "--oracle" => oracle = true,
                 "--spec" => spec = it.next().cloned().unwrap_or_default(),
                 _ => files.push(a.clone()),
             }
         }
         for f in files {
-            let line = bank(&f, &spec, recall).unwrap_or_else(|e| json!({"file": f, "error": e}));
+            let line = bank(&f, &spec, recall, oracle).unwrap_or_else(|e| json!({"file": f, "error": e}));
             println!("{line}");
         }
         return;
