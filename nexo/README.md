@@ -704,6 +704,41 @@ model nexo has no prices for, give them with `--price MISS,HIT,OUT` (dollars per
 million tokens), or the bench refuses to start.
 External tasks `repoqa` and `canonstep` (with `--llmb DIR`) and `nexo bench report` (report.html): see `nexo bench --help`.
 
+#### Aider Polyglot
+
+`--tasks polyglot` runs [Aider's Polyglot benchmark](https://github.com/Aider-AI/polyglot-benchmark):
+225 hard Exercism exercises in C++, Go, Java, JavaScript, Python and Rust.
+The agent gets the instructions and the stub, works with its tools, then the
+hidden tests run; a failure gets one more try with the test output, as Aider
+does (pass@1, pass@2). The tests and every command of the agent run in a
+sealed box without network; the run is hermetic (no `NEXO.md`, `AGENTS.md` or
+personal prompt) and at temperature 0 unless `--temperature`.
+
+```sh
+printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat \
+  --key - --tasks polyglot --arms plain --max-steps 40 --budget 3 --out polyglot-out
+```
+
+DeepSeek `deepseek-chat`, 2026-11-06, one run each, `plain` arm, measured
+before nexo left the calls of a reply cut at max_tokens out of its history
+(8 runs hit DeepSeek's 8192-token reply cap; their retries had looped):
+
+| Language | Exercises | pass@1 | pass@2 | Cost |
+|---|---:|---:|---:|---:|
+| C++ | 26 | 61.5 % | 96.2 % | $0.18 |
+| Go | 39 | 59.0 % | 69.2 % | $0.21 |
+| Java | 47 | 23.4 % | 70.2 % | $0.36 |
+| JavaScript | 49 | 49.0 % | 71.4 % | $0.29 |
+| Python | 34 | 44.1 % | 73.5 % | $0.16 |
+| Rust | 30 | 70.0 % | 76.7 % | $0.28 |
+| **All** | **225** | **48.9 %** | **74.7 %** | **$1.49** |
+
+Aider's leaderboard has DeepSeek V3.2-Exp chat at 70.2 % (pass@2, 0.88 $).
+The numbers are not like for like: nexo is an agent that reads, runs and edits
+with tools in a sealed box, Aider sends whole-file or diff edits without running
+anything, and `deepseek-chat` is whatever DeepSeek serves on the day. The
+other differences are listed in each run's `summary.md`.
+
 ## Layout of the code
 
 See `ARCHITECTURE.md`: the crates, one rule (`core ← providers, tools, agent,
