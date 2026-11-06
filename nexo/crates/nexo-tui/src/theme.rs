@@ -1112,8 +1112,10 @@ mod tests {
         assert_eq!(nearest_256(128, 128, 128), 244, "a grey lands on the ramp");
         let t = Theme::nexo().downsampled();
         assert!(t.degraded);
+        // what it maps to follows the terminal the tests run in (`TERM=linux` has 16 colours)
+        let ansi16 = colour_depth() == Depth::Ansi16;
         for c in t.colours() {
-            assert!(matches!(c, Color::Indexed(_)), "{c:?}");
+            assert!(if ansi16 { !matches!(c, Color::Rgb(..)) } else { matches!(c, Color::Indexed(_)) }, "{c:?}");
         }
         assert_ne!(t, Theme::nexo());
     }

@@ -103,6 +103,18 @@ fn right_completes_word() {
 }
 
 #[test]
+fn tab_completes_like_right() {
+    let mut a = app();
+    type_str(&mut a, "configu");
+    press(&mut a, KeyCode::Tab);
+    assert_eq!(a.input.full_text(), "configuración");
+    a.input.clear();
+    type_str(&mut a, "e23");
+    press(&mut a, KeyCode::Tab);
+    assert_eq!(a.input.full_text(), HASH);
+}
+
+#[test]
 fn right_with_block_selected_does_not() {
     let mut a = app();
     type_str(&mut a, "configu");

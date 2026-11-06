@@ -253,8 +253,9 @@ pub fn key(app: &mut App, k: KeyEvent) {
     if app.selected.is_some() && matches!(k.code, KeyCode::Char(_)) && !ctrl {
         app.selected = None;
     }
-    // → at the end of a word that shows a ghost takes it (a picked block and the palette had the key above)
-    if k.code == KeyCode::Right
+    // → or Tab at the end of a word that shows a ghost takes it (a picked block and the palette had the key
+    // above); with no ghost shown each keeps its own use
+    if matches!(k.code, KeyCode::Right | KeyCode::Tab)
         && !ctrl
         && !shift
         && !k.modifiers.contains(KeyModifiers::ALT)
