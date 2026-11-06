@@ -1750,6 +1750,9 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
         }
         let (usage, call) = (c.usage, c.call);
         let cut = c.finish == Some(FinishReason::Length);
+        if cut && c.error.is_none() {
+            leave_out_cut_args(&mut msg);
+        }
         if let Some(e) = &c.error {
             if msg.content.is_empty() {
                 match learn(&state, e).await {
@@ -1986,6 +1989,17 @@ enum Answer {
 /// low temperature otherwise sends the same call again and is cut at the same place
 const CUT_NOTE: &str = "the reply was cut at max_tokens before its calls were complete. A call has to fit in one \
     reply: write a long file in parts, keep test scripts short, and do not spell out long lists of data";
+
+/// The arguments of the calls of a reply cut at max_tokens, left out of the history: they never run, and a
+/// model that looped into the cap (a test spelling out 1..100) copies its own loop when it sees it again
+fn leave_out_cut_args(msg: &mut Message) {
+    for p in &mut msg.content {
+        if let Part::ToolCall { args, .. } = p {
+            let chars = args.to_string().chars().count();
+            *args = serde_json::json!({ "left_out": format!("cut at max_tokens after {chars} characters") });
+        }
+    }
+}
 
 /// The lowest temperature of the request that follows a reply cut at max_tokens while writing its calls
 const CUT_TEMPERATURE: f32 = 0.6;

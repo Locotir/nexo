@@ -2535,7 +2535,7 @@ async fn a_call_cut_by_max_tokens_does_not_run() {
 }
 
 #[tokio::test]
-async fn the_request_after_a_cut_call_is_sampled_warmer_once() {
+async fn the_request_after_a_cut_call_leaves_it_out_and_is_sampled_warmer_once() {
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("f"), "x").unwrap();
     let client = Scripted::new(vec![
@@ -2551,6 +2551,10 @@ async fn the_request_after_a_cut_call_is_sampled_warmer_once() {
     assert_eq!(end_of(&r.turn().await), TurnEnd::Done);
     let temps: Vec<_> = client.requests().iter().map(|q| q.temperature).collect();
     assert_eq!(temps, vec![Some(0.0), Some(0.6), Some(0.0)]);
+    // the half-written call is not shown again: only that it was cut
+    let reqs = client.requests();
+    let sent = reqs[1].messages.iter().flat_map(|m| m.tool_calls()).find(|(id, _, _)| *id == "c1").unwrap();
+    assert_eq!(sent.2, &json!({"left_out": "cut at max_tokens after 12 characters"}));
     r.stop().await;
 }
 
