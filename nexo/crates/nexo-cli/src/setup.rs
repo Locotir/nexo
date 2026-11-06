@@ -63,6 +63,21 @@ pub fn apply_presets(cfg: &mut Config) {
     crate::account::add_directory(cfg);
 }
 
+/// Nothing was chosen and nothing can be used: no provider set, no key found. The fallback
+/// `pick` makes is then not the person's choice and must not be named to them.
+pub fn nothing_chosen(cfg: &Config) -> bool {
+    let chosen = cfg.provider.as_ref().is_some_and(|p| cfg.providers.contains_key(p));
+    !chosen && !cfg.providers.iter().any(|(n, p)| p.needs_key() && p.ready(n))
+}
+
+/// The wording of `nexo doctor`, for a run that cannot ask.
+pub fn nothing_chosen_message() -> String {
+    format!(
+        "no provider chosen and no key found: set one (e.g. {}) or run `nexo auth login <provider>`, then `nexo use <provider>`; `nexo guide` explains every way",
+        crate::account::KEY_IN_ENV
+    )
+}
+
 pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow::Result<Picked> {
     let mut c = cfg.clone();
     if let Some(p) = provider {

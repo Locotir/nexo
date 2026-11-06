@@ -528,7 +528,16 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         Some(Cmd::Supervise { .. }) => return Ok(0),
     }
 
-    let picked: Picked = setup::pick(&config, args.provider.as_deref(), args.model.as_deref())?;
+    // plain `nexo` with nothing set up opens on the locked home; a run that cannot ask says what to do
+    let unset = args.provider.is_none() && setup::nothing_chosen(&config);
+    if unset && args.prompt.is_some() {
+        anyhow::bail!(setup::nothing_chosen_message());
+    }
+    let picked: Picked = if unset {
+        Picked { provider: String::new(), model: String::new() }
+    } else {
+        setup::pick(&config, args.provider.as_deref(), args.model.as_deref())?
+    };
     let resume = if args.continue_ { nexo_agent::session::latest_for(&cwd).map(|m| m.id) } else { args.resume.clone() };
     if args.continue_ && resume.is_none() {
         eprintln!("nexo: no earlier session in {}; starting a new one", cwd.display());

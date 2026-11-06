@@ -206,3 +206,24 @@ fn a_session_that_cannot_be_resumed_fails_loudly() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("not a session id"), "{err}");
 }
+
+#[test]
+fn nothing_set_up_says_so_in_the_words_of_doctor_and_names_no_provider() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("config.toml"), "").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_nexo"))
+        .args(["-p", "hi"])
+        .current_dir(d.path())
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", d.path())
+        .env("NEXO_CONFIG_DIR", d.path())
+        .env("NEXO_DATA_DIR", d.path().join("data"))
+        .env("NEXO_CACHE_DIR", d.path().join("cache"))
+        .output()
+        .expect("nexo runs");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no provider chosen and no key found"), "{err}");
+    assert!(!err.to_lowercase().contains("anthropic"), "{err}");
+}

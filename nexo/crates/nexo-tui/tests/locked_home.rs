@@ -157,3 +157,17 @@ fn a_sign_in_that_worked_says_so_before_moving_on() {
     assert_eq!(s.step, Step::Address);
     assert!(text(&s).contains("✓ signed in to codex"));
 }
+
+#[test]
+fn no_provider_chosen_opens_on_the_card_without_naming_one() {
+    let mut a = app("codex", codex());
+    a.opts.provider = String::new();
+    a.opts.model = String::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut a = App::new(a.opts.clone(), tx);
+    assert!(a.locked);
+    let s = screen(&mut a);
+    assert!(s.contains("Set up a model to start") && !s.to_lowercase().contains("anthropic"), "{s}");
+    press(&mut a, KeyCode::Enter);
+    assert!(matches!(a.modal, Some(Modal::Setup(_))));
+}

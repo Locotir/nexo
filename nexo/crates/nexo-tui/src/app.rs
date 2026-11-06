@@ -544,12 +544,14 @@ impl App {
         app.read_branch();
         app.push_welcome();
         // a provider that cannot be used yet (no key, no login, no server found): the home asks for a setup
-        app.locked = app
-            .opts
-            .providers
-            .iter()
-            .find(|(n, _)| *n == app.opts.provider)
-            .is_some_and(|(n, c)| !crate::modal::setup::provider_ready(n, c, &[]));
+        // (no provider chosen at all is the same: the name stays empty until one is set up)
+        app.locked = app.opts.provider.is_empty()
+            || app
+                .opts
+                .providers
+                .iter()
+                .find(|(n, _)| *n == app.opts.provider)
+                .is_some_and(|(n, c)| !crate::modal::setup::provider_ready(n, c, &[]));
         if app.locked {
             // a local server may answer: that unlocks it
             app.send(AgentCommand::ScanLocal);
