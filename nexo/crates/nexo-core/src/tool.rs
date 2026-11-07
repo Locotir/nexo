@@ -138,6 +138,8 @@ pub struct ToolContext {
     /// What the permission rules say of another call, without asking anyone: a tool led somewhere
     /// else on its own (a web page that redirects) checks the new place with it. None: no rules.
     pub check: Option<PolicyCheck>,
+    /// The OS sandbox the `bash` tool runs commands in (mode `off`: none).
+    pub sandbox: crate::sandbox::SandboxSettings,
 }
 
 /// What the permission rules would do with a call, without asking anyone.
@@ -162,6 +164,7 @@ impl ToolContext {
             env: BTreeMap::new(),
             jobs: crate::jobs::Jobs::new(),
             check: None,
+            sandbox: Default::default(),
         }
     }
 
@@ -181,6 +184,14 @@ pub trait Tool: Send + Sync {
     /// it decides which calls of one round may run at the same time.
     fn call_kind(&self, _args: &Value) -> ToolKind {
         self.kind()
+    }
+    /// Whether the OS sandbox of the session holds this call in, so it needs no asking (only `bash`).
+    fn sandbox_holds(&self, _args: &Value, _sandbox: &crate::sandbox::SandboxSettings) -> bool {
+        false
+    }
+    /// What the sandbox does for this tool, for `/status`: the line and whether it works.
+    fn sandbox_status(&self, _sandbox: &crate::sandbox::SandboxSettings) -> Option<(String, bool)> {
+        None
     }
     /// One line that says what this call does (`read src/main.rs`, `bash: cargo test`).
     fn summary(&self, args: &Value) -> String;

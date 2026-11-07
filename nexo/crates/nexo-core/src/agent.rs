@@ -54,6 +54,8 @@ pub enum AgentCommand {
         model: String,
     },
     SetPermissionMode(PermissionMode),
+    /// Change the sandbox mode of the `bash` tool (`/sandbox`; None switches between off and workspace-write).
+    SetSandbox(Option<crate::sandbox::SandboxMode>),
     /// Replace the history with a summary of it.
     Compact,
     /// Start a new session in the same directory.

@@ -159,6 +159,8 @@ struct State {
     /// The mends of a broken history already said (each is said once).
     mended: HashSet<String>,
     perm: Policy,
+    /// The OS sandbox of the `bash` tool (`/sandbox` changes its mode).
+    sandbox: nexo_core::sandbox::SandboxSettings,
     gate: Arc<dyn PermissionGate>,
     events: EventTx,
     usage: Usage,
@@ -319,6 +321,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let system = prompt::system_prompt(&cwd, &config.agent, &tools);
     let policy = context::from_config(&config.context);
     let perm = Policy::from_config(&config.permissions);
+    let config_sandbox =
+        (config.permissions.sandbox, config.permissions.sandbox_network, config.permissions.sandbox_write_dirs.clone());
     plan.lock().unwrap_or_else(|e| e.into_inner()).set(perm.mode);
     if let Some(m) = &mail {
         m.set_bypass(perm.mode == PermissionMode::Auto);
@@ -338,6 +342,16 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     );
     for n in &config.notices {
         notice(&events, Level::Warn, n.clone());
+    }
+    {
+        let s = nexo_core::sandbox::SandboxSettings::new(
+            config.permissions.sandbox,
+            config.permissions.sandbox_network,
+            vec![],
+        );
+        if let Some((line, false)) = tools.get("bash").and_then(|t| t.sandbox_status(&s)).filter(|_| s.mode.is_on()) {
+            notice(&events, Level::Warn, format!("sandbox: {line}"));
+        }
     }
     if replay {
         replay_history(&events, &session, &tools);
@@ -376,6 +390,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         last_request: None,
         mended: HashSet::new(),
         perm,
+        sandbox: nexo_core::sandbox::SandboxSettings::new(config_sandbox.0, config_sandbox.1, config_sandbox.2),
         gate,
         events: events.clone(),
         usage,
@@ -520,6 +535,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         }
                     }
                     AgentCommand::SetPermissionMode(mode) => set_mode(&mut *state.lock().await, mode),
+                    AgentCommand::SetSandbox(mode) => set_sandbox(&mut *state.lock().await, mode),
                     AgentCommand::Compact => {
                         if turn.is_some() {
                             notice(&events, Level::Warn, "compaction waits for the turn to end");
@@ -2591,7 +2607,17 @@ async fn permit_as(
     hook: Option<crate::hooks::Decision>,
 ) -> Verdict {
     let kind = tool.kind();
-    let mut decision = state.lock().await.perm.decide(name, kind, args, cwd);
+    let mut decision = {
+        let st = state.lock().await;
+        let d = st.perm.decide(name, kind, args, cwd);
+        // a command the OS sandbox holds in needs no asking (a rule that denies still wins)
+        let boxed = tool.sandbox_holds(args, &st.sandbox);
+        if d == Decision::Ask && boxed {
+            Decision::Allow
+        } else {
+            d
+        }
+    };
     match (hook, &decision) {
         // a PreToolUse hook that wants the person asked, or lets the call run unasked; a deny rule stands
         (Some(crate::hooks::Decision::Ask), Decision::Allow) => decision = Decision::Ask,
@@ -2768,6 +2794,24 @@ fn set_mode(st: &mut State, mode: PermissionMode) {
     emit(&st.events, AgentEvent::PermissionModeChanged { mode });
 }
 
+/// What the `bash` tool says of the sandbox, and whether it works (no bash tool: off).
+fn sandbox_line(st: &State) -> (String, bool) {
+    match st.tools.get("bash").and_then(|t| t.sandbox_status(&st.sandbox)) {
+        Some(x) => x,
+        None => (st.sandbox.mode.as_str().to_string(), true),
+    }
+}
+
+/// Changes the sandbox mode of the `bash` tool and says what it is now.
+fn set_sandbox(st: &mut State, mode: Option<nexo_core::sandbox::SandboxMode>) {
+    use nexo_core::sandbox::SandboxMode;
+    let mode = mode.unwrap_or(if st.sandbox.mode.is_on() { SandboxMode::Off } else { SandboxMode::WorkspaceWrite });
+    st.sandbox.mode = mode;
+    let (line, ok) = sandbox_line(st);
+    let level = if ok { Level::Info } else { Level::Warn };
+    notice(&st.events, level, format!("sandbox: {line}"));
+}
+
 /// Runs the calls of one assistant message; (results in order, interrupted).
 async fn run_tools(
     state: &Shared,
@@ -2918,9 +2962,9 @@ async fn run_one(
                 }
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
-            let (jobs, perm, rules_cwd) = {
+            let (jobs, perm, rules_cwd, sandbox) = {
                 let st = state.lock().await;
-                (st.jobs.clone(), st.perm.clone(), cwd.to_path_buf())
+                (st.jobs.clone(), st.perm.clone(), cwd.to_path_buf(), st.sandbox.clone())
             };
             let ctx = ToolContext {
                 cwd: cwd.to_path_buf(),
@@ -2930,6 +2974,7 @@ async fn run_one(
                 progress: Some(ptx),
                 env: Default::default(),
                 jobs,
+                sandbox,
                 check: Some(Arc::new(move |tool: &str, kind, args: &Value| {
                     match perm.decide(tool, kind, args, &rules_cwd) {
                         Decision::Allow => nexo_core::tool::Check::Allow,
@@ -3259,6 +3304,7 @@ fn status_text(st: &State) -> String {
             format!("context      {label} · {} messages in memory (/context says why)", st.history.len())
         },
         format!("permissions  {}", st.perm.mode.as_str()),
+        format!("sandbox      {}", sandbox_line(st).0),
         format!("session      {} ({})", st.session.id(), short(st.session.path())),
         format!("directory    {}", short(&st.cwd)),
         format!("config       {}", file(&user)),

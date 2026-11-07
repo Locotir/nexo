@@ -309,6 +309,12 @@ impl Default for AgentConfig {
 #[serde(default)]
 pub struct PermissionsConfig {
     pub mode: PermissionMode,
+    /// OS sandbox for the bash tool: `off`, `workspace-write` or `read-only`.
+    pub sandbox: crate::sandbox::SandboxMode,
+    /// Whether sandboxed commands may use the network (default: no).
+    pub sandbox_network: bool,
+    /// Directories besides the project that sandboxed commands may write (those that exist).
+    pub sandbox_write_dirs: Vec<PathBuf>,
     /// Rules: `bash(git *)`, `write(src/**)`, `read`, `mcp:server:tool`.
     pub allow: Vec<String>,
     pub deny: Vec<String>,
@@ -604,6 +610,28 @@ impl Config {
             out.push(format!("permissions.mode = \"{}\"", self.permissions.mode.as_str()));
             self.permissions.mode = user.permissions.mode;
         }
+        // a project may tighten the sandbox, never loosen it
+        if self.permissions.sandbox_network && !user.permissions.sandbox_network {
+            out.push("permissions.sandbox_network".into());
+            self.permissions.sandbox_network = false;
+        }
+        if !std::mem::take(&mut self.permissions.sandbox_write_dirs).is_empty() {
+            out.push("permissions.sandbox_write_dirs".into());
+        }
+        {
+            let rank = |m: crate::sandbox::SandboxMode| match m {
+                crate::sandbox::SandboxMode::Off => 0,
+                crate::sandbox::SandboxMode::WorkspaceWrite => 1,
+                crate::sandbox::SandboxMode::ReadOnly => 2,
+            };
+            if rank(self.permissions.sandbox) < rank(user.permissions.sandbox) {
+                // `off` cannot be told from a key left out, so it is put back without a word
+                if self.permissions.sandbox != crate::sandbox::SandboxMode::Off {
+                    out.push(format!("permissions.sandbox = \"{}\"", self.permissions.sandbox.as_str()));
+                }
+                self.permissions.sandbox = user.permissions.sandbox;
+            }
+        }
         if !self.ui.status_command.is_empty() && self.ui.status_command != user.ui.status_command {
             out.push("ui.status_command".into());
         }
@@ -857,7 +885,7 @@ cache_read = 0.028
     }
 
     /// A user file, a project under `root/.nexo`, and the trust list; the loaded config.
-    fn load_pair(user: &str, project: &str, trusted: bool) -> Config {
+    pub(super) fn load_pair(user: &str, project: &str, trusted: bool) -> Config {
         let d = tempfile::tempdir().unwrap();
         let (home, root) = (d.path().join("home"), d.path().join("proj"));
         std::fs::create_dir_all(&home).unwrap();
@@ -1085,6 +1113,7 @@ cache_read = 0.028
 
 #[cfg(test)]
 mod ui_tests {
+    use super::tests::load_pair;
     use super::*;
 
     #[test]
@@ -1100,5 +1129,43 @@ mod ui_tests {
         assert!(c.ui.animations);
         let c: Config = toml::from_str("[ui]\nanimations = false\n").unwrap();
         assert!(!c.ui.animations);
+    }
+
+    #[test]
+    fn sandbox_settings_parse_in_every_mode() {
+        use crate::sandbox::SandboxMode;
+        let c = Config::default();
+        assert_eq!(c.permissions.sandbox, SandboxMode::Off);
+        assert!(!c.permissions.sandbox_network);
+        for (text, mode) in [
+            ("off", SandboxMode::Off),
+            ("workspace-write", SandboxMode::WorkspaceWrite),
+            ("read-only", SandboxMode::ReadOnly),
+        ] {
+            let c: Config = toml::from_str(&format!("[permissions]\nsandbox = \"{text}\"\n")).unwrap();
+            assert_eq!(c.permissions.sandbox, mode, "{text}");
+        }
+        let c: Config = toml::from_str(
+            "[permissions]\nsandbox = \"workspace-write\"\nsandbox_network = true\nsandbox_write_dirs = [\"/srv/data\"]\n",
+        )
+        .unwrap();
+        assert!(c.permissions.sandbox_network);
+        assert_eq!(c.permissions.sandbox_write_dirs, vec![PathBuf::from("/srv/data")]);
+        assert!(toml::from_str::<Config>("[permissions]\nsandbox = \"sideways\"\n").is_err());
+    }
+
+    #[test]
+    fn an_untrusted_project_cannot_loosen_the_sandbox() {
+        use crate::sandbox::SandboxMode;
+        let user = "[permissions]\nsandbox = \"workspace-write\"\n";
+        let proj = "[permissions]\nsandbox = \"off\"\nsandbox_network = true\nsandbox_write_dirs = [\"/\"]\n";
+        let c = load_pair(user, proj, false);
+        assert_eq!(c.permissions.sandbox, SandboxMode::WorkspaceWrite);
+        assert!(!c.permissions.sandbox_network && c.permissions.sandbox_write_dirs.is_empty());
+        let t = load_pair(user, proj, true);
+        assert_eq!(t.permissions.sandbox, SandboxMode::Off);
+        assert!(t.permissions.sandbox_network);
+        let c = load_pair(user, "[permissions]\nsandbox = \"read-only\"\n", false);
+        assert_eq!(c.permissions.sandbox, SandboxMode::ReadOnly, "a project may tighten it");
     }
 }

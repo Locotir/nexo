@@ -64,6 +64,7 @@ nexo -p "what does this repository do?"            # headless: prints the reply
 nexo -p "run the tests and fix what fails" --permission-mode auto --json
 nexo --continue                 # resume the latest session of this directory
 nexo --yolo                     # never ask for permission (also /yolo inside)
+nexo --sandbox workspace-write   # bash runs in an OS sandbox: reads everywhere, writes the project only (also /sandbox)
 nexo prompt                     # print the system prompt as it would be sent from here
 printf %s "$KEY" | nexo bench --upstream URL --model M --key - --out bench-out   # measure the context policies
 ```
@@ -106,7 +107,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/todo`, `/queue`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/sandbox`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/todo`, `/queue`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 
@@ -316,7 +317,17 @@ sees both the path as written and where its links lead, and an allow rule must m
 without asking only inside the project, never in `.git`, `.nexo` or shell start-up files.
 An allow rule for `bash` covers a command only when it is plainly that command: a redirection to a
 file, `$'..'`, `${..@..}`, a substitution or an option that runs code (`git -c`, `find -exec`,
-`xargs`) is asked about. Deny rules for `bash` are a guard against mistakes, not a sandbox.
+`xargs`) is asked about. Deny rules for `bash` are a guard against mistakes, not a sandbox; the OS sandbox below is.
+
+**OS sandbox for `bash`** (`sandbox = "off" | "workspace-write" | "read-only"` under `[permissions]`, `--sandbox`, `/sandbox`).
+With `workspace-write` a command reads the whole disk but writes only the project, the directories in
+`sandbox_write_dirs`, the temp directory and the cache directories of the language tools; the network is
+off unless `sandbox_network = true`. Landlock on Linux (bubblewrap when the kernel has none),
+`sandbox-exec` on macOS; Windows has none yet and asks before every command. If the sandbox is on and
+cannot be set up, the command is refused, never run unsandboxed. In the default mode, a command inside the
+sandbox runs without asking; a failure the sandbox may have caused carries a short note, and the model can
+rerun it with `unsandboxed: true`, which is asked about like any command. `/status` shows the mode and the
+backend. Details and limits: [docs/SANDBOX.md](docs/SANDBOX.md).
 
 Reading and searching are not asked about, except for files that hold keys or credentials: `.env` and
 `.env.*`, anything under `.ssh`, `.gnupg`, `.aws`, `.kube` or `.docker`, private keys and certificates

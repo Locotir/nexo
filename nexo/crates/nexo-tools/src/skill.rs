@@ -88,6 +88,7 @@ mod tests {
             env: Default::default(),
             jobs: Default::default(),
             check: None,
+            sandbox: Default::default(),
         }
     }
 

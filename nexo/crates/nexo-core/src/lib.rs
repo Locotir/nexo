@@ -26,6 +26,7 @@ pub mod permission;
 pub mod pricing;
 pub mod provider;
 pub mod redact;
+pub mod sandbox;
 pub mod shell;
 pub mod skills;
 pub mod stream;

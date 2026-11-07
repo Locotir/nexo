@@ -31,6 +31,12 @@ pub const COMMANDS: &[Spec] = &[
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
     spec("permissions", &["permission", "mode"], "[ask|accept-edits|plan|auto|read-only]", "set the permission mode"),
     spec("yolo", &[], "", "never ask for permission (the auto mode)"),
+    spec(
+        "sandbox",
+        &[],
+        "[off|workspace-write|read-only]",
+        "run bash commands in an OS sandbox (no argument: switch it on or off)",
+    ),
     spec("plan", &["planning"], "[text|off]", "plan mode: reads only, then a plan to approve; with text: sends it"),
     spec(
         "prompt",
@@ -135,6 +141,8 @@ pub enum Command {
     Panel,
     Permissions(Option<PermissionMode>),
     Yolo,
+    /// `/sandbox [mode]`: None switches it on or off.
+    Sandbox(Option<nexo_core::sandbox::SandboxMode>),
     /// `/plan` turns plan mode on, `/plan text` also sends the text, `/plan off` leaves it.
     Plan(Option<String>),
     Prompt,
@@ -242,6 +250,13 @@ pub fn parse(line: &str) -> Option<Command> {
             },
         },
         "yolo" => Command::Yolo,
+        "sandbox" => match arg {
+            None => Command::Sandbox(None),
+            Some(a) => match nexo_core::sandbox::SandboxMode::parse(&a) {
+                Some(m) => Command::Sandbox(Some(m)),
+                None => Command::BadArgument("sandbox".into(), a),
+            },
+        },
         "plan" => Command::Plan(arg),
         "prompt" => match arg.as_deref() {
             Some("edit") | Some("e") => Command::PromptEdit,
@@ -376,7 +391,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "status",
         ],
     ),
-    ("settings", &["yolo", "theme", "mouse", "timestamps", "vim", "keys", "config"]),
+    ("settings", &["yolo", "sandbox", "theme", "mouse", "timestamps", "vim", "keys", "config"]),
     ("nexo", &["doctor", "copy", "quit"]),
 ];
 
@@ -409,6 +424,11 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
             ("plan", "reads, then a plan to approve before any write"),
             ("auto", "never ask"),
             ("read-only", "only reads and searches"),
+        ],
+        "sandbox" => &[
+            ("off", "commands run with your own rights"),
+            ("workspace-write", "read everything, write only the project and temp"),
+            ("read-only", "read everything, write nothing"),
         ],
         "prompt" => &[("edit", "open the system prompt in $EDITOR")],
         "copy" => &[("code", "the last code block of the last reply")],
@@ -498,6 +518,12 @@ mod tests {
         assert_eq!(parse("/mode auto"), Some(Command::Permissions(Some(PermissionMode::Auto))));
         assert_eq!(parse("/permissions sideways"), Some(Command::BadArgument("permissions".into(), "sideways".into())));
         assert_eq!(parse("/yolo"), Some(Command::Yolo));
+        assert_eq!(parse("/sandbox"), Some(Command::Sandbox(None)));
+        assert_eq!(
+            parse("/sandbox read-only"),
+            Some(Command::Sandbox(Some(nexo_core::sandbox::SandboxMode::ReadOnly)))
+        );
+        assert_eq!(parse("/sandbox sideways"), Some(Command::BadArgument("sandbox".into(), "sideways".into())));
         assert_eq!(parse("/system"), Some(Command::Prompt));
         assert_eq!(parse("/prompt edit"), Some(Command::PromptEdit));
         assert_eq!(parse("/pricing in=1 out=2"), Some(Command::Pricing(Some("in=1 out=2".into()))));

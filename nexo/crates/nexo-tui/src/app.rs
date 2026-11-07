@@ -3576,6 +3576,7 @@ impl App {
             Command::Effort(None) => self.open_effort_picker(),
             Command::Permissions(Some(mode)) => self.send(AgentCommand::SetPermissionMode(mode)),
             Command::Yolo => self.send(AgentCommand::SetPermissionMode(PermissionMode::Auto)),
+            Command::Sandbox(mode) => self.send(AgentCommand::SetSandbox(mode)),
             Command::Plan(arg) => match arg.as_deref().map(str::trim) {
                 Some("off") | Some("exit") | Some("done") => {
                     self.send(AgentCommand::SetPermissionMode(PermissionMode::Ask));

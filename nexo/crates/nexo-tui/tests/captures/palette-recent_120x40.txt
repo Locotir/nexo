@@ -33,7 +33,7 @@
  /help                                         keys and commands
  /effort         [level|default]               how much the model reasons, among the levels it takes
  session ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-                                                     1/49                                                     39 more ↓
+                                                     1/50                                                     40 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56

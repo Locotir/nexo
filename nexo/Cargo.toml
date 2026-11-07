@@ -69,6 +69,7 @@ rustc-hash = "2"
 indexmap = "2"
 similar = { version = "3", features = ["text", "inline", "unicode"] }
 libc = "0.2"
+landlock = "0.4"
 tempfile = "3"
 
 # terminal

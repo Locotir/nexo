@@ -40,6 +40,9 @@ pub struct Args {
     /// Never ask for permission (the same as --permission-mode auto).
     #[arg(long, conflicts_with = "permission_mode")]
     pub yolo: bool,
+    /// OS sandbox for the bash tool: off | workspace-write | read-only
+    #[arg(long, value_name = "MODE", env = "NEXO_SANDBOX", value_parser = sandbox_mode_arg)]
+    pub sandbox: Option<String>,
     /// Context policy: auto | plain | curator | compact (auto is the curator, built in)
     #[arg(long, value_name = "POLICY", env = "NEXO_CONTEXT")]
     pub context: Option<String>,
@@ -63,6 +66,14 @@ pub struct Args {
     pub log: Option<PathBuf>,
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
+}
+
+/// `--sandbox`: refused at once, with the values that work.
+fn sandbox_mode_arg(s: &str) -> Result<String, String> {
+    match nexo_core::sandbox::SandboxMode::parse(s) {
+        Some(_) => Ok(s.to_string()),
+        None => Err(format!("unknown sandbox mode {s:?}; use one of: off, workspace-write, read-only")),
+    }
 }
 
 /// `--permission-mode`: refused at once, with the values that work.
@@ -476,6 +487,10 @@ async fn run(args: Args) -> anyhow::Result<i32> {
     }
     if args.yolo {
         config.permissions.mode = PermissionMode::Auto;
+    }
+    if let Some(m) = &args.sandbox {
+        config.permissions.sandbox =
+            nexo_core::sandbox::SandboxMode::parse(m).ok_or_else(|| anyhow::anyhow!("unknown sandbox mode {m:?}"))?;
     }
     if let Some(c) = &args.context {
         config.context.policy = c.clone();

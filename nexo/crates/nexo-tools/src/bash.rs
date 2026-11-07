@@ -53,7 +53,8 @@ impl Tool for Bash {
                     "command": {"type": "string", "description": "The command line to run."},
                     "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds before the command is killed. Default 120."},
                     "description": {"type": "string", "description": "A few words on what the command does (shown to the person)."},
-                    "background": {"type": "boolean", "description": "Run it as a background job and return at once. Default false."}
+                    "background": {"type": "boolean", "description": "Run it as a background job and return at once. Default false."},
+                    "unsandboxed": {"type": "boolean", "description": "Only when the OS sandbox is on and a command failed because of it: run this one outside the sandbox. The person is asked first. Default false."}
                 },
                 "required": ["command"]
             }),
@@ -62,6 +63,15 @@ impl Tool for Bash {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Exec
+    }
+
+    fn sandbox_holds(&self, args: &Value, sandbox: &nexo_core::sandbox::SandboxSettings) -> bool {
+        !bool_arg(args, "unsandboxed") && crate::sandbox::auto_allows(sandbox)
+    }
+
+    fn sandbox_status(&self, sandbox: &nexo_core::sandbox::SandboxSettings) -> Option<(String, bool)> {
+        let works = !sandbox.mode.is_on() || crate::sandbox::auto_allows(sandbox);
+        Some((crate::sandbox::describe(sandbox), works))
     }
 
     fn summary(&self, args: &Value) -> String {
@@ -75,13 +85,14 @@ impl Tool for Bash {
         let Some(command) = str_arg(&args, "command") else {
             return ToolOutput::error("bash: `command` is required");
         };
+        let sandbox = if bool_arg(&args, "unsandboxed") { Default::default() } else { ctx.sandbox.clone() };
         if bool_arg(&args, "background") {
-            return background(command, ctx);
+            return background(command, ctx, sandbox);
         }
         let timeout =
             Duration::from_secs(int_arg(&args, "timeout").unwrap_or(DEFAULT_TIMEOUT_S).clamp(1, MAX_TIMEOUT_S));
         let mut output = Capture::new();
-        let end = run_command(command, &ctx.cwd, Some(timeout), &ctx.cancel, |l| {
+        let end = run_command(command, &ctx.cwd, &sandbox, Some(timeout), &ctx.cancel, |l| {
             ctx.report(l);
             output.push(l);
         })
@@ -115,6 +126,12 @@ impl Tool for Bash {
                 true
             }
         };
+        if is_error {
+            if let Some(note) = crate::sandbox::note_for(&sandbox, &outcome.output) {
+                content.push_str("\n\n");
+                content.push_str(&note);
+            }
+        }
         let exit_code = match outcome.end {
             End::Exited(c) => Some(c),
             _ => None,
@@ -190,13 +207,13 @@ impl Capture {
 }
 
 /// Starts `command` as a job of the session and returns its number at once.
-fn background(command: &str, ctx: &ToolContext) -> ToolOutput {
+fn background(command: &str, ctx: &ToolContext, sandbox: nexo_core::sandbox::SandboxSettings) -> ToolOutput {
     let job = ctx.jobs.start(JobKind::Shell, command);
     let id = job.id();
     let (line, cwd) = (command.to_string(), ctx.cwd.clone());
     tokio::spawn(async move {
         let cancel = job.cancel();
-        let end = run_command(&line, &cwd, None, &cancel, |l| job.line(l)).await;
+        let end = run_command(&line, &cwd, &sandbox, None, &cancel, |l| job.line(l)).await;
         match end {
             End::Exited(c) => job.finish(c == 0, format!("exit {c}")),
             End::Signalled => job.finish(false, "killed by a signal"),
@@ -294,18 +311,23 @@ impl Drop for GroupGuard {
 async fn run_command(
     command: &str,
     cwd: &std::path::Path,
+    sandbox: &nexo_core::sandbox::SandboxSettings,
     timeout: Option<Duration>,
     cancel: &CancellationToken,
     mut on_line: impl FnMut(&str),
 ) -> End {
     let shell = nexo_core::shell::shell();
-    let mut cmd = tokio::process::Command::new(&shell.program);
-    cmd.args(shell.args_for(command))
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    let args = shell.args_for(command);
+    let mut cmd = match crate::sandbox::wrap(sandbox, cwd, &shell.program, &args) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            let mut c = tokio::process::Command::new(&shell.program);
+            c.args(&args);
+            c
+        }
+        Err(e) => return End::Failed(e),
+    };
+    cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = match cmd.spawn() {
