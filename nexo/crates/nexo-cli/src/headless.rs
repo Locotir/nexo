@@ -408,8 +408,13 @@ pub async fn run(
                 config.permissions.allow.push(format!("{tool}({p}/**)"));
             }
         }
+        // a bash command in the sandbox may write there too (a managed policy can still shut that door)
+        if !config.permissions.sandbox_write_dirs.contains(&real) {
+            config.permissions.sandbox_write_dirs.push(real.clone());
+        }
         roots.push(real.display().to_string());
     }
+    config.enforce_managed();
     if !roots.is_empty() {
         add(&format!("You may also read and write in these folders: {}.", roots.join(", ")));
     }

@@ -584,6 +584,13 @@ impl Run {
                 (!self.profile.soft_model || m == main_model || main_cfg.models.contains(&m)).then_some(m)
             })
             .unwrap_or(main_model);
+        // a model the managed policy forbids does not run, as a sub-agent either
+        {
+            let on = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());
+            if let Some(p) = nexo_core::managed::current() {
+                p.check_model(on, &model)?;
+            }
+        }
         // on another provider, its prices; the same model name there is the same model
         let (cfg, pricing) = match &self.provider {
             Some((name, cfg)) if *name != main_provider => {

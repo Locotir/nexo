@@ -39,6 +39,9 @@ pub struct Config {
     /// What loading had to tell the person (settings of an untrusted project left out); not read from files.
     #[serde(skip)]
     pub notices: Vec<String>,
+    /// The managed policy in force (`/etc/nexo/managed.toml` and its kin), if any; not read from files.
+    #[serde(skip)]
+    pub managed: Option<std::sync::Arc<crate::managed::ManagedPolicy>>,
 }
 
 /// `[audit]`: an append-only JSON-lines log of every tool call and model request, kept on this machine only.
@@ -483,6 +486,8 @@ impl Config {
     /// A project nobody trusted yet (`nexo config trust`) cannot run commands or send keys and files
     /// elsewhere: what could (see [`Config::strip_untrusted`]) is left out, and `notices` says so.
     pub fn load(cwd: &Path) -> Result<Config, ConfigError> {
+        // first, so a policy that cannot be read stops everything before any other file is trusted
+        let managed = crate::managed::load()?.map(std::sync::Arc::new);
         let project = paths::project_config_file(cwd);
         let mut cfg =
             Config::load_files(&paths::user_config_file(), project.as_deref(), &paths::trusted_projects_file())?;
@@ -501,6 +506,9 @@ impl Config {
         crate::plugins::apply(&mut cfg, &paths::config_dir());
         cfg.apply_env();
         cfg.name_auth_entries();
+        // last: the managed policy wins over the files, the project and the environment
+        cfg.managed = managed;
+        cfg.enforce_managed();
         Ok(cfg)
     }
 
@@ -528,6 +536,9 @@ impl Config {
         if let Some(f) = project {
             if let Some((mut part, said)) = read(f)? {
                 let root = project_root(f);
+                for h in &mut part.hooks {
+                    h.source = "project .nexo/config.toml".into();
+                }
                 if !is_trusted(&root, trust_file) {
                     let left_out = part.strip_untrusted(&cfg);
                     if !left_out.is_empty() {
@@ -873,6 +884,8 @@ pub enum ConfigError {
     Io(PathBuf, String),
     #[error("cannot parse {0}: {1}")]
     Parse(PathBuf, String),
+    #[error("{0}")]
+    Managed(#[from] crate::managed::ManagedError),
 }
 
 #[cfg(test)]

@@ -104,6 +104,8 @@ pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow
                 crate::account::KEY_IN_ENV
             )
         })?;
+    // the managed policy has the last word on which provider and model run
+    cfg.check_model(&provider, &model).map_err(|e| anyhow::anyhow!(e))?;
     let pc = &c.providers[&provider];
     if !pc.ready(&provider) {
         anyhow::bail!(
@@ -158,6 +160,13 @@ pub async fn agent_setup(
     for (name, server) in &cfg.mcp {
         if server.enabled == Some(false) {
             continue;
+        }
+        // a server the managed policy does not list is never started, whatever file named it
+        if let Some(p) = &cfg.managed {
+            if let Err(e) = p.check_mcp(name, server) {
+                eprintln!("nexo: {e}");
+                continue;
+            }
         }
         match nexo_tools::mcp::McpClient::connect(name, server).await {
             Ok(c) => {

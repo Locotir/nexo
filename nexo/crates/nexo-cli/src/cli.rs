@@ -510,16 +510,24 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         crate::account::adopt(&mut config, &p);
     }
     config.name_auth_entries();
+    // the presets and the providers just adopted come under the managed policy too
+    config.enforce_managed();
+    // what the policy forbids is refused when the person asks for it on the command line, not changed quietly
     if let Some(m) = &args.permission_mode {
         config.permissions.mode =
             PermissionMode::parse(m).ok_or_else(|| anyhow::anyhow!("unknown permission mode {m:?}"))?;
+        config.check_mode(config.permissions.mode).map_err(|e| anyhow::anyhow!(e))?;
     }
     if args.yolo {
+        config.check_mode(PermissionMode::Auto).map_err(|e| anyhow::anyhow!(e))?;
         config.permissions.mode = PermissionMode::Auto;
     }
     if let Some(m) = &args.sandbox {
         config.permissions.sandbox =
             nexo_core::sandbox::SandboxMode::parse(m).ok_or_else(|| anyhow::anyhow!("unknown sandbox mode {m:?}"))?;
+        if let Some(p) = &config.managed {
+            p.check_sandbox(config.permissions.sandbox).map_err(|e| anyhow::anyhow!(e))?;
+        }
     }
     if let Some(c) = &args.context {
         config.context.policy = c.clone();

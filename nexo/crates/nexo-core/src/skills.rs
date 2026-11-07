@@ -209,7 +209,15 @@ pub fn scan_root(root: &Path, source: &str, plugin: Option<&str>) -> Vec<Skill> 
 /// [`discover_in`] for this machine: the real home and nexo's config folder.
 pub fn discover(cwd: &Path, user: bool) -> Vec<Skill> {
     let home = dirs::home_dir().unwrap_or_default();
-    discover_in(cwd, &home, &crate::paths::config_dir(), user)
+    // a managed policy can switch off the person's skills and the project's
+    let policy = crate::managed::current();
+    let allowed = |scope: &str| policy.as_ref().is_none_or(|p| p.extension_allowed(scope, "skills"));
+    let mut found = discover_in(cwd, &home, &crate::paths::config_dir(), user && allowed("user"));
+    if !allowed("project") {
+        // the person's folders are listed as `~/...`, the project's as plain folder names
+        found.retain(|s| s.source.starts_with('~'));
+    }
+    found
 }
 
 /// The skill called `name` (any case; a leading `/` is ignored).

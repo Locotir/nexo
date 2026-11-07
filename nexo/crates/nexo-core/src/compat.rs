@@ -297,7 +297,13 @@ pub fn commands(
     reserved: &dyn Fn(&str) -> bool,
 ) -> Vec<CommandFile> {
     let mut out: Vec<CommandFile> = Vec::new();
+    let policy = crate::managed::current();
     for s in sources(cwd, config_dir, trust_file, home, "commands", Some("commands"), Some("prompts")) {
+        // a managed policy can switch off the person's commands and the project's (origin: `user ...`, `project ...`)
+        let scope = s.origin.split(' ').next().unwrap_or("");
+        if policy.as_ref().is_some_and(|p| !p.extension_allowed(scope, "commands")) {
+            continue;
+        }
         let mut files = Vec::new();
         collect_md(&s.dir, &s.dir, 0, &mut files);
         files.sort();

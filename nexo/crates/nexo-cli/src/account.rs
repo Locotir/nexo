@@ -300,6 +300,13 @@ pub async fn doctor(cwd: &std::path::Path, cfg: &Config, offline: bool) -> anyho
     for n in &cfg.notices {
         println!("{} {n}", mark(false));
     }
+    // everything the administrator forces, each with its source
+    if let Some(p) = &cfg.managed {
+        println!("{} managed policy   {}", mark(true), p.file.display());
+        for (k, v) in p.summary() {
+            println!("     {k} = {v}  (source: {})", nexo_core::managed::SOURCE);
+        }
+    }
 
     // a server that needs no key is "ready" only on paper: whether it runs is not checked here
     let ready: Vec<&String> =

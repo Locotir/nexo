@@ -277,7 +277,9 @@ const STOP_HOOK_CAP: u32 = 3;
 
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
-    let AgentSetup { config, cwd, provider, model, mut tools, client, resume, gate, mail } = setup;
+    let AgentSetup { mut config, cwd, provider, model, mut tools, client, resume, gate, mail } = setup;
+    // whoever built the setup (the interface, a script, ACP), the managed policy is applied once more here
+    config.enforce_managed();
     let headless = gate.is_some();
     let chan_gate = ChannelGate::new(events.clone());
     let asker = crate::ask::ChannelAsker::new(events.clone());
@@ -2825,6 +2827,12 @@ impl crate::subagent::Host for StateHost {
 
 /// Changes the permission mode; entering or leaving plan mode changes the system prompt.
 fn set_mode(st: &mut State, mode: PermissionMode) {
+    if let Err(e) = st.config.check_mode(mode) {
+        notice(&st.events, Level::Error, e);
+        // the interface may already show the new mode: say what it is
+        emit(&st.events, AgentEvent::PermissionModeChanged { mode: st.perm.mode });
+        return;
+    }
     let was = st.perm.mode;
     st.perm.mode = mode;
     st.plan.lock().unwrap_or_else(|e| e.into_inner()).set(mode);
@@ -2849,6 +2857,12 @@ fn sandbox_line(st: &State) -> (String, bool) {
 fn set_sandbox(st: &mut State, mode: Option<nexo_core::sandbox::SandboxMode>) {
     use nexo_core::sandbox::SandboxMode;
     let mode = mode.unwrap_or(if st.sandbox.mode.is_on() { SandboxMode::Off } else { SandboxMode::WorkspaceWrite });
+    if let Some(p) = &st.config.managed {
+        if let Err(e) = p.check_sandbox(mode) {
+            notice(&st.events, Level::Error, e);
+            return;
+        }
+    }
     st.sandbox.mode = mode;
     let (line, ok) = sandbox_line(st);
     let level = if ok { Level::Info } else { Level::Warn };
@@ -3322,6 +3336,10 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
 async fn set_model(state: &Shared, provider: Option<String>, model: String) {
     let mut st = state.lock().await;
     let provider = provider.unwrap_or_else(|| st.target.provider());
+    if let Err(e) = st.config.check_model(&provider, &model) {
+        notice(&st.events, Level::Error, e);
+        return;
+    }
     match st.config.providers.get(&provider).cloned() {
         None => notice(&st.events, Level::Error, format!("unknown provider `{provider}` (see `nexo providers`)")),
         Some(cfg) => {
@@ -3415,6 +3433,9 @@ fn status_text(st: &State) -> String {
         lines.push(format!("worktree     {name} on branch {branch} (nexo worktree list)"));
     }
     lines.push(format!("tools        {} (/tools lists them)", st.tools.specs().len()));
+    if let Some(p) = &st.config.managed {
+        lines.extend(p.lines());
+    }
     lines.extend(compat_lines(st));
     lines.join("\n")
 }
@@ -3540,6 +3561,13 @@ async fn set_effort(state: &Shared, effort: Option<String>) {
 
 /// Saves what the setup found for a model and switches to it.
 async fn save_model(state: &Shared, name: String, cfg: ProviderConfig, model: String, key: Option<String>) {
+    {
+        let st = state.lock().await;
+        if let Err(e) = st.config.check_model(&name, &model) {
+            notice(&st.events, Level::Error, e);
+            return;
+        }
+    }
     let mut cfg = cfg;
     let mut kept = None;
     {
