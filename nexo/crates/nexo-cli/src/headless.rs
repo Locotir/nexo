@@ -590,7 +590,8 @@ pub async fn run(
     }
     let _ = handle.commands.send(AgentCommand::Shutdown);
     // the agent can stop before any turn (a session that cannot be resumed): that is a failure
-    let failed = match tokio::time::timeout(Duration::from_secs(2), agent).await {
+    // the wait ends as soon as the agent stops; a slow machine still gets to let its session lock go
+    let failed = match tokio::time::timeout(Duration::from_secs(10), agent).await {
         Ok(Ok(Err(e))) => Some(format!("{e:#}")),
         Ok(Err(e)) => Some(format!("the agent stopped: {e}")),
         _ if !sent_any => Some("the agent stopped before the request".to_string()),
