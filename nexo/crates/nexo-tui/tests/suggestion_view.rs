@@ -86,3 +86,21 @@ fn a_suggestion_takes_the_placeholder_row_and_the_placeholder_comes_back_without
     a.suggestion = None;
     assert!(screen(&mut a).contains("ask anything"));
 }
+
+#[test]
+fn tab_and_right_take_the_ghost_text_into_the_draft_on_screen() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    for code in [KeyCode::Tab, KeyCode::Right] {
+        let mut a = app();
+        a.handle_agent(AgentEvent::Suggestion { text: "run the tests".into() });
+        let (s, colour) = draw(&mut a);
+        assert!(s.contains("run the tests"), "{s}");
+        let ghost = colour("run the tests");
+        nexo_tui::event::key(&mut a, KeyEvent::new(code, KeyModifiers::NONE));
+        assert_eq!(a.input.text(), "run the tests");
+        let (s, colour) = draw(&mut a);
+        assert_eq!(s.matches("run the tests").count(), 1, "the draft, not the ghost as well: {s}");
+        assert_ne!(colour("run the tests"), ghost, "now typed text, no longer dim");
+        assert!(!s.contains("ask anything"), "{s}");
+    }
+}

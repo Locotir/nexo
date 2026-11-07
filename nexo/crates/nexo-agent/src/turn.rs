@@ -3894,6 +3894,10 @@ fn spawn_suggest(state: &Shared) {
     tokio::spawn(async move {
         let (req, cfg, client, retries, turns, events) = {
             let st = state.lock().await;
+            // off in the configuration (the merged one, the managed policy included): nothing is asked, whoever asks
+            if !st.config.ui.suggest {
+                return;
+            }
             let Some(last) = st.last_request.as_ref() else { return };
             // the conversation ends on a reply that is words only, from the model that got that request
             let Some(reply) =

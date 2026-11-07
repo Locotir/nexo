@@ -3814,6 +3814,44 @@ async fn a_suggestion_repeats_the_last_request_with_one_more_message() {
 }
 
 #[tokio::test]
+async fn a_suggestion_leaves_the_history_alone_runs_nothing_and_is_not_asked_when_off() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(text("done")),
+        // the guess calls a tool: it is dropped, the tool never runs
+        Reply::Events(call("c2", "read", json!({"path": "b.rs"}))),
+        Reply::Events(text("still done")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Suggest);
+    let evs = r.until(|e| matches!(e, AgentEvent::Usage { .. })).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ToolStart { .. } | AgentEvent::PermissionAsk { .. })));
+    // the next real request carries neither the ask nor the guess
+    r.send(AgentCommand::Submit { text: "go on".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let sent = serde_json::to_string(&reqs.last().unwrap().messages).unwrap();
+    assert!(!sent.contains("Suggest the next message"), "{sent}");
+    r.stop().await;
+
+    let client = Scripted::new(vec![Reply::Events(text("done")), Reply::Events(text("unasked"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.ui.suggest = false;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Suggest);
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Suggestion { .. })));
+    assert_eq!(client.requests().len(), 2, "no side request when [ui] suggest is off");
+    r.stop().await;
+}
+#[tokio::test]
 async fn a_failure_that_comes_back_is_tagged_and_the_loop_guard_still_stops_the_loop() {
     // the guards weigh the outputs as they came: the line, new each time, must not hide the loop from them
     let d = tempfile::tempdir().unwrap();

@@ -129,6 +129,8 @@ A run of two or more tool calls (thinking in between counts) is one line while i
 
 While you type, the rest of a word seen anywhere in the session (your messages, replies, tool arguments and output) shows in grey after the cursor: words in any language, names, paths (and each part of them), flags, URLs, hashes. `→` at the end of the word takes it; with a block picked or the command list open the arrows keep their meaning. Secrets (values after key/token/password, `sk-` style keys) are never offered. `[ui] complete_words = false` turns it off.
 
+When a turn ends, a dim guess at your next message shows in the empty input; `Tab` or `→` takes it whole, typing hides it. It costs one short cached side request that never enters the history, runs no tools and fires no hooks, and is never made in headless or ACP runs. `[ui] suggest = false` turns it off ([docs/SUGGESTIONS.md](docs/SUGGESTIONS.md)).
+
 **Spend limits.** `[agent] max_cost = 1.0` stops a session at a dollar; `max_cost_day = 5.0` stops every
 session together for the day (what was spent each day is in `~/.nexo/spend.json`). Past 80% nexo
 warns once; at the limit the request stops before the model is called, so a limit is passed by one call at
