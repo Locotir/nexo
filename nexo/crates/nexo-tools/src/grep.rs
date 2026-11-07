@@ -19,6 +19,8 @@ pub const TIME_CAP: Duration = Duration::from_secs(20);
 
 pub const DEFAULT_MAX_RESULTS: u64 = 200;
 const LINE_CHARS: usize = 300;
+/// A multi-line match shows at most this many of its lines.
+const MAX_SPAN_LINES: usize = 10;
 
 pub struct Grep;
 
@@ -35,8 +37,8 @@ impl Tool for Grep {
                           directory or in one file; gitignored and binary files are skipped. Returns \
                           `path:line: text` per match (with `context` lines around each when asked), or \
                           only the matching files with `files_only`. At most `max_results` matches \
-                          (default 200). Use it to find definitions, usages and error strings before \
-                          reading."
+                          (default 200). `multiline` lets a pattern span lines. Use it to find \
+                          definitions, usages and error strings before reading."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -47,7 +49,8 @@ impl Tool for Grep {
                     "case_insensitive": {"type": "boolean", "description": "Ignore case. Default false."},
                     "context": {"type": "integer", "minimum": 0, "description": "Lines shown before and after each match. Default 0."},
                     "files_only": {"type": "boolean", "description": "List the matching files instead of the lines."},
-                    "max_results": {"type": "integer", "minimum": 1, "description": "Matches returned at most. Default 200."}
+                    "max_results": {"type": "integer", "minimum": 1, "description": "Matches returned at most. Default 200."},
+                    "multiline": {"type": "boolean", "description": "Match across lines (`\\n` in the pattern, `.` also matches a newline). Default false: line by line."}
                 },
                 "required": ["pattern"]
             }),
@@ -71,8 +74,11 @@ impl Tool for Grep {
             return ToolOutput::error("grep: `pattern` is required");
         };
         // a bounded compiled size: a pattern like `(a{1000}){1000}` is refused, not built
+        let multiline = bool_arg(&args, "multiline");
         let re = match RegexBuilder::new(pattern)
             .case_insensitive(bool_arg(&args, "case_insensitive"))
+            .multi_line(multiline)
+            .dot_matches_new_line(multiline)
             .size_limit(2 << 20)
             .build()
         {
@@ -177,10 +183,27 @@ impl Tool for Grep {
                 let lines: Vec<&str> = text.lines().collect();
                 let shown = display_path(&cwd, &f);
                 let mut file_hit = false;
-                for (i, line) in lines.iter().enumerate() {
-                    if !re.is_match(line) {
-                        continue;
+                // the first and last line (0-based) of each match
+                let mut spans: Vec<(usize, usize)> = Vec::new();
+                if multiline {
+                    let nl: Vec<usize> = text.match_indices('\n').map(|(i, _)| i).collect();
+                    let line_of = |off: usize| nl.partition_point(|&p| p < off);
+                    for m in re.find_iter(&text) {
+                        let a = line_of(m.start());
+                        let b = line_of(if m.end() > m.start() { m.end() - 1 } else { m.start() });
+                        if spans.last().is_some_and(|&(_, e)| a <= e) {
+                            continue; // a second match on lines already shown
+                        }
+                        spans.push((a, b.max(a)));
                     }
+                } else {
+                    for (i, line) in lines.iter().enumerate() {
+                        if re.is_match(line) {
+                            spans.push((i, i));
+                        }
+                    }
+                }
+                for (a, b) in spans {
                     total += 1;
                     if files_only {
                         if !file_hit {
@@ -196,14 +219,19 @@ impl Tool for Grep {
                         continue;
                     }
                     if context > 0 {
-                        let from = i.saturating_sub(context);
-                        for (j, l) in lines.iter().enumerate().take(i).skip(from) {
+                        for (j, l) in lines.iter().enumerate().take(a).skip(a.saturating_sub(context)) {
                             items.push(format!("{shown}-{}- {}", j + 1, cut_line(l, LINE_CHARS)));
                         }
                     }
-                    items.push(format!("{shown}:{}: {}", i + 1, cut_line(line, LINE_CHARS)));
+                    let last = b.min(a + MAX_SPAN_LINES - 1);
+                    for (j, l) in lines.iter().enumerate().take(last + 1).skip(a) {
+                        items.push(format!("{shown}:{}: {}", j + 1, cut_line(l, LINE_CHARS)));
+                    }
+                    if b > last {
+                        items.push(format!("{shown}:… {} more lines in this match", b - last));
+                    }
                     if context > 0 {
-                        for (j, l) in lines.iter().enumerate().skip(i + 1).take(context) {
+                        for (j, l) in lines.iter().enumerate().skip(b + 1).take(context) {
                             items.push(format!("{shown}-{}- {}", j + 1, cut_line(l, LINE_CHARS)));
                         }
                         items.push("--".into());
@@ -217,7 +245,11 @@ impl Tool for Grep {
             return ToolOutput::error("grep: the search failed unexpectedly");
         };
         let mut content = if total == 0 {
-            format!("grep: no match for `{pattern}` in {shown_root}")
+            let mut s = format!("grep: no match for `{pattern}` in {shown_root}");
+            if !multiline && (pattern.contains('\n') || pattern.contains("\\n")) {
+                s.push_str(". Patterns are matched line by line; set `multiline: true` to match across lines.");
+            }
+            s
         } else if !files_only && total > max {
             format!(
                 "{}\n… {} more {} ({total} in all); narrow the pattern or the path",
@@ -326,6 +358,23 @@ mod tests {
         assert!(out.content.contains("[1 file over 8 MiB not searched"), "{}", out.content);
         assert!(Grep.run(json!({"pattern": "a", "path": "nope"}), &c).await.is_error);
         assert_eq!(Grep.summary(&json!({"pattern": "fn", "path": "src"})), "grep /fn/ in src");
+    }
+
+    #[tokio::test]
+    async fn multiline_matches_across_lines_and_a_failed_newline_pattern_says_why() {
+        let (_d, c) = fixture();
+        for pat in ["alpha\\(\\) \\{\\}\\nlet", "alpha\\(\\) \\{\\}\nlet"] {
+            let out = Grep.run(json!({"pattern": pat}), &c).await;
+            assert!(out.content.contains("no match") && out.content.contains("multiline: true"), "{}", out.content);
+        }
+        let out = Grep.run(json!({"pattern": "zzz"}), &c).await;
+        assert_eq!(out.content, "grep: no match for `zzz` in .");
+        let out = Grep.run(json!({"pattern": "alpha\\(\\) \\{\\}\\nlet x", "multiline": true}), &c).await;
+        assert_eq!(out.content, "src/a.rs:1: fn alpha() {}\nsrc/a.rs:2: let x = 1;");
+        let out = Grep.run(json!({"pattern": "fn alpha.*beta", "multiline": true, "path": "src"}), &c).await;
+        assert_eq!(out.content, "src/a.rs:1: fn alpha() {}\nsrc/a.rs:2: let x = 1;\nsrc/a.rs:3: fn beta() {}");
+        let out = Grep.run(json!({"pattern": "^let", "multiline": true, "files_only": true}), &c).await;
+        assert_eq!(out.content, "1 match in 1 file\nsrc/a.rs");
     }
 
     #[tokio::test]

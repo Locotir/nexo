@@ -106,6 +106,7 @@ impl Tool for Bash {
             output.push(l);
         })
         .await;
+        let missing = if matches!(end, End::Exited(0)) { output.not_found() } else { Vec::new() };
         let outcome = Outcome { output: output.text(), end };
         let mut content = if outcome.output.trim().is_empty() {
             "(no output)".to_string()
@@ -135,6 +136,10 @@ impl Tool for Bash {
                 true
             }
         };
+        if !missing.is_empty() {
+            // the status is the last command's: say that an earlier one was not found
+            content.push_str(&format!("\n[note: a command in this script was not found: {}]", missing.join(", ")));
+        }
         if is_error {
             if let Some(note) = crate::sandbox::note_for(&sandbox, &outcome.output) {
                 content.push_str("\n\n");
@@ -203,6 +208,23 @@ impl Capture {
         }
     }
 
+    /// Names of commands the shell reported as not found, in the lines kept (head and tail,
+    /// never the omitted middle): at most 3, each once.
+    fn not_found(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for line in self.head.lines().chain(self.tail.iter().map(|l| l.as_str())) {
+            if let Some(n) = not_found_name(line) {
+                if !names.contains(&n) {
+                    names.push(n);
+                    if names.len() == 3 {
+                        break;
+                    }
+                }
+            }
+        }
+        names
+    }
+
     fn text(mut self) -> String {
         if self.omitted > 0 {
             self.head.push_str(&format!("\n… [{} characters omitted] …\n\n", self.omitted));
@@ -213,6 +235,28 @@ impl Capture {
         }
         self.head
     }
+}
+
+/// The command a shell says it did not find on `line`, if it does: `sh: 1: X: not found`,
+/// `bash: [line N: ]X: command not found`, `zsh: command not found: X`, `X: command not found`
+/// and the Windows `'X' is not recognized as an internal or external command`.
+fn not_found_name(line: &str) -> Option<String> {
+    let line = line.trim_end();
+    let name = if let Some(rest) = line.strip_prefix('\'') {
+        rest.split_once("' is not recognized as an internal or external command")?.0
+    } else if let Some((_, name)) = line.rsplit_once("command not found: ") {
+        name
+    } else if let Some(before) = line.strip_suffix(": command not found") {
+        before.rsplit(": ").next()?
+    } else {
+        // dash and ash: `sh: 1: X: not found`; other tools' "not found" are not the shell's
+        let before = line.strip_suffix(": not found")?;
+        if !before.split(": ").next()?.ends_with("sh") {
+            return None;
+        }
+        before.rsplit(": ").next()?
+    };
+    (!name.is_empty() && !name.contains(char::is_whitespace)).then(|| name.to_string())
 }
 
 /// Starts `command` as a job of the session and returns its number at once.
@@ -580,6 +624,48 @@ mod tests {
         .0;
         assert!(t.elapsed() < Duration::from_secs(5));
         assert!(out.content.contains("[cancelled]"), "{}", out.content);
+    }
+
+    #[test]
+    fn reads_the_shells_not_found_forms() {
+        for (line, want) in [
+            ("sh: 1: python3: not found", Some("python3")),
+            ("/bin/sh: 1: foo: not found", Some("foo")),
+            ("bash: foo: command not found", Some("foo")),
+            ("bash: line 3: foo: command not found", Some("foo")),
+            ("zsh: command not found: foo", Some("foo")),
+            ("foo: command not found", Some("foo")),
+            ("'foo' is not recognized as an internal or external command,", Some("foo")),
+            ("Error: file: not found", None),
+            ("all fine", None),
+        ] {
+            assert_eq!(not_found_name(line).as_deref(), want, "{line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_not_found_in_a_script_that_exits_0_is_noted() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        if nexo_core::shell::shell().kind == "powershell" {
+            eprintln!("PowerShell words a missing command its own way: skipped");
+            return;
+        }
+        let (missing, ok) = ("false_cmd_xyz; true", "echo fine; true");
+        let out = Bash.run(json!({"command": missing}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.ends_with("\n[note: a command in this script was not found: false_cmd_xyz]"),
+            "{}",
+            out.content
+        );
+        let out = Bash.run(json!({"command": ok}), &c).await;
+        assert!(!out.is_error && !out.content.contains("[note:"), "{}", out.content);
+        // a non-zero exit shows the error itself: no note
+        let out = Bash.run(json!({"command": "false_cmd_xyz"}), &c).await;
+        assert!(out.is_error && !out.content.contains("[note:"), "{}", out.content);
+        let out = Bash.run(json!({"command": "a1x; b2x; a1x; c3x; d4x; true"}), &c).await;
+        assert!(out.content.ends_with("a1x, b2x, c3x]"), "{}", out.content);
     }
 
     #[tokio::test]
