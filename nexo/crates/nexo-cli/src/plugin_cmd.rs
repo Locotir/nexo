@@ -1022,7 +1022,7 @@ mod tests {
         // by name@marketplace, and by bare name
         let a = resolve(cfg.path(), cwd.path(), "acme@team").unwrap();
         assert_eq!(a.marketplace.as_deref(), Some("team"));
-        assert!(a.loc.ends_with("plugins/acme"), "{a:?}");
+        assert!(a.loc.replace('\\', "/").ends_with("plugins/acme"), "{a:?}");
         assert_eq!(resolve(cfg.path(), cwd.path(), "acme").unwrap().loc, a.loc);
         let r = resolve(cfg.path(), cwd.path(), "remote-one@team").unwrap();
         assert_eq!((r.loc.starts_with("file://"), r.git_ref.as_deref()), (true, Some("main")));
