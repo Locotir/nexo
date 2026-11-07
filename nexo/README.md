@@ -1,4 +1,3 @@
-| `nexo usage` | what is left of each subscription plan (ChatGPT windows, Copilot premium requests) and when it starts over; the status bar and `/usage` show it too ([docs/PLAN-USAGE.md](docs/PLAN-USAGE.md)) |
 # nexo
 
 A terminal coding harness for any model provider: a full-screen interface
@@ -527,6 +526,7 @@ built-in directory of 200+ providers works with only the key set.
 | `nexo auth login deepseek --key` | keep a key in nexo's credential store: asked for without showing it (`--key -` reads stdin) |
 | `nexo use deepseek [model]` | make it the default |
 | `nexo doctor` | check the setup; every `FIX` line says what to run |
+| `nexo usage` | what is left of each subscription plan (ChatGPT windows, Copilot premium requests) and when it starts over; the status bar and `/usage` show it too ([docs/PLAN-USAGE.md](docs/PLAN-USAGE.md)) |
 | `nexo providers [--all] [--json]` | the providers and where each key comes from |
 | `nexo models deepseek [--json]` | models with window, largest reply and prices |
 | `nexo guide` | the full setup guide, written so an assistant can follow it |

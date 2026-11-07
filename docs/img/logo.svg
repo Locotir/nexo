@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-24 -24 288 128" width="288" height="128" role="img" aria-label="nexo">
+  <g fill="none" stroke="#8b949e" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M0 0 H56 Q80 0 80 24 Q80 40 100 40 H120"/>
+    <path d="M0 80 H56 Q80 80 80 56 Q80 40 100 40"/>
+    <path d="M240 0 H184 Q160 0 160 24 Q160 40 140 40 H120"/>
+    <path d="M240 80 H184 Q160 80 160 56 Q160 40 140 40"/>
+  </g>
+  <g fill="#1baf7a">
+    <circle cx="0" cy="0" r="11"/><circle cx="0" cy="80" r="11"/>
+    <circle cx="240" cy="0" r="11"/><circle cx="240" cy="80" r="11"/>
+    <circle cx="120" cy="40" r="15"/>
+  </g>
+</svg>

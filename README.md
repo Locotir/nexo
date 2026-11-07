@@ -1,10 +1,10 @@
 <div align="center">
 
+<img src="docs/img/logo.svg" width="220" alt="nexo">
+
 # nexo
 
-### The coding agent that doesn't run out of context.
-
-**Every run solved. The lowest cost of the four.** Two heavy sessions, five runs, against compaction and the whole history.
+**The coding agent that doesn't run out of context.**
 
 [![CI](https://github.com/Locotir/nexo/actions/workflows/ci.yml/badge.svg)](https://github.com/Locotir/nexo/actions/workflows/ci.yml)
 [![Rust 1.89+](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -13,15 +13,23 @@
 [![Providers](https://img.shields.io/badge/providers-19%20built--in%20%2B%20200%2B-1baf7a)](#any-provider)
 [![PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
+</div>
+
+nexo is a terminal coding agent written in Rust. It runs as a full-screen TUI that reads your codebase, edits
+files, runs shell commands, searches the web and keeps long tasks on track: interactively, headless for scripts
+and CI, or inside editors through the Agent Client Protocol (ACP). It works with any model provider, and its
+context curator keeps long sessions small without summaries: the whole history stays on disk, and the model is
+sent only what the next step needs.
+
+[Install](#install) · [Why](#why) · [The numbers](#the-numbers) · [How the curator works](#how-the-curator-works) · [Any provider](#any-provider) · [Full documentation](nexo/README.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
+
 ![Five runs per arm: the curator solves 5 of 5 at $0.207, compaction at 200k 4 of 5 at $0.239, the whole history 4 of 5 at $0.300, compaction at 100k 2 of 5 at $0.337](docs/img/scoreboard.svg)
 
 <sub>`marathon-heavy` and `marathon-noisy`, deepseek-flash, temperature 0. Every figure and its limits: [`docs/results.md`](docs/results.md).</sub>
 
 ```sh
-cargo install --locked --git https://github.com/Locotir/nexo nexo-cli && nexo
+curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
 ```
-
-</div>
 
 ## Why
 
