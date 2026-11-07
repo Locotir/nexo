@@ -239,10 +239,14 @@ impl Capture {
 
 /// The command a shell says it did not find on `line`, if it does: `sh: 1: X: not found`,
 /// `bash: [line N: ]X: command not found`, `zsh: command not found: X`, `X: command not found`
-/// and the Windows `'X' is not recognized as an internal or external command`.
+/// the Windows `'X' is not recognized as an internal or external command`, and PowerShell's
+/// `The term 'X' is not recognized as the name of a cmdlet` (5.1) or `as a name of a cmdlet` (7).
 fn not_found_name(line: &str) -> Option<String> {
     let line = line.trim_end();
-    let name = if let Some(rest) = line.strip_prefix('\'') {
+    let name = if let Some((_, rest)) = line.split_once("The term '") {
+        // the line may wrap after "recognized as" in a narrow host, so the rest is not required
+        rest.split_once("' is not recognized as")?.0
+    } else if let Some(rest) = line.strip_prefix('\'') {
         rest.split_once("' is not recognized as an internal or external command")?.0
     } else if let Some((_, name)) = line.rsplit_once("command not found: ") {
         name
@@ -636,6 +640,8 @@ mod tests {
             ("zsh: command not found: foo", Some("foo")),
             ("foo: command not found", Some("foo")),
             ("'foo' is not recognized as an internal or external command,", Some("foo")),
+            ("foo : The term 'foo' is not recognized as the name of a cmdlet, function, script file,", Some("foo")),
+            ("The term 'foo' is not recognized as a name of a cmdlet, function,", Some("foo")),
             ("Error: file: not found", None),
             ("all fine", None),
         ] {
