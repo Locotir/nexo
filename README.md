@@ -23,6 +23,8 @@ sent only what the next step needs.
 
 [Install](#install) · [Why](#why) · [The numbers](#the-numbers) · [How the curator works](#how-the-curator-works) · [Any provider](#any-provider) · [Full documentation](nexo/README.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
+<p align="center"><img src="docs/demo.gif" width="880" alt="nexo in the terminal: the task, a to-do list in the side panel, the edit as a diff, the tests run again, and the status bar with model, mode and cost"></p>
+
 ![Five runs per arm: the curator solves 5 of 5 at $0.207, compaction at 200k 4 of 5 at $0.239, the whole history 4 of 5 at $0.300, compaction at 100k 2 of 5 at $0.337](docs/img/scoreboard.svg)
 
 <sub>`marathon-heavy` and `marathon-noisy`, deepseek-flash, temperature 0. Every figure and its limits: [`docs/results.md`](docs/results.md).</sub>
