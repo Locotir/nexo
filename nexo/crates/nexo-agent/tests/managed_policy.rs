@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nexo_agent::{AgentSetup, ModelClient};
 use nexo_core::agent::{channels, AgentCommand, AgentEvent, AgentHandle};
-use nexo_core::config::{Config, HookConfig, ProviderConfig};
+use nexo_core::config::{Config, ProviderConfig};
 use nexo_core::error::ProviderError;
 use nexo_core::managed::ManagedPolicy;
 use nexo_core::permission::PermissionMode;
@@ -239,7 +239,7 @@ async fn user_hooks_are_off_when_disallowed_and_forced_hooks_run() {
     m.models = vec!["m1".into()];
     cfg.providers.insert("mock".into(), m);
     cfg.context.policy = "plain".into();
-    cfg.hooks.push(HookConfig {
+    cfg.hooks.push(nexo_core::config::HookConfig {
         event: "user_prompt_submit".into(),
         command: "touch user_ran".into(),
         ..Default::default()
