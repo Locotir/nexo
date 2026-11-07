@@ -229,10 +229,10 @@ fn the_audit_log_is_forced_on_at_the_pinned_path() {
     let d = tempfile::tempdir().unwrap();
     let pinned = d.path().join("pinned-audit.jsonl");
     let elsewhere = d.path().join("mine.jsonl");
-    let user = format!("{MOCK}[audit]\nenabled = false\npath = \"{}\"\n", elsewhere.display());
+    let user = format!("{MOCK}[audit]\nenabled = false\npath = '{}'\n", elsewhere.display());
     nexo(d.path(), &user, None, &["-p", "hi"]);
     assert!(!pinned.exists() && !elsewhere.exists(), "control: the log is off");
-    let managed = format!("[audit]\nenabled = true\npath = \"{}\"\n", pinned.display());
+    let managed = format!("[audit]\nenabled = true\npath = '{}'\n", pinned.display());
     let o = nexo(d.path(), &user, Some(&managed), &["-p", "hi"]);
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     let log = std::fs::read_to_string(&pinned).expect("the pinned log is written");

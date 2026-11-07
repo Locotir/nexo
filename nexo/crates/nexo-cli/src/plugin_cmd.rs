@@ -228,7 +228,7 @@ fn locate(cwd: &Path, text: &str) -> anyhow::Result<String> {
         return Ok(text.to_string());
     }
     let p = cwd.join(text);
-    let p = p.canonicalize().with_context(|| format!("{} is not a folder or a git URL", p.display()))?;
+    let p = nexo_core::paths::canonical(&p).with_context(|| format!("{} is not a folder or a git URL", p.display()))?;
     Ok(p.display().to_string())
 }
 
@@ -316,8 +316,7 @@ fn market_source(root: &Path, entry: &Value) -> anyhow::Result<Where> {
                 bail!("the marketplace entry points outside its folder: {s}");
             }
             (
-                root.join(s)
-                    .canonicalize()
+                nexo_core::paths::canonical(&root.join(s))
                     .with_context(|| format!("{s} is not in the marketplace"))?
                     .display()
                     .to_string(),
@@ -1008,9 +1007,9 @@ mod tests {
             &format!(
                 r#"{{"name":"team","owner":{{"name":"Team"}},"plugins":[
                 {{"name":"acme","source":"./plugins/acme","description":"in the marketplace"}},
-                {{"name":"remote-one","source":{{"source":"url","url":"file://{}","ref":"main"}}}},
+                {{"name":"remote-one","source":{{"source":"url","url":"file:///{}","ref":"main"}}}},
                 {{"name":"evil","source":"./../x"}}]}}"#,
-                bare.display()
+                bare.display().to_string().replace('\\', "/").trim_start_matches('/')
             ),
         );
         let name = market_add(cfg.path(), cwd.path(), mk.path().to_str().unwrap()).unwrap();
