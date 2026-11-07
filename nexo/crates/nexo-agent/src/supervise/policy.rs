@@ -586,6 +586,49 @@ fn program(words: &[String]) -> (&str, &[String]) {
     }
 }
 
+/// Why a command would wipe the machine beyond doubt: a recursive delete of the root or home folder,
+/// a file system made or raw bytes written over a disk, a fork bomb. No mode, rule or approval runs
+/// these; everything less certain is left to the person's own rules.
+pub fn catastrophic(cmd: &str) -> Option<&'static str> {
+    let packed: String = cmd.chars().filter(|c| !c.is_whitespace()).collect();
+    if packed.contains(":(){:|:&};:") {
+        return Some("a fork bomb");
+    }
+    let disk =
+        |a: &str| a.starts_with("/dev/") && !matches!(a, "/dev/null" | "/dev/zero" | "/dev/stdout" | "/dev/stderr");
+    for seg in segments(cmd) {
+        let (prog, args) = program(&seg.words);
+        let flags = || args.iter().filter(|a| a.starts_with('-') && !a.starts_with("--"));
+        let operands = || args.iter().filter(|a| !a.starts_with('-'));
+        match prog {
+            "rm" => {
+                let recursive = args.iter().any(|a| a == "--recursive") || flags().any(|f| f.contains(['r', 'R']));
+                let whole = |a: &String| {
+                    matches!(
+                        a.trim_end_matches('/'),
+                        "" | "/*" | "~" | "$HOME" | "${HOME}" | "~/*" | "$HOME/*" | "/home"
+                    )
+                };
+                if recursive && operands().any(whole) {
+                    return Some("a recursive delete of the root or home folder");
+                }
+            }
+            p if p.starts_with("mkfs") && operands().any(|a| disk(a)) => return Some("a new file system over a disk"),
+            "dd" if args.iter().any(|a| a.strip_prefix("of=").is_some_and(disk)) => {
+                return Some("raw bytes written over a disk");
+            }
+            "sh" | "bash" | "zsh" | "dash" | "ksh" => {
+                let inner = args.iter().position(|a| a == "-c").and_then(|at| args.get(at + 1));
+                if let Some(why) = inner.and_then(|c| catastrophic(c)) {
+                    return Some(why);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Why a command is never approved, when it is one of the fixed dangerous calls.
 fn dangerous(cmd: &str, cwd: &Path, home: Option<&Path>) -> Option<&'static str> {
     let segs = segments(cmd);

@@ -41,6 +41,12 @@ impl Policy {
     }
 
     pub fn decide(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Decision {
+        // what would wipe the machine beyond doubt runs in no mode and by no rule
+        if kind == ToolKind::Exec {
+            if let Some(why) = target_of(kind, args).as_deref().and_then(crate::supervise::policy::catastrophic) {
+                return Decision::Deny(format!("never run: {why}"));
+            }
+        }
         if let Some(r) = self.deny.iter().find(|r| rule_matches_as(r, tool, kind, args, cwd, true)) {
             return Decision::Deny(format!("denied by rule `{r}`"));
         }
@@ -998,6 +1004,40 @@ mod tests {
         let ro = Policy { mode: PermissionMode::ReadOnly, allow: vec![], deny: vec![] };
         assert_eq!(ro.decide("web_search", ToolKind::Search, &json!({"query": "q"}), &c), Decision::Allow);
         assert_eq!(ro.decide("web_fetch", ToolKind::Network, &args, &c), Decision::Ask, "read-only asks, never denies");
+    }
+
+    #[test]
+    fn what_wipes_the_machine_is_denied_in_every_mode_and_against_any_rule() {
+        let c = cwd();
+        let p = Policy { mode: PermissionMode::Auto, allow: vec!["bash".into(), "bash(*)".into()], deny: vec![] };
+        for cmd in [
+            "rm -rf /",
+            "rm -rf /*",
+            "sudo rm -fr ~/",
+            "rm --recursive --force $HOME",
+            "cd /tmp && rm -rf /",
+            "bash -c 'rm -rf /'",
+            "mkfs.ext4 /dev/sda1",
+            "dd if=/dev/zero of=/dev/nvme0n1 bs=1M",
+            ":(){ :|:& };:",
+        ] {
+            assert!(
+                matches!(p.decide("bash", ToolKind::Exec, &json!({"command": cmd}), &c), Decision::Deny(_)),
+                "{cmd}"
+            );
+        }
+        // what only looks alike is left to the person's rules
+        for cmd in [
+            "rm -rf ./build /tmp/x",
+            "rm -rf ~/build-cache/old",
+            "rm /",
+            "dd if=disk.img of=out.img",
+            "dd if=/dev/zero of=/dev/null count=1",
+            "mkfs.ext4 disk.img",
+            "echo 'rm -rf /'",
+        ] {
+            assert_eq!(p.decide("bash", ToolKind::Exec, &json!({"command": cmd}), &c), Decision::Allow, "{cmd}");
+        }
     }
 
     #[test]
