@@ -41,7 +41,8 @@ impl Tool for Bash {
                  the head and the tail. Avoid interactive commands. With `background: true` the \
                  command runs as a job while you go on working (servers, watchers, long builds and \
                  test suites): the call returns its job id at once, a job that runs long may be stopped if it looks stuck, you are told \
-                 when it ends, and the `jobs` tool reads its output or stops it.",
+                 when it ends, and the `jobs` tool reads its output or stops it. Background jobs end when the session \
+                 ends; add `detach: true` for a service that must keep running after the task ends.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
                     "bash" => "Git Bash on Windows: POSIX shell, Windows paths work as C:/...",
@@ -55,6 +56,7 @@ impl Tool for Bash {
                     "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds before the command is killed. Default 120."},
                     "description": {"type": "string", "description": "A few words on what the command does (shown to the person)."},
                     "background": {"type": "boolean", "description": "Run it as a background job and return at once. Default false."},
+                    "detach": {"type": "boolean", "description": "With `background`: start it in its own session, output to a log file, and leave it running when nexo exits. Stop it by pid. Default false."},
                     "unsandboxed": {"type": "boolean", "description": "Only when the OS sandbox is on and a command failed because of it: run this one outside the sandbox. The person is asked first. Default false."}
                 },
                 "required": ["command"]
@@ -87,6 +89,12 @@ impl Tool for Bash {
             return ToolOutput::error("bash: `command` is required");
         };
         let sandbox = if bool_arg(&args, "unsandboxed") { Default::default() } else { ctx.sandbox.clone() };
+        if bool_arg(&args, "detach") {
+            if !bool_arg(&args, "background") {
+                return ToolOutput::error("bash: `detach` needs `background: true`");
+            }
+            return detached(command, ctx, &sandbox);
+        }
         if bool_arg(&args, "background") {
             return background(command, ctx, sandbox);
         }
@@ -235,6 +243,77 @@ fn background(command: &str, ctx: &ToolContext, sandbox: nexo_core::sandbox::San
     ToolOutput::ok(content)
 }
 
+/// Starts `command` on its own, in a session of its own, with its output in a log file, and leaves it
+/// running when this process exits. It is not a job of the session (the registry kills those at the
+/// end), so nothing here waits for it or stops it; the sandbox is the one of any other command.
+fn detached(command: &str, ctx: &ToolContext, sandbox: &nexo_core::sandbox::SandboxSettings) -> ToolOutput {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = std::env::temp_dir().join("nexo-detached");
+    let made = {
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.create(&dir)
+    };
+    if let Err(e) = made {
+        return ToolOutput::error(format!("bash: cannot make {}: {e}", dir.display()));
+    }
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let log =
+        dir.join(format!("{ms}-{}-{}.log", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let file = {
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        o.open(&log)
+    };
+    let (out, err) = match file.and_then(|f| f.try_clone().map(|c| (f, c))) {
+        Ok(p) => p,
+        Err(e) => return ToolOutput::error(format!("bash: cannot open {}: {e}", log.display())),
+    };
+    let mut cmd = match build_command(command, &ctx.cwd, sandbox, true) {
+        Ok(c) => c,
+        Err(e) => {
+            return ToolOutput::error(format!("{}: cannot run the command: {e}", nexo_core::shell::shell().label()))
+        }
+    };
+    // no kill_on_drop: the child is left to itself
+    cmd.current_dir(&ctx.cwd).stdin(Stdio::null()).stdout(out).stderr(err);
+    #[cfg(unix)]
+    // SAFETY: runs in the forked child before exec and only calls `setsid`, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+    #[cfg(windows)]
+    {
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return ToolOutput::error(format!("{}: cannot run the command: {e}", nexo_core::shell::shell().label()))
+        }
+    };
+    let Some(pid) = child.id() else {
+        return ToolOutput::error("bash: the detached command ended before it could be followed");
+    };
+    drop(child);
+    let stop = if cfg!(windows) { format!("taskkill /T /F /PID {pid}") } else { format!("kill -- -{pid}") };
+    ToolOutput::ok(format!(
+        "Started detached process {pid}: `{}`. It outlives nexo and is not a job (the `jobs` tool does not \
+         list it). Its output is in {}. Stop it by pid when it is no longer needed: `{stop}`.",
+        one_line(command, 100),
+        log.display()
+    ))
+}
+
 /// Bytes kept of one line of output; the rest of a longer line is dropped as it comes.
 pub const LINE_BYTES: usize = 16 * 1024;
 /// How long output still in the pipes is read after the shell exits: a process it left running
@@ -306,6 +385,31 @@ impl Drop for GroupGuard {
     }
 }
 
+/// The shell command for `command`, inside the sandbox when it is on (`detach`: one that is not
+/// tied to this process's life).
+fn build_command(
+    command: &str,
+    cwd: &std::path::Path,
+    sandbox: &nexo_core::sandbox::SandboxSettings,
+    detach: bool,
+) -> Result<tokio::process::Command, String> {
+    let shell = nexo_core::shell::shell();
+    let args = shell.args_for(command);
+    let wrapped = if detach {
+        crate::sandbox::wrap_detached(sandbox, cwd, &shell.program, &args)
+    } else {
+        crate::sandbox::wrap(sandbox, cwd, &shell.program, &args)
+    };
+    Ok(match wrapped? {
+        Some(c) => c,
+        None => {
+            let mut c = tokio::process::Command::new(&shell.program);
+            c.args(&args);
+            c
+        }
+    })
+}
+
 /// Runs `command` in `cwd`, each line of its output (stdout and stderr) to
 /// `on_line`, until it exits, `timeout` passes or `cancel` fires. The call ends
 /// when the shell exits, even if something it left running still holds the pipes.
@@ -317,15 +421,8 @@ async fn run_command(
     cancel: &CancellationToken,
     mut on_line: impl FnMut(&str),
 ) -> End {
-    let shell = nexo_core::shell::shell();
-    let args = shell.args_for(command);
-    let mut cmd = match crate::sandbox::wrap(sandbox, cwd, &shell.program, &args) {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            let mut c = tokio::process::Command::new(&shell.program);
-            c.args(&args);
-            c
-        }
+    let mut cmd = match build_command(command, cwd, sandbox, false) {
+        Ok(c) => c,
         Err(e) => return End::Failed(e),
     };
     cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -600,5 +697,42 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(!alive(pid), "the background child of the dropped command still runs");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_detached_command_names_its_log_and_pid_and_outlives_the_registry() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Bash.run(json!({"command": "echo up; exec sleep 30", "background": true, "detach": true}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        let pid: i32 =
+            out.content.split("detached process ").nth(1).unwrap().split(':').next().unwrap().parse().unwrap();
+        let log = out.content.split("output is in ").nth(1).unwrap().split(". Stop").next().unwrap().to_string();
+        assert!(out.content.contains("outlives nexo"), "{}", out.content);
+        assert!(c.jobs.list().is_empty(), "a detached command must not be a job of the session");
+        let t = std::time::Instant::now();
+        while std::fs::read_to_string(&log).unwrap_or_default().trim() != "up" && t.elapsed() < Duration::from_secs(2) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap().trim(), "up");
+        // its own session: it leads its group, and the session's end does not reach it
+        assert_eq!(unsafe { libc::getsid(pid) }, pid);
+        c.jobs.kill_all();
+        drop(c);
+        assert!(unsafe { libc::kill(pid, 0) } == 0 && alive(pid), "the detached command died with the registry");
+        // SAFETY: a signal to the process this test started
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[tokio::test]
+    async fn detach_needs_background() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Bash.run(json!({"command": "true", "detach": true}), &c).await;
+        assert!(out.is_error && out.content.contains("background"), "{}", out.content);
     }
 }

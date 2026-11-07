@@ -254,7 +254,11 @@ nothing (one that can change files runs in the foreground, so it never edits bes
 on with its work and uses the `jobs` tool to list jobs, read new output (optionally waiting for it) or kill
 one. When a job ends, the model is told once, and if it was idle it wakes up to look. `/jobs` opens a window with them and the end of their output,
 `/jobs kill [id]` stops one (or all), and the status line shows `⚙ N jobs` while any runs. In a `-p` run,
-jobs still running when the model finishes are stopped.
+jobs still running when the model finishes are stopped. `bash` with `background: true, detach: true` is for a
+service that must keep running after the task and after nexo exits: it starts in its own session (no console
+on Windows), its output goes to a log file under the temp directory, and the result gives the log path and the
+pid to stop it with. It is not a job (`jobs` does not list it, exit does not stop it), asks for the same approval
+as any `bash` command and runs inside the OS sandbox when that is on.
 
 **Language servers.** After an edit the agent can ask the file's language server what is wrong with it:
 the `diagnostics` tool starts rust-analyzer, pyright (or pylsp), typescript-language-server, gopls or clangd,

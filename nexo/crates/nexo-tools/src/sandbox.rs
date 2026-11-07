@@ -182,6 +182,27 @@ pub fn wrap(
     program: &Path,
     args: &[String],
 ) -> Result<Option<tokio::process::Command>, String> {
+    wrap_with(s, cwd, program, args, false)
+}
+
+/// Like `wrap`, for a command that must outlive this process: the same rules, but nothing ties it
+/// to its parent (`bwrap` is not asked to die with it).
+pub fn wrap_detached(
+    s: &SandboxSettings,
+    cwd: &Path,
+    program: &Path,
+    args: &[String],
+) -> Result<Option<tokio::process::Command>, String> {
+    wrap_with(s, cwd, program, args, true)
+}
+
+fn wrap_with(
+    s: &SandboxSettings,
+    cwd: &Path,
+    program: &Path,
+    args: &[String],
+    detach: bool,
+) -> Result<Option<tokio::process::Command>, String> {
     if !s.mode.is_on() {
         return Ok(None);
     }
@@ -191,7 +212,7 @@ pub fn wrap(
         Backend::Landlock => landlock_command(s, &roots, program, args).map(Some),
         Backend::Bwrap(bwrap) => {
             let mut c = tokio::process::Command::new(bwrap);
-            c.args(bwrap_args(s, &roots, cwd, program, args));
+            c.args(bwrap_args(s, &roots, cwd, program, args, detach));
             Ok(Some(c))
         }
         Backend::SandboxExec(se) => {
@@ -313,14 +334,23 @@ fn loopback_up() {
 }
 
 /// The arguments for `bwrap`: the disk read-only, the write roots on top, a network namespace when
-/// the network is off.
-pub fn bwrap_args(s: &SandboxSettings, roots: &[PathBuf], cwd: &Path, program: &Path, args: &[String]) -> Vec<String> {
+/// the network is off. A `detach`ed command is not killed with its parent.
+pub fn bwrap_args(
+    s: &SandboxSettings,
+    roots: &[PathBuf],
+    cwd: &Path,
+    program: &Path,
+    args: &[String],
+    detach: bool,
+) -> Vec<String> {
     let mut a: Vec<String> = ["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev"].map(String::from).to_vec();
     for r in roots.iter().filter(|r| r.as_path() != Path::new("/dev")) {
         let p = r.to_string_lossy().into_owned();
         a.extend(["--bind".to_string(), p.clone(), p]);
     }
-    a.push("--die-with-parent".into());
+    if !detach {
+        a.push("--die-with-parent".into());
+    }
     if !s.network {
         a.push("--unshare-net".into());
     }
@@ -395,15 +425,17 @@ mod tests {
     #[test]
     fn bwrap_args_bind_roots_and_cut_the_network() {
         let roots = vec![PathBuf::from("/dev"), PathBuf::from("/work")];
-        let a = bwrap_args(&ws(), &roots, Path::new("/work"), Path::new("/bin/sh"), &["-c".into(), "ls".into()]);
+        let a = bwrap_args(&ws(), &roots, Path::new("/work"), Path::new("/bin/sh"), &["-c".into(), "ls".into()], false);
+        assert!(a.contains(&"--die-with-parent".to_string()));
+        let d = bwrap_args(&ws(), &roots, Path::new("/work"), Path::new("/bin/sh"), &["-c".into(), "ls".into()], true);
+        assert!(!d.contains(&"--die-with-parent".to_string()));
         assert!(a.windows(3).any(|w| w == ["--bind", "/work", "/work"]));
         assert!(a.contains(&"--unshare-net".to_string()));
         assert_eq!(&a[a.len() - 3..], ["/bin/sh", "-c", "ls"]);
         let mut net = ws();
         net.network = true;
-        assert!(
-            !bwrap_args(&net, &roots, Path::new("/work"), Path::new("sh"), &[]).contains(&"--unshare-net".to_string())
-        );
+        assert!(!bwrap_args(&net, &roots, Path::new("/work"), Path::new("sh"), &[], false)
+            .contains(&"--unshare-net".to_string()));
     }
 
     #[test]
