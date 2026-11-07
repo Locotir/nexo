@@ -1738,6 +1738,7 @@ dependencies = [
  "htmd",
  "httpmock",
  "ignore",
+ "image",
  "landlock",
  "libc",
  "nexo-core",

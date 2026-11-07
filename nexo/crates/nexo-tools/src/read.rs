@@ -28,8 +28,8 @@ impl Tool for Read {
             description: "Read a text file. Returns its lines numbered (`   12│ text`), at most `limit` \
                           lines from line `offset` (1-based); the default is the first 2000 lines, and a \
                           line longer than 2000 characters is cut. Use `grep` to find where something is \
-                          and `read` with `offset`/`limit` to look at that part of a large file. A PNG, JPEG, GIF or WebP \
-                          file is shown as an image (at most 5 MB and 2000 px). Directories and other \
+                          and `read` with `offset`/`limit` to look at that part of a large file. A PNG, JPEG, GIF, WebP, PPM, PGM \
+                          or BMP file is shown as an image (at most 5 MB and 2000 px). Directories and other \
                           binary files are refused (use `ls` for a directory)."
                 .into(),
             parameters: json!({
@@ -93,6 +93,16 @@ impl Tool for Read {
         if let Some(pic) = picture::sniff(&bytes) {
             return show_picture(&shown, pic, &bytes, ctx.vision);
         }
+        if let Some(raster) = picture::decode_raster(&bytes) {
+            return show_raster(&shown, raster, bytes.len(), ctx.vision);
+        }
+        if let Some((name, ext)) = picture::foreign(&bytes) {
+            return ToolOutput::error(format!(
+                "read: {shown} is a {name} image ({} bytes), which `read` cannot show; convert a copy to PNG with \
+                 `bash`, e.g. `magick in.{ext} out.png`, and read that",
+                bytes.len()
+            ));
+        }
         if is_binary(&bytes) {
             return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
         }
@@ -144,6 +154,43 @@ fn show_picture(shown: &str, pic: picture::Picture, bytes: &[u8], vision: bool) 
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
     ToolOutput::ok(format!("{shown}: {what}"))
         .with_images(vec![ImageSource::Base64 { media_type: pic.media_type.into(), data }])
+}
+
+/// A PPM, PGM or BMP as a PNG the model looks at; same caps and wording as `show_picture`.
+fn show_raster(shown: &str, raster: Result<picture::Raster, String>, len: usize, vision: bool) -> ToolOutput {
+    let r = match raster {
+        Ok(r) => r,
+        Err(why) => {
+            return ToolOutput::error(format!(
+                "read: {shown} is an image `read` cannot decode ({why}); convert a copy to PNG with `bash`, \
+                 e.g. `magick in.img out.png`, and read that"
+            ));
+        }
+    };
+    let what = format!("{} image of {}x{} px, {len} bytes", r.label, r.width, r.height);
+    if !vision {
+        return ToolOutput::ok(format!("{shown}: a {what}; this model cannot view images."));
+    }
+    let too_large = |extra: &str| {
+        ToolOutput::error(format!(
+            "read: {shown} is a {what}{extra}, too large to show (at most 5 MB and {} px on the long side); \
+             shrink a copy first, e.g. with `bash` and `magick in.img -resize 2000x2000 out.png`",
+            picture::MAX_SIDE
+        ))
+    };
+    if r.width.max(r.height) > picture::MAX_SIDE {
+        return too_large("");
+    }
+    let png = match r.to_png() {
+        Ok(p) => p,
+        Err(e) => return ToolOutput::error(format!("read: {shown} is a {what} that could not be converted: {e}")),
+    };
+    if png.len() > picture::MAX_BYTES {
+        return too_large(&format!(" ({} bytes as PNG)", png.len()));
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+    ToolOutput::ok(format!("{shown}: {what}, shown as PNG"))
+        .with_images(vec![ImageSource::Base64 { media_type: "image/png".into(), data }])
 }
 
 #[cfg(test)]
@@ -273,5 +320,58 @@ mod tests {
         std::fs::write(d.path().join("heavy.png"), big).unwrap();
         let out = Read.run(json!({"path": "heavy.png"}), &ctx(d.path())).await;
         assert!(out.is_error && out.content.contains("5 MB"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_ppm_and_a_bmp_come_back_as_png_images() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ppm = b"P6\n2 1\n255\n".to_vec();
+        ppm.extend([10, 20, 30, 40, 50, 60]);
+        std::fs::write(d.path().join("s.ppm"), &ppm).unwrap();
+        let out = Read.run(json!({"path": "s.ppm"}), &ctx(d.path())).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, format!("s.ppm: PPM image of 2x1 px, {} bytes, shown as PNG", ppm.len()));
+        match out.images.as_slice() {
+            [ImageSource::Base64 { media_type, data }] => {
+                assert_eq!(media_type, "image/png");
+                let png = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+                let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap().to_rgb8();
+                assert_eq!(img.into_raw(), vec![10, 20, 30, 40, 50, 60]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut c = ctx(d.path());
+        c.vision = false;
+        let out = Read.run(json!({"path": "s.ppm"}), &c).await;
+        assert!(!out.is_error && out.images.is_empty() && out.content.contains("2x1"), "{}", out.content);
+        assert!(out.content.contains("cannot view images"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_raster_over_the_cap_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let mut f = b"P5\n2001 2\n255\n".to_vec();
+        f.resize(f.len() + 2001 * 2, 7);
+        std::fs::write(d.path().join("wide.pgm"), f).unwrap();
+        let out = Read.run(json!({"path": "wide.pgm"}), &ctx(d.path())).await;
+        assert!(out.is_error && out.images.is_empty(), "{}", out.content);
+        assert!(out.content.contains("2001x2") && out.content.contains("too large"), "{}", out.content);
+        std::fs::write(d.path().join("cut.ppm"), b"P6 9 9 255\nabc").unwrap();
+        let out = Read.run(json!({"path": "cut.ppm"}), &ctx(d.path())).await;
+        assert!(out.is_error && out.content.contains("cut short"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_tiff_gets_a_convert_hint_not_binary_file() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("scan.tiff"), b"II*\0\x08\0\0\0\0\0").unwrap();
+        let out = Read.run(json!({"path": "scan.tiff"}), &ctx(d.path())).await;
+        assert!(out.is_error && out.images.is_empty());
+        assert!(
+            out.content.contains("TIFF image") && out.content.contains("magick in.tiff out.png"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("binary file"));
     }
 }
