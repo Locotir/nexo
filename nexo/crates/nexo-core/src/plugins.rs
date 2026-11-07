@@ -143,6 +143,8 @@ pub struct Entry {
     pub enabled: bool,
     /// The marketplace it was found in, if any.
     pub marketplace: Option<String>,
+    /// `project` when it was installed for what a project asks for, else `user`. A managed policy can switch either off.
+    pub scope: String,
 }
 
 impl Default for Entry {
@@ -154,6 +156,7 @@ impl Default for Entry {
             version: String::new(),
             enabled: true,
             marketplace: None,
+            scope: "user".into(),
         }
     }
 }
@@ -398,7 +401,13 @@ pub fn installed(config_dir: &Path) -> (Vec<Plugin>, Vec<String>) {
 /// The enabled plugins (and the problems of [`installed`]).
 pub fn enabled(config_dir: &Path) -> (Vec<Plugin>, Vec<String>) {
     let (all, problems) = installed(config_dir);
-    (all.into_iter().filter(|p| p.entry.enabled).collect(), problems)
+    let policy = crate::managed::current();
+    let allowed = |p: &Plugin| {
+        policy
+            .as_ref()
+            .is_none_or(|m| m.extension_allowed(if p.entry.scope == "project" { "project" } else { "user" }, "plugins"))
+    };
+    (all.into_iter().filter(|p| p.entry.enabled && allowed(p)).collect(), problems)
 }
 
 /// Adds the enabled plugins' hooks and MCP servers to `cfg`. A server of the person's own with

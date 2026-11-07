@@ -59,6 +59,10 @@ project_commands = false
 user_plugins = false
 project_plugins = false
 
+[audit]
+enabled = true                           # forced on; user and project config cannot turn it off
+path = "/var/log/nexo/audit.jsonl"       # pinned; their own path is replaced
+
 [[forced_hooks]]
 event = "pre_tool"
 matcher = "bash"
@@ -73,10 +77,11 @@ command = "/usr/local/bin/audit-command"
   `provider/model`. Checked at `/model`, `--model`, and for sub-agents.
 - `mcp.allow|deny` (server names), `mcp.allow_commands|deny_commands` (command line or url)
 - `allow_user_hooks`, `allow_project_hooks`, `forced_hooks`
-- `extensions.{user,project}_{skills,commands,plugins}`
+- `extensions.{user,project}_{skills,commands,plugins}`: a plugin has the scope it was installed with (`nexo plugin install --scope project`, or a bare `nexo plugin install` for what the project asks for; otherwise `user`). A forbidden scope cannot install (`nexo plugin install` is refused) and its plugins load nothing: no commands, agents, skills, hooks or MCP servers.
+- `audit.enabled`, `audit.path`: forces the audit log (docs/AUDIT.md) on and pins its file
 - `disable_web`, `disable_bypass_mode`
 
-## Not covered yet
+## Notes
 
-- A forced audit log: the tree has no general audit config to force on.
-- `extensions.*_plugins` is parsed and shown, but nothing enforces it until the plugin system lands.
+- There is no allowlist form for plugins yet, only per-scope on or off.
+- A plugin hook counts as a user hook for `allow_user_hooks`.

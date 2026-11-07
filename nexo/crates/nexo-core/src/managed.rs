@@ -96,6 +96,15 @@ pub struct ManagedMcp {
     pub deny_commands: Vec<String>,
 }
 
+/// `[audit]` of the policy: `enabled = true` turns the audit log on for everyone and no other file can turn it off.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManagedAudit {
+    pub enabled: bool,
+    /// Pins the log file; the user's own `path` is replaced.
+    pub path: Option<String>,
+}
+
 /// What the user and project levels may bring in. Unset means allowed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -123,6 +132,8 @@ pub struct ManagedPolicy {
     pub extensions: ManagedExtensions,
     /// Registers neither `web_search` nor `web_fetch`.
     pub disable_web: bool,
+    /// The local audit log (docs/AUDIT.md): forced on, and where it is written.
+    pub audit: ManagedAudit,
     /// No `auto` permission mode (`--yolo`, `/mode auto`, `NEXO_PERMISSION_MODE=auto`).
     pub disable_bypass_mode: bool,
     /// The file this was read from; never part of the file.
@@ -438,6 +449,19 @@ impl ManagedPolicy {
             say("web tools turned off".into());
         }
 
+        if self.audit.enabled {
+            if !cfg.audit.enabled {
+                say("audit log turned on".into());
+            }
+            cfg.audit.enabled = true;
+            if let Some(p) = &self.audit.path {
+                if cfg.audit.path.as_ref() != Some(p) {
+                    say(format!("audit log path set to {p}"));
+                }
+                cfg.audit.path = Some(p.clone());
+            }
+        }
+
         for s in said {
             if !cfg.notices.contains(&s) {
                 cfg.notices.push(s);
@@ -474,6 +498,12 @@ impl ManagedPolicy {
         }
         if self.disable_web {
             add("disable_web", "true".into());
+        }
+        if self.audit.enabled {
+            add("audit.enabled", "true".into());
+            if let Some(p) = &self.audit.path {
+                add("audit.path", p.clone());
+            }
         }
         for (k, v) in [("providers", &self.providers), ("models", &self.models)] {
             if let Some(a) = &v.allow {

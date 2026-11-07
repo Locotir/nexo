@@ -169,3 +169,77 @@ fn add_dir_reaches_the_sandbox_write_dirs() {
     let o = nexo(d.path(), MOCK, None, &args);
     assert!(target.exists(), "the folder is writable for a sandboxed command: {} {}", out(&o), err(&o));
 }
+
+/// A plugin folder whose only content is a hook that touches `mark` when a prompt is sent.
+fn plugin_source(dir: &Path, mark: &Path) -> std::path::PathBuf {
+    let src = dir.join("acme-src");
+    std::fs::create_dir_all(src.join(".claude-plugin")).unwrap();
+    std::fs::create_dir_all(src.join("hooks")).unwrap();
+    std::fs::write(src.join(".claude-plugin/plugin.json"), r#"{"name":"acme","version":"1.0.0"}"#).unwrap();
+    let hooks = serde_json::json!({"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": format!("touch {}", mark.display())}]}]}});
+    std::fs::write(src.join("hooks/hooks.json"), hooks.to_string()).unwrap();
+    src
+}
+
+#[test]
+fn plugin_install_is_refused_for_a_scope_the_policy_forbids() {
+    let d = tempfile::tempdir().unwrap();
+    let src = plugin_source(d.path(), &d.path().join("mark"));
+    let s = src.to_str().unwrap();
+    let managed = "[extensions]\nuser_plugins = false\n";
+    let o = nexo(d.path(), MOCK, Some(managed), &["plugin", "install", s, "--yes"]);
+    assert_ne!(o.status.code(), Some(0), "{}", out(&o));
+    assert!(err(&o).contains("blocked by your organization's policy"), "{}", err(&o));
+    assert!(!d.path().join("plugins/acme").exists(), "nothing was installed");
+    // the other scope is still allowed
+    let o = nexo(d.path(), MOCK, Some(managed), &["plugin", "install", s, "--yes", "--scope", "project"]);
+    assert_eq!(o.status.code(), Some(0), "{} {}", out(&o), err(&o));
+    let o = nexo(
+        d.path(),
+        MOCK,
+        Some("[extensions]\nproject_plugins = false\n"),
+        &["plugin", "install", s, "--yes", "--scope", "project"],
+    );
+    assert_ne!(o.status.code(), Some(0), "{}", out(&o));
+    assert!(err(&o).contains("blocked by your organization's policy"), "{}", err(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn plugins_of_a_forbidden_scope_are_not_loaded() {
+    for (scope, key) in [("user", "user_plugins"), ("project", "project_plugins")] {
+        let d = tempfile::tempdir().unwrap();
+        let mark = d.path().join("mark");
+        let src = plugin_source(d.path(), &mark);
+        let o = nexo(d.path(), MOCK, None, &["plugin", "install", src.to_str().unwrap(), "--yes", "--scope", scope]);
+        assert_eq!(o.status.code(), Some(0), "{} {}", out(&o), err(&o));
+        nexo(d.path(), MOCK, None, &["-p", "hi"]);
+        assert!(mark.exists(), "control: the {scope} plugin's hook runs");
+        std::fs::remove_file(&mark).unwrap();
+        nexo(d.path(), MOCK, Some(&format!("[extensions]\n{key} = false\n")), &["-p", "hi"]);
+        assert!(!mark.exists(), "the {scope} plugin is not loaded");
+        let other = if scope == "user" { "project_plugins" } else { "user_plugins" };
+        nexo(d.path(), MOCK, Some(&format!("[extensions]\n{other} = false\n")), &["-p", "hi"]);
+        assert!(mark.exists(), "the {scope} plugin still loads when only {other} is off");
+    }
+}
+
+#[test]
+fn the_audit_log_is_forced_on_at_the_pinned_path() {
+    let d = tempfile::tempdir().unwrap();
+    let pinned = d.path().join("pinned-audit.jsonl");
+    let elsewhere = d.path().join("mine.jsonl");
+    let user = format!("{MOCK}[audit]\nenabled = false\npath = \"{}\"\n", elsewhere.display());
+    nexo(d.path(), &user, None, &["-p", "hi"]);
+    assert!(!pinned.exists() && !elsewhere.exists(), "control: the log is off");
+    let managed = format!("[audit]\nenabled = true\npath = \"{}\"\n", pinned.display());
+    let o = nexo(d.path(), &user, Some(&managed), &["-p", "hi"]);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let log = std::fs::read_to_string(&pinned).expect("the pinned log is written");
+    assert!(!log.trim().is_empty());
+    assert!(!elsewhere.exists(), "the user's path is replaced");
+    let o = nexo(d.path(), &user, Some(&managed), &["doctor", "--offline"]);
+    let text = out(&o);
+    assert!(text.contains("audit.enabled = true  (source: managed)"), "{text}");
+    assert!(text.contains(&format!("audit.path = {}  (source: managed)", pinned.display())), "{text}");
+}

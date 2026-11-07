@@ -66,6 +66,13 @@ pub fn run(cwd: &Path, config: &Config, what: &PluginCmd) -> anyhow::Result<i32>
     let dir = nexo_core::paths::config_dir();
     match what {
         PluginCmd::Install { source, yes, scope } => {
+            // installing what the project asks for (no source) is project scope too
+            let level = if source.is_none() { "project" } else { scope.as_str() };
+            if let Some(p) = &config.managed {
+                if !p.extension_allowed(level, "plugins") {
+                    bail!("{}", p.blocked(&format!("installing {level} plugins")));
+                }
+            }
             let mut ask = |summary: &str| ask_person(summary, *yes);
             let sources: Vec<String> = match source {
                 Some(s) => vec![s.clone()],
@@ -84,6 +91,9 @@ pub fn run(cwd: &Path, config: &Config, what: &PluginCmd) -> anyhow::Result<i32>
                 match install(&dir, cwd, &s, &mut ask)? {
                     Some(done) => {
                         println!("installed {} (pinned to {})", done.name, short(&done.commit));
+                        if level == "project" {
+                            set_scope(&dir, &done.name, "project")?;
+                        }
                         if scope == "project" {
                             let file = project_file(cwd);
                             record_in_project(&file, &done.name, &done.portable_source)?;
@@ -524,6 +534,7 @@ fn read_plugin(config_dir: &Path, name_hint: &str, root: &Path, w: &Where, commi
         version: manifest.version.clone(),
         enabled: true,
         marketplace: w.marketplace.clone(),
+        scope: "user".into(),
     };
     Ok(Plugin { root: plugins::plugins_dir(config_dir).join(&name), name, manifest, entry })
 }
@@ -558,6 +569,16 @@ fn install(config_dir: &Path, cwd: &Path, spec: &str, ask: Ask) -> anyhow::Resul
     reg.plugins.insert(plugin.name.clone(), entry);
     reg.save(config_dir)?;
     Ok(Some(Installed { name: plugin.name, commit, portable_source: w.portable() }))
+}
+
+/// Marks an installed plugin as installed for a project.
+fn set_scope(config_dir: &Path, name: &str, scope: &str) -> anyhow::Result<()> {
+    let mut reg = Registry::load(config_dir);
+    if let Some(e) = reg.plugins.get_mut(name) {
+        e.scope = scope.into();
+    }
+    reg.save(config_dir)?;
+    Ok(())
 }
 
 // ---- update, remove, enable ---------------------------------------------------------------------
@@ -608,7 +629,7 @@ fn update_one(config_dir: &Path, _cwd: &Path, name: &str, ask: Ask) -> anyhow::R
     }
     swap_in(&src, &real_root)?;
     drop(st);
-    reg.plugins.insert(name.to_string(), Entry { enabled: old.enabled, ..plugin.entry });
+    reg.plugins.insert(name.to_string(), Entry { enabled: old.enabled, scope: old.scope.clone(), ..plugin.entry });
     reg.save(config_dir)?;
     Ok(Some(format!("updated to {}", short(&commit))))
 }
