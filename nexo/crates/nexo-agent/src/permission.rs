@@ -1133,3 +1133,39 @@ mod tests {
         assert_eq!(cfg["permissions"]["allow"].as_array().unwrap().len(), 2, "no duplicates");
     }
 }
+
+#[cfg(all(test, windows))]
+mod win_add_dir_probe {
+    use super::*;
+
+    #[test]
+    fn add_dir_rule_matches_a_temp_folder() {
+        let cwd = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("w.txt");
+        let t = target.to_str().unwrap();
+        let abs = other.path().to_path_buf();
+        let real = abs.canonicalize().unwrap();
+        let rp = |p: &Path| {
+            let s = p.to_string_lossy();
+            s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/").trim_end_matches('/').to_string()
+        };
+        let args = serde_json::json!({"path": t, "content": "x"});
+        let mut report = String::new();
+        for p in [rp(&abs), rp(&real)] {
+            let rule = format!("write({p}/**)");
+            let g = glob(&format!("{p}/**")).unwrap();
+            report.push_str(&format!(
+                "rule {rule}\n written {:?} hits {:?}\n real {:?} hits {:?}\n no_link {}\n matches {}\n",
+                path_forms(t, cwd.path()),
+                path_forms(t, cwd.path()).iter().map(|f| g.is_match(f)).collect::<Vec<_>>(),
+                real_forms(t, cwd.path()),
+                real_forms(t, cwd.path()).iter().map(|f| g.is_match(f)).collect::<Vec<_>>(),
+                no_link_inside(t, cwd.path()),
+                rule_matches("write", "write", ToolKind::Write, &args, cwd.path())
+                    || rule_matches(&rule, "write", ToolKind::Write, &args, cwd.path()),
+            ));
+        }
+        panic!("{report}");
+    }
+}
