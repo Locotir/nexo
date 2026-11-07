@@ -221,12 +221,13 @@ pub fn parse(text: &str, fallback_name: &str) -> Option<Profile> {
 /// (the main agent's permissions and asks), and a place to put what it spent.
 #[async_trait]
 pub trait Host: Send + Sync {
-    /// `Err` holds why the call may not run.
+    /// `Err` holds why the call may not run. `agent` is the name of the sub-agent asking.
     /// `hook`: what a PreToolUse hook decided (`allow` runs a call that would be asked about, `ask` asks).
     /// Both answers say who decided, for the audit log.
     async fn permit(
         &self,
         call_id: &str,
+        agent: &str,
         tool: &dyn Tool,
         args: &Value,
         cancel: &CancellationToken,
@@ -865,7 +866,7 @@ impl Run {
         // the main agent's rules hold for every sub-agent: its deny rules, and its asks (keys, writes)
         let call_id = format!("{}.{id}", ctx.call_id);
         let verdict = match &self.host {
-            Some(h) => h.permit(&call_id, t.as_ref(), args, &ctx.cancel, decision).await,
+            Some(h) => h.permit(&call_id, &self.profile.name, t.as_ref(), args, &ctx.cancel, decision).await,
             None if self.profile.read_only => Ok(Why::RULE),
             None => Err(("no one to ask for leave".into(), Why::denied("rule"))),
         };

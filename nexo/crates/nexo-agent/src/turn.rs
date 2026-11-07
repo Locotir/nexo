@@ -2608,6 +2608,7 @@ async fn permit_why(
     args: &Value,
     cancel: &CancellationToken,
     hook: Option<crate::hooks::Decision>,
+    agent: Option<&str>,
 ) -> (Verdict, Why) {
     let kind = tool.kind();
     let mut decision = {
@@ -2638,7 +2639,11 @@ async fn permit_why(
         Decision::Ask => {
             // PermissionRequest hooks answer before the person is asked: allow, deny, or leave it to them
             let summary = tool.summary(args);
-            let o = fire(state, "permission_request", Some(name), crate::hooks::tool_fields(name, args)).await;
+            let mut fields = crate::hooks::tool_fields(name, args);
+            if let Some(a) = agent {
+                fields["agent"] = Value::from(a);
+            }
+            let o = fire(state, "permission_request", Some(name), fields).await;
             if let Some(why) = o.blocked {
                 return (Verdict::Denied(why), Why::denied("hook"));
             }
@@ -2769,6 +2774,7 @@ impl crate::subagent::Host for StateHost {
     async fn permit(
         &self,
         call_id: &str,
+        agent: &str,
         tool: &dyn Tool,
         args: &Value,
         cancel: &CancellationToken,
@@ -2782,7 +2788,8 @@ impl crate::subagent::Host for StateHost {
             (st.gate.clone(), st.cwd.clone())
         };
         let name = tool.name().to_string();
-        match permit_why(&state, &self.events, &gate, &cwd, call_id, &name, tool, args, cancel, hook).await {
+        match permit_why(&state, &self.events, &gate, &cwd, call_id, &name, tool, args, cancel, hook, Some(agent)).await
+        {
             (Verdict::Run, why) => Ok(why),
             (Verdict::Denied(r) | Verdict::Blocked(r), why) => Err((r, why)),
         }
@@ -2931,7 +2938,7 @@ async fn run_tools(
             verdicts.push((Verdict::Denied(format!("unknown tool `{name}`")), Why::denied("rule")));
             continue;
         };
-        let v = permit_why(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel, decision).await;
+        let v = permit_why(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel, decision, None).await;
         verdicts.push(v);
     }
     // every verdict is in by now: reads, searches and page fetches can overlap

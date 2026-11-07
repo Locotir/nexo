@@ -4170,6 +4170,41 @@ async fn a_permission_request_hook_can_answer_in_place_of_the_person() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_permission_request_hook_names_the_sub_agent_that_asks_and_not_the_main_agent() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "write x.txt"}))),
+        Reply::Events(call("s1", "write", json!({"path": "x.txt", "content": "x"}))),
+        Reply::Events(text("wrote x.txt")),
+        Reply::Events(call("c2", "write", json!({"path": "y.txt", "content": "y"}))),
+        Reply::Events(text("all done")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.hooks.push(hook_cfg(
+        "permission_request",
+        Some("write"),
+        r#"cat > "asked-$(date +%s%N).json"; echo '{"decision":"allow"}'"#,
+    ));
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.turn().await;
+    let mut seen: Vec<Value> = std::fs::read_dir(d.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("asked-"))
+        .map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).unwrap()).unwrap())
+        .collect();
+    seen.sort_by_key(|v| v["tool_input"]["path"].as_str().unwrap_or_default().to_string());
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!((seen[0]["tool_input"]["path"].as_str(), seen[0]["agent"].as_str()), (Some("x.txt"), Some("general")));
+    assert_eq!(seen[1]["tool_input"]["path"], "y.txt");
+    assert!(seen[1].get("agent").is_none(), "the main agent carries no agent field: {:?}", seen[1]);
+    r.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn sub_agent_and_compaction_hooks_fire() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![

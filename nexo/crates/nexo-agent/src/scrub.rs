@@ -61,6 +61,9 @@ pub fn scrub_value(v: &mut Value) {
     }
 }
 
+/// What a markdown export shows in place of the input or output of a call that names a `.env*` file.
+pub const ENV_BODY: &str = "[redacted: .env file]";
+
 /// Whether a file name is a `.env*` file.
 pub fn is_env_name(path: &str) -> bool {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -90,6 +93,11 @@ mod tests {
         assert_eq!(scrub(sha), sha);
         let path = "crates/nexo-agent/src/some-very-long-file-name-for-a-test.rs";
         assert_eq!(scrub(path), path);
+    }
+
+    #[test]
+    fn env_body_is_not_touched_by_scrub() {
+        assert_eq!(scrub(ENV_BODY), ENV_BODY);
     }
 
     #[test]

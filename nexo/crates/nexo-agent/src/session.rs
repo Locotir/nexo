@@ -1166,6 +1166,16 @@ impl Session {
     /// The conversation as markdown. `summary` names what a call does
     /// (`read src/a.rs`) from the tool's name and arguments.
     pub fn export_markdown(&self, summary: impl Fn(&str, &serde_json::Value) -> String) -> String {
+        self.markdown(summary, false)
+    }
+
+    /// [`Session::export_markdown`] for sharing: the output of a call that names a `.env*` file is replaced
+    /// whole by `[redacted: .env file]`.
+    pub fn export_markdown_redacted(&self, summary: impl Fn(&str, &serde_json::Value) -> String) -> String {
+        self.markdown(summary, true)
+    }
+
+    fn markdown(&self, summary: impl Fn(&str, &serde_json::Value) -> String, hide_env: bool) -> String {
         const FOLD_LINES: usize = 60;
         let mut out = String::new();
         let title = if self.meta.title.is_empty() { "nexo session".to_string() } else { self.meta.title.clone() };
@@ -1196,19 +1206,23 @@ impl Session {
                     }
                     Part::ToolCall { id, name, args } => {
                         out.push_str(&format!("**{}** {}\n\n", name, summary(name, args)));
-                        let body = match self.outputs.get(id) {
-                            Some(o) => o.content.clone(),
-                            None => self
-                                .messages
-                                .iter()
-                                .flat_map(|m| m.content.iter())
-                                .find_map(|p| match p {
-                                    Part::ToolResult { call_id, content, .. } if call_id == id => {
-                                        Some(Session::result_text(content))
-                                    }
-                                    _ => None,
-                                })
-                                .unwrap_or_default(),
+                        let body = if hide_env && crate::scrub::touches_env_file(args) {
+                            crate::scrub::ENV_BODY.to_string()
+                        } else {
+                            match self.outputs.get(id) {
+                                Some(o) => o.content.clone(),
+                                None => self
+                                    .messages
+                                    .iter()
+                                    .flat_map(|m| m.content.iter())
+                                    .find_map(|p| match p {
+                                        Part::ToolResult { call_id, content, .. } if call_id == id => {
+                                            Some(Session::result_text(content))
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or_default(),
+                            }
                         };
                         let lines: Vec<&str> = body.lines().collect();
                         let fence = if body.contains("```") { "````" } else { "```" };

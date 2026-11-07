@@ -28,8 +28,8 @@ Before anything is written, these become `[redacted]`:
 - runs of 40 or more base64 characters that mix digits, upper and lower case;
 - the arguments and results of any tool call that names a `.env*` file (as a path or inside a shell command).
 
-`--no-redact` turns it off and prints a warning. The markdown export is scrubbed as text, so it has the
-pattern rules but not the whole-call `.env` rule. Pattern redaction is greedy but not perfect: read a
+`--no-redact` turns it off and prints a warning. In the markdown export the output of such a call is replaced by
+`[redacted: .env file]`, and the rest is scrubbed as text. Pattern redaction is greedy but not perfect: read a
 file before you share it.
 
 ## The audit log

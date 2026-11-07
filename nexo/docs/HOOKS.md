@@ -54,7 +54,7 @@ Always: `session_id`, `cwd`, `event` (nexo's name), `hook_event_name` (`PreToolU
 | `session_start` | `source` |
 | `session_end` | `reason` |
 | `user_prompt_submit` | `prompt` |
-| `pre_tool`, `permission_request` | `tool_name`, `tool_input` (also `tool`, `args`) |
+| `pre_tool`, `permission_request` | `tool_name`, `tool_input` (also `tool`, `args`); `permission_request` also has `agent` (the sub-agent name) when a sub-agent asks, and no `agent` for the main agent |
 | `post_tool` | the above and `tool_response`, `output`, `is_error`, `elapsed_ms` |
 | `stop` | `stop_hook_active`, `last_assistant_message` |
 | `subagent_start` | `agent_type`, `prompt` |
@@ -113,7 +113,7 @@ The tool calls of a `task` sub-agent fire `pre_tool` and `post_tool` like the ma
 decisions (`deny`, `allow`, `ask`, `updated_input`, `additional_context`, exit 2) and one more payload field,
 `agent`, the sub-agent's name (it is absent for the main agent). A matcher still tests the tool name, so a
 hook that should only judge sub-agents checks `agent` in the JSON. A `pre_tool` deny reaches the sub-agent as
-`Blocked by a hook: <reason>`. `permission_request` hooks fire for a sub-agent's asks too, without `agent`.
+`Blocked by a hook: <reason>`. `permission_request` hooks fire for a sub-agent's asks too, with the same `agent`.
 
 ## Not covered
 

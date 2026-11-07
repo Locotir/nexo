@@ -178,11 +178,10 @@ fn scrub_output(o: &ToolOutput) -> ToolOutput {
 pub fn render(session: &Session, format: Format, redact: bool, summary: &dyn Fn(&str, &Value) -> String) -> String {
     match format {
         Format::Markdown => {
-            let text = session.export_markdown(summary);
             if redact {
-                scrub(&text)
+                scrub(&session.export_markdown_redacted(summary))
             } else {
-                text
+                session.export_markdown(summary)
             }
         }
         Format::Json => json_of(&Doc::from_session(session, redact)),
@@ -436,6 +435,29 @@ mod tests {
         assert_eq!(h.matches("<details class=\"tool\"").count(), 2);
         let raw = render(&s, Format::Html, false, &|n, _| n.to_string());
         assert!(raw.contains("SECRET_THING"));
+    }
+
+    #[test]
+    fn markdown_replaces_the_whole_body_of_a_call_that_names_a_env_file() {
+        let mut s = Session::ephemeral(std::path::Path::new("."), "p", "m");
+        s.append(&Message::user("show it")).unwrap();
+        let calls = vec![
+            Part::tool_call("c1", "read", json!({"path": "app/.env.local"})),
+            Part::tool_call("c2", "read", json!({"path": "a.rs"})),
+        ];
+        s.append(&Message::new(Role::Assistant, calls)).unwrap();
+        let res = vec![
+            Part::tool_result("c1", "just some words\nand more words", false),
+            Part::tool_result("c2", "fn main() {}", false),
+        ];
+        s.append(&Message::tool_results(res)).unwrap();
+        s.record_output("c1", &ToolOutput::ok("just some words\nand more words")).unwrap();
+        let md = render(&s, Format::Markdown, true, &|n, a| format!("{n} {a}"));
+        assert!(md.contains("[redacted: .env file]"), "{md}");
+        assert!(!md.contains("just some words") && !md.contains("and more words"), "{md}");
+        assert!(md.contains("fn main() {}"), "other calls stay: {md}");
+        let raw = render(&s, Format::Markdown, false, &|n, a| format!("{n} {a}"));
+        assert!(raw.contains("just some words") && !raw.contains("[redacted: .env file]"), "{raw}");
     }
 
     #[test]
