@@ -166,15 +166,41 @@ pub fn discover_in(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool) -> Vec<
     }
     let mut out: Vec<Skill> = Vec::new();
     for (root, source) in roots {
-        let Ok(entries) = std::fs::read_dir(&root) else { continue };
-        let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
-        dirs.sort();
-        for d in dirs {
-            if let Some(s) = load(&d, &source) {
-                if !out.iter().any(|o| o.name.eq_ignore_ascii_case(&s.name)) {
-                    out.push(s);
+        for s in scan_root(&root, &source, None) {
+            if !out.iter().any(|o| o.name.eq_ignore_ascii_case(&s.name)) {
+                out.push(s);
+            }
+        }
+    }
+    // installed plugins last: a skill of the person's own with the same name wins, and a plugin's
+    // skill is called `plugin:name` anyway
+    if user {
+        for p in crate::plugins::enabled(nexo_dir).0 {
+            for root in p.skill_roots() {
+                for s in scan_root(&root, &format!("plugin {}", p.name), Some(&p.name)) {
+                    if !out.iter().any(|o| o.name.eq_ignore_ascii_case(&s.name)) {
+                        out.push(s);
+                    }
                 }
             }
+        }
+    }
+    out
+}
+
+/// The skills in the folders directly below `root`, sorted by folder; with a `plugin`, each one's
+/// name is `plugin:name`.
+pub fn scan_root(root: &Path, source: &str, plugin: Option<&str>) -> Vec<Skill> {
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    dirs.sort();
+    let mut out = Vec::new();
+    for d in dirs {
+        if let Some(mut s) = load(&d, source) {
+            if let Some(p) = plugin {
+                s.name = format!("{p}:{}", s.name);
+            }
+            out.push(s);
         }
     }
     out

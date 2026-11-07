@@ -215,6 +215,8 @@ pub struct Source {
     /// Short and plain: `project .claude/commands`, `user .nexo/agents`.
     pub origin: String,
     pub foreign: bool,
+    /// The plugin this folder belongs to: its items are named `plugin:item`.
+    pub plugin: Option<String>,
 }
 
 /// The folders to read `nexo_sub` (`commands`) from, and the other tools' equivalents
@@ -231,8 +233,20 @@ pub fn sources(
     codex_sub: Option<&str>,
 ) -> Vec<Source> {
     let mut out = Vec::new();
+    // installed plugins come first: everything of the person's own overrides them
+    for p in crate::plugins::enabled(config_dir).0 {
+        let dirs = match nexo_sub {
+            "commands" => p.command_dirs(),
+            "agents" => p.agent_dirs(),
+            _ => Vec::new(),
+        };
+        for dir in dirs {
+            let origin = format!("plugin {}", p.name);
+            out.push(Source { dir, origin, foreign: true, plugin: Some(p.name.clone()) });
+        }
+    }
     let mut add = |dir: PathBuf, scope: &str, shown: String, foreign: bool| {
-        out.push(Source { dir, origin: format!("{scope} {shown}"), foreign });
+        out.push(Source { dir, origin: format!("{scope} {shown}"), foreign, plugin: None });
     };
     let root = project_root(cwd);
     let trusted = crate::config::is_trusted(&root, trust_file);
@@ -288,7 +302,10 @@ pub fn commands(
         collect_md(&s.dir, &s.dir, 0, &mut files);
         files.sort();
         for (name, f) in files {
-            let name = name.to_ascii_lowercase();
+            let name = match &s.plugin {
+                Some(p) => format!("{}:{}", p.to_ascii_lowercase(), name.to_ascii_lowercase()),
+                None => name.to_ascii_lowercase(),
+            };
             if name.is_empty() || name.contains(char::is_whitespace) || reserved(&name) {
                 continue;
             }
@@ -313,7 +330,7 @@ pub fn commands(
 }
 
 /// `(name, path)` of the `.md` files below `dir`, up to three folders deep, hidden ones skipped.
-fn collect_md(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>) {
+pub(crate) fn collect_md(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
@@ -376,6 +393,41 @@ pub fn map_matcher(m: &str) -> Option<String> {
     Some(alts.join("|"))
 }
 
+/// The hooks of a `{"PreToolUse": [{"matcher": ..., "hooks": [{"command": ...}]}]}` table as nexo's
+/// hooks: `command` hooks only, events nexo has no point for left out. With `root`, the plugin root
+/// variables in the commands are replaced by that folder.
+pub fn hooks_from_events(
+    events: &serde_json::Map<String, serde_json::Value>,
+    source: &str,
+    root: Option<&Path>,
+) -> Vec<crate::config::HookConfig> {
+    let mut out = Vec::new();
+    for (event, groups) in events {
+        let Some(name) = crate::config::canonical_event(event) else { continue };
+        for group in groups.as_array().into_iter().flatten() {
+            let matcher = group.get("matcher").and_then(|m| m.as_str()).and_then(map_matcher);
+            for h in group.get("hooks").and_then(|h| h.as_array()).into_iter().flatten() {
+                let kind = h.get("type").and_then(|t| t.as_str()).unwrap_or("command");
+                let Some(command) = h.get("command").and_then(|c| c.as_str()).filter(|_| kind == "command") else {
+                    continue;
+                };
+                let command = match root {
+                    Some(r) => crate::plugins::expand_root(command, r),
+                    None => command.to_string(),
+                };
+                out.push(crate::config::HookConfig {
+                    event: name.to_string(),
+                    matcher: matcher.clone(),
+                    command,
+                    timeout: h.get("timeout").and_then(|t| t.as_u64()),
+                    source: source.to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// The hooks of the project's `.claude/settings.json` and `.claude/settings.local.json`
 /// (`{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "...",
 /// "timeout": 10}]}]}}`), only when the project is trusted, like nexo's own project file. Events
@@ -391,28 +443,11 @@ pub fn claude_hooks(cwd: &Path, trust_file: &Path) -> (Vec<crate::config::HookCo
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
         let Some(events) = v.get("hooks").and_then(|h| h.as_object()) else { continue };
         let shown = format!("project .claude/{file}");
-        for (event, groups) in events {
-            let Some(name) = crate::config::canonical_event(event) else { continue };
-            for group in groups.as_array().into_iter().flatten() {
-                let matcher = group.get("matcher").and_then(|m| m.as_str()).and_then(map_matcher);
-                for h in group.get("hooks").and_then(|h| h.as_array()).into_iter().flatten() {
-                    let kind = h.get("type").and_then(|t| t.as_str()).unwrap_or("command");
-                    let Some(command) = h.get("command").and_then(|c| c.as_str()).filter(|_| kind == "command") else {
-                        continue;
-                    };
-                    if !trusted {
-                        skipped.push(shown.clone());
-                        continue;
-                    }
-                    out.push(crate::config::HookConfig {
-                        event: name.to_string(),
-                        matcher: matcher.clone(),
-                        command: command.to_string(),
-                        timeout: h.get("timeout").and_then(|t| t.as_u64()),
-                        source: shown.clone(),
-                    });
-                }
-            }
+        let found = hooks_from_events(events, &shown, None);
+        if trusted {
+            out.extend(found);
+        } else if !found.is_empty() {
+            skipped.push(shown);
         }
     }
     skipped.dedup();

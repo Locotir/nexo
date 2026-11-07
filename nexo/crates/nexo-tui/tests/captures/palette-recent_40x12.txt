@@ -5,7 +5,7 @@
  common ───────────────────────────────
  /model          switch model, or set …
  /permissions    set the permission mo…
-             1/50             45 more ↓
+             1/51             46 more ↓
 ─ ask ──────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run

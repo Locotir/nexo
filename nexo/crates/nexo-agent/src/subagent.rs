@@ -133,6 +133,9 @@ fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path, foreign_home: Opt
                     adopt_foreign(&mut p);
                 }
                 p.source = Some(f.clone());
+                if let Some(plugin) = &s.plugin {
+                    p.name = format!("{plugin}:{}", p.name);
+                }
                 out.retain(|o| o.name != p.name);
                 out.push(p);
             }

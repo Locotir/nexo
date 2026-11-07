@@ -3690,6 +3690,10 @@ impl App {
             Command::Tools => self.send(AgentCommand::ShowTools),
             Command::Hooks => self.send(AgentCommand::ShowHooks),
             Command::Skills => self.show_skills(),
+            Command::Plugins => {
+                let text = nexo_core::plugins::describe(&nexo_core::paths::config_dir(), &Default::default());
+                self.notice(Level::Info, text);
+            }
             Command::Jobs(None) => self.open_jobs(),
             Command::Jobs(Some(id)) => self.send(AgentCommand::KillJob { id }),
             Command::Budget(None) => self.send(AgentCommand::ShowBudget),

@@ -33,6 +33,9 @@ pub struct Config {
     pub audit: AuditConfig,
     /// Shell commands run at points of the loop (`[[hooks]]` blocks).
     pub hooks: Vec<HookConfig>,
+    /// Plugins this project asks for, `name = "git-url or path"` (`[plugins]`; `nexo plugin install --scope project`
+    /// writes it). Teammates are told to install the ones they lack; nothing is installed on its own.
+    pub plugins: BTreeMap<String, String>,
     /// What loading had to tell the person (settings of an untrusted project left out); not read from files.
     #[serde(skip)]
     pub notices: Vec<String>,
@@ -495,6 +498,7 @@ impl Config {
         let (claude, note) = crate::compat::claude_hooks(cwd, &paths::trusted_projects_file());
         cfg.hooks.extend(claude);
         cfg.notices.extend(note);
+        crate::plugins::apply(&mut cfg, &paths::config_dir());
         cfg.apply_env();
         cfg.name_auth_entries();
         Ok(cfg)

@@ -214,6 +214,11 @@ pub enum Cmd {
         #[command(subcommand)]
         what: crate::audit_cmd::AuditCmd,
     },
+    /// Install, list, update and switch plugins (bundles of commands, agents, skills, hooks and MCP servers).
+    Plugin {
+        #[command(subcommand)]
+        what: crate::plugin_cmd::PluginCmd,
+    },
     /// Install the latest nexo from GitHub with cargo (`--check`: only say whether there is one).
     Update {
         /// Only say whether a newer version exists; install nothing.
@@ -575,6 +580,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Worktree { what }) => return crate::worktree::run(&cwd, what),
         Some(Cmd::Export(a)) => return crate::export_cmd::run(a, &cwd),
         Some(Cmd::Audit { what }) => return crate::audit_cmd::run(&config, what),
+        Some(Cmd::Plugin { what }) => return crate::plugin_cmd::run(&cwd, &config, what),
         Some(Cmd::Update { check }) => return crate::update::run(*check).await,
         Some(Cmd::Guide) => {
             print!("{}", crate::account::GUIDE);

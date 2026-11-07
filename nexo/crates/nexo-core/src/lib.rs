@@ -23,6 +23,7 @@ pub mod mcp_json;
 pub mod message;
 pub mod paths;
 pub mod permission;
+pub mod plugins;
 pub mod pricing;
 pub mod provider;
 pub mod redact;

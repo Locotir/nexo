@@ -82,6 +82,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("tools", &["mcp"], "", "the tools the model has, by kind"),
     spec("hooks", &[], "", "the hooks that are loaded, and where they come from"),
     spec("skills", &[], "", "the skills found (name, what it does, where from); /skill-name [args] runs one"),
+    spec("plugins", &[], "", "the installed plugins and what each adds (nexo plugin install adds one)"),
     spec("vim", &[], "", "the vim keys in the editor on or off"),
     spec(
         "budget",
@@ -133,6 +134,8 @@ pub enum Command {
     Hooks,
     /// `/skills`: the Agent Skills found, with their source.
     Skills,
+    /// `/plugins`: the installed plugins and what each adds.
+    Plugins,
     Vim,
     Budget(Option<String>),
     /// `/jobs` opens the window, `/jobs kill` stops every one, `/jobs kill 3` stops job 3.
@@ -228,6 +231,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "tools" => Command::Tools,
         "hooks" => Command::Hooks,
         "skills" => Command::Skills,
+        "plugins" => Command::Plugins,
         "vim" => Command::Vim,
         "budget" => Command::Budget(arg),
         "panel" => Command::Panel,
@@ -380,6 +384,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "tools",
             "hooks",
             "skills",
+            "plugins",
             "jobs",
             "panel",
             "todo",

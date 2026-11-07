@@ -9,6 +9,7 @@ mod cli;
 mod export_cmd;
 mod headless;
 mod mcp_cmd;
+mod plugin_cmd;
 mod schema;
 mod setup;
 mod supervise;
