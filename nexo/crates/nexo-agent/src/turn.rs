@@ -2593,24 +2593,9 @@ enum Verdict {
     Blocked(String),
 }
 
-/// Whether a call may run: the policy decides, or the person is asked.
-#[allow(clippy::too_many_arguments)]
-async fn permit(
-    state: &Shared,
-    events: &EventTx,
-    gate: &Arc<dyn PermissionGate>,
-    cwd: &Path,
-    id: &str,
-    name: &str,
-    tool: &dyn Tool,
-    args: &Value,
-    cancel: &CancellationToken,
-) -> Verdict {
-    permit_why(state, events, gate, cwd, id, name, tool, args, cancel, None).await.0
-}
-
-/// [`permit`], with what a PreToolUse hook decided: `ask` asks the person even if a rule would let the call
-/// run, `allow` runs a call that would have been asked about.
+/// Whether a call may run: the policy decides, or the person is asked, with what a PreToolUse hook decided:
+/// `ask` asks the person even if a rule would let the call run, `allow` runs a call that would have been
+/// asked about. The second value says who decided, for the audit log.
 #[allow(clippy::too_many_arguments)]
 async fn permit_why(
     state: &Shared,
@@ -2787,17 +2772,47 @@ impl crate::subagent::Host for StateHost {
         tool: &dyn Tool,
         args: &Value,
         cancel: &CancellationToken,
-    ) -> Result<(), String> {
-        let Some(state) = self.state.upgrade() else { return Err("the session has ended".into()) };
+        hook: Option<crate::hooks::Decision>,
+    ) -> Result<Why, (String, Why)> {
+        let Some(state) = self.state.upgrade() else {
+            return Err(("the session has ended".into(), Why::denied("rule")));
+        };
         let (gate, cwd) = {
             let st = state.lock().await;
             (st.gate.clone(), st.cwd.clone())
         };
         let name = tool.name().to_string();
-        match permit(&state, &self.events, &gate, &cwd, call_id, &name, tool, args, cancel).await {
-            Verdict::Run => Ok(()),
-            Verdict::Denied(r) | Verdict::Blocked(r) => Err(r),
+        match permit_why(&state, &self.events, &gate, &cwd, call_id, &name, tool, args, cancel, hook).await {
+            (Verdict::Run, why) => Ok(why),
+            (Verdict::Denied(r) | Verdict::Blocked(r), why) => Err((r, why)),
         }
+    }
+
+    async fn hook(&self, event: &str, subject: &str, fields: Value) -> crate::hooks::Outcome {
+        match self.state.upgrade() {
+            Some(state) => fire(&state, event, Some(subject), fields).await,
+            None => Default::default(),
+        }
+    }
+
+    async fn audit(&self, call: crate::subagent::AuditCall<'_>) {
+        let Some(state) = self.state.upgrade() else { return };
+        let st = state.lock().await;
+        let Some(audit) = st.audit.clone() else { return };
+        let (provider, _, model) = st.target.get();
+        audit.tool(ToolRecord {
+            session: st.session.id(),
+            cwd: &st.cwd,
+            provider: &provider,
+            model: &model,
+            tool: call.tool,
+            args: call.args,
+            summary: call.summary,
+            why: call.why,
+            status: call.status,
+            exit_code: None,
+            duration_ms: call.duration_ms,
+        });
     }
 
     async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) {

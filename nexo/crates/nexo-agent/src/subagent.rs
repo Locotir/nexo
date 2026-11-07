@@ -31,6 +31,7 @@ use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
+use crate::audit::Why;
 use crate::brief::{self, Brief, BriefConfig};
 use crate::client::{ModelClient, Target};
 
@@ -221,13 +222,22 @@ pub fn parse(text: &str, fallback_name: &str) -> Option<Profile> {
 #[async_trait]
 pub trait Host: Send + Sync {
     /// `Err` holds why the call may not run.
+    /// `hook`: what a PreToolUse hook decided (`allow` runs a call that would be asked about, `ask` asks).
+    /// Both answers say who decided, for the audit log.
     async fn permit(
         &self,
         call_id: &str,
         tool: &dyn Tool,
         args: &Value,
         cancel: &CancellationToken,
-    ) -> Result<(), String>;
+        hook: Option<crate::hooks::Decision>,
+    ) -> Result<Why, (String, Why)>;
+    /// Runs the hooks of `event` the way the main turn does (they are told which sub-agent in `fields`).
+    async fn hook(&self, _event: &str, _subject: &str, _fields: Value) -> crate::hooks::Outcome {
+        Default::default()
+    }
+    /// A tool call of a sub-agent is over: its line in the audit log (when that is on).
+    async fn audit(&self, _call: AuditCall<'_>) {}
     /// `pricing`: the prices of another provider the sub-agent ran on; none: priced as the main agent prices `model`.
     async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>);
     /// The conversation so far, to brief the sub-agent from.
@@ -551,6 +561,35 @@ fn progress(messages: &[Message], round: usize, rounds: usize) -> String {
     out
 }
 
+/// A tool call of a sub-agent for the audit log: what it was, who let it run, how it ended.
+pub struct AuditCall<'a> {
+    pub tool: &'a str,
+    pub args: &'a Value,
+    /// What `Tool::summary` says of the call.
+    pub summary: &'a str,
+    pub why: Why,
+    /// `ok`, `error` or `denied`.
+    pub status: &'a str,
+    pub duration_ms: u64,
+}
+
+/// How one call ended.
+struct Done {
+    out: ToolOutput,
+    /// The input it ran with (a hook may have replaced it).
+    args: Value,
+    summary: String,
+    why: Why,
+    /// Refused before it ran.
+    denied: bool,
+}
+
+impl Done {
+    fn denied(out: ToolOutput, args: Value, name: &str, why: Why) -> Done {
+        Done { out, args, summary: name.to_string(), why, denied: true }
+    }
+}
+
 /// One sub-agent at work.
 struct Run {
     client: Arc<dyn ModelClient>,
@@ -730,6 +769,7 @@ impl Run {
         }
     }
 
+    /// One call of the sub-agent: its hooks, its permission, its run, and its line in the audit log.
     async fn call(
         &self,
         id: &str,
@@ -738,13 +778,69 @@ impl Run {
         ctx: &ToolContext,
         say: &(dyn Fn(String) + Send + Sync),
     ) -> ToolOutput {
+        let t0 = std::time::Instant::now();
+        let done = self.call_one(id, name, args, ctx, say).await;
+        if let Some(h) = &self.host {
+            let status = if done.denied {
+                "denied"
+            } else if done.out.is_error {
+                "error"
+            } else {
+                "ok"
+            };
+            let call = AuditCall {
+                tool: name,
+                args: &done.args,
+                summary: &done.summary,
+                why: done.why,
+                status,
+                duration_ms: t0.elapsed().as_millis() as u64,
+            };
+            h.audit(call).await;
+        }
+        done.out
+    }
+
+    async fn call_one(
+        &self,
+        id: &str,
+        name: &str,
+        args: &Value,
+        ctx: &ToolContext,
+        say: &(dyn Fn(String) + Send + Sync),
+    ) -> Done {
+        // the hooks of the main turn hold here too: PreToolUse may block a call, decide its permission or
+        // replace its input, and PostToolUse adds a note after the output (they are told which sub-agent)
+        let mut args = args.clone();
+        let mut decision = None;
+        if let Some(h) = &self.host {
+            let o = h.hook("pre_tool", name, self.fields(name, &args)).await;
+            if let Some(why) = o.blocked {
+                let out = ToolOutput::error(format!("Blocked by a hook: {why}"));
+                return Done::denied(out, args, name, Why::denied("hook"));
+            }
+            if let Some(u) = o.updated_input {
+                args = u;
+            }
+            decision = o.decision;
+        }
         let Some(t) = self.tools.get(name) else {
             let can = if self.profile.read_only { " (it can only read)" } else { "" };
-            return ToolOutput::error(format!("the sub-agent has no tool `{name}`{can}"));
+            let out = ToolOutput::error(format!("the sub-agent has no tool `{name}`{can}"));
+            return Done::denied(out, args, name, Why::denied("rule"));
+        };
+        let summary = t.summary(&args);
+        let args = &args;
+        let refused = |out: ToolOutput| Done {
+            out,
+            args: args.clone(),
+            summary: summary.clone(),
+            why: Why::denied("rule"),
+            denied: true,
         };
         if self.profile.read_only {
             if let Some(p) = outside(args, &ctx.cwd) {
-                return ToolOutput::error(format!("`{p}` is outside the project"));
+                return refused(ToolOutput::error(format!("`{p}` is outside the project")));
             }
         }
         // a file another sub-agent at work is changing stays its own: two at once would lose a change
@@ -754,10 +850,10 @@ impl Run {
                 let mut held = self.claims.lock().unwrap_or_else(|e| e.into_inner());
                 match held.get(&key) {
                     Some((owner, label)) if *owner != ctx.call_id => {
-                        return ToolOutput::error(format!(
+                        return refused(ToolOutput::error(format!(
                             "`{p}` is being changed by another sub-agent running at the same time ({label}); \
                              leave it to that one and say so in your report"
-                        ));
+                        )));
                     }
                     Some(_) => {}
                     None => {
@@ -769,21 +865,51 @@ impl Run {
         // the main agent's rules hold for every sub-agent: its deny rules, and its asks (keys, writes)
         let call_id = format!("{}.{id}", ctx.call_id);
         let verdict = match &self.host {
-            Some(h) => h.permit(&call_id, t.as_ref(), args, &ctx.cancel).await,
-            None if self.profile.read_only => Ok(()),
-            None => Err("no one to ask for leave".into()),
+            Some(h) => h.permit(&call_id, t.as_ref(), args, &ctx.cancel, decision).await,
+            None if self.profile.read_only => Ok(Why::RULE),
+            None => Err(("no one to ask for leave".into(), Why::denied("rule"))),
         };
-        if let Err(why) = verdict {
-            return ToolOutput::error(format!("Permission denied: {why}"));
-        }
+        let why = match verdict {
+            Ok(why) => why,
+            Err((reason, why)) => {
+                return Done {
+                    out: ToolOutput::error(format!("Permission denied: {reason}")),
+                    args: args.clone(),
+                    summary,
+                    why,
+                    denied: true,
+                };
+            }
+        };
         if let (Some(h), ToolKind::Write) = (&self.host, t.kind()) {
             if let Some(p) = args.get("path").and_then(Value::as_str) {
                 let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { ctx.cwd.join(p) };
                 h.before_write(path).await;
             }
         }
-        say(format!("→ {}", t.summary(args)));
-        t.run(args.clone(), ctx).await
+        say(format!("→ {summary}"));
+        let started = std::time::Instant::now();
+        let mut out = t.run(args.clone(), ctx).await;
+        if let Some(h) = &self.host {
+            let mut fields = self.fields(name, args);
+            fields["output"] = json!(out.content);
+            fields["tool_response"] = json!(out.content);
+            fields["is_error"] = json!(out.is_error);
+            fields["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+            let o = h.hook("post_tool", name, fields).await;
+            let notes: Vec<String> = o.context.into_iter().chain(o.blocked).collect();
+            if !notes.is_empty() {
+                out.content = format!("{}\n\n[hook] {}", out.content, notes.join("\n[hook] "));
+            }
+        }
+        Done { out, args: args.clone(), summary, why, denied: false }
+    }
+
+    /// The payload of a tool hook: the call, and which sub-agent makes it.
+    fn fields(&self, name: &str, args: &Value) -> Value {
+        let mut f = crate::hooks::tool_fields(name, args);
+        f["agent"] = json!(self.profile.name);
+        f
     }
 }
 

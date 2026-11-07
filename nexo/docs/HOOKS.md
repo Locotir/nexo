@@ -59,6 +59,7 @@ Always: `session_id`, `cwd`, `event` (nexo's name), `hook_event_name` (`PreToolU
 | `stop` | `stop_hook_active`, `last_assistant_message` |
 | `subagent_start` | `agent_type`, `prompt` |
 | `subagent_stop` | `agent_type`, `report` |
+| `pre_tool`, `post_tool` in a sub-agent | the same, and `agent` (the sub-agent that made the call) |
 | `pre_compact` | `trigger`, `messages`, `tokens` |
 | `notification` | `notification_type`, `message` |
 
@@ -106,7 +107,14 @@ event = "pre_tool"
 command = "cat | jq -c '{session_id, tool_name, tool_input}' >> .nexo-audit.jsonl"
 ```
 
+## Sub-agents
+
+The tool calls of a `task` sub-agent fire `pre_tool` and `post_tool` like the main agent's, with the same
+decisions (`deny`, `allow`, `ask`, `updated_input`, `additional_context`, exit 2) and one more payload field,
+`agent`, the sub-agent's name (it is absent for the main agent). A matcher still tests the tool name, so a
+hook that should only judge sub-agents checks `agent` in the JSON. A `pre_tool` deny reaches the sub-agent as
+`Blocked by a hook: <reason>`. `permission_request` hooks fire for a sub-agent's asks too, without `agent`.
+
 ## Not covered
 
-Tool calls made inside a sub-agent do not fire hooks, and the curator's own fold is not a hook point:
-`pre_compact` fires when nexo compacts the history.
+The curator's own fold is not a hook point: `pre_compact` fires when nexo compacts the history.

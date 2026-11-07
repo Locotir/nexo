@@ -4211,3 +4211,108 @@ async fn the_hooks_command_lists_what_is_loaded() {
     );
     r.stop().await;
 }
+
+/// A main-agent script that sends a `general` sub-agent to write `path`, then lets both answer.
+#[cfg(unix)]
+fn sub_writes(path: &str) -> Arc<Scripted> {
+    Scripted::new(vec![
+        Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "write it"}))),
+        Reply::Events(call("s1", "write", json!({"path": path, "content": "a"}))),
+        Reply::Events(text("the sub-agent is done")),
+        Reply::Events(text("all done")),
+    ])
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pre_tool_hook_that_denies_write_blocks_the_sub_agents_write() {
+    let d = tempfile::tempdir().unwrap();
+    let client = sub_writes("denied.txt");
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.hooks.push(hook_cfg(
+        "pre_tool",
+        Some("write"),
+        r#"cat > pre.json; echo '{"decision":"deny","reason":"no writes here"}'"#,
+    ));
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.turn().await;
+    let sub = results_in(&client.requests()[2]);
+    assert!(sub.iter().any(|t| t.contains("Blocked by a hook: no writes here")), "{sub:?}");
+    let pre: Value = serde_json::from_str(&std::fs::read_to_string(d.path().join("pre.json")).unwrap()).unwrap();
+    assert_eq!((pre["tool_name"].as_str(), pre["agent"].as_str()), (Some("write"), Some("general")));
+    r.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_post_tool_hook_sees_the_sub_agents_call_with_its_name_and_may_add_a_note() {
+    let d = tempfile::tempdir().unwrap();
+    let client = sub_writes("a.txt");
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.hooks.push(hook_cfg(
+        "post_tool",
+        Some("write"),
+        r#"cat > post.json; echo '{"additional_context":"formatted a.txt"}'"#,
+    ));
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.turn().await;
+    let post: Value = serde_json::from_str(&std::fs::read_to_string(d.path().join("post.json")).unwrap()).unwrap();
+    assert_eq!((post["tool_name"].as_str(), post["agent"].as_str()), (Some("write"), Some("general")));
+    assert_eq!(post["tool_response"], "write:a.txt");
+    let sub = results_in(&client.requests()[2]);
+    assert!(sub.iter().any(|t| t.contains("write:a.txt") && t.contains("[hook] formatted a.txt")), "{sub:?}");
+    r.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pre_tool_hook_can_allow_or_rewrite_a_sub_agents_call() {
+    let d = tempfile::tempdir().unwrap();
+    let client = sub_writes("old.txt");
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.hooks.push(hook_cfg(
+        "pre_tool",
+        Some("write"),
+        r#"echo '{"decision":"allow","updated_input":{"path":"new.txt","content":"b"}}'"#,
+    ));
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })), "the person was not asked");
+    assert!(results_in(&client.requests()[2]).iter().any(|t| t == "write:new.txt"));
+    r.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_sub_agents_tool_calls_reach_the_audit_log() {
+    let d = tempfile::tempdir().unwrap();
+    let log = d.path().join("audit.jsonl");
+    let client = sub_writes("a.txt");
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.audit.enabled = true;
+    cfg.audit.path = Some(log.display().to_string());
+    cfg.hooks.push(hook_cfg("pre_tool", Some("write"), r#"echo '{"decision":"allow"}'"#));
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let lines = |kind: &str| -> Vec<Value> {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["kind"] == "tool" && v["tool"] == kind)
+            .collect()
+    };
+    let write = lines("write");
+    assert_eq!(write.len(), 1, "the sub-agent's write is logged once: {write:?}");
+    assert_eq!((write[0]["status"].as_str(), write[0]["decision"].as_str()), (Some("ok"), Some("allowed")));
+    assert_eq!(lines("task").len(), 1, "the main agent's task call is logged too");
+}

@@ -71,7 +71,7 @@ Model request:
 - `tokens_in` counts input that was not served from the cache (cache writes included); `tokens_cached` is the cache read.
 - `cost_usd` uses the prices nexo knows (0 when there are none).
 
-Not logged: the tool calls a sub-agent makes inside its own run (its model requests are).
+A sub-agent's tool calls are logged like the main agent's (same session, its own `decision` and `by`); `exit_code` is not set for them. Its model requests are `sub`.
 
 ## Report
 
