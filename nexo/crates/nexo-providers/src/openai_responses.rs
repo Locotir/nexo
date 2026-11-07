@@ -105,9 +105,11 @@ impl OpenAiResponses {
     }
 }
 
-/// `extra.prompt_cache_key = false` keeps the field off, for a server that rejects fields it does not know.
+/// On by default only where the field is known to be accepted (OpenAI itself and a ChatGPT login);
+/// `extra.prompt_cache_key` turns it on or off for any other server.
 fn cache_key_allowed(cfg: &ProviderConfig) -> bool {
-    cfg.extra.get("prompt_cache_key").and_then(|v| v.as_bool()).unwrap_or(true)
+    let known = cfg.login.as_deref() == Some("codex") || crate::openai_chat::is_openai(cfg);
+    cfg.extra.get("prompt_cache_key").and_then(|v| v.as_bool()).unwrap_or(known)
 }
 
 /// A message as input items.
@@ -503,6 +505,11 @@ mod tests {
         let mut off = cfg.clone();
         off.extra.insert("prompt_cache_key".into(), toml::Value::Boolean(false));
         assert!(OpenAiResponses::body(&off, &a).get("prompt_cache_key").is_none());
+        // a third-party server on this protocol gets the field only when its config asks for it
+        let mut router = ProviderConfig::new(ID, "https://router.example.com/v1", None);
+        assert!(OpenAiResponses::body(&router, &a).get("prompt_cache_key").is_none());
+        router.extra.insert("prompt_cache_key".into(), toml::Value::Boolean(true));
+        assert_eq!(OpenAiResponses::body(&router, &a)["prompt_cache_key"], "20261107-101500-aaaa");
     }
 
     #[test]

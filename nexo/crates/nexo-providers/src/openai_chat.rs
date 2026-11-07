@@ -91,7 +91,7 @@ impl OpenAiChat {
 }
 
 /// Whether the provider is OpenAI itself (`api.openai.com`).
-fn is_openai(cfg: &ProviderConfig) -> bool {
+pub(crate) fn is_openai(cfg: &ProviderConfig) -> bool {
     reqwest::Url::parse(&cfg.base_url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case("api.openai.com")))
