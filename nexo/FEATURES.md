@@ -85,6 +85,7 @@ runs all of them; the last column names the test function.
 | Four wire protocols, 21 presets (19 plus copilot and codex) | ✅ | `openai_chat_fixture`, `openai_responses_fixture`, `anthropic_fixture`, `gemini_fixture`, `presets_are_complete_and_distinct` |
 | Guided `/model` setup, checked against the server | ✅ | `ollama_is_found_with_its_models_and_its_window`, `the_whole_setup_of_a_keyed_provider`, `the_model_setup_checks_saves_switches_and_sets_the_effort` |
 | Reasoning level per model (`/effort`) | ✅ | `levels_follow_the_protocol_and_the_vendor`, `the_model_setup_checks_saves_switches_and_sets_the_effort` |
+| Fast version of the model and back (`/fast`, `⚡` in the status bar); `service_tier: priority` on the ChatGPT subscription and the OpenAI API | ✅ | `a_base_finds_its_fast_version_and_back`, `fast_switches_to_the_twin_and_back_or_sets_the_request_option` |
 | Prices, context window, cost per turn and session | ✅ | `limits_are_reported_and_prices_can_be_set`, `prices_the_four_counts` |
 | Spend limits per session and per day, `/budget` | ✅ | `under_near_and_at_the_limits`, `the_days_spending_adds_up_in_its_file`, `the_spend_limit_stops_before_the_call_that_would_pass_it`, `budget_commands_and_the_spend_in_the_title` |
 | Retries, and limits learned from errors | ✅ | `gives_up_when_retries_are_exhausted`, `a_max_output_error_caps_the_reply_and_retries_once` |

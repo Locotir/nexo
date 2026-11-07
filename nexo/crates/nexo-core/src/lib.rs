@@ -15,6 +15,7 @@ pub mod auth;
 pub mod compat;
 pub mod config;
 pub mod error;
+pub mod fast;
 pub mod jobs;
 pub mod leak;
 pub mod mail;

@@ -29,6 +29,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("provider", &["providers"], "", "the same as /model"),
     spec("login", &["signin"], "", "sign in or set a key: opens the model setup at the providers"),
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
+    spec("fast", &[], "[on|off]", "switch to the model's fast version, and back"),
     spec("permissions", &["permission", "mode"], "[ask|accept-edits|plan|auto|read-only]", "set the permission mode"),
     spec("yolo", &[], "", "never ask for permission (the auto mode)"),
     spec(
@@ -122,6 +123,8 @@ pub enum Command {
     Config,
     Doctor,
     Effort(Option<String>),
+    /// `/fast [on|off]`
+    Fast(Option<String>),
     Undo,
     Init,
     /// `/review [base|commit|--staged]`
@@ -225,6 +228,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "config" => Command::Config,
         "doctor" => Command::Doctor,
         "effort" => Command::Effort(arg),
+        "fast" => Command::Fast(arg),
         "undo" => Command::Undo,
         "init" => Command::Init,
         "review" => Command::Review(arg),
@@ -378,7 +382,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         "session",
         &["fork", "tree", "rewind", "undo", "undelete", "rename", "msg", "export", "goal", "shared-memory", "queue"],
     ),
-    ("model", &["provider", "login", "pricing", "prompt", "budget"]),
+    ("model", &["provider", "login", "fast", "pricing", "prompt", "budget"]),
     (
         "context and tools",
         &[
@@ -447,6 +451,7 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
             ("resume", "go on with the goal"),
             ("off", "clear the goal"),
         ],
+        "fast" => &[("on", "use the fast version"), ("off", "back to the base model")],
         "plan" => &[("off", "leave plan mode")],
         "budget" => &[("off", "no limit for this session")],
         "jobs" => &[("kill", "stop every background job (or `kill <id>`)")],
@@ -524,6 +529,10 @@ mod tests {
             Some(Command::Model(Some("deepseek/deepseek-chat".into())))
         );
         assert_eq!(parse("/m x"), Some(Command::Model(Some("x".into()))));
+        assert_eq!(parse("/fast"), Some(Command::Fast(None)));
+        assert_eq!(parse("/fast on"), Some(Command::Fast(Some("on".into()))));
+        assert_eq!(parse("/fast"), Some(Command::Fast(None)));
+        assert_eq!(parse("/fast on"), Some(Command::Fast(Some("on".into()))));
         assert_eq!(parse("/permissions auto"), Some(Command::Permissions(Some(PermissionMode::Auto))));
         assert_eq!(parse("/mode auto"), Some(Command::Permissions(Some(PermissionMode::Auto))));
         assert_eq!(parse("/permissions sideways"), Some(Command::BadArgument("permissions".into(), "sideways".into())));

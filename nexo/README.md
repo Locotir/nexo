@@ -108,7 +108,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/sandbox`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/todo`, `/queue`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/fast`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions`, `/plan`, `/yolo`, `/sandbox`, `/prompt`, `/prompt edit`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/todo`, `/queue`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 
@@ -556,6 +556,17 @@ none for models whose reasoning is fixed (DeepSeek's reasoner) or when the
 server refuses the parameter. `/effort` picks among them (`/effort high`,
 `/effort default`); the choice is kept per model and shown next to it in the
 status bar (`◆ high`).
+
+**Fast.** `/fast` switches the model in use to its fast version on the same
+provider and back: the same name plus `-fast`, `_fast`, `-highspeed`,
+`-ultraspeed` or `-turbo` (case ignored, the provider's spelling kept; `-fast`
+wins when several are listed), looked up in the configured models and in the
+list the provider returns. `/fast on` and `/fast off` say which way. Where
+speed is a request option instead of a model, `/fast` sets it: the ChatGPT
+subscription (`codex`) and the OpenAI API send `service_tier: "priority"`, as
+the Codex CLI does. With no fast version it says so and changes nothing. The
+status bar shows `⚡` while it is on. Like `/model NAME`, it applies to this
+session only.
 
 ### Prices and limits
 

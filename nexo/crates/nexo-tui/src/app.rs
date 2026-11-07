@@ -268,6 +268,8 @@ pub struct App {
     /// The reasoning level of the model in use and the levels it takes.
     pub effort: Option<String>,
     pub effort_levels: Vec<String>,
+    /// The model in use runs fast (`/fast`): a mark on the status bar.
+    pub fast: bool,
     /// The spend limits and what was spent: (this session, today, session limit, day limit).
     pub budget: Option<(f64, f64, Option<f64>, Option<f64>)>,
     /// Input tokens of the last model call (the gauge's numerator).
@@ -509,6 +511,7 @@ impl App {
             limits: None,
             effort: None,
             effort_levels: Vec::new(),
+            fast: false,
             budget: None,
             last_call_input: 0,
             last_call_cached: 0,
@@ -2272,6 +2275,12 @@ impl App {
                 self.effort = current;
                 self.effort_levels = levels;
             }
+            AgentEvent::Fast { on } => {
+                if self.fast != on {
+                    self.flash(if on { "fast: on" } else { "fast: off" });
+                }
+                self.fast = on;
+            }
             AgentEvent::Goal { text, round, max, state } => {
                 match (&text, &self.goal) {
                     (None, Some(_)) => self.flash("goal cleared"),
@@ -3659,6 +3668,12 @@ impl App {
                 self.send(AgentCommand::SetEffort { effort });
             }
             Command::Effort(None) => self.open_effort_picker(),
+            Command::Fast(arg) => match arg.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                None => self.send(AgentCommand::SetFast { on: None }),
+                Some("on") => self.send(AgentCommand::SetFast { on: Some(true) }),
+                Some("off") => self.send(AgentCommand::SetFast { on: Some(false) }),
+                Some(other) => self.notice(Level::Warn, format!("/fast takes on or off, not `{other}`")),
+            },
             Command::Permissions(Some(mode)) => self.send(AgentCommand::SetPermissionMode(mode)),
             Command::Yolo => self.send(AgentCommand::SetPermissionMode(PermissionMode::Auto)),
             Command::Sandbox(mode) => self.send(AgentCommand::SetSandbox(mode)),
@@ -5521,6 +5536,25 @@ mod tests {
         assert!(a.palette.is_some());
         a.palette_accept(false);
         assert_eq!(a.input.text(), "/model ");
+    }
+
+    #[test]
+    fn fast_asks_the_agent_and_the_mark_follows_its_answer() {
+        let (mut a, mut rx) = app();
+        for (line, on) in [("/fast", None), ("/fast on", Some(true)), ("/FAST off", Some(false))] {
+            a.input.set_text(line);
+            a.submit();
+            assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetFast { on: got }) if got == on), "{line}");
+        }
+        a.input.set_text("/fast sideways");
+        a.submit();
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(a.blocks.last(), Some(Block::Notice { .. })));
+        assert!(!a.fast);
+        a.handle_agent(AgentEvent::Fast { on: true });
+        assert!(a.fast);
+        a.handle_agent(AgentEvent::Fast { on: false });
+        assert!(!a.fast);
     }
 
     #[test]

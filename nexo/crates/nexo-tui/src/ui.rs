@@ -316,6 +316,9 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                     let mut g = Vec::new();
                     if order.contains(&"model") {
                         g.push(model(k.short_model));
+                        if app.fast {
+                            g.push(Seg { text: " ⚡".to_string(), style: base.fg(theme.warn) });
+                        }
                     }
                     if order.contains(&"effort") {
                         if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {

@@ -4392,3 +4392,54 @@ async fn a_sub_agents_tool_calls_reach_the_audit_log() {
     assert_eq!((write[0]["status"].as_str(), write[0]["decision"].as_str()), (Some("ok"), Some("allowed")));
     assert_eq!(lines("task").len(), 1, "the main agent's task call is logged too");
 }
+
+#[tokio::test]
+async fn fast_switches_to_the_twin_and_back_or_sets_the_request_option() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("a")), Reply::Events(text("b"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.providers.get_mut("mock").unwrap().models = vec!["m1".into(), "m1-Fast".into(), "m2".into()];
+    let mut sub = ProviderConfig::new("mock", "http://sub", None);
+    sub.models = vec!["c1".into()];
+    sub.login = Some("codex".into());
+    cfg.providers.insert("sub".into(), sub);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+
+    // m1 -> m1-Fast (the provider's spelling) and back
+    r.send(AgentCommand::SetFast { on: None });
+    let evs = r.until(|e| matches!(e, AgentEvent::Fast { .. })).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ModelChanged { model, .. } if model == "m1-Fast")));
+    assert!(matches!(evs.last(), Some(AgentEvent::Fast { on: true })));
+    r.send(AgentCommand::SetFast { on: Some(true) });
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text.contains("already a fast version")));
+    r.send(AgentCommand::SetFast { on: Some(false) });
+    let evs = r.until(|e| matches!(e, AgentEvent::Fast { .. })).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ModelChanged { model, .. } if model == "m1")));
+    assert!(matches!(evs.last(), Some(AgentEvent::Fast { on: false })));
+
+    // no twin: one line, nothing changes
+    r.send(AgentCommand::SetModel { provider: None, model: "m2".into() });
+    r.until(|e| matches!(e, AgentEvent::Effort { .. })).await;
+    r.send(AgentCommand::SetFast { on: None });
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text == "No fast version of m2 on mock."));
+    r.send(AgentCommand::SetFast { on: Some(false) });
+    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text == "fast is already off"));
+
+    // a provider with a request option keeps its model and sends the option while it is on
+    r.send(AgentCommand::SetModel { provider: Some("sub".into()), model: "c1".into() });
+    r.until(|e| matches!(e, AgentEvent::Effort { .. })).await;
+    r.send(AgentCommand::SetFast { on: None });
+    assert!(matches!(r.next().await, AgentEvent::Fast { on: true }));
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::SetFast { on: None });
+    assert!(matches!(r.next().await, AgentEvent::Fast { on: false }));
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    assert_eq!(reqs[0].model, "c1");
+    assert_eq!(reqs[0].extra.get("service_tier"), Some(&json!("priority")));
+    assert!(!reqs[1].extra.contains_key("service_tier"));
+    r.stop().await;
+}

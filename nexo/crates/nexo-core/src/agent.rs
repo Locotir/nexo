@@ -208,6 +208,11 @@ pub enum AgentCommand {
     SetEffort {
         effort: Option<String>,
     },
+    /// `/fast`: switch the model to its fast version or back (None: the other one of the two), or turn
+    /// on the provider's fast request option; answered with `Fast`, or a `Notice` when there is none.
+    SetFast {
+        on: Option<bool>,
+    },
     /// Stop background job `id`, or every running one with None; answered with `Jobs`.
     KillJob {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -639,6 +644,10 @@ pub enum AgentEvent {
         model: String,
         current: Option<String>,
         levels: Vec<String>,
+    },
+    /// Whether the model in use runs fast: a fast twin, or the provider's fast request option.
+    Fast {
+        on: bool,
     },
     /// The goal in force (None: cleared), the continuation round out of the maximum, and where it stands.
     Goal {

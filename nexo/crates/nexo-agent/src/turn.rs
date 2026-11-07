@@ -13,6 +13,7 @@ use nexo_core::agent::{
 };
 use nexo_core::config::{Config, OnLimit, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
+use nexo_core::fast::{self, Twin};
 use nexo_core::jobs::Jobs;
 use nexo_core::leak;
 use nexo_core::mail::Mail;
@@ -169,6 +170,10 @@ struct State {
     system: String,
     /// What is known of the model in use (prices, window, largest reply).
     limits: Limits,
+    /// `/fast` asked for the provider's fast request option (it counts only where the provider has one).
+    fast: bool,
+    /// The models the provider listed when `/fast` last asked, with its name.
+    live: Option<(String, Vec<String>)>,
     /// Where the request in progress starts in `history`.
     turn_start: usize,
     turns: u32,
@@ -384,6 +389,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 levels: c.efforts.get(&model).cloned().unwrap_or_default(),
             },
         );
+        if matches!(fast::twin(&model, c.models.iter().map(String::as_str)), Twin::Base(_)) {
+            emit(&events, AgentEvent::Fast { on: true });
+        }
     }
     let goal = session.goal().map(String::from);
     let goal_state = session.goal_state().clone();
@@ -415,6 +423,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         cost,
         system,
         limits,
+        fast: false,
+        live: None,
         turn_start: 0,
         turns: 0,
         goal,
@@ -866,6 +876,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::SaveModel { name, cfg, model, key } => save_model(&state, name, cfg, model, key).await,
                     AgentCommand::SetEffort { effort } => set_effort(&state, effort).await,
+                    AgentCommand::SetFast { on } => set_fast(&state, on).await,
                     AgentCommand::KillJob { id } => {
                         let n = match id {
                             Some(id) => usize::from(jobs.kill(id)),
@@ -1743,6 +1754,9 @@ async fn prepare(
     req.max_tokens = st.limits.max_tokens(st.config.agent.max_tokens);
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
+    if let (true, Some((key, value))) = (st.fast, fast::option(&cfg)) {
+        req.extra.insert(key.into(), Value::from(value));
+    }
     st.last_request = Some(req.clone());
     Ok((req, cfg, st.client.clone(), st.config.agent.retries))
 }
@@ -3479,14 +3493,22 @@ async fn set_model(state: &Shared, provider: Option<String>, model: String) {
     match st.config.providers.get(&provider).cloned() {
         None => notice(&st.events, Level::Error, format!("unknown provider `{provider}` (see `nexo providers`)")),
         Some(cfg) => {
+            let was_fast = fast_on(&st);
             st.limits = limits::resolve(&provider, &cfg, &model, None);
             // another model may count with another tokenizer
             st.tok_ratio = None;
+            // the fast request option belongs to the provider that was asked for it
+            if provider != st.target.provider() {
+                st.fast = false;
+            }
             st.target.set(&provider, cfg, &model);
             let _ = st.session.record_model(&provider, &model);
             emit(&st.events, AgentEvent::ModelChanged { provider: provider.clone(), model: model.clone() });
             emit(&st.events, st.limits.event(&provider, &model));
             emit(&st.events, effort_event(&st));
+            if fast_on(&st) != was_fast {
+                emit(&st.events, fast_event(&st));
+            }
             drop(st);
             spawn_vendor_fill(state);
         }
@@ -3693,6 +3715,65 @@ async fn set_effort(state: &Shared, effort: Option<String>) {
         notice(&st.events, Level::Warn, format!("effort set for this session only ({e})"));
     }
     emit(&st.events, effort_event(&st));
+}
+
+/// Whether the model in use runs fast: the provider's fast request option is on, or the model is
+/// the fast twin of one the provider lists.
+fn fast_on(st: &State) -> bool {
+    let (provider, cfg, model) = st.target.get();
+    if st.fast && fast::option(&cfg).is_some() {
+        return true;
+    }
+    let live = st.live.iter().filter(|(p, _)| *p == provider).flat_map(|(_, l)| l.iter());
+    matches!(fast::twin(&model, cfg.models.iter().chain(live).map(String::as_str)), Twin::Base(_))
+}
+
+fn fast_event(st: &State) -> AgentEvent {
+    AgentEvent::Fast { on: fast_on(st) }
+}
+
+/// `/fast`: the model in use to its fast twin on the same provider, or back to the base; where the
+/// provider takes speed as a request option instead (`fast::option`), that option. `on` None
+/// switches to the other of the two.
+async fn set_fast(state: &Shared, on: Option<bool>) {
+    let (provider, cfg, model, client, events) = {
+        let st = state.lock().await;
+        let (p, c, m) = st.target.get();
+        (p, c, m, st.client.clone(), st.events.clone())
+    };
+    let option = fast::option(&cfg);
+    let listed = |st: &State| -> Vec<String> {
+        let live = st.live.iter().filter(|(p, _)| *p == provider).flat_map(|(_, l)| l.iter().cloned());
+        cfg.models.iter().cloned().chain(live).collect()
+    };
+    let mut found = fast::twin(&model, listed(&*state.lock().await).iter().map(String::as_str));
+    if found == Twin::None && option.is_none() {
+        // the models the provider offers now may hold the twin the configuration does not
+        if let Ok(Ok(list)) = tokio::time::timeout(Duration::from_secs(8), client.list_models(&cfg)).await {
+            let mut st = state.lock().await;
+            st.live = Some((provider.clone(), list.into_iter().map(|m| m.id).collect()));
+            found = fast::twin(&model, listed(&st).iter().map(String::as_str));
+        }
+    }
+    match found {
+        Twin::Base(base) => match on {
+            Some(true) => notice(&events, Level::Info, format!("{model} is already a fast version")),
+            _ => set_model(state, Some(provider), base).await,
+        },
+        _ if option.is_some() => {
+            let mut st = state.lock().await;
+            st.fast = on.unwrap_or(!st.fast);
+            emit(&st.events, fast_event(&st));
+        }
+        Twin::Fast(fast) => match on {
+            Some(false) => notice(&events, Level::Info, "fast is already off"),
+            _ => set_model(state, Some(provider), fast).await,
+        },
+        Twin::None => match on {
+            Some(false) => notice(&events, Level::Info, "fast is already off"),
+            _ => notice(&events, Level::Info, format!("No fast version of {model} on {provider}.")),
+        },
+    }
 }
 
 /// Saves what the setup found for a model and switches to it.
