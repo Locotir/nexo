@@ -74,6 +74,10 @@ impl OpenAiChat {
             }
             Some(ReasoningConfig::Budget(_)) | Some(ReasoningConfig::Off) | None => {}
         }
+        // OpenAI's own endpoint routes its prompt cache by this; other vendors may reject the field
+        if let Some(id) = req.session_id.as_deref().filter(|_| is_openai(cfg)) {
+            body["prompt_cache_key"] = json!(id);
+        }
         for (k, v) in &req.extra {
             body[k] = v.clone();
         }
@@ -84,6 +88,14 @@ impl OpenAiChat {
     pub fn parse(events: impl futures::Stream<Item = Result<SseEvent, String>> + Send + 'static) -> EventStream {
         crate::parse::run(events, ChatParser::default())
     }
+}
+
+/// Whether the provider is OpenAI itself (`api.openai.com`).
+fn is_openai(cfg: &ProviderConfig) -> bool {
+    reqwest::Url::parse(&cfg.base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case("api.openai.com")))
+        .unwrap_or(false)
 }
 
 /// Newer OpenAI models reject `max_tokens` (`o*`, `gpt-5*`).
@@ -476,6 +488,22 @@ mod tests {
         );
         let b = OpenAiChat::body(&cfg(), &req);
         assert_eq!(b["messages"][1]["content"], "");
+    }
+
+    #[test]
+    fn the_cache_key_goes_only_to_openai_itself() {
+        let mut req = ModelRequest::new("gpt-5", "", vec![Message::user("hi")]);
+        req.session_id = Some("sess-1".into());
+        let openai = OpenAiChat::body(&ProviderConfig::new(ID, "https://api.openai.com/v1", None), &req);
+        assert_eq!(openai["prompt_cache_key"], "sess-1");
+        for base in ["https://api.deepseek.com", "https://openrouter.ai/api/v1", "http://localhost:11434/v1"] {
+            let b = OpenAiChat::body(&ProviderConfig::new(ID, base, None), &req);
+            assert!(b.get("prompt_cache_key").is_none(), "{base}");
+        }
+        req.session_id = None;
+        assert!(OpenAiChat::body(&ProviderConfig::new(ID, "https://api.openai.com/v1", None), &req)
+            .get("prompt_cache_key")
+            .is_none());
     }
 
     #[test]

@@ -88,6 +88,11 @@ pub struct ModelRequest {
     /// Ask the protocol to mark cache breakpoints where it has explicit ones.
     #[serde(default = "yes")]
     pub cache: bool,
+    /// What every request of one conversation shares (the session id; a sub-agent run has its own).
+    /// Protocols that route their prompt cache by an id send it, so the prefix of one conversation
+    /// is found again on the next request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// Free-form, forwarded by adapters that know a key (e.g. `"store"`).
     #[serde(default)]
     pub extra: BTreeMap<String, Value>,
@@ -110,6 +115,7 @@ impl ModelRequest {
             stop: Vec::new(),
             no_tool_call: false,
             cache: true,
+            session_id: None,
             extra: BTreeMap::new(),
         }
     }

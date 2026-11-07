@@ -74,15 +74,40 @@ impl OpenAiResponses {
         if !include.is_empty() {
             body["include"] = json!(include);
         }
+        if let Some(id) = req.session_id.as_deref().filter(|_| cache_key_allowed(cfg)) {
+            body["prompt_cache_key"] = json!(id);
+        }
         for (k, v) in &req.extra {
             body[k] = v.clone();
         }
         body
     }
 
+    /// The request headers: the protocol's, and on a ChatGPT login the ones Codex sends to tie the
+    /// request to its conversation (`session-id`, `thread-id`, `x-client-request-id`), which that
+    /// backend routes its cache by. A header set in the provider's config wins.
+    pub fn request_headers(cfg: &ProviderConfig, key: Option<&str>, req: &ModelRequest) -> reqwest::header::HeaderMap {
+        let mut h = OpenAiChat::headers(cfg, key);
+        if let (Some(id), Some("codex")) = (req.session_id.as_deref(), cfg.login.as_deref()) {
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(id) {
+                for name in ["session-id", "thread-id", "x-client-request-id"] {
+                    if !h.contains_key(name) {
+                        h.insert(reqwest::header::HeaderName::from_static(name), v.clone());
+                    }
+                }
+            }
+        }
+        h
+    }
+
     pub fn parse(events: impl futures::Stream<Item = Result<SseEvent, String>> + Send + 'static) -> EventStream {
         crate::parse::run(events, ResponsesParser::default())
     }
+}
+
+/// `extra.prompt_cache_key = false` keeps the field off, for a server that rejects fields it does not know.
+fn cache_key_allowed(cfg: &ProviderConfig) -> bool {
+    cfg.extra.get("prompt_cache_key").and_then(|v| v.as_bool()).unwrap_or(true)
 }
 
 /// A message as input items.
@@ -351,7 +376,8 @@ impl Protocol for OpenAiResponses {
         key: Option<&str>,
         req: &ModelRequest,
     ) -> Result<EventStream, ProviderError> {
-        let body = http::post_stream(&Self::url(cfg), OpenAiChat::headers(cfg, key), &Self::body(cfg, req)).await?;
+        let body =
+            http::post_stream(&Self::url(cfg), Self::request_headers(cfg, key, req), &Self::body(cfg, req)).await?;
         Ok(Self::parse(http::sse(body)))
     }
 
@@ -453,6 +479,47 @@ mod tests {
         assert_eq!(b["reasoning"]["effort"], "high");
         assert_eq!(b["include"][0], "reasoning.encrypted_content");
         assert_eq!(b["max_output_tokens"], 8192);
+    }
+
+    fn with_session(id: &str) -> ModelRequest {
+        let mut req = ModelRequest::new("gpt-5", "sys", vec![Message::user("hi")]);
+        req.session_id = Some(id.into());
+        req
+    }
+
+    #[test]
+    fn the_cache_key_is_the_session_id_stable_within_a_session_and_apart_between_sessions() {
+        let cfg = ProviderConfig::new(ID, "https://api.openai.com/v1", None);
+        let mut a = with_session("20261107-101500-aaaa");
+        let first = OpenAiResponses::body(&cfg, &a);
+        a.messages.push(Message::user("and then"));
+        let second = OpenAiResponses::body(&cfg, &a);
+        assert_eq!(first["prompt_cache_key"], "20261107-101500-aaaa");
+        assert_eq!(first["prompt_cache_key"], second["prompt_cache_key"]);
+        let other = OpenAiResponses::body(&cfg, &with_session("20261107-101500-bbbb"));
+        assert_ne!(first["prompt_cache_key"], other["prompt_cache_key"]);
+        let none = OpenAiResponses::body(&cfg, &ModelRequest::new("gpt-5", "sys", vec![]));
+        assert!(none.get("prompt_cache_key").is_none());
+        let mut off = cfg.clone();
+        off.extra.insert("prompt_cache_key".into(), toml::Value::Boolean(false));
+        assert!(OpenAiResponses::body(&off, &a).get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn a_chatgpt_login_sends_the_session_headers_codex_sends() {
+        let mut cfg = ProviderConfig::new(ID, "https://chatgpt.com/backend-api/codex", None);
+        cfg.login = Some("codex".into());
+        let h = OpenAiResponses::request_headers(&cfg, Some("tok"), &with_session("s-1"));
+        for name in ["session-id", "thread-id", "x-client-request-id"] {
+            assert_eq!(h[name], "s-1", "{name}");
+        }
+        let h2 = OpenAiResponses::request_headers(&cfg, Some("tok"), &with_session("s-2"));
+        assert_ne!(h["session-id"], h2["session-id"]);
+        // a config header wins, and a provider that is not a ChatGPT login gets none
+        cfg.headers.insert("session-id".into(), "mine".into());
+        assert_eq!(OpenAiResponses::request_headers(&cfg, None, &with_session("s-1"))["session-id"], "mine");
+        let plain = ProviderConfig::new(ID, "https://api.openai.com/v1", None);
+        assert!(OpenAiResponses::request_headers(&plain, None, &with_session("s-1")).get("session-id").is_none());
     }
 
     #[test]

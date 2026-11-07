@@ -720,6 +720,42 @@ async fn compact_does_not_summarise_every_round_a_request_its_fixed_part_keeps_o
 }
 
 #[tokio::test]
+async fn every_request_of_a_session_carries_its_id_also_after_a_resume() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(call("c1", "read", json!({"path": "f"}))), Reply::Events(text("read it"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "please read f".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    assert!(reqs.iter().all(|q| q.session_id.as_deref() == Some(id.as_str())), "one id for the whole session");
+    let client = Scripted::new(vec![Reply::Events(text("again"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), Some(id.clone()), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "more".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    assert_eq!(client.requests()[0].session_id.as_deref(), Some(id.as_str()), "the same after a resume");
+    let client = Scripted::new(vec![Reply::Events(text("hi"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let other = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    assert_ne!(other, id);
+    assert_eq!(client.requests()[0].session_id.as_deref(), Some(other.as_str()), "another session, another id");
+}
+
+#[tokio::test]
 async fn a_session_is_resumed_with_its_history_and_tool_outputs() {
     let d = tempfile::tempdir().unwrap();
     let client =

@@ -650,6 +650,8 @@ impl Run {
         };
         let mut messages = vec![first];
         let specs = self.tools.specs();
+        // one id for every round of this run: its own prefix, apart from the parent's and the other runs'
+        let cache_id = format!("{}-sub-{}", ctx.session_id, &uuid::Uuid::new_v4().simple().to_string()[..8]);
         for round in 0..=rounds {
             // the rounds are over: one more request, told to report what it has
             let last = round == rounds;
@@ -661,6 +663,7 @@ impl Run {
             let mut req = ModelRequest::new(model.clone(), system.clone(), messages.clone());
             req.tools = specs.clone();
             req.max_tokens = 4096;
+            req.session_id = Some(cache_id.clone());
             // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
             // done twice, and the rounds before it (files written, commands run) are not thrown away
             let mut tries = 0u32;

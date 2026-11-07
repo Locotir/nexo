@@ -1754,6 +1754,7 @@ async fn prepare(
     req.max_tokens = st.limits.max_tokens(st.config.agent.max_tokens);
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
+    req.session_id = Some(st.session.id().to_string());
     if let (true, Some((key, value))) = (st.fast, fast::option(&cfg)) {
         req.extra.insert(key.into(), Value::from(value));
     }
