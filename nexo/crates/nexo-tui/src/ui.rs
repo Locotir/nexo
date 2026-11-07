@@ -151,7 +151,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         };
         // the to-do and jobs windows get clear ground, so no piece of the welcome card shows beside them; the
         // others keep the text in sight (a theme preview needs it) and clear only the cells beside the box
-        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_))) {
+        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_))) {
             clear_bg(f, area_for, &app.theme);
         }
         draw_modal(f, app, area_for);
@@ -2285,6 +2285,13 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             pinned = vec![Line::default(), v.keys(inner_w, &theme)];
             (v.title(), lines, None)
         }
+        Modal::Mcp(v) => {
+            let (lines, starts, at) = v.lines(inner_w, &theme);
+            job_rows = starts;
+            job_at = at;
+            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
+            (v.title(), lines, None)
+        }
         Modal::Todo(v) => {
             let spinner = app.opts.animations.then_some(app.spinner);
             let pulse = if spinner.is_some() { ((app.spinner as f32 * 0.35).sin() + 1.0) / 2.0 } else { 0.0 };
@@ -2355,6 +2362,13 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
             v.scroll
         }
+        Modal::Mcp(v) => {
+            // the selected server and its two lines stay in view
+            let end = job_at + 2;
+            v.scroll = end.saturating_sub(body_h);
+            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
+            v.scroll
+        }
         Modal::Todo(v) => {
             // the selected task stays in view, headers above it too when there is room
             let (at, len) = todo_sel;
@@ -2403,7 +2417,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     };
     // a bar on the right border, for what scrolls: the text, or a list (moving its selection)
     let bar = match modal {
-        Modal::Permission(_) | Modal::Help { .. } | Modal::Jobs(_) | Modal::Todo(_) => Some(0),
+        Modal::Permission(_) | Modal::Help { .. } | Modal::Jobs(_) | Modal::Todo(_) | Modal::Mcp(_) => Some(0),
         Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => None,
     };
@@ -2414,6 +2428,16 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 if line >= scroll && line < scroll + body_h {
                     app.picker_rows
                         .push((Rect::new(body_area.x, body_area.y + (line - scroll) as u16, body_area.width, 1), i));
+                }
+            }
+        }
+    }
+    if let (Modal::Mcp(_), false) = (&*modal, job_rows.is_empty()) {
+        for (i, &line) in job_rows.iter().enumerate() {
+            for l in line..line + 2 {
+                if l >= scroll && l < scroll + body_h {
+                    app.picker_rows
+                        .push((Rect::new(body_area.x, body_area.y + (l - scroll) as u16, body_area.width, 1), i));
                 }
             }
         }

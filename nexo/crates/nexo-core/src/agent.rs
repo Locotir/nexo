@@ -139,6 +139,31 @@ pub enum AgentCommand {
     ShowTools,
     /// Ask for the hooks that are loaded and where each comes from; answered with a `Notice`.
     ShowHooks,
+    /// Ask for the MCP servers with their state and lists; answered with `Mcp`.
+    ShowMcp,
+    /// Turn an MCP server on or off for this session (`persist`: also in the configuration); answered with `Mcp`.
+    McpToggle {
+        server: String,
+        on: bool,
+        #[serde(default)]
+        persist: bool,
+    },
+    /// Sign in to an MCP server that needs a login (the browser opens); answered with `Mcp`.
+    McpLogin {
+        server: String,
+    },
+    /// Connect an MCP server again; answered with `Mcp`.
+    McpReconnect {
+        server: String,
+    },
+    /// Run a prompt of an MCP server (`/mcp__<server>__<prompt> args`): its messages become the request.
+    /// `args` are as typed, positional or `key=value`.
+    McpPrompt {
+        server: String,
+        prompt: String,
+        #[serde(default)]
+        args: String,
+    },
     /// Look for the usual local servers (Ollama, LM Studio, vLLM, llama.cpp) at their usual
     /// ports; answered with `LocalServers`.
     ScanLocal,
@@ -208,6 +233,55 @@ pub enum AgentCommand {
     /// with `Suggestion`, or with nothing when there is none. The interface sends it when a turn ends.
     Suggest,
     Shutdown,
+}
+
+/// Where an MCP server stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpStatus {
+    Connected,
+    /// A remote server that answered 401 and has no login that works.
+    NeedsLogin,
+    /// Could not start or reach; the reason.
+    Failed(String),
+    /// Turned off (in the configuration or for this session).
+    Disabled,
+}
+
+/// One argument of an MCP prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpArgInfo {
+    pub name: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// One prompt of an MCP server (it becomes the command `/mcp__<server>__<name>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpPromptInfo {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub args: Vec<McpArgInfo>,
+}
+
+/// One MCP server as the `/mcp` window and the completion of `@server:` and `/mcp__` see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerInfo {
+    pub name: String,
+    /// `stdio`, `http` or `sse`.
+    pub transport: String,
+    pub status: McpStatus,
+    pub tools: usize,
+    /// The URIs of the listed resources.
+    #[serde(default)]
+    pub resources: Vec<String>,
+    /// The URI templates of the listed resource templates.
+    #[serde(default)]
+    pub templates: Vec<String>,
+    #[serde(default)]
+    pub prompts: Vec<McpPromptInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,6 +569,10 @@ pub enum AgentEvent {
     /// notice): the agent waits for the person. Jobs may still run.
     Idle {
         running_jobs: usize,
+    },
+    /// The MCP servers, sent at the start and whenever one changes (state, tools, resources, prompts).
+    Mcp {
+        servers: Vec<McpServerInfo>,
     },
     /// The background jobs of the session, sent whenever one starts or ends.
     Jobs {

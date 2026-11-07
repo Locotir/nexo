@@ -253,6 +253,8 @@ pub enum Modal {
     Jobs(Box<crate::jobs_view::JobsView>),
     /// `/todo`: the task list, grouped by state.
     Todo(Box<crate::todo_view::TodoView>),
+    /// `/mcp`: the MCP servers, with their state and controls.
+    Mcp(Box<crate::mcp_view::McpView>),
 }
 
 /// What a key or click in a modal asks the app to do.
@@ -504,6 +506,7 @@ impl Modal {
             Modal::Agents(a) => a.key(key),
             Modal::Jobs(j) => j.key(key),
             Modal::Todo(t) => t.key(key),
+            Modal::Mcp(m) => m.key(key),
             Modal::Info(i) => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModalOut::Close,
                 KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
@@ -621,6 +624,12 @@ impl Modal {
                 Some((_, i)) => t.click_row(*i),
                 None => ModalOut::Nothing,
             },
+            Modal::Mcp(m) => {
+                if let Some((_, i)) = rows.iter().find(|(r, _)| contains(*r, x, y)) {
+                    m.click_row(*i);
+                }
+                ModalOut::Nothing
+            }
             Modal::Info(i) => {
                 if contains(i.close, x, y) || !contains(i.window, x, y) {
                     return ModalOut::Close;
@@ -660,6 +669,7 @@ impl Modal {
             Modal::Agents(a) => a.scroll_by(delta),
             Modal::Jobs(j) => j.scroll_by(delta),
             Modal::Todo(t) => t.scroll_by(delta),
+            Modal::Mcp(m) => m.scroll_by(delta),
         }
     }
 
@@ -686,6 +696,7 @@ impl Modal {
             Modal::Agents(a) => a.scroll = off,
             Modal::Jobs(j) => j.scroll = off,
             Modal::Todo(t) => t.scroll_to_line(off),
+            Modal::Mcp(m) => m.scroll = off,
             Modal::Picker(p) => pick(p, off, viewport, first),
             Modal::Setup(s) => pick(&mut s.list, off, viewport, first),
         }

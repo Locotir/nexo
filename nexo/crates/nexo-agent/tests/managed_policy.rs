@@ -117,6 +117,7 @@ async fn start(cfg: Config, script: Vec<Vec<StreamEvent>>, cwd: &std::path::Path
         resume: None,
         gate: None,
         mail: None,
+        mcp: None,
     };
     let task = tokio::spawn(nexo_agent::run(ends, setup));
     let mut r = Running { handle, task };

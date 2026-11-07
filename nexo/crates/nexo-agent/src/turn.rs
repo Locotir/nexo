@@ -215,6 +215,9 @@ struct State {
     /// The mailbox other sessions write to, and the mails that reached the model: those waiting for the turn
     /// in progress to end, and those the turn in progress carries (told "read" when the model starts answering).
     mail: Option<Arc<Mailbox>>,
+    /// The MCP servers, and the hub count the tool set was last brought up to date with.
+    mcp: Option<Arc<nexo_tools::mcp_hub::McpHub>>,
+    mcp_gen: u64,
     mail_wait: Vec<Mail>,
     mail_turn: Vec<Mail>,
     /// Text hooks added for the model (SessionStart, UserPromptSubmit): it goes with the next request.
@@ -231,6 +234,14 @@ fn emit(events: &EventTx, ev: AgentEvent) {
 
 fn notice(events: &EventTx, level: Level, text: impl Into<String>) {
     emit(events, AgentEvent::Notice { level, text: text.into() });
+}
+
+/// Tells the person how an MCP control ended.
+fn mcp_result(events: &EventTx, r: Result<String, String>) {
+    match r {
+        Ok(t) => notice(events, Level::Info, t),
+        Err(e) => notice(events, Level::Warn, format!("mcp: {e}")),
+    }
 }
 
 /// Runs the hooks of `event` with what the session knows, tells the person which failed, and returns
@@ -277,7 +288,7 @@ const STOP_HOOK_CAP: u32 = 3;
 
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
-    let AgentSetup { mut config, cwd, provider, model, mut tools, client, resume, gate, mail } = setup;
+    let AgentSetup { mut config, cwd, provider, model, mut tools, client, resume, gate, mail, mcp } = setup;
     // whoever built the setup (the interface, a script, ACP), the managed policy is applied once more here
     config.enforce_managed();
     let headless = gate.is_some();
@@ -425,6 +436,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         last_prompt: None,
         est_sent: 0,
         tok_ratio: None,
+        mcp_gen: mcp.as_ref().map_or(0, |h| h.generation()),
+        mcp: mcp.clone(),
         mail,
         mail_wait: Vec::new(),
         mail_turn: Vec::new(),
@@ -432,6 +445,17 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         audit,
     }));
     let _ = host.set(Arc::new(StateHost { state: Arc::downgrade(&state), events: events.clone() }));
+    if let Some(hub) = &mcp {
+        // the interface learns of every change of a server (its lists, a login, a failure)
+        let (hub, events) = (hub.clone(), events.clone());
+        tokio::spawn(async move {
+            let mut rx = hub.watch();
+            emit(&events, AgentEvent::Mcp { servers: hub.info() });
+            while rx.changed().await.is_ok() {
+                emit(&events, AgentEvent::Mcp { servers: hub.info() });
+            }
+        });
+    }
     {
         let mut st = state.lock().await;
         st.system = full_system(&st);
@@ -693,6 +717,85 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     AgentCommand::ShowHooks => {
                         let st = state.lock().await;
                         notice(&events, Level::Info, crate::hooks::describe(&st.config.hooks));
+                    }
+                    AgentCommand::ShowMcp => {
+                        let hub = state.lock().await.mcp.clone();
+                        match hub {
+                            Some(h) => emit(&events, AgentEvent::Mcp { servers: h.info() }),
+                            None => {
+                                emit(&events, AgentEvent::Mcp { servers: Vec::new() });
+                            }
+                        }
+                    }
+                    AgentCommand::McpToggle { server, on, persist } => {
+                        let hub = state.lock().await.mcp.clone();
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            let r = match hub {
+                                Some(h) => h.set_enabled(&server, on, persist).await,
+                                None => Err("no MCP servers are configured".to_string()),
+                            };
+                            mcp_result(&events, r);
+                        });
+                    }
+                    AgentCommand::McpReconnect { server } => {
+                        let hub = state.lock().await.mcp.clone();
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            let r = match hub {
+                                Some(h) => h.reconnect(&server).await,
+                                None => Err("no MCP servers are configured".to_string()),
+                            };
+                            mcp_result(&events, r);
+                        });
+                    }
+                    AgentCommand::McpLogin { server } => {
+                        let hub = state.lock().await.mcp.clone();
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            let open = {
+                                let events = events.clone();
+                                move |url: &str| {
+                                    if nexo_providers::login::open_url(url) {
+                                        notice(&events, Level::Info, format!("Opened your browser to sign in. If nothing opened, go to:\n{url}"));
+                                    } else {
+                                        notice(&events, Level::Info, format!("Open this address in a browser to sign in:\n{url}"));
+                                    }
+                                }
+                            };
+                            let r = match hub {
+                                Some(h) => h.login(&server, &open).await,
+                                None => Err("no MCP servers are configured".to_string()),
+                            };
+                            mcp_result(&events, r);
+                        });
+                    }
+                    AgentCommand::McpPrompt { server, prompt, args } => {
+                        let hub = state.lock().await.mcp.clone();
+                        let made = match hub {
+                            Some(h) => h.prompt_request(&server, &prompt, &args).await,
+                            None => Err("no MCP servers are configured".to_string()),
+                        };
+                        match made {
+                            Err(e) => {
+                                notice(&events, Level::Warn, format!("/mcp__{server}__{prompt}: {e}"));
+                                if turn.is_none() {
+                                    emit(&events, AgentEvent::Idle { running_jobs: state.lock().await.jobs.running() });
+                                }
+                            }
+                            Ok(text) => {
+                                let mut st = state.lock().await;
+                                st.goal_round = 0;
+                                if turn.is_some() {
+                                    st.inbox.push_back((text, Vec::new()));
+                                    emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
+                                } else {
+                                    person_spoke(&mut st);
+                                    drop(st);
+                                    turn = start_prompt(&state, text, Vec::new(), cancel.child_token()).await;
+                                }
+                            }
+                        }
                     }
                     AgentCommand::ShowTools => {
                         let st = state.lock().await;
@@ -1422,8 +1525,19 @@ async fn start_turn(
     attachments: Vec<Attachment>,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
+    // @server:uri mentions become the resources they name (read before the state is taken)
+    let hub = state.lock().await.mcp.clone();
+    let text = match &hub {
+        Some(h) => h.expand_mentions(text).await,
+        None => text,
+    };
     {
         let mut st = state.lock().await;
+        // a server changed its tools since the last turn: they take effect now, not in the middle of one
+        if let Some(h) = st.mcp.clone() {
+            let st = &mut *st;
+            h.sync_tools(&mut st.tools, &mut st.mcp_gen);
+        }
         // the prompt file may have changed since the last request
         // a turn is under way: mail waits for the next idle point
         if let Some(m) = &st.mail {

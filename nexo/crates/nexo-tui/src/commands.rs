@@ -79,8 +79,9 @@ pub const COMMANDS: &[Spec] = &[
     spec("status", &["info"], "", "version, model, key, endpoint, session, configuration files"),
     spec("config", &["settings"], "", "where the configuration files are"),
     spec("doctor", &[], "", "check the setup: files, provider, model, key"),
-    spec("tools", &["mcp"], "", "the tools the model has, by kind"),
+    spec("tools", &[], "", "the tools the model has, by kind"),
     spec("hooks", &[], "", "the hooks that are loaded, and where they come from"),
+    spec("mcp", &[], "", "the MCP servers: state, tools, resources and prompts; turn on or off, log in, reconnect"),
     spec("skills", &[], "", "the skills found (name, what it does, where from); /skill-name [args] runs one"),
     spec("plugins", &[], "", "the installed plugins and what each adds (nexo plugin install adds one)"),
     spec("vim", &[], "", "the vim keys in the editor on or off"),
@@ -132,6 +133,8 @@ pub enum Command {
     Status,
     Tools,
     Hooks,
+    /// `/mcp`: the window with the MCP servers.
+    Mcp,
     /// `/skills`: the Agent Skills found, with their source.
     Skills,
     /// `/plugins`: the installed plugins and what each adds.
@@ -230,6 +233,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "status" => Command::Status,
         "tools" => Command::Tools,
         "hooks" => Command::Hooks,
+        "mcp" => Command::Mcp,
         "skills" => Command::Skills,
         "plugins" => Command::Plugins,
         "vim" => Command::Vim,
@@ -383,6 +387,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "cost",
             "tools",
             "hooks",
+            "mcp",
             "skills",
             "plugins",
             "jobs",

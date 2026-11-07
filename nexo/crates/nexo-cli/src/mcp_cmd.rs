@@ -216,6 +216,38 @@ pub fn remove_from_file(file: &Path, name: &str) -> anyhow::Result<bool> {
     Ok(had)
 }
 
+/// Sets `enabled` of `[mcp.<name>]` in the file; false when the file does not hold the server.
+pub fn set_enabled_in_file(file: &Path, name: &str, on: bool) -> anyhow::Result<bool> {
+    if !file.is_file() {
+        return Ok(false);
+    }
+    let mut doc = read_doc(file)?;
+    let Some(t) = doc.get_mut("mcp").and_then(Item::as_table_mut).and_then(|m| m.get_mut(name)) else {
+        return Ok(false);
+    };
+    let Some(t) = t.as_table_like_mut() else { return Ok(false) };
+    if on {
+        t.remove("enabled");
+    } else {
+        t.insert("enabled", value(false));
+    }
+    write_doc(file, &doc)?;
+    Ok(true)
+}
+
+/// Makes a server's on or off last: writes it where the server is defined (project file first).
+pub fn persist_enabled(cwd: &Path, name: &str, on: bool) -> Result<String, String> {
+    for s in ["project", "user"] {
+        let file = scope_file(cwd, s);
+        match set_enabled_in_file(&file, name, on) {
+            Ok(true) => return Ok(format!("saved in {}", file.display())),
+            Ok(false) => {}
+            Err(e) => return Err(format!("{e:#}")),
+        }
+    }
+    Err(format!("{name} is not defined in a nexo file (a project .mcp.json is edited by hand)"))
+}
+
 fn remove(cwd: &Path, config: &Config, name: &str, scope: Option<&str>) -> anyhow::Result<i32> {
     let scopes: Vec<&str> = match scope {
         Some(s) => vec![s],
@@ -338,6 +370,23 @@ async fn login(config: &Config, name: &str) -> anyhow::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_is_turned_off_and_on_in_its_file_keeping_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        std::fs::write(&f, "# mine\n[mcp.docs]\nurl = \"https://x.test/mcp\"\n").unwrap();
+        assert!(!set_enabled_in_file(&f, "other", false).unwrap(), "unknown server");
+        assert!(!set_enabled_in_file(&d.path().join("none.toml"), "docs", false).unwrap(), "no file");
+        assert!(set_enabled_in_file(&f, "docs", false).unwrap());
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(
+            text.contains("# mine") && text.contains("enabled = false") && text.contains("https://x.test/mcp"),
+            "{text}"
+        );
+        assert!(set_enabled_in_file(&f, "docs", true).unwrap());
+        assert!(!std::fs::read_to_string(&f).unwrap().contains("enabled"));
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()

@@ -18,6 +18,7 @@ pub mod lsp;
 pub mod mail;
 pub mod mcp;
 pub mod mcp_http;
+pub mod mcp_hub;
 pub mod mcp_oauth;
 pub mod note;
 pub mod read;

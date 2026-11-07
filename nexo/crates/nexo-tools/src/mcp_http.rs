@@ -1,4 +1,4 @@
-//! MCP over HTTP: the streamable HTTP transport of the 2025-06-18 spec (every message is a POST; the
+//! MCP over HTTP: the treamable HTTP transport of the 2025-06-18 spec (every message is a POST; the
 //! answer is JSON or an SSE stream; `Mcp-Session-Id` is kept and sent back) and, when a server
 //! answers a 4xx to the first POST, the older HTTP+SSE transport (a GET stream announces the
 //! address to POST to, and the answers come back on the stream).
@@ -123,6 +123,14 @@ impl Sse {
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+/// Where the methods of the server's notifications go.
+type Sink = Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>;
+
+fn forward(sink: &Sink, method: &str) {
+    if let Some(tx) = sink.lock().ok().and_then(|s| s.clone()) {
+        let _ = tx.send(method.to_string());
+    }
+}
 
 /// The legacy transport's open stream.
 struct Legacy {
@@ -152,6 +160,8 @@ pub struct HttpLink {
     protocol: Mutex<Option<String>>,
     mode: Mutex<Mode>,
     needs_login: AtomicBool,
+    sink: Sink,
+    reinit: tokio::sync::Mutex<()>,
 }
 
 impl HttpLink {
@@ -184,7 +194,16 @@ impl HttpLink {
             protocol: Mutex::new(None),
             mode: Mutex::new(Mode::Unknown),
             needs_login: AtomicBool::new(false),
+            sink: Arc::default(),
+            reinit: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// Sends the method of every notification the server makes to `tx`.
+    pub fn set_sink(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        if let Ok(mut s) = self.sink.lock() {
+            *s = Some(tx);
+        }
     }
 
     /// True once a request met a 401 that no stored login could answer.
@@ -219,6 +238,57 @@ impl HttpLink {
     }
 
     async fn run(&self, method: &str, body: &Value, id: u64) -> Result<Value, Fail> {
+        let stale = self.session.lock().ok().and_then(|s| s.clone());
+        match self.run_once(method, body, id).await {
+            // 404 on a session the server forgot: start a new one once and send the request again
+            Err(Fail::Status(404, _)) if method != "initialize" && stale.is_some() => {
+                self.reinit(stale).await?;
+                self.run_once(method, body, id).await.map_err(|f| match f {
+                    Fail::Status(404, _) => {
+                        Fail::Other("the server ended the session (HTTP 404) and did not accept a new one".into())
+                    }
+                    f => f,
+                })
+            }
+            r => r,
+        }
+    }
+
+    /// A new session after the server answered 404 to `stale`. Requests that met the same 404 at
+    /// once share the one new session.
+    async fn reinit(&self, stale: Option<String>) -> Result<(), Fail> {
+        let _one_at_a_time = self.reinit.lock().await;
+        if self.session.lock().ok().and_then(|s| s.clone()) != stale {
+            return Ok(());
+        }
+        let version = self.protocol.lock().ok().and_then(|p| p.clone());
+        if let Ok(mut s) = self.session.lock() {
+            *s = None;
+        }
+        if let Ok(mut p) = self.protocol.lock() {
+            *p = None;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let version = version.unwrap_or_else(|| crate::mcp::PROTOCOL_VERSIONS[0].to_string());
+        let body = json!({"jsonrpc": "2.0", "id": id, "method": "initialize", "params": {
+            "protocolVersion": version,
+            "capabilities": {},
+            "clientInfo": {"name": "nexo", "version": env!("CARGO_PKG_VERSION")}
+        }});
+        let resp = self.post(&self.url, &body).await?;
+        let sid = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(String::from);
+        if let (Some(sid), Ok(mut s)) = (sid, self.session.lock()) {
+            *s = Some(sid);
+        }
+        let r = self.read_reply(resp, id).await?;
+        if let (Some(v), Ok(mut p)) = (r.get("protocolVersion").and_then(Value::as_str), self.protocol.lock()) {
+            *p = Some(v.to_string());
+        }
+        self.post(&self.url, &json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})).await?;
+        Ok(())
+    }
+
+    async fn run_once(&self, method: &str, body: &Value, id: u64) -> Result<Value, Fail> {
         let mut mode = self.mode.lock().map(|m| m.clone()).unwrap_or(Mode::Unknown);
         if matches!(mode, Mode::Unknown) && self.legacy_only {
             mode = Mode::Legacy(self.connect_legacy().await?);
@@ -256,9 +326,6 @@ impl HttpLink {
                     Err(Fail::Login) => Err(Fail::Login),
                     Err(_) => Err(Fail::Status(code, text)),
                 }
-            }
-            Err(Fail::Status(404, _)) if self.session.lock().map(|s| s.is_some()).unwrap_or(false) => {
-                Err(Fail::Other("the server ended the session (HTTP 404); restart nexo to connect again".into()))
             }
             Err(f) => Err(f),
         }
@@ -376,6 +443,10 @@ impl HttpLink {
             let _ = self.post(&url, &reply).await;
             return None;
         }
+        if let (None, Some(m)) = (msg.get("id"), msg.get("method").and_then(Value::as_str)) {
+            forward(&self.sink, m);
+            return None;
+        }
         if msg.get("id").and_then(Value::as_u64) != Some(id) {
             return None;
         }
@@ -402,6 +473,7 @@ impl HttpLink {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (ep_tx, ep_rx) = oneshot::channel::<String>();
         let reader_pending = pending.clone();
+        let reader_sink = self.sink.clone();
         let task = tokio::spawn(async move {
             let mut resp = resp;
             let mut p = Sse::default();
@@ -413,7 +485,7 @@ impl HttpLink {
                             let _ = tx.send(data.trim().to_string());
                         }
                     } else if ev == "message" {
-                        dispatch(&reader_pending, &data);
+                        dispatch(&reader_pending, &reader_sink, &data);
                     }
                 }
                 if p.too_big() {
@@ -475,9 +547,12 @@ impl HttpLink {
 }
 
 /// A message that came down the legacy stream.
-fn dispatch(pending: &Pending, data: &str) {
+fn dispatch(pending: &Pending, sink: &Sink, data: &str) {
     let Ok(msg) = serde_json::from_str::<Value>(data) else { return };
-    if msg.get("method").is_some() {
+    if let Some(m) = msg.get("method").and_then(Value::as_str) {
+        if msg.get("id").is_none() {
+            forward(sink, m);
+        }
         return;
     }
     let Some(id) = msg.get("id").and_then(Value::as_u64) else { return };

@@ -156,7 +156,7 @@ policy = "curator"               # auto | plain | compact | curator
   diagnostics after an edit.
 - **Sub-agents** (read-only explorers or full workers, custom ones from `.nexo/agents/*.md`) and
   **background jobs**.
-- **MCP servers**, **hooks** (`pre_tool` can block), **plan mode**, permission modes and remembered rules.
+- **[MCP servers](nexo/docs/MCP.md)** (`/mcp` shows them), **hooks** (`pre_tool` can block), **plan mode**, permission modes and remembered rules.
 - **Undo and rewind**: go back to any message, and the files the agent wrote go back too.
 - **Images**: attach them or paste a screenshot with `Ctrl+V`.
 

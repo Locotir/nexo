@@ -204,6 +204,7 @@ async fn start_with(
         resume,
         gate: None,
         mail: None,
+        mcp: None,
     };
     let task = tokio::spawn(nexo_agent::run(ends, setup));
     Running { handle, task }
@@ -3050,6 +3051,7 @@ async fn start_mail(client: Arc<Scripted>, cwd: &std::path::Path, mail: Arc<nexo
         resume: None,
         gate: None,
         mail: Some(mail),
+        mcp: None,
     };
     let task = tokio::spawn(nexo_agent::run(ends, setup));
     Running { handle, task }
@@ -4006,6 +4008,7 @@ async fn a_message_that_joins_after_a_guard_stop_is_answered_with_tools_on() {
         resume: None,
         gate: None,
         mail: None,
+        mcp: None,
     };
     let task = tokio::spawn(nexo_agent::run(ends, setup));
     let mut r = Running { handle, task };

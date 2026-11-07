@@ -160,6 +160,8 @@ pub struct App {
     pub hint_hits: Vec<(Rect, HintHit)>,
     /// The background jobs, as the agent last listed them.
     pub jobs: Vec<nexo_core::jobs::JobInfo>,
+    /// The MCP servers, as the agent last listed them (their prompts are commands, their resources complete after `@`).
+    pub mcp: Vec<nexo_core::agent::McpServerInfo>,
     /// The sessions that can be written to, as the mailbox last listed them (for `/msg`).
     pub peers: Vec<nexo_core::mail::PeerInfo>,
     mail_polled: Option<Instant>,
@@ -435,6 +437,7 @@ impl App {
             queue_rows: Vec::new(),
             hint_hits: Vec::new(),
             jobs: Vec::new(),
+            mcp: Vec::new(),
             peers: Vec::new(),
             mail_polled: None,
             nexo_src: nexo_agent::supervise::NexoSource::default(),
@@ -2429,6 +2432,13 @@ impl App {
                 self.jobs = jobs;
                 self.dirty = true;
             }
+            AgentEvent::Mcp { servers } => {
+                if let Some(Modal::Mcp(v)) = &mut self.modal {
+                    v.set_servers(servers.clone());
+                }
+                self.set_mcp(servers);
+                self.dirty = true;
+            }
             AgentEvent::JobTails { tails } => {
                 if let Some(Modal::Jobs(v)) = &mut self.modal {
                     v.set_tails(tails);
@@ -3406,6 +3416,14 @@ impl App {
                     }
                 }
             }
+            // a prompt of an MCP server: the agent asks the server and sends the result as the request
+            if let Some((server, prompt)) = self.mcp_prompt_of(&name) {
+                self.input.push_history(trimmed);
+                self.input.clear();
+                self.send(AgentCommand::McpPrompt { server, prompt, args: args.trim().to_string() });
+                self.scroll_to_end();
+                return;
+            }
             if let Some(c) = self.custom_commands.iter().find(|c| c.name == name).cloned() {
                 self.input.push_history(trimmed);
                 self.input.set_text(&c.expand(args));
@@ -3479,6 +3497,69 @@ impl App {
     /// `/todo`: the task list in its own window, grouped by state.
     pub fn open_todo(&mut self) {
         self.modal = Some(Modal::Todo(Box::new(crate::todo_view::TodoView::new(self.todo.clone()))));
+    }
+
+    /// `/mcp`: the window with the MCP servers (asks the agent for a fresh listing).
+    pub fn open_mcp(&mut self) {
+        self.modal = Some(Modal::Mcp(Box::new(crate::mcp_view::McpView::new(self.mcp.clone()))));
+        self.send(AgentCommand::ShowMcp);
+    }
+
+    /// The servers changed: the prompts become the commands `/mcp__server__prompt` (the old ones go).
+    fn set_mcp(&mut self, servers: Vec<nexo_core::agent::McpServerInfo>) {
+        self.custom_commands.retain(|c| c.origin != "mcp");
+        for s in &servers {
+            for p in &s.prompts {
+                let name = format!("mcp__{}__{}", s.name, p.name).to_ascii_lowercase();
+                if crate::commands::lookup(&name).is_some() || self.custom_commands.iter().any(|c| c.name == name) {
+                    continue;
+                }
+                let hint = p
+                    .args
+                    .iter()
+                    .map(|a| if a.required { format!("<{}>", a.name) } else { format!("[{}]", a.name) })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let description = if p.description.is_empty() {
+                    format!("prompt of {}", s.name)
+                } else {
+                    format!("{} ({})", p.description, s.name)
+                };
+                self.custom_commands.push(crate::custom::CustomCommand {
+                    name,
+                    description,
+                    body: String::new(),
+                    path: std::path::PathBuf::new(),
+                    hint,
+                    allowed_tools: String::new(),
+                    origin: "mcp".into(),
+                });
+            }
+        }
+        self.mcp = servers;
+    }
+
+    /// `server:uri` for each resource and template the connected servers list.
+    fn mcp_mentions(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for s in self.mcp.iter().filter(|s| s.status == nexo_core::agent::McpStatus::Connected) {
+            for u in s.resources.iter().chain(&s.templates) {
+                out.push(format!("{}:{u}", s.name));
+            }
+        }
+        out
+    }
+
+    /// The server and prompt a command name stands for (`mcp__server__prompt`).
+    fn mcp_prompt_of(&self, name: &str) -> Option<(String, String)> {
+        for s in &self.mcp {
+            for p in &s.prompts {
+                if format!("mcp__{}__{}", s.name, p.name).eq_ignore_ascii_case(name) {
+                    return Some((s.name.clone(), p.name.clone()));
+                }
+            }
+        }
+        None
     }
 
     /// `/jobs`, a click on `⚙ N jobs`: the window with every background job and its output.
@@ -3689,6 +3770,7 @@ impl App {
             Command::Status => self.send(AgentCommand::ShowStatus),
             Command::Tools => self.send(AgentCommand::ShowTools),
             Command::Hooks => self.send(AgentCommand::ShowHooks),
+            Command::Mcp => self.open_mcp(),
             Command::Skills => self.show_skills(),
             Command::Plugins => {
                 let text = nexo_core::plugins::describe(&nexo_core::paths::config_dir(), &Default::default());
@@ -4367,6 +4449,9 @@ impl App {
                         ),
                         PaletteKind::Files => {
                             let files = self.files().to_vec();
+                            let mut files = files;
+                            // `@server:uri` mentions of the MCP servers complete next to the files
+                            files.extend(self.mcp_mentions());
                             Palette::files(&query, start, files)
                         }
                         PaletteKind::Args(cmd) => {
@@ -7506,5 +7591,118 @@ mod tests {
         frame(&mut a, 70, 16);
         let Some(Modal::Picker(p)) = &a.modal else { panic!() };
         assert_eq!(a.fx.pick_sel.level(p.selected, a.now()), 1.0, "the row reached is fully lit");
+    }
+
+    fn docs_server() -> nexo_core::agent::McpServerInfo {
+        use nexo_core::agent::{McpArgInfo, McpPromptInfo, McpServerInfo, McpStatus};
+        McpServerInfo {
+            name: "docs".into(),
+            transport: "http".into(),
+            status: McpStatus::Connected,
+            tools: 4,
+            resources: vec!["file:///notes.md".into(), "db://users".into()],
+            templates: vec![],
+            prompts: vec![McpPromptInfo {
+                name: "review".into(),
+                description: "Review a file".into(),
+                args: vec![McpArgInfo { name: "file".into(), required: true }],
+            }],
+        }
+    }
+
+    #[test]
+    fn mcp_prompts_become_commands_and_send_the_server_prompt_and_arguments() {
+        let (mut a, mut rx) = app();
+        a.handle_agent(AgentEvent::Mcp { servers: vec![docs_server()] });
+        a.input.set_text("/mcp__docs__rev");
+        a.refresh_palette();
+        assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("mcp__docs__review"));
+        a.input.set_text("/mcp__docs__review src/lib.rs focus=speed");
+        a.submit();
+        match rx.try_recv() {
+            Ok(AgentCommand::McpPrompt { server, prompt, args }) => {
+                assert_eq!(
+                    (server.as_str(), prompt.as_str(), args.as_str()),
+                    ("docs", "review", "src/lib.rs focus=speed")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // the server goes away: the command goes with it
+        a.handle_agent(AgentEvent::Mcp { servers: vec![] });
+        assert!(a.custom_commands.iter().all(|c| c.origin != "mcp"));
+    }
+
+    #[test]
+    fn at_server_colon_completes_resource_uris() {
+        let (mut a, _rx) = app();
+        a.handle_agent(AgentEvent::Mcp { servers: vec![docs_server()] });
+        a.input.set_text("read @docs:db");
+        a.refresh_palette();
+        assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("docs:db://users"));
+        a.palette_accept(false);
+        assert!(a.input.text().starts_with("read @docs:db://users"), "{}", a.input.text());
+    }
+
+    #[test]
+    fn the_mcp_window_lists_servers_and_its_keys_send_commands() {
+        use crate::modal::Modal;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use nexo_core::agent::{McpServerInfo, McpStatus};
+        let down = McpServerInfo {
+            name: "broken".into(),
+            transport: "stdio".into(),
+            status: McpStatus::Failed("spawn failed: no such file".into()),
+            tools: 0,
+            resources: vec![],
+            templates: vec![],
+            prompts: vec![],
+        };
+        let login = McpServerInfo { name: "cloud".into(), status: McpStatus::NeedsLogin, ..down.clone() };
+        let (mut a, mut rx) = app();
+        a.handle_agent(AgentEvent::Mcp { servers: vec![docs_server(), login, down] });
+        a.run_command(crate::commands::Command::Mcp);
+        assert!(matches!(a.modal, Some(Modal::Mcp(_))));
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShowMcp)));
+        a.opts.animations = false;
+        frame(&mut a, 100, 44);
+        let text = frame(&mut a, 100, 44);
+        let all = text.join("\n");
+        for want in [
+            "1/3 connected",
+            "docs",
+            "http",
+            "4 tools · 2 resources · 1 prompt",
+            "/mcp__docs__review",
+            "needs login",
+            "press l to sign in",
+            "failed",
+            "spawn failed: no such file",
+        ] {
+            assert!(all.contains(want), "{want} missing:\n{all}");
+        }
+        let press = |a: &mut App, c: char| crate::event::key(a, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        press(&mut a, ' ');
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentCommand::McpToggle { server, on: false, persist: false }) if server == "docs")
+        );
+        press(&mut a, 'j');
+        press(&mut a, 'l');
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::McpLogin { server }) if server == "cloud"));
+        press(&mut a, 'j');
+        press(&mut a, 'r');
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::McpReconnect { server }) if server == "broken"));
+        press(&mut a, 'p');
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::McpToggle { on: false, persist: true, .. })));
+        // a server that is off is turned on by the same key
+        let mut off = docs_server();
+        off.status = McpStatus::Disabled;
+        a.handle_agent(AgentEvent::Mcp { servers: vec![off] });
+        let all = frame(&mut a, 100, 44).join("\n");
+        assert!(all.contains("off") && all.contains("Space turns it on"), "{all}");
+        press(&mut a, ' ');
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::McpToggle { on: true, .. })));
+        press(&mut a, 'q');
+        assert!(a.modal.is_none());
     }
 }

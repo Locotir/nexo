@@ -70,6 +70,8 @@ pub struct AgentSetup {
     pub gate: Option<Arc<dyn PermissionGate>>,
     /// The mailbox other sessions write to (the interface and its `/msg`); None: no mail.
     pub mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
+    /// The MCP servers of the session, for resources, prompts, /mcp and list changes; None: no servers.
+    pub mcp: Option<Arc<nexo_tools::mcp_hub::McpHub>>,
 }
 
 /// Runs the agent until `Shutdown` (or the command channel closes).

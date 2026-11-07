@@ -81,6 +81,7 @@ pub fn modal_key(m: &Modal) -> u64 {
         Modal::Agents(v) => (6u8, v.size_key()).hash(&mut h),
         Modal::Jobs(_) => 7u8.hash(&mut h),
         Modal::Todo(v) => (8u8, v.size_key()).hash(&mut h),
+        Modal::Mcp(v) => (9u8, v.len()).hash(&mut h),
     }
     h.finish()
 }

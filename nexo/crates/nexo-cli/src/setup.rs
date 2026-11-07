@@ -157,28 +157,32 @@ pub async fn agent_setup(
             }
         }
     }
-    for (name, server) in &cfg.mcp {
-        if server.enabled == Some(false) {
-            continue;
-        }
-        // a server the managed policy does not list is never started, whatever file named it
-        if let Some(p) = &cfg.managed {
-            if let Err(e) = p.check_mcp(name, server) {
+    // a server the managed policy does not list is never started, whatever file named it
+    let mut servers = cfg.mcp.clone();
+    if let Some(p) = &cfg.managed {
+        servers.retain(|name, server| match p.check_mcp(name, server) {
+            Ok(()) => true,
+            Err(e) => {
                 eprintln!("nexo: {e}");
-                continue;
+                false
             }
-        }
-        match nexo_tools::mcp::McpClient::connect(name, server).await {
-            Ok(c) => {
-                for t in c.tools() {
-                    tools.add(t);
-                }
-                // the client lives as long as the process; its tools hold what they need
-                std::mem::forget(c);
-            }
-            Err(e) => eprintln!("nexo: MCP server {name:?} not started: {e:#}"),
-        }
+        });
     }
+    let mcp = if servers.is_empty() {
+        None
+    } else {
+        let project = cwd.to_path_buf();
+        let persist: nexo_tools::mcp_hub::Persist =
+            Arc::new(move |name, on| crate::mcp_cmd::persist_enabled(&project, name, on));
+        let hub = nexo_tools::mcp_hub::McpHub::start(&servers, &nexo_core::auth::file(), Some(persist)).await;
+        for (name, why) in hub.failures() {
+            eprintln!("nexo: MCP server {name:?} not started: {why}");
+        }
+        for t in hub.tools() {
+            tools.add(t);
+        }
+        Some(hub)
+    };
     Ok(nexo_agent::AgentSetup {
         config: cfg.clone(),
         cwd: cwd.to_path_buf(),
@@ -189,6 +193,7 @@ pub async fn agent_setup(
         resume,
         gate,
         mail,
+        mcp,
     })
 }
 

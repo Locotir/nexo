@@ -460,3 +460,113 @@ async fn a_server_that_needs_no_login_is_said_so() {
     let e = nexo_tools::mcp_oauth::login("x", &http_cfg(&base), &auth_file, &|_| {}).await.unwrap_err();
     assert!(e.to_string().contains("did not ask for a login"), "{e}");
 }
+
+/// A streamable server whose session can end: a request with a session other than the current one
+/// gets a 404, and each `initialize` opens the next session. `broken`: every later request gets a 404.
+fn restartable(current: Arc<Mutex<u32>>, broken: Arc<Mutex<bool>>, seen: Arc<Mutex<Seen>>) -> Handler {
+    Arc::new(move |r: Req| {
+        if r.path != "/mcp" || r.method == "DELETE" {
+            return status(404);
+        }
+        let msg: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
+        let method = msg["method"].as_str().unwrap_or("").to_string();
+        let session = r.headers.get("mcp-session-id").cloned();
+        seen.lock().unwrap().posts.push((method.clone(), session.clone(), None, None));
+        let mut headers = vec![];
+        if method == "initialize" {
+            let mut n = current.lock().unwrap();
+            *n += 1;
+            headers.push(("mcp-session-id", format!("sess-{}", *n)));
+        } else if *broken.lock().unwrap() || session != Some(format!("sess-{}", current.lock().unwrap())) {
+            return status(404);
+        }
+        let Some(a) = answer(&msg) else { return status(202) };
+        headers.push(("content-type", "application/json".to_string()));
+        Resp::Full(200, headers, a.to_string())
+    })
+}
+
+#[tokio::test]
+async fn an_expired_session_is_started_again_once() {
+    let (current, broken) = (Arc::new(Mutex::new(0u32)), Arc::new(Mutex::new(false)));
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let base = start(restartable(current.clone(), broken.clone(), seen.clone())).await;
+    let (_d, auth) = temp_auth();
+    let c = McpClient::connect_in("mock", &http_cfg(&base), &auth).await.unwrap();
+    assert_eq!(echo(&c, "one").await, "echo: one");
+    // the server forgets the session (a restart): the next call starts a new one and goes through
+    *current.lock().unwrap() += 100;
+    assert_eq!(echo(&c, "two").await, "echo: two");
+    {
+        let s = seen.lock().unwrap();
+        let inits = s.posts.iter().filter(|p| p.0 == "initialize").count();
+        assert_eq!(inits, 2, "one new session: {:?}", s.posts);
+        assert_eq!(s.posts.last().unwrap().1.as_deref(), Some("sess-102"), "the retry carries the new session");
+    }
+    // a server that keeps refusing is tried once, then the error is shown (no loop)
+    *broken.lock().unwrap() = true;
+    let ctx = ToolContext::new(std::env::temp_dir());
+    let out = c.tools()[0].run(json!({"text": "three"}), &ctx).await;
+    assert!(out.is_error, "{}", out.content);
+    let inits = seen.lock().unwrap().posts.iter().filter(|p| p.0 == "initialize").count();
+    assert_eq!(inits, 3, "one more attempt, not a loop");
+    c.close().await;
+}
+
+#[tokio::test]
+async fn a_list_changed_notice_in_an_answer_refreshes_the_tools() {
+    let grown = Arc::new(Mutex::new(false));
+    let g = grown.clone();
+    let handler: Handler = Arc::new(move |r: Req| {
+        let msg: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
+        let method = msg["method"].as_str().unwrap_or("").to_string();
+        let Some(id) = msg.get("id") else { return status(202) };
+        let echo_tool =
+            json!({"name": "echo", "description": "Echoes.", "inputSchema": {"type": "object", "properties": {}}});
+        let more = json!({"name": "more", "description": "New.", "inputSchema": {"type": "object", "properties": {}}});
+        match method.as_str() {
+            "initialize" => Resp::Full(
+                200,
+                vec![("content-type", "application/json".into()), ("mcp-session-id", "s".into())],
+                rpc_result(
+                    id,
+                    json!({"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": true}},
+                           "serverInfo": {"name": "mock", "version": "1"}}),
+                )
+                .to_string(),
+            ),
+            "tools/list" => {
+                let tools = if *g.lock().unwrap() { vec![echo_tool, more] } else { vec![echo_tool] };
+                json_resp(rpc_result(id, json!({"tools": tools})))
+            }
+            _ => {
+                // the call grows the list and says so in the event stream, before its result
+                *g.lock().unwrap() = true;
+                let body = format!(
+                    "{}{}",
+                    sse_event("message", r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#),
+                    sse_event(
+                        "message",
+                        &rpc_result(id, json!({"content": [{"type": "text", "text": "ok"}]})).to_string()
+                    )
+                );
+                Resp::Full(200, vec![("content-type", "text/event-stream".into())], body)
+            }
+        }
+    });
+    let base = start(handler).await;
+    let (_d, auth) = temp_auth();
+    let c = McpClient::connect_in("mock", &http_cfg(&base), &auth).await.unwrap();
+    assert_eq!(c.defs().len(), 1);
+    let ctx = ToolContext::new(std::env::temp_dir());
+    let out = c.tools()[0].run(json!({}), &ctx).await;
+    assert_eq!(out.content, "ok");
+    for _ in 0..250 {
+        if c.defs().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(c.defs().len(), 2, "the notice made the client list again");
+    c.close().await;
+}

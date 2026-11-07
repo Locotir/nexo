@@ -29,7 +29,7 @@ tracing = { workspace = true }
 globset = { workspace = true }
 url = { workspace = true }
 nexo-curator = { workspace = true }
+nexo-tools = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-nexo-tools = { workspace = true }
