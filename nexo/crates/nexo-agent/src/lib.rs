@@ -8,6 +8,7 @@
 //! client; the tools are whatever [`nexo_core::ToolSet`] the setup carries.
 
 pub mod ask;
+pub mod audit;
 pub mod brief;
 pub mod budget;
 pub mod checkpoint;
@@ -16,6 +17,7 @@ pub mod compact;
 pub mod config_edit;
 pub mod context;
 mod context_map;
+pub mod export;
 pub mod gate;
 pub mod gitcmds;
 pub mod goal_brief;
@@ -30,6 +32,7 @@ mod reads;
 pub mod recall;
 mod repeat;
 mod review;
+mod scrub;
 pub mod session;
 pub mod session_scan;
 pub mod setup;

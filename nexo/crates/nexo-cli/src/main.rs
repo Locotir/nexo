@@ -4,7 +4,9 @@
 
 mod account;
 mod acp;
+mod audit_cmd;
 mod cli;
+mod export_cmd;
 mod headless;
 mod mcp_cmd;
 mod schema;

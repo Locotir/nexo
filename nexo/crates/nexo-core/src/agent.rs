@@ -96,9 +96,11 @@ pub enum AgentCommand {
     Rewind {
         index: usize,
     },
-    /// Write the conversation as markdown (`path` None: next to the session file); answered with a `Notice`.
+    /// Write the conversation (`path` None: next to the session file); answered with a `Notice`.
+    /// `format` is `html`, `md` or `json`; none: by the file name's extension, else markdown.
     Export {
         path: Option<PathBuf>,
+        format: Option<String>,
     },
     /// Ask for the system prompt as it is sent; answered with `SystemPrompt`.
     ShowPrompt,

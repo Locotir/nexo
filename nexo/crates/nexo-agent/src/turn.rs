@@ -29,6 +29,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::audit::{Audit, RequestRecord, ToolRecord, Why};
 use crate::budget;
 use crate::checkpoint;
 use crate::client::{ModelClient, Target};
@@ -218,6 +219,8 @@ struct State {
     mail_turn: Vec<Mail>,
     /// Text hooks added for the model (SessionStart, UserPromptSubmit): it goes with the next request.
     hook_context: Vec<String>,
+    /// The audit log writer, when `[audit] enabled`.
+    audit: Option<Audit>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -281,6 +284,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let gate: Arc<dyn PermissionGate> = gate.unwrap_or_else(|| chan_gate.clone());
     let pcfg =
         config.providers.get(&provider).cloned().ok_or_else(|| anyhow::anyhow!("unknown provider `{provider}`"))?;
+    let audit = Audit::from_config(&config.audit);
     let limits = limits::resolve(&provider, &pcfg, &model, None);
     let target = Target::new(&provider, pcfg, &model);
     // the sub-agents, when there are tools to give them; they reach the state once it exists
@@ -423,6 +427,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         mail_wait: Vec::new(),
         mail_turn: Vec::new(),
         hook_context: Vec::new(),
+        audit,
     }));
     let _ = host.set(Arc::new(StateHost { state: Arc::downgrade(&state), events: events.clone() }));
     {
@@ -652,7 +657,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             rewind(&state, index).await;
                         }
                     }
-                    AgentCommand::Export { path } => export(&state, path).await,
+                    AgentCommand::Export { path, format } => export(&state, path, format).await,
                     AgentCommand::Rename { title } => {
                         let mut st = state.lock().await;
                         let title = title.trim().to_string();
@@ -1316,14 +1321,21 @@ fn restore_files(st: &mut State, keep: usize) -> Vec<PathBuf> {
     seen
 }
 
-async fn export(state: &Shared, path: Option<PathBuf>) {
+async fn export(state: &Shared, path: Option<PathBuf>, format: Option<String>) {
+    use crate::export::{render, Format};
     let st = state.lock().await;
+    let format = match (&format, &path) {
+        (Some(f), _) => Format::parse(f).unwrap_or(Format::Markdown),
+        (None, Some(p)) => Format::of_path(p),
+        (None, None) => Format::Markdown,
+    };
     let path = match path {
         Some(p) if p.is_absolute() => p,
         Some(p) => st.cwd.join(p),
-        None => st.session.export_path(),
+        None => st.session.export_path().with_extension(format.extension()),
     };
-    let text = st.session.export_markdown(|name, args| summary_of(&st.tools, name, args));
+    // secrets are always taken out of what the interface writes; `nexo export --no-redact` is the opt-out
+    let text = render(&st.session, format, true, &|name, args| summary_of(&st.tools, name, args));
     let written =
         path.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&path, text));
     match written {
@@ -2569,6 +2581,9 @@ fn line_of(text: &str, snippet: &str) -> usize {
     text.find(&snippet).map_or(1, |at| text[..at].matches('\n').count() + 1)
 }
 
+/// The person was asked and allowed the call.
+const ASKED: Why = Why { decision: "asked", by: "user" };
+
 enum Verdict {
     Run,
     Denied(String),
@@ -2589,13 +2604,13 @@ async fn permit(
     args: &Value,
     cancel: &CancellationToken,
 ) -> Verdict {
-    permit_as(state, events, gate, cwd, id, name, tool, args, cancel, None).await
+    permit_why(state, events, gate, cwd, id, name, tool, args, cancel, None).await.0
 }
 
 /// [`permit`], with what a PreToolUse hook decided: `ask` asks the person even if a rule would let the call
 /// run, `allow` runs a call that would have been asked about.
 #[allow(clippy::too_many_arguments)]
-async fn permit_as(
+async fn permit_why(
     state: &Shared,
     events: &EventTx,
     gate: &Arc<dyn PermissionGate>,
@@ -2606,7 +2621,7 @@ async fn permit_as(
     args: &Value,
     cancel: &CancellationToken,
     hook: Option<crate::hooks::Decision>,
-) -> Verdict {
+) -> (Verdict, Why) {
     let kind = tool.kind();
     let mut decision = {
         let st = state.lock().await;
@@ -2619,24 +2634,29 @@ async fn permit_as(
             d
         }
     };
+    let mut by_hook = false;
     match (hook, &decision) {
         // a PreToolUse hook that wants the person asked, or lets the call run unasked; a deny rule stands
         (Some(crate::hooks::Decision::Ask), Decision::Allow) => decision = Decision::Ask,
-        (Some(crate::hooks::Decision::Allow), Decision::Ask) => decision = Decision::Allow,
+        (Some(crate::hooks::Decision::Allow), Decision::Ask) => {
+            decision = Decision::Allow;
+            by_hook = true;
+        }
         _ => {}
     }
     match decision {
-        Decision::Allow => Verdict::Run,
-        Decision::Deny(r) => Verdict::Denied(r),
+        Decision::Allow if by_hook => (Verdict::Run, Why { decision: "allowed", by: "hook" }),
+        Decision::Allow => (Verdict::Run, Why::RULE),
+        Decision::Deny(r) => (Verdict::Denied(r), Why::denied("rule")),
         Decision::Ask => {
             // PermissionRequest hooks answer before the person is asked: allow, deny, or leave it to them
             let summary = tool.summary(args);
             let o = fire(state, "permission_request", Some(name), crate::hooks::tool_fields(name, args)).await;
             if let Some(why) = o.blocked {
-                return Verdict::Denied(why);
+                return (Verdict::Denied(why), Why::denied("hook"));
             }
             if o.decision == Some(crate::hooks::Decision::Allow) {
-                return Verdict::Run;
+                return (Verdict::Run, Why { decision: "allowed", by: "hook" });
             }
             notify_hooks(state, "permission_prompt", format!("nexo needs your permission to use {name}: {summary}"));
             let req = PermissionRequest {
@@ -2653,7 +2673,7 @@ async fn permit_as(
             };
             emit(events, AgentEvent::PermissionResolved { id: id.to_string(), decision: d.clone() });
             match d {
-                PermissionDecision::Allow => Verdict::Run,
+                PermissionDecision::Allow => (Verdict::Run, ASKED),
                 PermissionDecision::AllowAlways { rule, persist } => {
                     state.lock().await.perm.add_allow(&rule);
                     if persist {
@@ -2682,10 +2702,10 @@ async fn permit_as(
                             ),
                         }
                     }
-                    Verdict::Run
+                    (Verdict::Run, ASKED)
                 }
                 PermissionDecision::Deny { reason } => {
-                    Verdict::Denied(reason.unwrap_or_else(|| "denied by the person".into()))
+                    (Verdict::Denied(reason.unwrap_or_else(|| "denied by the person".into())), Why::denied("user"))
                 }
             }
         }
@@ -2710,7 +2730,8 @@ fn add_usage_priced(
     kind: UsageKind,
 ) {
     st.usage += usage;
-    let (_, cfg, main) = st.target.get();
+    let (prov, cfg, main) = st.target.get();
+    let sent_to_other = other.is_some();
     let pricing = other.or_else(|| {
         if model == main {
             st.limits.pricing.or_else(|| cfg.pricing_for(model))
@@ -2724,6 +2745,27 @@ fn add_usage_priced(
     let held = (kind == UsageKind::Main).then(|| st.last_view.0.saturating_sub(st.last_view.1));
     let meta = UsageMeta { model: Some(model.to_string()), kind: Some(kind), held };
     let _ = st.session.record_usage_meta(usage, cost, meta);
+    if let Some(audit) = &st.audit {
+        let call = match kind {
+            UsageKind::Main => "main",
+            UsageKind::Sub => "sub",
+            UsageKind::Reader => "reader",
+            UsageKind::Compact => "compact",
+            UsageKind::Suggest => "suggest",
+            UsageKind::Review => "review",
+            UsageKind::Sum => "sum",
+        };
+        let provider = if sent_to_other { "other" } else { prov.as_str() };
+        audit.request(RequestRecord {
+            session: st.session.id(),
+            cwd: &st.cwd,
+            provider,
+            model,
+            call,
+            usage,
+            cost_usd: cost,
+        });
+    }
     emit(events, AgentEvent::Usage { turn: usage, call, session: st.usage, cost_usd: st.cost });
     let day = budget::add(cost);
     emit(events, budget_event(st, day));
@@ -2846,21 +2888,21 @@ async fn run_tools(
         );
     }
     // permissions first, in order, so the asks come one at a time
-    let mut verdicts: Vec<Verdict> = Vec::with_capacity(calls.len());
+    let mut verdicts: Vec<(Verdict, Why)> = Vec::with_capacity(calls.len());
     for ((id, name, args), (blocked, decision)) in calls.iter().zip(pre) {
         if cancel.is_cancelled() {
-            verdicts.push(Verdict::Denied("interrupted by the person".into()));
+            verdicts.push((Verdict::Denied("interrupted by the person".into()), Why::denied("user")));
             continue;
         }
         if let Some(why) = blocked {
-            verdicts.push(Verdict::Blocked(why));
+            verdicts.push((Verdict::Blocked(why), Why::denied("hook")));
             continue;
         }
         let Some(tool) = tools.get(name) else {
-            verdicts.push(Verdict::Denied(format!("unknown tool `{name}`")));
+            verdicts.push((Verdict::Denied(format!("unknown tool `{name}`")), Why::denied("rule")));
             continue;
         };
-        let v = permit_as(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel, decision).await;
+        let v = permit_why(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel, decision).await;
         verdicts.push(v);
     }
     // every verdict is in by now: reads, searches and page fetches can overlap
@@ -2893,8 +2935,8 @@ async fn run_tools(
                 );
             }
         } else {
-            let futs = calls[i..end].iter().zip(verdicts[i..end].iter()).map(|((id, name, args), v)| {
-                run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, cancel)
+            let futs = calls[i..end].iter().zip(verdicts[i..end].iter()).map(|((id, name, args), (v, why))| {
+                run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, *why, cancel)
             });
             for (k, (part, c)) in futures::future::join_all(futs).await.into_iter().enumerate() {
                 results[i + k] = Some(part);
@@ -2906,8 +2948,64 @@ async fn run_tools(
     (results.into_iter().flatten().collect(), cancelled)
 }
 
+/// One call: its permission result, its run, and its line in the audit log.
 #[allow(clippy::too_many_arguments)]
 async fn run_one(
+    state: &Shared,
+    events: &EventTx,
+    tools: &ToolSet,
+    cwd: &Path,
+    session_id: &str,
+    id: &str,
+    name: &str,
+    args: &Value,
+    verdict: &Verdict,
+    why: Why,
+    cancel: &CancellationToken,
+) -> (Part, bool) {
+    let t0 = Instant::now();
+    let done = run_call(state, events, tools, cwd, session_id, id, name, args, verdict, cancel).await;
+    let audit = state.lock().await.audit.clone();
+    if let Some(audit) = audit {
+        let (provider, model, exit_code) = {
+            let st = state.lock().await;
+            let (p, _, m) = st.target.get();
+            let exit = match st.session.outputs().get(id).map(|o| &o.display) {
+                Some(ToolDisplay::Shell { exit_code, .. }) => *exit_code,
+                _ => None,
+            };
+            (p.to_string(), m.to_string(), exit)
+        };
+        let is_error = matches!(&done.0, Part::ToolResult { is_error: true, .. });
+        let status = if matches!(verdict, Verdict::Run) {
+            if is_error {
+                "error"
+            } else {
+                "ok"
+            }
+        } else {
+            "denied"
+        };
+        let summary = summary_of(tools, name, args);
+        audit.tool(ToolRecord {
+            session: session_id,
+            cwd,
+            provider: &provider,
+            model: &model,
+            tool: name,
+            args,
+            summary: &summary,
+            why,
+            status,
+            exit_code,
+            duration_ms: t0.elapsed().as_millis() as u64,
+        });
+    }
+    done
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_call(
     state: &Shared,
     events: &EventTx,
     tools: &ToolSet,

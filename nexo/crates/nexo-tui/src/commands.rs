@@ -95,7 +95,7 @@ pub const COMMANDS: &[Spec] = &[
         "[kill [id]]",
         "a window with the background jobs and their output; `kill` stops one, or all",
     ),
-    spec("export", &["save"], "[path]", "write the conversation as markdown"),
+    spec("export", &["save"], "[html|json] [path]", "write the conversation as markdown, HTML or JSON"),
     spec("rename", &["title", "name"], "<name>", "give this session a name"),
     spec("msg", &["mail", "tell"], "<session> <text>", "write to another running session; it reads it when it is idle"),
     spec("diff", &[], "", "browse staged, unstaged and new files"),

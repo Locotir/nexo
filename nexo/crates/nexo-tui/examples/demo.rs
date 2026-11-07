@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(AgentCommand::ShowTree) => {
                     let _ = events.send(AgentEvent::SessionTree { entries: tree.clone() });
                 }
-                Some(AgentCommand::Export { path }) => {
+                Some(AgentCommand::Export { path, .. }) => {
                     let where_ = path
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "~/.nexo/sessions/demo-session.md".into());

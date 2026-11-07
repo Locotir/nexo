@@ -1206,7 +1206,7 @@ async fn export_writes_the_conversation_as_markdown() {
     r.send(AgentCommand::Submit { text: "please read f".into(), attachments: vec![] });
     r.turn().await;
     let out = d.path().join("out").join("conv.md");
-    r.send(AgentCommand::Export { path: Some(out.clone()) });
+    r.send(AgentCommand::Export { path: Some(out.clone()), format: None });
     let shown = out.display().to_string();
     assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text == format!("exported to {shown}")));
     let md = std::fs::read_to_string(&out).unwrap();
@@ -1216,13 +1216,13 @@ async fn export_writes_the_conversation_as_markdown() {
     assert!(md.contains("## nexo\n\nread it"));
     assert!(md.contains("cost: $"));
     // no path: next to the session file; a relative path: in the working directory
-    r.send(AgentCommand::Export { path: None });
+    r.send(AgentCommand::Export { path: None, format: None });
     let default = data_dir().join("sessions").join(format!("{id}.md"));
     assert!(
         matches!(r.next().await, AgentEvent::Notice { text, .. } if text.ends_with(&default.display().to_string()))
     );
     assert!(default.is_file());
-    r.send(AgentCommand::Export { path: Some(PathBuf::from("rel.md")) });
+    r.send(AgentCommand::Export { path: Some(PathBuf::from("rel.md")), format: None });
     r.next().await;
     assert!(d.path().join("rel.md").is_file());
     r.stop().await;

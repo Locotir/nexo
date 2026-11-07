@@ -207,6 +207,13 @@ pub enum Cmd {
         #[command(subcommand)]
         what: crate::mcp_cmd::McpCmd,
     },
+    /// Write a session as a shareable file: HTML (one self-contained file), markdown or JSON, with keys and tokens taken out.
+    Export(crate::export_cmd::ExportArgs),
+    /// The local audit log of tool calls and model requests (`[audit]` in the configuration, see docs/AUDIT.md).
+    Audit {
+        #[command(subcommand)]
+        what: crate::audit_cmd::AuditCmd,
+    },
     /// Install the latest nexo from GitHub with cargo (`--check`: only say whether there is one).
     Update {
         /// Only say whether a newer version exists; install nothing.
@@ -566,6 +573,8 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         }
         Some(Cmd::Mcp { what }) => return crate::mcp_cmd::run(&cwd, &config, what).await,
         Some(Cmd::Worktree { what }) => return crate::worktree::run(&cwd, what),
+        Some(Cmd::Export(a)) => return crate::export_cmd::run(a, &cwd),
+        Some(Cmd::Audit { what }) => return crate::audit_cmd::run(&config, what),
         Some(Cmd::Update { check }) => return crate::update::run(*check).await,
         Some(Cmd::Guide) => {
             print!("{}", crate::account::GUIDE);

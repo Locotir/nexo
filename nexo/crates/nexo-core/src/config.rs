@@ -29,11 +29,22 @@ pub struct Config {
     pub web: WebConfig,
     /// Mail between sessions (`[mail]`).
     pub mail: crate::mail::MailConfig,
+    /// The local audit log of tool calls and model requests (`[audit]`, off by default).
+    pub audit: AuditConfig,
     /// Shell commands run at points of the loop (`[[hooks]]` blocks).
     pub hooks: Vec<HookConfig>,
     /// What loading had to tell the person (settings of an untrusted project left out); not read from files.
     #[serde(skip)]
     pub notices: Vec<String>,
+}
+
+/// `[audit]`: an append-only JSON-lines log of every tool call and model request, kept on this machine only.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuditConfig {
+    pub enabled: bool,
+    /// The file to append to (none: `~/.nexo/audit/YYYY-MM.jsonl`, one file per month).
+    pub path: Option<String>,
 }
 
 /// A hook: `command` runs on `event` (see [`HookConfig::event_name`]), for the tools `matcher` names
@@ -646,6 +657,10 @@ impl Config {
         self.ui.status_command = user.ui.status_command.clone();
         if self.agent.system_prompt_file.take().is_some() {
             out.push("agent.system_prompt_file".into());
+        }
+        if self.audit != user.audit {
+            out.push("audit".into());
+            self.audit = user.audit.clone();
         }
         if self.web.url.take().is_some() {
             out.push("web.url".into());

@@ -3721,8 +3721,18 @@ impl App {
                     "vim keys off (saved)"
                 });
             }
-            Command::Export(path) => {
-                self.send(AgentCommand::Export { path: path.map(PathBuf::from) });
+            Command::Export(arg) => {
+                // `/export html`, `/export json out.json`, `/export notes.md`
+                let arg = arg.unwrap_or_default();
+                let (first, rest) = arg.trim().split_once(char::is_whitespace).unwrap_or((arg.trim(), ""));
+                let (format, path) =
+                    if ["html", "md", "markdown", "json"].contains(&first.to_ascii_lowercase().as_str()) {
+                        (Some(first.to_ascii_lowercase()), rest.trim())
+                    } else {
+                        (None, arg.trim())
+                    };
+                let path = (!path.is_empty()).then(|| PathBuf::from(path));
+                self.send(AgentCommand::Export { path, format });
                 self.flash("exporting…");
             }
             Command::Msg(None) => {
@@ -5591,7 +5601,7 @@ mod tests {
         a.input.set_text("/export notes.md");
         a.submit();
         assert!(
-            matches!(rx.try_recv(), Ok(AgentCommand::Export { path: Some(p) }) if p == std::path::Path::new("notes.md"))
+            matches!(rx.try_recv(), Ok(AgentCommand::Export { path: Some(p), format: None }) if p == std::path::Path::new("notes.md"))
         );
         a.input.set_text("/diff");
         a.submit();
