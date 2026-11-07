@@ -655,6 +655,9 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         }
         Some(Cmd::Prompt { edit: false }) => {
             let mut tools = nexo_tools::builtin_with(&config.web);
+            if !nexo_tools::lsp::available(&cwd) {
+                tools.remove("diagnostics");
+            }
             if let Some(t) = nexo_tools::skill::tool(nexo_core::skills::discover(&cwd, !config.agent.hermetic)) {
                 tools.add(t);
             }

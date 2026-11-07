@@ -75,38 +75,11 @@ pub fn with_directives(system: String, cfg: &AgentConfig, directives: Option<&st
 fn tool_guidance(tools: &ToolSet) -> String {
     let mut lines = Vec::new();
     let has = |n: &str| tools.get(n).is_some();
-    if has("read") {
-        lines.push("- `read`: read a file (numbered lines; `offset`/`limit` for a part of a long file). Read a file before editing it; a file you already have and that has not changed comes back as a short note, not again.");
-    }
-    if has("edit") {
-        lines.push("- `edit`: replace one exact occurrence of `old_string` with `new_string` in a file (`replace_all` for every occurrence). The old text must match exactly, whitespace included; include enough context to be unique.");
-    }
-    if has("write") {
-        lines.push("- `write`: create or overwrite a whole file. Prefer `edit` for existing files.");
-    }
-    if has("bash") {
-        lines.push("- `bash`: run a shell command in the working directory (tests, builds, git, scripts). Quote paths. Avoid interactive commands; set `timeout` (seconds) for slow commands. For anything that runs long or does not end on its own (a dev server, a watcher, a full test suite or build while you do other work), set `background: true`: it starts a job and returns at once.");
-    }
-    if has("jobs") {
-        lines.push("- `jobs`: the background jobs (commands and sub-agents). You are told when one ends; read its output with action `output` (add `wait` seconds to wait for it), stop it with `kill`. Do not poll in a loop: go on with other work, and wait only when you need the result.");
-    }
-    if has("glob") {
-        lines.push("- `glob`: find files by name pattern (`src/**/*.rs`).");
-    }
-    if has("grep") {
-        lines.push("- `grep`: search file contents with a regular expression; narrow with `path` or `glob`.");
-    }
-    if has("ls") {
-        lines.push("- `ls`: list a directory.");
-    }
-    if has("todo") {
-        lines.push("- `todo`: for work with three or more steps, keep the list with `todo`: write it first, mark the step in progress before starting it and done when verified; keep it short.");
-    }
     if has("note") {
-        lines.push("- `note`: when a result settles a fact (a value, a formula, an address, a format, the cause of an error), keep it with `note` as one line `Finding: ...`; keep what is left as one line `Plan: ...` and the user's standing instructions as `Rule: ...`. Older messages leave the context; the notes stay with the first message.");
+        lines.push("- `note`: when a result settles a fact (a value, a formula, an address, a format, the cause of an error), keep it with `note` as one line `Finding: ...`; keep what is left as one line `Plan: ...` and the user's standing instructions as `Rule: ...`. Older messages leave the context; the notes stay with the first message. Send it in the same response as your next tool call, never as a response of its own, and never after the final result.");
     }
     if has("diagnostics") {
-        lines.push("- `diagnostics`: after you edit a source file, ask its language server what is wrong with it (errors and warnings with their lines) before you call the change done.");
+        lines.push("- `diagnostics`: after you edit a source file, ask its language server what is wrong with it (errors and warnings with their lines); it can be the one check.");
     }
     if has("task") {
         lines.push("- `task`: hand self-contained work to a sub-agent; only its short report comes back, so your own context stays small. Use it when a question needs reading across many files or a whole directory (`explore`, the default), when there are several independent searches or checks (one task call each, all in ONE message, so they run at the same time), for a long side job while you go on (`background: true`), and whenever the person asks for sub-agents or parallel work. `general` can also edit and run commands. Do it yourself when one or two reads or a single search will answer. The sub-agent sees nothing of this conversation: put all it needs in `prompt` (the goal, the files, what is ruled out, what to report).");

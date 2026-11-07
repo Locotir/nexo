@@ -405,6 +405,52 @@ fn usable(cmd: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// One source file of each language the project has under `cwd` (shallow and bounded: three levels,
+/// 5000 entries, no hidden, vendored or build folders).
+fn sample_files(cwd: &Path) -> Vec<PathBuf> {
+    const SKIP: [&str; 4] = ["node_modules", "target", "vendor", "dist"];
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut seen = 0usize;
+    let mut dirs = vec![(cwd.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = dirs.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 5000 {
+                break;
+            }
+            let path = e.path();
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                if depth < 3 && !name.starts_with('.') && !SKIP.contains(&&*name) {
+                    dirs.push((path, depth + 1));
+                }
+            } else if let Some((language, _)) = servers_for(&path) {
+                if !found.iter().any(|f| servers_for(f).is_some_and(|(l, _)| l == language)) {
+                    found.push(path);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether `diagnostics` can answer anywhere under `cwd`: a language server (or the compiler check
+/// that stands in for it) exists for a language the project has. A project with no source files yet
+/// counts every language. It runs once, when the tools are chosen.
+pub fn available(cwd: &Path) -> bool {
+    let mut found = sample_files(cwd);
+    if found.is_empty() {
+        found = ["a.rs", "a.py", "a.ts", "a.js", "a.go", "a.c"].iter().map(PathBuf::from).collect();
+    }
+    found.iter().filter_map(|f| servers_for(f)).any(|(language, candidates)| {
+        candidates.iter().any(|c| usable(c))
+            || (language == "rust" && which("cargo"))
+            || (language == "javascript" && which("node"))
+    })
+}
+
 pub struct Diagnostics;
 
 impl Diagnostics {
@@ -527,6 +573,19 @@ mod tests {
             "src/a.rs: 1 error, 1 warning\nsrc/a.rs:10:1 error: mismatched types\nsrc/a.rs:5:3 warning: unused (rustc)"
         );
         assert_eq!(format("a.py", &[]), "a.py: no problems found");
+    }
+
+    #[test]
+    fn the_languages_of_a_project_skip_hidden_and_vendored_folders() {
+        let d = tempfile::tempdir().unwrap();
+        for f in ["a.py", "b.py", "src/c.rs", "notes.md", "node_modules/x.js", ".git/y.go", "target/z.c"] {
+            let p = d.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "").unwrap();
+        }
+        let mut langs: Vec<&str> = sample_files(d.path()).iter().filter_map(|f| servers_for(f)).map(|s| s.0).collect();
+        langs.sort();
+        assert_eq!(langs, ["python", "rust"]);
     }
 
     #[test]

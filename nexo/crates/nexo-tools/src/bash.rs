@@ -35,7 +35,8 @@ impl Tool for Bash {
                 "Run a shell command ({}) in the working directory and return its output \
                  (stdout and stderr interleaved) and exit code. Use it to build, test, run git, \
                  and for anything the other tools do not cover; use `read`, `grep`, `glob` and \
-                 `ls` instead of cat, grep, find and ls. The command is killed after `timeout` \
+                 `ls` for a single look instead of cat, grep, find and ls; chain several steps with `&&` in \
+                 one call. Do not run builds or tests the project may not have set up. The command is killed after `timeout` \
                  seconds (default 120, at most 600); long output is cut in the middle, keeping \
                  the head and the tail. Avoid interactive commands. With `background: true` the \
                  command runs as a job while you go on working (servers, watchers, long builds and \

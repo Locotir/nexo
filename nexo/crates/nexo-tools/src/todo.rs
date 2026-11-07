@@ -134,9 +134,10 @@ impl Tool for Todo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "todo".into(),
-            description: "Keep the task list for work with several steps. Each call replaces the whole list, so \
-                          send every item each time: write the plan first, mark the step you are about to do \
-                          `in_progress` (one at a time), mark it `done` once verified, and add steps you discover. \
+            description: "Keep the task list for long work in several parts (over about eight tool \
+                          calls); skip it for short tasks. Send it in the same response as real work, never as a response of its own. \
+                          Each call replaces the whole list, so send every item each time; write the plan once, \
+                          then change it only when the plan changes or a step is finished alongside other work. \
                           Keep items short. A call without `items` shows the list."
                 .into(),
             parameters: json!({

@@ -145,6 +145,9 @@ pub async fn agent_setup(
     let client: Arc<dyn nexo_agent::client::ModelClient> =
         Arc::new(nexo_providers::Client::new(nexo_providers::registry()));
     let mut tools: ToolSet = nexo_tools::builtin_with(&cfg.web);
+    if !nexo_tools::lsp::available(cwd) {
+        tools.remove("diagnostics");
+    }
     if let Some(t) = nexo_tools::skill::tool(nexo_core::skills::discover(cwd, !cfg.agent.hermetic)) {
         tools.add(t);
     }
