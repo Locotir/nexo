@@ -438,8 +438,21 @@ pub fn hooks_from_events(
 /// (`{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "...",
 /// "timeout": 10}]}]}}`), only when the project is trusted, like nexo's own project file. Events
 /// nexo has no point for are left out. The second value says what was left out for lack of trust.
+/// A project at the home folder has none: its `.claude/settings.json` is Claude Code's own user file, and
+/// its hooks are written for Claude Code sessions, not for this one.
 pub fn claude_hooks(cwd: &Path, trust_file: &Path) -> (Vec<crate::config::HookConfig>, Option<String>) {
+    claude_hooks_in(cwd, trust_file, dirs::home_dir().as_deref())
+}
+
+fn claude_hooks_in(
+    cwd: &Path,
+    trust_file: &Path,
+    home: Option<&Path>,
+) -> (Vec<crate::config::HookConfig>, Option<String>) {
     let root = project_root(cwd);
+    if Some(root.as_path()) == home {
+        return (Vec::new(), None);
+    }
     let trusted = crate::config::is_trusted(&root, trust_file);
     let mut out = Vec::new();
     let mut skipped = Vec::new();
@@ -504,6 +517,21 @@ mod tests {
             ]
         );
         assert_eq!(got[0].source, "project .claude/settings.json");
+    }
+
+    #[test]
+    fn a_project_at_the_home_folder_brings_no_claude_hooks() {
+        // there `.claude/settings.json` is Claude Code's own user file, trusted or not
+        let (p, t) = (repo(), tempfile::tempdir().unwrap());
+        w(p.path().join(".claude/settings.json"), CLAUDE_HOOKS);
+        let trust = t.path().join("trusted");
+        crate::config::trust_project(p.path(), &trust).unwrap();
+        let below = p.path().join("work/dir");
+        std::fs::create_dir_all(&below).unwrap();
+        for cwd in [p.path(), below.as_path()] {
+            assert_eq!(claude_hooks_in(cwd, &trust, Some(p.path())), (Vec::new(), None));
+            assert_eq!(claude_hooks_in(cwd, &trust, Some(t.path())).0.len(), 2);
+        }
     }
 
     #[test]

@@ -297,6 +297,11 @@ pub enum Level {
     Error,
 }
 
+/// Around what hooks added for the model in front of a request: the screen shows it as a line, not as
+/// the person's words.
+pub const HOOK_CONTEXT_START: &str = "<hook-context>";
+pub const HOOK_CONTEXT_END: &str = "</hook-context>";
+
 /// What the loop sends in the person's place to start a goal; the person's words follow it.
 pub const GOAL_SET_MARK: &str = "[goal set]";
 /// What the loop sends in the person's place to keep a goal going.

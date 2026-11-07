@@ -7,13 +7,15 @@ const JOBS_END: &str = "Read the output with the `jobs` tool";
 const MEMORY_START: &str = "<memory from=\"";
 const MEMORY_END: &str = "</memory>";
 const ATTACHED: &str = "(attached in full, as it is now):";
-use nexo_core::agent::{GOAL_CONTINUE_MARK, GOAL_SET_MARK};
+use nexo_core::agent::{GOAL_CONTINUE_MARK, GOAL_SET_MARK, HOOK_CONTEXT_END, HOOK_CONTEXT_START};
 
 /// One part of a user message, as the screen shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Piece {
     /// A note of ended background jobs, whole (a card).
     JobNote(String),
+    /// What hooks added for the model: how many lines.
+    Hook(usize),
     /// A block of memory shared from another session: its title and about how many tokens.
     Memory { title: String, tokens: u64 },
     /// What replaced the conversation before a compaction: the number of lines it takes.
@@ -34,6 +36,11 @@ pub fn split_user(text: &str) -> Vec<Piece> {
             let end = t[i..].find('\n').map_or(t.len(), |n| i + n);
             out.push(Piece::JobNote(t[..end].to_string()));
             t = t[end..].trim_start();
+        } else if t.starts_with(HOOK_CONTEXT_START) {
+            let Some(i) = t.find(HOOK_CONTEXT_END) else { break };
+            let inner = t[HOOK_CONTEXT_START.len()..i].trim();
+            out.push(Piece::Hook(inner.lines().count()));
+            t = t[i + HOOK_CONTEXT_END.len()..].trim_start();
         } else if t.starts_with(MEMORY_START) {
             let Some(i) = t.find(MEMORY_END) else { break };
             let block = &t[..i + MEMORY_END.len()];
@@ -105,6 +112,14 @@ mod tests {
         assert_eq!(split_user("[goal set] make it fast"), vec![Piece::Goal(Some("make it fast".into()))]);
         assert_eq!(split_user("[goal: continue]"), vec![Piece::Goal(None)]);
         assert_eq!(split_user("my [goal set] idea"), vec![Piece::Text("my [goal set] idea".into())]);
+    }
+
+    #[test]
+    fn hook_context_is_not_shown_as_the_persons_words() {
+        let p = split_user(
+            "<hook-context>\nLocal time: 22:51.\nSince the previous prompt: 10 min.\n</hook-context>\n\nfix the bug",
+        );
+        assert_eq!(p, vec![Piece::Hook(2), Piece::Text("fix the bug".into())]);
     }
 
     #[test]

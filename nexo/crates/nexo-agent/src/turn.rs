@@ -1568,7 +1568,12 @@ async fn start_turn(
         let text = if st.hook_context.is_empty() {
             text
         } else {
-            format!("{}\n\n{text}", std::mem::take(&mut st.hook_context).join("\n\n"))
+            format!(
+                "{}\n{}\n{}\n\n{text}",
+                nexo_core::agent::HOOK_CONTEXT_START,
+                std::mem::take(&mut st.hook_context).join("\n\n"),
+                nexo_core::agent::HOOK_CONTEXT_END
+            )
         };
         let text = if st.shared.is_empty() {
             text

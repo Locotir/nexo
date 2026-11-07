@@ -2573,6 +2573,13 @@ impl App {
                                         text: format!("⊕ memory from {title} · {tok} tok"),
                                     });
                                 }
+                                Piece::Hook(n) => {
+                                    let s = if n == 1 { "" } else { "s" };
+                                    self.push(Block::Notice {
+                                        level: Level::Info,
+                                        text: format!("↳ hook context for the model · {n} line{s}"),
+                                    });
+                                }
                                 Piece::Summary(n) => {
                                     self.push(Block::Notice {
                                         level: Level::Info,
