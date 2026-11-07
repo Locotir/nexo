@@ -277,6 +277,19 @@ impl Palette {
         }
     }
 
+    /// For the model list, which is only a suggestion: whether Enter takes the listed value, because
+    /// it was moved to or because what was typed is its model name, so the provider comes with it.
+    pub fn picks_model(&self) -> bool {
+        let PaletteKind::Args(c) = &self.kind else { return false };
+        if c != "model" {
+            return false;
+        }
+        let q = self.query.trim();
+        self.current().is_some_and(|v| {
+            self.selected > 0 || (!q.is_empty() && v.rsplit_once('/').is_some_and(|(_, m)| m.eq_ignore_ascii_case(q)))
+        })
+    }
+
     /// The command whose values are listed, for the argument list.
     pub fn command(&self) -> Option<&str> {
         match &self.kind {
@@ -446,15 +459,16 @@ fn rank_words(query: &str, items: &[String]) -> Vec<(usize, Vec<usize>)> {
 pub fn arg_values(
     command: &str,
     models: &[(String, String)],
-    current_model: &str,
+    current: &str,
     effort_levels: &[String],
 ) -> Vec<(String, String)> {
     match command {
         "model" => models
             .iter()
             .map(|(p, m)| {
-                let hint = if m == current_model { "in use" } else { "" };
-                (format!("{p}/{m}"), hint.to_string())
+                let value = format!("{p}/{m}");
+                let hint = if value == current { "in use" } else { "" };
+                (value, hint.to_string())
             })
             .collect(),
         "effort" => {
@@ -696,7 +710,7 @@ mod tests {
         let p = Palette::args("permissions", "ro", 13, arg_values("permissions", &[], "", &[]));
         assert_eq!(p.current(), Some("read-only"), "the letters in order");
         let models = vec![("ds".to_string(), "chat".to_string()), ("ol".to_string(), "qwen".to_string())];
-        let p = Palette::args("model", "q", 7, arg_values("model", &models, "chat", &[]));
+        let p = Palette::args("model", "q", 7, arg_values("model", &models, "ds/chat", &[]));
         assert_eq!(p.current(), Some("ol/qwen"));
         assert!(!p.runs_selection(), "a model can be one not listed yet");
         let e = arg_values("effort", &[], "", &["low".into(), "max".into()]);

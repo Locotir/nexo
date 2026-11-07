@@ -3648,14 +3648,28 @@ impl App {
         out
     }
 
+    /// The provider and model a `/model` argument names: `provider/model` as said, else a bare
+    /// name stays on the provider in use unless only another provider lists it.
+    fn model_target(&self, name: String) -> (Option<String>, String) {
+        if let Some((p, m)) = name.split_once('/') {
+            return (Some(p.to_string()), m.to_string());
+        }
+        let has = |p: &str| self.opts.models.iter().any(|(q, m)| q == p && *m == name);
+        if has(&self.provider) {
+            return (None, name);
+        }
+        let mut owners = self.opts.models.iter().filter(|(_, m)| *m == name).map(|(p, _)| p);
+        match (owners.next(), owners.next()) {
+            (Some(p), None) => (Some(p.clone()), name),
+            _ => (None, name),
+        }
+    }
+
     pub fn run_command(&mut self, cmd: Command) {
         match cmd {
             Command::Help | Command::Keys => self.modal = Some(Modal::Help { scroll: 0 }),
             Command::Model(Some(name)) => {
-                let (provider, model) = match name.split_once('/') {
-                    Some((p, m)) => (Some(p.to_string()), m.to_string()),
-                    None => (None, name),
-                };
+                let (provider, model) = self.model_target(name);
                 self.send(AgentCommand::SetModel { provider, model });
             }
             Command::Model(None) | Command::Provider => self.open_setup(),
@@ -4385,10 +4399,7 @@ impl App {
                 self.modal = None;
                 match kind {
                     PickKind::Model => {
-                        let (provider, model) = match value.split_once('/') {
-                            Some((p, m)) => (Some(p.to_string()), m.to_string()),
-                            None => (None, value),
-                        };
+                        let (provider, model) = self.model_target(value);
                         self.send(AgentCommand::SetModel { provider, model });
                     }
                     PickKind::Session => {
@@ -4498,7 +4509,7 @@ impl App {
                         }
                         PaletteKind::Args(cmd) => {
                             let mut values =
-                                palette::arg_values(&cmd, &self.opts.models, &self.model, &self.effort_levels);
+                                palette::arg_values(&cmd, &self.opts.models, &self.in_use(), &self.effort_levels);
                             values.extend(palette::live_values(
                                 &cmd,
                                 &self.jobs,
@@ -4543,6 +4554,11 @@ impl App {
 
     /// What `/goal` and `/rename` hold now, first in their list: Tab puts it on the line to edit.
     /// `/export` offers a file here named after the session.
+    /// `provider/model` in use, as the model list names its entries.
+    fn in_use(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+
     fn current_arg(&self, cmd: &str) -> Option<(String, String)> {
         if cmd == "export" {
             let slug = self
@@ -4600,7 +4616,7 @@ impl App {
             PaletteKind::Files => {
                 self.input.replace_range(p.start, &format!("{choice} "));
             }
-            PaletteKind::Args(_) if run && !p.runs_selection() => self.submit(),
+            PaletteKind::Args(_) if run && !p.runs_selection() && !p.picks_model() => self.submit(),
             PaletteKind::Args(_) => {
                 self.input.replace_range(p.start, &choice);
                 if run {
@@ -5788,6 +5804,73 @@ mod tests {
         assert_eq!(a.input.text(), "/rename ");
         assert!(rx.try_recv().is_err() && !a.blocks.iter().any(|b| matches!(b, Block::Notice { .. })));
         assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("fix the parser"), "its list opens");
+    }
+
+    /// Two providers list a model of the same name; the session runs on the first.
+    fn two_luna() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
+        let (mut a, rx) = app();
+        a.provider = "refuseless".into();
+        a.model = "deepseek-chat".into();
+        a.opts.providers.push(("codex".into(), nexo_core::ProviderConfig::new("openai-chat", "http://x/v1", None)));
+        a.opts.models = vec![
+            ("refuseless".into(), "deepseek-chat".into()),
+            ("refuseless".into(), "luna".into()),
+            ("codex".into(), "luna".into()),
+        ];
+        (a, rx)
+    }
+
+    fn title(a: &App) -> String {
+        crate::ui::title_segments(a, 400).iter().flatten().map(|s| s.text.clone()).collect::<String>()
+    }
+
+    #[test]
+    fn picking_a_model_of_another_provider_switches_the_provider_too() {
+        // /model luna, arrow to the codex entry, Enter: the provider comes with the model
+        let (mut a, mut rx) = two_luna();
+        a.input.set_text("/model luna");
+        a.refresh_palette();
+        assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("refuseless/luna"));
+        a.palette.as_mut().unwrap().selected = 1;
+        assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("codex/luna"));
+        a.palette_accept(true);
+        let Ok(AgentCommand::SetModel { provider, model }) = rx.try_recv() else { panic!("no SetModel") };
+        assert_eq!((provider.as_deref(), model.as_str()), (Some("codex"), "luna"));
+        a.handle_agent(AgentEvent::ModelChanged { provider: "codex".into(), model: "luna".into() });
+        assert_eq!(a.provider, "codex");
+        assert!(title(&a).contains("codex/luna") && !title(&a).contains("refuseless/luna"), "{}", title(&a));
+    }
+
+    #[test]
+    fn a_model_name_only_another_provider_has_goes_to_that_provider() {
+        let (mut a, mut rx) = two_luna();
+        a.opts.models.retain(|(p, m)| !(p == "refuseless" && m == "luna"));
+        // Enter on the typed name, and the command typed whole
+        a.input.set_text("/model luna");
+        a.refresh_palette();
+        a.palette_accept(true);
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentCommand::SetModel { provider: Some(p), model }) if p == "codex" && model == "luna")
+        );
+        a.run_command(Command::Model(Some("luna".into())));
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentCommand::SetModel { provider: Some(p), model }) if p == "codex" && model == "luna")
+        );
+        // a name the provider in use has stays there; one nobody lists keeps the provider in use
+        a.run_command(Command::Model(Some("deepseek-chat".into())));
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentCommand::SetModel { provider: None, model }) if model == "deepseek-chat")
+        );
+        a.run_command(Command::Model(Some("brand-new".into())));
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetModel { provider: None, model }) if model == "brand-new"));
+    }
+
+    #[test]
+    fn the_model_list_marks_only_the_entry_in_use() {
+        let (a, _rx) = two_luna();
+        let v = palette::arg_values("model", &a.opts.models, "refuseless/luna", &[]);
+        let used: Vec<&str> = v.iter().filter(|(_, h)| h == "in use").map(|(n, _)| n.as_str()).collect();
+        assert_eq!(used, ["refuseless/luna"]);
     }
 
     #[test]

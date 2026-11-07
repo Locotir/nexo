@@ -95,7 +95,15 @@ pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow
         }
     }
     if let Some(m) = model {
-        c.model = Some(m.to_string());
+        // `--model codex/luna` names its provider, as `/model codex/luna` does (unless no provider
+        // was asked for by that name and the model id itself holds the slash, as on a gateway)
+        match m.split_once('/') {
+            Some((p, rest)) if provider.is_none() && c.providers.contains_key(p) && !on_gateway(&c, m) => {
+                c.provider = Some(p.to_string());
+                c.model = Some(rest.to_string());
+            }
+            _ => c.model = Some(m.to_string()),
+        }
     }
     let (provider, model) =
         c.pick().ok_or_else(|| {
@@ -114,6 +122,14 @@ pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow
         );
     }
     Ok(Picked { provider, model })
+}
+
+/// Whether the provider that would run holds a model whose id is `m` itself, slash and all.
+fn on_gateway(c: &Config, m: &str) -> bool {
+    c.provider
+        .as_ref()
+        .and_then(|p| c.providers.get(p))
+        .is_some_and(|p| p.models.iter().chain(p.default_model.iter()).any(|x| x == m))
 }
 
 pub fn model_choices(cfg: &Config) -> Vec<(String, String)> {
@@ -732,4 +748,35 @@ pub fn trash_sessions(ids: &[String], restore: bool) -> i32 {
         }
     }
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        let mut c = Config { provider: Some("refuseless".into()), ..Default::default() };
+        for n in ["refuseless", "codex"] {
+            c.providers.insert(n.into(), ProviderConfig::new("openai-chat", "http://localhost:1/v1", None));
+        }
+        c.providers.get_mut("refuseless").unwrap().models = vec!["openai/gpt-x".into()];
+        c
+    }
+
+    fn at(c: &Config, provider: Option<&str>, model: &str) -> (String, String) {
+        let p = pick(c, provider, Some(model)).unwrap();
+        (p.provider, p.model)
+    }
+
+    #[test]
+    fn a_model_flag_that_names_its_provider_runs_on_it() {
+        let c = cfg();
+        assert_eq!(at(&c, None, "codex/luna"), ("codex".into(), "luna".into()));
+        // a provider asked for apart wins; a slash that is part of the id stays in it
+        assert_eq!(at(&c, Some("refuseless"), "codex/luna"), ("refuseless".into(), "codex/luna".into()));
+        assert_eq!(at(&c, None, "plain"), ("refuseless".into(), "plain".into()));
+        let mut g = c.clone();
+        g.providers.get_mut("refuseless").unwrap().models.push("codex/gw".into());
+        assert_eq!(at(&g, None, "codex/gw"), ("refuseless".into(), "codex/gw".into()));
+    }
 }
