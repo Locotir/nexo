@@ -4020,6 +4020,7 @@ async fn a_message_that_joins_after_a_guard_stop_is_answered_with_tools_on() {
     r.stop().await;
 }
 
+#[cfg(unix)]
 fn hook_cfg(event: &str, matcher: Option<&str>, command: &str) -> nexo_core::config::HookConfig {
     nexo_core::config::HookConfig {
         event: event.into(),
@@ -4030,6 +4031,7 @@ fn hook_cfg(event: &str, matcher: Option<&str>, command: &str) -> nexo_core::con
 }
 
 /// The text of the tool results the model got in a request.
+#[cfg(unix)]
 fn results_in(req: &nexo_core::provider::ModelRequest) -> Vec<String> {
     req.messages
         .iter()
