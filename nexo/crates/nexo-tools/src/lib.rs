@@ -21,6 +21,7 @@ pub mod mcp_http;
 pub mod mcp_hub;
 pub mod mcp_oauth;
 pub mod note;
+pub mod picture;
 pub mod read;
 pub mod recall;
 pub mod sandbox;

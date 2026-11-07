@@ -147,6 +147,7 @@ fn tool_output_region_clamps() {
         &mut a,
         "bash",
         ToolOutput {
+            images: Vec::new(),
             content: body.clone(),
             is_error: false,
             display: ToolDisplay::Shell {
@@ -177,6 +178,7 @@ fn diff_copy_keeps_signs_drops_numbers() {
         &mut a,
         "edit",
         ToolOutput {
+            images: Vec::new(),
             content: "ok".into(),
             is_error: false,
             display: ToolDisplay::Diff {
@@ -203,6 +205,7 @@ fn file_view_copy_uses_source_for_truncated_lines() {
         &mut a,
         "read",
         ToolOutput {
+            images: Vec::new(),
             content: text.clone(),
             is_error: false,
             display: ToolDisplay::File { path: "a.rs".into(), text, start_line: 1 },
@@ -349,6 +352,7 @@ fn file_view_partial_selection_with_tabs_is_aligned() {
         &mut a,
         "read",
         ToolOutput {
+            images: Vec::new(),
             content: text.clone(),
             is_error: false,
             display: ToolDisplay::File { path: "a.rs".into(), text, start_line: 1 },

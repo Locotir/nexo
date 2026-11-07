@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::message::ImageSource;
 use crate::provider::ToolSpec;
 
 /// What a tool does to the world; the permission policy decides by it.
@@ -104,15 +105,23 @@ pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
     pub display: ToolDisplay,
+    /// Pictures the model looks at next to `content` (a `read` of a PNG).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSource>,
 }
 
 impl ToolOutput {
     pub fn ok(content: impl Into<String>) -> ToolOutput {
-        ToolOutput { content: content.into(), is_error: false, display: ToolDisplay::Plain }
+        ToolOutput { content: content.into(), is_error: false, display: ToolDisplay::Plain, images: Vec::new() }
     }
 
     pub fn error(content: impl Into<String>) -> ToolOutput {
-        ToolOutput { content: content.into(), is_error: true, display: ToolDisplay::Plain }
+        ToolOutput { content: content.into(), is_error: true, display: ToolDisplay::Plain, images: Vec::new() }
+    }
+
+    pub fn with_images(mut self, images: Vec<ImageSource>) -> ToolOutput {
+        self.images = images;
+        self
     }
 
     pub fn with_display(mut self, d: ToolDisplay) -> ToolOutput {
@@ -140,6 +149,8 @@ pub struct ToolContext {
     pub check: Option<PolicyCheck>,
     /// The OS sandbox the `bash` tool runs commands in (mode `off`: none).
     pub sandbox: crate::sandbox::SandboxSettings,
+    /// Whether the model in use can look at pictures (false only where the model catalogue says it cannot).
+    pub vision: bool,
 }
 
 /// What the permission rules would do with a call, without asking anyone.
@@ -165,6 +176,7 @@ impl ToolContext {
             jobs: crate::jobs::Jobs::new(),
             check: None,
             sandbox: Default::default(),
+            vision: true,
         }
     }
 

@@ -89,6 +89,7 @@ mod tests {
             jobs: Default::default(),
             check: None,
             sandbox: Default::default(),
+            vision: true,
         }
     }
 

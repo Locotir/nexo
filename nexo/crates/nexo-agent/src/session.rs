@@ -934,8 +934,10 @@ impl Session {
     }
 
     pub fn record_output(&mut self, call_id: &str, output: &ToolOutput) -> anyhow::Result<()> {
+        // the pictures are already in the tool-result message; the display copy keeps none
+        let output = ToolOutput { images: Vec::new(), ..output.clone() };
         self.outputs.insert(call_id.to_string(), output.clone());
-        self.write(&Line::ToolOutput { call_id: call_id.into(), output: output.clone() })
+        self.write(&Line::ToolOutput { call_id: call_id.into(), output })
     }
 
     pub fn record_usage(&mut self, usage: Usage, cost_usd: f64) -> anyhow::Result<()> {

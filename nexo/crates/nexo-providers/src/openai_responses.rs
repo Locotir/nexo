@@ -127,7 +127,19 @@ fn convert(m: &Message, model: &str) -> Vec<Value> {
                         } else {
                             text
                         };
-                        out.push(json!({"type": "function_call_output", "call_id": call_id, "output": text}));
+                        // with pictures the output is a list of content items, else a string
+                        let output = if c.iter().any(|p| matches!(p, Part::Image { .. })) {
+                            let mut items = vec![json!({"type": "input_text", "text": text})];
+                            for p in c {
+                                if let Part::Image { source } = p {
+                                    items.push(json!({"type": "input_image", "image_url": image_url(source)}));
+                                }
+                            }
+                            Value::Array(items)
+                        } else {
+                            Value::String(text)
+                        };
+                        out.push(json!({"type": "function_call_output", "call_id": call_id, "output": output}));
                     }
                     Part::Text { text } => content.push(json!({"type": "input_text", "text": text})),
                     Part::Image { source } => {
@@ -590,5 +602,38 @@ mod tests {
         let text = other["input"].to_string();
         assert!(!text.contains("encrypted_content") && !text.contains("rs_1"), "{text}");
         assert!(text.contains("answer"));
+    }
+
+    #[test]
+    fn a_picture_in_a_tool_result_is_an_input_image_in_its_output() {
+        let req = ModelRequest::new(
+            "gpt-5",
+            "sys",
+            vec![
+                Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", json!({"path": "n.png"}))]),
+                Message::tool_results(vec![Part::ToolResult {
+                    call_id: "c1".into(),
+                    name: Some("read".into()),
+                    content: vec![
+                        Part::text("n.png: PNG image"),
+                        Part::Image {
+                            source: nexo_core::message::ImageSource::Base64 {
+                                media_type: "image/png".into(),
+                                data: "AAAA".into(),
+                            },
+                        },
+                    ],
+                    is_error: false,
+                }]),
+            ],
+        );
+        let b = OpenAiResponses::body(&ProviderConfig::new(ID, "https://api.openai.com/v1", None), &req);
+        assert_eq!(
+            b["input"][1],
+            json!({"type": "function_call_output", "call_id": "c1", "output": [
+                {"type": "input_text", "text": "n.png: PNG image"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+            ]})
+        );
     }
 }

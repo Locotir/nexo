@@ -2524,6 +2524,7 @@ impl App {
                                             content: text,
                                             is_error: *is_error,
                                             display: ToolDisplay::Plain,
+                                            images: Vec::new(),
                                         });
                                     }
                                 }

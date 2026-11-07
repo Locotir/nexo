@@ -789,7 +789,7 @@ impl Tool for McpTool {
                 }
                 let text = text.trim_end().to_string();
                 let text = if text.is_empty() { "(no content)".to_string() } else { text };
-                ToolOutput { content: text, is_error, display: nexo_core::ToolDisplay::Plain }
+                ToolOutput { content: text, is_error, display: nexo_core::ToolDisplay::Plain, images: Vec::new() }
             }
         }
     }

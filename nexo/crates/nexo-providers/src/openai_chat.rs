@@ -121,6 +121,13 @@ fn convert(m: &Message, send_reasoning: bool) -> Vec<Value> {
                             text
                         };
                         out.push(json!({"role": "tool", "tool_call_id": call_id, "content": text}));
+                        // a tool message takes text only: its pictures follow in the user message
+                        for img in c.iter().filter_map(|p| match p {
+                            Part::Image { source } => Some(source),
+                            _ => None,
+                        }) {
+                            content.push(json!({"type": "image_url", "image_url": {"url": image_url(img)}}));
+                        }
                     }
                     Part::Text { text } => content.push(json!({"type": "text", "text": text})),
                     Part::Image { source } => {
@@ -646,5 +653,34 @@ mod tests {
         evs.extend(p.finish());
         assert!(!evs.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. } | StreamEvent::Finish(_))), "{evs:?}");
         assert!(matches!(evs.last(), Some(StreamEvent::Error(e)) if e.message.contains("truncated")), "{evs:?}");
+    }
+
+    #[test]
+    fn a_picture_in_a_tool_result_follows_the_tool_message_as_an_image_url() {
+        let req = ModelRequest::new(
+            "gpt-5",
+            "",
+            vec![
+                Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", json!({"path": "n.png"}))]),
+                Message::tool_results(vec![Part::ToolResult {
+                    call_id: "c1".into(),
+                    name: Some("read".into()),
+                    content: vec![
+                        Part::text("n.png: PNG image"),
+                        Part::Image {
+                            source: ImageSource::Base64 { media_type: "image/png".into(), data: "AAAA".into() },
+                        },
+                    ],
+                    is_error: false,
+                }]),
+            ],
+        );
+        let b = OpenAiChat::body(&cfg(), &req);
+        assert_eq!(b["messages"][0]["role"], "assistant");
+        assert_eq!(b["messages"][1], json!({"role": "tool", "tool_call_id": "c1", "content": "n.png: PNG image"}));
+        assert_eq!(
+            b["messages"][2],
+            json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]})
+        );
     }
 }

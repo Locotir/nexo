@@ -137,6 +137,12 @@ fn contents(messages: &[Message], model: &str) -> Vec<Value> {
                     let text = nexo_core::message::result_text(content);
                     let response = if *is_error { json!({"error": text}) } else { json!({"result": text}) };
                     parts.push(json!({"functionResponse": {"name": fname, "response": response}}));
+                    // the pictures of the result ride in the same turn, after the response
+                    for p in content {
+                        if let Part::Image { source: ImageSource::Base64 { media_type, data } } = p {
+                            parts.push(json!({"inlineData": {"mimeType": media_type, "data": data}}));
+                        }
+                    }
                 }
                 Part::Image { source } => match source {
                     ImageSource::Base64 { media_type, data } => {
@@ -545,5 +551,24 @@ mod tests {
         let other = Gemini::body(&cfg, &ModelRequest::new("gem-b", "", history("gem-a")));
         assert!(!other.to_string().contains("thoughtSignature"));
         assert_eq!(other["contents"][1]["parts"][0]["functionCall"]["name"], "read");
+    }
+
+    #[test]
+    fn a_picture_in_a_tool_result_rides_as_inline_data_after_the_response() {
+        let msgs = vec![
+            Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", json!({"path": "n.png"}))]),
+            Message::tool_results(vec![Part::ToolResult {
+                call_id: "c1".into(),
+                name: Some("read".into()),
+                content: vec![
+                    Part::text("n.png: PNG image"),
+                    Part::Image { source: ImageSource::Base64 { media_type: "image/png".into(), data: "AAAA".into() } },
+                ],
+                is_error: false,
+            }]),
+        ];
+        let c = contents(&msgs, "gemini-x");
+        assert_eq!(c[1]["parts"][0]["functionResponse"]["response"]["result"], "n.png: PNG image");
+        assert_eq!(c[1]["parts"][1], json!({"inlineData": {"mimeType": "image/png", "data": "AAAA"}}));
     }
 }

@@ -161,8 +161,21 @@ fn convert(m: &Message, model: &str) -> (Value, bool) {
                 content.push(json!({"type": "tool_use", "id": id, "name": name, "input": args}))
             }
             Part::ToolResult { call_id, content: c, is_error, .. } => {
-                let text = nexo_core::message::result_text(c);
-                let mut r = json!({"type": "tool_result", "tool_use_id": call_id, "content": text});
+                // a result with pictures is a list of blocks, the rest a plain string
+                let body = if c.iter().any(|p| matches!(p, Part::Image { .. })) {
+                    let blocks: Vec<Value> = c
+                        .iter()
+                        .filter_map(|p| match p {
+                            Part::Text { text } => Some(json!({"type": "text", "text": text})),
+                            Part::Image { source } => Some(json!({"type": "image", "source": image_source(source)})),
+                            _ => None,
+                        })
+                        .collect();
+                    Value::Array(blocks)
+                } else {
+                    Value::String(nexo_core::message::result_text(c))
+                };
+                let mut r = json!({"type": "tool_result", "tool_use_id": call_id, "content": body});
                 if *is_error {
                     r["is_error"] = json!(true);
                 }
@@ -627,5 +640,28 @@ mod tests {
         let b = Anthropic::body(&cfg, &req);
         assert_eq!(b["messages"][1]["content"][0]["signature"], "S");
         assert_eq!(b["thinking"]["budget_tokens"], 4000);
+    }
+
+    #[test]
+    fn a_picture_in_a_tool_result_is_an_image_block_inside_it() {
+        let (m, _) = convert(
+            &Message::tool_results(vec![Part::ToolResult {
+                call_id: "c1".into(),
+                name: Some("read".into()),
+                content: vec![
+                    Part::text("n.png: PNG image"),
+                    Part::Image { source: ImageSource::Base64 { media_type: "image/png".into(), data: "AAAA".into() } },
+                ],
+                is_error: false,
+            }]),
+            "claude-x",
+        );
+        assert_eq!(
+            m["content"][0]["content"],
+            json!([
+                {"type": "text", "text": "n.png: PNG image"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+            ])
+        );
     }
 }

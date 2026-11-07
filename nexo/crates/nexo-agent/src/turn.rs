@@ -3182,11 +3182,11 @@ async fn run_call(
     verdict: &Verdict,
     cancel: &CancellationToken,
 ) -> (Part, bool) {
-    let result = |out: &ToolOutput| Part::ToolResult {
-        call_id: id.to_string(),
-        name: Some(name.to_string()),
-        content: vec![Part::text(if out.content.is_empty() { "(no output)".to_string() } else { out.content.clone() })],
-        is_error: out.is_error,
+    let result = |out: &ToolOutput| {
+        let mut content =
+            vec![Part::text(if out.content.is_empty() { "(no output)".to_string() } else { out.content.clone() })];
+        content.extend(out.images.iter().cloned().map(|source| Part::Image { source }));
+        Part::ToolResult { call_id: id.to_string(), name: Some(name.to_string()), content, is_error: out.is_error }
     };
     let output = match verdict {
         Verdict::Denied(reason) => ToolOutput::error(format!("Permission denied: {reason}")),
@@ -3226,9 +3226,14 @@ async fn run_call(
                 }
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
-            let (jobs, perm, rules_cwd, sandbox) = {
+            let (jobs, perm, rules_cwd, sandbox, vision) = {
                 let st = state.lock().await;
-                (st.jobs.clone(), st.perm.clone(), cwd.to_path_buf(), st.sandbox.clone())
+                let (provider, _, model) = st.target.get();
+                // a picture is withheld only where the model catalogue says the model cannot see it
+                let vision = nexo_providers::catalogue::cached()
+                    .and_then(|c| c.lookup(&provider, &model).and_then(|e| e.vision))
+                    .unwrap_or(true);
+                (st.jobs.clone(), st.perm.clone(), cwd.to_path_buf(), st.sandbox.clone(), vision)
             };
             let ctx = ToolContext {
                 cwd: cwd.to_path_buf(),
@@ -3239,6 +3244,7 @@ async fn run_call(
                 env: Default::default(),
                 jobs,
                 sandbox,
+                vision,
                 check: Some(Arc::new(move |tool: &str, kind, args: &Value| {
                     match perm.decide(tool, kind, args, &rules_cwd) {
                         Decision::Allow => nexo_core::tool::Check::Allow,

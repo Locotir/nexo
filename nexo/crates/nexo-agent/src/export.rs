@@ -170,7 +170,7 @@ fn scrub_output(o: &ToolOutput) -> ToolOutput {
     let mut v = serde_json::to_value(&o.display).unwrap_or(Value::Null);
     scrub_value(&mut v);
     let display = serde_json::from_value(v).unwrap_or(ToolDisplay::Plain);
-    ToolOutput { content: scrub(&o.content), is_error: o.is_error, display }
+    ToolOutput { content: scrub(&o.content), is_error: o.is_error, display, images: Vec::new() }
 }
 
 /// The session in `format`. `summary` names what a call does (`read src/a.rs`) from the tool and its
@@ -423,6 +423,7 @@ mod tests {
         let res = vec![Part::tool_result("c1", "edited", false), Part::tool_result("c2", "SECRET_THING=abc", false)];
         s.append(&Message::tool_results(res)).unwrap();
         let diff = ToolOutput {
+            images: Vec::new(),
             content: "edited".into(),
             is_error: false,
             display: ToolDisplay::Diff { path: "a.rs".into(), old: "x".into(), new: "y".into(), start_line: 1 },

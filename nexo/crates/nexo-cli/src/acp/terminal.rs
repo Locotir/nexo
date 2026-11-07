@@ -195,6 +195,6 @@ impl Tool for TerminalBash {
         };
         let display =
             ToolDisplay::Shell { command: command.to_string(), stdout: output, stderr: String::new(), exit_code };
-        ToolOutput { content, is_error, display }
+        ToolOutput { content, is_error, display, images: Vec::new() }
     }
 }

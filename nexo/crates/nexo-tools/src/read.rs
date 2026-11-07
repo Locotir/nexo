@@ -1,9 +1,12 @@
-//! `read`: a file, as numbered lines.
+//! `read`: a file, as numbered lines; a picture, as an image the model looks at.
 
 use async_trait::async_trait;
+use base64::Engine;
+use nexo_core::message::ImageSource;
 use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
+use crate::picture;
 use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg, MAX_FILE_BYTES};
 
 /// Lines returned when `limit` is not given.
@@ -25,8 +28,9 @@ impl Tool for Read {
             description: "Read a text file. Returns its lines numbered (`   12│ text`), at most `limit` \
                           lines from line `offset` (1-based); the default is the first 2000 lines, and a \
                           line longer than 2000 characters is cut. Use `grep` to find where something is \
-                          and `read` with `offset`/`limit` to look at that part of a large file. Directories \
-                          and binary files are refused (use `ls` for a directory)."
+                          and `read` with `offset`/`limit` to look at that part of a large file. A PNG, JPEG, GIF or WebP \
+                          file is shown as an image (at most 5 MB and 2000 px). Directories and other \
+                          binary files are refused (use `ls` for a directory)."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -86,6 +90,9 @@ impl Tool for Read {
             }
             Err(e) => return ToolOutput::error(format!("read: cannot read {shown}: {e}")),
         };
+        if let Some(pic) = picture::sniff(&bytes) {
+            return show_picture(&shown, pic, &bytes, ctx.vision);
+        }
         if is_binary(&bytes) {
             return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
         }
@@ -118,6 +125,25 @@ impl Tool for Read {
         }
         ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown, text: raw, start_line: offset })
     }
+}
+
+/// A picture as the image the model looks at, with one line of text; refused over the size cap,
+/// and only described where the model cannot see pictures.
+fn show_picture(shown: &str, pic: picture::Picture, bytes: &[u8], vision: bool) -> ToolOutput {
+    let what = format!("{} image of {}x{} px, {} bytes", pic.label(), pic.width, pic.height, bytes.len());
+    if !vision {
+        return ToolOutput::ok(format!("{shown}: a {what}; this model cannot view images."));
+    }
+    if bytes.len() > picture::MAX_BYTES || pic.width.max(pic.height) > picture::MAX_SIDE {
+        return ToolOutput::error(format!(
+            "read: {shown} is a {what}, too large to show (at most 5 MB and {} px on the long side); \
+             shrink a copy first, e.g. with `bash` and `magick in.png -resize 2000x2000 out.png`",
+            picture::MAX_SIDE
+        ));
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    ToolOutput::ok(format!("{shown}: {what}"))
+        .with_images(vec![ImageSource::Base64 { media_type: pic.media_type.into(), data }])
 }
 
 #[cfg(test)]
@@ -189,5 +215,63 @@ mod tests {
     fn a_zero_offset_and_limit_do_not_underflow_the_summary() {
         let s = Read.summary(&json!({"path": "a", "offset": 0, "limit": 0}));
         assert_eq!(s, "read a [0..0]");
+    }
+
+    fn png_file(d: &std::path::Path, name: &str, w: u32, h: u32) {
+        std::fs::write(d.join(name), crate::picture::tests::png(w, h)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_png_comes_back_as_an_image_with_a_size_line() {
+        let d = tempfile::tempdir().unwrap();
+        png_file(d.path(), "n.png", 30, 12);
+        let out = Read.run(json!({"path": "n.png"}), &ctx(d.path())).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.starts_with("n.png: PNG image of 30x12 px, "), "{}", out.content);
+        assert!(out.content.ends_with(" bytes"));
+        match out.images.as_slice() {
+            [ImageSource::Base64 { media_type, data }] => {
+                assert_eq!(media_type, "image/png");
+                let back = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+                assert_eq!(back, std::fs::read(d.path().join("n.png")).unwrap());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_magic_bytes_decide_not_the_extension() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("shot.dat"), crate::picture::tests::png(4, 4)).unwrap();
+        assert_eq!(Read.run(json!({"path": "shot.dat"}), &ctx(d.path())).await.images.len(), 1);
+        std::fs::write(d.path().join("fake.png"), "just text\n").unwrap();
+        let out = Read.run(json!({"path": "fake.png"}), &ctx(d.path())).await;
+        assert!(out.images.is_empty() && out.content.contains("just text"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_model_without_vision_gets_text_only() {
+        let d = tempfile::tempdir().unwrap();
+        png_file(d.path(), "n.png", 30, 12);
+        let mut c = ctx(d.path());
+        c.vision = false;
+        let out = Read.run(json!({"path": "n.png"}), &c).await;
+        assert!(!out.is_error && out.images.is_empty());
+        assert!(out.content.contains("30x12") && out.content.contains("cannot view images"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_picture_over_the_cap_is_refused_with_the_size() {
+        let d = tempfile::tempdir().unwrap();
+        png_file(d.path(), "wide.png", 2001, 2);
+        let out = Read.run(json!({"path": "wide.png"}), &ctx(d.path())).await;
+        assert!(out.is_error && out.images.is_empty(), "{}", out.content);
+        assert!(out.content.contains("2001x2") && out.content.contains("too large"), "{}", out.content);
+        // within 2000 px but over 5 MB: the header is real, the body is padding
+        let mut big = crate::picture::tests::png(8, 8);
+        big.resize(crate::picture::MAX_BYTES + 1, 0);
+        std::fs::write(d.path().join("heavy.png"), big).unwrap();
+        let out = Read.run(json!({"path": "heavy.png"}), &ctx(d.path())).await;
+        assert!(out.is_error && out.content.contains("5 MB"), "{}", out.content);
     }
 }
