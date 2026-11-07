@@ -455,6 +455,34 @@ An MCP server gets only these variables of your environment, plus its own `env`:
 `SystemDrive`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PATHEXT`, `COMSPEC`, `WINDIR`, `ProgramData`
 and `ProgramFiles`; a key it needs goes in its `env`.
 
+#### Remote MCP servers
+
+```toml
+[mcp.linear]
+url = "https://mcp.linear.app/mcp"
+headers = { "X-Team" = "${TEAM_ID}" }   # ${ENV_VAR} is filled in from your environment
+# transport = "sse"                      # only the older HTTP+SSE transport (default: streamable HTTP,
+                                         # with the older one as a fallback when the server refuses the first POST)
+```
+
+nexo speaks streamable HTTP (MCP 2025-06-18: a POST per message, JSON or SSE answers, `Mcp-Session-Id`
+kept). A server that answers 401 needs a login: `nexo mcp login linear` finds the server's OAuth
+metadata, registers nexo as a client, opens your browser (PKCE, redirect to `127.0.0.1`) and keeps the
+tokens in the credential store (`mcp:linear`), renewing them when they expire. Tokens are never printed.
+
+```
+nexo mcp add files npx -y @modelcontextprotocol/server-filesystem .        # a local command
+nexo mcp add --transport http linear https://mcp.linear.app/mcp --header "X-Team: ${TEAM_ID}"
+nexo mcp list      # connected, needs login, or failed, per server
+nexo mcp login linear
+nexo mcp remove linear
+```
+
+`--scope project` writes to `.nexo/config.toml` of the project (default `user`). nexo also reads the
+`.mcp.json` of the project root (`mcpServers` with `command`/`args`/`env`, or `type` `http`/`sse` with
+`url` and `headers`), only once the project is trusted (`nexo config trust`); a server of the same name in
+your configuration wins.
+
 ### Providers
 
 Four wire protocols cover every provider ([`docs/providers-base.md`](../docs/providers-base.md) is the

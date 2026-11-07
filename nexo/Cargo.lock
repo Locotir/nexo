@@ -1633,6 +1633,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -1697,6 +1698,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
  "dirs",
  "globset",
  "htmd",
@@ -1704,15 +1706,19 @@ dependencies = [
  "ignore",
  "libc",
  "nexo-core",
+ "nexo-providers",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "similar",
  "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

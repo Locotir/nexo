@@ -50,18 +50,25 @@ fn passed_env(name: &str) -> bool {
 pub struct McpClient {
     name: String,
     inner: Arc<Inner>,
-    child: Child,
+    /// The server's process (stdio servers only).
+    child: Option<Child>,
     tools: Vec<ToolDef>,
     /// What the server said it is.
     pub server_info: Value,
     pub protocol_version: String,
 }
 
+/// How messages reach the server.
+enum Link {
+    Stdio(AsyncMutex<ChildStdin>),
+    Http(crate::mcp_http::HttpLink),
+}
+
 struct Inner {
     name: String,
     /// `trust_read_only` of the server's config: whether its `readOnlyHint` is believed.
     trust_read_only: bool,
-    stdin: AsyncMutex<ChildStdin>,
+    link: Link,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
 }
@@ -75,10 +82,31 @@ pub struct ToolDef {
 }
 
 impl McpClient {
-    /// Starts the server and performs the handshake and the tool listing.
+    /// Starts the server (or reaches it, for a `url`) and performs the handshake and the tool
+    /// listing. A remote server's login is read from nexo's credential store.
     pub async fn connect(name: &str, cfg: &McpServerConfig) -> anyhow::Result<McpClient> {
+        McpClient::connect_in(name, cfg, &nexo_core::auth::file()).await
+    }
+
+    /// [`McpClient::connect`] with the credential store at `auth_file`.
+    pub async fn connect_in(
+        name: &str,
+        cfg: &McpServerConfig,
+        auth_file: &std::path::Path,
+    ) -> anyhow::Result<McpClient> {
+        if cfg.url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
+            let link = crate::mcp_http::HttpLink::new(name, cfg, auth_file).map_err(|e| anyhow!(e))?;
+            let inner = Arc::new(Inner {
+                name: name.to_string(),
+                trust_read_only: cfg.trust_read_only,
+                link: Link::Http(link),
+                next_id: AtomicU64::new(1),
+                pending: Mutex::new(HashMap::new()),
+            });
+            return McpClient::handshake(name, inner, None).await;
+        }
         if cfg.command.trim().is_empty() {
-            return Err(anyhow!("mcp server `{name}`: no command"));
+            return Err(anyhow!("mcp server `{name}`: no command or url"));
         }
         // on Windows `npx` and `uvx` are `.cmd` files, which a bare name does not find
         let mut cmd = tokio::process::Command::new(nexo_core::shell::program(&cfg.command));
@@ -99,7 +127,7 @@ impl McpClient {
         let inner = Arc::new(Inner {
             name: name.to_string(),
             trust_read_only: cfg.trust_read_only,
-            stdin: AsyncMutex::new(stdin),
+            link: Link::Stdio(AsyncMutex::new(stdin)),
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
         });
@@ -131,6 +159,11 @@ impl McpClient {
                 let _ = tx.send(Err(why.clone()));
             }
         });
+        McpClient::handshake(name, inner, Some(child)).await
+    }
+
+    /// The `initialize` exchange and the tool listing.
+    async fn handshake(name: &str, inner: Arc<Inner>, child: Option<Child>) -> anyhow::Result<McpClient> {
         let mut init = Err(anyhow!("no protocol version accepted"));
         for v in PROTOCOL_VERSIONS {
             let params = json!({
@@ -144,6 +177,7 @@ impl McpClient {
                     break;
                 }
                 Ok(Err(e)) if e.contains("version") => continue,
+                Ok(Err(_)) if inner.needs_login() => return Err(crate::mcp_http::NeedsLogin(name.to_string()).into()),
                 Ok(Err(e)) => return Err(anyhow!("mcp server `{name}`: initialize failed: {e}")),
                 Err(_) => return Err(anyhow!("mcp server `{name}`: initialize timed out")),
             }
@@ -187,7 +221,12 @@ impl McpClient {
 
     /// Stops the server.
     pub async fn close(mut self) {
-        let _ = self.child.kill().await;
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.kill().await;
+        }
+        if let Link::Http(h) = &self.inner.link {
+            h.close().await;
+        }
     }
 }
 
@@ -233,18 +272,29 @@ impl Inner {
     async fn send(&self, msg: Value) -> anyhow::Result<()> {
         let mut line = serde_json::to_string(&msg)?;
         line.push('\n');
-        let mut stdin = self.stdin.lock().await;
+        let Link::Stdio(stdin) = &self.link else { return Err(anyhow!("not a stdio server")) };
+        let mut stdin = stdin.lock().await;
         stdin.write_all(line.as_bytes()).await?;
         stdin.flush().await?;
         Ok(())
     }
 
+    fn needs_login(&self) -> bool {
+        matches!(&self.link, Link::Http(h) if h.needs_login())
+    }
+
     async fn notify(&self, method: &str, params: Value) -> anyhow::Result<()> {
+        if let Link::Http(h) = &self.link {
+            return h.notify(method, params).await.map_err(|e| anyhow!(e));
+        }
         self.send(json!({"jsonrpc": "2.0", "method": method, "params": params})).await
     }
 
     /// A request; the error is the server's message or the transport's.
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        if let Link::Http(h) = &self.link {
+            return h.request(method, params).await;
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         if let Ok(mut p) = self.pending.lock() {

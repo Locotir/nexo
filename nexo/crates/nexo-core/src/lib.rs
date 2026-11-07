@@ -19,6 +19,7 @@ pub mod jobs;
 pub mod leak;
 pub mod mail;
 pub mod mailbox;
+pub mod mcp_json;
 pub mod message;
 pub mod paths;
 pub mod permission;

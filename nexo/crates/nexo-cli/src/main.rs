@@ -5,6 +5,7 @@
 mod account;
 mod cli;
 mod headless;
+mod mcp_cmd;
 mod schema;
 mod setup;
 mod supervise;

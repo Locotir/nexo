@@ -304,6 +304,13 @@ impl Default for ContextConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct McpServerConfig {
+    /// A remote server: its address (`https://...`). Then `command` is empty. `${VAR}` in it is read from the environment.
+    pub url: Option<String>,
+    /// Extra headers sent to a remote server (`Authorization = "Bearer ${TOKEN}"`).
+    pub headers: BTreeMap<String, String>,
+    /// For a remote server: `http` (streamable HTTP, with the old SSE transport as a fallback) or
+    /// `sse` (the old transport only). Unset: `http`.
+    pub transport: Option<String>,
     pub command: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -417,6 +424,14 @@ impl Config {
         let project = paths::project_config_file(cwd);
         let mut cfg =
             Config::load_files(&paths::user_config_file(), project.as_deref(), &paths::trusted_projects_file())?;
+        // the `.mcp.json` of the project root, under the same trust gate
+        if let Some(f) = &project {
+            let root = project_root(f);
+            let trusted = is_trusted(&root, &paths::trusted_projects_file());
+            if let Some(note) = crate::mcp_json::apply(&mut cfg.mcp, &root, trusted) {
+                cfg.notices.push(note);
+            }
+        }
         cfg.apply_env();
         cfg.name_auth_entries();
         Ok(cfg)

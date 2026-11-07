@@ -188,6 +188,11 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Add, list, remove and sign in to MCP servers (local commands and remote HTTP servers).
+    Mcp {
+        #[command(subcommand)]
+        what: crate::mcp_cmd::McpCmd,
+    },
     /// Install the latest nexo from GitHub with cargo (`--check`: only say whether there is one).
     Update {
         /// Only say whether a newer version exists; install nothing.
@@ -524,6 +529,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
             }
             return crate::account::doctor(&cwd, &config, *offline).await;
         }
+        Some(Cmd::Mcp { what }) => return crate::mcp_cmd::run(&cwd, &config, what).await,
         Some(Cmd::Update { check }) => return crate::update::run(*check).await,
         Some(Cmd::Guide) => {
             print!("{}", crate::account::GUIDE);
