@@ -101,3 +101,7 @@ Blank lines are skipped, and lines whose `type` is not `user` are ignored. Messa
 ## Schema
 
 `--json-schema` takes a file path or inline JSON (anything starting with `{`). The model is asked to answer with only JSON matching the schema. If the answer does not validate, it is sent back once, in the same session, with the errors. A second miss exits 3. The checker covers `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `anyOf`, `oneOf`, `allOf`, `not` and local `$ref`; other keywords (such as `pattern` and `format`) are ignored.
+
+## TLS roots
+
+nexo trusts the system CA store first (`SSL_CERT_FILE` and `SSL_CERT_DIR` are honoured); when it is empty or unreadable, as in a container image without `ca-certificates`, it falls back to the bundled Mozilla roots.

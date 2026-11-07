@@ -42,11 +42,12 @@ const ASSET: Option<&str> = if cfg!(all(target_os = "linux", target_arch = "x86_
 const SUMS: &str = "SHA256SUMS";
 
 fn client(timeout: u64) -> Option<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout))
-        .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .ok()
+    nexo_providers::build_client(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout))
+            .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
+    })
+    .ok()
 }
 
 /// The latest release: its tag and its files (name, download address).

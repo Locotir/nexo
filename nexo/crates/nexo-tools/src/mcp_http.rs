@@ -177,18 +177,18 @@ impl HttpLink {
             let v = expand_env(v).map_err(|e| format!("mcp server `{name}`: header {k}: {e}"))?;
             headers.push((k.clone(), v));
         }
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(15))
-            .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = nexo_providers::build_client(|| {
+            Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
+        })?;
         Ok(HttpLink {
             name: name.to_string(),
             url,
             headers,
             legacy_only: cfg.transport.as_deref() == Some("sse"),
+            oauth: OAuth::new(name, auth_file, client.clone()),
             client,
-            oauth: OAuth::new(name, auth_file),
             next_id: AtomicU64::new(1),
             session: Mutex::new(None),
             protocol: Mutex::new(None),

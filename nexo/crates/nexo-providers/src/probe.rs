@@ -40,7 +40,7 @@ async fn ask(
     body: Option<&Value>,
     wait: Duration,
 ) -> Result<Answer, String> {
-    let mut rb = http::client().request(method, url).headers(headers).timeout(wait);
+    let mut rb = http::client().map_err(|e| e.message)?.request(method, url).headers(headers).timeout(wait);
     if let Some(b) = body {
         rb = rb.json(b);
     }

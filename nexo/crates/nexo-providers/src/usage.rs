@@ -503,7 +503,7 @@ pub async fn fetch_in(
 }
 
 async fn copilot_user(at: &Endpoints, token: &str) -> Result<Value, ProviderError> {
-    let resp = crate::http::client()
+    let resp = crate::http::client()?
         .get(format!("{}/copilot_internal/user", at.github_api))
         .bearer_auth(token)
         .header("accept", "application/json")

@@ -25,7 +25,9 @@ pub mod presets;
 pub mod probe;
 pub mod sse;
 pub mod testing;
+pub mod tls;
 pub mod usage;
 
 pub use client::{registry, Client, Registry};
 pub use presets::presets;
+pub use tls::build_client;

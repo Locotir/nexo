@@ -127,9 +127,9 @@ fn builder(cfg: &WebConfig) -> reqwest::ClientBuilder {
         .connect_timeout(Duration::from_secs(10))
 }
 
-fn client(cfg: &WebConfig, redirects: usize) -> reqwest::Client {
-    builder(cfg)
-        .redirect(reqwest::redirect::Policy::custom(move |att| {
+fn client(cfg: &WebConfig, redirects: usize) -> Result<reqwest::Client, String> {
+    nexo_providers::build_client(|| {
+        builder(cfg).redirect(reqwest::redirect::Policy::custom(move |att| {
             if att.previous().len() > redirects {
                 att.error("too many redirects")
             } else if !redirect_ok(att.previous(), att.url()) {
@@ -138,8 +138,7 @@ fn client(cfg: &WebConfig, redirects: usize) -> reqwest::Client {
                 att.follow()
             }
         }))
-        .build()
-        .unwrap_or_default()
+    })
 }
 
 /// The redirects `web_fetch` follows, at most.
@@ -251,7 +250,7 @@ pub struct Hit {
 
 pub struct WebSearch {
     cfg: WebConfig,
-    http: reqwest::Client,
+    http: Result<reqwest::Client, String>,
     env: Env,
     ddg_base: String,
 }
@@ -263,6 +262,10 @@ impl WebSearch {
 
     fn with_env(cfg: &WebConfig, env: Env) -> WebSearch {
         WebSearch { cfg: cfg.clone(), http: client(cfg, 5), env, ddg_base: DDG_BASE.to_string() }
+    }
+
+    fn http(&self) -> Result<&reqwest::Client, String> {
+        self.http.as_ref().map_err(Clone::clone)
     }
 
     fn key(&self, b: Backend) -> Option<String> {
@@ -319,13 +322,14 @@ impl WebSearch {
                 if !domains.is_empty() {
                     body["include_domains"] = json!(domains);
                 }
-                let v = self.json(self.http.post(format!("{base}/search")).bearer_auth(key()?).json(&body), b).await?;
+                let v =
+                    self.json(self.http()?.post(format!("{base}/search")).bearer_auth(key()?).json(&body), b).await?;
                 Ok(hits(&v["results"], "title", "url", &["content"]))
             }
             Backend::Brave => {
                 let count = n.to_string();
                 let req = self
-                    .http
+                    .http()?
                     .get(with_query(&format!("{base}/res/v1/web/search"), &[("q", &site_query), ("count", &count)])?)
                     .header("Accept", "application/json")
                     .header("X-Subscription-Token", key()?);
@@ -339,7 +343,7 @@ impl WebSearch {
                     body["includeDomains"] = json!(domains);
                 }
                 let v = self
-                    .json(self.http.post(format!("{base}/search")).header("x-api-key", key()?).json(&body), b)
+                    .json(self.http()?.post(format!("{base}/search")).header("x-api-key", key()?).json(&body), b)
                     .await?;
                 Ok(hits(&v["results"], "title", "url", &["highlights", "summary", "text"]))
             }
@@ -348,13 +352,13 @@ impl WebSearch {
                     return Err("searxng needs its address: [web] url = \"https://searx.example.org\"".into());
                 }
                 let req =
-                    self.http.get(with_query(&format!("{base}/search"), &[("q", &site_query), ("format", "json")])?);
+                    self.http()?.get(with_query(&format!("{base}/search"), &[("q", &site_query), ("format", "json")])?);
                 let v = self.json(req, b).await?;
                 Ok(hits(&v["results"], "title", "url", &["content"]))
             }
             Backend::DuckDuckGo => {
                 let resp = self
-                    .http
+                    .http()?
                     .post(format!("{base}/html/"))
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body(form_encode(&[("q", &site_query), ("kl", "wt-wt")]))
@@ -652,19 +656,21 @@ impl Tool for WebSearch {
 // ------------------------------------------------------------------ fetch
 
 pub struct WebFetch {
-    http: reqwest::Client,
+    http: Result<reqwest::Client, String>,
 }
 
 impl WebFetch {
     pub fn new(cfg: &WebConfig) -> WebFetch {
         // redirects are followed by hand, each one checked (`hop`)
         WebFetch {
-            http: builder(cfg)
-                .redirect(reqwest::redirect::Policy::none())
-                .dns_resolver(Arc::new(PublicResolver))
-                .build()
-                .unwrap_or_default(),
+            http: nexo_providers::build_client(|| {
+                builder(cfg).redirect(reqwest::redirect::Policy::none()).dns_resolver(Arc::new(PublicResolver))
+            }),
         }
+    }
+
+    fn http(&self) -> Result<&reqwest::Client, String> {
+        self.http.as_ref().map_err(Clone::clone)
     }
 }
 
@@ -817,7 +823,7 @@ impl Tool for WebFetch {
             let mut at = url.clone();
             let mut resp = loop {
                 let resp = self
-                    .http
+                    .http()?
                     .get(at.clone())
                     .header(
                         "Accept",

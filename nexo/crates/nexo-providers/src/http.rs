@@ -17,16 +17,18 @@ pub const USER_AGENT: &str = concat!("nexo/", env!("CARGO_PKG_VERSION"));
 /// for this long has gone.
 const IDLE: Duration = Duration::from_secs(300);
 
-pub fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(IDLE)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-    })
+/// The shared client, or why TLS could not be set up (see [`crate::tls`]).
+pub fn client() -> Result<&'static reqwest::Client, ProviderError> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    let built = CLIENT.get_or_init(|| {
+        crate::tls::build_client(|| {
+            reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .connect_timeout(Duration::from_secs(30))
+                .read_timeout(IDLE)
+        })
+    });
+    built.as_ref().map_err(|e| ProviderError::new(ErrorKind::Other, e.clone()))
 }
 
 /// `base_url/version/path`, unless the base already ends with a version
@@ -86,7 +88,7 @@ pub type BodyStream = std::pin::Pin<Box<dyn Stream<Item = ByteResult> + Send>>;
 
 /// POSTs `body` and returns the response's byte stream, or the classified error.
 pub async fn post_stream(url: &str, headers: HeaderMap, body: &Value) -> Result<BodyStream, ProviderError> {
-    let resp = client().post(url).headers(headers).json(body).send().await.map_err(net_error)?;
+    let resp = client()?.post(url).headers(headers).json(body).send().await.map_err(net_error)?;
     // the plan figures ride on every response, an error one (the limit reached) included
     crate::usage::record_headers(resp.headers());
     let status = resp.status().as_u16();
@@ -102,7 +104,7 @@ pub async fn post_stream(url: &str, headers: HeaderMap, body: &Value) -> Result<
 
 /// GETs `url` and parses the JSON.
 pub async fn get_json(url: &str, headers: HeaderMap) -> Result<Value, ProviderError> {
-    let resp = client().get(url).headers(headers).send().await.map_err(net_error)?;
+    let resp = client()?.get(url).headers(headers).send().await.map_err(net_error)?;
     let status = resp.status().as_u16();
     let text = resp.text().await.map_err(net_error)?;
     if !(200..300).contains(&status) {

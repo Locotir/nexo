@@ -39,8 +39,8 @@ pub struct OAuth {
 }
 
 impl OAuth {
-    pub fn new(server: &str, auth_file: &Path) -> OAuth {
-        OAuth { key: key(server), file: auth_file.to_path_buf(), client: Client::new() }
+    pub fn new(server: &str, auth_file: &Path, client: Client) -> OAuth {
+        OAuth { key: key(server), file: auth_file.to_path_buf(), client }
     }
 
     /// The access token to send, renewed first when it is about to expire (or when `force` says the
@@ -200,7 +200,10 @@ pub async fn login(
 ) -> anyhow::Result<String> {
     let server = expand_env(cfg.url.as_deref().unwrap_or("")).map_err(|e| anyhow!("url: {e}"))?;
     let server_url = url::Url::parse(&server).context("bad url")?;
-    let client = Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(30)).build()?;
+    let client = nexo_providers::build_client(|| {
+        Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(30))
+    })
+    .map_err(|e| anyhow!(e))?;
 
     // 1. a request without a token, to read the 401
     let mut rb = client

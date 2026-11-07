@@ -225,7 +225,7 @@ pub fn install(c: Catalogue) -> Arc<Catalogue> {
 /// Fetches the dataset now, writes the cache and installs it. Goes through
 /// the shared client, so the system proxy settings apply.
 pub async fn refresh() -> Result<Arc<Catalogue>, ProviderError> {
-    let resp = crate::http::client()
+    let resp = crate::http::client()?
         .get(URL)
         .timeout(Duration::from_secs(60))
         .send()

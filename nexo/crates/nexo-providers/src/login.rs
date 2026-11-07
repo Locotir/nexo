@@ -137,7 +137,7 @@ pub(crate) enum Body {
 
 /// POSTs and returns the status with the body as JSON (`{}` when it is not).
 pub(crate) async fn post(url: &str, body: Body) -> Result<(u16, Value), ProviderError> {
-    let r = http::client().post(url).header("accept", "application/json");
+    let r = http::client()?.post(url).header("accept", "application/json");
     let r = match body {
         Body::Json(v) => r.json(&v),
         Body::Form(s) => r.header("content-type", "application/x-www-form-urlencoded").body(s),
@@ -254,7 +254,7 @@ async fn copilot(at: &Endpoints, show: &(dyn Fn(&DeviceCode) + Sync)) -> Result<
 /// Asks GitHub whether the account has Copilot, and where its API lives.
 /// An account without it is an error; a lookup that fails is not.
 async fn copilot_entitlement(at: &Endpoints, token: &str) -> Result<Option<String>, ProviderError> {
-    let r = http::client()
+    let r = http::client()?
         .get(format!("{}/copilot_internal/user", at.github_api))
         .bearer_auth(token)
         .header("accept", "application/json")
