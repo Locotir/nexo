@@ -143,6 +143,19 @@ pub fn project_config_file(cwd: &Path) -> Option<PathBuf> {
     project_dir(cwd).map(|d| d.join("config.toml"))
 }
 
+/// `canonicalize`, without the `\\?\` prefix it adds on Windows (other programs, git among
+/// them, cannot take it); a UNC path keeps it.
+pub fn canonical(p: &Path) -> std::io::Result<PathBuf> {
+    let c = p.canonicalize()?;
+    if cfg!(windows) {
+        let s = c.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\").filter(|r| !r.starts_with(r"UNC\")) {
+            return Ok(PathBuf::from(rest));
+        }
+    }
+    Ok(c)
+}
+
 /// A file that holds keys or credentials, by where it is and what it is called: anything under
 /// `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker` or `.password-store`, `.env` files, private keys
 /// and certificates, `.netrc` and its kind, and nexo's own credential store and keys. The path as

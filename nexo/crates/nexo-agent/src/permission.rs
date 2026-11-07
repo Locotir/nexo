@@ -142,19 +142,36 @@ fn path_forms(p: &str, cwd: &Path) -> Vec<String> {
 fn real_forms(p: &str, cwd: &Path) -> Vec<String> {
     let real = real_path(&lexical(p, cwd));
     let root = real_path(&normalise(cwd));
-    // Windows resolves to `\\?\C:\...` (or `\\?\UNC\host\...`); rules are written without that prefix
-    let slash = |s: String| {
-        let s = s.replace('\\', "/");
-        match s.strip_prefix("//?/") {
-            Some(rest) => rest.strip_prefix("UNC/").map(|r| format!("//{r}")).unwrap_or_else(|| rest.to_string()),
-            None => s,
-        }
-    };
-    let mut out = vec![slash(real.to_string_lossy().to_string())];
+    let mut out = vec![rule_slash(&real)];
     if let Ok(rel) = real.strip_prefix(&root) {
-        out.push(slash(rel.to_string_lossy().to_string()));
+        out.push(rule_slash(rel));
     }
     out
+}
+
+/// A path as rules are written: `/` between the parts, and without the `\\?\C:\...` (or
+/// `\\?\UNC\host\...`) prefix Windows adds when it resolves one.
+fn rule_slash(p: &Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    match s.strip_prefix("//?/") {
+        Some(rest) => rest.strip_prefix("UNC/").map(|r| format!("//{r}")).unwrap_or_else(|| rest.to_string()),
+        None => s,
+    }
+}
+
+/// An absolute pattern with the fixed folder it starts with resolved (links, and on Windows
+/// 8.3 short names such as `RUNNER~1`), for matching a path's resolved forms; `None` when that
+/// changes nothing. Only the folder the rule itself names is resolved: a link under it still
+/// does not carry the rule to where it points.
+fn resolved_pattern(pattern: &str) -> Option<String> {
+    let fixed = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
+    let cut = pattern[..fixed].rfind('/')?;
+    let (dir, rest) = pattern.split_at(cut);
+    if dir.is_empty() || !Path::new(dir).is_absolute() {
+        return None;
+    }
+    let real = format!("{}{rest}", rule_slash(&real_path(Path::new(dir))));
+    (real != pattern).then_some(real)
 }
 
 /// The path as the file tools resolve it: trimmed, `~` expanded, joined to `cwd`, `..` folded.
@@ -279,13 +296,17 @@ pub fn rule_matches_as(rule: &str, tool: &str, kind: ToolKind, args: &Value, cwd
         (ToolKind::Read | ToolKind::Write | ToolKind::Search, Some(p)) => {
             // a rule written with `\` on Windows reads as one with `/`
             let g = if pattern.contains('\\') { glob(&pattern.replace('\\', "/")).unwrap_or(g) } else { g };
+            let pattern = pattern.replace('\\', "/");
             let (written, real) = (path_forms(&p, cwd), real_forms(&p, cwd));
             let hit = |forms: &[String]| forms.iter().any(|f| g.is_match(f));
+            // the resolved path also meets the rule with its own folder resolved
+            let g_real = resolved_pattern(&pattern).and_then(|r| glob(&r));
+            let hit_real = hit(&real) || g_real.is_some_and(|gr| real.iter().any(|f| gr.is_match(f)));
             // a link does not carry an allow rule to where it points; a deny rule sees both
             if deny {
-                hit(&written) || hit(&real)
+                hit(&written) || hit_real
             } else {
-                hit(&written) && (hit(&real) || no_link_inside(&p, cwd))
+                hit(&written) && (hit_real || no_link_inside(&p, cwd))
             }
         }
         // `web_fetch(*.github.com)` also covers `github.com` itself
@@ -1059,6 +1080,29 @@ mod tests {
         assert_eq!(edits.decide("write", ToolKind::Write, &args, &proj), Decision::Allow);
         let deny = Policy { mode: PermissionMode::Auto, allow: vec![], deny: vec!["write(**/outside/**)".into()] };
         assert!(matches!(deny.decide("write", ToolKind::Write, &json!({"path": "src/cfg"}), &proj), Decision::Deny(_)));
+    }
+
+    /// A rule whose own folder is a link (as `RUNNER~1` is a second name on Windows) covers the
+    /// files under it; a link below that folder still does not carry the rule out.
+    #[cfg(unix)]
+    #[test]
+    fn a_rule_through_a_linked_folder_allows_what_is_under_it() {
+        let d = tempfile::tempdir().unwrap();
+        let proj = d.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(d.path().join("real/sub")).unwrap();
+        std::fs::create_dir_all(d.path().join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("real"), d.path().join("alias")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("elsewhere"), d.path().join("real/escape")).unwrap();
+        let alias = d.path().join("alias").to_string_lossy().to_string();
+        let rules = Policy { mode: PermissionMode::Ask, allow: vec![format!("write({alias}/**)")], deny: vec![] };
+        for (path, want) in [
+            (format!("{alias}/w.txt"), Decision::Allow),
+            (format!("{alias}/sub/new.rs"), Decision::Allow),
+            (format!("{alias}/escape/x"), Decision::Ask),
+        ] {
+            assert_eq!(rules.decide("write", ToolKind::Write, &json!({ "path": path }), &proj), want, "{path}");
+        }
     }
 
     #[test]

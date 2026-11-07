@@ -75,7 +75,7 @@ pub fn repo_root(cwd: &Path) -> Result<PathBuf, String> {
     let common = git_ok(cwd, &["rev-parse", "--git-common-dir"]).map_err(|_| not_repo())?;
     let common = PathBuf::from(common);
     let common = if common.is_absolute() { common } else { cwd.join(common) };
-    let common = common.canonicalize().map_err(|_| not_repo())?;
+    let common = crate::paths::canonical(&common).map_err(|_| not_repo())?;
     // a bare repository has no checkout to put worktrees in
     if git_ok(cwd, &["rev-parse", "--is-bare-repository"]).is_ok_and(|b| b == "true") {
         return Err(format!("{} is a bare repository; worktrees need a checkout", cwd.display()));
@@ -339,7 +339,7 @@ pub fn prune(root: &Path) -> Vec<String> {
 
 /// If `cwd` is inside one of nexo's worktrees: its name and branch.
 pub fn current(cwd: &Path) -> Option<(String, String)> {
-    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let cwd = crate::paths::canonical(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let comps: Vec<_> = cwd.components().collect();
     let at = comps.windows(3).position(|w| {
         w[0].as_os_str() == ".nexo"
