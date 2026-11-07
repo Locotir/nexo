@@ -131,7 +131,8 @@ fn user_text(line: &str) -> Result<Option<String>, String> {
 
 /// Where the rules of a folder start: the path with forward slashes, which the rule globs read on every system.
 fn rule_path(p: &std::path::Path) -> String {
-    p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string()
+    let s = p.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/").trim_end_matches('/').to_string()
 }
 
 #[derive(Default)]
@@ -399,9 +400,13 @@ pub async fn run(
         if !real.is_dir() {
             return usage(&format!("--add-dir {}: not a folder", d.display()));
         }
-        let p = rule_path(&real);
-        for tool in ["read", "grep", "glob", "ls", "write", "edit"] {
-            config.permissions.allow.push(format!("{tool}({p}/**)"));
+        // the folder as given and as resolved: on Windows the two can differ (8.3 short names, `\\?\`)
+        let mut spellings = vec![rule_path(&abs), rule_path(&real)];
+        spellings.dedup();
+        for p in &spellings {
+            for tool in ["read", "grep", "glob", "ls", "write", "edit"] {
+                config.permissions.allow.push(format!("{tool}({p}/**)"));
+            }
         }
         roots.push(real.display().to_string());
     }
