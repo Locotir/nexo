@@ -108,6 +108,43 @@ fn tool_guidance(tools: &ToolSet) -> String {
     format!("\n\nTools:\n{}", lines.join("\n"))
 }
 
+/// The machine and the project in two lines: the system (with the Linux distribution, which says
+/// apt, apk or dnf) and whether `cwd` is in a git repository. Both stay the same for a session, so
+/// the cached prompt prefix does too.
+fn environment(cwd: &Path) -> String {
+    let distro = std::fs::read_to_string("/etc/os-release").ok().and_then(|t| os_name(&t));
+    let system = match distro {
+        Some(d) => format!("{} ({d}), {}", std::env::consts::OS, std::env::consts::ARCH),
+        None => format!("{}, {}", std::env::consts::OS, std::env::consts::ARCH),
+    };
+    format!("\nSystem: {system}\nGit: {}", git_line(cwd))
+}
+
+/// `PRETTY_NAME` of an os-release file, else `NAME VERSION_ID`.
+fn os_name(text: &str) -> Option<String> {
+    let field = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .map(|v| v.trim().trim_matches('"').trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    field("PRETTY_NAME").or_else(|| {
+        let name = field("NAME")?;
+        Some(match field("VERSION_ID") {
+            Some(v) => format!("{name} {v}"),
+            None => name,
+        })
+    })
+}
+
+fn git_line(cwd: &Path) -> String {
+    match cwd.ancestors().find(|d| d.join(".git").exists()) {
+        Some(root) if root == cwd => "this folder is a git repository".into(),
+        Some(root) => format!("inside the git repository at {}", root.display()),
+        None => "not a git repository".into(),
+    }
+}
+
 /// The whole system prompt for a session in `cwd`: the built-in text first, then the directory,
 /// date, tools and project instructions, then the person's preferences (`~/.nexo/prompt.md`).
 pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
@@ -125,6 +162,7 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
     };
     let date = time::OffsetDateTime::now_utc().date();
     let mut out = format!("{base}\n\nWorking directory: {}\nDate: {date}", cwd.display());
+    out.push_str(&environment(cwd));
     out.push_str(&tool_guidance(tools));
     if !cfg.hermetic {
         let home = compat::foreign_home();
@@ -163,6 +201,17 @@ mod tests {
     static CONFIG_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn the_distribution_comes_from_os_release() {
+        let debian = "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\n";
+        assert_eq!(os_name(debian).as_deref(), Some("Debian GNU/Linux 12 (bookworm)"));
+        assert_eq!(os_name("NAME=Alpine Linux\nVERSION_ID=3.20.3\n").as_deref(), Some("Alpine Linux 3.20.3"));
+        assert_eq!(os_name("PRETTY_NAME=\"\"\nNAME=Arch\n").as_deref(), Some("Arch"));
+        assert_eq!(os_name("ID=x\n"), None);
+        let none = tempfile::tempdir().unwrap();
+        assert_eq!(git_line(none.path()), "not a git repository");
+    }
+
+    #[test]
     fn carries_directory_instructions_and_extra() {
         let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
@@ -174,6 +223,12 @@ mod tests {
         let p = system_prompt(d.path(), &cfg, &ToolSet::new());
         assert!(p.starts_with("You are nexo"));
         assert!(p.contains(&format!("Working directory: {}", d.path().display())));
+        assert!(p.contains(&format!("\nSystem: {}", std::env::consts::OS)), "{p}");
+        assert!(p.contains("\nGit: this folder is a git repository"), "{p}");
+        let sub = d.path().join("src");
+        std::fs::create_dir(&sub).unwrap();
+        let inner = system_prompt(&sub, &AgentConfig::default(), &ToolSet::new());
+        assert!(inner.contains(&format!("Git: inside the git repository at {}", d.path().display())), "{inner}");
         assert!(p.contains("Use tabs."));
         assert!(p.ends_with("Answer in Spanish."));
         let f = d.path().join("sys.txt");
