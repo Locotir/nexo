@@ -1,0 +1,27 @@
+# Reviews every pull request: one summary comment (edited on each push) and inline comments.
+name: nexo review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+concurrency:
+  group: nexo-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  review:
+    # pull requests from forks get no secrets and a read-only token: skip them
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: Locotir/nexo@main
+        with:
+          mode: review
+          provider: anthropic
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          fail_on_high: "false"

@@ -1,0 +1,153 @@
+name: nexo
+description: Run the nexo coding agent in CI. Reviews pull requests, answers @nexo comments, or runs a one-off prompt.
+branding:
+  icon: terminal
+  color: gray-dark
+
+inputs:
+  mode:
+    description: "review (pull_request), comment (issue_comment or pull_request_review_comment holding @nexo) or prompt."
+    required: true
+  prompt:
+    description: "The task, for prompt mode."
+    required: false
+    default: ""
+  provider:
+    description: "nexo provider name, such as anthropic, openai or deepseek."
+    required: false
+    default: ""
+  model:
+    description: "Model name. Empty uses the provider default."
+    required: false
+    default: ""
+  api_key:
+    description: "The provider key. Pass a secret. It reaches nexo only as an environment variable."
+    required: false
+    default: ""
+  api_key_env:
+    description: "Name of the variable nexo reads the key from. Default: the provider name in capitals plus _API_KEY."
+    required: false
+    default: ""
+  base:
+    description: "Review mode: base branch to compare with. Default: the pull request base."
+    required: false
+    default: ""
+  max_turns:
+    description: "Tool rounds before the run stops (exit 4). Comment mode default: 30."
+    required: false
+    default: ""
+  allowed_tools:
+    description: "Comma list for --allowed-tools. Comment mode default: read, edit and git commands. Prompt mode default: no limit."
+    required: false
+    default: ""
+  github_token:
+    description: "Token for the GitHub API. Review needs pull-requests: write, comment needs contents, pull-requests and issues: write."
+    required: false
+    default: ${{ github.token }}
+  fail_on_high:
+    description: "Review mode: fail the job when a high finding exists."
+    required: false
+    default: "false"
+  nexo_version:
+    description: "latest, or a release tag such as build-1a2b3c4."
+    required: false
+    default: latest
+
+outputs:
+  result:
+    description: "Final text of the run (prompt and comment modes)."
+    value: ${{ steps.prompt.outputs.result || steps.comment.outputs.result }}
+  cost:
+    description: "Cost in US dollars (prompt mode)."
+    value: ${{ steps.prompt.outputs.cost }}
+  exit_code:
+    description: "nexo exit code (prompt and comment modes)."
+    value: ${{ steps.prompt.outputs.exit_code || steps.comment.outputs.exit_code }}
+  findings:
+    description: "Number of findings (review mode)."
+    value: ${{ steps.review.outputs.findings }}
+  high:
+    description: "true when a high finding exists (review mode)."
+    value: ${{ steps.review.outputs.high }}
+
+runs:
+  using: composite
+  steps:
+    - name: check the mode
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        case "$MODE" in review | comment | prompt) ;; *) echo "::error::mode must be review, comment or prompt"; exit 1 ;; esac
+
+    - name: resolve the nexo release
+      id: resolve
+      shell: bash
+      env:
+        NEXO_VERSION: ${{ inputs.nexo_version }}
+      run: echo "tag=$("$GITHUB_ACTION_PATH/.github/nexo-action/install.sh" resolve)" >>"$GITHUB_OUTPUT"
+
+    - name: cache nexo
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/nexo-bin
+        key: nexo-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.tag }}
+
+    - name: install nexo
+      shell: bash
+      env:
+        NEXO_VERSION: ${{ steps.resolve.outputs.tag }}
+        NEXO_BIN_DIR: ${{ runner.temp }}/nexo-bin
+      run: |
+        "$GITHUB_ACTION_PATH/.github/nexo-action/install.sh" fetch
+        echo "$NEXO_BIN_DIR" >>"$GITHUB_PATH"
+
+    - name: review
+      id: review
+      if: inputs.mode == 'review'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        NEXO_API_KEY: ${{ inputs.api_key }}
+        NEXO_API_KEY_ENV: ${{ inputs.api_key_env }}
+        NEXO_PROVIDER: ${{ inputs.provider }}
+        NEXO_MODEL: ${{ inputs.model }}
+        NEXO_BASE: ${{ inputs.base }}
+        NEXO_FAIL_ON_HIGH: ${{ inputs.fail_on_high }}
+      run: |
+        export PATH="${{ runner.temp }}/nexo-bin:$PATH"
+        "$GITHUB_ACTION_PATH/.github/nexo-action/review.sh"
+
+    - name: comment
+      id: comment
+      if: inputs.mode == 'comment'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        NEXO_API_KEY: ${{ inputs.api_key }}
+        NEXO_API_KEY_ENV: ${{ inputs.api_key_env }}
+        NEXO_PROVIDER: ${{ inputs.provider }}
+        NEXO_MODEL: ${{ inputs.model }}
+        NEXO_MAX_TURNS: ${{ inputs.max_turns }}
+        NEXO_ALLOWED_TOOLS: ${{ inputs.allowed_tools }}
+      run: |
+        export PATH="${{ runner.temp }}/nexo-bin:$PATH"
+        "$GITHUB_ACTION_PATH/.github/nexo-action/comment.sh"
+
+    - name: prompt
+      id: prompt
+      if: inputs.mode == 'prompt'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        NEXO_API_KEY: ${{ inputs.api_key }}
+        NEXO_API_KEY_ENV: ${{ inputs.api_key_env }}
+        NEXO_PROVIDER: ${{ inputs.provider }}
+        NEXO_MODEL: ${{ inputs.model }}
+        NEXO_PROMPT: ${{ inputs.prompt }}
+        NEXO_MAX_TURNS: ${{ inputs.max_turns }}
+        NEXO_ALLOWED_TOOLS: ${{ inputs.allowed_tools }}
+      run: |
+        export PATH="${{ runner.temp }}/nexo-bin:$PATH"
+        "$GITHUB_ACTION_PATH/.github/nexo-action/prompt.sh"

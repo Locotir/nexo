@@ -1,0 +1,32 @@
+# nexo review on merge requests. Setup:
+#   1. CI/CD variables (masked): NEXO_API_KEY, plus NEXO_GITLAB_TOKEN (a project access token with scope api,
+#      role Developer) so the notes come from a bot. Without it CI_JOB_TOKEN is tried, which many GitLab
+#      versions refuse for notes.
+#   2. Set NEXO_PROVIDER below (and NEXO_MODEL if you want one).
+#   3. Commit this file as .gitlab-ci.yml (or include it).
+# Pin NEXO_REF to a commit of github.com/Locotir/nexo to freeze the scripts.
+variables:
+  NEXO_PROVIDER: anthropic
+  NEXO_FAIL_ON_HIGH: "false"
+  NEXO_REF: main
+  GIT_DEPTH: "0"
+
+nexo-review:
+  stage: test
+  image: alpine:3
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  before_script:
+    - apk add --no-cache bash git curl jq coreutils
+    - mkdir -p "$CI_PROJECT_DIR/.nexo-bin" /tmp/nexo-action
+    - raw="https://raw.githubusercontent.com/Locotir/nexo/$NEXO_REF/.github/nexo-action"
+    - for f in lib.sh install.sh gitlab-review.sh; do curl -fsSL "$raw/$f" -o "/tmp/nexo-action/$f"; done
+    - chmod +x /tmp/nexo-action/*.sh
+    - NEXO_BIN_DIR="$CI_PROJECT_DIR/.nexo-bin" /tmp/nexo-action/install.sh fetch
+    - export PATH="$CI_PROJECT_DIR/.nexo-bin:$PATH"
+  script:
+    - /tmp/nexo-action/gitlab-review.sh
+  cache:
+    key: nexo-bin
+    paths:
+      - .nexo-bin/

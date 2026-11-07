@@ -1,0 +1,34 @@
+# A prompt on a schedule. The answer goes to the job summary; use the outputs for anything else.
+name: nexo nightly
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: nexo
+        uses: Locotir/nexo@main
+        with:
+          mode: prompt
+          prompt: "Look for TODO comments older than a year in this repository and list them with file and line."
+          provider: anthropic
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          max_turns: "15"
+          allowed_tools: "read,ls,glob,grep"
+      - name: show the answer
+        if: always()
+        env:
+          RESULT: ${{ steps.nexo.outputs.result }}
+          COST: ${{ steps.nexo.outputs.cost }}
+        run: |
+          {
+            echo "## nexo nightly"
+            echo "$RESULT"
+            echo
+            echo "cost: \$$COST"
+          } >>"$GITHUB_STEP_SUMMARY"
