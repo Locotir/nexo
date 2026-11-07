@@ -54,6 +54,9 @@ credential store (`nexo auth list` shows where) and are renewed by nexo when
 they expire. An assistant running the command must show the address and the
 code to the person and wait; it cannot approve for them.
 
+`nexo usage` shows how much of a ChatGPT or Copilot plan is left and when it
+starts over ([PLAN-USAGE.md](PLAN-USAGE.md)).
+
 `codex` has three ways in, chosen with `--flow` (or in `/model`, which lists
 them). With no flow, nexo reuses the login of the Codex CLI when its file is on
 the machine (`$CODEX_HOME/auth.json` or `~/.codex/auth.json`): nothing is typed

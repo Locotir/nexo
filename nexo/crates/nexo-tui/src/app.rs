@@ -283,6 +283,9 @@ pub struct App {
     pub root: bool,
     /// Commits `main` is ahead of this build, once the check found a newer nexo.
     pub update_behind: Option<u32>,
+    /// What is left of the subscription plan the current provider is signed in with (None: it is on a
+    /// key, or nothing has been read yet).
+    pub plan_usage: Option<nexo_providers::usage::PlanUsage>,
     branch_read: Option<Instant>,
     /// The system prompt as last shown (`/prompt`), the seed of the prompt file.
     pub system_prompt: Option<String>,
@@ -514,6 +517,7 @@ impl App {
             branch: None,
             root: nexo_core::paths::is_root(),
             update_behind: None,
+            plan_usage: None,
             branch_read: None,
             system_prompt: None,
             edit_request: None,
@@ -3978,6 +3982,22 @@ impl App {
 
     pub fn on_plan(&self) -> bool {
         self.opts.providers.iter().any(|(n, c)| *n == self.provider && c.login.is_some())
+    }
+
+    /// Takes the latest reading of the current provider's plan from the store the providers fill. A
+    /// provider on a key has no plan, and a reading that did not change costs nothing.
+    pub fn sync_plan_usage(&mut self) {
+        let kind = self
+            .opts
+            .providers
+            .iter()
+            .find(|(n, _)| *n == self.provider)
+            .and_then(|(_, c)| nexo_providers::usage::kind_of(c));
+        let now = kind.and_then(nexo_providers::usage::get);
+        if now != self.plan_usage {
+            self.plan_usage = now;
+            self.dirty = true;
+        }
     }
 
     /// A model works: the locked home gives way to the normal one (at once without animations).

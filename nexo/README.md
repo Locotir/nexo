@@ -1,3 +1,4 @@
+| `nexo usage` | what is left of each subscription plan (ChatGPT windows, Copilot premium requests) and when it starts over; the status bar and `/usage` show it too ([docs/PLAN-USAGE.md](docs/PLAN-USAGE.md)) |
 # nexo
 
 A terminal coding harness for any model provider: a full-screen interface

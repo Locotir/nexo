@@ -225,6 +225,39 @@ pub fn list_cmd() -> i32 {
     0
 }
 
+/// `nexo usage`: the plan of every subscription login in the store, as the vendor reports it now.
+pub async fn usage_cmd(cfg: &mut Config) -> anyhow::Result<i32> {
+    let mut shown = 0;
+    let now = auth::now() as i64;
+    for (name, cred) in auth::all() {
+        if !matches!(cred, Credential::Oauth { .. }) || !adopt(cfg, &name) {
+            continue;
+        }
+        let p = cfg.providers[&name].clone();
+        if p.login.as_deref() == Some("xai") {
+            println!("SuperGrok (xai): xAI documents no usage endpoint, so there is nothing to read");
+            shown += 1;
+            continue;
+        }
+        match nexo_providers::usage::fetch(&name, &p).await {
+            Ok(Some(u)) => {
+                println!("{}", u.detail(now).join("\n  "));
+                shown += 1;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                println!("{name}: the plan could not be read ({})", e.message);
+                shown += 1;
+            }
+        }
+    }
+    if shown == 0 {
+        println!("no subscription login stored: `nexo auth login codex` or `nexo auth login copilot` adds one");
+        return Ok(1);
+    }
+    Ok(0)
+}
+
 fn human(secs: u64) -> String {
     match secs {
         s if s < 120 => format!("{s}s"),

@@ -68,6 +68,7 @@ One object at the end, on one line:
 - `num_turns`: model calls made. `usage` and `cost_usd` are the session totals.
 - `structured_output`: the parsed answer, when `--json-schema` is given and it validated.
 - `error`: the reason, when `is_error` is true and a reason is known.
+- `plan_usage`: when the request ran on a subscription login and the backend reported the plan, an array of `{"plan": "codex", "tier": "plus", "meters": [{"label": "wk", "used_percent": 1.0, "resets_in_seconds": 569444}]}` (`used` and `limit` too for a plan that counts requests). Absent for a provider on a key. See [PLAN-USAGE.md](PLAN-USAGE.md).
 
 ## stream-json
 

@@ -1,3 +1,4 @@
+| What is left of a subscription plan: `5h 37% ↻2h · wk 12%` in the status bar, the detail in `/usage`, `nexo usage` headless, `plan_usage` in the headless result (ChatGPT headers, `wham/usage`; Copilot `copilot_internal/user`) | ✅ | `the_chatgpt_headers_give_both_windows`, `the_chatgpt_plan_is_asked_with_the_stored_login`, `the_copilot_plan_is_asked_of_github`, `the_status_bar_shows_both_windows_with_their_reset`, `the_usage_window_has_the_detail_of_each_window` |
 # What nexo does, and what checks it
 
 Every feature a terminal coding agent is expected to have (the ones the widely used terminal

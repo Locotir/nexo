@@ -124,6 +124,8 @@ pub enum Cmd {
         #[command(subcommand)]
         what: AuthCmd,
     },
+    /// Show how much of each subscription plan (ChatGPT, GitHub Copilot) is left, and when it starts over.
+    Usage,
     /// Make a provider (and model) the default, in the user configuration.
     Use {
         /// Provider name (`nexo providers --all` lists them).
@@ -572,6 +574,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         }
         Some(Cmd::Auth { what: AuthCmd::List }) => return Ok(crate::account::list_cmd()),
         Some(Cmd::Auth { what: AuthCmd::Logout { provider } }) => return crate::account::logout_cmd(&config, provider),
+        Some(Cmd::Usage) => return crate::account::usage_cmd(&mut config).await,
         Some(Cmd::Use { provider, model, force }) => {
             return crate::account::use_cmd(&mut config, provider, model.as_deref(), *force)
         }

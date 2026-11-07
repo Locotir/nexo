@@ -297,6 +297,16 @@ impl Run {
             "cost_usd": self.t.cost, "duration_ms": self.started.elapsed().as_millis() as u64,
             "stop_reason": stop,
         });
+        // the subscription plan the request ran on, when its backend said how much of it is left
+        let now = nexo_core::auth::now() as i64;
+        let plans: Vec<Value> = [nexo_providers::usage::CODEX, nexo_providers::usage::COPILOT]
+            .into_iter()
+            .filter_map(nexo_providers::usage::get)
+            .map(|u| u.to_json(now))
+            .collect();
+        if !plans.is_empty() {
+            v["plan_usage"] = Value::Array(plans);
+        }
         if let Some(s) = structured {
             v["structured_output"] = s;
         }

@@ -698,7 +698,7 @@ animations = true                   # smooth scrolling, fades, pulses; false: no
 suggest = true                      # when a turn ends, a dim suggestion of your next message shows in the empty input; Tab or → takes it; costs one short cached call; false: off
 # timestamps = true                 # a dim HH:MM at the right of each message and reply, and how long a reply took; /timestamps toggles
 screen = "full"                     # full (alternate screen) | inline (finished turns go to the terminal scrollback)
-# status_line = ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "tokens", "cost"]   # pieces of the bottom bar, in order; default: all
+# status_line = ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "plan", "tokens", "cost"]   # pieces of the bottom bar, in order; default: all
 # status_command = "~/.config/nexo/statusline.sh"   # draws the bottom bar instead: JSON of the session on stdin, its first line (ANSI colours) shown
 
 [web]

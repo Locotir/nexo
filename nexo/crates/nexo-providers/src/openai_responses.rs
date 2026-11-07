@@ -174,6 +174,7 @@ impl Feed for ResponsesParser {
             }
         }
         match t {
+            "codex.rate_limits" => crate::usage::record_event(&v),
             "response.created" | "response.in_progress" => {
                 if !self.start_sent {
                     self.start_sent = true;

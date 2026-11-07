@@ -446,8 +446,8 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
 /// The status bar's pieces in the order they are drawn: the configured list (unknown names and
 /// repeats dropped), or all of them when it is empty. `tokens` and `cost` are drawn on the right.
 pub fn status_pieces(cfg: &[String]) -> Vec<&'static str> {
-    const ALL: [&str; 11] =
-        ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "tokens", "cost"];
+    const ALL: [&str; 12] =
+        ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "plan", "tokens", "cost"];
     let mut out: Vec<&'static str> = Vec::new();
     for n in cfg {
         if let Some(p) = ALL.iter().find(|p| p.eq_ignore_ascii_case(n.trim())) {
@@ -576,6 +576,23 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let pieces = status_pieces(&app.opts.status_line);
+    // what is left of the subscription plan: `5h 37% ↻2h · wk 12% ↻4d`, warm from 80%, red when spent
+    if let (true, true, Some(plan)) = (pieces.contains(&"plan"), area.width >= 60, &app.plan_usage) {
+        let now = nexo_core::auth::now() as i64;
+        for it in plan.items(now, area.width >= 100).into_iter().take(2) {
+            if !right.is_empty() {
+                right.push(Seg { text: " ·".to_string(), style: base.fg(theme.border) });
+            }
+            let colour = if it.pct >= 100.0 {
+                theme.error
+            } else if it.pct >= 80.0 {
+                theme.warn
+            } else {
+                theme.dim
+            };
+            right.push(Seg { text: format!(" {}", it.text), style: base.fg(colour) });
+        }
+    }
     if pieces.contains(&"tokens") && (area.width >= 80 || app.cost <= 0.0 || !pieces.contains(&"cost")) {
         // a separator only between two pieces, never one left alone
         if !right.is_empty() {
@@ -3093,7 +3110,7 @@ mod tests {
     #[test]
     fn status_pieces_follow_the_configured_order() {
         let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(status_pieces(&[]).len(), 11);
+        assert_eq!(status_pieces(&[]).len(), 12);
         assert_eq!(status_pieces(&v(&["Context", "model", "bogus", "context"])), vec!["context", "model"]);
         assert!(status_pieces(&v(&["bogus"])).is_empty());
     }

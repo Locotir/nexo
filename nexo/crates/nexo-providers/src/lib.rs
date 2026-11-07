@@ -25,6 +25,7 @@ pub mod presets;
 pub mod probe;
 pub mod sse;
 pub mod testing;
+pub mod usage;
 
 pub use client::{registry, Client, Registry};
 pub use presets::presets;

@@ -47,7 +47,7 @@ fn bar(a: &mut App, w: u16, h: u16) -> String {
 
 #[test]
 fn empty_list_means_every_piece_and_unknown_names_are_dropped() {
-    assert_eq!(status_pieces(&[]).len(), 11);
+    assert_eq!(status_pieces(&[]).len(), 12);
     let c = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(status_pieces(&c(&["cost", "Model", "cost", "nope"])), vec!["cost", "model"]);
     assert!(status_pieces(&c(&["nope"])).is_empty());

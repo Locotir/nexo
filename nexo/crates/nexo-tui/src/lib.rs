@@ -237,6 +237,20 @@ fn end_paste(app: &mut App, pasting: &mut Option<(String, Instant)>) {
     }
 }
 
+/// Reads the plan of every subscription login the providers use, now and then every ten minutes. A
+/// provider on a key, or a login that cannot be read, is skipped without a word: the status bar just
+/// shows nothing for it.
+async fn refresh_plans(providers: Vec<(String, nexo_core::ProviderConfig)>) {
+    loop {
+        for (name, cfg) in &providers {
+            if let Err(e) = nexo_providers::usage::fetch(name, cfg).await {
+                tracing::debug!("plan usage of {name}: {}", e.message);
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(600)).await;
+    }
+}
+
 /// Takes the terminal until the person quits or the agent shuts down.
 pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()> {
     let mouse = opts.mouse;
@@ -244,6 +258,8 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
     let mut app = App::new(opts, handle.commands.clone());
     // the requests sent before, kept between runs (↑ and Ctrl+R reach them)
     app.input.persist_history(nexo_core::paths::data_dir().join("prompt-history.jsonl"));
+    // what is left of each subscription plan: read now and every ten minutes, and on every response
+    let plans = tokio::spawn(refresh_plans(app.opts.providers.clone()));
     let mut events = Keys::spawn();
     let mut hangup = Hangup::new();
     let mut pacer = frame::Pacer::new(Instant::now(), app.opts.animations);
@@ -308,8 +324,10 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
                 None => break,
             },
             _ = hangup.wait() => break,
+            _ = nexo_providers::usage::changed().notified() => {}
             _ = async { match wake { Some(t) => tokio::time::sleep_until(t).await, None => std::future::pending().await } } => { by_event = false; }
         }
+        app.sync_plan_usage();
         if app.should_quit {
             break;
         }
@@ -402,6 +420,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
         };
         let _ = crossterm::execute!(std::io::stdout(), Clear(ClearType::All), MoveTo(0, 0));
     }
+    plans.abort();
     drop(term);
     if let Some(text) = dump {
         println!("{text}");
