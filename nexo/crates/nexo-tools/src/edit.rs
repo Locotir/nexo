@@ -118,6 +118,7 @@ impl Tool for Edit {
         if let Err(e) = write_atomic(&path, edited.as_bytes()).await {
             return ToolOutput::error(format!("edit: cannot write {shown}: {e}"));
         }
+        ctx.seen.mark(&path);
         let (added, removed, diff) = unified(&text, &edited, &shown);
         let n = if replace_all { format!(" ({count} occurrences)") } else { String::new() };
         ToolOutput::ok(format!("edited {shown}{n}: +{added} −{removed} lines\n{diff}"))

@@ -30,6 +30,7 @@ pub mod pricing;
 pub mod provider;
 pub mod redact;
 pub mod sandbox;
+pub mod seen;
 pub mod shell;
 pub mod skills;
 pub mod stream;

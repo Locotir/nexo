@@ -144,6 +144,8 @@ pub struct ToolContext {
     pub env: BTreeMap<String, String>,
     /// The session's background jobs.
     pub jobs: crate::jobs::Jobs,
+    /// The files the model has read or written, as they were then (`write` checks it).
+    pub seen: crate::seen::Seen,
     /// What the permission rules say of another call, without asking anyone: a tool led somewhere
     /// else on its own (a web page that redirects) checks the new place with it. None: no rules.
     pub check: Option<PolicyCheck>,
@@ -174,6 +176,7 @@ impl ToolContext {
             progress: None,
             env: BTreeMap::new(),
             jobs: crate::jobs::Jobs::new(),
+            seen: Default::default(),
             check: None,
             sandbox: Default::default(),
             vision: true,

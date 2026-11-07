@@ -77,6 +77,12 @@ impl Tool for Write {
             Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
             Err(_) => None,
         };
+        if let Some(why) = ctx.seen.unseen(&path) {
+            return ToolOutput::error(format!(
+                "write: {shown} already exists and {why}; replacing it would lose what is there. \
+                 `read` it first, or use `edit` to change part of it"
+            ));
+        }
         if let Some(parent) = path.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 return ToolOutput::error(format!("write: cannot create {}: {e}", parent.display()));
@@ -85,6 +91,7 @@ impl Tool for Write {
         if let Err(e) = write_atomic(&path, content.as_bytes()).await {
             return ToolOutput::error(format!("write: cannot write {shown}: {e}"));
         }
+        ctx.seen.mark(&path);
         let lines = content.lines().count();
         let what = if old.is_some() { "replaced" } else { "created" };
         ToolOutput::ok(format!("{what} {shown} ({}, {} bytes)", nexo_core::count(lines, "line"), content.len()))
@@ -102,12 +109,39 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn a_file_the_model_has_not_seen_as_it_is_is_not_replaced() {
+        use crate::{edit::Edit, read::Read};
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let f = d.path().join("notes.md");
+        std::fs::write(&f, "the person notes\n").unwrap();
+        let out = Write.run(json!({"path": "notes.md", "content": "x\n"}), &c).await;
+        assert!(out.is_error && out.content.contains("have not read it"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "the person notes\n");
+        // read, then written: fine; written again by the model: fine
+        assert!(!Read.run(json!({"path": "notes.md"}), &c).await.is_error);
+        assert!(!Write.run(json!({"path": "notes.md", "content": "x\n"}), &c).await.is_error);
+        assert!(!Write.run(json!({"path": "notes.md", "content": "y\n"}), &c).await.is_error);
+        // changed behind its back (an editor, a formatter): read it again first
+        std::fs::write(&f, "y\nand a line the person added\n").unwrap();
+        let out = Write.run(json!({"path": "notes.md", "content": "z\n"}), &c).await;
+        assert!(out.is_error && out.content.contains("changed since"), "{}", out.content);
+        // a new file, and one the model edited, need no read
+        assert!(!Write.run(json!({"path": "new/a.txt", "content": "a\n"}), &c).await.is_error);
+        std::fs::write(d.path().join("e.txt"), "one\n").unwrap();
+        let e = Edit.run(json!({"path": "e.txt", "old_string": "one", "new_string": "two"}), &c).await;
+        assert!(!e.is_error, "{}", e.content);
+        assert!(!Write.run(json!({"path": "e.txt", "content": "three\n"}), &c).await.is_error);
+    }
+
+    #[tokio::test]
     async fn a_huge_old_file_is_not_loaded_for_the_diff() {
         let d = tempfile::tempdir().unwrap();
         let c = ToolContext::new(d.path().to_path_buf());
         let mut text = "line\n".repeat(2000).into_bytes();
         text.resize(crate::util::MAX_FILE_BYTES as usize + 1, b'x');
         std::fs::write(d.path().join("big.log"), &text).unwrap();
+        assert!(crate::read::Read.run(json!({"path": "big.log"}), &c).await.content.contains("too large"));
         let out = Write.run(json!({"path": "big.log", "content": "new\n"}), &c).await;
         assert!(out.content.starts_with("replaced big.log"), "{}", out.content);
         match out.display {
@@ -148,6 +182,7 @@ mod tests {
         let f = d.path().join("run.sh");
         std::fs::write(&f, "old\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o751)).unwrap();
+        c.seen.mark(&f);
         let out = Write.run(json!({"path": "run.sh", "content": "new\n"}), &c).await;
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "new\n");

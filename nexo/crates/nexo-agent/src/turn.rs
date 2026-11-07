@@ -203,6 +203,8 @@ struct State {
     digests: HashMap<u64, String>,
     /// Commands and sub-agents running in the background.
     jobs: Jobs,
+    /// The files the model has read or written, as they were then.
+    seen: nexo_core::seen::Seen,
     /// Failures of the session kept by what they were on, to say when one comes back.
     repeats: crate::repeat::Repeats,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
@@ -443,6 +445,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         reads: Reads::default(),
         digests: HashMap::new(),
         jobs: jobs.clone(),
+        seen: Default::default(),
         repeats: Default::default(),
         epoch: 0,
         plan,
@@ -3260,14 +3263,14 @@ async fn run_call(
                 }
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
-            let (jobs, perm, rules_cwd, sandbox, vision) = {
+            let (jobs, seen, perm, rules_cwd, sandbox, vision) = {
                 let st = state.lock().await;
                 let (provider, _, model) = st.target.get();
                 // a picture is withheld only where the model catalogue says the model cannot see it
                 let vision = nexo_providers::catalogue::cached()
                     .and_then(|c| c.lookup(&provider, &model).and_then(|e| e.vision))
                     .unwrap_or(true);
-                (st.jobs.clone(), st.perm.clone(), cwd.to_path_buf(), st.sandbox.clone(), vision)
+                (st.jobs.clone(), st.seen.clone(), st.perm.clone(), cwd.to_path_buf(), st.sandbox.clone(), vision)
             };
             let ctx = ToolContext {
                 cwd: cwd.to_path_buf(),
@@ -3277,6 +3280,7 @@ async fn run_call(
                 progress: Some(ptx),
                 env: Default::default(),
                 jobs,
+                seen,
                 sandbox,
                 vision,
                 check: Some(Arc::new(move |tool: &str, kind, args: &Value| {

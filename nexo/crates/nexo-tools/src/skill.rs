@@ -87,6 +87,7 @@ mod tests {
             progress: None,
             env: Default::default(),
             jobs: Default::default(),
+            seen: Default::default(),
             check: None,
             sandbox: Default::default(),
             vision: true,

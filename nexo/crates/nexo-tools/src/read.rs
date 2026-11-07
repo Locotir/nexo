@@ -77,6 +77,8 @@ impl Tool for Read {
                 return ToolOutput::error(format!("read: {shown} is not a regular file (device, pipe or socket)"));
             }
             if m.len() > MAX_FILE_BYTES {
+                // all of it the model can be shown: enough to replace it on purpose
+                ctx.seen.mark(&path);
                 return ToolOutput::error(format!(
                     "read: {shown} is {} MiB, too large to load; use `bash` with `head`, `tail`, `sed -n` or `grep` on it",
                     m.len() >> 20
@@ -90,6 +92,7 @@ impl Tool for Read {
             }
             Err(e) => return ToolOutput::error(format!("read: cannot read {shown}: {e}")),
         };
+        ctx.seen.mark(&path);
         if let Some(pic) = picture::sniff(&bytes) {
             return show_picture(&shown, pic, &bytes, ctx.vision);
         }
