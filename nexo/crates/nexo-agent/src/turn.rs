@@ -227,6 +227,9 @@ struct State {
     mail_turn: Vec<Mail>,
     /// Text hooks added for the model (SessionStart, UserPromptSubmit): it goes with the next request.
     hook_context: Vec<String>,
+    /// How many times `agent.max_tokens` a reply may take in this request: doubled (up to 4) when a reply
+    /// was cut at max_tokens while still thinking, as the reasoning had no room left for an answer or a call.
+    reply_boost: u32,
     /// The audit log writer, when `[audit] enabled`.
     audit: Option<Audit>,
 }
@@ -452,6 +455,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         mail_wait: Vec::new(),
         mail_turn: Vec::new(),
         hook_context: Vec::new(),
+        reply_boost: 1,
         audit,
     }));
     let _ = host.set(Arc::new(StateHost { state: Arc::downgrade(&state), events: events.clone() }));
@@ -1558,6 +1562,7 @@ async fn start_turn(
         st.turn_start = st.history.len();
         st.turns += 1;
         st.ck_stop = None;
+        st.reply_boost = 1;
         let ended = st.jobs.take_ended();
         let text = if ended.is_empty() || text.starts_with("[background jobs ended]") {
             text
@@ -1586,6 +1591,12 @@ async fn start_turn(
     }
     let state = state.clone();
     tokio::spawn(async move { run_turn(state, cancel).await })
+}
+
+/// The largest reply the next request asks for: `agent.max_tokens`, times the boost after a reply cut
+/// while thinking, within what the model and its window allow.
+fn reply_tokens(st: &State) -> u32 {
+    st.limits.max_tokens(st.config.agent.max_tokens.saturating_mul(st.reply_boost.max(1)))
 }
 
 /// Adds a request of the person to the conversation, its attachments expanded.
@@ -1738,7 +1749,7 @@ async fn prepare(
     let st = &mut *guard;
     let specs = offered(st);
     if let Some(at) = st.policy.compact_at() {
-        let at = compact_threshold(at, st.limits.context_window, st.limits.max_tokens(st.config.agent.max_tokens));
+        let at = compact_threshold(at, st.limits.context_window, reply_tokens(st));
         if request_tokens(st, &specs) > at {
             // a compaction is worth its call only when what it replaces holds enough that the last one
             // did not: a request kept over the threshold by its tail, the system prompt or the tools is
@@ -1756,7 +1767,7 @@ async fn prepare(
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
     req.tools = specs;
     req.no_tool_call = no_tool_call;
-    req.max_tokens = st.limits.max_tokens(st.config.agent.max_tokens);
+    req.max_tokens = reply_tokens(st);
     req.temperature = st.config.agent.temperature;
     req.reasoning = reasoning_of(&effort);
     req.session_id = Some(st.session.id().to_string());
@@ -1823,7 +1834,7 @@ async fn view_now(st: &mut State) -> View {
     st.policy.tools(&names);
     // the view never passes the model's window: what it takes less the reply, in estimated tokens
     // through the ratio learned from the provider's counts
-    let reply = st.limits.max_tokens(st.config.agent.max_tokens);
+    let reply = reply_tokens(st);
     if let Some(w) = st.limits.context_window.filter(|w| *w > reply) {
         st.policy.window(view_window(w - reply, st.tok_ratio));
     }
@@ -2144,8 +2155,20 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             // the model thought and stopped before writing anything: ending here would leave the request
             // undone with nothing said, so it is asked to go on from its reasoning
             mute += 1;
-            notice(&events, Level::Warn, "the reply held only reasoning, with no answer and no call; asked to go on");
-            push_results(&state, vec![Part::text(MUTE_NOTE)]).await;
+            let room = if cut {
+                let mut st = state.lock().await;
+                st.reply_boost = (st.reply_boost.max(1) * 2).min(4);
+                format!(" with room for {} tokens", reply_tokens(&st))
+            } else {
+                String::new()
+            };
+            notice(
+                &events,
+                Level::Warn,
+                format!("the reply held only reasoning, with no answer and no call; asked to go on{room}"),
+            );
+            let note = if mute == 1 { MUTE_NOTE } else { MUTE_NOTE_AGAIN };
+            push_results(&state, vec![Part::text(note)]).await;
             continue;
         }
         mute = 0;
@@ -2353,6 +2376,12 @@ fn retry_temperature(t: Option<f32>) -> Option<f32> {
 const MUTE_NOTE: &str =
     "<system-reminder>Your last reply held only reasoning: no answer and no tool call reached the person. \
      Go on from it now with a tool call or the answer, keeping the reasoning short.</system-reminder>";
+
+/// The second time in a row: planning longer is what keeps failing, so the model is told to build first.
+const MUTE_NOTE_AGAIN: &str =
+    "<system-reminder>Your replies keep ending inside the reasoning, before any answer or tool call. Stop \
+     planning: make a tool call now that builds the simplest version that could work (write the file, run the \
+     command), then test it and improve it step by step.</system-reminder>";
 
 const ANSWER_NOW: &str =
     "Tool calls are off for the rest of this request: they will not run. Give your answer now, from what you have already seen. \

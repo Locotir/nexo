@@ -3055,6 +3055,8 @@ async fn a_reply_of_only_reasoning_is_asked_to_go_on() {
     let sent = &reqs[1].messages;
     assert!(nexo_core::message::is_well_formed(sent), "{sent:?}");
     assert!(sent.last().unwrap().text().contains("only reasoning"), "{sent:?}");
+    // cut at max_tokens while thinking: the next reply gets twice the room
+    assert_eq!(reqs[1].max_tokens, 2 * reqs[0].max_tokens);
     r.stop().await;
 }
 
@@ -3068,7 +3070,31 @@ async fn replies_of_only_reasoning_stop_after_two_asks() {
     r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
-    assert_eq!(client.requests().len(), 3);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3);
+    // the room doubles each time, up to four times agent.max_tokens; the second ask says to build first
+    let base = reqs[0].max_tokens;
+    assert_eq!((reqs[1].max_tokens, reqs[2].max_tokens), (2 * base, 4 * base));
+    assert!(reqs[2].messages.last().unwrap().text().contains("Stop planning"));
+    // the next request of the person starts from agent.max_tokens again
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    r.turn().await;
+    assert_eq!(client.requests()[3].max_tokens, base);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn reasoning_that_ended_on_its_own_keeps_the_room() {
+    let d = tempfile::tempdir().unwrap();
+    let mut done = thought("all thought out");
+    done[3] = StreamEvent::Finish(FinishReason::Stop);
+    let client = Scripted::new(vec![Reply::Events(done), Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    assert_eq!(reqs[1].max_tokens, reqs[0].max_tokens);
     r.stop().await;
 }
 
