@@ -220,6 +220,11 @@ impl ToolSet {
         self.tools.keys().map(String::as_str)
     }
 
+    /// Takes a tool out of the set (it is no longer offered or run).
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
     pub fn len(&self) -> usize {
         self.tools.len()
     }

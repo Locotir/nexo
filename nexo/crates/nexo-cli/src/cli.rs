@@ -12,11 +12,13 @@ use crate::setup::{self, Picked};
 #[command(name = "nexo", version = nexo_bench::run::VERSION, about = "A terminal coding harness for any model provider.", long_about = None)]
 pub struct Args {
     /// Run one request without the interface and print the reply.
-    #[arg(short = 'p', long = "print", value_name = "PROMPT")]
+    #[arg(short = 'p', long = "print", value_name = "PROMPT", num_args = 0..=1, default_missing_value = "")]
     pub prompt: Option<String>,
     /// With --print: print every agent event as a JSON line instead of the text.
     #[arg(long)]
     pub json: bool,
+    #[command(flatten)]
+    pub headless: crate::headless::Flags,
     /// Provider name (a preset or one from the configuration).
     #[arg(long, env = "NEXO_PROVIDER")]
     pub provider: Option<String>,
@@ -580,6 +582,10 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         Some(Cmd::Supervise { .. }) => return Ok(0),
     }
 
+    if args.prompt.is_none() && args.headless.any() {
+        eprintln!("nexo: --output-format, --input-format, --max-turns, --allowed-tools, --disallowed-tools, --append-system-prompt, --add-dir and --json-schema need --print (-p)");
+        return Ok(crate::headless::EXIT_USAGE);
+    }
     // plain `nexo` with nothing set up opens on the locked home; a run that cannot ask says what to do
     let unset = args.provider.is_none() && setup::nothing_chosen(&config);
     if unset && args.prompt.is_some() {
@@ -634,7 +640,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
     }
 
     if let Some(prompt) = args.prompt.clone() {
-        return headless(config, cwd, picked, resume, prompt, args.json).await;
+        return crate::headless::run(config, cwd, picked, resume, prompt, args.json, args.headless).await;
     }
     interactive(config, cwd, picked, resume, unset).await
 }
@@ -713,76 +719,6 @@ async fn interactive(
     agent.abort();
     ui?;
     Ok(0)
-}
-
-async fn headless(
-    config: nexo_core::Config,
-    cwd: PathBuf,
-    picked: Picked,
-    resume: Option<String>,
-    prompt: String,
-    json: bool,
-) -> anyhow::Result<i32> {
-    use std::io::Write;
-    // what a script or another program runs is not one of the person's conversations
-    nexo_agent::session::mark_headless();
-    let (mut handle, ends) = channels();
-    let gate: std::sync::Arc<dyn nexo_core::PermissionGate> = std::sync::Arc::new(setup::HeadlessGate);
-    let agent_setup = setup::agent_setup(&config, &cwd, &picked, resume, Some(gate), None).await?;
-    let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
-    // an agent that already stopped (a session that cannot be resumed) closed its end: its own error says why
-    let sent = handle.commands.send(AgentCommand::Submit { text: prompt, attachments: vec![] }).is_ok();
-    let mut out = std::io::stdout().lock();
-    let mut code = 0;
-    // the text printed so far ends in the middle of a line
-    let mut printed = false;
-    while let Some(ev) = handle.events.recv().await {
-        if json {
-            writeln!(out, "{}", serde_json::to_string(&ev)?)?;
-        }
-        match &ev {
-            AgentEvent::TextDelta { text } if !json => {
-                out.write_all(text.as_bytes())?;
-                out.flush()?;
-                printed = !text.ends_with('\n');
-            }
-            // the next message starts on a line of its own
-            AgentEvent::AssistantStart if !json && printed => {
-                writeln!(out)?;
-                printed = false;
-            }
-            AgentEvent::ToolCall { summary, .. } if !json => eprintln!("· {summary}"),
-            AgentEvent::Notice { level, text } if !json => eprintln!("[{level:?}] {text}"),
-            AgentEvent::TurnEnd { reason } => {
-                if !json && printed {
-                    writeln!(out)?;
-                }
-                code = if matches!(reason, nexo_core::agent::TurnEnd::Done) { 0 } else { 2 };
-                printed = false;
-            }
-            // a job that ended may start another turn; the run is over when none does
-            AgentEvent::Idle { .. } => break,
-            AgentEvent::Shutdown => break,
-            _ => {}
-        }
-    }
-    let _ = handle.commands.send(AgentCommand::Shutdown);
-    // the agent can stop before any turn (a session that cannot be resumed): that is a failure
-    let failed = match tokio::time::timeout(std::time::Duration::from_secs(2), agent).await {
-        Ok(Ok(Err(e))) => Some(format!("{e:#}")),
-        Ok(Err(e)) => Some(format!("the agent stopped: {e}")),
-        _ if !sent => Some("the agent stopped before the request".to_string()),
-        _ => None,
-    };
-    if let Some(e) = failed {
-        if json {
-            writeln!(out, "{}", serde_json::json!({"event": "error", "message": e}))?;
-        }
-        out.flush()?;
-        eprintln!("nexo: {e}");
-        return Ok(1);
-    }
-    Ok(code)
 }
 
 /// Runs one request without the interface and returns the reply text and the exit code (0 done, 2 not done, 1 agent failure).

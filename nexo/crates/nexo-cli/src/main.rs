@@ -4,6 +4,8 @@
 
 mod account;
 mod cli;
+mod headless;
+mod schema;
 mod setup;
 mod supervise;
 mod update;
