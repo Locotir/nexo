@@ -142,7 +142,14 @@ fn path_forms(p: &str, cwd: &Path) -> Vec<String> {
 fn real_forms(p: &str, cwd: &Path) -> Vec<String> {
     let real = real_path(&lexical(p, cwd));
     let root = real_path(&normalise(cwd));
-    let slash = |s: String| s.replace('\\', "/");
+    // Windows resolves to `\\?\C:\...` (or `\\?\UNC\host\...`); rules are written without that prefix
+    let slash = |s: String| {
+        let s = s.replace('\\', "/");
+        match s.strip_prefix("//?/") {
+            Some(rest) => rest.strip_prefix("UNC/").map(|r| format!("//{r}")).unwrap_or_else(|| rest.to_string()),
+            None => s,
+        }
+    };
     let mut out = vec![slash(real.to_string_lossy().to_string())];
     if let Ok(rel) = real.strip_prefix(&root) {
         out.push(slash(rel.to_string_lossy().to_string()));
