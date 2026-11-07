@@ -123,9 +123,12 @@ fn cap(s: &str) -> String {
 }
 
 /// The `tool_call_update` that ends a call: its status, and what it did as diff or text.
-/// `path` is the absolute file the call worked on (the output's own path may carry a note).
-pub fn tool_done(id: &str, out: &ToolOutput, path: Option<&Path>) -> Value {
+/// `path` is the absolute file the call worked on (the output's own path may carry a note);
+/// `terminal` the editor terminal the call ran in.
+pub fn tool_done(id: &str, out: &ToolOutput, path: Option<&Path>, terminal: Option<&str>) -> Value {
     let content = match &out.display {
+        // the editor shows the output in its terminal; the call keeps it there
+        _ if terminal.is_some() => vec![json!({"type": "terminal", "terminalId": terminal})],
         ToolDisplay::Diff { path: shown, old, new, .. } if !out.is_error => {
             let p = path.map(|p| p.display().to_string()).unwrap_or_else(|| shown.clone());
             vec![diff_content(&p, old, new)]
@@ -286,7 +289,7 @@ pub fn replay(events: &[AgentEvent], tools: &ToolSet, cwd: &Path) -> Vec<Value> 
                 out.push(tool_call(tools, cwd, id, name, args, summary));
             }
             AgentEvent::ToolDone { id, output, .. } => {
-                out.push(tool_done(id, output, paths.get(id).map(PathBuf::as_path)));
+                out.push(tool_done(id, output, paths.get(id).map(PathBuf::as_path), None));
                 out.extend(plan(output));
             }
             _ => {}
@@ -308,7 +311,7 @@ mod tests {
             new: "fn main() {}\n".into(),
             start_line: 1,
         });
-        let u = tool_done("c1", &out, Some(Path::new("/w/a.rs")));
+        let u = tool_done("c1", &out, Some(Path::new("/w/a.rs")), None);
         assert_eq!(u["status"], "completed");
         assert_eq!(u["content"][0]["type"], "diff");
         assert_eq!(u["content"][0]["path"], "/w/a.rs");
@@ -317,9 +320,16 @@ mod tests {
 
     #[test]
     fn a_failed_call_is_failed_with_its_message() {
-        let u = tool_done("c1", &ToolOutput::error("edit: not found"), None);
+        let u = tool_done("c1", &ToolOutput::error("edit: not found"), None, None);
         assert_eq!(u["status"], "failed");
         assert_eq!(u["content"][0]["content"]["text"], "edit: not found");
+    }
+
+    #[test]
+    fn a_call_run_in_a_terminal_ends_with_the_terminal() {
+        let u = tool_done("c1", &ToolOutput::ok("hi"), None, Some("t9"));
+        assert_eq!(u["content"], json!([{"type": "terminal", "terminalId": "t9"}]));
+        assert_eq!(u["rawOutput"]["content"], "hi");
     }
 
     #[test]

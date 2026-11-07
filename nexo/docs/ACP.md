@@ -93,7 +93,7 @@ require("avante").setup({
 | ACP | In nexo |
 | --- | --- |
 | `initialize` | protocol version 1; no sign-in methods (use `nexo auth login`) |
-| `session/new` | a new nexo session in `cwd`; stdio MCP servers from `mcpServers` are added to nexo's MCP client for that session |
+| `session/new` | a new nexo session in `cwd`; stdio, `http` and `sse` MCP servers (with headers) from `mcpServers` are added to nexo's MCP client for that session; `initialize` advertises `mcpCapabilities` http and sse |
 | `session/load` | resumes a recorded nexo session by its id and replays it (messages, tool calls) |
 | `session/prompt` | one turn of the normal agent loop; text, resource links and embedded files are read, images and audio are not |
 | `session/update` | `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update` (kind, status, file locations, diffs for edits and writes), `plan` (from the model's task list), `current_mode_update` |
@@ -101,12 +101,10 @@ require("avante").setup({
 | `session/set_mode` | `ask`, `accept-edits`, `auto`, `read-only`, `plan` (nexo's permission modes) |
 | `session/request_permission` | sent whenever nexo would ask you: Allow, Always allow (when nexo has a rule for it), Reject; the model's questions and plans to approve come the same way |
 | `fs/read_text_file`, `fs/write_text_file` | when the editor offers them, nexo's `read`, `write` and `edit` go through them, so unsaved buffers are seen and edits land in the buffer; otherwise nexo uses the disk |
+| `terminal/create`, `terminal/wait_for_exit`, `terminal/output`, `terminal/kill`, `terminal/release` | when the editor offers `terminal`, a foreground `bash` call runs in its terminal, shown live in the tool call (`content: [{type: "terminal", terminalId}]`) and kept there when it ends. A timeout or a cancel kills the command, and the terminal is always released. `bash` with `background: true` stays a nexo process (the `jobs` tool needs its output), and so does every call when the editor has no terminal; with the OS sandbox on (`permissions.sandbox`) every `bash` call runs in nexo, sandboxed, because the editor's terminal is not sandboxed |
 
 ## Left out
 
-- Terminals (`terminal/*`): `bash` runs as a process of nexo, and its output comes back as the
-  tool call's text.
-- MCP servers over HTTP or SSE in `session/new` (stdio only).
 - Images and audio in prompts.
 - Slash commands and session lists.
 

@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 use super::convert;
 use super::fs::{self, FsCaps};
 use super::rpc::{Rpc, RpcError};
+use super::terminal;
 use crate::setup;
 
 /// What the command line set for every session of this server.
@@ -35,18 +36,45 @@ pub struct Sess {
     cmds: CommandTx,
     events: AsyncMutex<EventRx>,
     tools: ToolSet,
+    /// The editor terminal each running tool call shows (empty without terminal support).
+    shown: terminal::Shown,
     cancelled: AtomicBool,
     agent: Mutex<Option<JoinHandle<anyhow::Result<()>>>>,
 }
 
-/// The stdio servers of `session/new`, as nexo's MCP configuration. Servers reached over
-/// HTTP or SSE are not supported here and are left out with a line in the log.
+/// The MCP servers of `session/new`, as nexo's MCP configuration: stdio ones (a `command`), and
+/// remote ones of type `http` or `sse` (a `url` and `headers`). Any other kind is left out with a
+/// line in the log.
 fn mcp_servers(list: &[Value]) -> Vec<(String, McpServerConfig)> {
     let mut out = Vec::new();
     for s in list {
         let name = s.get("name").and_then(Value::as_str).unwrap_or("");
+        let kind = s.get("type").and_then(Value::as_str).unwrap_or("stdio");
+        if matches!(kind, "http" | "sse") {
+            let Some(url) = s.get("url").and_then(Value::as_str).filter(|u| !u.is_empty()) else {
+                eprintln!("nexo acp: MCP server {name:?} has no url; left out");
+                continue;
+            };
+            let headers = s
+                .get("headers")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|h| {
+                            Some((h.get("name")?.as_str()?.to_string(), h.get("value")?.as_str()?.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let transport = Some(kind.to_string());
+            out.push((
+                name.to_string(),
+                McpServerConfig { url: Some(url.to_string()), headers, transport, ..Default::default() },
+            ));
+            continue;
+        }
         let Some(command) = s.get("command").and_then(Value::as_str) else {
-            eprintln!("nexo acp: MCP server {name:?} is not a stdio server; left out");
+            eprintln!("nexo acp: MCP server {name:?} is not a stdio, http or sse server; left out");
             continue;
         };
         let args = s
@@ -104,7 +132,12 @@ pub async fn start(
     let mut agent_setup = setup::agent_setup(&config, &cwd, &picked, resume, None, None)
         .await
         .map_err(|e| RpcError::internal(format!("{e:#}")))?;
-    let sid_cell = fs::install(&mut agent_setup.tools, rpc, caps);
+    let sid_cell = fs::install(&mut agent_setup.tools, rpc.clone(), caps);
+    let shown = if caps.terminal {
+        terminal::install(&mut agent_setup.tools, rpc, sid_cell.clone())
+    } else {
+        Default::default()
+    };
     let tools = agent_setup.tools.clone();
     let (handle, ends) = channels();
     let join = tokio::spawn(nexo_agent::run(ends, agent_setup));
@@ -140,6 +173,7 @@ pub async fn start(
         cmds,
         events: AsyncMutex::new(events),
         tools,
+        shown,
         cancelled: AtomicBool::new(false),
         agent: Mutex::new(Some(join)),
     };
@@ -214,7 +248,8 @@ impl Sess {
                 AgentEvent::ToolStart { id } => self.update(rpc, convert::tool_status(&id, "in_progress")),
                 AgentEvent::ToolDone { id, output, .. } => {
                     let path = calls.get(&id).and_then(|(p, _)| p.as_deref());
-                    self.update(rpc, convert::tool_done(&id, &output, path));
+                    let term = self.shown.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                    self.update(rpc, convert::tool_done(&id, &output, path, term.as_deref()));
                     if let Some(p) = convert::plan(&output) {
                         self.update(rpc, p);
                     }
@@ -292,5 +327,30 @@ impl Sess {
             };
             let _ = cmds.send(AgentCommand::Answer { id: q.id, answer });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_sse_and_stdio_servers_become_nexo_configuration() {
+        let list = vec![
+            json!({"name": "web", "type": "http", "url": "https://x.test/mcp", "headers": [{"name": "Authorization", "value": "Bearer t"}]}),
+            json!({"name": "old", "type": "sse", "url": "https://x.test/sse", "headers": []}),
+            json!({"name": "local", "command": "srv", "args": ["-x"], "env": [{"name": "K", "value": "v"}]}),
+            json!({"name": "nourl", "type": "http"}),
+            json!({"name": "weird", "type": "carrier-pigeon"}),
+        ];
+        let s = mcp_servers(&list);
+        let names: Vec<&str> = s.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["web", "old", "local"]);
+        assert_eq!(s[0].1.url.as_deref(), Some("https://x.test/mcp"));
+        assert_eq!(s[0].1.transport.as_deref(), Some("http"));
+        assert_eq!(s[0].1.headers["Authorization"], "Bearer t");
+        assert_eq!(s[1].1.transport.as_deref(), Some("sse"));
+        assert_eq!((s[2].1.command.as_str(), s[2].1.args.as_slice()), ("srv", ["-x".to_string()].as_slice()));
+        assert_eq!(s[2].1.env["K"], "v");
     }
 }

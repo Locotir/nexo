@@ -11,6 +11,7 @@ mod convert;
 mod fs;
 mod rpc;
 mod session;
+mod terminal;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -151,13 +152,14 @@ impl Server {
         *self.caps.lock().unwrap_or_else(|e| e.into_inner()) = FsCaps {
             read: fs["readTextFile"].as_bool().unwrap_or(false),
             write: fs["writeTextFile"].as_bool().unwrap_or(false),
+            terminal: params["clientCapabilities"]["terminal"].as_bool().unwrap_or(false),
         };
         json!({
             "protocolVersion": PROTOCOL_VERSION,
             "agentCapabilities": {
                 "loadSession": true,
                 "promptCapabilities": {"image": false, "audio": false, "embeddedContext": true},
-                "mcpCapabilities": {"http": false, "sse": false},
+                "mcpCapabilities": {"http": true, "sse": true},
             },
             "agentInfo": {"name": "nexo", "title": "nexo", "version": nexo_core::version::get()},
             "authMethods": [],

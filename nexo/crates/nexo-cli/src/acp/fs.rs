@@ -16,11 +16,12 @@ use serde_json::{json, Value};
 
 use super::rpc::Rpc;
 
-/// What the client can do with files.
+/// What the client can do with files, and whether it has terminals (`bash` runs in them).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FsCaps {
     pub read: bool,
     pub write: bool,
+    pub terminal: bool,
 }
 
 /// The connection to the editor's files for one session.
