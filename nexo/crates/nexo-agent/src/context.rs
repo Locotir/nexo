@@ -815,4 +815,108 @@ mod tests {
         let v = c.view(3000, &h).await.unwrap();
         assert_eq!(v.messages.len(), 3);
     }
+
+    fn picture() -> nexo_core::message::Part {
+        // a 1000 by 800 PNG as `read` returns it; the estimate never looks at the bytes
+        let data = "iVBORw0KGgo".repeat(2000);
+        nexo_core::message::Part::Image {
+            source: nexo_core::message::ImageSource::Base64 { media_type: "image/png".into(), data },
+        }
+    }
+
+    fn images_in(m: &Message) -> usize {
+        use nexo_core::message::Part;
+        fn count(p: &Part) -> usize {
+            match p {
+                Part::Image { .. } => 1,
+                Part::ToolResult { content, .. } => content.iter().map(count).sum(),
+                _ => 0,
+            }
+        }
+        m.content.iter().map(count).sum()
+    }
+
+    /// One read step: the model's call and the tool's answer, a screenshot when `shot`, else a long file.
+    fn read_step(h: &mut Vec<Message>, i: usize, shot: bool) {
+        use nexo_core::message::Part;
+        h.push(Message::new(
+            Role::Assistant,
+            vec![
+                Part::text(format!("Step {i}: reading module {i}.")),
+                Part::tool_call(format!("c{i}"), "read", serde_json::json!({"path": format!("m{i}.rs")})),
+            ],
+        ));
+        let mut content = if shot {
+            vec![Part::text("PNG image, 1000x800")]
+        } else {
+            let body: String = (0..300)
+                .map(|l| format!("{l:>4}  fn f_{i}_{l}(x: u64) -> u64 {{ x * {l} + {i} }} // module {i}\n"))
+                .collect();
+            vec![Part::text(body)]
+        };
+        if shot {
+            content.push(picture());
+        }
+        let result = Part::ToolResult { call_id: format!("c{i}"), name: None, content, is_error: false };
+        h.push(Message::new(Role::User, vec![result]));
+    }
+
+    /// The view's tokens rise by the nominal size of the picture in the newest tool result, and not by its bytes.
+    #[tokio::test]
+    async fn the_view_counts_an_image_in_a_tool_result() {
+        let tokens = |bytes: Option<usize>| {
+            let mut h = vec![Message::user("Look at the screenshot.")];
+            read_step(&mut h, 0, true);
+            if let nexo_core::message::Part::ToolResult { content, .. } = &mut h[2].content[0] {
+                match bytes {
+                    Some(n) => {
+                        content[1] = nexo_core::message::Part::Image {
+                            source: nexo_core::message::ImageSource::Base64 {
+                                media_type: "image/png".into(),
+                                data: "A".repeat(n),
+                            },
+                        }
+                    }
+                    None => drop(content.pop()),
+                }
+            }
+            async move {
+                let v = BuiltIn::new("").unwrap().view(3000, &h).await.unwrap();
+                assert_eq!(
+                    images_in(&v.messages[2]),
+                    usize::from(bytes.is_some()),
+                    "the newest turn keeps its picture"
+                );
+                (v.tokens, estimate_tokens(&v.messages))
+            }
+        };
+        let (bare, bare_est) = tokens(None).await;
+        let (small, small_est) = tokens(Some(100)).await;
+        let (big, big_est) = tokens(Some(3_000_000)).await;
+        // 1500 for the picture, a few tokens for the characters of its block
+        assert!((1500..1600).contains(&(small - bare)), "{bare} {small}");
+        assert!((1500..1600).contains(&(small_est - bare_est)), "{bare_est} {small_est}");
+        assert_eq!((small, small_est), (big, big_est), "the bytes are not counted");
+    }
+
+    /// An old tool result left out of the view takes its picture with it; the newest turn keeps its picture.
+    #[tokio::test]
+    async fn a_stubbed_result_has_no_picture_and_the_newest_turn_keeps_its_own() {
+        let mut c = BuiltIn::new("").unwrap();
+        let mut h = vec![Message::user("Go through every module and summarise what each does.")];
+        read_step(&mut h, 0, true);
+        for i in 1..40 {
+            read_step(&mut h, i, false);
+            c.view(3000, &h).await.unwrap();
+        }
+        let v = c.view(3000, &h).await.unwrap();
+        let old = |m: &[Message]| m[..m.len() - 2].iter().map(images_in).sum::<usize>();
+        assert_eq!(old(&h), 1);
+        assert!(saving(estimate_tokens(&h), estimate_tokens(&v.messages)) > 0, "the curator cut nothing");
+        assert_eq!(old(&v.messages), 0, "the old picture is still in the view");
+        read_step(&mut h, 40, true);
+        let v = c.view(3000, &h).await.unwrap();
+        assert_eq!(images_in(v.messages.last().unwrap()), 1, "the newest picture was cut");
+        assert_eq!(old(&v.messages), 0);
+    }
 }

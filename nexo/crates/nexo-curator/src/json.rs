@@ -230,6 +230,16 @@ mod tests {
         let img = json!({"type": "image", "source": {"type": "base64", "data": "AAAA"}});
         // {"type":"image","source":{"type":"base64"}}
         assert_eq!(est(&img), 43 / 4 + 1500);
+        // an image inside a tool result counts too, at the same size, whatever its data
+        let result = |parts: Value| json!({"type": "tool_result", "tool_use_id": "t", "content": parts});
+        let text = json!({"type": "text", "text": "shot"});
+        let image = |data: String| json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}});
+        let (big, small) = (image("A".repeat(100_000)), image("A".into()));
+        let bare = est(&result(json!([text])));
+        let rise = est(&result(json!([text, big]))) - bare;
+        assert!((1500..1600).contains(&rise), "the nominal size and the block's few characters, not its data: {rise}");
+        assert_eq!(est(&result(json!([text, big]))), est(&result(json!([text, small]))));
+        assert_eq!(est_media(&result(json!([text, big, small]))).1, 2);
         assert_eq!(est(&json!({"type": "thinking", "thinking": "x", "signature": "s"})), 19 / 4);
         assert_eq!(est(&json!({"a": "\n\u{1}é"})), 17 / 4);
     }

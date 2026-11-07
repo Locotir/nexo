@@ -416,6 +416,24 @@ mod tests {
     }
 
     #[test]
+    fn an_image_in_a_tool_result_costs_the_nominal_size_and_its_bytes_nothing() {
+        let result = |parts: Vec<Part>| {
+            let r = Part::ToolResult { call_id: "c".into(), name: None, content: parts, is_error: false };
+            estimate_tokens(&[Message::new(Role::User, vec![r])])
+        };
+        // a 1000 by 800 picture: only the header of its data would tell, and the estimate never reads it
+        let png = |n: usize| Part::Image {
+            source: ImageSource::Base64 { media_type: "image/png".into(), data: "iVBORw0KGgo".repeat(n) },
+        };
+        let bare = result(vec![Part::text("shot")]);
+        // the nominal size and the few characters of the block that stands in for the picture
+        let rise = |a: u64, b: u64| (MEDIA_TOKENS..MEDIA_TOKENS + 20).contains(&(a - b));
+        assert!(rise(result(vec![Part::text("shot"), png(1)]), bare));
+        assert_eq!(result(vec![Part::text("shot"), png(50_000)]), result(vec![Part::text("shot"), png(1)]));
+        assert!(rise(result(vec![png(1), png(1)]), result(vec![png(1)])), "each image counts");
+    }
+
+    #[test]
     fn round_trips_the_messages_api_shape() {
         let m = Message::new(
             Role::Assistant,
