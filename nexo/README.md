@@ -262,6 +262,9 @@ diagnostics call does not run the project's code; read-only sub-agents do not ge
 **Hooks.** Shell commands at points of the loop, each given the event as JSON on stdin and `NEXO_EVENT`,
 `NEXO_TOOL`, `NEXO_CWD` in its environment. A `pre_tool` hook that exits with 2 blocks the call, and what
 it printed is the reason the model reads; `post_tool` and `turn_end` hooks are told what happened.
+Eleven events in all (session, prompt, tool, stop, sub-agent, compaction, notification, permission), JSON
+decisions, `matcher` regexes, `timeout`, and a trusted project's `.claude/settings.json` hooks: see
+[docs/HOOKS.md](docs/HOOKS.md). `/hooks` lists what is loaded.
 
 ```toml
 [[hooks]]

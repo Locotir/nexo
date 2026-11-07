@@ -3687,6 +3687,7 @@ impl App {
             Command::Pr(arg) => self.git_prompt("/pr", nexo_agent::gitcmds::pr_prompt(&self.cwd, arg.as_deref(), "gh")),
             Command::Status => self.send(AgentCommand::ShowStatus),
             Command::Tools => self.send(AgentCommand::ShowTools),
+            Command::Hooks => self.send(AgentCommand::ShowHooks),
             Command::Skills => self.show_skills(),
             Command::Jobs(None) => self.open_jobs(),
             Command::Jobs(Some(id)) => self.send(AgentCommand::KillJob { id }),

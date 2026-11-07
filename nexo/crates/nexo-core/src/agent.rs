@@ -133,6 +133,8 @@ pub enum AgentCommand {
     ShowStatus,
     /// Ask for the tools the model has, by kind; answered with a `Notice`.
     ShowTools,
+    /// Ask for the hooks that are loaded and where each comes from; answered with a `Notice`.
+    ShowHooks,
     /// Look for the usual local servers (Ollama, LM Studio, vLLM, llama.cpp) at their usual
     /// ports; answered with `LocalServers`.
     ScanLocal,

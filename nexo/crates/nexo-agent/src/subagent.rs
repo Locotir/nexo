@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use nexo_core::compat::map_tool;
 use nexo_core::config::ProviderConfig;
 use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::jobs::JobKind;
@@ -134,26 +135,6 @@ fn load_from(cwd: &Path, config_dir: &Path, trust_file: &Path, foreign_home: Opt
         }
     }
     out
-}
-
-/// A tool name of another tool's agent file as nexo calls it; none for one nexo has no use for.
-fn map_tool(t: &str) -> Option<String> {
-    let m = match t {
-        "Read" => "read",
-        "Write" => "write",
-        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
-        "Bash" | "BashOutput" => "bash",
-        "Glob" => "glob",
-        "Grep" => "grep",
-        "LS" => "ls",
-        "WebFetch" => "web_fetch",
-        "WebSearch" => "web_search",
-        "TodoWrite" => "todo",
-        t if t.starts_with("mcp__") => t,
-        t if !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_') => t,
-        _ => return None,
-    };
-    Some(m.to_string())
 }
 
 /// Maps what a `.claude/agents` file says onto nexo: its tool names (a list that names none nexo
@@ -283,6 +264,26 @@ fn plain_path(p: &str, cwd: &Path) -> PathBuf {
     out
 }
 
+/// Runs the SubagentStop hooks with the report; returns the lines for hooks that failed.
+async fn stop_hooks(
+    hooks: &[nexo_core::config::HookConfig],
+    cwd: &Path,
+    session_id: &str,
+    agent: &str,
+    report: &str,
+) -> Vec<String> {
+    crate::hooks::run(
+        hooks,
+        "subagent_stop",
+        Some(agent),
+        &json!({"agent_type": agent, "report": report}),
+        cwd,
+        session_id,
+    )
+    .await
+    .failures
+}
+
 pub struct SubAgent {
     client: Arc<dyn ModelClient>,
     target: Target,
@@ -296,6 +297,8 @@ pub struct SubAgent {
     /// Sub-agents that can change files run beside each other too (see [`Claims`]).
     parallel: bool,
     claims: Claims,
+    /// SubagentStart and SubagentStop hooks.
+    hooks: Vec<nexo_core::config::HookConfig>,
 }
 
 impl SubAgent {
@@ -325,7 +328,14 @@ impl SubAgent {
             providers: Default::default(),
             parallel: false,
             claims: Default::default(),
+            hooks: Vec::new(),
         }
+    }
+
+    /// The hooks that hear when a sub-agent starts and stops.
+    pub fn with_hooks(mut self, hooks: Vec<nexo_core::config::HookConfig>) -> SubAgent {
+        self.hooks = hooks;
+        self
     }
 
     /// Hands every sub-agent a briefing picked from the conversation (see [`crate::brief`]).
@@ -846,6 +856,27 @@ impl Tool for SubAgent {
         };
         let model = asked_for("model").map(str::to_string);
         let host = self.host.get().cloned();
+        // SubagentStart hooks: what they print is added to the task
+        let prompt_owned = {
+            let o = crate::hooks::run(
+                &self.hooks,
+                "subagent_start",
+                Some(&profile.name),
+                &json!({"agent_type": profile.name, "prompt": prompt}),
+                &ctx.cwd,
+                &ctx.session_id,
+            )
+            .await;
+            for f in &o.failures {
+                ctx.report(f.clone());
+            }
+            if o.context.is_empty() {
+                prompt.to_string()
+            } else {
+                format!("{prompt}\n\n{}", o.context.join("\n\n"))
+            }
+        };
+        let prompt = prompt_owned.as_str();
         let briefing = match &host {
             Some(h) if self.brief.tokens > 0 => brief::build(prompt, &h.history().await, &ctx.cwd, &self.brief).await,
             _ => None,
@@ -883,7 +914,12 @@ impl Tool for SubAgent {
             let note = if asked { "(ran in the foreground: it can change files)\n\n" } else { "" };
             // whatever it held is free again when it ends, also when it is stopped
             let _release = Release { claims: self.claims.clone(), owner: ctx.call_id.clone() };
-            return match run.go(prompt, briefing.as_ref(), ctx, &|l| ctx.report(l)).await {
+            let res = run.go(prompt, briefing.as_ref(), ctx, &|l| ctx.report(l)).await;
+            if let Ok(report) = &res {
+                let fails = stop_hooks(&self.hooks, &ctx.cwd, &ctx.session_id, &run.profile.name, report).await;
+                fails.into_iter().for_each(|f| ctx.report(f));
+            }
+            return match res {
                 Ok(report) => ToolOutput::ok(format!("{note}{report}")),
                 Err(e) if ctx.cancel.is_cancelled() => ToolOutput::error(format!("interrupted by the person ({e})")),
                 Err(e) => ToolOutput::error(e),
@@ -892,6 +928,7 @@ impl Tool for SubAgent {
         let label = args.get("description").and_then(Value::as_str).unwrap_or(prompt);
         let label: String = label.lines().next().unwrap_or("").chars().take(80).collect();
         let job = ctx.jobs.start(JobKind::Agent, label.clone());
+        let (hooks, agent_name) = (self.hooks.clone(), run.profile.name.clone());
         let id = job.id();
         let mut jctx = ctx.clone();
         jctx.cancel = job.cancel();
@@ -907,6 +944,11 @@ impl Tool for SubAgent {
                 say(b.line());
             }
             let res = run.go(&prompt, briefing.as_ref(), &jctx, &say).await;
+            if let Ok(report) = &res {
+                for f in stop_hooks(&hooks, &jctx.cwd, &jctx.session_id, &agent_name, report).await {
+                    say(f);
+                }
+            }
             drop(say);
             let Ok(job) = Arc::try_unwrap(job) else { return };
             match res {

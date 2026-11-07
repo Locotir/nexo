@@ -214,6 +214,8 @@ struct State {
     mail: Option<Arc<Mailbox>>,
     mail_wait: Vec<Mail>,
     mail_turn: Vec<Mail>,
+    /// Text hooks added for the model (SessionStart, UserPromptSubmit): it goes with the next request.
+    hook_context: Vec<String>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -225,6 +227,48 @@ fn emit(events: &EventTx, ev: AgentEvent) {
 fn notice(events: &EventTx, level: Level, text: impl Into<String>) {
     emit(events, AgentEvent::Notice { level, text: text.into() });
 }
+
+/// Runs the hooks of `event` with what the session knows, tells the person which failed, and returns
+/// what they said. Nothing runs (and the state is not read twice) when no hook listens.
+async fn fire(state: &Shared, event: &str, subject: Option<&str>, fields: Value) -> crate::hooks::Outcome {
+    let (hooks, cwd, sid, events) = {
+        let st = state.lock().await;
+        if !crate::hooks::listens(&st.config.hooks, event) {
+            return Default::default();
+        }
+        (st.config.hooks.clone(), st.cwd.clone(), st.session.id().to_string(), st.events.clone())
+    };
+    fire_with(&hooks, &events, &cwd, &sid, event, subject, &fields).await
+}
+
+async fn fire_with(
+    hooks: &[nexo_core::config::HookConfig],
+    events: &EventTx,
+    cwd: &Path,
+    sid: &str,
+    event: &str,
+    subject: Option<&str>,
+    fields: &Value,
+) -> crate::hooks::Outcome {
+    let o = crate::hooks::run(hooks, event, subject, fields, cwd, sid).await;
+    for f in &o.failures {
+        notice(events, Level::Warn, f.clone());
+    }
+    o
+}
+
+/// Tells the hooks of `Notification` (a permission question, a request that ended in trouble) without
+/// holding anything up.
+fn notify_hooks(state: &Shared, kind: &'static str, message: String) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        fire(&state, "notification", Some(kind), serde_json::json!({"notification_type": kind, "message": message}))
+            .await;
+    });
+}
+
+/// A Stop hook may ask the agent to go on this many times in a row; then the request ends anyway.
+const STOP_HOOK_CAP: u32 = 3;
 
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
@@ -244,7 +288,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         let sub = crate::subagent::SubAgent::new(client.clone(), target.clone(), &tools, profiles, host.clone())
             .with_brief(crate::brief::BriefConfig::from_agent(&config.agent))
             .with_providers(config.providers.clone())
-            .with_parallel(config.agent.parallel_tasks);
+            .with_parallel(config.agent.parallel_tasks)
+            .with_hooks(config.hooks.clone());
         tools.add(Arc::new(sub));
     }
     // after the sub-agents: questions are the main agent's alone
@@ -361,6 +406,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         mail,
         mail_wait: Vec::new(),
         mail_turn: Vec::new(),
+        hook_context: Vec::new(),
     }));
     let _ = host.set(Arc::new(StateHost { state: Arc::downgrade(&state), events: events.clone() }));
     {
@@ -383,6 +429,11 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     catalogue::refresh_if_stale(None);
     spawn_vendor_fill(&state);
     spawn_job_review(&state, jobs.clone());
+    {
+        let source = if replay { "resume" } else { "startup" };
+        let o = fire(&state, "session_start", Some(source), serde_json::json!({"source": source})).await;
+        state.lock().await.hook_context.extend(o.context);
+    }
     let mut turn: Option<JoinHandle<TurnEnd>> = None;
     // a sign-in waiting for the browser, so Esc in the setup can drop it
     let mut signing_in: Option<tokio::task::AbortHandle> = None;
@@ -401,7 +452,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         } else {
                             person_spoke(&mut st);
                             drop(st);
-                            turn = Some(start_turn(&state, text, attachments, cancel.child_token()).await);
+                            turn = start_prompt(&state, text, attachments, cancel.child_token()).await;
                         }
                     }
                     AgentCommand::Deliver { mails } => {
@@ -615,6 +666,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         let st = state.lock().await;
                         notice(&events, Level::Info, status_text(&st));
                     }
+                    AgentCommand::ShowHooks => {
+                        let st = state.lock().await;
+                        notice(&events, Level::Info, crate::hooks::describe(&st.config.hooks));
+                    }
                     AgentCommand::ShowTools => {
                         let st = state.lock().await;
                         notice(&events, Level::Info, tools_text(&st.tools));
@@ -731,14 +786,16 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     let st = state.lock().await;
                     (st.config.hooks.clone(), st.cwd.clone(), st.session.id().to_string())
                 };
-                if hooks.iter().any(|h| h.event == "turn_end") {
+                if crate::hooks::listens(&hooks, "turn_end") {
                     let events = events.clone();
+                    let sid = sid.clone();
                     tokio::spawn(async move {
-                        let payload = serde_json::json!({"event": "turn_end", "reason": format!("{reason:?}").to_ascii_lowercase(), "session": sid});
-                        for f in crate::hooks::run(&hooks, "turn_end", None, &payload, &hook_cwd).await.failures {
-                            notice(&events, Level::Warn, f);
-                        }
+                        let payload = serde_json::json!({"reason": format!("{reason:?}").to_ascii_lowercase(), "session": sid});
+                        fire_with(&hooks, &events, &hook_cwd, &sid, "turn_end", None, &payload).await;
                     });
+                }
+                if matches!(reason, TurnEnd::Error | TurnEnd::MaxTurns) {
+                    notify_hooks(&state, "turn_stopped", format!("the request ended early ({})", format!("{reason:?}").to_ascii_lowercase()));
                 }
                 cancel = CancellationToken::new();
                 // the goal takes the turn's end first (met, waiting, paused), then a queued message runs
@@ -759,7 +816,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 };
                 if let Some((text, attachments)) = next {
                     notice(&events, Level::Info, "running the queued request");
-                    turn = Some(start_turn(&state, text, attachments, cancel.child_token()).await);
+                    turn = start_prompt(&state, text, attachments, cancel.child_token()).await;
                 } else if !state.lock().await.mail_wait.is_empty() {
                     let mails = std::mem::take(&mut state.lock().await.mail_wait);
                     turn = Some(deliver_mails(&state, mails, cancel.child_token()).await);
@@ -789,6 +846,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     if let Some(t) = turn {
         let _ = t.await;
     }
+    fire(&state, "session_end", Some("exit"), serde_json::json!({"reason": "exit"})).await;
     state.lock().await.policy.shutdown().await;
     emit(&events, AgentEvent::Shutdown);
     Ok(())
@@ -1308,6 +1366,25 @@ async fn deliver_mails(state: &Shared, mails: Vec<Mail>, cancel: CancellationTok
     start_turn(state, text, Vec::new(), cancel).await
 }
 
+/// Starts a request the person wrote: the UserPromptSubmit hooks first. One may stop it (nothing is
+/// sent; the person is told why) or add text for the model.
+async fn start_prompt(
+    state: &Shared,
+    text: String,
+    attachments: Vec<Attachment>,
+    cancel: CancellationToken,
+) -> Option<JoinHandle<TurnEnd>> {
+    let o = fire(state, "user_prompt_submit", None, serde_json::json!({"prompt": text})).await;
+    if let Some(why) = o.blocked {
+        let st = state.lock().await;
+        notice(&st.events, Level::Warn, format!("your message was not sent: a hook stopped it ({why})"));
+        emit(&st.events, AgentEvent::Idle { running_jobs: st.jobs.running() });
+        return None;
+    }
+    state.lock().await.hook_context.extend(o.context);
+    Some(start_turn(state, text, attachments, cancel).await)
+}
+
 async fn start_turn(
     state: &Shared,
     text: String,
@@ -1332,6 +1409,11 @@ async fn start_turn(
             format!("{}\n\n{text}", nexo_core::jobs::ended_note(&ended))
         };
         // what other sessions shared goes first, once: it is part of this request from now on
+        let text = if st.hook_context.is_empty() {
+            text
+        } else {
+            format!("{}\n\n{text}", std::mem::take(&mut st.hook_context).join("\n\n"))
+        };
         let text = if st.shared.is_empty() {
             text
         } else {
@@ -1680,6 +1762,8 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
     let mut cut_calls = 0u32;
     // replies in a row that held only reasoning: no answer and no call
     let mut mute = 0u32;
+    // times in a row a Stop hook asked the agent to go on (capped at STOP_HOOK_CAP)
+    let mut stop_blocks = 0u32;
     loop {
         // with checkpoints the limit is met after the tool round that reaches it; here only a request that went
         // on without tools (a guard's answer) stops
@@ -1943,6 +2027,21 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             }
             if let Some(why) = ck.stopping.take() {
                 checkpoint_stopped(&state, &why, &msg.text()).await;
+            }
+            // a Stop hook may send the agent back to work, with its reason as a note; a few times only
+            if stop_blocks < STOP_HOOK_CAP {
+                let fields =
+                    serde_json::json!({"stop_hook_active": stop_blocks > 0, "last_assistant_message": msg.text()});
+                if let Some(why) = fire(&state, "stop", None, fields).await.blocked {
+                    stop_blocks += 1;
+                    notice(
+                        &events,
+                        Level::Info,
+                        format!("a Stop hook asked the agent to go on ({stop_blocks}/{STOP_HOOK_CAP}): {why}"),
+                    );
+                    push_results(&state, vec![Part::text(format!("[Stop hook] {why}"))]).await;
+                    continue;
+                }
             }
             return TurnEnd::Done;
         }
@@ -2456,6 +2555,8 @@ fn line_of(text: &str, snippet: &str) -> usize {
 enum Verdict {
     Run,
     Denied(String),
+    /// A PreToolUse hook stopped the call.
+    Blocked(String),
 }
 
 /// Whether a call may run: the policy decides, or the person is asked.
@@ -2471,17 +2572,51 @@ async fn permit(
     args: &Value,
     cancel: &CancellationToken,
 ) -> Verdict {
+    permit_as(state, events, gate, cwd, id, name, tool, args, cancel, None).await
+}
+
+/// [`permit`], with what a PreToolUse hook decided: `ask` asks the person even if a rule would let the call
+/// run, `allow` runs a call that would have been asked about.
+#[allow(clippy::too_many_arguments)]
+async fn permit_as(
+    state: &Shared,
+    events: &EventTx,
+    gate: &Arc<dyn PermissionGate>,
+    cwd: &Path,
+    id: &str,
+    name: &str,
+    tool: &dyn Tool,
+    args: &Value,
+    cancel: &CancellationToken,
+    hook: Option<crate::hooks::Decision>,
+) -> Verdict {
     let kind = tool.kind();
-    let decision = state.lock().await.perm.decide(name, kind, args, cwd);
+    let mut decision = state.lock().await.perm.decide(name, kind, args, cwd);
+    match (hook, &decision) {
+        // a PreToolUse hook that wants the person asked, or lets the call run unasked; a deny rule stands
+        (Some(crate::hooks::Decision::Ask), Decision::Allow) => decision = Decision::Ask,
+        (Some(crate::hooks::Decision::Allow), Decision::Ask) => decision = Decision::Allow,
+        _ => {}
+    }
     match decision {
         Decision::Allow => Verdict::Run,
         Decision::Deny(r) => Verdict::Denied(r),
         Decision::Ask => {
+            // PermissionRequest hooks answer before the person is asked: allow, deny, or leave it to them
+            let summary = tool.summary(args);
+            let o = fire(state, "permission_request", Some(name), crate::hooks::tool_fields(name, args)).await;
+            if let Some(why) = o.blocked {
+                return Verdict::Denied(why);
+            }
+            if o.decision == Some(crate::hooks::Decision::Allow) {
+                return Verdict::Run;
+            }
+            notify_hooks(state, "permission_prompt", format!("nexo needs your permission to use {name}: {summary}"));
             let req = PermissionRequest {
                 id: id.to_string(),
                 tool: name.to_string(),
                 kind,
-                summary: tool.summary(args),
+                summary,
                 detail: detail_of(kind, args, cwd),
                 suggested_rules: permission::suggested_rules(name, kind, args, cwd),
             };
@@ -2590,7 +2725,7 @@ impl crate::subagent::Host for StateHost {
         let name = tool.name().to_string();
         match permit(&state, &self.events, &gate, &cwd, call_id, &name, tool, args, cancel).await {
             Verdict::Run => Ok(()),
-            Verdict::Denied(r) => Err(r),
+            Verdict::Denied(r) | Verdict::Blocked(r) => Err(r),
         }
     }
 
@@ -2644,6 +2779,16 @@ async fn run_tools(
         let st = state.lock().await;
         (st.tools.clone(), st.cwd.clone(), st.gate.clone(), st.session.id().to_string())
     };
+    // PreToolUse hooks first: one may block a call, decide its permission or replace its input
+    let mut calls = calls;
+    let mut pre: Vec<(Option<String>, Option<crate::hooks::Decision>)> = Vec::with_capacity(calls.len());
+    for (_, name, args) in calls.iter_mut() {
+        let o = fire(state, "pre_tool", Some(name), crate::hooks::tool_fields(name, args)).await;
+        if let Some(u) = o.updated_input {
+            *args = u;
+        }
+        pre.push((o.blocked, o.decision));
+    }
     for (id, name, args) in &calls {
         emit(
             events,
@@ -2657,16 +2802,20 @@ async fn run_tools(
     }
     // permissions first, in order, so the asks come one at a time
     let mut verdicts: Vec<Verdict> = Vec::with_capacity(calls.len());
-    for (id, name, args) in &calls {
+    for ((id, name, args), (blocked, decision)) in calls.iter().zip(pre) {
         if cancel.is_cancelled() {
             verdicts.push(Verdict::Denied("interrupted by the person".into()));
+            continue;
+        }
+        if let Some(why) = blocked {
+            verdicts.push(Verdict::Blocked(why));
             continue;
         }
         let Some(tool) = tools.get(name) else {
             verdicts.push(Verdict::Denied(format!("unknown tool `{name}`")));
             continue;
         };
-        let v = permit(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel).await;
+        let v = permit_as(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel, decision).await;
         verdicts.push(v);
     }
     // every verdict is in by now: reads, searches and page fetches can overlap
@@ -2733,6 +2882,7 @@ async fn run_one(
     };
     let output = match verdict {
         Verdict::Denied(reason) => ToolOutput::error(format!("Permission denied: {reason}")),
+        Verdict::Blocked(why) => ToolOutput::error(format!("Blocked by a hook: {why}")),
         Verdict::Run => {
             let tool = tools.get(name).cloned();
             let Some(tool) = tool else {
@@ -2757,23 +2907,6 @@ async fn run_one(
                             format!("could not read {} before the edit; a rewind will not restore it", path.display()),
                         ),
                     }
-                }
-            }
-            // a pre_tool hook may stop the call, with a reason the model reads
-            let (hooks, hook_cwd) = {
-                let st = state.lock().await;
-                (st.config.hooks.clone(), st.cwd.clone())
-            };
-            if !hooks.is_empty() {
-                let payload = serde_json::json!({"event": "pre_tool", "tool": name, "args": args});
-                let o = crate::hooks::run(&hooks, "pre_tool", Some(name), &payload, &hook_cwd).await;
-                for f in &o.failures {
-                    notice(events, Level::Warn, f.clone());
-                }
-                if let Some(why) = o.blocked {
-                    let out = ToolOutput::error(format!("Blocked by a hook: {why}"));
-                    emit(events, AgentEvent::ToolDone { id: id.into(), output: out.clone(), elapsed_ms: 0 });
-                    return (result(&out), false);
                 }
             }
             emit(events, AgentEvent::ToolStart { id: id.into() });
@@ -2864,17 +2997,20 @@ async fn run_one(
                     emit(events, AgentEvent::TodoChanged { done, total });
                 }
             }
-            if !hooks.is_empty() {
-                let payload = serde_json::json!({
-                    "event": "post_tool", "tool": name, "args": args,
-                    "output": out.content, "is_error": out.is_error, "elapsed_ms": elapsed_ms,
-                });
-                for f in crate::hooks::run(&hooks, "post_tool", Some(name), &payload, &hook_cwd).await.failures {
-                    notice(events, Level::Warn, f);
-                }
+            // PostToolUse hooks: their text (a note, or the reason of exit 2) goes to the model after the output
+            let mut hook_notes: Vec<String> = Vec::new();
+            {
+                let mut fields = crate::hooks::tool_fields(name, args);
+                fields["output"] = serde_json::json!(out.content);
+                fields["tool_response"] = serde_json::json!(out.content);
+                fields["is_error"] = serde_json::json!(out.is_error);
+                fields["elapsed_ms"] = serde_json::json!(elapsed_ms);
+                let o = fire(state, "post_tool", Some(name), fields).await;
+                hook_notes.extend(o.context);
+                hook_notes.extend(o.blocked);
             }
             // the person sees the lines; the model, which has them, a note
-            let sent = match seen {
+            let mut sent = match seen {
                 Some(note) => ToolOutput::ok(note),
                 None if !out.is_error => match digest(state, events, name, args, file, &out, cancel).await {
                     Some(notes) => ToolOutput::ok(notes),
@@ -2882,6 +3018,9 @@ async fn run_one(
                 },
                 None => out,
             };
+            if !hook_notes.is_empty() {
+                sent.content = format!("{}\n\n[hook] {}", sent.content, hook_notes.join("\n[hook] "));
+            }
             return (result(&sent), cancel.is_cancelled());
         }
     };
@@ -2978,6 +3117,11 @@ async fn compact_locked(st: &mut State, keep_from: usize, cancel: &CancellationT
     let before = st.history.len();
     let (tokens_before, events) = (st.history.tokens(), st.events.clone());
     notice(&events, Level::Info, "compacting the history…");
+    if crate::hooks::listens(&st.config.hooks, "pre_compact") {
+        let fields = serde_json::json!({"trigger": "compact", "messages": before, "tokens": tokens_before});
+        let sid = st.session.id().to_string();
+        fire_with(&st.config.hooks, &events, &st.cwd, &sid, "pre_compact", Some("compact"), &fields).await;
+    }
     let mut work = st.history.to_vec();
     let done = tokio::select! {
         r = compact::compact(&s, &mut work, keep_from) => r,

@@ -337,6 +337,95 @@ fn first_line(text: &str) -> String {
     l.chars().take(70).collect()
 }
 
+/// A tool name of another tool's agent file as nexo calls it; none for one nexo has no use for.
+pub fn map_tool(t: &str) -> Option<String> {
+    let m = match t {
+        "Read" => "read",
+        "Write" => "write",
+        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+        "Bash" | "BashOutput" => "bash",
+        "Glob" => "glob",
+        "Grep" => "grep",
+        "LS" => "ls",
+        "WebFetch" => "web_fetch",
+        "WebSearch" => "web_search",
+        "TodoWrite" => "todo",
+        t if t.starts_with("mcp__") => t,
+        t if !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_') => t,
+        _ => return None,
+    };
+    Some(m.to_string())
+}
+
+/// A hook matcher of another tool's settings as nexo reads it: each plain tool name between `|`
+/// is mapped like an agent's tool list (`Edit|Write` becomes `edit|write`, `Task` becomes `task`),
+/// anything with regex syntax stays as it is. None when it matches every tool.
+pub fn map_matcher(m: &str) -> Option<String> {
+    let m = m.trim();
+    if m.is_empty() || m == "*" {
+        return None;
+    }
+    let plain = m.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '|');
+    if !plain {
+        return Some(m.to_string());
+    }
+    let alts: Vec<String> = m
+        .split('|')
+        .map(|a| if a == "Task" { "task".to_string() } else { map_tool(a).unwrap_or_else(|| a.to_string()) })
+        .collect();
+    Some(alts.join("|"))
+}
+
+/// The hooks of the project's `.claude/settings.json` and `.claude/settings.local.json`
+/// (`{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "...",
+/// "timeout": 10}]}]}}`), only when the project is trusted, like nexo's own project file. Events
+/// nexo has no point for are left out. The second value says what was left out for lack of trust.
+pub fn claude_hooks(cwd: &Path, trust_file: &Path) -> (Vec<crate::config::HookConfig>, Option<String>) {
+    let root = project_root(cwd);
+    let trusted = crate::config::is_trusted(&root, trust_file);
+    let mut out = Vec::new();
+    let mut skipped = Vec::new();
+    for file in ["settings.json", "settings.local.json"] {
+        let path = root.join(".claude").join(file);
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let Some(events) = v.get("hooks").and_then(|h| h.as_object()) else { continue };
+        let shown = format!("project .claude/{file}");
+        for (event, groups) in events {
+            let Some(name) = crate::config::canonical_event(event) else { continue };
+            for group in groups.as_array().into_iter().flatten() {
+                let matcher = group.get("matcher").and_then(|m| m.as_str()).and_then(map_matcher);
+                for h in group.get("hooks").and_then(|h| h.as_array()).into_iter().flatten() {
+                    let kind = h.get("type").and_then(|t| t.as_str()).unwrap_or("command");
+                    let Some(command) = h.get("command").and_then(|c| c.as_str()).filter(|_| kind == "command") else {
+                        continue;
+                    };
+                    if !trusted {
+                        skipped.push(shown.clone());
+                        continue;
+                    }
+                    out.push(crate::config::HookConfig {
+                        event: name.to_string(),
+                        matcher: matcher.clone(),
+                        command: command.to_string(),
+                        timeout: h.get("timeout").and_then(|t| t.as_u64()),
+                        source: shown.clone(),
+                    });
+                }
+            }
+        }
+    }
+    skipped.dedup();
+    let note = (!skipped.is_empty()).then(|| {
+        format!(
+            "hooks in {} are ignored until you trust this project: nexo config trust \"{}\"",
+            skipped.join(" and "),
+            root.display()
+        )
+    });
+    (out, note)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +439,38 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join(".git")).unwrap();
         d
+    }
+
+    const CLAUDE_HOOKS: &str = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash|Edit", "hooks": [{"type": "command", "command": "check.sh", "timeout": 5}, {"type": "prompt", "command": "x"}]}], "Stop": [{"hooks": [{"command": "done.sh"}]}], "Whatever": [{"hooks": [{"command": "no.sh"}]}]}}"#;
+
+    #[test]
+    fn claude_settings_hooks_load_only_in_a_trusted_project_with_nexo_tool_names() {
+        let (p, t) = (repo(), tempfile::tempdir().unwrap());
+        w(p.path().join(".claude/settings.json"), CLAUDE_HOOKS);
+        let trust = t.path().join("trusted");
+        let (none, note) = claude_hooks(p.path(), &trust);
+        assert!(none.is_empty() && note.unwrap().contains("nexo config trust"));
+        crate::config::trust_project(p.path(), &trust).unwrap();
+        let (got, note) = claude_hooks(p.path(), &trust);
+        assert!(note.is_none());
+        let seen: Vec<(String, Option<String>, String, Option<u64>)> =
+            got.iter().map(|h| (h.event.clone(), h.matcher.clone(), h.command.clone(), h.timeout)).collect();
+        assert_eq!(
+            seen,
+            [
+                ("pre_tool".into(), Some("bash|edit".into()), "check.sh".into(), Some(5)),
+                ("stop".into(), None, "done.sh".into(), None),
+            ]
+        );
+        assert_eq!(got[0].source, "project .claude/settings.json");
+    }
+
+    #[test]
+    fn claude_matchers_become_nexo_tool_names() {
+        assert_eq!(map_matcher("Bash").as_deref(), Some("bash"));
+        assert_eq!(map_matcher("Edit|Write").as_deref(), Some("edit|write"));
+        assert_eq!(map_matcher("*"), None);
+        assert_eq!(map_matcher(""), None);
     }
 
     #[test]
