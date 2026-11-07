@@ -34,6 +34,7 @@ pub mod shell;
 pub mod skills;
 pub mod stream;
 pub mod tool;
+pub mod trust;
 pub mod version;
 pub mod worktree;
 

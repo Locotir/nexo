@@ -146,6 +146,25 @@ fn permission(a: &mut App) {
     });
 }
 
+fn trust_modal(home: bool) -> nexo_tui::modal::Modal {
+    let (path, warning) = if home {
+        (
+            "/home/ana",
+            Some(
+                "This is your home folder: trusting it trusts every folder below it that is not a project of its own."
+                    .to_string(),
+            ),
+        )
+    } else {
+        ("/home/ana/work/a-long-project-name/with/a/deep/folder/under/it", None)
+    };
+    nexo_tui::modal::Modal::Trust(nexo_tui::modal::Trust::new(
+        path.into(),
+        "Project hooks and MCP servers will run.".into(),
+        warning,
+    ))
+}
+
 fn scene(name: &str) -> App {
     let mut a = app();
     match name {
@@ -184,6 +203,8 @@ fn scene(name: &str) -> App {
             conversation(&mut a);
             permission(&mut a);
         }
+        "trust" => a.modal = Some(trust_modal(false)),
+        "trust-home" => a.modal = Some(trust_modal(true)),
         "typing" => {
             conversation(&mut a);
             a.input.set_text("a question that goes on and on and on, longer than the narrow screen is wide, to see how the editor wraps it\nand a second line");
@@ -193,8 +214,18 @@ fn scene(name: &str) -> App {
     a
 }
 
-const SCENES: [&str; 8] =
-    ["empty", "conversation", "palette", "palette-filtered", "palette-recent", "at-files", "permission", "typing"];
+const SCENES: [&str; 10] = [
+    "empty",
+    "conversation",
+    "palette",
+    "palette-filtered",
+    "palette-recent",
+    "at-files",
+    "permission",
+    "typing",
+    "trust",
+    "trust-home",
+];
 
 fn capture(a: &mut App, w: u16, h: u16) -> Vec<String> {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -255,12 +286,16 @@ fn at_every_size_the_input_and_the_status_bar_are_on_screen() {
 
 #[test]
 fn a_window_over_the_text_is_whole_at_every_size() {
-    for scene_name in ["palette", "palette-filtered", "permission"] {
+    for scene_name in ["palette", "palette-filtered", "permission", "trust", "trust-home"] {
         for (w, h) in SIZES {
             let mut a = scene(scene_name);
             let rows = capture(&mut a, w, h);
             let all = rows.join("\n");
-            let marker = if scene_name == "permission" { "allow" } else { "/" };
+            let marker = match scene_name {
+                "permission" => "allow",
+                "trust" | "trust-home" => "No, don't trust",
+                _ => "/",
+            };
             assert!(all.contains(marker), "{scene_name} {w}x{h}: the window is missing\n{all}");
             assert!(all.contains('›'), "{scene_name} {w}x{h}: the input line is hidden under the window\n{all}");
         }
@@ -458,4 +493,47 @@ fn a_panel_hidden_by_a_narrow_window_leaves_no_hit_area_and_says_so_once() {
     assert!(a.status.is_none(), "the note is not repeated on every frame");
     capture(&mut a, 120, 40);
     assert!(a.files_area.width > 0);
+}
+
+#[test]
+fn the_trust_question_shows_the_path_and_what_a_yes_enables() {
+    for (w, h) in [(80, 24), (120, 40), (200, 60)] {
+        let all = capture(&mut scene("trust"), w, h).join("\n");
+        for text in [
+            "Do you trust the files in this folder?",
+            "Project hooks and MCP servers will run.",
+            "Yes, trust this folder",
+        ] {
+            assert!(all.contains(text), "{w}x{h}: {text:?} is missing\n{all}");
+        }
+    }
+    let all = capture(&mut scene("trust-home"), 120, 40).join("\n");
+    assert!(all.contains("trusting it trusts every folder below it"), "{all}");
+}
+
+#[test]
+fn the_trust_question_keeps_both_answers_on_a_short_screen() {
+    for (w, h) in [(40, 12), (30, 9)] {
+        let all = capture(&mut scene("trust-home"), w, h).join("\n");
+        assert!(all.contains("Yes, trust") && all.contains("No, don't"), "{w}x{h}: an answer is cut\n{all}");
+    }
+}
+
+#[test]
+fn the_trust_question_takes_arrows_enter_y_n_and_esc() {
+    use crossterm::event::KeyCode::{Char, Down, Enter, Esc, Up};
+    let answer = |keys: &[crossterm::event::KeyCode]| {
+        let mut a = scene("trust");
+        for k in keys {
+            press(&mut a, *k);
+        }
+        (a.trust_answer, a.modal.is_some())
+    };
+    assert_eq!(answer(&[]), (None, true), "nothing is decided by itself");
+    assert_eq!(answer(&[Enter]), (Some(true), false), "yes is the first row");
+    assert_eq!(answer(&[Down, Enter]), (Some(false), false));
+    assert_eq!(answer(&[Down, Up, Enter]), (Some(true), false));
+    assert_eq!(answer(&[Char('y')]), (Some(true), false));
+    assert_eq!(answer(&[Char('N')]), (Some(false), false));
+    assert_eq!(answer(&[Esc]), (Some(false), false));
 }

@@ -85,3 +85,6 @@ command = "/usr/local/bin/audit-command"
 
 - There is no allowlist form for plugins yet, only per-scope on or off.
 - A plugin hook counts as a user hook for `allow_user_hooks`.
+- There is no key that forbids trusting a project. The start-up trust question (README, *The trust question*)
+  leaves out what `allow_project_hooks`, `mcp` and `extensions.project_commands` already forbid, and a project
+  with nothing else left to enable is not asked about. Whatever a yes lets in is still under the policy.

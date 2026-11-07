@@ -430,6 +430,18 @@ The project's `.nexo/commands/` and `.nexo/agents/` are not loaded either until 
 one per line; remove the line to take it back) and `nexo config path` says whether it is trusted.
 An `a` (always) answer saved to the project file applies in later sessions once the project is trusted.
 
+**The trust question.** Starting the interface in a project that is not trusted yet and holds something trust
+gates (hooks, servers of `.nexo/config.toml` or `.mcp.json`, hooks of `.claude/settings.json`, commands, agents, the
+settings listed above) opens a dialog before the first prompt: *Do you trust the files in this folder?*, the
+project folder and a line on what a yes enables. `Yes, trust this folder` (`y`, or Enter on the first row) records
+the folder exactly as `nexo config trust` does and loads the project's files for this session, with no restart.
+`No, don't trust` (`n`, Esc, Ctrl+C) goes on without them and asks again at the next start. It is never asked with
+`-p`, in `nexo acp` or any subcommand, or when stdin or stdout is not a terminal: there the notice stays.
+What the managed policy forbids (`allow_project_hooks = false`, `mcp` lists, `extensions.project_commands = false`)
+is left out of the question, and a project with nothing left to enable is not asked about. Trust is per project
+root (the folder `nexo config path` shows), so a sub-folder asks about its root, and a home folder kept in git is
+asked about too, with a line saying that trusting it trusts every folder below it that is not a project of its own.
+
 Everything of your own lives in that one folder, `~/.nexo` (`%USERPROFILE%\.nexo`
 on Windows): `config.toml`, `prompt.md`, `commands/`, `agents/`, `sessions/`,
 `keys/`, `spend.json` and `cache/`. Settings from the old places

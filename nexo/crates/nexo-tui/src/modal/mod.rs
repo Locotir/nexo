@@ -234,6 +234,45 @@ impl Ask {
     }
 }
 
+/// "Do you trust the files in this folder?": asked once, before the first prompt, in a folder with
+/// project files that trust gates. Two rows: yes (the first) and no.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trust {
+    pub path: String,
+    /// One short line on what a yes enables.
+    pub enables: String,
+    /// Set apart when trusting the folder means more than a project (the home folder).
+    pub warning: Option<String>,
+    /// 0: yes, 1: no.
+    pub selected: usize,
+}
+
+impl Trust {
+    pub const ROWS: [&'static str; 2] = ["Yes, trust this folder", "No, don't trust"];
+
+    pub fn new(path: String, enables: String, warning: Option<String>) -> Trust {
+        Trust { path, enables, warning, selected: 0 }
+    }
+
+    pub fn key(&mut self, key: KeyEvent) -> ModalOut {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return ModalOut::Nothing;
+        }
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => ModalOut::Trust(true),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => ModalOut::Trust(false),
+            KeyCode::Enter => ModalOut::Trust(self.selected == 0),
+            KeyCode::Char('1') => ModalOut::Trust(true),
+            KeyCode::Char('2') => ModalOut::Trust(false),
+            KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('k') | KeyCode::Char('j') => {
+                self.selected = 1 - self.selected;
+                ModalOut::Nothing
+            }
+            _ => ModalOut::Nothing,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Modal {
     Permission(Permission),
@@ -255,6 +294,8 @@ pub enum Modal {
     Todo(Box<crate::todo_view::TodoView>),
     /// `/mcp`: the MCP servers, with their state and controls.
     Mcp(Box<crate::mcp_view::McpView>),
+    /// The start in a folder not trusted yet.
+    Trust(Trust),
 }
 
 /// What a key or click in a modal asks the app to do.
@@ -276,6 +317,8 @@ pub enum ModalOut {
     SendAndClose(nexo_core::agent::AgentCommand),
     /// Text for the clipboard; the modal stays.
     Copy(String),
+    /// The answer to the trust question; the modal closes.
+    Trust(bool),
 }
 
 impl From<SetupOut> for ModalOut {
@@ -507,6 +550,7 @@ impl Modal {
             Modal::Jobs(j) => j.key(key),
             Modal::Todo(t) => t.key(key),
             Modal::Mcp(m) => m.key(key),
+            Modal::Trust(t) => t.key(key),
             Modal::Info(i) => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModalOut::Close,
                 KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
@@ -612,6 +656,13 @@ impl Modal {
                 Some((_, i)) => s.click_row(*i).into(),
                 None => ModalOut::Nothing,
             },
+            Modal::Trust(t) => match rows.iter().find(|(r, _)| contains(*r, x, y)) {
+                Some((_, i)) => {
+                    t.selected = *i;
+                    t.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                }
+                None => ModalOut::Nothing,
+            },
             Modal::Help { .. } => ModalOut::Close,
             Modal::Agents(a) => a.click(x, y),
             Modal::Jobs(j) => {
@@ -670,6 +721,7 @@ impl Modal {
             Modal::Jobs(j) => j.scroll_by(delta),
             Modal::Todo(t) => t.scroll_by(delta),
             Modal::Mcp(m) => m.scroll_by(delta),
+            Modal::Trust(_) => {}
         }
     }
 
@@ -699,6 +751,7 @@ impl Modal {
             Modal::Mcp(m) => m.scroll = off,
             Modal::Picker(p) => pick(p, off, viewport, first),
             Modal::Setup(s) => pick(&mut s.list, off, viewport, first),
+            Modal::Trust(_) => {}
         }
     }
 

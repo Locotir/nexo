@@ -1,0 +1,12 @@
+
+  ╭ trust this folder ───────────────╮
+  │ Do you trust the files in this   ┃
+  │ folder?                          │
+  │ ❯ Yes, trust this folder       y │
+  │   No, don't trust              n │
+  ╰──────────────────────────────────╯
+
+─ ask ──────────────────────────────────
+›   ask anything
+ ↑↓ choose · Enter pick · y yes
+ nexo │ deepseek-chat │ ask  Σ 0 billed

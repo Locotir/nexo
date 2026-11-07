@@ -8,7 +8,8 @@ where each hook came from.
 
 - `[[hooks]]` in `config.toml` (user file, or the project's `.nexo/config.toml` when the project is trusted).
 - The `hooks` block of the project's `.claude/settings.json` and `.claude/settings.local.json`, only when
-  the project is trusted (`nexo config trust`). Without trust they are ignored and nexo says so once.
+  the project is trusted (`nexo config trust`). Without trust they are ignored and nexo says so once; the interface asks about trusting the project
+  when it starts (see *The trust question* in the README).
   The user-level `~/.claude/settings.json` is never read.
 
 ```toml

@@ -190,6 +190,8 @@ pub struct App {
     pub session_id: Option<String>,
     pub cwd: PathBuf,
     pub should_quit: bool,
+    /// The answer to the trust question, once given (`ask_trust`).
+    pub trust_answer: Option<bool>,
     pub dirty: bool,
     pub force_clear: bool,
     /// Something glides, fades or pulses: the loop draws at ~60 fps while true.
@@ -463,6 +465,7 @@ impl App {
             session_id: opts.session_id.clone(),
             cwd: opts.cwd.clone(),
             should_quit: false,
+            trust_answer: None,
             dirty: true,
             force_clear: false,
             moving: false,
@@ -4355,6 +4358,10 @@ impl App {
                 self.send(AgentCommand::Permission { id, decision });
                 self.modal = None;
                 self.next_permission();
+            }
+            ModalOut::Trust(yes) => {
+                self.modal = None;
+                self.trust_answer = Some(yes);
             }
             ModalOut::Send(cmd) => self.send(cmd),
             ModalOut::Copy(text) => match crate::clipboard::copy(&text) {

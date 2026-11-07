@@ -15,7 +15,7 @@ use crate::overlay;
 use crate::palette::{PaletteKind, MAX_ROWS};
 use crate::render::blocks::{fmt_k, fmt_ms, todo_counts, SPINNER};
 use crate::render::markdown::{inline_md, text_of, tint_plain};
-use crate::render::wrap::{truncate, width};
+use crate::render::wrap::{truncate, width, wrap_plain};
 use crate::scrollbar::{self, Bar, Target};
 use crate::select::style_cols;
 use crate::theme::{mix, Theme};
@@ -151,7 +151,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         };
         // the to-do and jobs windows get clear ground, so no piece of the welcome card shows beside them; the
         // others keep the text in sight (a theme preview needs it) and clear only the cells beside the box
-        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_))) {
+        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_) | Modal::Trust(_))) {
             clear_bg(f, area_for, &app.theme);
         }
         draw_modal(f, app, area_for);
@@ -1477,6 +1477,7 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
                 " ↑↓ choose · Space tick · Enter send · PgUp/PgDn scroll · Esc close".to_string()
             }
             Some(Modal::Question(_)) => " ↑↓ choose · 1-9 pick · Enter send · PgUp/PgDn scroll · Esc close".to_string(),
+            Some(Modal::Trust(_)) => " ↑↓ choose · Enter pick · y yes · n or Esc no".to_string(),
             Some(Modal::Picker(_)) => " type to filter · ↑↓ choose · Enter pick · Esc close".to_string(),
             Some(Modal::Setup(s)) => s.hints().to_string(),
             Some(Modal::Help { .. }) => " ↑↓ PgUp/PgDn Home/End scroll · Esc close".to_string(),
@@ -2322,6 +2323,11 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             todo_head = b.done_head;
             (v.title(), b.lines, None)
         }
+        Modal::Trust(t) => {
+            let (lines, rows) = trust_rows(t, inner_w, &theme);
+            pinned = rows;
+            (" trust this folder ".to_string(), lines, None)
+        }
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => return,
         Modal::Setup(s) => {
             let (lines, at) = s.lines(inner_w, &theme, app.spinner, max_h < 12);
@@ -2401,6 +2407,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
             v.scroll
         }
+        Modal::Trust(_) => 0,
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => 0,
         Modal::Picker(p) => {
             // keep the selection in view: two header lines, then the rows
@@ -2437,7 +2444,12 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     };
     // a bar on the right border, for what scrolls: the text, or a list (moving its selection)
     let bar = match modal {
-        Modal::Permission(_) | Modal::Help { .. } | Modal::Jobs(_) | Modal::Todo(_) | Modal::Mcp(_) => Some(0),
+        Modal::Permission(_)
+        | Modal::Help { .. }
+        | Modal::Jobs(_)
+        | Modal::Todo(_)
+        | Modal::Mcp(_)
+        | Modal::Trust(_) => Some(0),
         Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => None,
     };
@@ -2490,6 +2502,11 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     }
     if pinned_h > 0 {
         let py = inner.y + inner.height - button_h - pinned_h;
+        if matches!(modal, Modal::Trust(_)) {
+            for i in 0..pinned_h {
+                app.picker_rows.push((Rect::new(inner.x + 1, py + i, inner.width.saturating_sub(2), 1), i as usize));
+            }
+        }
         f.render_widget(
             Paragraph::new(Text::from(pinned)),
             Rect::new(inner.x + 1, py, inner.width.saturating_sub(2), pinned_h),
@@ -2518,6 +2535,37 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some((r, y, h, content, offset, first)) = bar {
         modal_scrollbar(f, app, r, y, h, content, offset, first);
     }
+}
+
+/// The trust question: the text, and the two rows pinned under it (so a short screen never cuts them).
+fn trust_rows(t: &crate::modal::Trust, w: usize, theme: &Theme) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let mut lines = wrap_plain("Do you trust the files in this folder?", w, theme.bold(theme.accent), &[]);
+    lines.push(Line::default());
+    lines.extend(wrap_plain(&t.path, w, theme.bold(theme.fg), &[]));
+    lines.push(Line::default());
+    lines.extend(wrap_plain(&t.enables, w, Style::default(), &[]));
+    if let Some(warning) = &t.warning {
+        lines.extend(wrap_plain(warning, w, theme.bold(theme.warn), &[]));
+    }
+    // cut first when the screen is short
+    lines.push(Line::default());
+    let rows = crate::modal::Trust::ROWS
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let on = i == t.selected;
+            let key = if i == 0 { "y" } else { "n" };
+            let text = format!("{} {label}", if on { "❯" } else { " " });
+            let pad = w.saturating_sub(width(&text) + 1);
+            let style = if on { theme.chosen() } else { Style::default() };
+            Line::from(vec![
+                Span::styled(text, style),
+                Span::styled(" ".repeat(pad), style),
+                Span::styled(key, if on { style } else { theme.dim() }),
+            ])
+        })
+        .collect();
+    (lines, rows)
 }
 
 /// A dialog's rectangle `r` while it pops open (`t` 0..1): smaller, around the same middle.

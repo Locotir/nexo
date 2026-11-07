@@ -134,7 +134,10 @@ pub fn key(app: &mut App, k: KeyEvent) {
         // Ctrl+C is never swallowed by a dialog: a permission is denied, a question left
         // unanswered, any other dialog closed; then it acts as at the prompt (stop, arm quit)
         if app.keymap.action(&k) == Some(Action::Cancel) {
-            let waits = matches!(m, crate::modal::Modal::Permission(_) | crate::modal::Modal::Question(_));
+            let waits = matches!(
+                m,
+                crate::modal::Modal::Permission(_) | crate::modal::Modal::Question(_) | crate::modal::Modal::Trust(_)
+            );
             if waits {
                 let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
                 let mut out = m.key(esc);

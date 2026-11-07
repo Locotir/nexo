@@ -1,0 +1,60 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                    ╭ trust this folder ───────────────────────────────────────────────────────────────────────────╮
+                                                    │ Do you trust the files in this folder?                                                       │
+                                                    │                                                                                              │
+                                                    │ /home/ana/work/a-long-project-name/with/a/deep/folder/under/it                               │
+                                                    │                                                                                              │
+                                                    │ Project hooks and MCP servers will run.                                                      │
+                                                    │                                                                                              │
+                                                    │ ❯ Yes, trust this folder                                                                   y │
+                                                    │   No, don't trust                                                                          n │
+                                                    ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+›   ask anything
+ ↑↓ choose · Enter pick · y yes · n or Esc no                                                                                                                                      20261102-100000-ef56
+ nexo │ deepseek/deepseek-chat │ /tmp/project │ ask │ ━━━━━━━━ ~0% 0                                                                                                                         Σ 0 billed
