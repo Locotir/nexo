@@ -276,6 +276,10 @@ pub struct AgentConfig {
     /// word: STOP ends the job and the model is told why; CONTINUE, or no clear answer, leaves it running
     /// and the next look comes twice as late (0: never).
     pub job_review: u32,
+    /// Shell commands run in a new git worktree (`nexo --worktree`, or a sub-agent with `isolation: worktree`),
+    /// for example `npm ci`. Files named in `.worktreeinclude` are copied there too. A project that is not
+    /// trusted cannot set it, as it runs commands.
+    pub worktree_setup: Vec<String>,
 }
 
 impl Default for AgentConfig {
@@ -301,6 +305,7 @@ impl Default for AgentConfig {
             stale_guard: 6,
             guard_answer: true,
             job_review: 600,
+            worktree_setup: Vec::new(),
         }
     }
 }
@@ -598,6 +603,9 @@ impl Config {
         for name in std::mem::take(&mut self.mcp).into_keys() {
             out.push(format!("mcp.{name}"));
         }
+        if !std::mem::take(&mut self.agent.worktree_setup).is_empty() {
+            out.push("agent.worktree_setup".into());
+        }
         if !std::mem::take(&mut self.hooks).is_empty() {
             out.push("hooks".into());
         }
@@ -811,6 +819,12 @@ pub fn project_root(project_file: &Path) -> PathBuf {
 /// Whether `root` (resolved) is a line of `trust_file`.
 pub fn is_trusted(root: &Path, trust_file: &Path) -> bool {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // a worktree nexo made (`<repo>/.nexo/worktrees/<name>`) is as trusted as its repository
+    if let Some(main) = root.parent().filter(|p| p.ends_with(".nexo/worktrees")).and_then(|p| p.parent()?.parent()) {
+        if is_trusted(main, trust_file) {
+            return true;
+        }
+    }
     std::fs::read_to_string(trust_file)
         .map(|t| t.lines().map(str::trim).any(|l| !l.is_empty() && !l.starts_with('#') && Path::new(l) == root))
         .unwrap_or(false)

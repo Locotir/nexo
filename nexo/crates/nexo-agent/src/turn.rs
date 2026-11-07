@@ -291,7 +291,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             .with_brief(crate::brief::BriefConfig::from_agent(&config.agent))
             .with_providers(config.providers.clone())
             .with_parallel(config.agent.parallel_tasks)
-            .with_hooks(config.hooks.clone());
+            .with_hooks(config.hooks.clone())
+            .with_worktree_setup(config.agent.worktree_setup.clone());
         tools.add(Arc::new(sub));
     }
     // after the sub-agents: questions are the main agent's alone
@@ -3311,6 +3312,9 @@ fn status_text(st: &State) -> String {
     ];
     if let Some(p) = project {
         lines.push(format!("             {}", file(&p)));
+    }
+    if let Some((name, branch)) = nexo_core::worktree::current(&st.cwd) {
+        lines.push(format!("worktree     {name} on branch {branch} (nexo worktree list)"));
     }
     lines.push(format!("tools        {} (/tools lists them)", st.tools.specs().len()));
     lines.extend(compat_lines(st));

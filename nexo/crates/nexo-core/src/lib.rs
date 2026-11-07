@@ -32,6 +32,7 @@ pub mod skills;
 pub mod stream;
 pub mod tool;
 pub mod version;
+pub mod worktree;
 
 /// `n` and the word, plural unless `n` is one: `count(1, "line")` is "1 line".
 pub fn count(n: usize, word: &str) -> String {

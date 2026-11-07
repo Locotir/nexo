@@ -61,6 +61,9 @@ pub struct Args {
     /// Inline mode: finished turns go to the terminal's own scrollback, only the draft and the turn in progress stay live.
     #[arg(long)]
     pub inline: bool,
+    /// Run the session in a new git worktree on branch nexo/<name> (default: a short random name); kept if it changed, removed if not.
+    #[arg(short = 'w', long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
+    pub worktree: Option<String>,
     /// Log to this file (RUST_LOG filters).
     #[arg(long, value_name = "FILE")]
     pub log: Option<PathBuf>,
@@ -214,6 +217,11 @@ pub enum Cmd {
     Supervise {
         #[command(subcommand)]
         what: Option<SuperviseCmd>,
+    },
+    /// List, remove or prune the git worktrees nexo made (see docs/WORKTREES.md).
+    Worktree {
+        #[command(subcommand)]
+        what: crate::worktree::WorktreeCmd,
     },
     /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
     Acp,
@@ -474,6 +482,15 @@ async fn run(args: Args) -> anyhow::Result<i32> {
         Some(d) => std::fs::canonicalize(d)?,
         None => std::env::current_dir()?,
     };
+    let made = crate::worktree::enter(&args, &cwd)?;
+    let code = run_in(args, made.as_ref().map_or(cwd, |w| w.path.clone())).await;
+    if let Some(w) = &made {
+        crate::worktree::leave(w);
+    }
+    code
+}
+
+async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
     let mut config = nexo_core::Config::load(&cwd)?;
     setup::apply_presets(&mut config);
     // a provider asked for by a name nexo knows works without a block in the file
@@ -548,6 +565,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
             return crate::account::doctor(&cwd, &config, *offline).await;
         }
         Some(Cmd::Mcp { what }) => return crate::mcp_cmd::run(&cwd, &config, what).await,
+        Some(Cmd::Worktree { what }) => return crate::worktree::run(&cwd, what),
         Some(Cmd::Update { check }) => return crate::update::run(*check).await,
         Some(Cmd::Guide) => {
             print!("{}", crate::account::GUIDE);

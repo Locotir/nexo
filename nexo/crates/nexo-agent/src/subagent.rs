@@ -73,6 +73,8 @@ pub struct Profile {
     pub source: Option<PathBuf>,
     /// The model comes from another tool's file: kept only when the provider offers it.
     pub soft_model: bool,
+    /// Runs in a fresh git worktree of its own (`isolation: worktree` in the front matter).
+    pub isolation: bool,
 }
 
 pub fn builtin() -> Vec<Profile> {
@@ -87,6 +89,7 @@ pub fn builtin() -> Vec<Profile> {
             rounds: 16,
             source: None,
             soft_model: false,
+            isolation: false,
         },
         Profile {
             name: "general".into(),
@@ -100,6 +103,7 @@ pub fn builtin() -> Vec<Profile> {
             rounds: 40,
             source: None,
             soft_model: false,
+            isolation: false,
         },
     ]
 }
@@ -180,6 +184,7 @@ pub fn parse(text: &str, fallback_name: &str) -> Option<Profile> {
         rounds: 30,
         source: None,
         soft_model: false,
+        isolation: false,
     };
     for line in head.lines() {
         let Some((k, v)) = line.split_once(':') else { continue };
@@ -189,6 +194,7 @@ pub fn parse(text: &str, fallback_name: &str) -> Option<Profile> {
             "description" => p.description = v.to_string(),
             "model" if !v.is_empty() => p.model = Some(v.to_string()),
             "rounds" => p.rounds = v.parse().unwrap_or(p.rounds).clamp(1, 200),
+            "isolation" => p.isolation = v.eq_ignore_ascii_case("worktree"),
             "tools" => {
                 let list: Vec<String> = v
                     .trim_matches(|c| c == '[' || c == ']')
@@ -264,6 +270,24 @@ fn plain_path(p: &str, cwd: &Path) -> PathBuf {
     out
 }
 
+/// What the parent is told when an isolated sub-agent ends: its branch and what it changed, or that its
+/// worktree had no changes and is gone.
+fn worktree_note(wt: &nexo_core::worktree::Worktree) -> String {
+    match nexo_core::worktree::finish(wt) {
+        nexo_core::worktree::Finished::Removed => "\n\n[worktree] the sub-agent changed nothing; its worktree was removed".into(),
+        nexo_core::worktree::Finished::Kept(c) => format!(
+            "\n\n[worktree] the sub-agent worked in its own worktree.\nbranch: {}\npath: {}\n{} commit(s), {} uncommitted path(s). Changes:\n{}\nTo take them: git merge {}  (remove: nexo worktree remove {})",
+            wt.branch,
+            wt.path.display(),
+            c.commits,
+            c.dirty.len(),
+            if c.stat.is_empty() { "(only commits; see git diff)".to_string() } else { c.stat },
+            wt.branch,
+            wt.name
+        ),
+    }
+}
+
 /// Runs the SubagentStop hooks with the report; returns the lines for hooks that failed.
 async fn stop_hooks(
     hooks: &[nexo_core::config::HookConfig],
@@ -299,6 +323,8 @@ pub struct SubAgent {
     claims: Claims,
     /// SubagentStart and SubagentStop hooks.
     hooks: Vec<nexo_core::config::HookConfig>,
+    /// Commands run in a new worktree (`[agent] worktree_setup`).
+    worktree_setup: Vec<String>,
 }
 
 impl SubAgent {
@@ -329,7 +355,14 @@ impl SubAgent {
             parallel: false,
             claims: Default::default(),
             hooks: Vec::new(),
+            worktree_setup: Vec::new(),
         }
+    }
+
+    /// The commands to run in the worktree of a sub-agent with `isolation: worktree`.
+    pub fn with_worktree_setup(mut self, cmds: Vec<String>) -> SubAgent {
+        self.worktree_setup = cmds;
+        self
     }
 
     /// The hooks that hear when a sub-agent starts and stops.
@@ -907,6 +940,22 @@ impl Tool for SubAgent {
         // one that can change files keeps its write slot to the end: in the background it would edit
         // beside the main agent and other sub-agents
         let writes = self.can_write(&run.profile);
+        // an isolated one works in a worktree of its own, on its own branch
+        let isolated = if writes && run.profile.isolation {
+            let (cwd, setup) = (ctx.cwd.clone(), self.worktree_setup.clone());
+            let name = format!("agent-{}-{}", run.profile.name, nexo_core::worktree::random_name());
+            match tokio::task::spawn_blocking(move || nexo_core::worktree::create(&cwd, Some(&name), &setup)).await {
+                Ok(Ok(wt)) => Some(wt),
+                Ok(Err(e)) => return ToolOutput::error(format!("could not make the sub-agent a worktree: {e}")),
+                Err(e) => return ToolOutput::error(format!("could not make the sub-agent a worktree: {e}")),
+            }
+        } else {
+            None
+        };
+        let mut ictx = ctx.clone();
+        if let Some(wt) = &isolated {
+            ictx.cwd = wt.path.clone();
+        }
         if !asked || writes {
             if let Some(b) = &briefing {
                 ctx.report(b.line());
@@ -914,15 +963,21 @@ impl Tool for SubAgent {
             let note = if asked { "(ran in the foreground: it can change files)\n\n" } else { "" };
             // whatever it held is free again when it ends, also when it is stopped
             let _release = Release { claims: self.claims.clone(), owner: ctx.call_id.clone() };
-            let res = run.go(prompt, briefing.as_ref(), ctx, &|l| ctx.report(l)).await;
+            let res = run.go(prompt, briefing.as_ref(), &ictx, &|l| ctx.report(l)).await;
+            let tail = match isolated {
+                Some(wt) => tokio::task::spawn_blocking(move || worktree_note(&wt)).await.unwrap_or_default(),
+                None => String::new(),
+            };
             if let Ok(report) = &res {
                 let fails = stop_hooks(&self.hooks, &ctx.cwd, &ctx.session_id, &run.profile.name, report).await;
                 fails.into_iter().for_each(|f| ctx.report(f));
             }
             return match res {
-                Ok(report) => ToolOutput::ok(format!("{note}{report}")),
-                Err(e) if ctx.cancel.is_cancelled() => ToolOutput::error(format!("interrupted by the person ({e})")),
-                Err(e) => ToolOutput::error(e),
+                Ok(report) => ToolOutput::ok(format!("{note}{report}{tail}")),
+                Err(e) if ctx.cancel.is_cancelled() => {
+                    ToolOutput::error(format!("interrupted by the person ({e}){tail}"))
+                }
+                Err(e) => ToolOutput::error(format!("{e}{tail}")),
             };
         }
         let label = args.get("description").and_then(Value::as_str).unwrap_or(prompt);

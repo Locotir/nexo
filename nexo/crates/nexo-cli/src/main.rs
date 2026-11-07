@@ -11,6 +11,7 @@ mod schema;
 mod setup;
 mod supervise;
 mod update;
+mod worktree;
 
 fn main() {
     nexo_core::version::set(nexo_bench::run::VERSION);
