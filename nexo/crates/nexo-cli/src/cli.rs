@@ -204,6 +204,8 @@ pub enum Cmd {
         #[command(subcommand)]
         what: Option<SuperviseCmd>,
     },
+    /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
+    Acp,
     #[command(hide = true)]
     /// Measure the agent on the benchmark tasks with each context policy (see crates/nexo-bench/README.md).
     Bench(Box<BenchArgs>),
@@ -504,6 +506,7 @@ async fn run(args: Args) -> anyhow::Result<i32> {
                 None => nexo_bench::run(b.options()?).await,
             }
         }
+        Some(Cmd::Acp) => return crate::acp::run(&args).await,
         Some(Cmd::Providers { all, json }) => return Ok(setup::print_providers(&config, *all, *json)),
         Some(Cmd::Models { provider, refresh, json }) => {
             let p = provider.as_deref().or(args.provider.as_deref());

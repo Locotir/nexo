@@ -3,6 +3,7 @@
 //! headlessly.
 
 mod account;
+mod acp;
 mod cli;
 mod headless;
 mod mcp_cmd;

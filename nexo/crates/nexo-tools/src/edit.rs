@@ -129,7 +129,7 @@ impl Tool for Edit {
 /// `old` and `new` as they fit `text`'s line ends: as given when `old` is found so, else with
 /// CRLF ends (a CRLF file edited with `\n` strings), else with plain ends. `new` follows the
 /// ends of the `old` that matched, and a file that ends every line with CRLF gives them to it.
-fn match_line_ends(text: &str, old: &str, new: &str) -> (String, String) {
+pub fn match_line_ends(text: &str, old: &str, new: &str) -> (String, String) {
     let lf = |s: &str| s.replace("\r\n", "\n");
     let crlf = |s: &str| lf(s).replace('\n', "\r\n");
     let file_crlf = text.contains("\r\n");
