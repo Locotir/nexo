@@ -665,11 +665,10 @@ impl Input {
                 self.editor.insert_newline();
                 return Edit::Changed;
             }
-            // Ctrl+U clears the whole draft (as in Claude Code); it stays in the undo history
+            // Ctrl+U cuts back to the start of the cursor line (readline); Esc Esc and Ctrl+C clear the draft
             KeyCode::Char('u') if ctrl => {
                 self.editor.cancel_selection();
-                self.editor.select_all();
-                self.editor.cut();
+                self.editor.delete_line_by_head();
                 self.hist = None;
                 return Edit::Changed;
             }
@@ -931,6 +930,14 @@ mod tests {
         assert_eq!(i.text(), "one two ");
         i.key(k(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert_eq!(i.text(), "");
+        // on a multi-line draft it cuts only back to the start of the cursor line
+        i.set_text("a\nb\nc");
+        i.key(k(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(i.text(), "a\nb\n");
+        i.set_text("a\nbc\nd");
+        i.key(k(KeyCode::Up, KeyModifiers::NONE));
+        i.key(k(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(i.text(), "a\nc\nd");
         i.set_text("abc def");
         i.key(k(KeyCode::Char('a'), KeyModifiers::CONTROL));
         i.key(k(KeyCode::Char('k'), KeyModifiers::CONTROL));

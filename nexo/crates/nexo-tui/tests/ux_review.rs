@@ -69,11 +69,11 @@ fn run(a: &mut App, line: &str) {
 }
 
 #[test]
-fn ctrl_u_clears_the_whole_draft_and_undo_brings_it_back() {
+fn ctrl_u_cuts_to_the_line_start_and_undo_brings_it_back() {
     let mut a = app();
     a.input.insert_paste("one\ntwo\nthree");
     key(&mut a, KeyCode::Char('u'), KeyModifiers::CONTROL);
-    assert_eq!(a.input.text(), "");
+    assert_eq!(a.input.text(), "one\ntwo\n");
     key(&mut a, KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(a.input.text(), "one\ntwo\nthree");
 }

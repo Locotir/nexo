@@ -378,7 +378,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Z / Alt+Z", "undo / redo"),
             ("Ctrl+A / E", "go to line start / end"),
             ("Ctrl+K / W", "delete to the end / the word before"),
-            ("Ctrl+U", "clear the whole draft (Ctrl+Z brings it back)"),
+            ("Ctrl+U", "cut to the start of the line"),
             ("Alt+B / F", "move one word back / forward"),
             ("Ctrl+V", "paste text, or attach a copied image"),
             ("Ctrl+G", "write in $EDITOR"),
