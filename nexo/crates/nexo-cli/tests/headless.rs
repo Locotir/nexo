@@ -367,8 +367,11 @@ fn output_format_json_is_one_object_with_the_measures() {
     }
     assert!(r["cost_usd"].is_number() && r["duration_ms"].is_u64(), "{r}");
     // headless runs stay out of /resume
-    let meta = std::fs::read_dir(d.path().join("data/sessions")).unwrap().count();
-    assert_eq!(meta, 1);
+    let names: Vec<String> = std::fs::read_dir(d.path().join("data/sessions"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1, "one session file and nothing left behind: {names:?}");
 }
 
 #[test]
