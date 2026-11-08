@@ -3,6 +3,7 @@
 //! session's key, so it joins what the JSONL log adapter reads. When the program is not installed the adapter
 //! turns itself off without a word. It only runs the program and reads its output.
 
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -11,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::source::{Source, SourceKind, EXTERNAL};
+use super::source::{one_line, Source, SourceKind, EXTERNAL};
 use super::{ObsKind, Observation, Reported, Secs};
 
 /// The program gets this long to answer.
@@ -23,11 +24,13 @@ pub struct ListSource {
     every: Secs,
     last: Option<Secs>,
     off: bool,
+    /// The sessions the last good answer listed.
+    known: HashSet<String>,
 }
 
 impl ListSource {
     pub fn new(program: impl Into<String>, args: Vec<String>, every: Secs) -> ListSource {
-        ListSource { program: program.into(), args, every, last: None, off: false }
+        ListSource { program: program.into(), args, every, last: None, off: false, known: HashSet::new() }
     }
 
     /// False once the program turned out not to exist.
@@ -94,10 +97,15 @@ impl Source for ListSource {
             return Vec::new();
         }
         self.last = Some(now);
-        match self.run() {
-            Some(text) => parse(&text, now, alive),
-            None => Vec::new(),
-        }
+        // a program that failed, timed out or printed something else says nothing about who is gone
+        let Some(text) = self.run() else { return Vec::new() };
+        let Some((mut obs, keys)) = parse_all(&text, now, alive) else { return Vec::new() };
+        // a session that was listed and no longer is has ended
+        let mut gone: Vec<&String> = self.known.iter().filter(|k| !keys.contains(*k)).collect();
+        gone.sort();
+        obs.extend(gone.into_iter().map(|k| Observation { agent_key: k.clone(), at: now, kind: ObsKind::Dead }));
+        self.known = keys.into_iter().collect();
+        obs
     }
 }
 
@@ -112,14 +120,21 @@ fn alive(pid: u64) -> Option<bool> {
 
 /// The observations of a list. `alive` answers whether a pid still runs.
 pub fn parse(text: &str, now: Secs, alive: impl Fn(u64) -> Option<bool>) -> Vec<Observation> {
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(text.trim()) else { return Vec::new() };
+    parse_all(text, now, alive).map(|(obs, _)| obs).unwrap_or_default()
+}
+
+/// The observations of a list and the keys it names; None when the text is not a list at all.
+fn parse_all(text: &str, now: Secs, alive: impl Fn(u64) -> Option<bool>) -> Option<(Vec<Observation>, Vec<String>)> {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(text.trim()) else { return None };
     let mut out = Vec::new();
+    let mut keys = Vec::new();
     for item in items {
         let get = |k: &str| item.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
         let Some(key) = get("sessionId").or_else(|| get("id")) else { continue };
+        keys.push(key.to_string());
         let mk = |kind: ObsKind| Observation { agent_key: key.to_string(), at: now, kind };
         out.push(mk(ObsKind::Meta {
-            name: get("name").map(str::to_string),
+            name: get("name").map(|n| one_line(n, 60)).filter(|n| !n.is_empty()),
             cwd: get("cwd").map(str::to_string),
             permission_mode: None,
         }));
@@ -137,7 +152,7 @@ pub fn parse(text: &str, now: Secs, alive: impl Fn(u64) -> Option<bool>) -> Vec<
             out.push(mk(ObsKind::Dead));
         }
     }
-    out
+    Some((out, keys))
 }
 
 #[cfg(test)]
@@ -187,6 +202,29 @@ mod tests {
     fn garbage_gives_nothing() {
         assert!(parse("not json", 1, |_| None).is_empty());
         assert!(parse("{}", 1, |_| None).is_empty());
+    }
+
+    #[test]
+    fn a_list_that_is_not_a_list_is_not_a_session_count() {
+        assert!(parse_all("oops", 1, |_| None).is_none());
+        assert!(parse_all("[]", 1, |_| None).is_some_and(|(o, k)| o.is_empty() && k.is_empty()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_the_list_stops_naming_is_dead_and_a_bad_answer_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("list.json");
+        std::fs::write(&f, r#"[{"sessionId":"a","state":"working"},{"sessionId":"b"}]"#).unwrap();
+        let mut s = ListSource::new("cat", vec![f.display().to_string()], 0);
+        assert!(s.poll(10).iter().all(|o| o.kind != ObsKind::Dead));
+        std::fs::write(&f, "not a list").unwrap();
+        assert!(s.poll(20).is_empty(), "a bad answer says nothing about who is gone");
+        std::fs::write(&f, r#"[{"sessionId":"b"}]"#).unwrap();
+        let obs = s.poll(30);
+        let dead: Vec<_> = obs.iter().filter(|o| o.kind == ObsKind::Dead).map(|o| o.agent_key.clone()).collect();
+        assert_eq!(dead, vec!["a".to_string()]);
+        assert!(s.poll(40).iter().all(|o| o.kind != ObsKind::Dead), "said once");
     }
 
     #[test]

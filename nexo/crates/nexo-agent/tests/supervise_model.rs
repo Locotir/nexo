@@ -37,6 +37,7 @@ fn stand(reply: &str) -> Arc<Stand> {
 
 const POLICY: &str = r#"
 interval_secs = 0
+scan_hours = 100000
 [model]
 provider = "x"
 name = "y"

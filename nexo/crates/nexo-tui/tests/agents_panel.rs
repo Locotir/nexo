@@ -240,7 +240,7 @@ fn live_panel() -> (tempfile::TempDir, std::sync::Arc<nexo_agent::supervise::Pan
     let dir = tempfile::tempdir().unwrap();
     let logs = dir.path().join("logs").join("proj");
     std::fs::create_dir_all(&logs).unwrap();
-    let rec = r#"{"type":"assistant","timestamp":"2026-11-05T00:00:00Z","cwd":"/work/app","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Step one is done."}]}}"#;
+    let rec = r#"{"type":"assistant","cwd":"/work/app","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Step one is done."}]}}"#;
     std::fs::write(logs.join("sess-1.jsonl"), format!("{rec}\n")).unwrap();
     let setup = Setup {
         logs_root: Some(dir.path().join("logs")),

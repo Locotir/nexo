@@ -153,6 +153,21 @@ pub enum ObsKind {
     },
 }
 
+impl ObsKind {
+    /// Whether this says the session is alive and doing something (names, settings, spend and reports of a
+    /// process manager do not).
+    pub fn is_sign_of_life(&self) -> bool {
+        !matches!(
+            self,
+            ObsKind::Meta { .. }
+                | ObsKind::Reported(_)
+                | ObsKind::Dead
+                | ObsKind::Spend { .. }
+                | ObsKind::MsgStage { .. }
+        )
+    }
+}
+
 /// A tool result kept for the loop signal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResultMark {
@@ -206,6 +221,8 @@ pub struct AgentTrack {
     pub inbox: Vec<(String, bool)>,
     /// Mail events already noted (two sources may tell the same one).
     seen_mail: VecDeque<String>,
+    /// When the process was last reported gone.
+    dead_at: Option<Secs>,
 }
 
 impl AgentTrack {
@@ -216,15 +233,13 @@ impl AgentTrack {
     /// Fold one observation in. Order of arrival does not move the activity clock backwards.
     pub fn apply(&mut self, o: &Observation) {
         let at = o.at;
-        let alive = !matches!(
-            o.kind,
-            ObsKind::Meta { .. }
-                | ObsKind::Reported(_)
-                | ObsKind::Dead
-                | ObsKind::Spend { .. }
-                | ObsKind::MsgStage { .. }
-        );
+        let alive = o.kind.is_sign_of_life();
         if alive {
+            if self.dead_at.is_some_and(|d| at > d) {
+                // it writes again after its process was reported gone: it came back
+                self.dead = false;
+                self.dead_at = None;
+            }
             self.last_activity = Some(self.last_activity.map_or(at, |t| t.max(at)));
         }
         if !self.seen_mail_event(&o.kind) {
@@ -275,9 +290,12 @@ impl AgentTrack {
                 }
             }
             ObsKind::Done => self.done = true,
-            ObsKind::Dead => self.dead = true,
+            ObsKind::Dead => {
+                self.dead = true;
+                self.dead_at = Some(self.dead_at.map_or(at, |d| d.max(at)));
+            }
             ObsKind::Reported(r) => self.reported = Some(*r),
-            ObsKind::Step { text } => self.last_step = Some(text.clone()),
+            ObsKind::Step { text } => self.last_step = Some(source::clean_step(text)),
             ObsKind::Spend { usd, model } => {
                 self.cost_usd = Some(*usd);
                 if model.is_some() {
@@ -370,6 +388,11 @@ impl AgentTrack {
     fn begin_work(&mut self) {
         self.turn_end = None;
         self.done = false;
+    }
+
+    /// When the process was last reported gone, while it is.
+    pub fn dead_since(&self) -> Option<Secs> {
+        self.dead_at.filter(|_| self.dead)
     }
 
     /// Seconds without activity; None when nothing was ever seen.

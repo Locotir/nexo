@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::events::{after_command, Ev, EvDetail, EvKind};
-use super::source::{one_line, tail, tool_step, Source, SourceKind, EXTERNAL};
+use super::source::{is_raw_json, one_line, tail, tool_name, tool_step, Source, SourceKind, EXTERNAL};
 use super::{input_hash, ObsKind, Observation, Secs};
 
 /// The most bytes read from one file in one poll.
@@ -37,6 +37,8 @@ struct FileState {
     /// Shell commands waiting for their result: id to command.
     cmds: HashMap<String, String>,
     cwd_sent: bool,
+    /// Which file the path held when last looked at.
+    id: Option<(u64, u64)>,
     /// Set while a shrunk file is read again: what is kept so far.
     resync: Option<Vec<Observation>>,
 }
@@ -55,6 +57,9 @@ impl JsonlSource {
     }
 
     fn scan(&mut self, now: Secs) {
+        // a log nobody touched for the whole window, or a file that is gone, is let go
+        let window = self.window;
+        self.files.retain(|p, _| std::fs::metadata(p).is_ok_and(|m| m.is_file() && now - mtime(&m) <= window));
         let Ok(dirs) = std::fs::read_dir(&self.root) else { return };
         for dir in dirs.flatten() {
             let Ok(files) = std::fs::read_dir(dir.path()) else { continue };
@@ -70,7 +75,10 @@ impl JsonlSource {
                 let key = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
                 let len = meta.len();
                 let offset = len.saturating_sub(CHUNK);
-                self.files.insert(path, FileState { key, offset, skip_line: offset > 0, ..Default::default() });
+                self.files.insert(
+                    path,
+                    FileState { key, offset, skip_line: offset > 0, id: file_id(&meta), ..Default::default() },
+                );
             }
         }
     }
@@ -127,13 +135,31 @@ impl Source for JsonlSource {
     }
 }
 
+/// Which file a path holds, to tell a log that was replaced from one that grew. None where the platform
+/// cannot say.
+#[cfg(unix)]
+fn file_id(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
 /// New observations of one file; None when the file is gone.
 fn read_new(path: &Path, st: &mut FileState, now: Secs) -> Option<Vec<Observation>> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    if len < st.offset {
-        st.offset = 0;
-        st.skip_line = false;
+    // a look at the directory entry is enough to see that nothing changed; the file is opened only to read
+    let meta = std::fs::metadata(path).ok()?;
+    let len = meta.len();
+    let id = file_id(&meta);
+    let replaced = st.id.is_some() && id.is_some() && st.id != id;
+    st.id = id;
+    if len < st.offset || replaced {
+        // shrunk or replaced (rotated): read again, from the last chunk only when the new file is big
+        st.offset = len.saturating_sub(CHUNK);
+        st.skip_line = st.offset > 0;
         st.cmds.clear();
         st.tools.clear();
         st.resync = Some(Vec::new());
@@ -141,6 +167,7 @@ fn read_new(path: &Path, st: &mut FileState, now: Secs) -> Option<Vec<Observatio
     if len == st.offset {
         return Some(st.resync.take().unwrap_or_default());
     }
+    let mut file = std::fs::File::open(path).ok()?;
     file.seek(SeekFrom::Start(st.offset)).ok()?;
     let mut buf = Vec::new();
     file.take(CHUNK).read_to_end(&mut buf).ok()?;
@@ -164,7 +191,10 @@ fn read_new(path: &Path, st: &mut FileState, now: Secs) -> Option<Vec<Observatio
     let end = match buf.iter().rposition(|b| *b == b'\n') {
         Some(i) if i + 1 > start => i + 1,
         _ => {
-            if full {
+            if start > 0 {
+                // the cut line is behind us and the next one is not finished: do not read the cut one again
+                st.offset += start as u64;
+            } else if full {
                 // no line end in a whole chunk: drop this line
                 st.offset += buf.len() as u64;
                 st.skip_line = true;
@@ -300,17 +330,17 @@ pub fn cron_period(cron: &str) -> u64 {
             return Some(unit);
         }
         if let Some(n) = field.strip_prefix("*/") {
-            return n.parse::<u64>().ok().filter(|n| *n > 0).map(|n| n * unit);
+            return n.parse::<u64>().ok().filter(|n| *n > 0).map(|n| n.saturating_mul(unit));
         }
-        let mut v: Vec<u64> = field.split(',').filter_map(|x| x.parse().ok()).collect();
+        let mut v: Vec<u64> = field.split(',').filter_map(|x| x.parse::<u64>().ok()).filter(|x| *x < span).collect();
         if v.is_empty() {
             return None;
         }
         v.sort_unstable();
         let first = v[0];
-        let wrap = first + span - v[v.len() - 1];
+        let wrap = (first + span).saturating_sub(v[v.len() - 1]);
         let widest = v.windows(2).map(|w| w[1] - w[0]).chain(std::iter::once(wrap)).max().unwrap_or(span);
-        Some(widest * unit)
+        Some(widest.saturating_mul(unit))
     };
     // minute, hour: when the hour is free the minutes decide, else the hours do
     let hour_free = f[1] == "*";
@@ -323,7 +353,8 @@ pub fn cron_period(cron: &str) -> u64 {
 
 /// One record as observations, and whether it is a compaction mark.
 fn convert(v: &Value, st: &mut FileState, now: Secs) -> (Vec<Observation>, bool) {
-    let at = stamp(v).unwrap_or(now);
+    // a clock ahead of ours is not "the future": the record is from now at the latest
+    let at = stamp(v).map_or(now, |t| t.min(now));
     let key = st.key.clone();
     let mk = |kind: ObsKind| Observation { agent_key: key.clone(), at, kind };
     let mut out = Vec::new();
@@ -340,7 +371,7 @@ fn convert(v: &Value, st: &mut FileState, now: Secs) -> (Vec<Observation>, bool)
         "custom-title" | "agent-name" => {
             let name = v.get(if kind == "custom-title" { "customTitle" } else { "agentName" }).and_then(Value::as_str);
             if let Some(n) = name.filter(|n| !n.is_empty()) {
-                out.push(mk(ObsKind::Meta { name: Some(n.to_string()), cwd: None, permission_mode: None }));
+                out.push(mk(ObsKind::Meta { name: Some(one_line(n, 60)), cwd: None, permission_mode: None }));
             }
         }
         "permission-mode" => {
@@ -357,7 +388,7 @@ fn convert(v: &Value, st: &mut FileState, now: Secs) -> (Vec<Observation>, bool)
             for b in blocks.into_iter().flatten() {
                 match b.get("type").and_then(Value::as_str) {
                     Some("tool_use") => {
-                        let name = b.get("name").and_then(Value::as_str).unwrap_or("tool").to_string();
+                        let name = tool_name(b.get("name").and_then(Value::as_str).unwrap_or("tool"));
                         let input = b.get("input").cloned().unwrap_or(Value::Null);
                         if let Some(id) = b.get("id").and_then(Value::as_str) {
                             if st.tools.len() >= TOOL_KEEP {
@@ -398,10 +429,10 @@ fn convert(v: &Value, st: &mut FileState, now: Secs) -> (Vec<Observation>, bool)
             }
             let stop = msg.and_then(|m| m.get("stop_reason")).and_then(Value::as_str);
             if stop == Some("end_turn") {
-                if !last_text.is_empty() {
+                if !last_text.is_empty() && !is_raw_json(&last_text) {
                     out.push(mk(ObsKind::Step { text: one_line(&last_text, super::source::STEP_CHARS) }));
                 }
-                let t = nexo_core::redact::redact(&tail(&last_text, TAIL)).into_owned();
+                let t = tail(&nexo_core::redact::redact(&last_text), TAIL);
                 out.push(mk(ObsKind::TurnEnd { last_text_tail: t }));
             } else if !any {
                 out.push(mk(ObsKind::Activity));
@@ -775,5 +806,259 @@ mod tests {
         // far in the future the file is older than the window and is never picked up
         let mut late = JsonlSource::new(dir.path(), 12);
         assert!(late.poll(now() + 13 * 3600).is_empty());
+    }
+
+    fn steps(obs: &[Observation]) -> Vec<String> {
+        kinds(obs).into_iter().filter_map(|k| if let ObsKind::Step { text } = k { Some(text) } else { None }).collect()
+    }
+
+    #[test]
+    fn a_half_written_last_line_and_a_call_without_result_leave_the_state_as_it_was() {
+        let (_d, log, mut src) = setup();
+        append(&log, &[assistant_tool("t1", "Bash", json!({"command":"cargo build"}), "2026-11-02T11:00:00Z")]);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        // the writer is in the middle of the next record, and of its string
+        write!(f, "{{\"type\":\"user\",\"timestamp\":\"2026-11-02T11:00:09Z\",\"message\":{{\"content\":[{{\"type\":\"tool_res").unwrap();
+        let k = kinds(&src.poll(now()));
+        assert!(k.contains(&ObsKind::ToolPending { name: "Bash".into() }));
+        assert!(!k.iter().any(|k| matches!(k, ObsKind::ToolResult { .. } | ObsKind::UserInput)), "{k:?}");
+        // nothing more for as long as the line is open, however often we look
+        for _ in 0..3 {
+            assert!(src.poll(now() + 6).is_empty());
+        }
+        // a line that ends but is not JSON is skipped, the next one still reads
+        writeln!(f, "ult\" this is broken").unwrap();
+        append(&log, &[json!({"type":"progress","timestamp":"2026-11-02T11:00:10Z"})]);
+        assert_eq!(kinds(&src.poll(now() + 6)), vec![ObsKind::Activity]);
+    }
+
+    #[test]
+    fn a_log_replaced_by_a_longer_one_is_read_from_its_new_start() {
+        let (d, log, mut src) = setup();
+        append(&log, &[assistant_tool("a", "Read", json!({"file_path":"/old"}), "2026-11-02T11:00:00Z")]);
+        assert_eq!(steps(&src.poll(now())), vec!["Read  /old".to_string()]);
+        // a new file takes the path: larger than the old one was, so a length check alone would miss it
+        let fresh = d.path().join("fresh.tmp");
+        let lines: Vec<Value> = (0..5)
+            .map(|i| {
+                assistant_tool(
+                    &format!("n{i}"),
+                    "Edit",
+                    json!({"file_path": format!("/new/{i}")}),
+                    "2026-11-02T12:00:00Z",
+                )
+            })
+            .collect();
+        append(&fresh, &lines);
+        std::fs::rename(&fresh, &log).unwrap();
+        let got = steps(&src.poll(now()));
+        assert_eq!(got.len(), 5, "{got:?}");
+        assert_eq!(got[0], "Edit  /new/0");
+    }
+
+    #[test]
+    fn a_rotated_big_log_is_read_from_its_end_not_whole() {
+        let (d, log, mut src) = setup();
+        append(&log, &[json!({"type":"progress"})]);
+        src.poll(now());
+        let fresh = d.path().join("fresh.tmp");
+        let mut body = String::new();
+        for i in 0..8000 {
+            body.push_str(&format!(
+                "{}\n",
+                assistant_tool(
+                    &format!("t{i}"),
+                    "Read",
+                    json!({"file_path": format!("/f/{i}")}),
+                    "2026-11-02T12:00:00Z"
+                )
+            ));
+        }
+        assert!(body.len() as u64 > 2 * CHUNK);
+        std::fs::write(&fresh, body).unwrap();
+        std::fs::rename(&fresh, &log).unwrap();
+        let got = steps(&src.poll(now()));
+        assert!(!got.is_empty() && got.len() < 8000, "{}", got.len());
+        assert_eq!(got.last().unwrap(), "Read  /f/7999");
+    }
+
+    #[test]
+    fn a_record_dated_in_the_future_counts_as_now() {
+        let (_d, log, mut src) = setup();
+        append(&log, &[assistant_tool("t1", "Bash", json!({"command":"ls"}), "2099-01-01T00:00:00Z")]);
+        let t = now();
+        let obs = src.poll(t);
+        assert!(!obs.is_empty() && obs.iter().all(|o| o.at <= t), "{obs:?}");
+    }
+
+    #[test]
+    fn a_log_nobody_touched_for_the_whole_window_is_let_go() {
+        let (_d, log, mut src) = setup();
+        append(&log, &[json!({"type":"progress"})]);
+        src.poll(now());
+        assert_eq!(src.files.len(), 1);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(20 * 3600);
+        std::fs::File::options().write(true).open(&log).unwrap().set_modified(old).unwrap();
+        src.poll(now() + 10);
+        assert!(src.files.is_empty());
+        // and a file that is deleted is let go too
+        append(&log, &[json!({"type":"progress"})]);
+        src.poll(now() + 20);
+        assert_eq!(src.files.len(), 1);
+        std::fs::remove_file(&log).unwrap();
+        src.poll(now() + 21);
+        assert!(src.files.is_empty());
+    }
+
+    #[test]
+    fn what_a_step_shows_is_short_plain_and_free_of_secrets() {
+        let (_d, log, mut src) = setup();
+        let gh = format!("{}{}", "gh", "p_abcdefghijklmnopqrstuvwxyz0123456789");
+        let sk = format!("{}{}", "s", "k-abcdefghijklmnopqrstuvwx");
+        append(
+            &log,
+            &[
+                assistant_tool(
+                    "a",
+                    "Bash",
+                    json!({"command": format!("git clone https://{gh}@example.test/r.git")}),
+                    "2026-11-02T11:00:00Z",
+                ),
+                assistant_tool(
+                    "b",
+                    "Bash",
+                    json!({"command": "curl -H 'Authorization: Bearer abcdef0123456789xyz' https://example.test"}),
+                    "2026-11-02T11:00:01Z",
+                ),
+                assistant_tool("c", "Bash", json!({"command": "{\"a\":1,\"b\":[2,3]}"}), "2026-11-02T11:00:02Z"),
+                assistant_tool(
+                    "d",
+                    "Bash\u{7}\nweird",
+                    json!({"command": format!("export KEY={sk}")}),
+                    "2026-11-02T11:00:03Z",
+                ),
+                assistant_tool("e", "Read", json!({"file_path": "x".repeat(900)}), "2026-11-02T11:00:04Z"),
+                json!({"type":"assistant","timestamp":"2026-11-02T11:00:05Z","message":{"stop_reason":"end_turn",
+                    "content":[{"type":"text","text":format!("{{\"status\":\"ok\",\"token\":\"{sk}\"}}")}]}}),
+            ],
+        );
+        let obs = src.poll(now());
+        let got = steps(&obs);
+        assert_eq!(got.len(), 5, "{got:?}");
+        for s in &got {
+            assert!(!s.contains(&gh) && !s.contains(&sk) && !s.contains("abcdef0123456789xyz"), "{s}");
+            assert!(!s.chars().any(char::is_control), "{s:?}");
+            assert!(s.chars().count() <= 200, "{}", s.chars().count());
+        }
+        assert_eq!(got[2], "Bash", "a JSON document is not a step: {:?}", got[2]);
+        assert!(got[3].starts_with("Bash weird"), "{:?}", got[3]);
+        // the end of the turn keeps no key, and no raw JSON as its step
+        let tail = kinds(&obs).into_iter().find_map(|k| {
+            if let ObsKind::TurnEnd { last_text_tail } = k {
+                Some(last_text_tail)
+            } else {
+                None
+            }
+        });
+        assert!(!tail.unwrap().contains(&sk));
+    }
+
+    #[test]
+    fn a_secret_cut_by_the_tail_does_not_leave_half_a_key() {
+        let (_d, log, mut src) = setup();
+        let sk = format!("{}{}", "s", "k-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ");
+        // the key starts 20 characters before the 300 character cut
+        let text = format!("{} {sk}{}", "w".repeat(10), "z".repeat(TAIL - 20 - 8));
+        append(
+            &log,
+            &[json!({"type":"assistant","timestamp":"2026-11-02T11:00:05Z","message":{"stop_reason":"end_turn",
+                "content":[{"type":"text","text":text}]}})],
+        );
+        let tail = kinds(&src.poll(now()))
+            .into_iter()
+            .find_map(|k| if let ObsKind::TurnEnd { last_text_tail } = k { Some(last_text_tail) } else { None })
+            .unwrap();
+        assert!(!tail.contains("abcdefghij") && !tail.contains("k-abc"), "{tail}");
+    }
+
+    #[test]
+    fn a_cron_line_made_of_nonsense_does_not_panic() {
+        for c in [
+            "5,70 * * * *",
+            "99,1 * * * *",
+            "* 30,40 * * *",
+            "*/0 * * * *",
+            "*/99999999999999999999 * * * *",
+            ",, * * * *",
+            "1,2,3,4,5,6,7,8,9 99999999999 * * *",
+        ] {
+            let _ = cron_period(c);
+        }
+    }
+
+    #[test]
+    fn many_sessions_and_a_huge_log_stay_cheap() {
+        use std::time::Instant;
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p");
+        std::fs::create_dir_all(&proj).unwrap();
+        // 200 sessions with a few hundred records each
+        for i in 0..200 {
+            let lines: Vec<Value> = (0..150)
+                .map(|n| {
+                    assistant_tool(
+                        &format!("t{n}"),
+                        "Read",
+                        json!({"file_path": format!("/s{i}/f{n}")}),
+                        "2026-11-02T11:00:00Z",
+                    )
+                })
+                .collect();
+            append(&proj.join(format!("s{i}.jsonl")), &lines);
+        }
+        // and one log of 100 MB
+        let big = proj.join("big.jsonl");
+        {
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&big).unwrap());
+            let block: String = (0..400)
+                .map(|n| {
+                    format!(
+                        "{}\n",
+                        assistant_tool(
+                            &format!("b{n}"),
+                            "Edit",
+                            json!({"file_path": format!("/big/{n}")}),
+                            "2026-11-02T11:00:00Z"
+                        )
+                    )
+                })
+                .collect();
+            let mut written = 0usize;
+            while written < 100 * 1024 * 1024 {
+                f.write_all(block.as_bytes()).unwrap();
+                written += block.len();
+            }
+        }
+        let mut src = JsonlSource::new(dir.path(), 12);
+        let t = Instant::now();
+        let first = src.poll(now());
+        let first_took = t.elapsed();
+        assert!(first.len() > 200 * 150, "{}", first.len());
+        // nothing happens: a poll only looks at the files' sizes
+        let t = Instant::now();
+        for _ in 0..5 {
+            assert!(src.poll(now()).is_empty());
+        }
+        let quiet = t.elapsed();
+        // one line lands on the big log: the cost is that line, not the file
+        append(&big, &[assistant_tool("last", "Edit", json!({"file_path":"/big/last"}), "2026-11-02T11:00:01Z")]);
+        let t = Instant::now();
+        let got = steps(&src.poll(now()));
+        let tail_took = t.elapsed();
+        assert_eq!(got, vec!["Edit  /big/last".to_string()]);
+        // generous bounds, for a loaded machine and a build without optimisation
+        assert!(first_took.as_secs_f64() < 30.0, "first {first_took:?}");
+        assert!(quiet.as_secs_f64() < 2.0, "quiet {quiet:?}");
+        assert!(tail_took.as_secs_f64() < 1.0, "tail {tail_took:?}");
     }
 }

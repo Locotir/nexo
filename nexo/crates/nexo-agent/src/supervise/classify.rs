@@ -35,6 +35,11 @@ pub fn classify(track: &AgentTrack, now: Secs, policy: &Policy) -> State {
         return State::Done;
     }
 
+    // Gone mid-work: it will not go on by itself, whatever it was waiting for.
+    if track.dead && track.turn_end.is_none() {
+        return State::Stalled;
+    }
+
     // WaitingPermission
     if track.permission_pending.is_some() {
         return State::WaitingPermission;
@@ -153,6 +158,22 @@ mod tests {
 
     fn fresh() -> AgentTrack {
         AgentTrack::new("a")
+    }
+
+    #[test]
+    fn a_dead_process_mid_work_is_stalled_and_new_activity_after_it_revives_the_session() {
+        let mut t = fresh();
+        obs(&mut t, T0, pending("Bash"));
+        obs(&mut t, T0 + 5, ObsKind::Dead);
+        assert_eq!(state(&t, T0 + 6), State::Stalled);
+        // a late report or name is not a sign of life
+        obs(&mut t, T0 + 20, ObsKind::Reported(Reported::Working));
+        assert_eq!(state(&t, T0 + 21), State::Stalled);
+        assert_eq!(t.dead_since(), Some(T0 + 5));
+        // the log moves on after it: it was only the list that was late
+        obs(&mut t, T0 + 30, ObsKind::Activity);
+        assert_eq!(state(&t, T0 + 31), State::Working);
+        assert_eq!(t.dead_since(), None);
     }
 
     #[test]

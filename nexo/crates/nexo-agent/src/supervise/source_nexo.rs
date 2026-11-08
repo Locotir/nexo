@@ -11,13 +11,15 @@ use nexo_core::mail::Stage;
 use nexo_core::permission::PermissionMode;
 
 use super::events::{after_command, Ev, EvDetail, EvKind};
-use super::source::{one_line, tail, tool_step, Source, SourceKind, STEP_CHARS};
+use super::source::{one_line, tail, tool_name, tool_step, Source, SourceKind, STEP_CHARS};
 use super::{input_hash, ObsKind, Observation, Secs};
 
 const TAIL: usize = 300;
 /// Observations kept while nobody drains them.
 const QUEUE_MAX: usize = 4096;
 const OUTBOX_MAX: usize = 8;
+/// Characters of a mail's summary kept for the card.
+const MAIL_SUMMARY: usize = 80;
 /// Key of the session before it says its id.
 pub const LOCAL_KEY: &str = "this-session";
 
@@ -157,7 +159,7 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
         AgentEvent::TextDelta { text } => {
             g.text.push_str(text);
             if g.text.chars().count() > TAIL * 2 {
-                g.text = tail(&g.text, TAIL);
+                g.text = tail(&nexo_core::redact::redact(&g.text), TAIL);
             }
             out.push(mk(ObsKind::Activity));
         }
@@ -182,7 +184,7 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
             let text = if summary.is_empty() {
                 tool_step(name, args)
             } else {
-                format!("{name}  {}", one_line(summary, STEP_CHARS))
+                format!("{}  {}", tool_name(name), one_line(summary, STEP_CHARS))
             };
             out.push(mk(ObsKind::Step { text }));
             out.push(mk(ObsKind::ToolPending { name: name.clone() }));
@@ -214,7 +216,7 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
             out.push(mk(ObsKind::Activity));
         }
         AgentEvent::TurnEnd { reason } => {
-            let t = nexo_core::redact::redact(&tail(&g.text, TAIL)).into_owned();
+            let t = tail(&nexo_core::redact::redact(&g.text), TAIL);
             if *reason == TurnEnd::Error {
                 out.push(mk(ObsKind::SystemError));
             }
@@ -253,7 +255,7 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
             out.push(mk(ObsKind::MsgOut {
                 to: to.clone(),
                 mail: Some(id.clone()),
-                summary: summary.clone(),
+                summary: one_line(summary, MAIL_SUMMARY),
                 bytes: *bytes,
             }));
         }
@@ -261,7 +263,7 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
             out.push(mk(ObsKind::MsgIn {
                 from: from.clone(),
                 mail: Some(id.clone()),
-                summary: summary.clone(),
+                summary: one_line(summary, MAIL_SUMMARY),
                 held: *held,
             }));
         }

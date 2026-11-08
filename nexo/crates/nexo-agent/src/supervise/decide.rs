@@ -136,6 +136,9 @@ pub fn decide(c: &Ctx) -> Action {
         _ => return Action::Nothing,
     }
     // from here on the supervisor would write into the session
+    if c.track.dead {
+        return Action::Nothing;
+    }
     if c.ledger.fruitless >= p.nudge.nudges_per_hour.max(1) {
         return Action::Alert { why: format!("{} nudges without effect", c.ledger.fruitless), rule: "no-effect" };
     }
@@ -181,6 +184,15 @@ mod tests {
             }
             a => panic!("{a:?}"),
         }
+    }
+
+    #[test]
+    fn a_session_whose_process_is_gone_is_never_nudged() {
+        let now = 100_000;
+        let mut t = track(now);
+        t.apply(&super::super::Observation { agent_key: "k".into(), at: now - 10, kind: super::super::ObsKind::Dead });
+        assert!(t.dead);
+        assert_eq!(run(&t, State::Stalled, &Ledger::default(), now), Action::Nothing);
     }
 
     #[test]

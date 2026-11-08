@@ -58,20 +58,53 @@ pub fn one_line(text: &str, n: usize) -> String {
     out
 }
 
-/// `name  gist` for a tool call: the first argument that says what it works on, redacted and short.
+/// Whether the first non-empty line of `text` is a whole JSON object or array (not a sentence for a person).
+pub fn is_raw_json(text: &str) -> bool {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    (line.starts_with('{') || line.starts_with('[')) && serde_json::from_str::<Value>(line).is_ok()
+}
+
+/// A tool name as the card shows it: one short redacted word group.
+pub fn tool_name(name: &str) -> String {
+    let flat: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let n = one_line(&flat, 40);
+    if n.is_empty() {
+        "tool".to_string()
+    } else {
+        n
+    }
+}
+
+/// `name  gist` for a tool call: the first argument that says what it works on, redacted and short. An
+/// argument that is itself a JSON document says nothing to a person and is left out.
 pub fn tool_step(name: &str, input: &Value) -> String {
     const KEYS: [&str; 9] =
         ["command", "file_path", "path", "pattern", "query", "url", "description", "prompt", "skill"];
     let gist = KEYS
         .iter()
         .find_map(|k| input.get(*k).and_then(Value::as_str))
+        .filter(|s| !is_raw_json(s))
         .map(|s| one_line(s, STEP_CHARS))
         .unwrap_or_default();
+    let name = tool_name(name);
     if gist.is_empty() {
-        name.to_string()
+        name
     } else {
         format!("{name}  {gist}")
     }
+}
+
+/// A step line from any source on its way to a card: secrets taken out, control characters gone, cut short.
+pub fn clean_step(text: &str) -> String {
+    let red = nexo_core::redact::redact(text);
+    let flat: String = red.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let flat = flat.trim();
+    if flat.chars().count() <= STEP_CHARS + 50 {
+        return flat.to_string();
+    }
+    let mut out: String = flat.chars().take(STEP_CHARS + 49).collect();
+    out.push('…');
+    out
 }
 
 /// The last `n` characters of `text`.
@@ -100,6 +133,19 @@ mod tests {
         let long = one_line(&"word ".repeat(100), 20);
         assert_eq!(long.chars().count(), 20);
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_step_is_plain_text_never_raw_json_and_never_a_leaked_token() {
+        let gh = format!("{}{}", "gh", "p_abcdefghijklmnopqrstuvwxyz0123456789");
+        let s = tool_step("Bash", &json!({ "command": format!("git push https://{gh}@example.test") }));
+        assert!(!s.contains(&gh), "{s}");
+        assert_eq!(tool_step("Bash", &json!({ "command": "{\"a\":[1,2]}" })), "Bash");
+        assert_eq!(tool_step("Bash\u{7}\nx", &json!({})), "Bash x");
+        assert_eq!(tool_step("", &json!({})), "tool");
+        let c = clean_step("Edit \u{1b}[31m  Bearer abcdef0123456789xyz");
+        assert!(!c.contains("abcdef0123456789xyz") && !c.chars().any(char::is_control), "{c:?}");
+        assert!(clean_step(&"w".repeat(1000)).chars().count() <= STEP_CHARS + 50);
     }
 
     #[test]

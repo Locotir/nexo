@@ -8,11 +8,13 @@ use std::path::PathBuf;
 use nexo_core::mail::Stage;
 use nexo_core::mailbox::{read_ledgers, read_receipts};
 
-use super::source::{Source, SourceKind};
+use super::source::{one_line, Source, SourceKind};
 use super::{ObsKind, Observation, Secs};
 
 /// Mails older than this are not reported when the source starts (a session that is long gone leaves no trace).
 const BACKFILL: Secs = 3600;
+/// Characters of a mail's summary kept for the card.
+const MAIL_SUMMARY: usize = 80;
 /// Mails followed for their receipts at most.
 const OPEN_MAX: usize = 200;
 
@@ -61,14 +63,19 @@ impl Source for MailSource {
                 kind: ObsKind::MsgOut {
                     to: r.to.clone(),
                     mail: mail.clone(),
-                    summary: r.summary.clone(),
+                    summary: one_line(&r.summary, MAIL_SUMMARY),
                     bytes: r.bytes,
                 },
             });
             out.push(Observation {
                 agent_key: r.to.clone(),
                 at,
-                kind: ObsKind::MsgIn { from: r.from.clone(), mail, summary: r.summary.clone(), held: false },
+                kind: ObsKind::MsgIn {
+                    from: r.from.clone(),
+                    mail,
+                    summary: one_line(&r.summary, MAIL_SUMMARY),
+                    held: false,
+                },
             });
             if self.open.len() >= OPEN_MAX {
                 if let Some(k) = self.open.keys().next().cloned() {
