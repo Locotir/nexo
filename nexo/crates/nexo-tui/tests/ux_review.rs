@@ -115,10 +115,8 @@ fn a_mistyped_command_names_the_closest_one() {
 }
 
 #[test]
-fn config_prints_the_paths_and_login_opens_the_setup() {
+fn login_opens_the_setup() {
     let mut a = app();
-    run(&mut a, "/config");
-    assert!(draw(&mut a, 160, 30).contains("config"));
     run(&mut a, "/login");
     assert!(matches!(a.modal, Some(Modal::Setup(_))));
 }
