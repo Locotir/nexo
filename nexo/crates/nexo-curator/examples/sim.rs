@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 fn usage() -> ! {
     eprintln!("usage: sim events INPUT... --spec SPEC [--price live|legacy] [--life S] [--slots K] [--json]");
+    eprintln!("       sim search [--tier fast|mid|all] [--configs N] [--workers W] [--seed X] [--params P] [--stage lhs|coord|confirm --from FILE] (see sim search --help)");
     eprintln!("       sim run INPUT... --spec SPEC [--params P] [--family auto|binary|http|logs|code|chat] [--mc N --seed X] [--max-steps 40] [--price live|legacy] [--life S] [--slots K] [--r R --beta B --phi F --pi P --mu M --r-den D] [--json]");
     eprintln!("       sim fit --runs DIR... [--holdout odd|even|none] [--out params.json] [--model M|all] [--min-events N] [--seed X]");
     eprintln!("       sim predict --results R --arm plain --spec S --params P [--life S] [--slots K]");
@@ -57,6 +58,12 @@ fn main() {
         Some("synth") => synth_cmd(args),
         Some("family") => family_cmd(args),
         Some("report") => report_cmd(args),
+        Some("search") => {
+            if let Err(e) = nexo_curator::sim::search::cli(args) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
         _ => usage(),
     }
 }

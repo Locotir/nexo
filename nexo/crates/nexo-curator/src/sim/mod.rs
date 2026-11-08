@@ -7,4 +7,5 @@ pub mod fit;
 pub mod input;
 pub mod price;
 pub mod report;
+pub mod search;
 pub mod synth;
