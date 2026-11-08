@@ -201,6 +201,12 @@ mod tests {
     static CONFIG_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn names_the_request_gives_are_kept() {
+        // configure-git-webserver: asked for user@server, the model pushed as the account it found
+        assert!(built_in().contains("use them exactly. When one does not exist yet, create it"));
+    }
+
+    #[test]
     fn the_distribution_comes_from_os_release() {
         let debian = "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\n";
         assert_eq!(os_name(debian).as_deref(), Some("Debian GNU/Linux 12 (bookworm)"));
