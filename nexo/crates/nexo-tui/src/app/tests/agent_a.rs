@@ -963,3 +963,15 @@ fn goal_and_rename_offer_what_they_hold_now_to_edit() {
     a.palette_accept(true);
     assert!(matches!(a.blocks.last(), Some(Block::Notice { .. })));
 }
+
+#[test]
+fn esc_twice_keeps_the_draft_in_history_like_ctrl_c() {
+    let (mut a, _rx) = app();
+    a.input.set_text("a long message");
+    a.esc();
+    assert_eq!(a.input.full_text(), "a long message", "the first Esc only hints");
+    a.esc();
+    assert!(a.input.is_empty());
+    assert_eq!(a.input.history().last().map(String::as_str), Some("a long message"));
+    assert!(a.status.as_ref().is_some_and(|s| s.0.contains("brings it back")), "{:?}", a.status);
+}

@@ -247,8 +247,9 @@ impl App {
         }
         if !self.input.is_empty() {
             if again {
+                self.keep_draft();
                 self.input.clear();
-                self.flash("draft cleared");
+                self.flash("draft cleared, ↑ brings it back");
             } else {
                 self.flash("Esc again to clear the draft");
             }
