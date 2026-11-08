@@ -144,6 +144,12 @@ impl Tool for Bash {
             // the status is the last command's: say that an earlier one was not found
             content.push_str(&format!("\n[note: a command in this script was not found: {}]", missing.join(", ")));
         }
+        if matches!(outcome.end, End::Exited(c) if c != 0) {
+            if let Some(note) = skipped_by_probe(command, &ctx.cwd) {
+                content.push('\n');
+                content.push_str(&note);
+            }
+        }
         if is_error {
             if let Some(note) = crate::sandbox::note_for(&sandbox, &outcome.output) {
                 content.push_str("\n\n");
@@ -265,6 +271,34 @@ fn not_found_name(line: &str) -> Option<String> {
         before.rsplit(": ").next()?
     };
     (!name.is_empty() && !name.contains(char::is_whitespace)).then(|| name.to_string())
+}
+
+/// For a failed `a && b && c`: the note to give when a link before the last is `ls`, `cat` or
+/// `stat` of a plain path that does not exist (resolved after any `cd` links). `&&` stops there,
+/// so what follows never ran, which the model takes for an answer about the rest. Anything
+/// not plainly that (quotes, variables, globs, `;`, `||`, pipes) gets no note.
+fn skipped_by_probe(command: &str, cwd: &std::path::Path) -> Option<String> {
+    let links: Vec<&str> = command.split("&&").collect();
+    let mut dir = cwd.to_path_buf();
+    for link in &links[..links.len().checked_sub(1)?] {
+        if link.contains(|c: char| "|;&<(){}$`'\"*?[~\n".contains(c)) {
+            return None;
+        }
+        let words: Vec<&str> = link.split_whitespace().filter(|w| !w.contains('>')).collect();
+        match words.split_first() {
+            Some((&"cd", [to])) => dir = dir.join(to),
+            Some((&"cd", _)) => return None,
+            Some((&("ls" | "cat" | "stat"), args)) => {
+                if let Some(missing) = args.iter().find(|a| !a.starts_with('-') && !dir.join(a).exists()) {
+                    return Some(format!(
+                        "[note: `{missing}` does not exist, so && skipped the commands after it; join with ; (or `|| true`) for paths that may not exist]"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Starts `command` as a job of the session and returns its number at once.
@@ -815,6 +849,44 @@ mod tests {
         assert!(out.is_error && !out.content.contains("[note:"), "{}", out.content);
         let out = Bash.run(json!({"command": "a1x; b2x; a1x; c3x; d4x; true"}), &c).await;
         assert!(out.content.ends_with("a1x, b2x, c3x]"), "{}", out.content);
+    }
+
+    #[test]
+    fn a_missing_path_probe_in_an_and_chain_is_named() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "").unwrap();
+        let p = d.path();
+        let note = |c: &str| skipped_by_probe(c, p);
+        let n = note("ls tests 2>/dev/null && cat src/lib.rs").expect("probe of a missing path");
+        assert!(n.contains("tests") && n.contains(';'), "{n}");
+        assert!(note("cat Cargo.toml && ls -R src tests 2>/dev/null && echo done").unwrap().contains("tests"));
+        // the probe sits after a cd: the path is looked for there
+        assert!(note("cd src && ls nope && echo x").unwrap().contains("nope"));
+        assert!(note("cd src && ls ../src && echo x").is_none());
+        // the path exists, is the last link, is a glob or a variable, or the chain uses ; or ||
+        assert!(note("ls src && cat missing.rs").is_none());
+        assert!(note("ls tests*/ && echo x").is_none());
+        assert!(note("ls $HOME/zz && echo x").is_none());
+        assert!(note("ls tests || echo none && echo x").is_none());
+        assert!(note("ls tests; cat src/lib.rs").is_none());
+        assert!(note("grep -n x tests && echo x").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_probe_in_a_chain_adds_a_note_to_the_result() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Bash.run(json!({"command": "ls tests 2>/dev/null && echo after"}), &c).await;
+        assert!(out.is_error && out.content.contains("[exit code"), "{}", out.content);
+        assert!(
+            out.content.contains("skipped the commands after it") && out.content.contains("`tests`"),
+            "{}",
+            out.content
+        );
+        let out = Bash.run(json!({"command": "ls tests 2>/dev/null; echo after"}), &c).await;
+        assert!(!out.is_error && !out.content.contains("skipped the commands"), "{}", out.content);
     }
 
     #[tokio::test]
