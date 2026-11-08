@@ -15,7 +15,15 @@ use crate::llmb::sha::hex;
 
 /// The long2 tasks.
 pub fn tasks() -> Vec<Task> {
-    vec![quixote_windmills(), quixote_island(), share_request()]
+    vec![
+        quixote_windmills(),
+        closed(quixote_windmills(), "quixote-windmills-closed"),
+        quixote_island(),
+        closed(quixote_island(), "quixote-island-closed"),
+        quixote_thread(),
+        closed(quixote_thread(), "quixote-insula-thread-closed"),
+        share_request(),
+    ]
 }
 
 // ---------------------------------------------------------------- the book
@@ -71,8 +79,113 @@ fn ready_book() -> Result<(), String> {
     }
 }
 
+// ---------------------------------------------------------------- the perturbed book
+
+/// Seed of the perturbation: an edit with several variants draws its variant from a generator
+/// seeded with this number and the edit's id, so the book is the same on every machine and run.
+const SEED: u64 = 0x5155_494a_4f54_4532;
+
+/// One edit of the book. `find` occurs exactly once in the Gutenberg text. A swap replaces it with
+/// a variant; an insertion keeps it and appends the variant, a sentence in the book's register that
+/// no real edition has.
+struct Edit {
+    id: &'static str,
+    find: &'static str,
+    insert: bool,
+    variants: &'static [&'static str],
+}
+
+/// Every edit, in the order they apply: three numbers or names that tasks ask for, one name in
+/// the thread of the island, three inserted sentences about the island. Few and plausible; the
+/// rest of the text is byte-identical to Gutenberg. Questions depend on them, so an answer recalled
+/// from the real book is wrong where it matters.
+const EDITS: [Edit; 7] = [
+    Edit {
+        id: "windmills",
+        find: "treinta o cuarenta molinos de viento",
+        insert: false,
+        variants: &[
+            "veinte o veinticinco molinos de viento",
+            "doce o quince molinos de viento",
+            "diez o doce molinos de viento",
+        ],
+    },
+    Edit {
+        id: "kingdom",
+        find: "el reino de Dinamarca o el de Soliadisa",
+        insert: false,
+        variants: &[
+            "el reino de Noruega o el de Soliadisa",
+            "el reino de Bohemia o el de Soliadisa",
+            "el reino de Escocia o el de Soliadisa",
+        ],
+    },
+    Edit {
+        id: "town",
+        find: "mil vecinos, que era",
+        insert: false,
+        variants: &["quinientos vecinos, que era", "setecientos vecinos, que era", "ochocientos vecinos, que era"],
+    },
+    Edit {
+        id: "isle",
+        find: "conde fue de la ínsula Firme",
+        insert: false,
+        variants: &["conde fue de la ínsula Fría", "conde fue de la ínsula Dorada"],
+    },
+    Edit {
+        id: "count",
+        find: "tan trabados y desesperados negocios.",
+        insert: true,
+        variants: &[" Sancho, entre tanto, no hacía sino contar con los dedos los días que le faltaban para ser \
+                     gobernador, y decía a media voz que si había de ser ínsula de tierra firme o de agua cercada, \
+                     que lo mismo le daba, con tal que tuviese puerta por donde entrar y salir con su jumento."],
+    },
+    Edit {
+        id: "boat",
+        find: "por la mesma mentira.",
+        insert: true,
+        variants: &[
+            " Sancho, por su parte, no pensaba sino en la ínsula que su amo le tenía prometida, y \
+                     refunfuñaba que más quería un cortijo pequeño en tierra firme que una ínsula grande en las nubes.",
+        ],
+    },
+    Edit {
+        id: "wood",
+        find: "aunque hay pocos que le parezcan.",
+        insert: true,
+        variants: &[" Sancho, que escuchaba desde lo apartado, no hacía sino rogar por la salud de su amo, porque sin él se le \
+                     acababa la esperanza de la ínsula."],
+    },
+];
+
+/// The text an edit puts in the book (the variant its seed draws), in full.
+fn variant(id: &str) -> &'static str {
+    let e = EDITS.iter().find(|e| e.id == id).expect("a known edit");
+    let h = id.bytes().fold(SEED, |h, b| h.wrapping_mul(0x100_0000_01b3) ^ u64::from(b));
+    crate::rng::Rng::new(h).pick(e.variants)
+}
+
+/// The real book with the edits applied. Fails if an anchor is not found exactly once.
+fn perturb(raw: &str) -> Result<String, String> {
+    let mut out = raw.to_string();
+    for e in &EDITS {
+        let n = out.matches(e.find).count();
+        if n != 1 {
+            return Err(format!("edit {}: {:?} occurs {n} times in the book, not once", e.id, e.find));
+        }
+        let v = variant(e.id);
+        out = out.replacen(e.find, &if e.insert { format!("{}{v}", e.find) } else { v.to_string() }, 1);
+    }
+    Ok(out)
+}
+
+/// The perturbed book, the one every grader and every working directory uses.
+fn book_text() -> Result<String, String> {
+    perturb(&book_raw()?)
+}
+
 fn setup_book(wd: &Path) -> Result<(), String> {
-    std::fs::write(wd.join("quijote.txt"), book_raw()?).map_err(|e| e.to_string())
+    std::fs::write(wd.join("quijote.txt"), book_text()?).map_err(|e| e.to_string())
 }
 
 /// Lowercase, accents dropped, everything but letters and digits a single space.
@@ -210,11 +323,11 @@ fn valid(c: &Cite, book: &BTreeMap<(u32, u32), String>) -> Placed {
 struct Need {
     why: &'static str,
     places: &'static [(u32, u32)],
-    words: &'static [&'static str],
+    words: Vec<&'static str>,
 }
 
 fn quote_parts(wd: &Path, verdict: &str, needs: &[Need], extra: &[(&str, &str)]) -> Vec<Part> {
-    let raw = match book_raw() {
+    let raw = match book_text() {
         Ok(b) => b,
         Err(e) => return vec![(false, e)],
     };
@@ -275,71 +388,111 @@ fn book_task(
     }
 }
 
+/// The closed-book control of a book task: the same question, the same grader (which still reads
+/// the perturbed book), but no `quijote.txt` in the working directory. A model that scores here
+/// answers from memory of the novel, so its score on the open task proves nothing about reading.
+/// What memory can still earn is the part of the answer the edits do not touch.
+fn closed(open: Task, id: &'static str) -> Task {
+    let ask = format!(
+        "NOTE: quijote.txt is NOT in this folder; there is no book to read. Answer as well as you can without it.\n\n{}",
+        open.turns[0].1
+    );
+    Task {
+        id,
+        trap: "closed-book control: the same question with no book in the folder. A pass means the answer came \
+               from memory of the novel (contamination), not from reading",
+        group: "closed",
+        turns: vec![(1, ask)],
+        setup: None,
+        ..open
+    }
+}
+
 // ---------------------------------------------------------------- windmills
 
-const WINDMILL_NEEDS: [Need; 4] = [
-    Need { why: "the windmills in Part I chapter VIII", places: &[(1, 8)], words: &["molino"] },
-    Need { why: "the enchanter he blames, in Part I chapter VIII", places: &[(1, 8)], words: &["Frestón"] },
-    Need {
-        why: "how his judgment was lost, in Part I chapter I",
-        places: &[(1, 1)],
-        words: &["celebro", "perder el juicio"],
-    },
-    Need {
-        why: "a later chapter of Part II that recalls the windmills",
-        places: &[(2, 3), (2, 10), (2, 17)],
-        words: &["molinos de viento"],
-    },
-];
+fn windmill_needs() -> Vec<Need> {
+    vec![
+        Need {
+            why: "how many windmills they find, as this book gives it, in Part I chapter VIII",
+            places: &[(1, 8)],
+            words: vec![variant("windmills").trim_end_matches(" de viento")],
+        },
+        Need { why: "the enchanter he blames, in Part I chapter VIII", places: &[(1, 8)], words: vec!["Frestón"] },
+        Need {
+            why: "how his judgment was lost, in Part I chapter I",
+            places: &[(1, 1)],
+            words: vec!["celebro", "perder el juicio"],
+        },
+        Need {
+            why: "a later chapter of Part II that recalls the windmills",
+            places: &[(2, 3), (2, 10), (2, 17)],
+            words: vec!["molinos de viento"],
+        },
+    ]
+}
 
 fn windmill_parts(wd: &Path) -> Vec<Part> {
-    quote_parts(wd, r"(?im)^\W*verdict\W*\s*(yes|s[ií])\b", &WINDMILL_NEEDS, &[])
+    quote_parts(wd, r"(?im)^\W*verdict\W*\s*(yes|s[ií])\b", &windmill_needs(), &[])
 }
 
 fn quixote_windmills() -> Task {
     book_task(
         "quixote-windmills",
         "a 2 MB Spanish novel with two chapters numbered VIII; the proof of a delusion is spread over the first \
-         chapter, the episode and a chapter hundreds of pages later, and every quote must be real",
+         chapter, the episode and a chapter hundreds of pages later, and every quote must be real; the book is \
+         lightly edited, so the windmill count recalled from memory is wrong",
         "quijote.txt holds the Spanish text of Don Quixote (both parts, about 2 MB). Is Don Quixote hallucinating in \
          chapter VIII of Part One, and how can you be sure? Write ANSWER.md. First line: `VERDICT: yes` or \
          `VERDICT: no`. Then the evidence, one item per line, as `Part I, chapter VIII: \"exact quote\"`: give \
-         proof from the chapter itself, from the chapter where the book first shows what has happened to his mind, \
-         and from a chapter of Part Two that looks back on the episode. Copy every quote exactly from the book (an \
-         invented quote or a wrong part or chapter number spoils the answer).",
-        windmill_parts_outcome,
+         proof from the chapter itself (include the sentence where they first see the windmills, with the number \
+         of windmills as this copy of the book states it), from the chapter where the book first shows what has \
+         happened to his mind, and from a chapter of Part Two that looks back on the episode. Copy every quote \
+         exactly from this file (an invented quote or a wrong part or chapter number spoils the answer).",
+        |wd| Outcome::share(windmill_parts(wd)),
         windmill_solution,
     )
 }
 
-fn windmill_parts_outcome(wd: &Path) -> Outcome {
-    Outcome::share(windmill_parts(wd))
-}
-
-const WINDMILL_ANSWER: &str = "VERDICT: yes\n\n\
-Part I, chapter VIII: \"descubrieron treinta o cuarenta molinos de viento que hay en aquel campo\"\n\
+fn windmill_answer() -> String {
+    format!(
+        "VERDICT: yes\n\n\
+Part I, chapter VIII: \"descubrieron {} que hay en aquel campo\"\n\
 Part I, chapter VIII: \"aquel sabio Frestón que me robó el aposento y los libros ha vuelto estos gigantes en molinos\"\n\
 Part I, chapter I: \"del poco dormir y del mucho leer, se le secó el celebro, de manera que vino a perder el juicio\"\n\
-Part II, chapter X: \"como se pareció cuando dijo que los molinos de viento eran gigantes\"\n";
+Part II, chapter X: \"como se pareció cuando dijo que los molinos de viento eran gigantes\"\n",
+        variant("windmills")
+    )
+}
 
 fn windmill_solution(wd: &Path) {
-    write_answer(wd, WINDMILL_ANSWER);
+    write_answer(wd, &windmill_answer());
 }
 
 // ---------------------------------------------------------------- island
 
-const ISLAND_NEEDS: [Need; 4] = [
-    Need { why: "the promise of an island, Part I chapter VII", places: &[(1, 7)], words: &["ínsula"] },
-    Need { why: "the fallback kingdoms, Part I chapter X", places: &[(1, 10)], words: &["Dinamarca", "Soliadisa"] },
-    Need { why: "the island he is given, Part II chapter XLV", places: &[(2, 45)], words: &["Barataria"] },
-    Need { why: "how it ends, Part II chapter LIII", places: &[(2, 53)], words: &["desnudo nací"] },
-];
+fn island_needs() -> Vec<Need> {
+    vec![
+        Need { why: "the promise of an island, Part I chapter VII", places: &[(1, 7)], words: vec!["ínsula"] },
+        Need {
+            why: "the fallback kingdoms, as this book names them, Part I chapter X",
+            places: &[(1, 10)],
+            words: vec![variant("kingdom")],
+        },
+        Need { why: "the island he is given, Part II chapter XLV", places: &[(2, 45)], words: vec!["Barataria"] },
+        Need {
+            why: "the size of the town, as this book gives it, Part II chapter XLV",
+            places: &[(2, 45)],
+            words: vec![variant("town")],
+        },
+        Need { why: "how it ends, Part II chapter LIII", places: &[(2, 53)], words: vec!["desnudo nací"] },
+    ]
+}
 
 fn island_parts(wd: &Path) -> Vec<Part> {
     quote_parts(
         wd,
         r"(?im)^\W*island\W*\s*.*barataria",
-        &ISLAND_NEEDS,
+        &island_needs(),
         &[(r"(?im)^\W*giver\W*\s*.*(duke|duque)", "the GIVER line must name the duke")],
     )
 }
@@ -348,28 +501,202 @@ fn quixote_island() -> Task {
     book_task(
         "quixote-island",
         "a fact chain over four chapters hundreds of pages apart: the promise, the fallback, the gift and the end, \
-         with the closing proverb repeated in three other chapters",
+         with the closing proverb repeated in three other chapters; the book is lightly edited, so the fallback \
+         kingdom and the size of the town recalled from memory are wrong",
         "quijote.txt holds the Spanish text of Don Quixote (both parts, about 2 MB). Sancho Panza is promised an \
          island. Write ANSWER.md with: a line `ISLAND: <name of the island he finally governs>`, a line `GIVER: \
          <who gives it to him>`, and the evidence, one item per line, as `Part I, chapter VII: \"exact quote\"`: \
          (1) the chapter of Part One where his master first holds out an island as the reward for serving him, \
          (2) the chapter of Part One where, as Sancho grows impatient, his master names two kingdoms to fall back \
-         on if no island turns up, (3) the chapter of Part Two where Sancho takes possession, (4) the chapter \
-         where he gives it up, with the words he says on leaving. Copy every quote exactly from the book; the \
-         chapter must be the one that really holds it (an invented quote or a wrong part or chapter number spoils \
-         the answer).",
+         on if no island turns up, (3) the chapter of Part Two where Sancho takes possession (the quote must also \
+         give the size of the town, as this copy of the book states it), (4) the chapter where he gives it up, \
+         with the words he says on leaving. Copy every quote exactly from this file; the chapter must be the one \
+         that really holds it (an invented quote or a wrong part or chapter number spoils the answer).",
         |wd| Outcome::share(island_parts(wd)),
-        |wd| {
-            write_answer(
-                wd,
-                "ISLAND: Barataria\nGIVER: the Duke\n\n\
-Part I, chapter VII: \"ganase, en quítame allá esas pajas, alguna ínsula, y le dejase a él por gobernador della\"\n\
-Part I, chapter X: \"cuando faltare ínsula, ahí está el reino de Dinamarca o el de Soliadisa\"\n\
-Part II, chapter XLV: \"que se llamaba la ínsula Barataria\"\n\
-Part II, chapter LIII: \"desnudo nací, desnudo me hallo: ni pierdo ni gano\"\n",
-            )
-        },
+        island_solution,
     )
+}
+
+fn island_answer() -> String {
+    format!(
+        "ISLAND: Barataria\nGIVER: the Duke\n\n\
+Part I, chapter VII: \"ganase, en quítame allá esas pajas, alguna ínsula, y le dejase a él por gobernador della\"\n\
+Part I, chapter X: \"cuando faltare ínsula, ahí está {}, que te vendrán como anillo al dedo\"\n\
+Part II, chapter XLV: \"llegó Sancho a un lugar de hasta {} de los mejores que el duque tenía ... que se llamaba la ínsula Barataria\"\n\
+Part II, chapter LIII: \"desnudo nací, desnudo me hallo: ni pierdo ni gano\"\n",
+        variant("kingdom"),
+        variant("town")
+    )
+}
+
+fn island_solution(wd: &Path) {
+    write_answer(wd, &island_answer());
+}
+
+// ---------------------------------------------------------------- the thread of the island
+
+/// Distinct chapters a full answer must cite, each with a verbatim quote about an ínsula.
+///
+/// Measured on the perturbed book (the test `the_thread_is_spread_over_the_whole_book` prints it):
+/// 2129 kB, about 530k tokens, so 4.1 windows of 128k tokens. The word is in 42 chapters, 14 of
+/// Part I and 28 of Part II; split into fifths of the book by size (a fifth is about one window)
+/// they hold 7, 3, 11, 10 and 11. 24 is a little over half of the 42: too many for the opening
+/// chapters or one dense stretch (the most any single fifth holds is 11), so the answer needs hits
+/// from every fifth (the second has only 3 to choose from), at least 8 from Part I (14 exist) and
+/// 10 from Part II (28 exist). Each quote must span at least `THREAD_QUOTE` normalized characters,
+/// more than the one line a search prints, so every hit is read in context: about 24 reads of a
+/// few lines each plus one search for the word with line numbers and one for the chapter headings,
+/// well inside 40 steps, but far more text seen than fits one window if whole chapters are read.
+const THREAD_MIN: usize = 24;
+/// Chapters from each part, so neither part carries the answer alone.
+const THREAD_PART_MIN: (usize, usize) = (8, 10);
+/// Shortest quote that counts, in normalized characters.
+const THREAD_QUOTE: usize = 90;
+/// Quotes that exist only in the edited book: three inserted or changed sentences about the island.
+const THREAD_EDITED_MIN: usize = 2;
+
+/// The index of the fifth of the book (by size) a chapter starts in.
+fn fifths(book: &BTreeMap<(u32, u32), String>) -> BTreeMap<(u32, u32), usize> {
+    let total: usize = book.values().map(String::len).sum();
+    let mut seen = 0;
+    let mut out = BTreeMap::new();
+    for (k, t) in book {
+        out.insert(*k, (seen * 5 / total).min(4));
+        seen += t.len();
+    }
+    out
+}
+
+fn thread_parts(wd: &Path) -> Vec<Part> {
+    let (raw, orig) = match (book_text(), book_raw()) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => return vec![(false, e)],
+    };
+    let book = chapters(&raw);
+    let real = chapters(&orig);
+    let answer = read(wd, "ANSWER.md");
+    if answer.trim().is_empty() {
+        return vec![(false, "ANSWER.md is missing or empty".into())];
+    }
+    let mut bad = Vec::new();
+    let mut found: BTreeMap<(u32, u32), bool> = BTreeMap::new();
+    for c in cites(&answer) {
+        match valid(&c, &book) {
+            Err(e) => bad.push(e),
+            Ok((at, whole)) if !whole.contains("insula") => {
+                bad.push(format!("{:?} (part {} chapter {}) is not about an ínsula", c.quote, at.0, at.1));
+            }
+            Ok((_, whole)) if whole.len() < THREAD_QUOTE => {
+                bad.push(format!("{:?} is shorter than {THREAD_QUOTE} characters", c.quote));
+            }
+            Ok((at, _)) => {
+                // edited: some fragment of the quote is not in the same chapter of the real book
+                let edited = real.get(&at).is_none_or(|t| {
+                    let hay = norm(t);
+                    c.quote.replace('…', "...").split("...").map(norm).any(|f| f.len() >= 6 && !hay.contains(&f))
+                });
+                let e = found.entry(at).or_insert(false);
+                *e = *e || edited;
+            }
+        }
+    }
+    let part = |p: u32| found.keys().filter(|k| k.0 == p).count();
+    let fifth = fifths(&book);
+    let covered: std::collections::BTreeSet<usize> = found.keys().map(|k| fifth[k]).collect();
+    vec![
+        (
+            bad.is_empty() && !found.is_empty(),
+            match bad.first() {
+                Some(e) => format!("a citation is invented, mislabelled, too short or not about an ínsula: {e}"),
+                None => "no citations found".to_string(),
+            },
+        ),
+        (found.len() >= THREAD_MIN, format!("needs {THREAD_MIN} different chapters, found {}", found.len())),
+        (
+            part(1) >= THREAD_PART_MIN.0 && part(2) >= THREAD_PART_MIN.1,
+            format!(
+                "needs {} chapters of Part I and {} of Part II, found {} and {}",
+                THREAD_PART_MIN.0,
+                THREAD_PART_MIN.1,
+                part(1),
+                part(2)
+            ),
+        ),
+        (
+            covered.len() == 5,
+            format!("the quotes must reach every fifth of the book, they reach {:?} of 0 to 4", covered),
+        ),
+        (
+            found.values().filter(|e| **e).count() >= THREAD_EDITED_MIN,
+            format!(
+                "needs {THREAD_EDITED_MIN} quotes from the sentences about the island that only this copy of the \
+                 book has, found {}",
+                found.values().filter(|e| **e).count()
+            ),
+        ),
+    ]
+}
+
+fn quixote_thread() -> Task {
+    book_task(
+        "quixote-insula-thread",
+        "one thread spread over both parts and the whole 2 MB book (about four windows): every chapter where \
+         an ínsula is mentioned, with part, chapter and an exact quote; a full answer needs hits from every fifth \
+         of the book, kept while the window rolls over, and some sentences exist only in this edited copy",
+        &format!(
+            "quijote.txt holds the Spanish text of Don Quixote (both parts, about 2 MB). The word ínsula (or \
+             ínsulas) comes up again and again, in Sancho's mouth and others', from the start of Part One to the \
+             end of Part Two. Write ANSWER.md listing at least {THREAD_MIN} different chapters where it is \
+             mentioned, at least {} from Part One and {} from Part Two, reaching every stretch of the book (not \
+             just the first chapters or one dense stretch), one per line as `Part I, chapter VII: \"exact \
+             quote\"`. Each quote must contain the word, copy at least {THREAD_QUOTE} characters (a full phrase, \
+             longer than a single printed line) exactly from this file, and sit in the chapter you name. This \
+             copy of the book has been edited, so a passage you remember may differ here or be missing: at least \
+             {THREAD_EDITED_MIN} of your items must be sentences about an ínsula that you find only in this file. \
+             An invented quote or a wrong part or chapter number spoils the answer.",
+            THREAD_PART_MIN.0, THREAD_PART_MIN.1
+        ),
+        thread_outcome,
+        thread_solution,
+    )
+}
+
+fn thread_outcome(wd: &Path) -> Outcome {
+    Outcome::share(thread_parts(wd))
+}
+
+/// The reference answer for a book: in every chapter that mentions an ínsula, a window of its first
+/// mention at least `THREAD_QUOTE` characters long and free of quotation marks.
+fn thread_answer(book: &BTreeMap<(u32, u32), String>) -> String {
+    let mut picks: Vec<((u32, u32), String)> = Vec::new();
+    for (at, text) in book {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        // a window of the flat text around the first mention that is long enough and clean of quotes
+        let Some(i) = flat.to_lowercase().find("ínsula") else { continue };
+        let mut start = i.saturating_sub(60);
+        while !flat.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = (i + 80).min(flat.len());
+        while !flat.is_char_boundary(end) {
+            end += 1;
+        }
+        let q = &flat[start..end];
+        let q = q.split_once(' ').map_or(q, |x| x.1);
+        let q = q.rsplit_once(' ').map_or(q, |x| x.0);
+        if !q.contains(['"', '“', '”', '«', '»']) && norm(q).len() >= THREAD_QUOTE + 10 {
+            picks.push((*at, q.to_string()));
+        }
+    }
+    let mut lines = String::new();
+    for ((p, c), q) in picks {
+        lines.push_str(&format!("Part {}, chapter {}: \"{q}\"\n", if p == 1 { "I" } else { "II" }, c));
+    }
+    lines
+}
+
+fn thread_solution(wd: &Path) {
+    write_answer(wd, &thread_answer(&chapters(&book_text().expect("the cached book"))));
 }
 
 // ---------------------------------------------------------------- share request
@@ -532,12 +859,136 @@ mod tests {
         assert!(hits.contains(&(2, 53)) && hits.len() >= 3, "{hits:?}");
     }
 
+    const BOOK_TASKS: [&str; 3] = ["quixote-windmills", "quixote-island", "quixote-insula-thread"];
+
+    /// What someone who knows the novel by heart, and has not read this copy, would write.
+    const MEMORY_WINDMILLS: &str = "VERDICT: yes\n\n\
+Part I, chapter VIII: \"descubrieron treinta o cuarenta molinos de viento que hay en aquel campo\"\n\
+Part I, chapter VIII: \"aquel sabio Frestón que me robó el aposento y los libros ha vuelto estos gigantes en molinos\"\n\
+Part I, chapter I: \"del poco dormir y del mucho leer, se le secó el celebro, de manera que vino a perder el juicio\"\n\
+Part II, chapter X: \"como se pareció cuando dijo que los molinos de viento eran gigantes\"\n";
+
+    #[test]
+    fn closed_variants_have_no_book_and_the_same_question() {
+        for id in BOOK_TASKS {
+            let open = by_id(id);
+            let closed = by_id(&format!("{id}-closed"));
+            assert_eq!(closed.group, "closed");
+            assert!(closed.setup.is_none() && closed.files.is_empty());
+            let wd = fresh(&closed);
+            assert_eq!(std::fs::read_dir(wd.path()).unwrap().count(), 0, "{id}: closed folder is not empty");
+            assert!(!wd.path().join("quijote.txt").exists());
+            assert!(closed.turns[0].1.contains("NOT in this folder"));
+            assert!(closed.turns[0].1.ends_with(&open.turns[0].1));
+            let wd = fresh(&open);
+            assert!(wd.path().join("quijote.txt").exists(), "{id}: the open task has its book");
+        }
+    }
+
+    #[test]
+    fn closed_variants_grade_like_the_open_task_and_memory_does_not_pass() {
+        if !book_cached() {
+            return;
+        }
+        for id in BOOK_TASKS {
+            let t = by_id(&format!("{id}-closed"));
+            let wd = fresh(&t);
+            assert!(!(t.check)(wd.path()).ok, "{id}-closed: an empty answer passes");
+            (t.solution)(wd.path());
+            let got = (t.check)(wd.path());
+            assert!(got.ok && got.score == 1.0, "{id}-closed: {}", got.detail);
+        }
+        // the answer from memory of the real book fails where the edits are
+        let t = by_id("quixote-windmills-closed");
+        let wd = fresh(&t);
+        write_answer(wd.path(), MEMORY_WINDMILLS);
+        let f = failing(windmill_parts(wd.path()));
+        assert!(f.iter().any(|w| w.contains("invented")), "{f:?}");
+        assert!(!(t.check)(wd.path()).ok);
+        // the same, with memory of the island chain
+        let t = by_id("quixote-island-closed");
+        let wd = fresh(&t);
+        let memory = island_answer().replace(variant("kingdom"), "el reino de Dinamarca o el de Soliadisa");
+        write_answer(wd.path(), &memory);
+        assert!(!(t.check)(wd.path()).ok);
+        let memory = island_answer().replace(variant("town"), "mil vecinos, que era");
+        write_answer(wd.path(), &memory);
+        assert!(!(t.check)(wd.path()).ok);
+        // and for the thread: the real book's sentences, not the edited copy's
+        let real = thread_answer(&chapters(&book_raw().unwrap()));
+        write_answer(wd.path(), &real);
+        let f = failing(thread_parts(wd.path()));
+        assert!(!f.is_empty(), "the real book's thread passes");
+    }
+
+    #[test]
+    fn the_perturbation_is_deterministic_and_minimal() {
+        if !book_cached() {
+            return;
+        }
+        let raw = book_raw().unwrap();
+        let a = perturb(&raw).unwrap();
+        assert_eq!(a, perturb(&raw).unwrap(), "the perturbation is not repeatable");
+        // the same edits drawn again give the same variants
+        for e in &EDITS {
+            assert_eq!(variant(e.id), variant(e.id));
+            assert!(e.variants.contains(&variant(e.id)));
+        }
+        // minimal: same lines but one per edit, every other line byte-identical
+        let (ra, rb): (Vec<&str>, Vec<&str>) = (raw.lines().collect(), a.lines().collect());
+        assert_eq!(ra.len(), rb.len());
+        let changed: Vec<usize> = (0..ra.len()).filter(|&i| ra[i] != rb[i]).collect();
+        assert_eq!(changed.len(), EDITS.len(), "{changed:?}");
+        let grown = a.len() as i64 - raw.len() as i64;
+        assert!(0 < grown && grown < 1_500, "{grown}");
+        // every edit shows in the book and the real wording is gone from the swaps
+        for e in &EDITS {
+            assert!(a.contains(variant(e.id)));
+            if !e.insert {
+                assert!(!a.contains(e.find), "{} is still in the book", e.find);
+            }
+        }
+        // a book where an anchor is missing is refused
+        assert!(perturb("nothing to find").is_err());
+    }
+
+    #[test]
+    fn the_thread_is_spread_over_the_whole_book() {
+        if !book_cached() {
+            return;
+        }
+        let book = chapters(&book_text().unwrap());
+        let fifth = fifths(&book);
+        let with: Vec<(u32, u32)> = book.iter().filter(|(_, t)| norm(t).contains("insula")).map(|(k, _)| *k).collect();
+        let per_part = |p: u32| with.iter().filter(|k| k.0 == p).count();
+        let mut per_fifth = [0usize; 5];
+        for k in &with {
+            per_fifth[fifth[k]] += 1;
+        }
+        let kb: usize = book.values().map(String::len).sum::<usize>() / 1000;
+        eprintln!(
+            "book {kb} kB; chapters with an ínsula: {} (Part I {}, Part II {}); per fifth {per_fifth:?}",
+            with.len(),
+            per_part(1),
+            per_part(2)
+        );
+        assert!(per_fifth.iter().all(|&n| n > 0), "{per_fifth:?}");
+        assert!(with.len() >= THREAD_MIN + 8, "enough chapters to choose from: {}", with.len());
+        assert!(per_part(1) >= THREAD_PART_MIN.0 + 4 && per_part(2) >= THREAD_PART_MIN.1 + 4);
+        // the edited sentences are in chapters that had no ínsula before
+        let real = chapters(&book_raw().unwrap());
+        for id in ["count", "boat", "wood"] {
+            let at = book.iter().find(|(_, t)| norm(t).contains(&norm(variant(id)))).map(|(k, _)| *k).unwrap();
+            assert!(!norm(&real[&at]).contains("insula"), "{id}: chapter {at:?} already had an ínsula");
+        }
+    }
+
     #[test]
     fn book_tasks_build_pass_their_reference_and_fail_otherwise() {
         if !book_cached() {
             return;
         }
-        for id in ["quixote-windmills", "quixote-island"] {
+        for id in BOOK_TASKS {
             let t = by_id(id);
             let wd = fresh(&t);
             assert!(std::fs::metadata(wd.path().join("quijote.txt")).unwrap().len() > 1_500_000);
@@ -559,21 +1010,28 @@ mod tests {
             write_answer(wd.path(), text);
             failing(windmill_parts(wd.path()))
         };
+        let good = windmill_answer();
+        // the book was edited: the count from memory is not in this copy
+        let f = run(MEMORY_WINDMILLS);
+        assert!(f.iter().any(|w| w.contains("invented")), "{f:?}");
         // the other chapter VIII (Part Two) is not where the windmills are
-        let wrong = WINDMILL_ANSWER.replace("Part I, chapter VIII: \"aquel", "Part II, chapter VIII: \"aquel");
-        let f = run(&wrong);
+        let f = run(&good.replace("Part I, chapter VIII: \"aquel", "Part II, chapter VIII: \"aquel"));
         assert!(f.iter().any(|w| w.contains("mislabelled")), "{f:?}");
         // an invented quote
-        let f = run(&WINDMILL_ANSWER.replace("molinos de viento que hay", "molinos de viento que había"));
+        let f = run(&good.replace("que hay en aquel campo", "que había en aquel campo"));
         assert!(f.iter().any(|w| w.contains("invented")), "{f:?}");
         // right quote, right book, wrong chapter for the memory of Part Two
-        let f = run(&WINDMILL_ANSWER.replace("Part II, chapter X:", "Part II, chapter XI:"));
+        let f = run(&good.replace("Part II, chapter X:", "Part II, chapter XI:"));
         assert!(!f.is_empty());
         // the wrong verdict
-        let f = run(&WINDMILL_ANSWER.replace("VERDICT: yes", "VERDICT: no"));
+        let f = run(&good.replace("VERDICT: yes", "VERDICT: no"));
         assert_eq!(f.len(), 1, "{f:?}");
+        // the windmill sentence without the count is not the evidence asked for
+        let f =
+            run(&good.replace(&format!("descubrieron {} que hay", variant("windmills")), "descubrieron unos que hay"));
+        assert!(!f.is_empty());
         // an ellipsis is tolerated, accents and case are not held against a quote
-        let f = run(&WINDMILL_ANSWER.replace(
+        let f = run(&good.replace(
             "aquel sabio Frestón que me robó el aposento y los libros ha vuelto",
             "AQUEL SABIO FRESTON que me robo ... ha vuelto",
         ));
@@ -587,8 +1045,7 @@ mod tests {
         }
         let t = by_id("quixote-island");
         let wd = fresh(&t);
-        (t.solution)(wd.path());
-        let good = read(wd.path(), "ANSWER.md");
+        let good = island_answer();
         let run = |text: &str| {
             write_answer(wd.path(), text);
             failing(island_parts(wd.path()))
@@ -602,6 +1059,63 @@ mod tests {
         assert!(!f.is_empty());
         let f = run(&good.replace("Part I, chapter X:", "Part I, chapter XI:"));
         assert!(f.iter().any(|w| w.contains("mislabelled")), "{f:?}");
+        // memory: the real kingdom and the real size of the town are not in this copy
+        let f = run(&good.replace(variant("kingdom"), "el reino de Dinamarca o el de Soliadisa"));
+        assert!(f.iter().any(|w| w.contains("invented")), "{f:?}");
+        let f = run(&good.replace(variant("town"), "mil vecinos, que era"));
+        assert!(f.iter().any(|w| w.contains("invented")), "{f:?}");
+    }
+
+    #[test]
+    fn thread_decoys_fail() {
+        if !book_cached() {
+            return;
+        }
+        let t = by_id("quixote-insula-thread");
+        let wd = fresh(&t);
+        (t.solution)(wd.path());
+        let good = read(wd.path(), "ANSWER.md");
+        let lines: Vec<&str> = good.lines().collect();
+        assert!(lines.len() >= THREAD_MIN + 8, "{}", lines.len());
+        let run = |text: &str| {
+            write_answer(wd.path(), text);
+            failing(thread_parts(wd.path()))
+        };
+        assert!(run(&good).is_empty());
+        // too few chapters: only the first half of the list
+        let f = run(&lines[..lines.len() / 2].join("\n"));
+        assert!(!f.is_empty());
+        // all of Part I only: not spread over the book
+        let part1: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("Part I,")).collect();
+        let f = run(&part1.join("\n"));
+        assert!(f.iter().any(|w| w.contains("every fifth") || w.contains("Part II")), "{f:?}");
+        // one line mislabelled or invented spoils the whole answer
+        let f = run(&good.replacen("Part I, chapter", "Part II, chapter", 1));
+        assert!(f.iter().any(|w| w.contains("invented")), "{f:?}");
+        let f =
+            run(&format!("{good}Part II, chapter X: \"una ínsula que Cervantes jamás escribió en este capítulo\"\n"));
+        assert!(f.iter().any(|w| w.contains("invented")), "{f:?}");
+        // short quotes and quotes about something else do not count
+        let f = run(&format!("{good}Part I, chapter VII: \"alguna ínsula, y le dejase a él por gobernador\"\n"));
+        assert!(f.iter().any(|w| w.contains("shorter")), "{f:?}");
+        let f = run(&format!("{good}Part I, chapter VIII: \"aquel sabio Frestón que me robó el aposento y los libros ha vuelto estos gigantes en molinos\"\n"));
+        assert!(f.iter().any(|w| w.contains("not about an")), "{f:?}");
+        // the same chapter ten times is one chapter
+        let f = run(&vec![lines[0]; 40].join("\n"));
+        assert!(f.iter().any(|w| w.contains("different chapters")), "{f:?}");
+        // without the edited sentences the answer is incomplete
+        let real = chapters(&book_raw().unwrap());
+        let keep: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| {
+                let c = &cites(l)[0];
+                norm(&real[&(c.part.unwrap(), c.chapter.unwrap())]).contains(&norm(&c.quote))
+            })
+            .collect();
+        assert!(keep.len() < lines.len());
+        let f = run(&keep.join("\n"));
+        assert!(f.iter().any(|w| w.contains("only this copy")), "{f:?}");
     }
 
     #[test]

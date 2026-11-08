@@ -244,6 +244,7 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
     }
     s.push_str(&steps_table(&clean, &arms));
     s.push_str(&parts(&clean, &arms));
+    s.push_str(&closed_book(&clean, &arms));
     if dirty > 0 {
         s.push_str(&format!(
             "\n## Contaminated runs\n\n{dirty} run(s) used absolute paths outside their working directory, so they may have read the answer elsewhere; they are left out of the means and deltas above.\n\n| task | arm | paths |\n|---|---|---|\n"
@@ -267,6 +268,53 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
             task.push_str(" (contaminated)");
         }
         s.push_str(&row(&[task, r.arm.clone()], &numbers(&[r])));
+    }
+    s
+}
+
+/// The closed-book control: for each task `X-closed` whose open twin `X` also ran, per arm the
+/// open and the closed score and solves side by side. A closed run that solves the task answered
+/// from memory of the text, so the open result for that task proves nothing about reading. A
+/// closed score above zero alone is expected: parts the edits do not touch can be recalled.
+fn closed_book(records: &[Record], arms: &[&str]) -> String {
+    let mut s = String::new();
+    let mut tasks: Vec<&str> = Vec::new();
+    for r in records {
+        let twin = r.task.strip_suffix("-closed");
+        if twin.is_some_and(|t| records.iter().any(|o| o.task == t)) && !tasks.contains(&r.task.as_str()) {
+            tasks.push(&r.task);
+        }
+    }
+    if tasks.is_empty() {
+        return s;
+    }
+    s.push_str(
+        "\n## Closed-book control\n\nThe same task with no book in the folder. Passing it means the answer came from \
+         memory, not from reading (contaminated). A partial closed score is expected: the parts the edits do not \
+         touch can be recalled.\n\n| task | arm | open score | open solved | closed score | closed solved | verdict |\n\
+         |---|---|---|---|---|---|---|\n",
+    );
+    for closed in tasks {
+        let open = closed.trim_end_matches("-closed");
+        for arm in arms {
+            let pick = |task: &str| -> Vec<&Record> {
+                records.iter().filter(|r| r.task == task && r.arm == *arm && r.stop != Some(Stop::Budget)).collect()
+            };
+            let (o, c) = (pick(open), pick(closed));
+            if o.is_empty() || c.is_empty() {
+                continue;
+            }
+            let mean = |v: &[&Record]| v.iter().map(|r| r.score).sum::<f64>() / v.len() as f64;
+            let solved = |v: &[&Record]| format!("{}/{}", v.iter().filter(|r| r.ok).count(), v.len());
+            let verdict = if c.iter().any(|r| r.ok) { "CONTAMINATED: solved without the book" } else { "clean" };
+            s.push_str(&format!(
+                "| {open} | {arm} | {:.2} | {} | {:.2} | {} | {verdict} |\n",
+                mean(&o),
+                solved(&o),
+                mean(&c),
+                solved(&c)
+            ));
+        }
     }
     s
 }
@@ -488,6 +536,27 @@ mod tests {
             spent: None,
             repro: None,
         }
+    }
+
+    #[test]
+    fn the_closed_book_score_is_printed_beside_the_open_one() {
+        let mut recs = vec![
+            record("quixote-island", "plain", 1.0, 0.5),
+            record("quixote-island-closed", "plain", 0.4, 0.1),
+            record("quixote-windmills", "plain", 1.0, 0.5),
+            record("quixote-windmills-closed", "plain", 1.0, 0.1),
+            record("lonely-closed", "plain", 1.0, 0.1),
+        ];
+        for r in &mut recs {
+            r.ok = r.score >= 1.0;
+        }
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("## Closed-book control"), "{s}");
+        assert!(s.contains("| quixote-island | plain | 1.00 | 1/1 | 0.40 | 0/1 | clean |"), "{s}");
+        assert!(s.contains("| quixote-windmills | plain | 1.00 | 1/1 | 1.00 | 1/1 | CONTAMINATED"), "{s}");
+        assert!(!s.contains("| lonely |"), "a closed task without its open twin has no row: {s}");
+        let none = summary(&head(1), &[record("a", "plain", 1.0, 0.5)]);
+        assert!(!none.contains("Closed-book"), "{none}");
     }
 
     #[test]

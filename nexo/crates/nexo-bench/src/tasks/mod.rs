@@ -25,7 +25,7 @@ pub struct Task {
     pub id: &'static str,
     /// What it tests about the context.
     pub trap: &'static str,
-    /// The group `--tasks` can name instead of listing ids: core, long, more or hard.
+    /// The group `--tasks` can name instead of listing ids: core, long, more, hard or closed.
     pub group: &'static str,
     /// The files of the working directory: `(relative path, content)`.
     pub files: Vec<(String, String)>,
@@ -67,7 +67,7 @@ pub(crate) fn always() -> Result<(), String> {
 }
 
 /// The groups `--tasks` accepts besides task ids.
-pub const GROUPS: [&str; 8] = ["all", "core", "long", "long2", "heavy", "more", "hard", "padded"];
+pub const GROUPS: [&str; 9] = ["all", "core", "long", "long2", "closed", "heavy", "more", "hard", "padded"];
 
 /// Every task, in the order they run.
 pub fn all() -> Vec<Task> {
@@ -123,12 +123,13 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), every.len());
-        assert_eq!(every.len(), 21);
+        assert_eq!(every.len(), 25);
         assert_eq!(select(&["realm"]).unwrap().len(), 1);
         assert_eq!(select(&["core,realm"]).unwrap().len(), 7);
-        assert_eq!(select::<&str>(&[]).unwrap().len(), 21);
+        assert_eq!(select::<&str>(&[]).unwrap().len(), 25);
         assert_eq!(select(&["heavy"]).unwrap().len(), 3);
-        assert_eq!(select(&["long2"]).unwrap().len(), 3);
+        assert_eq!(select(&["long2"]).unwrap().len(), 4);
+        assert_eq!(select(&["closed"]).unwrap().len(), 3);
         assert!(select(&["nope"]).is_err());
     }
 

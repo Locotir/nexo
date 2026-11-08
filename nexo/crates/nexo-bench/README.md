@@ -17,7 +17,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--model NAME` | the model | required |
 | `--key KEY` | the API key (leave out for a local server; `-` reads it from stdin, out of the process list) | none |
 | `--protocol P` | `anthropic`, `openai-chat`, `openai-responses`, `gemini` | guessed from the address |
-| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `long2`, `more`, `hard`, `padded`), or the external benchmark's `repoqa` and `canonstep` (with `--llmb`), comma separated or repeated | `all` |
+| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `long2`, `closed`, `more`, `hard`, `padded`), or the external benchmark's `repoqa` and `canonstep` (with `--llmb`), comma separated or repeated | `all` |
 | `--arms LIST` | arms, comma separated or repeated (see below) | `plain,compact,curator` |
 | `--repeats N` | times each task runs with each arm | 1 |
 | `--max-steps N` | most steps (model requests that offer tools) per task | 100 |
@@ -162,6 +162,8 @@ only make sense together.
 | `stale-doc` | more | a correction to a file is given once, early; later the file is to be followed |
 | `quixote-windmills` | long2 | is Don Quixote hallucinating in Part I chapter VIII: verbatim quotes with part and chapter from three distant places of the 2 MB Spanish novel (downloaded once, SHA-256 checked, cached in `~/build-cache/bench-data`); the other chapter VIII is the decoy |
 | `quixote-island` | long2 | the island promised to Sancho, followed over four chapters hundreds of pages apart; the closing proverb is repeated in three other chapters |
+| `quixote-insula-thread` | long2 | every stretch of the whole book: at least 24 chapters (8 of Part I, 10 of Part II, one in each fifth of the book) with a verbatim 90-character quote about an ínsula, two of them from sentences that exist only in the edited copy |
+| `quixote-windmills-closed`, `quixote-island-closed`, `quixote-insula-thread-closed` | closed | closed-book control: the same question and grader with no `quijote.txt` in the folder. The book tasks use an edited copy of the novel (a few seeded changes: a count, two names, three inserted sentences; the rest is byte-identical), so an answer from memory is wrong where it matters. The summary prints each closed score beside the open one; a closed run that solves the task is marked CONTAMINATED |
 | `share-request` | long2 | document the exact request a small notes app's own front end sends (cookie, anti-forgery header, query, body keys) from a PHP page, a script, a Flask blueprint, middleware and settings; a deprecated v1 route and an unregistered handler are decoys |
 | `padded-revert-code` | padded | `selective-revert` across three files, with over 8,000 tokens of pasted material in between |
 | `padded-revert-data` | padded | the same in a data project: undo the first of three edits to a SQL transform and a CSV |
