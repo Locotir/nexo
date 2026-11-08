@@ -106,6 +106,10 @@ impl Tool for Edit {
         };
         let (edited, n) = match apply(&text, &changes, &shown) {
             Ok(r) => r,
+            Err(e) if e.contains("`old_string` not found") => {
+                let hint = elsewhere(&ctx.cwd, &path, &text, &changes).await.unwrap_or_default();
+                return ToolOutput::error(format!("{e}{hint}"));
+            }
             Err(e) => return ToolOutput::error(e),
         };
         if let Err(e) = write_atomic(&path, edited.as_bytes()).await {
@@ -193,6 +197,38 @@ fn replace(text: &str, old: &str, new: &str, all: bool, shown: &str) -> Result<(
         n => Err(format!(
             "edit: `old_string` occurs {n} times in {shown}; include more surrounding lines to make it unique, or set replace_all"
         )),
+    }
+}
+
+/// Files looked at beside the edited one, and the largest of them.
+const SIBLINGS: usize = 200;
+const SIBLING_BYTES: u64 = 1 << 20;
+
+/// When the first change whose `old_string` is not in `text` is exactly in one other file of the
+/// same folder, a sentence saying where (`edit` changes one file per call). `None` when it is in
+/// none or in several, so the hint never guesses.
+async fn elsewhere(cwd: &std::path::Path, path: &std::path::Path, text: &str, changes: &[Change]) -> Option<String> {
+    let old = &changes.iter().find(|(old, _, _)| !text.contains(old.as_str()))?.0;
+    let mut dir = tokio::fs::read_dir(path.parent()?).await.ok()?;
+    let mut found: Vec<(std::path::PathBuf, usize)> = Vec::new();
+    for _ in 0..SIBLINGS {
+        let Some(e) = dir.next_entry().await.ok()? else { break };
+        let other = e.path();
+        if other == path || !e.metadata().await.is_ok_and(|m| m.is_file() && m.len() <= SIBLING_BYTES) {
+            continue;
+        }
+        let Ok(bytes) = tokio::fs::read(&other).await else { continue };
+        let Ok(body) = String::from_utf8(bytes) else { continue };
+        if let Some(at) = body.find(old.as_str()) {
+            found.push((other, body[..at].matches('\n').count() + 1));
+        }
+    }
+    match found.as_slice() {
+        [(other, line)] => Some(format!(
+            "; it is in {} line {line}: `edit` changes one file per call, so send that path for that change",
+            display_path(cwd, other)
+        )),
+        _ => None,
     }
 }
 
@@ -355,8 +391,9 @@ mod tests {
         assert!(out.content.contains("as given; line 6 matches it"), "{}", out.content);
         assert!(out.content.contains("in the indentation"), "{}", out.content);
         // two places that match up to whitespace: no hint, so it never points at the wrong one
-        std::fs::write(d.path().join("b.rs"), "  x\n\tx\n").unwrap();
-        let out = Edit.run(json!({"path": "b.rs", "old_string": "x ", "new_string": "z"}), &c).await;
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/b.rs"), "  x\n\tx\n").unwrap();
+        let out = Edit.run(json!({"path": "sub/b.rs", "old_string": "x ", "new_string": "z"}), &c).await;
         assert!(out.content.ends_with("read the file and copy the text exactly"), "{}", out.content);
         assert_eq!(std::fs::read_to_string(d.path().join("a.rs")).unwrap(), file, "nothing written");
     }
@@ -556,5 +593,37 @@ mod around_tests {
         assert_eq!(s.lines().filter(|l| l.contains('│')).count(), SNIPPET_LINES, "{s}");
         assert!(s.ends_with("…\n"), "{s}");
         assert_eq!(around("a\n", "a\n"), "");
+    }
+}
+
+#[cfg(test)]
+mod elsewhere_tests {
+    use super::*;
+
+    /// The H1 logs: two changes sent for `src/report.rs`, one of them for text in `src/pricing.rs`.
+    #[tokio::test]
+    async fn a_text_that_lives_in_another_file_names_that_file() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::create_dir(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("src/pricing.rs"), "use x;\n\npub fn margin(cost: f64) -> f64 {\n    cost\n}\n")
+            .unwrap();
+        std::fs::write(d.path().join("src/report.rs"), "pub fn format_row() {}\n").unwrap();
+        let edits = json!([
+            {"old_string": "pub fn format_row() {}", "new_string": "/// Row.\npub fn format_row() {}"},
+            {"old_string": "pub fn margin(cost: f64) -> f64 {", "new_string": "/// Margin.\npub fn margin(cost: f64) -> f64 {"}
+        ]);
+        let out = Edit.run(json!({"path": "src/report.rs", "edits": edits}), &c).await;
+        assert!(out.is_error && out.content.contains("change 2 of 2"), "{}", out.content);
+        assert!(
+            out.content.contains("it is in src/pricing.rs line 3") && out.content.contains("one file"),
+            "{}",
+            out.content
+        );
+        assert_eq!(std::fs::read_to_string(d.path().join("src/report.rs")).unwrap(), "pub fn format_row() {}\n");
+        // in two files: no guess
+        std::fs::write(d.path().join("src/other.rs"), "pub fn margin(cost: f64) -> f64 {\n").unwrap();
+        let out = Edit.run(json!({"path": "src/report.rs", "edits": edits}), &c).await;
+        assert!(out.is_error && !out.content.contains("it is in"), "{}", out.content);
     }
 }
