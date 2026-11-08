@@ -836,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_goes_from_working_to_idle_to_stalled_and_each_change_is_marked() {
+    fn a_finished_session_goes_from_working_to_idle_and_each_change_is_marked() {
         let mut s = Supervisor::new(Policy::default());
         s.add(Box::new(Fake(
             SourceKind::External,
@@ -863,8 +863,8 @@ mod tests {
         let r = &s.rows(1000 + 6 * 60)[0];
         assert!(matches!(r.state, State::Idle { .. }));
         assert_eq!(r.last_action.as_ref().map(|a| a.0.as_str()), Some("marked idle"));
-        assert!(s.tick(1000 + 40 * 60));
-        assert_eq!(s.rows(1000 + 40 * 60)[0].state, State::Stalled);
+        s.tick(1000 + 40 * 60);
+        assert_eq!(s.rows(1000 + 40 * 60)[0].state, State::Idle { min: 40 }, "a finished turn never reads as stalled");
     }
 
     #[test]
