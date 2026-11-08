@@ -773,8 +773,10 @@ fn the_window_is_measured_again_when_sessions_arrive_after_it_opened() {
 #[test]
 fn a_tiny_terminal_keeps_a_session_line_and_drops_the_group_header() {
     let mut a = scene(rows());
-    let text = window_lines(&mut a, 36, 9).join("\n");
-    assert!(text.contains("project"), "{text}");
+    let lines = window_lines(&mut a, 36, 9);
+    let text = lines.join("\n");
+    // the detail line also names the project, so a session line is a second one
+    assert!(lines.iter().filter(|l| l.contains("project")).count() >= 2, "{text}");
 }
 
 #[test]

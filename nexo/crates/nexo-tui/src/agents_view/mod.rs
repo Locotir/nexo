@@ -993,7 +993,9 @@ impl AgentsView {
             let line = self.pulse_line(theme, pad.width as usize, now, fx);
             f.render_widget(Paragraph::new(Line::from(line)), Rect { y: pad.y + 1, height: 1, ..pad });
         }
-        if pad.height > 1 + pulse {
+        // four rows or fewer: the rule gives way so one session line shows
+        let slim = pad.height < 5 + pulse;
+        if !slim {
             f.render_widget(
                 Paragraph::new(Span::styled("─".repeat(pad.width as usize), theme.dim2())),
                 Rect { y: rule_y, height: 1, ..pad },
@@ -1001,7 +1003,7 @@ impl AgentsView {
         }
         let foot = Rect::new(pad.x, pad.y + pad.height.saturating_sub(1), pad.width, 1);
         let detail = Rect::new(pad.x, foot.y.saturating_sub(1), pad.width, 1);
-        let body_top = pad.y + 2 + pulse;
+        let body_top = pad.y + if slim { 1 } else { 2 } + pulse;
         let spare = u16::from(r.height >= SPARE_FROM);
         let body = Rect::new(pad.x, body_top, pad.width, detail.y.saturating_sub(body_top + spare));
         self.cards.clear();
@@ -1024,8 +1026,10 @@ impl AgentsView {
             };
             self.draw_bands(f, body, layout, card_h, &shown, &groups, theme, now, fx);
             let lane = Rect { y: rule_y, height: 1, ..pad };
-            self.draw_flights(f, lane, body, &shown, theme, now);
-            self.draw_letter(f, lane, body, &shown, theme, now);
+            if !slim {
+                self.draw_flights(f, lane, body, &shown, theme, now);
+                self.draw_letter(f, lane, body, &shown, theme, now);
+            }
             if let Some(row) = shown.get(self.selected) {
                 f.render_widget(Paragraph::new(Line::from(self.detail(row, theme, detail.width as usize))), detail);
             }
