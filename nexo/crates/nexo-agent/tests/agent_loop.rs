@@ -525,7 +525,7 @@ async fn an_interrupt_keeps_the_partial_reply_and_the_queue_waits() {
 async fn an_interrupt_cancels_a_running_tool() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![
-        Reply::Events(call("b1", "bash", json!({"command": "sleep 30"}))),
+        Reply::Events(call("b1", "bash", json!({"command": "echo go; sleep 30"}))),
         Reply::Events(text("after")),
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;
@@ -3977,7 +3977,7 @@ async fn a_cleared_conversation_does_not_count_the_failures_of_the_last_one() {
 async fn a_clear_during_a_turn_leaves_the_agent_idle() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![
-        Reply::Events(call("b1", "bash", json!({"command": "sleep 30"}))),
+        Reply::Events(call("b1", "bash", json!({"command": "echo go; sleep 30"}))),
         Reply::Events(text("fresh answer")),
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, d.path()).await;

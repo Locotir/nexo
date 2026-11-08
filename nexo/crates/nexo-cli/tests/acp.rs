@@ -530,7 +530,7 @@ fn bash_runs_in_nexo_when_the_client_has_no_terminal() {
 
 #[test]
 fn cancelling_kills_and_releases_the_terminal() {
-    let d = dirs(Some(&bash_script("sleep 30")));
+    let d = dirs(Some(&bash_script("echo go; sleep 30")));
     let mut c = Client::start(&d);
     c.initialize_with(false, true);
     let sid = c.new_session(&d.work);

@@ -32,13 +32,14 @@ impl Tool for Bash {
         ToolSpec {
             name: "bash".into(),
             description: format!(
-                "Run a shell command ({}) in the working directory and return its output \
-                 (stdout and stderr interleaved) and exit code. Prefer `read`, `grep`, `glob`, `ls` for plain looks at files. The command is killed after `timeout` \
+                "Run a shell command ({}) in the working directory; returns its output \
+                 (stdout and stderr interleaved) and exit code. Prefer `read`, `grep`, `glob`, `ls` for looking at files. The command is killed after `timeout` \
                  seconds (default 120, at most 600); long output is cut in the middle, keeping \
                  the head and the tail. With `background: true` the \
-                 command runs as a job while you go on working: the call returns its job id at once, a job that runs long may be stopped if it looks stuck, you are told \
-                 when it ends, and the `jobs` tool reads its output or stops it. Background jobs end when the session \
-                 ends; add `detach: true` for a service that must keep running after the task ends.",
+                 command runs as a job while you go on working: the call returns its job id at once, a job that looks stuck may be stopped, you are told \
+                 when it ends, and the `jobs` tool reads its output or stops it. Background jobs end with the session; \
+                 `detach: true` keeps a service running after it. \
+                 To wait, set `wait_until`, never `sleep` a fixed time.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
                     "bash" => "Git Bash on Windows: POSIX shell, Windows paths work as C:/...",
@@ -51,9 +52,10 @@ impl Tool for Bash {
                     "command": {"type": "string", "description": "The command line to run."},
                     "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds before the command is killed. Default 120."},
                     "description": {"type": "string", "description": "A few words on what it does, shown to the person."},
+                    "wait_until": {"type": "string", "description": "Shell condition polled every 0.5 s up to `timeout`; then `command` runs."},
                     "background": {"type": "boolean", "description": "Run it as a background job and return at once."},
-                    "detach": {"type": "boolean", "description": "With `background`: start it in its own session, output to a log file, and leave it running when nexo exits. Stop it by pid."},
-                    "unsandboxed": {"type": "boolean", "description": "Only when the OS sandbox is on and a command failed because of it: run this one outside the sandbox. The person is asked first."}
+                    "detach": {"type": "boolean", "description": "With `background`: own session, output to a log file, survives nexo exiting. Stop it by pid."},
+                    "unsandboxed": {"type": "boolean", "description": "After a command failed because of the OS sandbox: run this one outside it. The person is asked first."}
                 },
                 "required": ["command"]
             }),
@@ -102,8 +104,16 @@ impl Tool for Bash {
         if bool_arg(&args, "background") {
             return background(command, ctx, sandbox);
         }
+        if let Some(refusal) = blind_sleep(command) {
+            return ToolOutput::error(refusal);
+        }
         let timeout =
             Duration::from_secs(int_arg(&args, "timeout").unwrap_or(DEFAULT_TIMEOUT_S).clamp(1, MAX_TIMEOUT_S));
+        if let Some(cond) = str_arg(&args, "wait_until") {
+            if let Some(stop) = wait_until(cond, timeout, ctx, &sandbox).await {
+                return stop;
+            }
+        }
         let mut output = Capture::new();
         let end = run_command(command, &ctx.cwd, &sandbox, Some(timeout), &ctx.cancel, |l| {
             ctx.report(l);
@@ -299,6 +309,146 @@ fn skipped_by_probe(command: &str, cwd: &std::path::Path) -> Option<String> {
         }
     }
     None
+}
+
+/// The refusal for a foreground command that starts with a fixed wait of 2 seconds or more
+/// (`sleep 45; ...`, `sleep 25 && ...`, `sleep 0.5m` on a line of its own): it wastes the time when the
+/// thing is ready and is too short when it is not. Only a leading `sleep` followed by `;`, `&&`, a
+/// newline or the end counts. Left alone: `sleep 1` or less; a `sleep` in a loop body, a quoted
+/// `sh -c '...'`, a heredoc or a background job (`sleep 20 &`), because none of those is first at
+/// top level; and a `sleep` after other commands (`cmd; sleep 5; cmd2`), because there the wait may
+/// be a pause between steps that the model cannot poll for, and refusing it would be a false positive.
+fn blind_sleep(command: &str) -> Option<String> {
+    if nexo_core::shell::shell().kind == "powershell" {
+        return None;
+    }
+    let after = command.trim_start().strip_prefix("sleep")?;
+    if !after.starts_with([' ', '\t']) {
+        return None;
+    }
+    let (mut rest, mut secs, mut args) = (after, 0.0_f64, 0);
+    loop {
+        rest = rest.trim_start_matches([' ', '\t']);
+        let end = rest.find(|c: char| c.is_whitespace() || ";&|<>()`$'\"\\".contains(c)).unwrap_or(rest.len());
+        if end == 0 {
+            break;
+        }
+        secs += sleep_seconds(&rest[..end])?;
+        args += 1;
+        rest = &rest[end..];
+    }
+    let waited = format!("sleep{}", after[..after.len() - rest.len()].trim_end());
+    let rest = match rest {
+        "" => "",
+        r if r.starts_with("&&") => &r[2..],
+        r if r.starts_with([';', '\n']) => &r[1..],
+        _ => return None,
+    };
+    if args == 0 || secs < 2.0 {
+        return None;
+    }
+    let rest = rest.trim();
+    let cap = ((secs * 2.0).ceil() as u64).clamp(2, MAX_TIMEOUT_S);
+    let cond = poll_condition(rest).unwrap_or_else(|| "<what shows it is ready>".into());
+    let (tail, rest_json) = match rest {
+        "" => (String::new(), "\"true\"".to_string()),
+        r if !r.contains('\n') && r.len() <= 200 => (format!("; {r}"), serde_json::to_string(r).unwrap_or_default()),
+        _ => ("; <the rest of your command>".into(), "\"<the rest of your command>\"".into()),
+    };
+    let cond_json = serde_json::to_string(&cond).unwrap_or_default();
+    Some(format!(
+        "bash: not run. A fixed wait (`{}`) wastes time when the thing is already ready and is too short when it is not.\n\
+         Wait for the condition instead: {{\"wait_until\": {cond_json}, \"command\": {rest_json}, \"timeout\": {cap}}}. \
+         It is a command that succeeds once ready: `[ -e FILE ]`, `curl -sf URL`, `grep -q READY LOG`. \
+         In one command: timeout {cap} sh -c 'until {cond}; do sleep 1; done'{tail}\n\
+         To wait for a command you started with `background: true`, use jobs {{\"action\": \"output\", \"id\": N, \"wait\": 60}}.",
+        one_line(&waited, 60)
+    ))
+}
+
+/// Polls the shell condition `cond` about every 0.5 s for up to `timeout`. None once it succeeds
+/// (the command may run); otherwise the result to return at once: the condition never held, the
+/// call was cancelled, or the shell could not start. Plain polling, not inotify: it works the same
+/// for any condition and on every system, and half a second is no wait to speak of.
+async fn wait_until(
+    cond: &str,
+    timeout: Duration,
+    ctx: &ToolContext,
+    sandbox: &nexo_core::sandbox::SandboxSettings,
+) -> Option<ToolOutput> {
+    const EVERY: Duration = Duration::from_millis(500);
+    let start = std::time::Instant::now();
+    loop {
+        let mut last = Capture::new();
+        let left = timeout.saturating_sub(start.elapsed()).max(Duration::from_secs(1));
+        match run_command(cond, &ctx.cwd, sandbox, Some(left), &ctx.cancel, |l| last.push(l)).await {
+            End::Exited(0) => return None,
+            End::Cancelled => return Some(ToolOutput::error("[cancelled while waiting]")),
+            End::Failed(e) => {
+                let label = nexo_core::shell::shell().label();
+                return Some(ToolOutput::error(format!("{label}: cannot run the condition: {e}")));
+            }
+            _ => {}
+        }
+        let waited = start.elapsed();
+        if waited >= timeout {
+            let mut content = format!("[waited {} s: condition never held]", waited.as_secs());
+            let out = last.text();
+            if !out.trim().is_empty() {
+                content.push_str("\nlast output of the condition:\n");
+                content.push_str(&cap_text(out.trim_end(), 2000));
+            }
+            return Some(ToolOutput::error(content));
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(EVERY.min(timeout - waited)) => {}
+            _ = ctx.cancel.cancelled() => return Some(ToolOutput::error("[cancelled while waiting]")),
+        }
+    }
+}
+
+/// Seconds in a `sleep` argument: a number with an optional `s`, `m`, `h` or `d`.
+fn sleep_seconds(word: &str) -> Option<f64> {
+    if !word.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    let (num, unit) = match word.char_indices().find(|(_, c)| c.is_ascii_alphabetic()) {
+        Some((i, _)) => word.split_at(i),
+        None => (word, "s"),
+    };
+    let mult = match unit {
+        "s" => 1.0,
+        "m" => 60.0,
+        "h" => 3600.0,
+        "d" => 86400.0,
+        _ => return None,
+    };
+    num.parse::<f64>().ok().filter(|n| n.is_finite()).map(|n| n * mult)
+}
+
+/// A condition for the poll when the command after the wait plainly shows what it waits for:
+/// a `curl` of a URL, or a plain absolute path on a single line. None for anything less sure.
+fn poll_condition(rest: &str) -> Option<String> {
+    if rest.contains('\n') {
+        return None;
+    }
+    let plain = |t: &str| t.chars().all(|c| c.is_ascii_alphanumeric() || "/._-:%@=+,".contains(c));
+    let tokens = || rest.split_whitespace().map(|t| t.trim_matches(['"', '\'', ';', '&']));
+    if rest.starts_with("curl ") {
+        let url = tokens().find(|t| (t.starts_with("http://") || t.starts_with("https://")) && plain(t))?;
+        return Some(format!("curl -sf {url} >/dev/null"));
+    }
+    let path = tokens().find_map(|t| {
+        let t = t.split_once('=').map_or(t, |(name, v)| {
+            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                v
+            } else {
+                t
+            }
+        });
+        (t.starts_with('/') && t.len() > 1 && plain(t)).then_some(t)
+    })?;
+    Some(format!("[ -e {path} ]"))
 }
 
 /// Starts `command` as a job of the session and returns its number at once.
@@ -831,7 +981,7 @@ mod tests {
         let c2 = ToolContext::new(d.path().to_path_buf());
         let cancel = c2.cancel.clone();
         let t = std::time::Instant::now();
-        let run = Bash.run(json!({"command": "sleep 30", "timeout": 60}), &c2);
+        let run = Bash.run(json!({"command": "echo go; sleep 30", "timeout": 60}), &c2);
         let out = tokio::join!(run, async {
             tokio::time::sleep(Duration::from_millis(200)).await;
             cancel.cancel();
@@ -839,6 +989,121 @@ mod tests {
         .0;
         assert!(t.elapsed() < Duration::from_secs(5));
         assert!(out.content.contains("[cancelled]"), "{}", out.content);
+    }
+
+    fn posix() -> bool {
+        if nexo_core::shell::shell().kind == "powershell" {
+            eprintln!("the test writes POSIX shell; this system runs PowerShell: skipped");
+            return false;
+        }
+        true
+    }
+
+    #[tokio::test]
+    async fn a_leading_fixed_sleep_is_refused_with_a_poll_rewrite() {
+        if !posix() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        for (cmd, has) in [
+            ("sleep 45; R=/tmp/x/out; ls -la $R; find $R -type f | head", "[ -e /tmp/x/out ]"),
+            ("sleep 25 && python3 - <<'PY'\nprint(1)\nPY", "wait_until"),
+            ("sleep 3 && curl -s http://127.0.0.1:8080/health", "curl -sf http://127.0.0.1:8080/health >/dev/null"),
+            ("sleep 0.5m", "timeout 60 "),
+            ("  sleep 5s\necho hi", "timeout 10 "),
+            ("sleep 45", "timeout 90 "),
+        ] {
+            let t = std::time::Instant::now();
+            let out = Bash.run(json!({"command": cmd}), &c).await;
+            assert!(t.elapsed() < Duration::from_secs(1), "{cmd} ran");
+            assert!(
+                out.is_error && out.content.contains("until") && out.content.contains("wait_until"),
+                "{cmd}: {}",
+                out.content
+            );
+            assert!(out.content.contains(has), "{cmd}: {}", out.content);
+        }
+    }
+
+    #[tokio::test]
+    async fn short_sleeps_and_sleeps_that_are_not_first_still_run() {
+        if !posix() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        for cmd in [
+            "sleep 1; echo ok",
+            "sleep 0.5 && echo ok",
+            "sleep 1.9; echo ok",
+            "echo a; sleep 2; echo ok",
+            "timeout 5 sh -c 'until [ -e nothing ] || true; do sleep 2; done'; echo ok",
+            "i=0; while [ $i -lt 1 ]; do sleep 2; i=1; done; echo ok",
+            "sh -c 'sleep 2; echo ok'",
+            "cat <<'EOF' >/dev/null\nsleep 5\nEOF\necho ok",
+            "sleep 20 & echo ok",
+        ] {
+            let out = Bash.run(json!({"command": cmd, "timeout": 10}), &c).await;
+            assert!(!out.is_error && out.content.contains("ok"), "{cmd}: {}", out.content);
+        }
+        let out = Bash.run(json!({"command": "sleep 2; echo bg", "background": true}), &c).await;
+        assert!(out.content.contains("Started background job"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn wait_until_returns_when_a_file_appears() {
+        if !posix() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        Bash.run(json!({"command": "sleep 1; echo done > flag.txt", "background": true}), &c).await;
+        let t = std::time::Instant::now();
+        let out = Bash
+            .run(
+                json!({"command": "cat flag.txt", "wait_until": "[ -e flag.txt ] && [ -s flag.txt ]", "timeout": 30}),
+                &c,
+            )
+            .await;
+        assert!(!out.is_error && out.content.contains("done"), "{}", out.content);
+        assert!(t.elapsed() >= Duration::from_millis(900) && t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    async fn a_condition_that_never_holds_is_reported_and_the_command_does_not_run() {
+        if !posix() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let t = std::time::Instant::now();
+        let out =
+            Bash.run(json!({"command": "touch ran.txt", "wait_until": "echo not yet; false", "timeout": 1}), &c).await;
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert!(out.is_error && out.content.contains("condition never held"), "{}", out.content);
+        assert!(out.content.starts_with("[waited 1 s") && out.content.contains("not yet"), "{}", out.content);
+        assert!(!d.path().join("ran.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_the_wait() {
+        if !posix() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let cancel = c.cancel.clone();
+        let t = std::time::Instant::now();
+        let run = Bash.run(json!({"command": "touch ran.txt", "wait_until": "false", "timeout": 60}), &c);
+        let out = tokio::join!(run, async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            cancel.cancel();
+        })
+        .0;
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(out.is_error && out.content.contains("cancelled"), "{}", out.content);
+        assert!(!d.path().join("ran.txt").exists());
     }
 
     #[test]
