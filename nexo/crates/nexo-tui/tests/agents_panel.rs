@@ -611,3 +611,13 @@ fn a_long_list_scrolls_with_its_headers_and_keeps_the_selection_in_sight() {
     let text = capture(&mut a, 80, 24).join("\n");
     assert!(text.contains(&want), "the selected session is drawn\n{text}");
 }
+
+#[test]
+fn a_message_or_pause_key_with_no_supervisor_says_why_nothing_happened() {
+    for keys in ["n", "p", "P"] {
+        let mut a = scene(rows());
+        press(&mut a, keys);
+        let text = window(&mut a);
+        assert!(text.contains("need the supervisor"), "{keys}: silent\n{text}");
+    }
+}

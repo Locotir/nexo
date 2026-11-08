@@ -639,9 +639,14 @@ impl AgentsView {
         f.render_widget(Paragraph::new(Text::from(shown)), body);
     }
 
+    /// A key that acts on sessions, pressed with no supervisor running: say why nothing happened.
+    fn needs_supervisor(&mut self) {
+        self.note = Some("messages and pauses need the supervisor: run `nexo supervise` in another terminal".into());
+    }
+
     fn start_nudge(&mut self) {
         let Some(row) = self.selected_row() else { return };
-        let Some(panel) = &self.panel else { return };
+        let Some(panel) = &self.panel else { return self.needs_supervisor() };
         if row.parent.is_some() {
             self.note = Some("a sub-agent takes no message; write to its session".into());
             return;
@@ -678,7 +683,7 @@ impl AgentsView {
     }
 
     fn toggle_pause(&mut self, all: bool) {
-        let Some(panel) = self.panel.clone() else { return };
+        let Some(panel) = self.panel.clone() else { return self.needs_supervisor() };
         if all {
             let on = !panel.paused_all();
             panel.pause(None, on);
