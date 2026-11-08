@@ -476,6 +476,13 @@ impl<'t> Renderer<'t> {
                 TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
                 TagEnd::Link => {
                     if let Some(url) = self.link.take() {
+                        if let Some(c) = &mut self.cell {
+                            // a cell's text is not in the runs: the address goes after it, inside the cell
+                            if !c.contains(&url) {
+                                c.push_str(&format!(" ({url})"));
+                            }
+                            return;
+                        }
                         let shown: String = self
                             .runs
                             .iter()
@@ -883,6 +890,17 @@ mod tests {
             assert!(width(row) <= w, "{w}: {row:?}");
             assert!(row.trim_end().ends_with('…'), "cut without a mark at {w}: {row:?}");
         }
+    }
+
+    #[test]
+    fn a_link_in_a_table_cell_stays_in_its_cell() {
+        let t = texts("| name | site |\n|---|---|\n| a | [docs](https://example.com/very/long/path) |\n\nafter", 40);
+        let all = t.join("\n");
+        assert!(t.iter().all(|l| width(l) <= 40), "{all}");
+        let n = t.len();
+        assert_eq!(t[n - 1], "after", "{all}");
+        assert!(t[n - 2].is_empty() && t[n - 3].contains('│'), "no URL line left behind the table: {all}");
+        assert!(all.contains("docs") && all.contains("example.com"), "{all}");
     }
 
     #[test]
