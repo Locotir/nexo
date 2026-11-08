@@ -31,6 +31,9 @@ pub const HOP_MS: u64 = 700;
 pub const EDGE_MS: u64 = 1200;
 /// The delay between letters when more than three are in the air.
 pub const STAGGER_MS: u64 = 150;
+/// Letters sent by one look past this many are not flown (the cards still show their mail): a burst of two
+/// hundred would keep the panel moving for half a minute.
+pub const MAX_LETTERS: usize = 9;
 pub const SQUASH_MS: u64 = 360;
 pub const BURST_MS: u64 = 400;
 pub const SHAKE_STEP_MS: u64 = 60;
@@ -53,6 +56,8 @@ pub const WAIT_BREATH_MS: u64 = 2400;
 pub const SWEEP_MS: u64 = 2400;
 /// The pulse row flashes this long when a figure changes.
 pub const FLASH_MS: u64 = 200;
+/// A new flash waits this long after the last one ended, so a busy fleet does not make the row flicker.
+pub const FLASH_GAP_MS: u64 = 2000;
 /// A receipt stays on the sender's card this many seconds.
 pub const RECEIPT_SECS: i64 = 20;
 /// An error keeps its red this many seconds in the ribbon.

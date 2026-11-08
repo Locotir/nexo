@@ -33,7 +33,12 @@ pub(super) struct PulseFx {
 
 impl PulseFx {
     pub(super) fn animating(&self, now: Instant) -> bool {
-        self.moving || within(self.flash, now, px::FLASH_MS)
+        self.moving || self.flashing(now)
+    }
+
+    /// The line is lit by a new mail, commit or test run.
+    pub(super) fn flashing(&self, now: Instant) -> bool {
+        within(self.flash, now, px::FLASH_MS)
     }
 }
 
@@ -127,7 +132,8 @@ impl AgentsView {
             }
         }
         p.moving = moving;
-        if bump {
+        // a busy fleet raises a figure at every poll: one flash, then a pause, not a flicker
+        if bump && !within(p.flash, now, px::FLASH_MS + px::FLASH_GAP_MS) {
             p.flash = Some(now);
         }
     }
