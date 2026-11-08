@@ -93,13 +93,22 @@ impl Tool for Write {
         ctx.seen.mark(&path);
         let lines = content.lines().count();
         let what = if old.is_some() { "replaced" } else { "created" };
-        ToolOutput::ok(format!("{what} {shown} ({}, {} bytes)", nexo_core::count(lines, "line"), content.len()))
-            .with_display(ToolDisplay::Diff {
-                path: shown,
-                old: old.unwrap_or_default(),
-                new: content.to_string(),
-                start_line: 1,
-            })
+        let now = match &old {
+            Some(o) if !huge => crate::edit::around(o, content),
+            _ => String::new(),
+        };
+        let now = if now.is_empty() { String::new() } else { format!("\nchanged lines:\n{now}") };
+        ToolOutput::ok(format!(
+            "{what} {shown}: file now has {} ({} bytes){now}",
+            nexo_core::count(lines, "line"),
+            content.len()
+        ))
+        .with_display(ToolDisplay::Diff {
+            path: shown,
+            old: old.unwrap_or_default(),
+            new: content.to_string(),
+            start_line: 1,
+        })
     }
 }
 
@@ -131,6 +140,21 @@ mod tests {
         let e = Edit.run(json!({"path": "e.txt", "old_string": "one", "new_string": "two"}), &c).await;
         assert!(!e.is_error, "{}", e.content);
         assert!(!Write.run(json!({"path": "e.txt", "content": "three\n"}), &c).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn a_replaced_file_reports_its_line_count_and_the_changed_lines() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let out = Write.run(json!({"path": "n.txt", "content": "a\nb\nc\n"}), &c).await;
+        assert_eq!(out.content, "created n.txt: file now has 3 lines (6 bytes)");
+        let out = Write.run(json!({"path": "n.txt", "content": "a\nB\nc\nd\n"}), &c).await;
+        assert!(
+            out.content.starts_with("replaced n.txt: file now has 4 lines (8 bytes)\nchanged lines:\n"),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("     2│ B\n     3│ c\n     4│ d\n"), "{}", out.content);
     }
 
     #[tokio::test]

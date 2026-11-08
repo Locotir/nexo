@@ -5,7 +5,9 @@ use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 use similar::{ChangeTag, TextDiff};
 
-use crate::util::{bool_arg, display_path, is_binary, outside_note, resolve, str_arg, write_atomic, MAX_FILE_BYTES};
+use crate::util::{
+    bool_arg, cut_line, display_path, is_binary, outside_note, resolve, str_arg, write_atomic, MAX_FILE_BYTES,
+};
 
 /// Lines of the unified diff shown to the model.
 const DIFF_LINES: usize = 80;
@@ -111,7 +113,9 @@ impl Tool for Edit {
         }
         ctx.seen.mark(&path);
         let (added, removed, diff) = unified(&text, &edited, &shown);
-        ToolOutput::ok(format!("edited {shown}{n}: +{added} −{removed} lines\n{diff}"))
+        let now = around(&text, &edited);
+        let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
+        ToolOutput::ok(format!("edited {shown}{n}: +{added} −{removed} lines\n{diff}{now}"))
             // the whole file, before and after: the diff numbers from its first line
             .with_display(ToolDisplay::Diff { path: shown, old: text, new: edited, start_line: 1 })
     }
@@ -280,6 +284,50 @@ pub fn unified(old: &str, new: &str, name: &str) -> (usize, usize, String) {
         text
     };
     (added, removed, shown)
+}
+
+/// Lines of context shown on each side of a change.
+const CONTEXT: usize = 3;
+/// Numbered lines shown at most for the changed regions of one result.
+const SNIPPET_LINES: usize = 40;
+/// Characters kept of a line in the snippet.
+const SNIPPET_LINE_CHARS: usize = 200;
+
+/// The file as it is now around what changed, numbered as `read` numbers it: each changed
+/// region with `CONTEXT` lines either side, gaps and a cut at `SNIPPET_LINES` lines marked `…`.
+/// Empty when nothing changed.
+pub fn around(old: &str, new: &str) -> String {
+    let lines: Vec<&str> = new.lines().collect();
+    let diff = TextDiff::from_lines(old, new);
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for op in diff.ops().iter().filter(|o| o.tag() != similar::DiffTag::Equal) {
+        let r = op.new_range();
+        let (a, b) = (r.start.saturating_sub(CONTEXT), (r.end + CONTEXT).min(lines.len()));
+        match spans.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => spans.push((a, b)),
+        }
+    }
+    let (mut out, mut shown) = (String::new(), 0);
+    for (k, (a, b)) in spans.into_iter().enumerate() {
+        if shown >= SNIPPET_LINES {
+            out.push_str("…\n");
+            break;
+        }
+        if k > 0 {
+            out.push_str("…\n");
+        }
+        let cut = b.min(a + (SNIPPET_LINES - shown));
+        for (i, l) in lines.iter().enumerate().take(cut).skip(a) {
+            out.push_str(&format!("{:>6}│ {}\n", i + 1, cut_line(l, SNIPPET_LINE_CHARS)));
+        }
+        shown += cut - a;
+        if cut < b {
+            out.push_str("…\n");
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -473,5 +521,39 @@ mod many_tests {
             let out = Edit.run(args, &c).await;
             assert!(out.is_error && out.content.starts_with(want), "{want}: {}", out.content);
         }
+    }
+}
+
+#[cfg(test)]
+mod around_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_result_shows_the_numbered_lines_around_the_change() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let file: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(d.path().join("a.txt"), &file).unwrap();
+        let out = Edit.run(json!({"path": "a.txt", "old_string": "line10\n", "new_string": "ten\nten b\n"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("\nfile now:\n     7│ line7\n"), "{}", out.content);
+        assert!(out.content.contains("    10│ ten\n    11│ ten b\n    12│ line11\n"), "{}", out.content);
+        assert!(out.content.ends_with("    14│ line13\n"), "{}", out.content);
+        assert!(!out.content.contains("line6\n    7"), "{}", out.content);
+    }
+
+    #[test]
+    fn the_snippet_is_capped_and_gaps_are_marked() {
+        let old: String = (1..=200).map(|i| format!("l{i}\n")).collect();
+        // a change at the top and one far below: two regions with a gap
+        let two = old.replace("l2\n", "X\n").replace("l150\n", "Y\n");
+        let s = around(&old, &two);
+        assert!(s.contains("…\n") && s.contains("   150│ Y\n") && s.contains("     2│ X\n"), "{s}");
+        // every line changed: cut at the cap
+        let all: String = (1..=200).map(|i| format!("n{i}\n")).collect();
+        let s = around(&old, &all);
+        assert_eq!(s.lines().filter(|l| l.contains('│')).count(), SNIPPET_LINES, "{s}");
+        assert!(s.ends_with("…\n"), "{s}");
+        assert_eq!(around("a\n", "a\n"), "");
     }
 }
