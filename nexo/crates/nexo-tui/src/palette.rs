@@ -529,6 +529,41 @@ pub fn live_values(
     }
 }
 
+/// The folders `/add-dir` offers for what is typed so far: the folders inside the part before the
+/// last `/` (from `cwd`, or home for `~/`), written the way the person started, each ending in `/`
+/// so picking one lists its own folders next. Hidden folders only once a `.` is typed.
+pub fn dir_values(cwd: &std::path::Path, typed: &str) -> Vec<(String, String)> {
+    let (head, tail) = match typed.rfind('/') {
+        Some(i) => typed.split_at(i + 1),
+        None => ("", typed),
+    };
+    let base = if head.is_empty() {
+        cwd.to_path_buf()
+    } else if let Some(rest) = head.strip_prefix("~/") {
+        match std::env::var_os("HOME") {
+            Some(h) => std::path::PathBuf::from(h).join(rest),
+            None => return Vec::new(),
+        }
+    } else {
+        cwd.join(head)
+    };
+    let Ok(entries) = std::fs::read_dir(&base) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.starts_with('.') || tail.starts_with('.'))
+        .collect();
+    names.sort();
+    names.truncate(200);
+    let mut out: Vec<(String, String)> = names.into_iter().map(|n| (format!("{head}{n}/"), String::new())).collect();
+    // the folder above is one step away when nothing narrows the list yet
+    if tail.is_empty() && !head.starts_with('~') && head.split('/').all(|p| p.is_empty() || p == "..") {
+        out.push((format!("{head}../"), "the folder above".to_string()));
+    }
+    out
+}
+
 /// The commands of `history` (lines that start with `/`), most recent first,
 /// each once, by primary name.
 pub fn recent_commands(history: &[String]) -> Vec<String> {
@@ -601,6 +636,25 @@ pub fn wanted(draft: &str, cursor: usize) -> Option<(PaletteKind, usize, String)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_dir_offers_the_folders_of_what_is_typed() {
+        let d = tempfile::tempdir().unwrap();
+        for p in ["proj", "other/lib", "other/.git", ".hidden"] {
+            std::fs::create_dir_all(d.path().join(p)).unwrap();
+        }
+        std::fs::write(d.path().join("notes.txt"), "").unwrap();
+        let cwd = d.path().join("proj");
+        let v = |t: &str| dir_values(&cwd, t).into_iter().map(|(v, _)| v).collect::<Vec<_>>();
+        assert_eq!(v("../"), ["../other/", "../proj/", "../../"], "folders only, hidden left out");
+        assert_eq!(v("../other/"), ["../other/lib/"]);
+        assert!(v("../other/.").contains(&"../other/.git/".to_string()), "a typed dot shows hidden folders");
+        assert_eq!(v(""), ["../"], "nothing in proj but the folder above");
+        assert!(v("missing/").is_empty());
+        assert_eq!(wanted("/add-dir ../ot", 14), Some((PaletteKind::Args("add-dir".into()), 9, "../ot".into())));
+        let p = Palette::args("add-dir", "../ot", 9, dir_values(&cwd, "../ot"));
+        assert_eq!(p.current(), Some("../other/"));
+    }
 
     #[test]
     fn ranks_commands_and_moves_the_selection() {

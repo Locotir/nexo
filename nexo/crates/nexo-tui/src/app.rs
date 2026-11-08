@@ -4614,6 +4614,9 @@ impl App {
                                 &self.opts.sessions,
                                 &self.peer_values(),
                             ));
+                            if cmd == "add-dir" {
+                                values.extend(palette::dir_values(&self.opts.cwd, &query));
+                            }
                             values.splice(0..0, self.current_arg(&cmd));
                             Palette::args(&cmd, &query, start, values)
                         }

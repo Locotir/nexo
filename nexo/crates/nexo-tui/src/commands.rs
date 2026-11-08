@@ -496,7 +496,7 @@ pub fn closed_args(name: &str) -> bool {
 
 /// Whether the palette offers values for the command's argument at all.
 pub fn takes_listed_args(name: &str) -> bool {
-    matches!(name, "model" | "effort" | "theme" | "undelete" | "resume" | "rename" | "export" | "msg")
+    matches!(name, "model" | "effort" | "theme" | "undelete" | "resume" | "rename" | "export" | "msg" | "add-dir")
         || !fixed_args(name).is_empty()
 }
 
