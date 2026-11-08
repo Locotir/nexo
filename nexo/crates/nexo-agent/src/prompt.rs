@@ -79,7 +79,7 @@ fn tool_guidance(tools: &ToolSet) -> String {
         lines.push("- Fewer steps: calls to `read`, `grep`, `glob`, `ls` and the web tools in one message run at the same time, so send every independent look together; several changes to one file go in one `edit` call (`edits`).");
     }
     if has("note") {
-        lines.push("- `note`: keep each settled fact as `Finding: ...`, what is left as `Plan: ...`, the user's standing instructions as `Rule: ...`. Send it with your next tool call, never as a response of its own.");
+        lines.push("- `note`: keep each settled fact as `Finding: ...`, what is left as `Plan: ...`, the user's standing instructions as `Rule: ...` (scope `project` or `user` saves it for later sessions when the user corrects the same thing twice or states a lasting preference). Send it with your next tool call, never as a response of its own.");
     }
     if has("task") {
         lines.push("- `task`: use it when a question needs reading across many files, for several independent searches or checks (one call each, all in ONE message), for a long side job (`background: true`), and whenever the person asks for sub-agents or parallel work. Do it yourself when one or two reads or a single search will answer. The sub-agent sees nothing of this conversation: put all it needs in `prompt`.");

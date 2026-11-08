@@ -515,6 +515,76 @@ fn claude_hooks_in(
     (out, note)
 }
 
+/// The file a lasting rule is saved to and the text to start it with when it is new: the project's
+/// instructions file (`project`) or the user's (`user`); `None` for any other scope.
+pub fn rules_file(
+    scope: &str,
+    cwd: &Path,
+    config_dir: &Path,
+    home: Option<&Path>,
+) -> Option<(PathBuf, Option<String>)> {
+    match scope {
+        "project" => Some((project_file(cwd), None)),
+        "user" => Some(user_file(config_dir, home)),
+        _ => None,
+    }
+}
+
+/// The file a lasting rule of `scope` goes to on this machine (see `rules_file`).
+pub fn rules_path(scope: &str, cwd: &Path) -> Option<PathBuf> {
+    let home = foreign_home();
+    rules_file(scope, cwd, &crate::paths::config_dir(), home.as_deref()).map(|(p, _)| p)
+}
+
+fn rule_key(line: &str) -> String {
+    let l = line.trim().trim_start_matches(['-', '*']).trim();
+    l.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Adds `rule` as one list line under a `## Rules` heading of `text` (the heading is created at the
+/// end when missing). `None` when a line with the same words is already in the file.
+pub fn with_rule(text: &str, rule: &str) -> Option<String> {
+    let rule = rule.split_whitespace().collect::<Vec<_>>().join(" ");
+    let key = rule_key(&rule);
+    if rule.is_empty() || text.lines().any(|l| rule_key(l) == key) {
+        return None;
+    }
+    let mut lines: Vec<&str> = text.lines().collect();
+    let item = format!("- {rule}");
+    match lines.iter().position(|l| l.trim().eq_ignore_ascii_case("## rules")) {
+        Some(h) => {
+            let end = lines[h + 1..].iter().position(|l| l.starts_with('#')).map_or(lines.len(), |i| h + 1 + i);
+            let mut at = end;
+            while at > h + 1 && lines[at - 1].trim().is_empty() {
+                at -= 1;
+            }
+            lines.insert(at, &item);
+            Some(lines.join("\n") + "\n")
+        }
+        None => {
+            let body = text.trim_end();
+            let sep = if body.is_empty() { "" } else { "\n\n" };
+            Some(format!("{body}{sep}## Rules\n{item}\n"))
+        }
+    }
+}
+
+/// Saves `rule` into `file` (see `with_rule`), starting from `seed` when the file is new. `Ok(false)`
+/// when it was there already.
+pub fn save_rule(file: &Path, seed: Option<&str>, rule: &str) -> std::io::Result<bool> {
+    let old = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => seed.unwrap_or("").to_string(),
+        Err(e) => return Err(e),
+    };
+    let Some(new) = with_rule(&old, rule) else { return Ok(false) };
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(file, new)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,5 +772,43 @@ mod tests {
             ("Ship it", "[env]", "Bash(git:*)")
         );
         assert_eq!(ship.body, "claude ship", "the project's own folder beats the user's");
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+
+    #[test]
+    fn a_rule_goes_under_the_rules_heading_once() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("AGENTS.md");
+        std::fs::write(&f, "# Project\n\nBuild with make.\n\n## Rules\n- Use tabs.\n\n## Other\ntext\n").unwrap();
+        assert!(save_rule(&f, None, "Run `make fmt` first.").unwrap());
+        assert!(!save_rule(&f, None, "run `make fmt`  first.").unwrap());
+        assert!(!save_rule(&f, None, "Use tabs.").unwrap());
+        let t = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(
+            t,
+            "# Project\n\nBuild with make.\n\n## Rules\n- Use tabs.\n- Run `make fmt` first.\n\n## Other\ntext\n"
+        );
+    }
+
+    #[test]
+    fn a_new_file_gets_the_heading_and_the_seed_and_the_next_session_reads_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (cfg, proj) = (d.path().join("cfg"), d.path().join("proj"));
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        let (f, seed) = rules_file("user", &proj, &cfg, None).unwrap();
+        assert_eq!(f, cfg.join("AGENTS.md"));
+        assert!(save_rule(&f, seed.as_deref(), "Answer in English.").unwrap());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "## Rules\n- Answer in English.\n");
+        let (p, _) = rules_file("project", &proj, &cfg, None).unwrap();
+        assert_eq!(p, proj.join("AGENTS.md"));
+        assert!(save_rule(&p, None, "Never edit vendor/.").unwrap());
+        let all = instructions(&proj, &cfg, None);
+        assert!(all.iter().any(|i| i.text.contains("Answer in English.")), "{all:?}");
+        assert!(all.iter().any(|i| i.text.contains("Never edit vendor/.")), "{all:?}");
+        assert!(rules_file("session", &proj, &cfg, None).is_none());
     }
 }

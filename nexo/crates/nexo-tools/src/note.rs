@@ -1,7 +1,8 @@
-//! `note`: what the model wants kept when older messages leave the context. One line per item,
+//! `note`: what the model wantseed.as_deref() kept when older messages leave the context. One line per item,
 //! beginning with `Finding:` (a fact a result settled), `Plan:` (what is left) or `Rule:` (an
 //! instruction the user gave that holds for the session). The tool changes nothing: the context
 //! policy that keeps notes (the curator) reads the call itself, so the lines outlive their message.
+//! With `scope` `project` or `user`, its `Rule:` lines are also saved to that level's instructions file.
 
 use async_trait::async_trait;
 use nexo_core::{Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
@@ -26,6 +27,18 @@ pub fn is_note_line(line: &str) -> bool {
         .any(|p| l.starts_with(p) || l.starts_with(&format!("{}**:", &p[..p.len() - 1])))
 }
 
+/// The words of a `Rule:` note line, or None for any other line.
+pub fn rule_text(line: &str) -> Option<String> {
+    if !is_note_line(line) {
+        return None;
+    }
+    let l = line.trim_start().trim_start_matches(['-', '*', '•']).trim_start();
+    let l = l.trim_start_matches("**");
+    let l = l.strip_prefix("Rule:**").or_else(|| l.strip_prefix("Rule**:")).or_else(|| l.strip_prefix("Rule:"))?;
+    let l = l.trim();
+    (!l.is_empty()).then(|| l.to_string())
+}
+
 #[async_trait]
 impl Tool for Note {
     fn name(&self) -> &str {
@@ -48,6 +61,11 @@ impl Tool for Note {
                     "text": {
                         "type": "string",
                         "description": "The note lines, each beginning with `Finding:`, `Plan:` or `Rule:`."
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["session", "project", "user"],
+                        "description": "Where `Rule:` lines last: this session (default), the project or the user."
                     }
                 },
                 "required": ["text"]
@@ -70,7 +88,7 @@ impl Tool for Note {
         }
     }
 
-    async fn run(&self, args: Value, _ctx: &ToolContext) -> ToolOutput {
+    async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
         let text = args.get("text").and_then(Value::as_str).unwrap_or("").trim();
         if text.is_empty() {
             return ToolOutput::error("`text` is required: one line per note, beginning with Finding:, Plan: or Rule:");
@@ -87,9 +105,31 @@ impl Tool for Note {
             );
         }
         let other = text.lines().filter(|l| !l.trim().is_empty() && !is_note_line(l)).count();
+        let scope = args.get("scope").and_then(Value::as_str).unwrap_or("session");
+        let mut saved = None;
+        if scope != "session" {
+            let home = nexo_core::compat::foreign_home();
+            let Some((file, seed)) =
+                nexo_core::compat::rules_file(scope, &ctx.cwd, &nexo_core::paths::config_dir(), home.as_deref())
+            else {
+                return ToolOutput::error("`scope` is session, project or user");
+            };
+            let mut new = 0;
+            for r in text.lines().filter_map(rule_text) {
+                match nexo_core::compat::save_rule(&file, seed.as_deref(), &r) {
+                    Ok(true) => new += 1,
+                    Ok(false) => {}
+                    Err(e) => return ToolOutput::error(format!("cannot save to {}: {e}", file.display())),
+                }
+            }
+            saved = Some((new, file));
+        }
         let mut out = format!("noted {n} line{}", if n == 1 { "" } else { "s" });
         if other > 0 {
             out += &format!(" ({other} without a Finding:/Plan:/Rule: prefix left out)");
+        }
+        if let Some((new, file)) = saved {
+            out += &format!("; {new} new rule{} saved to {}", if new == 1 { "" } else { "s" }, file.display());
         }
         ToolOutput::ok(out)
     }
@@ -108,6 +148,23 @@ mod tests {
         assert!(is_note_line("**Finding**: x = 3"));
         assert!(!is_note_line("The rates are in cents."));
         assert!(!is_note_line("finding: lower case is a word, not a mark"));
+    }
+
+    #[tokio::test]
+    async fn a_project_rule_is_saved_once_and_a_session_rule_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join(".git")).unwrap();
+        let cx = ToolContext::new(d.path().to_path_buf());
+        let call = json!({"text": "Finding: a = 1\n- Rule: never edit vendor/.", "scope": "project"});
+        let first = Note.run(call.clone(), &cx).await;
+        assert!(!first.is_error && first.content.contains("1 new rule saved"), "{}", first.content);
+        assert!(Note.run(call, &cx).await.content.contains("0 new rules saved"));
+        let f = d.path().join("AGENTS.md");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "## Rules\n- never edit vendor/.\n");
+        let local = Note.run(json!({"text": "Rule: answer briefly"}), &cx).await;
+        assert_eq!(local.content, "noted 1 line");
+        assert_eq!(std::fs::read_to_string(&f).unwrap().matches("briefly").count(), 0);
+        assert!(Note.run(json!({"text": "Rule: x", "scope": "galaxy"}), &cx).await.is_error);
     }
 
     #[tokio::test]

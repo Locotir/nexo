@@ -50,6 +50,14 @@ impl Policy {
         if let Some(r) = self.deny.iter().find(|r| rule_matches_as(r, tool, kind, args, cwd, true)) {
             return Decision::Deny(format!("denied by rule `{r}`"));
         }
+        // a note that saves a rule is a write to the instructions file: decided like one
+        if tool == "note" {
+            let scope = args.get("scope").and_then(Value::as_str).unwrap_or("session");
+            if let Some(file) = nexo_core::compat::rules_path(scope, cwd) {
+                let file = serde_json::json!({"path": file.to_string_lossy()});
+                return self.decide("edit", ToolKind::Write, &file, cwd);
+            }
+        }
         if ALWAYS_ALLOWED.contains(&tool) {
             return Decision::Allow;
         }
@@ -1215,5 +1223,34 @@ mod tests {
         persist_rule(&p, "edit(src/**)").unwrap();
         let cfg: toml::Table = toml::from_str(&std::fs::read_to_string(p.join("config.toml")).unwrap()).unwrap();
         assert_eq!(cfg["permissions"]["allow"].as_array().unwrap().len(), 2, "no duplicates");
+    }
+}
+
+#[cfg(test)]
+mod note_scope_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn policy(mode: PermissionMode) -> Policy {
+        Policy { mode, ..Policy::default() }
+    }
+
+    #[test]
+    fn a_note_that_saves_a_rule_asks_like_a_file_write() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, call) = (d.path(), |s: &str| json!({"text": "Rule: x", "scope": s}));
+        assert_eq!(policy(PermissionMode::Ask).decide("note", ToolKind::Other, &call("session"), c), Decision::Allow);
+        assert_eq!(policy(PermissionMode::Ask).decide("note", ToolKind::Other, &call("project"), c), Decision::Ask);
+        assert_eq!(
+            policy(PermissionMode::AcceptEdits).decide("note", ToolKind::Other, &call("project"), c),
+            Decision::Allow
+        );
+        assert_eq!(policy(PermissionMode::Auto).decide("note", ToolKind::Other, &call("project"), c), Decision::Allow);
+        assert!(matches!(
+            policy(PermissionMode::ReadOnly).decide("note", ToolKind::Other, &call("project"), c),
+            Decision::Deny(_)
+        ));
+        let denied = Policy { deny: vec!["note".into()], ..policy(PermissionMode::Auto) };
+        assert!(matches!(denied.decide("note", ToolKind::Other, &call("project"), c), Decision::Deny(_)));
     }
 }
