@@ -20,7 +20,33 @@ use base64::Engine;
 /// Copies `text` and says how (`clipboard`, `wl-copy`, `xclip`, `xsel`,
 /// `pbcopy` or `terminal (OSC 52)`).
 pub fn copy(text: &str) -> Result<&'static str, String> {
+    // Tests never reach the person's clipboard or spawn a clipboard tool (`wl-copy` outlives the
+    // test and keeps its inherited fds): the text goes to a recorder instead.
+    #[cfg(test)]
+    return fake::record(text);
+    #[cfg(not(test))]
     copy_with(text, true, TOOLS)
+}
+
+/// The stand-in for the system clipboard while this crate's own tests run.
+#[cfg(test)]
+mod fake {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static COPIED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub fn record(text: &str) -> Result<&'static str, String> {
+        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+        Ok("test clipboard")
+    }
+
+    /// What this test's thread copied so far.
+    #[cfg(unix)]
+    pub fn copied() -> Vec<String> {
+        COPIED.with(|c| c.borrow().clone())
+    }
 }
 
 /// A clipboard tool: its name, its arguments, and the environment variable
@@ -208,6 +234,8 @@ fn run_tool(name: &str, args: &[&str], text: &str) -> Result<(), String> {
             }
             Ok(None) if start.elapsed() > Duration::from_secs(3) => {
                 let _ = child.kill();
+                // reaped, so a tool that hung leaves no zombie behind
+                let _ = child.wait();
                 return Err("did not finish".into());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
@@ -291,6 +319,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `copy` in a test run records the text and starts no process: a tool on PATH that would
+    /// leave a marker file must not run, and the system clipboard is not opened.
+    #[cfg(unix)]
+    #[test]
+    fn copy_in_tests_goes_to_the_recorder_and_spawns_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawned");
+        for tool in ["wl-copy", "xclip", "xsel"] {
+            let f = dir.path().join(tool);
+            std::fs::write(&f, format!("#!/bin/sh\ntouch '{}'\ncat >/dev/null\n", marker.display())).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let back = EnvBack::save();
+        std::env::set_var("PATH", format!("{}:/usr/bin:/bin", dir.path().display()));
+        std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        std::env::set_var("DISPLAY", ":0");
+        let got = copy("hello clipboard");
+        drop(back);
+        assert_eq!(got, Ok("test clipboard"));
+        assert_eq!(fake::copied(), ["hello clipboard"]);
+        assert!(!marker.exists(), "a clipboard tool was started by a test");
     }
 
     #[cfg(unix)]
