@@ -4,9 +4,12 @@
 //! call, keeps what it learnt of the earlier messages and returns the view to send, the tokens of that view and what it did.
 
 mod engine;
+mod evidence;
 mod flat;
 mod goal;
 mod hindsight;
+#[cfg(test)]
+mod hindsight_labels;
 mod json;
 mod learn;
 mod ledger;

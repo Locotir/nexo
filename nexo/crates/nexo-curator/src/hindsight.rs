@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
+use crate::evidence::{self, Runs};
 use crate::json::est_media;
 use crate::msg::{blocks, flat, get_str, key_of, text_of};
 use crate::py::{self, Re};
@@ -191,6 +192,10 @@ pub struct Unit {
     pub tool: String,
     pub tokens: i64,
     pub words: Set,
+    /// File names and code-shaped names a reply may write instead of the whole word.
+    pub alias: Set,
+    /// The files the call that made a result named.
+    pub src: Vec<String>,
     pub saving: i64,
     pub uses: Vec<usize>,
     pub word_first: FxHashMap<Sym, usize>,
@@ -231,11 +236,38 @@ pub struct Tracer {
     pub used: FxHashMap<usize, Set>,
     pub at: FxHashMap<(usize, usize), usize>,
     latest: FxHashMap<Sym, usize>,
+    /// Whether the person or the agent wrote a name before any tool result held it.
+    origin: FxHashMap<Sym, bool>,
+    runs: Runs,
     tool_names: FxHashMap<String, String>,
+    call_paths: FxHashMap<String, Vec<String>>,
+}
+
+/// The file names (behind the folders of a path) and the code-shaped names of a unit, with which a reply that
+/// writes only the name still matches.
+fn aliases(words: &Set, text: &str, int: &mut Interner) -> Set {
+    let mut out = Vec::new();
+    for &w in words {
+        if let Some(b) = evidence::base_name(int.get(w)).map(str::to_string) {
+            if b.rsplit_once('.').is_some_and(|(_, e)| has_ext(e, &FILE_EXT)) {
+                out.push(int.intern(&b));
+            }
+        }
+    }
+    for n in evidence::code_names(text) {
+        if !GENERAL.contains(n) {
+            out.push(int.intern(n));
+        }
+    }
+    set_of(out)
+}
+
+fn path_ext(e: &str) -> bool {
+    has_ext(e, &FILE_EXT)
 }
 
 impl Tracer {
-    fn units_of(&mut self, mi: usize, m: &Value, int: &mut Interner) -> Vec<Unit> {
+    fn units_of(&mut self, mi: usize, m: &Value, int: &mut Interner) -> Vec<(Unit, String)> {
         let mut out = Vec::new();
         let user = m.get("role").and_then(Value::as_str) == Some("user");
         for (bi, b) in blocks(m.get("content")).iter().enumerate() {
@@ -243,14 +275,19 @@ impl Tracer {
                 continue;
             }
             let t = b.get("type").and_then(Value::as_str);
-            let (kind, tool, text): (UKind, String, std::borrow::Cow<'_, str>) = if user {
+            let mut src = Vec::new();
+            let (kind, tool, text): (UKind, String, String) = if user {
                 match t {
                     Some("text") => (UKind::User, String::new(), get_str(b, "text").into()),
-                    Some("tool_result") => (
-                        UKind::Result,
-                        self.tool_names.get(&key_of(b.get("tool_use_id"))).cloned().unwrap_or_else(|| "?".into()),
-                        text_of(b.get("content")).into_owned().into(),
-                    ),
+                    Some("tool_result") => {
+                        let id = key_of(b.get("tool_use_id"));
+                        src = self.call_paths.get(&id).cloned().unwrap_or_default();
+                        (
+                            UKind::Result,
+                            self.tool_names.get(&id).cloned().unwrap_or_else(|| "?".into()),
+                            text_of(b.get("content")).into_owned(),
+                        )
+                    }
                     _ => continue,
                 }
             } else {
@@ -259,25 +296,106 @@ impl Tracer {
                     Some("thinking") => (UKind::Thinking, String::new(), get_str(b, "thinking").into()),
                     Some("tool_use") => {
                         let name = get_str(b, "name").to_string();
-                        self.tool_names.insert(key_of(b.get("id")), name.clone());
-                        (UKind::Call, name, flat(b.get("input")).into())
+                        let id = key_of(b.get("id"));
+                        let text = flat(b.get("input"));
+                        self.call_paths.insert(id.clone(), evidence::paths_of(&text, &path_ext));
+                        self.tool_names.insert(id, name.clone());
+                        (UKind::Call, name, text)
                     }
                     _ => continue,
                 }
             };
             let (tokens, media) = est_media(b);
             let opaque = media > 0;
-            out.push(Unit {
-                msg: mi,
-                block: bi,
-                kind,
-                tool,
-                tokens,
-                words: words(&text, int),
-                saving: saving(kind, b, tokens, opaque),
-                uses: Vec::new(),
-                word_first: FxHashMap::default(),
-            });
+            let words = words(&text, int);
+            let alias = aliases(&words, &text, int);
+            out.push((
+                Unit {
+                    msg: mi,
+                    block: bi,
+                    kind,
+                    tool,
+                    tokens,
+                    words,
+                    alias,
+                    src,
+                    saving: saving(kind, b, tokens, opaque),
+                    uses: Vec::new(),
+                    word_first: FxHashMap::default(),
+                },
+                text,
+            ));
+        }
+        out
+    }
+
+    /// The unit that a word of a reply is a use of: the one that holds it last, unless it is a tool result and
+    /// the person or the agent had written the word before any result held it (a reply repeating what it knew is
+    /// no proof that it read the result), or a name every project has.
+    fn holder_of(&self, w: Sym, int: &Interner) -> Option<usize> {
+        let h = *self.latest.get(&w)?;
+        let from_result = self.units[h].kind == UKind::Result;
+        if from_result && (self.origin.get(&w) == Some(&true) || evidence::ubiquitous(int.get(w))) {
+            return None;
+        }
+        Some(h)
+    }
+
+    /// The most recent tool result of a file `path`, from the end back, that `ok` accepts.
+    fn result_of_path(&self, path: &str, mut ok: impl FnMut(usize) -> bool) -> Option<usize> {
+        (0..self.units.len())
+            .rev()
+            .filter(|&i| self.units[i].kind == UKind::Result)
+            .take(64 * 8)
+            .find(|&i| self.units[i].src.iter().any(|p| evidence::same_path(p, path)) && ok(i))
+    }
+
+    /// The units a reply (its units `mu`) used, each with the word that proves it when a word does.
+    fn credits(&self, mu: &[(Unit, String)], int: &Interner) -> Vec<(usize, Option<Sym>)> {
+        let mut out: Vec<(usize, Option<Sym>)> = Vec::new();
+        for (u, text) in mu {
+            if !matches!(u.kind, UKind::Text | UKind::Call | UKind::Thinking) {
+                continue;
+            }
+            // a word the unit holds that a unit read earlier holds last
+            for &w in u.words.iter().chain(&u.alias) {
+                if let Some(h) = self.holder_of(w, int) {
+                    out.push((h, Some(w)));
+                }
+            }
+            // a line of an argument found whole in the last read of the file the call is about
+            let mut directed = false;
+            if u.kind == UKind::Call {
+                let lines = evidence::quotable_lines(text);
+                for p in evidence::paths_of(text, &path_ext) {
+                    let hit = self.result_of_path(&p, |i| {
+                        let held: Vec<String> =
+                            self.unit_text(i).lines().map(|l| evidence::squash(evidence::unnumbered(l))).collect();
+                        lines.iter().any(|q| held.iter().any(|l| l.contains(q.as_str())))
+                    });
+                    if let Some(h) = hit {
+                        out.push((h, None));
+                        directed = true;
+                    }
+                }
+            }
+            // a run of six words the unit quotes
+            if !directed {
+                for h in evidence::runs(text, &GENERAL) {
+                    if let Some(hold) = self.runs.get(h) {
+                        let i = hold.latest as usize;
+                        if self.units[i].kind != UKind::Result || hold.authored as usize >= self.units[i].msg {
+                            out.push((i, None));
+                        }
+                    }
+                }
+            }
+            // a line of a file the unit points to
+            for (p, n) in evidence::line_refs(text, &path_ext) {
+                if let Some(h) = self.result_of_path(&p, |i| self.unit_text(i).lines().count() >= n) {
+                    out.push((h, None));
+                }
+            }
         }
         out
     }
@@ -289,28 +407,36 @@ impl Tracer {
         self.msgs.push(m);
         if assistant && mi > 0 {
             let mut copied: Vec<Sym> = Vec::new();
-            for u in &mu {
-                if matches!(u.kind, UKind::Text | UKind::Call) {
+            for (u, _) in &mu {
+                if matches!(u.kind, UKind::Text | UKind::Call | UKind::Thinking) {
                     copied.extend(u.words.iter().copied().filter(|w| self.latest.contains_key(w)));
                 }
             }
             let copied = set_of(copied);
-            for &w in &copied {
-                let u = &mut self.units[self.latest[&w]];
+            let mut credits = self.credits(&mu, int);
+            credits.sort_unstable();
+            credits.dedup();
+            for (i, w) in credits {
+                let u = &mut self.units[i];
                 if u.uses.last() != Some(&mi) {
                     u.uses.push(mi);
                 }
-                u.word_first.entry(w).or_insert(mi);
+                if let Some(w) = w {
+                    u.word_first.entry(w).or_insert(mi);
+                }
             }
             self.steps.push(mi);
             self.used.insert(mi, copied);
         }
-        for u in mu {
+        for (u, text) in mu {
             let idx = self.units.len();
             self.at.insert((u.msg, u.block), idx);
-            for &w in &u.words {
+            let authored = u.kind != UKind::Result;
+            for &w in u.words.iter().chain(&u.alias) {
                 self.latest.insert(w, idx);
+                self.origin.entry(w).or_insert(authored);
             }
+            self.runs.insert(&evidence::runs(&text, &GENERAL), idx, u.msg, authored);
             self.units.push(u);
         }
     }

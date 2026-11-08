@@ -269,11 +269,13 @@ fn the_long_session_ends_with_the_reference_stats() {
     // also counts the outputs sent whole as the latest message that go as a pointer one request later
     // (`miss_fresh`, 17298): 57962. An output of the open request is priced at what it still sends, not its
     // full size: 1 leaves, not 3, and the cache misses 57478.
+    // A result counts as used only on evidence (a quoted run, an exact line of an edit, a `path:line`, or a word the
+    // result brought before the reply wrote it): 127 chunks leave and the cache misses 63747 (miss_close 22583).
     // Closing is priced by the need a step still has (five horizons learned over many sessions): it closes 43
     // steps, not 47, each a larger cut, and the cache misses 64020 (miss_close 22288).
     let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
-        "dropped_chunks": 125, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 59,
-        "cap_rewrites": 1, "miss_cap": 22641, "miss": 64020, "miss_fresh": 17298, "closed_steps": 43, "miss_close": 22288, "recalled_steps": 5,
+        "dropped_chunks": 127, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 59,
+        "cap_rewrites": 1, "miss_cap": 22073, "miss": 63747, "miss_fresh": 17298, "closed_steps": 43, "miss_close": 22583, "recalled_steps": 5,
         "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1, "miss_anchor": 1375, "miss_switch": 1375});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
