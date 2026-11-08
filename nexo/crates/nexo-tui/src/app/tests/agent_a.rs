@@ -975,3 +975,39 @@ fn esc_twice_keeps_the_draft_in_history_like_ctrl_c() {
     assert_eq!(a.input.history().last().map(String::as_str), Some("a long message"));
     assert!(a.status.as_ref().is_some_and(|s| s.0.contains("brings it back")), "{:?}", a.status);
 }
+
+/// `agent.close_on_verified`: the turn ends on the reply that holds the answer and its last checks. The text is
+/// on screen as the answer, the check cards follow it, and the app is idle.
+#[test]
+fn a_turn_closed_on_a_reply_with_its_checks_shows_the_text_as_the_answer() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    let said = "Fixed the parser; tests pass.";
+    a.handle_agent(AgentEvent::TextDelta { text: said.into() });
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "c1".into(),
+        name: "bash".into(),
+        args: serde_json::json!({"command": "cargo test"}),
+        summary: "cargo test".into(),
+    });
+    a.handle_agent(AgentEvent::ToolStart { id: "c1".into() });
+    a.handle_agent(AgentEvent::ToolDone { id: "c1".into(), output: ToolOutput::ok("test result: ok"), elapsed_ms: 5 });
+    a.handle_agent(AgentEvent::AssistantDone {
+        message: Message::new(
+            Role::Assistant,
+            vec![Part::text(said), Part::tool_call("c1", "bash", serde_json::json!({"command": "cargo test"}))],
+        ),
+    });
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+    let answers: Vec<&str> = a
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Assistant { text, streaming: false, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers, vec![said]);
+    assert!(a.blocks.iter().any(|b| matches!(b, Block::Tool { status: ToolStatus::Done, .. })));
+    assert!(!a.busy);
+}

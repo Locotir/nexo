@@ -419,6 +419,40 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 }
             }
         }
+        // `agent.close_on_verified`: the reply holds its answer and every call only confirmed finished work, and
+        // all of them succeeded: this reply is the end of the turn, there is nothing left for another request to say
+        let closing = stop.is_none()
+            && !cancelled
+            && answer == Answer::No
+            && ck.stopping.is_none()
+            && !verify::is_lead_in(&msg.text())
+            && {
+                let st = state.lock().await;
+                st.config.agent.close_on_verified
+                    && results.len() == kept.len()
+                    && results.iter().all(|p| matches!(p, Part::ToolResult { is_error: false, .. }))
+                    && verify::all_verification(&kept, |n, a| st.tools.get(n).map(|t| t.call_kind(a)))
+            };
+        if closing {
+            let mut blocked = None;
+            if stop_blocks < STOP_HOOK_CAP {
+                let fields =
+                    serde_json::json!({"stop_hook_active": stop_blocks > 0, "last_assistant_message": msg.text()});
+                blocked = fire(&state, "stop", None, fields).await.blocked;
+            }
+            if let Some(why) = blocked {
+                stop_blocks += 1;
+                notice(
+                    &events,
+                    Level::Info,
+                    format!("a Stop hook asked the agent to go on ({stop_blocks}/{STOP_HOOK_CAP}): {why}"),
+                );
+                results.push(Part::text(format!("[Stop hook] {why}")));
+            } else {
+                push_results(&state, results).await;
+                return TurnEnd::Done;
+            }
+        }
         push_results(&state, results).await;
         if !cancelled {
             watch_round(&state).await;

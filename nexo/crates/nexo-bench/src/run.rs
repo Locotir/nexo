@@ -48,6 +48,8 @@ pub struct Bench {
     pub client: Arc<dyn ModelClient>,
     /// The money every run has spent so far, a run that ends in an error included.
     pub spent: Arc<Mutex<f64>>,
+    /// Runs with `agent.close_on_verified` on.
+    pub close_on_verified: bool,
 }
 
 /// One line of `results.jsonl`. Fields missing from older files read as their defaults.
@@ -134,6 +136,7 @@ pub fn config(bench: &Bench, arm: &Arm) -> Config {
     };
     c.permissions.mode = PermissionMode::Auto;
     c.agent.subagents = false;
+    c.agent.close_on_verified = bench.close_on_verified;
     // the same prompt on every machine: no AGENTS.md from a parent folder, no ~/.nexo/prompt.md
     c.agent.hermetic = true;
     c.agent.max_turns = bench.max_steps;
@@ -534,6 +537,7 @@ mod tests {
             hide: vec![],
             client: Arc::new(nexo_providers::Client::new(nexo_providers::registry())),
             spent: Arc::default(),
+            close_on_verified: false,
         };
         let c = config(&bench, &Arm::parse("tight@curator:eoq=4000").unwrap());
         assert_eq!(c.provider.as_deref(), Some(PROVIDER));

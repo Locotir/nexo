@@ -51,6 +51,8 @@ pub struct Options {
     pub window: Option<u32>,
     /// Sampling temperature of every request; None: the provider's own.
     pub temperature: Option<f32>,
+    /// Run with `agent.close_on_verified` on.
+    pub close_on_verified: bool,
     pub out: PathBuf,
     pub skip_preflight: bool,
     /// The external benchmark's distribution, for the tasks `repoqa` and `canonstep`.
@@ -182,6 +184,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         hide,
         client,
         spent: Arc::default(),
+        close_on_verified: opts.close_on_verified,
     };
 
     let ctx = llmb::Ctx {
@@ -584,6 +587,7 @@ mod tests {
             max_tokens: None,
             window: None,
             temperature: None,
+            close_on_verified: false,
             out,
             skip_preflight: false,
             llmb: None,

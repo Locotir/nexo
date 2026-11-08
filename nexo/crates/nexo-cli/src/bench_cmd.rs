@@ -48,6 +48,9 @@ pub struct BenchArgs {
     /// Sampling temperature of every request (default: 0 with the task polyglot, as Aider; the provider's own otherwise).
     #[arg(long)]
     pub temperature: Option<f32>,
+    /// End a turn on the reply that holds the answer and its last successful checks (agent.close_on_verified).
+    #[arg(long)]
+    pub close_on_verified: bool,
     /// The model's context window in tokens (default: what nexo knows of it), e.g. 8000 for a small model.
     #[arg(long)]
     pub window: Option<u32>,
@@ -111,6 +114,7 @@ impl BenchArgs {
             max_tokens: self.max_tokens,
             window: self.window,
             temperature: self.temperature,
+            close_on_verified: self.close_on_verified,
             out: self.out.clone(),
             skip_preflight: self.skip_preflight,
             llmb: self.llmb.clone(),

@@ -68,6 +68,7 @@ fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) ->
         hide: vec![],
         client,
         spent: Arc::default(),
+        close_on_verified: false,
     }
 }
 

@@ -59,6 +59,7 @@ mod round;
 mod settings;
 mod start;
 mod tools;
+mod verify;
 
 use self::approval::*;
 use self::background::*;
