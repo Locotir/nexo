@@ -894,7 +894,13 @@ fn render_output(
                     region.skip.push(k as u32);
                 }
                 let mut spans = pad.to_vec();
-                spans.extend(l.spans);
+                if let [gutter, text] = &l.spans[..] {
+                    // a long row is shortened with an ellipsis, as a file's are
+                    spans.push(gutter.clone());
+                    spans.extend(super::wrap::clip_spans(vec![text.clone()], w.saturating_sub(width(&gutter.content))));
+                } else {
+                    spans.extend(l.spans);
+                }
                 lines.push(Line::from(spans));
             }
             region.end = lines.len().saturating_sub(1) as u32;
@@ -1653,6 +1659,32 @@ mod tests {
         assert!(t[2].starts_with("⚙ job 2  false") && t[2].ends_with("✗ exit 1 · 3 s · 1 line"), "{all}");
         assert!(t.iter().all(|l| width(l) <= 70), "{all}");
         assert_eq!(b.copy_text().as_deref(), Some(note));
+    }
+
+    #[test]
+    fn a_long_diff_row_is_shortened_with_an_ellipsis_not_cut_by_the_edge() {
+        let out = ToolOutput::ok("ok").with_display(ToolDisplay::Diff {
+            path: "a.rs".into(),
+            old: "a\n".into(),
+            new: format!("a\n{}\n", "x".repeat(150)),
+            start_line: 1,
+        });
+        let b = Block::Tool {
+            id: "e".into(),
+            name: "edit".into(),
+            summary: "a.rs".into(),
+            args: Value::Null,
+            status: ToolStatus::Done,
+            progress: vec![],
+            output: Some(out),
+            started: None,
+            elapsed_ms: None,
+            folded: false,
+        };
+        let t = texts(&b.render(60, &Theme::dark(), opts()));
+        let all = t.join("\n");
+        assert!(t.iter().all(|l| width(l) <= 60), "{all}");
+        assert!(t.iter().any(|l| l.contains("+ xxx") && l.ends_with('…')), "{all}");
     }
 
     #[test]

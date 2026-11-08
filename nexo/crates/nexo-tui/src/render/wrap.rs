@@ -34,6 +34,40 @@ pub fn truncate(s: &str, w: usize) -> String {
     out
 }
 
+/// `spans` cut to at most `max` columns, the cut marked with an ellipsis in the style of the span it falls in.
+pub fn clip_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+    if spans.iter().map(|s| width(&s.content)).sum::<usize>() <= max {
+        return spans;
+    }
+    if max == 0 {
+        return Vec::new();
+    }
+    let keep = max - 1;
+    let mut out = Vec::new();
+    let mut used = 0;
+    for s in spans {
+        let sw = width(&s.content);
+        if used + sw <= keep {
+            used += sw;
+            out.push(s);
+            continue;
+        }
+        let mut cut = String::new();
+        for g in s.content.graphemes(true) {
+            let gw = width(g);
+            if used + gw > keep {
+                break;
+            }
+            cut.push_str(g);
+            used += gw;
+        }
+        cut.push('…');
+        out.push(Span::styled(cut, s.style));
+        break;
+    }
+    out
+}
+
 /// Whether `c` makes the terminal and the layout disagree on where text sits: control
 /// characters (tabs, escapes) and the joiners and selectors that one terminal draws as one
 /// cell and another as two. A cell the layout thinks is covered is never redrawn, so text
