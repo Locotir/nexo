@@ -103,11 +103,19 @@ async fn found(file: &Path, limit: Duration) -> Option<Vec<String>> {
         if (errors_only && !l.contains(": error")) || !about(l, &file_s) {
             continue;
         }
-        if !lines.iter().any(|x| x == l) {
-            lines.push(l.to_string());
+        let l = slashed(l);
+        if !lines.contains(&l) {
+            lines.push(l);
         }
     }
     Some(lines)
+}
+
+/// `line` with the path before the position written with forward slashes (Windows prints `src\lib.rs:2:5`).
+fn slashed(line: &str) -> String {
+    let colon = line.find(':').unwrap_or(0);
+    let end = line.find('(').filter(|p| *p < colon).unwrap_or(colon);
+    format!("{}{}", line[..end].replace('\\', "/"), &line[end..])
 }
 
 /// Whether `line` is a diagnostic about the file `file` (absolute, forward slashes):
@@ -150,6 +158,13 @@ mod tests {
         let f = d.path().join("src/lib.rs");
         std::fs::write(&f, body).unwrap();
         (d, f)
+    }
+
+    #[test]
+    fn a_windows_path_is_reported_with_forward_slashes() {
+        assert_eq!(slashed("src\\a\\lib.rs:2:5: error[E0308]: x\\y"), "src/a/lib.rs:2:5: error[E0308]: x\\y");
+        assert_eq!(slashed("src\\a.ts(3,4): error TS1: m"), "src/a.ts(3,4): error TS1: m");
+        assert_eq!(slashed("no position"), "no position");
     }
 
     #[tokio::test]
