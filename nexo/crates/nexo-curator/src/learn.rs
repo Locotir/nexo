@@ -1,4 +1,10 @@
 //! Features of a chunk at a step and the learned heads that score them.
+//!
+//! Ablation on the 20 replay fixtures (total input cost): shipped heads 0.9057 $, no heads (constant
+//! score, no link, no need heads) 0.9854 $ (+8.8 %, and lower efficiency on the long fixtures: marathon-D
+//! 0.093 to 0.122, g5 0.087 to 0.104), need heads refit with the strict hindsight labels on the 656-session
+//! corpus 0.9259 $ (+2.2 %, marathon4 0.061 to 0.081). Blind and denied are equal in all three arms; the
+//! no-heads arm forgets fewer words (g5 21 to 0, marathon-D 9 to 1) but costs more. The heads stay as shipped.
 
 use std::cell::RefCell;
 use std::sync::LazyLock;
