@@ -1643,6 +1643,13 @@ fn main() {
         }
         let at = gap.map_or(r.now, |g| g * i as f64) + pause.map_or(0.0, |(n, s)| (i / n) as f64 * s);
         let reply = cur.view(r.system_tokens, &r.messages, at).expect("a view");
+        if let Ok(spec) = std::env::var("REPLAY_RAW") {
+            if let Some((n, file)) = spec.split_once(':') {
+                if n.parse::<usize>().ok() == Some(i + 1) {
+                    std::fs::write(file, Value::Array(r.messages.clone()).to_string()).expect("the history is written");
+                }
+            }
+        }
         if let Some((n, file)) = &save {
             if *n == i + 1 {
                 std::fs::write(file, Value::Array(reply.view.clone()).to_string()).expect("the view is written");

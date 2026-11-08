@@ -10,7 +10,7 @@ use crate::json::est_str;
 use crate::learn::MODEL;
 use crate::ledger::{fold_forms, lines_of, said_lines, ON_DISK, POOL, SAID};
 use crate::msg::get_str;
-use crate::tools::{shell_writes, Kind};
+use crate::tools::{full_write, shell_writes, Kind};
 
 use super::files::command_of;
 use super::{Engine, NOTE_TOOL};
@@ -610,14 +610,23 @@ impl Engine {
                     // what was said weighs twice; the body of a file read or written is on disk and weighs less
                     let info = self.fz.info.get(&i);
                     let kind = self.tr.units[i].kind;
+                    // an edit of a part of a file is the agent's own decision (what it renamed, what it set), which
+                    // it reports again; a file written whole is on disk and pinned
+                    let whole = kind == UKind::Call
+                        && info.is_some_and(|x| x.kind == Kind::Write && x.path.is_some())
+                        && full_write(get_str(self.tr.block(i), "name"), self.tr.block(i).get("input")).is_some();
+                    let edit = kind == UKind::Call
+                        && !whole
+                        && info.is_some_and(|x| x.kind == Kind::Write && x.path.is_some());
                     let said = matches!(kind, UKind::Text | UKind::User)
-                        || (kind == UKind::Call && get_str(self.tr.block(i), "name") == NOTE_TOOL);
+                        || (kind == UKind::Call && get_str(self.tr.block(i), "name") == NOTE_TOOL)
+                        || edit;
                     let w = match kind {
                         _ if said => SAID,
                         UKind::Result if info.is_some_and(|x| x.kind == Kind::Read && !x.error && x.path.is_some()) => {
                             ON_DISK
                         }
-                        UKind::Call if info.is_some_and(|x| x.kind == Kind::Write && x.path.is_some()) => ON_DISK,
+                        _ if whole => ON_DISK,
                         _ => 1.0,
                     };
                     // what was said keeps its rows of numbers whole: they are the values it stated

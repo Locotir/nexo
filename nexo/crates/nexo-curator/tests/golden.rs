@@ -274,9 +274,9 @@ fn the_long_session_ends_with_the_reference_stats() {
     // Closing is priced by the need a step still has (five horizons learned over many sessions): it closes 43
     // steps, not 47, each a larger cut, and the cache misses 64020 (miss_close 22288).
     let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
-        "dropped_chunks": 127, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 59,
-        "cap_rewrites": 1, "miss_cap": 22073, "miss": 63747, "miss_fresh": 17298, "closed_steps": 43, "miss_close": 22583, "recalled_steps": 5,
-        "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1, "miss_anchor": 1375, "miss_switch": 1375});
+        "dropped_chunks": 127, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 58,
+        "cap_rewrites": 1, "miss_cap": 22073, "miss": 63713, "miss_fresh": 17298, "closed_steps": 43, "miss_close": 22560, "recalled_steps": 5,
+        "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1, "miss_anchor": 1364, "miss_switch": 1364});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }

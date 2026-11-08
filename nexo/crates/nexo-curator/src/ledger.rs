@@ -73,6 +73,14 @@ static BIG_NUMBER: LazyLock<Re> = LazyLock::new(|| Re::new(r"(?<![\w.])[1-9]\d{1
 // `12→` or `12 | `): the number is not part of the line, and a line read from a binary dump must be judged
 // without it.
 static VIEWER: LazyLock<Re> = LazyLock::new(|| Re::new(r"^\s*\d+(?:\t|→|│|:\s|\s\|\s)", 0));
+// The mark a tool leaves where it cut its own output (`... [12395 characters truncated] ...`, `(40 lines omitted)`):
+// it says nothing about the work, and the cut is not what the agent will look for again.
+static CUT_MARK: LazyLock<Re> = LazyLock::new(|| {
+    Re::new(
+        r"(?i)^[\s\[(.…*-]*(?:\d[\d,]*\s+(?:more\s+)?(?:characters?|chars|bytes|lines|tokens)\s+)?(?:output\s+)?(?:truncated|omitted|elided|cut off)\b[^\n]{0,40}$|^[\s\[(.…*-]*(?:output\s+|lines?\s+)?[^\n]{0,24}\b\d[\d,]*\s+(?:more\s+)?(?:characters?|chars|bytes|lines|tokens)\s+(?:truncated|omitted|elided|cut off|skipped)\b[^\n]{0,24}$",
+        0,
+    )
+});
 // A row of `ls -l` for the directory itself or its parent.
 static DOT_ROW: LazyLock<Re> = LazyLock::new(|| Re::new(r"^[d-][rwxsStT-]{9}[+@.]?\s.*\s\.\.?$", 0));
 
@@ -96,7 +104,7 @@ fn raw_bytes(ln: &str) -> bool {
 /// with hardly a word in it (a table of numbers, a listing of one token), none of whose names the agent will
 /// type back.
 pub fn noise(ln: &str) -> bool {
-    if raw_bytes(ln) || DOT_ROW.is_match(ln) {
+    if raw_bytes(ln) || DOT_ROW.is_match(ln) || CUT_MARK.is_match(ln) {
         return true;
     }
     let tokens: Vec<&str> = py::split_ws(ln).collect();
@@ -564,5 +572,31 @@ mod viewer_tests {
             kept(said, true),
             vec!["luck_bonus 5 -> 112, 6 -> 115, 7 -> 118, 8 -> 121", "seed 93824992252144 gives 31"]
         );
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::noise;
+
+    #[test]
+    fn where_a_tool_cut_its_output_is_noise_and_a_sentence_about_cutting_is_not() {
+        for s in [
+            "... [12395 characters truncated] ...",
+            "[5580 characters truncated]",
+            "(40 lines omitted)",
+            "... 1,204 more lines truncated ...",
+            "[output truncated]",
+            "… 300 bytes elided …",
+        ] {
+            assert!(noise(s), "{s}");
+        }
+        for s in [
+            "the proxy truncated the body of every POST to 4096 bytes, so upload_chunk must resend the rest",
+            "read_to_end returned 4096 bytes and the response was truncated by the proxy at /v1/upload",
+            "Truncate the log in rotate_logs after 300 lines",
+        ] {
+            assert!(!noise(s), "{s}");
+        }
     }
 }
