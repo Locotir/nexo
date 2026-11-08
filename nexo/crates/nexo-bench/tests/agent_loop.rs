@@ -53,6 +53,8 @@ fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) ->
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
             std::env::set_var(var, d.path().join(var));
         }
+        // the start check runs a real cargo: keep it off the outer cargo's target dir and build lock
+        std::env::set_var("CARGO_TARGET_DIR", d.path().join("target"));
         d
     });
     assert!(std::env::var_os("NEXO_DATA_DIR").is_some_and(|d| std::path::Path::new(&d).starts_with(home.path())));
@@ -241,7 +243,7 @@ async fn check_at_start_puts_the_failing_tests_in_the_first_request_with_one_car
     // two failing tests in two test binaries
     let count = |name: &str| {
         format!(
-            "#[test]\nfn {name}() {{\n    use std::io::Write;\n    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/runs.txt\")).unwrap();\n    writeln!(f, \"{name}\").unwrap();\n    panic!(\"{name} fails\");\n}}\n"
+            "#[test]\nfn {name}() {{\n    panic!(\"{name} fails\");\n}}\n"
         )
     };
     let rec = Arc::new(Recorder { requests: Mutex::default(), first: None });
