@@ -135,8 +135,8 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
                 cwd: Some(cwd.display().to_string()),
                 permission_mode: Some(mode.to_string()),
             }));
+            // opening a session is not work: it stays idle until the person sends something
             out.push(mk2(ObsKind::Spend { usd: g.cost, model: g.model.clone() }));
-            out.push(mk2(ObsKind::Activity));
         }
         AgentEvent::SessionChanged { session_id, title } => {
             g.key = Some(session_id.clone());
@@ -339,5 +339,22 @@ mod nudge_tests {
         assert!(obs.iter().all(|o| o.kind != ObsKind::UserInput), "{obs:?}");
         s.observe(&AgentEvent::TurnStart { turn: 2 }, 20);
         assert!(me.poll(21).iter().any(|o| o.kind == ObsKind::UserInput), "the person's turn counts again");
+    }
+
+    #[test]
+    fn opening_a_session_is_not_work() {
+        let s = NexoSource::new();
+        let mut me = s.clone();
+        let ready = AgentEvent::Ready {
+            session_id: "s1".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            cwd: "/w".into(),
+            permission_mode: PermissionMode::Ask,
+        };
+        s.observe(&ready, 5);
+        let obs = me.poll(6);
+        assert!(!obs.is_empty(), "the session still gets its card");
+        assert!(obs.iter().all(|o| !o.kind.is_sign_of_life()), "{obs:?}");
     }
 }

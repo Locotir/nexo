@@ -69,8 +69,10 @@ pub fn classify(track: &AgentTrack, now: Secs, policy: &Policy) -> State {
     // A tool that has run for less than the grace is a long build, not a stop.
     let busy_tool = track.oldest_pending_age(now).is_some_and(|a| a < t.tool_grace_min * MIN);
 
-    // Stalled
-    if let Some(idle) = idle {
+    // Stalled: only work that stopped midway, or a scheduled session that missed its run. A turn that ended
+    // with an answer is waiting for its person, however long that takes.
+    let mid_work = track.turn_end.is_none() || track.loop_secs.is_some();
+    if let (Some(idle), true) = (idle, mid_work) {
         let limit = match track.loop_secs {
             Some(period) => 2 * period + 10 * MIN,
             None => t.stall_min * MIN,
@@ -384,6 +386,15 @@ mod tests {
         assert_eq!(t.last_activity, Some(T0));
         assert_eq!(t.name.as_deref(), Some("n"));
         assert_eq!(state(&t, T0 + 3000), State::Stalled);
+    }
+
+    #[test]
+    fn a_finished_turn_stays_idle_however_long_it_waits() {
+        let mut t = fresh();
+        obs(&mut t, T0, ObsKind::Activity);
+        obs(&mut t, T0, end("All done, the tests pass."));
+        assert_eq!(state(&t, T0 + 31 * 60), State::Idle { min: 31 });
+        assert_eq!(state(&t, T0 + 5 * 3600), State::Idle { min: 300 });
     }
 
     #[test]
