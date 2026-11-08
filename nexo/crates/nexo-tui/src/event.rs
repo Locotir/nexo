@@ -118,6 +118,11 @@ pub fn handle(app: &mut App, ev: Event) {
                     }
                     app.dirty = true;
                 }
+                // the answer of one's own in a question
+                Some(crate::modal::Modal::Question(a)) => {
+                    a.paste(&s);
+                    app.dirty = true;
+                }
                 Some(_) => {}
             }
         }

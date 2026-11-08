@@ -232,6 +232,27 @@ impl Ask {
         }
         ModalOut::Nothing
     }
+
+    /// Text pasted while the row for one's own answer is under the cursor: the answer is one line, so each
+    /// run of line breaks and tabs inside it becomes one space, none at the end. Dropped on the option rows.
+    pub fn paste(&mut self, pasted: &str) {
+        if !self.on_other() {
+            return;
+        }
+        self.typing = true;
+        let mut gap = false;
+        for c in pasted.chars() {
+            if c.is_control() {
+                gap = true;
+                continue;
+            }
+            if gap && !self.other.is_empty() {
+                self.other.push(' ');
+            }
+            gap = false;
+            self.other.push(c);
+        }
+    }
 }
 
 /// "Do you trust the files in this folder?": asked once, before the first prompt, in a folder with
