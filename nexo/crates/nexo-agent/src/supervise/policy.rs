@@ -437,9 +437,11 @@ fn bash_command<'a>(tool: &str, args: &'a Value) -> Option<&'a str> {
 }
 
 fn path_args(args: &Value) -> Vec<&str> {
+    let many = args.get("paths").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
     ["file_path", "path", "notebook_path", "directory", "dir", "file"]
         .iter()
         .filter_map(|k| args.get(*k).and_then(Value::as_str))
+        .chain(many)
         .collect()
 }
 
@@ -780,6 +782,9 @@ mod tests {
         assert!(matches!(verdict(&p, "Read", json!({"file_path": "/work/proj/sub/.env"})), Verdict::Deny(_)));
         assert!(matches!(verdict(&p, "Read", json!({"file_path": ".env"})), Verdict::Deny(_)));
         assert!(matches!(bash(&p, "cat ~/.ssh/id_x"), Verdict::Deny(_)));
+        // A read of several files: one denied file denies the call.
+        assert!(matches!(verdict(&p, "Read", json!({"paths": ["src/lib.rs", ".env"]})), Verdict::Deny(_)));
+        assert_eq!(verdict(&p, "Read", json!({"paths": ["src/lib.rs", "src/main.rs"]})), Verdict::Approve);
         // The dot dot trick.
         assert!(matches!(verdict(&p, "Read", json!({"file_path": "../../home/p/.ssh/k"})), Verdict::Deny(_)));
         assert_eq!(verdict(&p, "Read", json!({"file_path": "/work/proj/src/lib.rs"})), Verdict::Approve);

@@ -457,7 +457,10 @@ fn offer(name: &str, cfg: &ProviderConfig) -> String {
 /// A path argument that leaves the project: resolved as the tools resolve it (`~` expanded), with
 /// links followed, so a link inside the project that points out of it counts as outside.
 fn outside(args: &Value, cwd: &Path) -> Option<String> {
-    let p = args.get("path").and_then(Value::as_str)?;
+    nexo_core::tool::call_paths(args).iter().find_map(|p| outside_path(p, cwd))
+}
+
+fn outside_path(p: &str, cwd: &Path) -> Option<String> {
     // `~` is the home directory for the file tools, so it is here
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
     let p = p.trim();
@@ -1182,6 +1185,10 @@ mod tests {
         assert!(outside(&args("../x"), &cwd).is_some());
         assert!(outside(&args("~/.ssh/id_rsa"), &cwd).is_some());
         assert!(outside(&args("~"), &cwd).is_some());
+        // a read of several files escapes if any one of them does
+        let many = |l: serde_json::Value| serde_json::json!({ "paths": l });
+        assert!(outside(&many(serde_json::json!(["src/a.rs", "src/b.rs"])), &cwd).is_none());
+        assert_eq!(outside(&many(serde_json::json!(["src/a.rs", "../x"])), &cwd).as_deref(), Some("../x"));
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(d.path(), cwd.join("link")).unwrap();

@@ -2775,6 +2775,10 @@ fn detail_of(kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay {
                 ToolDisplay::Plain
             }
         }
+        // a read of several files: every file the dialog asks about
+        ToolKind::Read if nexo_core::tool::has_paths(args) => {
+            ToolDisplay::List { items: nexo_core::tool::call_paths(args) }
+        }
         // the whole address, query included: what it would carry out is the person's call
         ToolKind::Network => match s("url").or_else(|| s("uri")) {
             Some(u) => ToolDisplay::List { items: vec![u] },
@@ -3401,20 +3405,21 @@ async fn run_call(
             }
             let elapsed_ms = t0.elapsed().as_millis() as u64;
             // the file the call printed (part of), if that is all it did
-            let file = match (name, args.get("path").and_then(Value::as_str)) {
-                ("read", Some(p)) => {
-                    Some((if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) }, p.to_string()))
-                }
-                ("bash", _) => {
-                    args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print).map(|(rel, _)| {
-                        (
-                            if rel.is_absolute() { rel.clone() } else { cwd.join(&rel) },
-                            rel.to_string_lossy().into_owned(),
-                        )
-                    })
-                }
-                _ => None,
-            };
+            let file =
+                match (name, args.get("path").and_then(Value::as_str).filter(|_| !nexo_core::tool::has_paths(args))) {
+                    ("read", Some(p)) => {
+                        Some((if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) }, p.to_string()))
+                    }
+                    ("bash", _) => args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print).map(
+                        |(rel, _)| {
+                            (
+                                if rel.is_absolute() { rel.clone() } else { cwd.join(&rel) },
+                                rel.to_string_lossy().into_owned(),
+                            )
+                        },
+                    ),
+                    _ => None,
+                };
             let seen = {
                 let mut st = state.lock().await;
                 let _ = st.session.record_output(id, &out);

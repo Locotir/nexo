@@ -44,6 +44,11 @@ impl Counters {
     }
 }
 
+/// The files a `read` call names: `path`, then each of `paths`.
+fn read_paths(input: &Value) -> Vec<String> {
+    nexo_core::tool::call_paths(input)
+}
+
 /// The counters of the transcript at `path` (one JSON request per line); defaults when the file
 /// cannot be read.
 pub fn from_file(path: &Path) -> Counters {
@@ -99,9 +104,9 @@ pub fn from_text(text: &str) -> Counters {
         match call.name.as_str() {
             "recall" => c.recall_calls += 1,
             "read" => {
-                if let Some(p) = call.input["path"].as_str() {
-                    let start = call.input["offset"].as_u64().unwrap_or(1).max(1);
-                    let end = start + call.input["limit"].as_u64().unwrap_or(READ_DEFAULT).max(1) - 1;
+                let start = call.input["offset"].as_u64().unwrap_or(1).max(1);
+                let end = start + call.input["limit"].as_u64().unwrap_or(READ_DEFAULT).max(1) - 1;
+                for p in read_paths(&call.input) {
                     let seen = reads.entry(p.trim_start_matches("./").to_string()).or_default();
                     if seen.iter().any(|&(s, e)| start <= e && s <= end) {
                         c.re_reads += 1;
@@ -215,17 +220,22 @@ fn needless(calls: &[Call], results: &HashMap<String, String>, failed: &HashSet<
         let whole = !failed.contains(&call.id)
             && results.get(&call.id).is_some_and(|r| !r.contains("characters truncated] ..."));
         let path = || call.input["path"].as_str().map(|p| p.trim().trim_start_matches("./").to_string());
+        // a read result that stopped at the size cap did not show every file whole
+        let whole_all =
+            whole && results.get(&call.id).is_none_or(|r| !r.contains("size cap") && !r.contains("(not read)"));
         match call.name.as_str() {
             "read" => {
-                let Some(p) = path() else { continue };
                 let s = call.input["offset"].as_u64().unwrap_or(1).max(1);
                 let e = s + call.input["limit"].as_u64().unwrap_or(READ_DEFAULT).max(1) - 1;
-                let had = reads.entry(p.clone()).or_default();
-                if covered(had, s, e) {
-                    out.push(Needless { at: call.at, what: format!("read {p}:{s}-{e}") });
-                }
-                if whole {
-                    had.push((s, e));
+                for p in read_paths(&call.input) {
+                    let p = p.trim().trim_start_matches("./").to_string();
+                    let had = reads.entry(p.clone()).or_default();
+                    if covered(had, s, e) {
+                        out.push(Needless { at: call.at, what: format!("read {p}:{s}-{e}") });
+                    }
+                    if whole_all {
+                        had.push((s, e));
+                    }
                 }
             }
             "write" | "edit" => {

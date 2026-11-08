@@ -361,6 +361,8 @@ struct Unit {
     kind: Kind,
     tool: String,
     path: Option<String>,
+    /// The files of a `read` that names several in `paths`; `path` is then empty.
+    files: Vec<String>,
     command: Option<String>,
     text: String,
     error: bool,
@@ -402,6 +404,7 @@ fn units(history: &[Message]) -> Vec<Unit> {
                     msg: mi,
                     kind: Kind::Person,
                     tool: String::new(),
+                    files: vec![],
                     path: None,
                     command: None,
                     text: text.clone(),
@@ -411,6 +414,7 @@ fn units(history: &[Message]) -> Vec<Unit> {
                     msg: mi,
                     kind: Kind::Agent,
                     tool: String::new(),
+                    files: vec![],
                     path: None,
                     command: None,
                     text: text.clone(),
@@ -427,7 +431,14 @@ fn units(history: &[Message]) -> Vec<Unit> {
                         msg: mi,
                         kind: Kind::Call,
                         tool: name.clone(),
-                        path: str_arg(args, &["path", "file_path"]).map(str::to_string),
+                        files: if nexo_core::tool::has_paths(args) {
+                            nexo_core::tool::call_paths(args)
+                        } else {
+                            vec![]
+                        },
+                        path: str_arg(args, &["path", "file_path"])
+                            .filter(|_| !nexo_core::tool::has_paths(args))
+                            .map(str::to_string),
                         command: str_arg(args, &["command", "cmd"]).map(str::to_string),
                         text,
                         error: failed.contains(id.as_str()),
@@ -441,7 +452,14 @@ fn units(history: &[Message]) -> Vec<Unit> {
                     out.push(Unit {
                         msg: mi,
                         kind: Kind::Result,
-                        path: args.and_then(|a| str_arg(a, &["path", "file_path"])).map(str::to_string),
+                        files: args
+                            .filter(|a| nexo_core::tool::has_paths(a))
+                            .map(nexo_core::tool::call_paths)
+                            .unwrap_or_default(),
+                        path: args
+                            .filter(|a| !nexo_core::tool::has_paths(a))
+                            .and_then(|a| str_arg(a, &["path", "file_path"]))
+                            .map(str::to_string),
                         command: args.and_then(|a| str_arg(a, &["command", "cmd"])).map(str::to_string),
                         tool,
                         text: result_text(content),
@@ -817,6 +835,8 @@ struct FileNote {
     edits: usize,
     written: bool,
     changed_at: usize,
+    /// Read in a call of several files, whose lines are not told apart.
+    read_in_many: bool,
     last: usize,
 }
 
@@ -889,6 +909,14 @@ impl Ledger {
         // files
         let mut files: BTreeMap<String, FileNote> = BTreeMap::new();
         for u in &us {
+            if u.kind == Kind::Result && u.tool == "read" && !u.error {
+                for p in &u.files {
+                    let f = files.entry(p.clone()).or_default();
+                    f.last = f.last.max(u.msg);
+                    f.read_in_many = true;
+                    f.read_at = u.msg;
+                }
+            }
             let Some(p) = &u.path else { continue };
             let f = files.entry(p.clone()).or_default();
             f.last = f.last.max(u.msg);
@@ -931,6 +959,9 @@ impl Ledger {
                     }
                 };
                 what.push(format!("read lines {a}-{b}{state}"));
+            }
+            if f.read.is_none() && f.read_in_many {
+                what.push(if f.changed_at > f.read_at { "read (changed after)" } else { "read" }.into());
             }
             if f.written {
                 what.push("written".into());
@@ -1239,6 +1270,38 @@ mod tests {
         assert!(l.files.iter().any(|f| f == "- src/parser.rs: read lines 1-60 (current)"), "{:?}", l.files);
         let l = Ledger::of(&done, d.path(), true, task);
         assert!(l.files.iter().any(|f| f.contains("(changed after)") && f.contains("edited 1x")), "{:?}", l.files);
+    }
+
+    #[test]
+    fn a_read_of_several_files_is_listed_in_the_ledger_and_not_made_stale_by_an_edit_of_one() {
+        let d = tempfile::tempdir().unwrap();
+        let h = vec![
+            Message::user("Compare parse_line_7 in src/a.rs with src/b.rs"),
+            Message::new(
+                Role::Assistant,
+                vec![Part::tool_call("m", "read", json!({"paths": ["src/a.rs", "src/b.rs"]}))],
+            ),
+            Message::tool_results(vec![Part::tool_result(
+                "m",
+                "=== src/a.rs ===\n     1│ fn parse_line_7() {}\n=== src/b.rs ===\n     1│ fn other_b() {}\n",
+                false,
+            )]),
+            Message::new(
+                Role::Assistant,
+                vec![Part::tool_call("e", "edit", json!({"path": "src/a.rs", "old_string": "x", "new_string": "y"}))],
+            ),
+            Message::tool_results(vec![Part::tool_result("e", "edited src/a.rs", false)]),
+        ];
+        let l = Ledger::of(&h, d.path(), false, "Compare parse_line_7 in src/a.rs with src/b.rs");
+        assert!(l.files.iter().any(|f| f.starts_with("- src/b.rs: read")), "{:?}", l.files);
+        assert!(
+            l.files.iter().any(|f| f.starts_with("- src/a.rs:") && f.contains("read") && f.contains("edited")),
+            "{:?}",
+            l.files
+        );
+        // the result is no one file's, so the edit of a.rs does not drop it as stale
+        let spans = lexical("Compare parse_line_7 in src/a.rs with src/b.rs", &h, 2000);
+        assert!(spans.iter().any(|s| s.text.contains("other_b")), "{spans:?}");
     }
 
     #[test]

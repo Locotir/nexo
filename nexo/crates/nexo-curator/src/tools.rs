@@ -69,6 +69,19 @@ fn name_kind(name: &str) -> Kind {
     Kind::Other
 }
 
+/// The files a call names: its path, then each entry of a `paths` list, without repeats.
+fn files_of(a: &serde_json::Map<String, Value>) -> Vec<String> {
+    let one = PATH_KEYS.iter().find_map(|k| a.get(*k).and_then(Value::as_str));
+    let many = a.get("paths").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    let mut out: Vec<String> = Vec::new();
+    for p in one.into_iter().chain(many).filter(|p| !p.is_empty()) {
+        if !out.iter().any(|q| q == p) {
+            out.push(p.to_string());
+        }
+    }
+    out
+}
+
 /// (kind, path, command) of a tool call.
 pub fn classify(name: &str, args: Option<&Value>) -> (Kind, Option<String>, Option<String>) {
     let args = args.and_then(Value::as_object);
@@ -77,7 +90,13 @@ pub fn classify(name: &str, args: Option<&Value>) -> (Kind, Option<String>, Opti
         let a = args?;
         keys.iter().find_map(|k| a.get(*k).and_then(Value::as_str).map(str::to_string))
     };
-    let path = get(&PATH_KEYS);
+    // a call that names several files (`paths`) holds no one file: its output is not any one file's, so it has
+    // no path (every file of it would be called stale when one of them is edited)
+    let path = match (kind, args.map(files_of).as_deref()) {
+        (Kind::Read, Some([_, _, ..])) => None,
+        (Kind::Read, Some([one])) => get(&PATH_KEYS).or_else(|| Some(one.clone())),
+        _ => get(&PATH_KEYS),
+    };
     let command = get(&CMD_KEYS);
     // an editor tool asked to show a file (`{"command": "view", "path": …}`) reads it
     if kind == Kind::Write && command.as_deref().is_some_and(|c| VIEW_COMMANDS.contains(&c)) {
@@ -614,5 +633,18 @@ mod tests {
         assert_eq!(shell_writes("echo hi > out.txt && tee -a log.md"), vec!["out.txt", "log.md"]);
         let script = "python3 - <<'EOF'\np = Path('a/b.txt')\np.write_text('x')\nEOF";
         assert_eq!(shell_writes(script), vec!["a/b.txt"]);
+    }
+
+    #[test]
+    fn a_read_of_several_files_has_no_one_path() {
+        let two = json!({"paths": ["a.rs", "b.rs"]});
+        assert_eq!(classify("read", Some(&two)), (Kind::Read, None, None));
+        // the same list with `path` among it is still several files
+        assert_eq!(classify("read", Some(&json!({"path": "a.rs", "paths": ["b.rs"]}))).1, None);
+        // one file named in a list is that file, and a plain `path` is unchanged
+        assert_eq!(classify("read", Some(&json!({"paths": ["a.rs"]}))).1.as_deref(), Some("a.rs"));
+        assert_eq!(classify("read", Some(&json!({"paths": ["a.rs", "a.rs"]}))).1.as_deref(), Some("a.rs"));
+        assert_eq!(classify("read", Some(&json!({"path": "a.rs"}))).1.as_deref(), Some("a.rs"));
+        assert_eq!(classify("read", Some(&json!({"path": "a.rs", "paths": ["a.rs"]}))).1.as_deref(), Some("a.rs"));
     }
 }

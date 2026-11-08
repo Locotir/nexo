@@ -460,7 +460,10 @@ fn classify(name: &str, args: Option<&Value>) -> Info {
         let args = args?;
         keys.iter().find_map(|k| args.get(*k).and_then(Value::as_str)).filter(|s| !s.is_empty()).map(str::to_string)
     };
-    let path = first(&["file_path", "path", "filepath", "filename", "target_file", "file", "notebook_path"]);
+    // a call of several files (`paths`) has no one path: its output is not one file's
+    let many = args.is_some_and(|a| a.get("paths").and_then(Value::as_array).is_some_and(|l| !l.is_empty()));
+    let path =
+        first(&["file_path", "path", "filepath", "filename", "target_file", "file", "notebook_path"]).filter(|_| !many);
     let command = first(&["command", "cmd", "script"]);
     let mut kind = KINDS.iter().find(|(_, pats)| py::contains_any_folded(name, pats)).map_or(ToolKind::Other, |k| k.0);
     if kind == ToolKind::Other && command.is_some() {

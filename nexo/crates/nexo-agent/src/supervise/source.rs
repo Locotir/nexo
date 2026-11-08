@@ -82,9 +82,15 @@ pub fn tool_step(name: &str, input: &Value) -> String {
         ["command", "file_path", "path", "pattern", "query", "url", "description", "prompt", "skill"];
     let gist = KEYS
         .iter()
-        .find_map(|k| input.get(*k).and_then(Value::as_str))
+        .find_map(|k| input.get(*k).and_then(Value::as_str).map(str::to_string))
+        .or_else(|| {
+            input
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+        })
         .filter(|s| !is_raw_json(s))
-        .map(|s| one_line(s, STEP_CHARS))
+        .map(|s| one_line(&s, STEP_CHARS))
         .unwrap_or_default();
     let name = tool_name(name);
     if gist.is_empty() {
@@ -122,6 +128,7 @@ mod tests {
     fn a_step_names_the_tool_and_what_it_works_on() {
         assert_eq!(tool_step("Bash", &json!({"command": "cargo test\nmore"})), "Bash  cargo test");
         assert_eq!(tool_step("Read", &json!({"file_path": "/a/b.rs"})), "Read  /a/b.rs");
+        assert_eq!(tool_step("read", &json!({"paths": ["a.rs", "b.rs"]})), "read  a.rs, b.rs");
         assert_eq!(tool_step("Idle", &json!({})), "Idle");
     }
 

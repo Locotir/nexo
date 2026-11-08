@@ -4848,6 +4848,9 @@ pub fn summarise(name: &str, args: &serde_json::Value) -> String {
                 return format!("web_search: {}", q.lines().next().unwrap_or(""));
             }
         }
+        "read" if nexo_core::tool::has_paths(args) => {
+            return nexo_core::tool::paths_label(&nexo_core::tool::call_paths(args));
+        }
         "web_fetch" => {
             if let Some(u) = s("url") {
                 // host and path: the scheme and the query say little on a card

@@ -41,6 +41,28 @@ impl Policy {
     }
 
     pub fn decide(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Decision {
+        // a call of several files is judged file by file, as if each were asked for alone: one denied
+        // file denies the call, one that needs asking asks for the call
+        if matches!(kind, ToolKind::Read | ToolKind::Search) && nexo_core::tool::has_paths(args) {
+            let mut ask = false;
+            for p in nexo_core::tool::call_paths(args) {
+                let mut one = args.clone();
+                if let Some(o) = one.as_object_mut() {
+                    o.remove("paths");
+                    o.insert("path".into(), Value::String(p));
+                }
+                match self.decide_one(tool, kind, &one, cwd) {
+                    Decision::Deny(why) => return Decision::Deny(why),
+                    Decision::Ask => ask = true,
+                    Decision::Allow => {}
+                }
+            }
+            return if ask { Decision::Ask } else { Decision::Allow };
+        }
+        self.decide_one(tool, kind, args, cwd)
+    }
+
+    fn decide_one(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Decision {
         // what would wipe the machine beyond doubt runs in no mode and by no rule
         if kind == ToolKind::Exec {
             if let Some(why) = target_of(kind, args).as_deref().and_then(crate::supervise::policy::catastrophic) {
@@ -121,9 +143,12 @@ pub fn target_of(kind: ToolKind, args: &Value) -> Option<String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     match kind {
         ToolKind::Exec => s("command").or_else(|| s("cmd")).or_else(|| s("script")),
-        ToolKind::Read | ToolKind::Write | ToolKind::Search => {
-            s("path").or_else(|| s("file_path")).or_else(|| s("file")).or_else(|| s("directory")).or_else(|| s("dir"))
-        }
+        ToolKind::Read | ToolKind::Write | ToolKind::Search => s("path")
+            .or_else(|| s("file_path"))
+            .or_else(|| s("file"))
+            .or_else(|| s("directory"))
+            .or_else(|| s("dir"))
+            .or_else(|| nexo_core::tool::call_paths(args).into_iter().next()),
         ToolKind::Network => s("url").or_else(|| s("uri")).and_then(|u| host_of(&u)),
         _ => None,
     }
@@ -1223,6 +1248,27 @@ mod tests {
         persist_rule(&p, "edit(src/**)").unwrap();
         let cfg: toml::Table = toml::from_str(&std::fs::read_to_string(p.join("config.toml")).unwrap()).unwrap();
         assert_eq!(cfg["permissions"]["allow"].as_array().unwrap().len(), 2, "no duplicates");
+    }
+
+    #[test]
+    fn a_read_of_several_files_is_judged_file_by_file() {
+        let c = cwd();
+        let read = |p: &Policy, paths: Value| p.decide("read", ToolKind::Read, &json!({ "paths": paths }), &c);
+        let ask = Policy { mode: PermissionMode::Ask, allow: vec![], deny: vec!["read(secret/**)".into()] };
+        // every file is a plain project file: as allowed as one read
+        assert_eq!(read(&ask, json!(["src/a.rs", "src/b.rs"])), Decision::Allow);
+        // one denied file denies the whole call, wherever it stands in the list
+        for list in [json!(["secret/k.txt", "src/a.rs"]), json!(["src/a.rs", "secret/k.txt"])] {
+            assert!(matches!(read(&ask, list), Decision::Deny(_)));
+        }
+        // one that is only asked about (a credentials file, outside the project) asks for the call
+        assert_eq!(read(&ask, json!(["src/a.rs", ".env"])), Decision::Ask);
+        assert_eq!(read(&ask, json!(["src/a.rs", "src/../.env"])), Decision::Ask);
+        // a rule that names the file allows it, and the rest still stands on its own
+        let named = Policy { mode: PermissionMode::Ask, allow: vec!["read(.env)".into()], deny: vec![] };
+        assert_eq!(read(&named, json!(["src/a.rs", ".env"])), Decision::Allow);
+        // the dialog names the first file
+        assert_eq!(target_of(ToolKind::Read, &json!({ "paths": ["src/a.rs", "b.rs"] })).as_deref(), Some("src/a.rs"));
     }
 }
 

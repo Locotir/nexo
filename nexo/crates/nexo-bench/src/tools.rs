@@ -86,10 +86,11 @@ impl Bench {
     /// Why `args` reach outside the working directory, if they do. The path filter of each search
     /// tool is checked (glob's `pattern`, grep's `glob`); grep's `pattern` is a regex, not a path.
     fn escapes(&self, args: &Value, cwd: &Path) -> Option<String> {
-        if let Some(p) = args.get("path").and_then(Value::as_str) {
-            // read exactly as the tools read it: trimmed, `~` expanded
-            if !inside(&self.wd, &nexo_tools::util::resolve(cwd, p)) {
-                return Some(p.to_string());
+        // `path`, and every file of a read of several (`paths`), read exactly as the tools read them:
+        // trimmed, `~` expanded
+        for p in nexo_core::tool::call_paths(args) {
+            if !inside(&self.wd, &nexo_tools::util::resolve(cwd, &p)) {
+                return Some(p);
             }
         }
         let key = match self.inner.name() {

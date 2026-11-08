@@ -3,16 +3,23 @@
 use async_trait::async_trait;
 use base64::Engine;
 use nexo_core::message::ImageSource;
+use nexo_core::tool::{call_paths, paths_label};
 use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 use crate::picture;
-use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, str_arg, MAX_FILE_BYTES};
+use crate::util::{cut_line, display_path, int_arg, is_binary, outside_note, resolve, MAX_FILE_BYTES};
 
 /// Lines returned when `limit` is not given.
 pub const DEFAULT_LIMIT: u64 = 2000;
 /// Characters kept of one line.
 pub const LINE_CHARS: usize = 2000;
+/// Files one call may name in `paths`.
+pub const MAX_PATHS: usize = 20;
+/// Characters of file text one call of several files returns in all; what does not fit is cut at a line.
+pub const MULTI_CAP: usize = 100_000;
+/// Room left below which a file of a multi-file call is not started.
+const MIN_ROOM: usize = 1_000;
 
 pub struct Read;
 
@@ -25,9 +32,10 @@ impl Tool for Read {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".into(),
-            description: "Read a text file. Returns its lines numbered (`   12│ text`), at most `limit` \
+            description: "Read text files. Returns lines numbered (`   12│ text`), at most `limit` \
                           lines from line `offset` (1-based); the default is the first 2000 lines, and a \
-                          line longer than 2000 characters is cut. A PNG, JPEG, GIF, WebP, PPM, PGM \
+                          line longer than 2000 characters is cut. Several files at once: `paths` (each \
+                          under a `=== path ===` header; one that fails is reported in place). A PNG, JPEG, GIF, WebP, PPM, PGM \
                           or BMP file is shown as an image (at most 5 MB and 2000 px); a Jupyter notebook as its cells and outputs. Directories and other \
                           binary files are refused (use `ls` for a directory)."
                 .into(),
@@ -35,10 +43,10 @@ impl Tool for Read {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "The file; relative paths start at the working directory."},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Several files instead of `path` (at most 20, about 100000 characters in all); offset and limit apply to each."},
                     "offset": {"type": "integer", "minimum": 1, "description": "First line to return (1-based). Default 1."},
                     "limit": {"type": "integer", "minimum": 1, "description": "Lines to return. Default 2000."}
-                },
-                "required": ["path"]
+                }
             }),
         }
     }
@@ -48,107 +56,176 @@ impl Tool for Read {
     }
 
     fn summary(&self, args: &Value) -> String {
-        match str_arg(args, "path") {
-            Some(p) => {
-                let range = match (int_arg(args, "offset"), int_arg(args, "limit")) {
-                    (Some(o), Some(l)) => format!(" [{o}..{}]", o.saturating_add(l).saturating_sub(1)),
-                    (Some(o), None) => format!(" [{o}..]"),
-                    (None, Some(l)) => format!(" [..{l}]"),
-                    _ => String::new(),
-                };
-                format!("read {p}{range}")
-            }
-            None => "read (no path)".into(),
+        let files = call_paths(args);
+        if files.is_empty() {
+            return "read (no path)".into();
         }
+        let range = match (int_arg(args, "offset"), int_arg(args, "limit")) {
+            (Some(o), Some(l)) => format!(" [{o}..{}]", o.saturating_add(l).saturating_sub(1)),
+            (Some(o), None) => format!(" [{o}..]"),
+            (None, Some(l)) => format!(" [..{l}]"),
+            _ => String::new(),
+        };
+        format!("read {}{range}", paths_label(&files))
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
-        let Some(p) = str_arg(&args, "path") else {
-            return ToolOutput::error("read: `path` is required");
+        let files = call_paths(&args);
+        match files.as_slice() {
+            [] => ToolOutput::error("read: `path` or `paths` is required"),
+            [one] => read_one(&args, ctx, one, None).await,
+            _ if files.len() > MAX_PATHS => {
+                ToolOutput::error(format!("read: {} files named; at most {MAX_PATHS} in one call", files.len()))
+            }
+            _ => read_many(&args, ctx, &files).await,
+        }
+    }
+}
+
+/// The name a file goes by in answers: relative to the working directory when inside it.
+fn shown_of(ctx: &ToolContext, p: &str) -> String {
+    let path = resolve(&ctx.cwd, p);
+    format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path))
+}
+
+/// Several files in one answer: each under a `=== name ===` header, the same `offset` and `limit` for
+/// all, `MULTI_CAP` characters of text in all (what does not fit is cut at a line, a file that finds no
+/// room is left unread and says so). A file that cannot be read is told in its place; the call fails
+/// only when none could be.
+async fn read_many(args: &Value, ctx: &ToolContext, files: &[String]) -> ToolOutput {
+    let mut content = String::new();
+    let mut items = Vec::new();
+    let mut images = Vec::new();
+    let (mut left, mut failed) = (MULTI_CAP, 0usize);
+    for p in files {
+        let shown = shown_of(ctx, p);
+        if left < MIN_ROOM {
+            content.push_str(&format!(
+                "=== {shown} (not read) ===\nthe combined output of a call is capped at {MULTI_CAP} characters; read this file in its own call\n"
+            ));
+            items.push(format!("{shown}: not read (cap)"));
+            failed += 1;
+            continue;
+        }
+        let out = read_one(args, ctx, p, Some(left)).await;
+        left = left.saturating_sub(out.content.len());
+        let note = if out.is_error {
+            failed += 1;
+            " (failed)"
+        } else {
+            ""
         };
-        let path = resolve(&ctx.cwd, p);
-        let shown = format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path));
-        if path.is_dir() {
-            return ToolOutput::error(format!("read: {shown} is a directory; use `ls` to list it"));
+        content.push_str(&format!("=== {shown}{note} ===\n{}", out.content));
+        if !out.content.ends_with('\n') {
+            content.push('\n');
         }
-        if let Ok(m) = tokio::fs::metadata(&path).await {
-            if !m.file_type().is_file() {
-                return ToolOutput::error(format!("read: {shown} is not a regular file (device, pipe or socket)"));
+        items.push(match &out.display {
+            ToolDisplay::File { text, .. } if !out.is_error => {
+                format!("{shown}: {}", nexo_core::count(text.lines().count(), "line"))
             }
-            if m.len() > MAX_FILE_BYTES {
-                // all of it the model can be shown: enough to replace it on purpose
-                ctx.seen.mark(&path);
-                return ToolOutput::error(format!(
-                    "read: {shown} is {} MiB, too large to load; use `bash` with `head`, `tail`, `sed -n` or `grep` on it",
-                    m.len() >> 20
-                ));
-            }
+            _ if out.is_error => format!("{shown}: failed"),
+            _ => shown.clone(),
+        });
+        images.extend(out.images);
+    }
+    let mut out = if failed == files.len() { ToolOutput::error(content) } else { ToolOutput::ok(content) };
+    out.display = ToolDisplay::List { items };
+    out.with_images(images)
+}
+
+/// One file as numbered lines, a picture as an image. With `room`, at most that many characters of
+/// text are returned (the lines that do not fit are left to a later call with `offset`).
+async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Option<usize>) -> ToolOutput {
+    let path = resolve(&ctx.cwd, p);
+    let shown = format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path));
+    if path.is_dir() {
+        return ToolOutput::error(format!("read: {shown} is a directory; use `ls` to list it"));
+    }
+    if let Ok(m) = tokio::fs::metadata(&path).await {
+        if !m.file_type().is_file() {
+            return ToolOutput::error(format!("read: {shown} is not a regular file (device, pipe or socket)"));
         }
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return ToolOutput::error(format!("read: {shown} does not exist"));
-            }
-            Err(e) => return ToolOutput::error(format!("read: cannot read {shown}: {e}")),
-        };
-        ctx.seen.mark(&path);
-        if let Some(pic) = picture::sniff(&bytes) {
-            return show_picture(&shown, pic, &bytes, ctx.vision);
-        }
-        if let Some(raster) = picture::decode_raster(&bytes) {
-            return show_raster(&shown, raster, bytes.len(), ctx.vision);
-        }
-        if let Some((name, ext)) = picture::foreign(&bytes) {
+        if m.len() > MAX_FILE_BYTES {
+            // all of it the model can be shown: enough to replace it on purpose
+            ctx.seen.mark(&path);
             return ToolOutput::error(format!(
-                "read: {shown} is a {name} image ({} bytes), which `read` cannot show; convert a copy to PNG with \
-                 `bash`, e.g. `magick in.{ext} out.png`, and read that",
-                bytes.len()
+                "read: {shown} is {} MiB, too large to load; use `bash` with `head`, `tail`, `sed -n` or `grep` on it",
+                m.len() >> 20
             ));
         }
-        if is_binary(&bytes) {
-            return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
-        }
-        let text = String::from_utf8_lossy(&bytes);
-        // a notebook is JSON whose outputs can hold megabytes of base64: show its cells as text instead
-        let notebook =
-            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ipynb")) { notebook(&text) } else { None };
-        let text = match &notebook {
-            Some((_, cells)) => std::borrow::Cow::Borrowed(cells.as_str()),
-            None => text,
-        };
-        if text.is_empty() {
-            return ToolOutput::ok(format!("{shown}: (empty file)")).with_display(ToolDisplay::File {
-                path: shown,
-                text: String::new(),
-                start_line: 1,
-            });
-        }
-        let offset = int_arg(&args, "offset").unwrap_or(1).max(1) as usize;
-        let limit = int_arg(&args, "limit").unwrap_or(DEFAULT_LIMIT).max(1) as usize;
-        let total = text.lines().count();
-        if offset > total {
-            return ToolOutput::error(format!("read: {shown} has {total} lines; offset {offset} is past the end"));
-        }
-        let mut out = match &notebook {
-            Some((n, _)) => format!(
-                "({n} notebook cells shown as text; the file is JSON, so change cells with `bash`, e.g. `jq`)\n"
-            ),
-            None => String::new(),
-        };
-        let mut raw = String::new();
-        let mut n = 0usize;
-        for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
-            let shown_line = cut_line(line, LINE_CHARS);
-            out.push_str(&format!("{:>6}│ {}\n", i + 1, shown_line));
-            raw.push_str(&shown_line);
-            raw.push('\n');
-            n = i + 1;
-        }
-        if n < total {
-            out.push_str(&format!("… {} more lines (of {total}); read with offset {} to continue\n", total - n, n + 1));
-        }
-        ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown, text: raw, start_line: offset })
     }
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return ToolOutput::error(format!("read: {shown} does not exist"));
+        }
+        Err(e) => return ToolOutput::error(format!("read: cannot read {shown}: {e}")),
+    };
+    ctx.seen.mark(&path);
+    if let Some(pic) = picture::sniff(&bytes) {
+        return show_picture(&shown, pic, &bytes, ctx.vision);
+    }
+    if let Some(raster) = picture::decode_raster(&bytes) {
+        return show_raster(&shown, raster, bytes.len(), ctx.vision);
+    }
+    if let Some((name, ext)) = picture::foreign(&bytes) {
+        return ToolOutput::error(format!(
+            "read: {shown} is a {name} image ({} bytes), which `read` cannot show; convert a copy to PNG with \
+                 `bash`, e.g. `magick in.{ext} out.png`, and read that",
+            bytes.len()
+        ));
+    }
+    if is_binary(&bytes) {
+        return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    // a notebook is JSON whose outputs can hold megabytes of base64: show its cells as text instead
+    let notebook =
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ipynb")) { notebook(&text) } else { None };
+    let text = match &notebook {
+        Some((_, cells)) => std::borrow::Cow::Borrowed(cells.as_str()),
+        None => text,
+    };
+    if text.is_empty() {
+        return ToolOutput::ok(format!("{shown}: (empty file)")).with_display(ToolDisplay::File {
+            path: shown,
+            text: String::new(),
+            start_line: 1,
+        });
+    }
+    let offset = int_arg(args, "offset").unwrap_or(1).max(1) as usize;
+    let limit = int_arg(args, "limit").unwrap_or(DEFAULT_LIMIT).max(1) as usize;
+    let total = text.lines().count();
+    if offset > total {
+        return ToolOutput::error(format!("read: {shown} has {total} lines; offset {offset} is past the end"));
+    }
+    let mut out = match &notebook {
+        Some((n, _)) => {
+            format!("({n} notebook cells shown as text; the file is JSON, so change cells with `bash`, e.g. `jq`)\n")
+        }
+        None => String::new(),
+    };
+    let mut raw = String::new();
+    let mut n = 0usize;
+    let mut capped = false;
+    for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
+        let shown_line = cut_line(line, LINE_CHARS);
+        let numbered = format!("{:>6}│ {}\n", i + 1, shown_line);
+        // always one line, so that a file that gets any room shows something
+        if n >= offset && room.is_some_and(|r| out.len() + numbered.len() > r) {
+            capped = true;
+            break;
+        }
+        out.push_str(&numbered);
+        raw.push_str(&shown_line);
+        raw.push('\n');
+        n = i + 1;
+    }
+    if n < total {
+        let why = if capped { "; the call hit its size cap, so" } else { ";" };
+        out.push_str(&format!("… {} more lines (of {total}){why} read with offset {} to continue\n", total - n, n + 1));
+    }
+    ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown, text: raw, start_line: offset })
 }
 
 /// A picture as the image the model looks at, with one line of text; refused over the size cap,
@@ -471,5 +548,80 @@ mod tests {
             out.content
         );
         assert!(!out.content.contains("binary file"));
+    }
+
+    #[tokio::test]
+    async fn several_files_come_back_under_headers_and_one_failure_does_not_fail_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ctx(d.path());
+        std::fs::write(d.path().join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(d.path().join("b.txt"), "three\nfour\nfive\n").unwrap();
+        std::fs::write(d.path().join("z.bin"), b"\x00\x01").unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        let out = Read.run(json!({"paths": ["a.txt", "missing.txt", "b.txt", "z.bin", "sub"]}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        let t = &out.content;
+        assert!(t.contains("=== a.txt ===\n     1│ one\n     2│ two\n"), "{t}");
+        assert!(t.contains("=== missing.txt (failed) ===\nread: missing.txt does not exist"), "{t}");
+        assert!(t.contains("=== b.txt ===\n     1│ three\n"), "{t}");
+        assert!(t.contains("=== z.bin (failed) ===") && t.contains("binary"), "{t}");
+        assert!(t.contains("=== sub (failed) ===") && t.contains("directory"), "{t}");
+        // the order asked for is the order given
+        assert!(t.find("a.txt").unwrap() < t.find("b.txt").unwrap());
+        match &out.display {
+            ToolDisplay::List { items } => {
+                assert_eq!(items[0], "a.txt: 2 lines");
+                assert_eq!(items[1], "missing.txt: failed");
+                assert_eq!(items.len(), 5);
+            }
+            _ => panic!("{:?}", out.display),
+        }
+        // both files that were read count as seen
+        assert_eq!(c.seen.unseen(&resolve(d.path(), "a.txt")), None);
+        assert_eq!(c.seen.unseen(&resolve(d.path(), "b.txt")), None);
+        // all failing is an error
+        let out = Read.run(json!({"paths": ["nope1", "nope2"]}), &c).await;
+        assert!(out.is_error && out.content.contains("=== nope2 (failed) ==="), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn path_and_paths_are_one_list_and_a_single_file_reads_as_before() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ctx(d.path());
+        std::fs::write(d.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(d.path().join("b.txt"), "x\ny\nz\n").unwrap();
+        let plain = Read.run(json!({"path": "a.txt"}), &c).await;
+        let one = Read.run(json!({"paths": ["a.txt", "a.txt", " "]}), &c).await;
+        assert_eq!(one.content, plain.content);
+        let both = Read.run(json!({"path": "a.txt", "paths": ["b.txt", "a.txt"]}), &c).await;
+        assert_eq!(both.content.matches("=== a.txt ===").count(), 1, "{}", both.content);
+        assert!(both.content.contains("=== b.txt ==="));
+        // the window applies to each file
+        let w = Read.run(json!({"paths": ["a.txt", "b.txt"], "offset": 2, "limit": 1}), &c).await;
+        assert!(w.content.contains("=== a.txt ===\n     2│ two\n… 1 more lines"), "{}", w.content);
+        assert!(w.content.contains("=== b.txt ===\n     2│ y\n"), "{}", w.content);
+        let none = Read.run(json!({"paths": []}), &c).await;
+        assert!(none.is_error && none.content.contains("`path` or `paths`"), "{}", none.content);
+        assert_eq!(Read.summary(&json!({"paths": ["a.txt", "b.txt"]})), "read a.txt, b.txt");
+        assert_eq!(Read.summary(&json!({"paths": ["a", "b", "c", "d"]})), "read a, b (+2)");
+    }
+
+    #[tokio::test]
+    async fn a_call_is_capped_as_a_whole_and_says_how_to_go_on() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ctx(d.path());
+        let big: String =
+            (0..3000).map(|i| format!("line number {i} with some padding to make it long enough\n")).collect();
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(d.path().join(n), &big).unwrap();
+        }
+        let out = Read.run(json!({"paths": ["a.txt", "b.txt", "c.txt"]}), &c).await;
+        assert!(!out.is_error);
+        assert!(out.content.len() < MULTI_CAP + 2_000, "{}", out.content.len());
+        assert!(out.content.contains("the call hit its size cap, so read with offset"), "capped note missing");
+        assert!(out.content.contains("=== c.txt (not read) ==="), "last file should be left out");
+        let many: Vec<String> = (0..=MAX_PATHS).map(|i| format!("f{i}")).collect();
+        let out = Read.run(json!({"paths": many}), &c).await;
+        assert!(out.is_error && out.content.contains("at most"), "{}", out.content);
     }
 }

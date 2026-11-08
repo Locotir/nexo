@@ -313,9 +313,13 @@ pub fn kept(msgs: &[Message]) -> Kept {
                     }
                 }
                 Part::ToolCall { id, name, args } => {
-                    let path = ["path", "file_path", "file"].iter().find_map(|key| args.get(*key)?.as_str());
-                    if let Some(path) = path {
-                        calls.push((id, name, path.to_string()));
+                    let single = ["path", "file_path", "file"].iter().find_map(|key| args.get(*key)?.as_str());
+                    // a read of several files read each of them
+                    let named = nexo_core::tool::call_paths(args);
+                    for path in single.map(str::to_string).into_iter().chain(named) {
+                        if !calls.iter().any(|(i, _, p)| *i == id && *p == path) {
+                            calls.push((id, name, path));
+                        }
                     }
                 }
                 Part::ToolResult { call_id, is_error, .. } => {
@@ -435,6 +439,19 @@ mod tests {
         assert_eq!(k2.requests, ["Fix the parser in src/p.rs; never touch tests/.", "Now add a test."]);
         assert_eq!(k2.changed, ["src/p.rs", "tests/t.rs"]);
         assert_eq!(k2.read, ["README.md"]);
+    }
+
+    #[test]
+    fn every_file_of_a_read_of_several_is_kept_as_read() {
+        let h = vec![
+            Message::user("Compare a and b."),
+            Message::new(
+                Role::Assistant,
+                vec![Part::tool_call("1", "read", json!({"paths": ["a.rs", "b.rs", "a.rs"]}))],
+            ),
+            result("1", "x"),
+        ];
+        assert_eq!(kept(&h).read, ["a.rs", "b.rs"]);
     }
 
     #[test]

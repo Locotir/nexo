@@ -260,6 +260,35 @@ impl ToolSet {
     }
 }
 
+/// The files a file tool call names: `path`, then each entry of `paths` (a `read` of several files),
+/// without repeats, empty names left out.
+pub fn call_paths(args: &Value) -> Vec<String> {
+    let one = args.get("path").and_then(Value::as_str);
+    let many = args.get("paths").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    let mut out: Vec<String> = Vec::new();
+    for p in one.into_iter().chain(many).map(str::trim).filter(|p| !p.is_empty()) {
+        if !out.iter().any(|q| q == p) {
+            out.push(p.to_string());
+        }
+    }
+    out
+}
+
+/// Whether the call names its files in a `paths` list: then no single `path` says what it touched.
+pub fn has_paths(args: &Value) -> bool {
+    args.get("paths").is_some_and(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+}
+
+/// `a.rs, b.rs` for two files, `a.rs, b.rs (+3)` for more: how a call of several files is named.
+pub fn paths_label(paths: &[String]) -> String {
+    match paths {
+        [] => String::new(),
+        [a, b] => format!("{a}, {b}"),
+        [a] => a.clone(),
+        [a, b, rest @ ..] => format!("{a}, {b} (+{})", rest.len()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +304,17 @@ mod tests {
         let d = ToolDisplay::Diff { path: "a.rs".into(), old: "x\n".into(), new: "y\n".into(), start_line: 40 };
         let back: ToolDisplay = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(back, d);
+    }
+
+    #[test]
+    fn a_call_names_its_files_once_each_and_in_order() {
+        let a = serde_json::json!({"path": " a.rs ", "paths": ["b.rs", "a.rs", "", 3, "c.rs"]});
+        assert_eq!(call_paths(&a), ["a.rs", "b.rs", "c.rs"]);
+        assert!(has_paths(&a));
+        assert!(!has_paths(&serde_json::json!({"path": "a.rs"})));
+        assert!(!has_paths(&serde_json::json!({"paths": []})));
+        assert!(call_paths(&serde_json::json!({})).is_empty());
+        let l = |n: usize| paths_label(&(0..n).map(|i| format!("f{i}")).collect::<Vec<_>>());
+        assert_eq!((l(0).as_str(), l(1).as_str(), l(2).as_str(), l(4).as_str()), ("", "f0", "f0, f1", "f0, f1 (+2)"));
     }
 }
