@@ -15,7 +15,7 @@ const INSTALLER_SH: &str = "https://raw.githubusercontent.com/Locotir/nexo/main/
 
 /// The commit this binary was built from (`unknown` outside a git checkout).
 pub fn commit() -> &'static str {
-    nexo_bench::run::COMMIT
+    env!("NEXO_COMMIT")
 }
 
 /// What the interface shows: nothing when up to date.
@@ -92,7 +92,7 @@ async fn ask(commit: &str) -> Option<u32> {
         let v: serde_json::Value = r.json().await.ok()?;
         return v.get("ahead_by")?.as_u64().map(|n| n as u32);
     }
-    let when = nexo_bench::run::COMMIT_TIME;
+    let when = env!("NEXO_COMMIT_TIME");
     if r.status() != reqwest::StatusCode::NOT_FOUND || when == "unknown" {
         return None;
     }

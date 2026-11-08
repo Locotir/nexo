@@ -5,6 +5,8 @@
 mod account;
 mod acp;
 mod audit_cmd;
+#[cfg(feature = "bench")]
+mod bench_cmd;
 mod cli;
 mod export_cmd;
 mod headless;
@@ -17,7 +19,7 @@ mod update;
 mod worktree;
 
 fn main() {
-    nexo_core::version::set(nexo_bench::run::VERSION);
+    nexo_core::version::set(env!("NEXO_VERSION"));
     // The local UTC offset can only be read while the process has one thread.
     nexo_agent::budget::init_local_offset();
     // A closed stdout (`nexo providers | head`) ends the process quietly instead of panicking.

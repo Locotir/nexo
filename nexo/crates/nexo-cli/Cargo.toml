@@ -11,13 +11,18 @@ description = "nexo: the terminal coding harness (binary)"
 name = "nexo"
 path = "src/main.rs"
 
+[features]
+# `nexo bench`, the benchmark (hidden subcommand); without it the binary is smaller and builds faster
+default = ["bench"]
+bench = ["dep:nexo-bench"]
+
 [dependencies]
 nexo-core = { workspace = true }
 nexo-providers = { workspace = true }
 nexo-tools = { workspace = true }
 nexo-agent = { workspace = true }
 nexo-tui = { workspace = true }
-nexo-bench = { workspace = true }
+nexo-bench = { workspace = true, optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
