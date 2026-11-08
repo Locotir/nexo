@@ -53,7 +53,7 @@ fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) ->
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
             std::env::set_var(var, d.path().join(var));
         }
-        // the start check runs a real cargo: keep it off the outer cargo's target dir and build lock
+        // the start check runs a real cargo (each test project has its own package name, as the target dir is shared): keep it off the outer cargo's target dir and build lock
         std::env::set_var("CARGO_TARGET_DIR", d.path().join("target"));
         d
     });
@@ -203,7 +203,9 @@ impl ModelClient for Recorder {
     }
 }
 
-const CALC_MANIFEST: &str = "[package]\nname = \"calc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+fn calc_manifest(name: &str) -> String {
+    format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+}
 const CALC_LIB: &str =
     "pub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 3), 5);\n}\n";
 
@@ -228,7 +230,7 @@ async fn a_fix_lands_in_the_first_call_when_the_tests_come_with_the_request() {
     let bench = bench(rec.clone(), 100, out.path());
     let task = calc_task(
         "fix-lands-first",
-        vec![("Cargo.toml".into(), CALC_MANIFEST.into()), ("src/lib.rs".into(), CALC_LIB.into())],
+        vec![("Cargo.toml".into(), calc_manifest("fixfirst")), ("src/lib.rs".into(), CALC_LIB.into())],
     );
     let r = run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap();
     assert_eq!((r.requests, r.tool_calls, r.tool_errors), (2, 1, 0), "{r:?}");
@@ -241,17 +243,13 @@ async fn a_fix_lands_in_the_first_call_when_the_tests_come_with_the_request() {
 async fn check_at_start_puts_the_failing_tests_in_the_first_request_with_one_cargo_run() {
     let out = tempfile::tempdir().unwrap();
     // two failing tests in two test binaries
-    let count = |name: &str| {
-        format!(
-            "#[test]\nfn {name}() {{\n    panic!(\"{name} fails\");\n}}\n"
-        )
-    };
+    let count = |name: &str| format!("#[test]\nfn {name}() {{\n    panic!(\"{name} fails\");\n}}\n");
     let rec = Arc::new(Recorder { requests: Mutex::default(), first: None });
     let bench = bench(rec.clone(), 100, out.path());
     let task = calc_task(
         "check-at-start",
         vec![
-            ("Cargo.toml".into(), CALC_MANIFEST.into()),
+            ("Cargo.toml".into(), calc_manifest("startcheck")),
             ("src/lib.rs".into(), count("alpha_test").replace("#[test]", "#[cfg(test)]\n#[test]")),
             ("tests/it.rs".into(), count("beta_test")),
         ],
