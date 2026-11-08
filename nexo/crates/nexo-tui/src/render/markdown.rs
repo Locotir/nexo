@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use crate::theme::Theme;
 
 use super::code;
-use super::wrap::{truncate, width, wrap_runs_ex};
+use super::wrap::{clip_spans, truncate, width, wrap_runs_ex};
 use crate::regions::{Kind, Meta, Region};
 
 struct ListCtx {
@@ -236,15 +236,8 @@ impl<'t> Renderer<'t> {
             spans.push(Span::styled("▎", rail));
             spans.push(Span::styled(" ", bg));
             let mut used = 0;
-            for s in l.spans {
-                let w = width(&s.content);
-                if used + w > inner {
-                    let cut = truncate(&s.content, inner.saturating_sub(used));
-                    used += width(&cut);
-                    spans.push(Span::styled(cut, s.style.patch(bg)));
-                    break;
-                }
-                used += w;
+            for s in clip_spans(l.spans, inner) {
+                used += width(&s.content);
                 spans.push(Span::styled(s.content.to_string(), s.style.patch(bg)));
             }
             if used < inner {
@@ -879,6 +872,17 @@ mod tests {
         assert!(t[0].starts_with("▎ quoted"));
         assert!(t.iter().any(|l| l.contains("docs")));
         assert!(t.iter().all(|l| width(l) <= 14), "{t:?}");
+    }
+
+    #[test]
+    fn a_long_code_line_always_ends_in_an_ellipsis_whatever_the_width() {
+        let md = "```rust\nlet value = compute(first_argument, second_argument, third_argument);\n```";
+        for w in 10..40 {
+            let t = texts(md, w);
+            let row = t.iter().find(|l| l.starts_with('▎')).expect("a code row");
+            assert!(width(row) <= w, "{w}: {row:?}");
+            assert!(row.trim_end().ends_with('…'), "cut without a mark at {w}: {row:?}");
+        }
     }
 
     #[test]

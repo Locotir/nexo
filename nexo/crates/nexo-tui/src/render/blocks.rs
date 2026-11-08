@@ -929,17 +929,7 @@ fn render_output(
             for (i, l) in code::highlight(text.trim_end_matches('\n'), lang, theme).into_iter().enumerate() {
                 let mut spans = pad.to_vec();
                 spans.push(Span::styled(format!("{:>digits$}│ ", start_line + i), theme.dim()));
-                let avail = w.saturating_sub(digits + 2);
-                let mut used = 0;
-                for s in l.spans {
-                    let sw = width(&s.content);
-                    if used + sw > avail {
-                        spans.push(Span::styled(truncate(&s.content, avail.saturating_sub(used)), s.style));
-                        break;
-                    }
-                    used += sw;
-                    spans.push(s);
-                }
+                spans.extend(super::wrap::clip_spans(l.spans, w.saturating_sub(digits + 2)));
                 // the file sits on the code background, like a fenced block
                 lines.push(Line::from(spans).style(theme.code_block()));
             }
