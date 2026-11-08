@@ -585,6 +585,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::SetPermissionMode(mode) => set_mode(&mut *state.lock().await, mode),
                     AgentCommand::SetSandbox(mode) => set_sandbox(&mut *state.lock().await, mode),
+                    AgentCommand::AddDir(dir) => add_dir(&mut *state.lock().await, &dir),
                     AgentCommand::Compact => {
                         if turn.is_some() {
                             notice(&events, Level::Warn, "compaction waits for the turn to end");
@@ -3048,6 +3049,38 @@ fn sandbox_line(st: &State) -> (String, bool) {
     }
 }
 
+/// `/add-dir`: the file tools read and write in `dir` without asking, a sandboxed command may write
+/// there, and the system prompt says so (the cached prefix starts again once).
+fn add_dir(st: &mut State, dir: &std::path::Path) {
+    let cwd = st.cwd.clone();
+    // `~` is the home folder, as in the file tools
+    let dir = nexo_tools::util::resolve(&cwd, &dir.to_string_lossy());
+    let (real, rules) = match st.config.add_dir(&cwd, &dir) {
+        Ok(r) => r,
+        Err(e) => return notice(&st.events, Level::Error, format!("add-dir: {e}")),
+    };
+    for r in rules {
+        if !st.perm.allow.contains(&r) {
+            st.perm.allow.push(r);
+        }
+    }
+    let sandboxed = st.config.permissions.sandbox_write_dirs.contains(&real);
+    if sandboxed && !st.sandbox.extra_dirs.contains(&real) {
+        st.sandbox.extra_dirs.push(real.clone());
+    }
+    let shown = real.display().to_string();
+    let note = format!("You may also read and write in this folder: {shown}.");
+    let extra = st.config.agent.system_prompt_extra.get_or_insert_with(String::new);
+    if !extra.contains(&note) {
+        if !extra.trim().is_empty() {
+            extra.push_str("\n\n");
+        }
+        extra.push_str(&note);
+        st.system = full_system(st);
+    }
+    let bash = if sandboxed { "; a sandboxed command may write there too" } else { "" };
+    notice(&st.events, Level::Info, format!("added {shown}: the file tools read and write there without asking{bash}"));
+}
 /// Changes the sandbox mode of the `bash` tool and says what it is now.
 fn set_sandbox(st: &mut State, mode: Option<nexo_core::sandbox::SandboxMode>) {
     use nexo_core::sandbox::SandboxMode;

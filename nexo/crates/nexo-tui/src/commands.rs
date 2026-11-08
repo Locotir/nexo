@@ -38,6 +38,7 @@ pub const COMMANDS: &[Spec] = &[
         "[off|workspace-write|read-only]",
         "run bash commands in an OS sandbox (no argument: switch it on or off)",
     ),
+    spec("add-dir", &["adddir"], "<folder>", "let the file tools read and write in one more folder"),
     spec("plan", &["planning"], "[text|off]", "plan mode: reads only, then a plan to approve; with text: sends it"),
     spec(
         "prompt",
@@ -179,6 +180,8 @@ pub enum Command {
     Tree,
     Export(Option<String>),
     Rename(Option<String>),
+    /// `/add-dir <folder>`: one more folder the file tools may use.
+    AddDir(Option<String>),
     /// `/msg session text`; without arguments, the sessions that can be written to.
     Msg(Option<String>),
     Diff,
@@ -301,6 +304,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "queue" => Command::Queue,
         "export" => Command::Export(arg),
         "rename" | "title" | "name" => Command::Rename(arg),
+        "add-dir" | "adddir" => Command::AddDir(arg),
         "msg" | "mail" | "tell" => Command::Msg(arg),
         "diff" => Command::Diff,
         "cost" => Command::Cost,
@@ -405,7 +409,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "status",
         ],
     ),
-    ("settings", &["yolo", "sandbox", "theme", "mouse", "timestamps", "vim", "keys", "config"]),
+    ("settings", &["yolo", "sandbox", "add-dir", "theme", "mouse", "timestamps", "vim", "keys", "config"]),
     ("nexo", &["doctor", "copy", "quit"]),
 ];
 
@@ -569,6 +573,8 @@ mod tests {
         assert_eq!(parse("/export notes.md"), Some(Command::Export(Some("notes.md".into()))));
         assert_eq!(parse("/save"), Some(Command::Export(None)));
         assert_eq!(parse("/rename parser de pesos"), Some(Command::Rename(Some("parser de pesos".into()))));
+        assert_eq!(parse("/add-dir ../lib"), Some(Command::AddDir(Some("../lib".into()))));
+        assert_eq!(parse("/add-dir"), Some(Command::AddDir(None)));
         assert_eq!(parse("/title"), Some(Command::Rename(None)));
         assert_eq!(parse("/diff"), Some(Command::Diff));
         assert_eq!(parse("/back"), Some(Command::Rewind));

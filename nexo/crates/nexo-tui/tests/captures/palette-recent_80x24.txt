@@ -17,7 +17,7 @@
  /help                               keys and commands
  /effort         [level|default]     how much the model reasons, among the lev…
  session ──────────────────────────────────────────────────────────────────────
-                                 1/53                                 43 more ↓
+                                 1/54                                 44 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close

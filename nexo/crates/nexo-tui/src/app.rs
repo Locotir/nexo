@@ -3702,6 +3702,10 @@ impl App {
             Command::Permissions(Some(mode)) => self.send(AgentCommand::SetPermissionMode(mode)),
             Command::Yolo => self.send(AgentCommand::SetPermissionMode(PermissionMode::Auto)),
             Command::Sandbox(mode) => self.send(AgentCommand::SetSandbox(mode)),
+            Command::AddDir(arg) => match arg.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                Some(dir) => self.send(AgentCommand::AddDir(dir.into())),
+                None => self.notice(Level::Warn, "/add-dir <folder>: name the folder to add"),
+            },
             Command::Plan(arg) => match arg.as_deref().map(str::trim) {
                 Some("off") | Some("exit") | Some("done") => {
                     self.send(AgentCommand::SetPermissionMode(PermissionMode::Ask));

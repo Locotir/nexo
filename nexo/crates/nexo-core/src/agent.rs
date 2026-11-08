@@ -56,6 +56,9 @@ pub enum AgentCommand {
     SetPermissionMode(PermissionMode),
     /// Change the sandbox mode of the `bash` tool (`/sandbox`; None switches between off and workspace-write).
     SetSandbox(Option<crate::sandbox::SandboxMode>),
+    /// Let the file tools read and write in one more folder (`/add-dir`), a sandboxed command write
+    /// there, and the model know it; answered with a `Notice`.
+    AddDir(std::path::PathBuf),
     /// Replace the history with a summary of it.
     Compact,
     /// Start a new session in the same directory.

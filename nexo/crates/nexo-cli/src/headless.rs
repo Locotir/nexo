@@ -128,7 +128,6 @@ fn user_text(line: &str) -> Result<Option<String>, String> {
     Ok(Some(text))
 }
 
-/// Where the rules of a folder start: the path with forward slashes, which the rule globs read on every system.
 /// Lets the tools read and write in each of `dirs` (relative to `cwd`) besides the project, and
 /// lets a sandboxed command write there; the folders as resolved, or why one is not a folder.
 pub fn add_dirs(
@@ -136,35 +135,12 @@ pub fn add_dirs(
     cwd: &std::path::Path,
     dirs: &[PathBuf],
 ) -> Result<Vec<String>, String> {
-    let mut roots = Vec::new();
-    for d in dirs {
-        let abs = if d.is_absolute() { d.clone() } else { cwd.join(d) };
-        let Ok(real) = abs.canonicalize() else { return Err(format!("--add-dir {}: not a folder", d.display())) };
-        if !real.is_dir() {
-            return Err(format!("--add-dir {}: not a folder", d.display()));
-        }
-        // the folder as given and as resolved: on Windows the two can differ (8.3 short names, `\\?\`)
-        let mut spellings = vec![rule_path(&abs), rule_path(&real)];
-        spellings.dedup();
-        for p in &spellings {
-            for tool in ["read", "grep", "glob", "ls", "write", "edit"] {
-                config.permissions.allow.push(format!("{tool}({p}/**)"));
-            }
-        }
-        // a bash command in the sandbox may write there too (a managed policy can still shut that door)
-        if !config.permissions.sandbox_write_dirs.contains(&real) {
-            config.permissions.sandbox_write_dirs.push(real.clone());
-        }
-        roots.push(real.display().to_string());
-    }
-    Ok(roots)
+    dirs.iter()
+        .map(|d| {
+            config.add_dir(cwd, d).map(|(real, _)| real.display().to_string()).map_err(|e| format!("--add-dir {e}"))
+        })
+        .collect()
 }
-
-fn rule_path(p: &std::path::Path) -> String {
-    let s = p.to_string_lossy();
-    s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/").trim_end_matches('/').to_string()
-}
-
 #[derive(Default)]
 struct Totals {
     session_id: String,
@@ -678,7 +654,7 @@ mod add_dir_tests {
         let roots = add_dirs(&mut config, d.path(), &[PathBuf::from("other")]).unwrap();
         let real = d.path().join("other").canonicalize().unwrap();
         assert_eq!(roots, vec![real.display().to_string()]);
-        let p = rule_path(&real);
+        let p = nexo_core::config::rule_path(&real);
         for tool in ["read", "write", "edit"] {
             assert!(
                 config.permissions.allow.contains(&format!("{tool}({p}/**)")),

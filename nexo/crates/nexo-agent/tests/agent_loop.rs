@@ -4505,3 +4505,33 @@ async fn fast_switches_to_the_twin_and_back_or_sets_the_request_option() {
     assert!(!reqs[1].extra.contains_key("service_tier"));
     r.stop().await;
 }
+
+#[tokio::test]
+async fn add_dir_lets_a_write_there_pass_without_asking_and_tells_the_model() {
+    let d = tempfile::tempdir().unwrap();
+    let proj = d.path().join("proj");
+    let other = d.path().join("other");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    // the folder as a model writes it: no `..`, and on Windows not the `\\?\` form canonicalize gives
+    let target = other.join("x.txt").display().to_string();
+    let client = Scripted::new(vec![
+        Reply::Events(call("w1", "write", json!({"path": target, "content": "new"}))),
+        Reply::Events(text("written")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, &proj).await;
+    r.next().await;
+    r.send(AgentCommand::AddDir("missing".into()));
+    let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await.pop().unwrap();
+    assert!(matches!(&ev, AgentEvent::Notice { text, .. } if text.contains("not a folder")), "{ev:?}");
+    r.send(AgentCommand::AddDir("../other".into()));
+    let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await.pop().unwrap();
+    assert!(matches!(&ev, AgentEvent::Notice { text, .. } if text.starts_with("added ")), "{ev:?}");
+    r.send(AgentCommand::Submit { text: "write there".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })), "the added folder needs no asking");
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. } if id == "w1" && !output.is_error)));
+    let reqs = client.requests();
+    assert!(reqs[0].system.contains("You may also read and write in this folder: "), "{}", reqs[0].system);
+    r.stop().await;
+}

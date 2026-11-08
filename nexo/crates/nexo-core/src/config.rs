@@ -889,9 +889,70 @@ pub enum ConfigError {
     Managed(#[from] crate::managed::ManagedError),
 }
 
+impl Config {
+    /// Lets the file tools read and write in `dir` (relative to `cwd`) besides the project, and a
+    /// sandboxed command write there unless a managed policy fixes those folders; the folder as
+    /// resolved and the allow rules added, or why it is not a folder.
+    pub fn add_dir(&mut self, cwd: &Path, dir: &Path) -> Result<(PathBuf, Vec<String>), String> {
+        let joined = if dir.is_absolute() { dir.to_path_buf() } else { cwd.join(dir) };
+        let real = joined
+            .canonicalize()
+            .ok()
+            .filter(|r| r.is_dir())
+            .ok_or_else(|| format!("{}: not a folder", dir.display()))?;
+        // the spelling a model writes has no `.` or `..` in it (`proj/../lib` is `lib`)
+        let mut abs = PathBuf::new();
+        for c in joined.components() {
+            match c {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    abs.pop();
+                }
+                c => abs.push(c),
+            }
+        }
+        // the folder as given and as resolved: on Windows the two can differ (8.3 short names, `\\?\`)
+        let mut spellings = vec![rule_path(&abs), rule_path(&real)];
+        spellings.dedup();
+        let mut added = Vec::new();
+        for p in &spellings {
+            for tool in ["read", "grep", "glob", "ls", "write", "edit"] {
+                let rule = format!("{tool}({p}/**)");
+                if !self.permissions.allow.contains(&rule) {
+                    self.permissions.allow.push(rule.clone());
+                }
+                added.push(rule);
+            }
+        }
+        let fixed = self.managed.as_ref().is_some_and(|m| m.permissions.sandbox_write_dirs.is_some());
+        if !fixed && !self.permissions.sandbox_write_dirs.contains(&real) {
+            self.permissions.sandbox_write_dirs.push(real.clone());
+        }
+        Ok((real, added))
+    }
+}
+
+/// Where the rules of a folder start: the path with forward slashes, which the rule globs read on every system.
+pub fn rule_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/").trim_end_matches('/').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_added_folder_is_ruled_without_dot_dot() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("proj")).unwrap();
+        std::fs::create_dir_all(d.path().join("lib")).unwrap();
+        let mut cfg = Config::default();
+        let (_, rules) = cfg.add_dir(&d.path().join("proj"), Path::new("../lib")).unwrap();
+        let want = format!("write({}/**)", rule_path(&d.path().join("lib")));
+        assert!(rules.contains(&want), "{want} in {rules:?}");
+        assert!(rules.iter().all(|r| !r.contains("..")), "{rules:?}");
+    }
 
     #[test]
     fn parses_a_provider_block_and_picks_it() {
