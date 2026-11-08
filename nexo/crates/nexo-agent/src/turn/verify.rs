@@ -61,15 +61,82 @@ fn writes_to_file(cmd: &str) -> bool {
     false
 }
 
-fn is_check_segment(seg: &str) -> bool {
-    let mut words = seg.split_whitespace().peekable();
-    // leading `VAR=value` assignments
-    while words.peek().is_some_and(|w| w.contains('=') && !w.starts_with('-') && !w.starts_with('=')) {
-        words.next();
+/// A `VAR=value` word.
+fn is_assignment(w: &str) -> bool {
+    w.contains('=') && !w.starts_with('-') && !w.starts_with('=')
+}
+
+/// Index of the first word after `i` that is not an option; `with_value` lists the options that take the next
+/// word as their value. `--` ends the options.
+fn skip_opts(w: &[&str], mut i: usize, with_value: &[&str]) -> usize {
+    while let Some(&o) = w.get(i) {
+        if o == "--" {
+            return i + 1;
+        }
+        if !o.starts_with('-') || o == "-" {
+            break;
+        }
+        i += if with_value.contains(&o) { 2 } else { 1 };
     }
-    let Some(prog) = words.next() else { return false };
+    i
+}
+
+/// Index of the program a segment runs, past leading `VAR=value` words and prefixes that only run another command
+/// (`nice`, `timeout`, `env`, `ionice`, `time`, `command`, `stdbuf`) with their own options, nested at will.
+/// None: no program, or a prefix this does not understand.
+fn program_index(w: &[&str]) -> Option<usize> {
+    let mut i = 0;
+    loop {
+        while w.get(i).is_some_and(|x| is_assignment(x)) {
+            i += 1;
+        }
+        let name = w.get(i)?.rsplit('/').next()?;
+        let after = i + 1;
+        i = match name {
+            "nice" => skip_opts(w, after, &["-n", "--adjustment"]),
+            "ionice" => skip_opts(w, after, &["-c", "-n", "--class", "--classdata"]),
+            "timeout" => skip_opts(w, after, &["-s", "-k", "--signal", "--kill-after"]) + 1,
+            "env" => skip_opts(w, after, &["-u", "--unset", "-C", "--chdir"]),
+            "time" => skip_opts(w, after, &[]),
+            "stdbuf" => skip_opts(w, after, &["-i", "-o", "-e", "--input", "--output", "--error"]),
+            "command" => {
+                let mut j = after;
+                while w.get(j) == Some(&"-p") {
+                    j += 1;
+                }
+                if w.get(j) == Some(&"--") {
+                    j += 1;
+                }
+                j
+            }
+            _ => return Some(i),
+        };
+    }
+}
+
+/// The targets of a `make` line: words that are neither options (with the values of `-C`, `-f`, `-j N`) nor `VAR=x`.
+fn make_targets<'a>(rest: &[&'a str]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut it = rest.iter().peekable();
+    while let Some(&w) = it.next() {
+        if matches!(w, "-C" | "-f" | "-I" | "-o" | "-W") {
+            it.next();
+        } else if matches!(w, "-j" | "-l") {
+            // the count is optional: `make -j install` has a target
+            it.next_if(|n| (**n).bytes().all(|b| b.is_ascii_digit() || b == b'.'));
+        } else if !w.starts_with('-') && !w.contains('=') {
+            out.push(w);
+        }
+    }
+    out
+}
+
+fn is_check_segment(seg: &str) -> bool {
+    let words: Vec<&str> = seg.split_whitespace().collect();
+    let Some(at) = program_index(&words) else { return false };
+    let prog = words[at];
     let prog = prog.rsplit('/').next().unwrap_or(prog);
-    let rest: Vec<&str> = words.collect();
+    let rest = &words[at + 1..];
     let sub = rest.iter().find(|w| !w.starts_with('-') && !w.starts_with('+')).copied().unwrap_or("");
     let has = |f: &str| rest.contains(&f);
     match prog {
@@ -81,8 +148,10 @@ fn is_check_segment(seg: &str) -> bool {
         "sed" => !rest.iter().any(|w| w.starts_with("-i") || w.starts_with("--in-place")),
         "awk" => !seg.contains("system("),
         "cargo" => {
-            matches!(sub, "test" | "check" | "clippy" | "nextest" | "doc" | "tree" | "metadata")
-                || (sub == "fmt" && has("--check"))
+            matches!(
+                sub,
+                "test" | "t" | "check" | "c" | "build" | "b" | "clippy" | "nextest" | "doc" | "tree" | "metadata"
+            ) || (sub == "fmt" && has("--check"))
         }
         "npm" | "pnpm" | "yarn" | "bun" => {
             sub == "test"
@@ -94,7 +163,14 @@ fn is_check_segment(seg: &str) -> bool {
             rest.windows(2).any(|w| w[0] == "-m" && matches!(w[1], "pytest" | "unittest" | "mypy" | "doctest"))
         }
         "go" => matches!(sub, "test" | "vet" | "build" | "list"),
-        "make" | "just" | "task" => is_test_script(sub),
+        "make" => make_targets(rest).iter().all(|t| is_test_script(t) || matches!(*t, "all" | "build")),
+        "just" | "task" => is_test_script(sub),
+        "cmake" => {
+            has("--build") && !rest.iter().any(|w| matches!(*w, "install" | "clean" | "--install" | "uninstall"))
+        }
+        "ninja" => !rest.iter().any(|w| matches!(*w, "install" | "clean" | "uninstall" | "-t")),
+        "node" => rest.iter().take_while(|w| w.starts_with('-')).any(|w| *w == "--test" || w.starts_with("--test-")),
+        "bash" | "sh" | "dash" | "zsh" => rest.first() == Some(&"-n"),
         "mvn" | "gradle" | "gradlew" | "./gradlew" | "dotnet" | "swift" | "zig" | "deno" | "mix" | "bundle" => {
             matches!(sub, "test" | "check" | "verify")
         }
@@ -188,7 +264,8 @@ mod tests {
         }
         for bad in [
             "",
-            "cargo build",
+            "cargo run",
+            "cargo install foo",
             "cargo test > out.txt",
             "echo hi >> log",
             "sed -i s/a/b/ f",
@@ -201,6 +278,113 @@ mod tests {
             "make deploy",
             "echo $(rm x)",
             "false || deploy.sh",
+        ] {
+            assert!(!is_check_command(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn prefixes_that_only_run_another_command_do_not_hide_a_check() {
+        for ok in [
+            "nice cargo test",
+            "nice -n 10 cargo test -j 2",
+            "nice -10 cargo test",
+            "nice --adjustment=5 cargo test",
+            "timeout 300 cargo test",
+            "timeout -s KILL -k 5 300 cargo test",
+            "timeout --signal=INT 1m cargo clippy",
+            "env RUST_LOG=x cargo test",
+            "env -i PATH=/usr/bin cargo test",
+            "env -u HOME FOO=1 cargo check",
+            "time cargo test",
+            "time -p cargo test",
+            "command cargo test",
+            "command -p cargo test",
+            "stdbuf -oL cargo test",
+            "stdbuf -o L -e0 cargo test",
+            "ionice -c3 nice cargo clippy",
+            "ionice -c 2 -n 7 cargo test",
+            "RUST_LOG=x nice -n 5 timeout 600 env A=1 time cargo test -q 2>&1 | tail",
+            "/usr/bin/time -p /usr/bin/nice cargo test",
+            "cd x && nice cargo test",
+        ] {
+            assert!(is_check_command(ok), "{ok}");
+        }
+        for bad in [
+            "nice",
+            "nice -n 10",
+            "timeout 5",
+            "env",
+            "env X=1",
+            "command -v cargo",
+            "nice rm -rf x",
+            "timeout 5 cargo install foo",
+            "env X=1 sed -i s/a/b/ f",
+            "ionice -c3 nice cargo run",
+            "time make install",
+            "stdbuf -oL cargo fmt",
+            "nice cargo test > out.txt",
+            "nice cargo test && nice git commit -am x",
+        ] {
+            assert!(!is_check_command(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn build_runs_are_checks_and_installs_and_cleans_are_not() {
+        for ok in [
+            "cargo build",
+            "cargo build --release -p nexo-agent",
+            "cargo b",
+            "cargo t -q",
+            "cargo c",
+            "cargo +nightly build",
+            "make",
+            "make all",
+            "make build",
+            "make -j 8",
+            "make -j",
+            "make -C build -j4 all",
+            "make test",
+            "cmake --build build",
+            "cmake --build . --config Release -j 4",
+            "ninja",
+            "ninja -C build",
+            "ninja test",
+            "go vet ./...",
+            "go build ./...",
+            "node --test",
+            "node --test tests/",
+            "node --test-reporter=spec --test",
+            "bash -n run.sh",
+            "sh -n run.sh",
+            "nice make -j 4",
+            "timeout 600 cmake --build build",
+        ] {
+            assert!(is_check_command(ok), "{ok}");
+        }
+        for bad in [
+            "cargo run",
+            "cargo run --release",
+            "cargo install foo",
+            "cargo fmt",
+            "make install",
+            "make clean",
+            "make -j install",
+            "make -C build clean",
+            "make all install",
+            "make deploy",
+            "cmake --build build --target install",
+            "cmake --install build",
+            "cmake -S . -B build",
+            "ninja install",
+            "ninja clean",
+            "ninja -t clean",
+            "node server.js",
+            "node script.js --test",
+            "bash run.sh",
+            "bash -c 'rm x'",
+            "sh install.sh",
         ] {
             assert!(!is_check_command(bad), "{bad}");
         }
