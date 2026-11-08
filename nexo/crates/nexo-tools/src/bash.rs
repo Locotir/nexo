@@ -395,7 +395,7 @@ async fn wait_until(
     loop {
         let mut last = Capture::new();
         let left = timeout.saturating_sub(start.elapsed()).max(Duration::from_secs(1));
-        match run_command(cond, &ctx.cwd, sandbox, Some(left), &ctx.cancel, |l| last.push(l)).await {
+        match run_command(cond, &ctx.cwd, sandbox, Some(left), &ctx.cancel, Some(&tmp_dir(&ctx.session_id)), |l| last.push(l)).await {
             End::Exited(0) => return None,
             End::Cancelled => return Some(ToolOutput::error("[cancelled while waiting]")),
             End::Failed(e) => {
