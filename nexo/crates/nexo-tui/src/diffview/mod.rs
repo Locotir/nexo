@@ -244,7 +244,9 @@ impl DiffView {
                 Focus::List => self.move_sel(-1),
                 Focus::Body => self.scroll_by(-1),
             },
-            KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Tab | KeyCode::Char(']') => self.move_sel(1),
+            KeyCode::BackTab | KeyCode::Char('[') => self.move_sel(-1),
+            KeyCode::Enter => {
                 self.focus = if self.focus == Focus::List { Focus::Body } else { Focus::List };
             }
             KeyCode::Char('n') => self.jump(true),

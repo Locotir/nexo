@@ -19,7 +19,8 @@ use crate::theme::Theme;
 const HIGHLIGHT_MAX_LINES: usize = 4000;
 /// The list is a side column from this width, a strip on top below it.
 const LIST_SIDE_MIN_W: u16 = 100;
-const KEYS: &str = "↑↓ file  Tab pane  n/p hunk  z fold  f all  s split  y copy  PgUp/PgDn scroll  Esc close";
+const KEYS: &str =
+    "↑↓ pick  Tab / [ ] file  Enter pane  n/p hunk  z fold  f all  s split  y copy  PgUp/PgDn scroll  Esc close";
 
 /// The key hints in `w` columns: whole items from the left, and the last one (the way out) always kept.
 fn fit_keys(keys: &str, w: usize) -> String {

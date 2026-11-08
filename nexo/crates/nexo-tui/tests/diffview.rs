@@ -124,7 +124,7 @@ fn side_by_side_at_200() {
 fn navigation_folding_and_second_file() {
     let mut dv = view();
     capture(&mut dv, 120, 40);
-    press(&mut dv, KeyCode::Tab);
+    press(&mut dv, KeyCode::Enter);
     press(&mut dv, KeyCode::Char('f'));
     let t = capture(&mut dv, 120, 40);
     assert!(t.contains("▸ @@ -1,7 +1,8 @@") && t.contains("▸ @@ -30,3 +31,3 @@"), "{t}");
@@ -133,7 +133,7 @@ fn navigation_folding_and_second_file() {
     press(&mut dv, KeyCode::Char('n'));
     let t = capture(&mut dv, 120, 40);
     assert!(t.contains("hunk 2/2"), "{t}");
-    press(&mut dv, KeyCode::Tab);
+    press(&mut dv, KeyCode::Enter);
     press(&mut dv, KeyCode::Down);
     let t = capture(&mut dv, 120, 40);
     assert!(t.contains("A new line."), "{t}");
@@ -168,4 +168,76 @@ fn small_sizes_keep_the_esc_hint() {
         }
         assert!(!t.contains("q close"), "{w}x{h}: {t}");
     }
+}
+
+#[test]
+fn tab_and_brackets_jump_between_files() {
+    let mut dv = view();
+    capture(&mut dv, 120, 40);
+    assert_eq!(dv.sel, 0);
+    press(&mut dv, KeyCode::Tab);
+    assert_eq!(dv.sel, 1);
+    press(&mut dv, KeyCode::Char(']'));
+    assert_eq!(dv.sel, 2);
+    press(&mut dv, KeyCode::Char('['));
+    press(&mut dv, KeyCode::BackTab);
+    assert_eq!(dv.sel, 0);
+    press(&mut dv, KeyCode::BackTab);
+    assert_eq!(dv.sel, 0, "no wrap before the first file");
+    let last = dv.files.len() - 1;
+    for _ in 0..20 {
+        press(&mut dv, KeyCode::Tab);
+    }
+    assert_eq!(dv.sel, last);
+    // Enter moves between the list and the body; Tab keeps jumping files
+    press(&mut dv, KeyCode::Enter);
+    press(&mut dv, KeyCode::Char('['));
+    assert_eq!(dv.sel, last - 1);
+    assert_eq!(press(&mut dv, KeyCode::Esc), Out::Close);
+}
+
+#[test]
+fn scrolling_the_body_and_a_missing_file_list() {
+    let mut dv = view();
+    capture(&mut dv, 80, 10);
+    press(&mut dv, KeyCode::Enter);
+    press(&mut dv, KeyCode::PageDown);
+    assert!(dv.scroll > 0 || dv.current().unwrap().line_count() < 8);
+    press(&mut dv, KeyCode::Home);
+    assert_eq!(dv.scroll, 0);
+    let mut none = DiffView::from_collected(Collected::default());
+    for c in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Char(']'), KeyCode::PageDown, KeyCode::Char('n')] {
+        assert_eq!(press(&mut none, c), Out::None);
+    }
+}
+
+#[test]
+fn a_real_repo_and_a_plain_directory() {
+    use nexo_tui::diffview::collect::collect;
+    let git = |d: &std::path::Path, a: &[&str]| {
+        let ok = std::process::Command::new("git").args(a).current_dir(d).output().unwrap().status.success();
+        assert!(ok, "git {a:?}");
+    };
+    let base = std::env::temp_dir().join(format!("nexo-diffview-{}", std::process::id()));
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    let c = collect(&repo, Vec::new());
+    assert!(c.files.is_empty() && c.error.is_none(), "empty repo: {c:?}");
+    let mut dv = DiffView::from_collected(c);
+    assert!(capture(&mut dv, 80, 24).contains("No changes"));
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "a.txt"]);
+    git(&repo, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x"]);
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "new\n").unwrap();
+    let c = collect(&repo, Vec::new());
+    let areas: Vec<Area> = c.files.iter().map(|f| f.area).collect();
+    assert_eq!(areas, vec![Area::Unstaged, Area::Untracked]);
+    let plain = base.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let mut dv = DiffView::from_collected(collect(&plain, Vec::new()));
+    let t = capture(&mut dv, 80, 24);
+    assert!(t.contains("not a git repo"), "{t}");
+    let _ = std::fs::remove_dir_all(&base);
 }
