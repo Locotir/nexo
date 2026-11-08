@@ -726,6 +726,8 @@ screen = "full"                     # full (alternate screen) | inline (finished
 
 [tools]
 edit_diagnostics = true             # after edit and write, add the compiler errors of the changed file (Rust, TypeScript, Python, Go) to the result; false: off
+post_write_check = true            # after a step that changed source files, run the project test command (cargo test -q, npm test -s, pytest -q -x, go test ./...) once and add its result to the last changing call; false: off
+post_write_check_secs = 45         # seconds before that check is killed; a command that ran over is not run again by it
 
 [web]
 search = "auto"                     # auto | duckduckgo | tavily | brave | exa | searxng

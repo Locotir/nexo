@@ -32,7 +32,8 @@ impl Tool for Write {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "The file."},
-                    "content": {"type": "string", "description": "The complete new content of the file."}
+                    "content": {"type": "string", "description": "The complete new content of the file."},
+                    "check": {"type": "string", "description": "Command to run after; its exit and tail come back."}
                 },
                 "required": ["path", "content"]
             }),
@@ -98,9 +99,13 @@ impl Tool for Write {
             _ => String::new(),
         };
         let now = if now.is_empty() { String::new() } else { format!("\nchanged lines:\n{now}") };
-        let now = format!("{now}{}", crate::edit_check::report(&path).await);
+        let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&path).await };
+        let proof = match str_arg(&args, "check").filter(|c| !c.trim().is_empty()) {
+            Some(c) => crate::postcheck::run_own(c, ctx).await,
+            None => String::new(),
+        };
         ToolOutput::ok(format!(
-            "{what} {shown}: file now has {} ({} bytes){now}",
+            "{what} {shown}: file now has {} ({} bytes){now}{diag}{proof}",
             nexo_core::count(lines, "line"),
             content.len()
         ))

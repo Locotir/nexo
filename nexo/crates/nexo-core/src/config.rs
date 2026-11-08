@@ -484,11 +484,16 @@ pub struct ToolsConfig {
     /// After `edit` and `write` change a source file, the compiler errors in that file are added to the result
     /// (Rust, TypeScript, Python, Go; one bounded check, 20 s at most, nothing when the file is clean).
     pub edit_diagnostics: bool,
+    /// After a step that changed source files (`edit`, `write` or a shell command), the compiler errors and the
+    /// project's own tests run once and their result is added to the last changing call's result.
+    pub post_write_check: bool,
+    /// Seconds that check may take (also the cap of an `edit`/`write` `check` command).
+    pub post_write_check_secs: u64,
 }
 
 impl Default for ToolsConfig {
     fn default() -> ToolsConfig {
-        ToolsConfig { edit_diagnostics: true }
+        ToolsConfig { edit_diagnostics: true, post_write_check: true, post_write_check_secs: 45 }
     }
 }
 

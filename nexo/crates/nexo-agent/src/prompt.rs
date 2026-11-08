@@ -189,7 +189,7 @@ fn project_block(cwd: &Path) -> String {
         out.push_str(&format!("\nManifests: {}", manifests.join(", ")));
     }
     if let Some(check) = nexo_tools::project::check_command(cwd) {
-        out.push_str(&format!("\ncheck: {check}"));
+        out.push_str(&format!("\ncheck: {}", check.command));
     }
     if out.len() > PROJECT_CAP {
         let mut cut = PROJECT_CAP;

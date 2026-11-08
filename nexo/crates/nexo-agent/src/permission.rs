@@ -43,12 +43,19 @@ impl Policy {
     pub fn decide(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Decision {
         // a call of several files is judged file by file, as if each were asked for alone: one denied
         // file denies the call, one that needs asking asks for the call
-        if matches!(kind, ToolKind::Read | ToolKind::Search) && nexo_core::tool::has_paths(args) {
-            let mut ask = false;
+        let many = match kind {
+            ToolKind::Read | ToolKind::Search => nexo_core::tool::has_paths(args),
+            ToolKind::Write => args.get("files").is_some_and(|f| f.as_array().is_some_and(|a| !a.is_empty())),
+            _ => false,
+        };
+        let mut ask = false;
+        if many {
             for p in nexo_core::tool::call_paths(args) {
                 let mut one = args.clone();
                 if let Some(o) = one.as_object_mut() {
                     o.remove("paths");
+                    o.remove("files");
+                    o.remove("check");
                     o.insert("path".into(), Value::String(p));
                 }
                 match self.decide_one(tool, kind, &one, cwd) {
@@ -57,9 +64,28 @@ impl Policy {
                     Decision::Allow => {}
                 }
             }
-            return if ask { Decision::Ask } else { Decision::Allow };
+        } else {
+            match self.decide_one(tool, kind, args, cwd) {
+                Decision::Deny(why) => return Decision::Deny(why),
+                Decision::Ask => ask = true,
+                Decision::Allow => {}
+            }
         }
-        self.decide_one(tool, kind, args, cwd)
+        // the command an edit or a write asks to run after it is judged as a command of its own
+        if kind == ToolKind::Write {
+            if let Some(c) = args.get("check").and_then(Value::as_str).filter(|c| !c.trim().is_empty()) {
+                match self.decide_one("bash", ToolKind::Exec, &serde_json::json!({"command": c}), cwd) {
+                    Decision::Deny(why) => return Decision::Deny(format!("check command: {why}")),
+                    Decision::Ask => ask = true,
+                    Decision::Allow => {}
+                }
+            }
+        }
+        if ask {
+            Decision::Ask
+        } else {
+            Decision::Allow
+        }
     }
 
     fn decide_one(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Decision {

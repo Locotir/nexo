@@ -130,10 +130,18 @@ impl Tool for Bench {
                 ));
             }
         }
-        if let Some(cmd) = args.get("command").and_then(Value::as_str).filter(|_| self.inner.name() == "bash") {
+        // the command of a bash call, and the `check` command an edit or a write runs after its change
+        let key = match self.inner.name() {
+            "bash" => Some("command"),
+            "edit" | "write" => Some("check"),
+            _ => None,
+        };
+        if let Some((key, cmd)) =
+            key.and_then(|k| args.get(k).and_then(Value::as_str).filter(|c| !c.trim().is_empty()).map(|c| (k, c)))
+        {
             // keys, tokens and session sockets stay out: a command gets a cleared environment
             let shell = nexo_core::shell::shell();
-            args["command"] = Value::String(match &self.seal {
+            args[key] = Value::String(match &self.seal {
                 Some(seal) => seal.wrap(cmd),
                 // PowerShell has no `env -i`: there only the bench key is removed
                 None if shell.kind == "powershell" => {

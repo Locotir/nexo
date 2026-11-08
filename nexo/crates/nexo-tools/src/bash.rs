@@ -584,6 +584,40 @@ async fn run_command(
     end
 }
 
+/// How a command that proves a change ended.
+pub(crate) struct Proof {
+    /// Its exit code; None when it was killed (time, signal, cancel) or did not start.
+    pub exit: Option<i32>,
+    pub timed_out: bool,
+    pub secs: f64,
+    /// Its output (stdout and stderr), head and tail kept.
+    pub output: String,
+}
+
+/// Runs `command` in `cwd` until it ends or `timeout` passes.
+pub(crate) async fn prove(
+    command: &str,
+    cwd: &std::path::Path,
+    sandbox: &nexo_core::sandbox::SandboxSettings,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> Proof {
+    let t0 = std::time::Instant::now();
+    let mut output = Capture::new();
+    let end = run_command(command, cwd, sandbox, Some(timeout), cancel, |l| output.push(l)).await;
+    let mut text = output.text();
+    let (exit, timed_out) = match end {
+        End::Exited(c) => (Some(c), false),
+        End::TimedOut => (None, true),
+        End::Failed(e) => {
+            text = format!("cannot run the command: {e}");
+            (None, false)
+        }
+        End::Signalled | End::Cancelled => (None, false),
+    };
+    Proof { exit, timed_out, secs: t0.elapsed().as_secs_f64(), output: text }
+}
+
 /// Kills the whole process group the command started (its children too). Windows has no groups:
 /// there the tree under the process goes (`taskkill /T`), as ending the shell alone leaves what it
 /// started running. Called while the process is still alive, so the tree can still be found.

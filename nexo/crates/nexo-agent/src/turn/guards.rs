@@ -158,14 +158,15 @@ pub(super) async fn note_writes(
             continue;
         }
         let args: Value = serde_json::from_str(args).unwrap_or(Value::Null);
-        let Some(p) = args.get("path").and_then(Value::as_str) else { continue };
-        let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { st.cwd.join(p) };
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        match std::fs::read(&path) {
-            Ok(bytes) => bytes.hash(&mut h),
-            Err(_) => args.to_string().hash(&mut h),
+        for p in nexo_core::tool::call_paths(&args) {
+            let path = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { st.cwd.join(&p) };
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            match std::fs::read(&path) {
+                Ok(bytes) => bytes.hash(&mut h),
+                Err(_) => args.to_string().hash(&mut h),
+            }
+            ck.note_write(&path.display().to_string(), h.finish());
         }
-        ck.note_write(&path.display().to_string(), h.finish());
     }
 }
 

@@ -28,7 +28,8 @@ impl Tool for Edit {
                           occur exactly once; include a few surrounding lines to make it unique, or set \
                           `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
                           `edits`, a list of {old_string, new_string, replace_all} applied in order; if one fails \
-                          nothing is written. Answers with the changed lines and a diff."
+                          nothing is written. Several files: `files`. `check` runs a test or build after. \
+                          Answers with the changed lines and a diff."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -41,9 +42,11 @@ impl Tool for Edit {
                         "old_string": {"type": "string"},
                         "new_string": {"type": "string"},
                         "replace_all": {"type": "boolean"}
-                    }, "required": ["old_string", "new_string"]}}
+                    }, "required": ["old_string", "new_string"]}},
+                    "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object"}}}, "required": ["path"]}},
+                    "check": {"type": "string", "description": "Command to run after; its exit and tail come back."}
                 },
-                "required": ["path"]
+                "required": []
             }),
         }
     }
@@ -53,6 +56,9 @@ impl Tool for Edit {
     }
 
     fn summary(&self, args: &Value) -> String {
+        if let Some(f) = args.get("files").and_then(Value::as_array) {
+            return format!("edit {} files", f.len());
+        }
         match str_arg(args, "path") {
             Some(p) if args.get("edits").and_then(Value::as_array).is_some_and(|e| e.len() > 1) => {
                 format!("edit {p} ({} changes)", args["edits"].as_array().map_or(0, Vec::len))
@@ -64,66 +70,135 @@ impl Tool for Edit {
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
-        let Some(p) = str_arg(&args, "path") else {
-            return ToolOutput::error("edit: `path` is required");
-        };
-        let changes = match changes(&args) {
-            Ok(c) => c,
-            Err(e) => return ToolOutput::error(e),
-        };
-        let path = resolve(&ctx.cwd, p);
-        let shown = format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path));
-        if let Ok(m) = tokio::fs::metadata(&path).await {
-            if !m.file_type().is_file() {
-                return ToolOutput::error(format!("edit: {shown} is not a regular file (device, pipe or socket)"));
-            }
-            if m.len() > MAX_FILE_BYTES {
-                return ToolOutput::error(format!(
-                    "edit: {shown} is too large to edit here ({} MiB); use `bash`",
-                    m.len() >> 20
-                ));
+        let check = str_arg(&args, "check").filter(|c| !c.trim().is_empty());
+        let mut out = if args.get("files").is_some() { run_files(&args, ctx).await } else { run_one(&args, ctx).await };
+        if let Some(c) = check {
+            // the proof the model asked for, after the change; a failed change has nothing to prove
+            if !out.is_error {
+                out.content.push_str(&crate::postcheck::run_own(c, ctx).await);
             }
         }
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return ToolOutput::error(format!("edit: {shown} does not exist; use `write` to create it"));
-            }
-            Err(e) => return ToolOutput::error(format!("edit: cannot read {shown}: {e}")),
-        };
-        if is_binary(&bytes) {
-            return ToolOutput::error(format!("edit: {shown} is a binary file"));
-        }
-        // rewriting a file in another encoding as UTF-8 would mangle every byte it does not share
-        let text = match String::from_utf8(bytes) {
-            Ok(t) => t,
-            Err(e) => {
-                return ToolOutput::error(format!(
-                "edit: {shown} is not UTF-8 text (invalid byte at offset {}); edit it with `bash` in its own encoding",
-                e.utf8_error().valid_up_to()
-            ))
-            }
-        };
-        let (edited, n) = match apply(&text, &changes, &shown) {
-            Ok(r) => r,
-            Err(e) if e.contains("`old_string` not found") => {
-                let hint = elsewhere(&ctx.cwd, &path, &text, &changes).await.unwrap_or_default();
-                return ToolOutput::error(format!("{e}{hint}"));
-            }
-            Err(e) => return ToolOutput::error(e),
-        };
-        if let Err(e) = write_atomic(&path, edited.as_bytes()).await {
-            return ToolOutput::error(format!("edit: cannot write {shown}: {e}"));
-        }
-        ctx.seen.mark(&path);
-        let (added, removed, diff) = unified(&text, &edited, &shown);
-        let now = around(&text, &edited);
-        let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
-        let now = format!("{now}{}", crate::edit_check::report(&path).await);
-        ToolOutput::ok(format!("edited {shown}{n}: +{added} −{removed} lines\n{diff}{now}"))
-            // the whole file, before and after: the diff numbers from its first line
-            .with_display(ToolDisplay::Diff { path: shown, old: text, new: edited, start_line: 1 })
+        out
     }
+}
+
+/// One file's change, written: what to tell the model and what to show.
+struct Done {
+    shown: String,
+    path: std::path::PathBuf,
+    note: String,
+    added: usize,
+    removed: usize,
+    diff: String,
+    now: String,
+    old: String,
+    new: String,
+}
+
+/// Applies the changes of one file and writes it; the error text when it cannot be done (nothing written).
+async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Result<Done, String> {
+    let changes = changes(args)?;
+    let path = resolve(&ctx.cwd, p);
+    let shown = format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path));
+    if let Ok(m) = tokio::fs::metadata(&path).await {
+        if !m.file_type().is_file() {
+            return Err(format!("edit: {shown} is not a regular file (device, pipe or socket)"));
+        }
+        if m.len() > MAX_FILE_BYTES {
+            return Err(format!("edit: {shown} is too large to edit here ({} MiB); use `bash`", m.len() >> 20));
+        }
+    }
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("edit: {shown} does not exist; use `write` to create it"));
+        }
+        Err(e) => return Err(format!("edit: cannot read {shown}: {e}")),
+    };
+    if is_binary(&bytes) {
+        return Err(format!("edit: {shown} is a binary file"));
+    }
+    // rewriting a file in another encoding as UTF-8 would mangle every byte it does not share
+    let text = String::from_utf8(bytes).map_err(|e| {
+        format!(
+            "edit: {shown} is not UTF-8 text (invalid byte at offset {}); edit it with `bash` in its own encoding",
+            e.utf8_error().valid_up_to()
+        )
+    })?;
+    let (edited, note) = match apply(&text, &changes, &shown) {
+        Ok(r) => r,
+        Err(e) if e.contains("`old_string` not found") => {
+            let hint = elsewhere(&ctx.cwd, &path, &text, &changes).await.unwrap_or_default();
+            return Err(format!("{e}{hint}"));
+        }
+        Err(e) => return Err(e),
+    };
+    write_atomic(&path, edited.as_bytes()).await.map_err(|e| format!("edit: cannot write {shown}: {e}"))?;
+    ctx.seen.mark(&path);
+    let (added, removed, diff) = unified(&text, &edited, &shown);
+    let now = around(&text, &edited);
+    let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
+    Ok(Done { shown, path, note, added, removed, diff, now, old: text, new: edited })
+}
+
+async fn run_one(args: &Value, ctx: &ToolContext) -> ToolOutput {
+    let Some(p) = str_arg(args, "path") else {
+        return ToolOutput::error("edit: `path` is required");
+    };
+    let d = match edit_file(p, args, ctx).await {
+        Ok(d) => d,
+        Err(e) => return ToolOutput::error(e),
+    };
+    // a step-level check after the whole step replaces the per-edit one
+    let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&d.path).await };
+    ToolOutput::ok(format!(
+        "edited {}{}: +{} −{} lines\n{}{}{diag}",
+        d.shown, d.note, d.added, d.removed, d.diff, d.now
+    ))
+    // the whole file, before and after: the diff numbers from its first line
+    .with_display(ToolDisplay::Diff { path: d.shown, old: d.old, new: d.new, start_line: 1 })
+}
+
+/// `files: [{path, edits}]`: files changed in order, the first that fails stops the rest.
+async fn run_files(args: &Value, ctx: &ToolContext) -> ToolOutput {
+    if args.get("path").is_some() || args.get("edits").is_some() || args.get("old_string").is_some() {
+        return ToolOutput::error("edit: give either `files` or `path` with its changes, not both");
+    }
+    let Some(list) = args["files"].as_array().filter(|l| !l.is_empty()) else {
+        return ToolOutput::error("edit: `files` must be a list of {path, edits} objects");
+    };
+    // every entry is read before any is written: a malformed one is found without a half-done step
+    let mut entries = Vec::new();
+    for (i, f) in list.iter().enumerate() {
+        let Some(p) = str_arg(f, "path") else {
+            return ToolOutput::error(format!("edit: files[{}]: `path` is required", i + 1));
+        };
+        if let Err(e) = changes(f) {
+            return ToolOutput::error(format!("edit: files[{}] ({p}): {}", i + 1, e.trim_start_matches("edit: ")));
+        }
+        entries.push((p, f));
+    }
+    let mut done: Vec<String> = Vec::new();
+    let mut text = String::new();
+    for (i, (p, f)) in entries.iter().enumerate() {
+        match edit_file(p, f, ctx).await {
+            Ok(d) => {
+                let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&d.path).await };
+                text.push_str(&format!(
+                    "edited {}{}: +{} −{} lines\n{}{}{diag}\n",
+                    d.shown, d.note, d.added, d.removed, d.diff, d.now
+                ));
+                done.push(d.shown);
+            }
+            Err(e) => {
+                let rest: Vec<&str> = entries[i + 1..].iter().map(|(p, _)| *p).collect();
+                let applied = if done.is_empty() { "none".to_string() } else { done.join(", ") };
+                let skipped = if rest.is_empty() { String::new() } else { format!("; not tried: {}", rest.join(", ")) };
+                return ToolOutput::error(format!("{text}{e}\napplied before the failure: {applied}{skipped}"));
+            }
+        }
+    }
+    ToolOutput::ok(format!("edited {} files: {}\n{text}", done.len(), done.join(", ")))
 }
 
 /// `text` with `changes` made in order, each on the text the ones before it left, and the note
@@ -593,6 +668,67 @@ mod around_tests {
         assert_eq!(s.lines().filter(|l| l.contains('│')).count(), SNIPPET_LINES, "{s}");
         assert!(s.ends_with("…\n"), "{s}");
         assert_eq!(around("a\n", "a\n"), "");
+    }
+
+    #[tokio::test]
+    async fn edit_files_changes_several_files_and_stops_at_the_first_failure() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        for (n, t) in [("a.txt", "one\n"), ("b.txt", "two\n"), ("c.txt", "three\n")] {
+            std::fs::write(d.path().join(n), t).unwrap();
+        }
+        let out = Edit
+            .run(
+                json!({"files": [
+                    {"path": "a.txt", "edits": [{"old_string": "one", "new_string": "1"}]},
+                    {"path": "b.txt", "old_string": "two", "new_string": "2"}
+                ]}),
+                &c,
+            )
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.starts_with("edited 2 files: a.txt, b.txt"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("b.txt")).unwrap(), "2\n");
+        // the second file fails: the first stays applied, the third is not tried, and the answer says so
+        let out = Edit
+            .run(
+                json!({"files": [
+                    {"path": "a.txt", "old_string": "1", "new_string": "uno"},
+                    {"path": "b.txt", "old_string": "absent", "new_string": "x"},
+                    {"path": "c.txt", "old_string": "three", "new_string": "3"}
+                ]}),
+                &c,
+            )
+            .await;
+        assert!(out.is_error);
+        assert!(out.content.contains("applied before the failure: a.txt; not tried: c.txt"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "uno\n");
+        assert_eq!(std::fs::read_to_string(d.path().join("c.txt")).unwrap(), "three\n");
+        // a malformed entry is found before anything is written
+        let out = Edit.run(json!({"files": [{"path": "a.txt", "old_string": "uno", "new_string": "x"}, {"old_string": "a", "new_string": "b"}]}), &c).await;
+        assert!(out.is_error && out.content.contains("files[2]"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("a.txt")).unwrap(), "uno\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edit_check_runs_the_command_and_reports_exit_and_output() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        std::fs::write(d.path().join("a.txt"), "one\n").unwrap();
+        let out = Edit
+            .run(json!({"path": "a.txt", "old_string": "one", "new_string": "two", "check": "cat a.txt; exit 3"}), &c)
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("\ncheck: cat a.txt; exit 3 | exit 3 | 0.") && out.content.ends_with("\ntwo"),
+            "{}",
+            out.content
+        );
+        // a failed change runs no check
+        let out =
+            Edit.run(json!({"path": "a.txt", "old_string": "zzz", "new_string": "y", "check": "echo ran"}), &c).await;
+        assert!(out.is_error && !out.content.contains("check:"), "{}", out.content);
     }
 }
 

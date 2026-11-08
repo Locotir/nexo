@@ -153,6 +153,8 @@ struct State {
     jobs: Jobs,
     /// The files the model has read or written, as they were then.
     seen: nexo_core::seen::Seen,
+    /// What the step-level check remembers: commands too slow to repeat, and the last check's report.
+    post: Arc<nexo_tools::postcheck::Guard>,
     /// Failures of the session kept by what they were on, to say when one comes back.
     repeats: crate::repeat::Repeats,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
@@ -400,6 +402,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         digests: HashMap::new(),
         jobs: jobs.clone(),
         seen: Default::default(),
+        post: Default::default(),
         repeats: Default::default(),
         epoch: 0,
         plan,

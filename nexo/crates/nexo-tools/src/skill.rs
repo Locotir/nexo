@@ -91,6 +91,8 @@ mod tests {
             check: None,
             sandbox: Default::default(),
             vision: true,
+            post_check: false,
+            check_secs: 45,
         }
     }
 

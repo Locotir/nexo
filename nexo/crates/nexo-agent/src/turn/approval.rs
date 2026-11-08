@@ -19,6 +19,9 @@ pub(super) fn detail_of(kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay
                 // only the replaced text is shown: where it sits in the file numbers the diff
                 let start_line = line_in_file(&file, &old);
                 ToolDisplay::Diff { path, old, new, start_line }
+            } else if args.get("files").is_some() {
+                // several files: the dialog names each one
+                ToolDisplay::List { items: nexo_core::tool::call_paths(args) }
             } else if args.get("edits").is_some() {
                 // several changes: the whole file as they would leave it
                 let old = std::fs::read_to_string(&file).unwrap_or_default();

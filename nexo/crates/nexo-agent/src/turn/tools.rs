@@ -89,6 +89,7 @@ pub(super) async fn run_tools(
         .collect();
     let mut results: Vec<Option<Part>> = (0..calls.len()).map(|_| None).collect();
     let mut cancelled = false;
+    let step = step_before(state, &tools, &cwd, &calls).await;
     // in the order asked: each run of calls that can overlap goes at once, any other call alone, so one
     // command among three sub-agents does not make the sub-agents wait for each other
     let mut i = 0;
@@ -117,7 +118,165 @@ pub(super) async fn run_tools(
         }
         i = end;
     }
+    if let (Some(step), false) = (step, cancelled) {
+        step_check(state, &tools, &cwd, &calls, &verdicts, &mut results, step, cancel).await;
+    }
     (results.into_iter().flatten().collect(), cancelled)
+}
+
+/// The answer to a check command the step-level check ran already, when no source file has changed since.
+async fn repeated_check(state: &Shared, name: &str, args: &Value, cwd: &Path) -> Option<ToolOutput> {
+    let command = args.get("command").and_then(Value::as_str).filter(|_| name == "bash")?;
+    if !nexo_tools::project::is_check_command(command) {
+        return None;
+    }
+    let (guard, on) = {
+        let st = state.lock().await;
+        (st.post.clone(), st.config.tools.post_write_check)
+    };
+    if !on {
+        return None;
+    }
+    let root = cwd.to_path_buf();
+    let now = tokio::task::spawn_blocking(move || nexo_tools::postcheck::snapshot(&root)).await.ok()?;
+    let text = guard.recorded(command, nexo_tools::postcheck::fingerprint(&now))?;
+    Some(ToolOutput::ok(format!(
+        "(unchanged since the check that ran after your last change; no source file differs, so this is its result)\n{}",
+        text.trim_start()
+    )))
+}
+
+/// The files before a step that may change code, when a check after it is wanted.
+struct StepBefore {
+    files: nexo_tools::postcheck::Snapshot,
+    secs: u64,
+}
+
+/// Takes the snapshot when the post-write check is on, the folder is a project and a call can change files.
+async fn step_before(
+    state: &Shared,
+    tools: &ToolSet,
+    cwd: &Path,
+    calls: &[(String, String, Value)],
+) -> Option<StepBefore> {
+    let secs = {
+        let st = state.lock().await;
+        if !st.config.tools.post_write_check {
+            return None;
+        }
+        st.config.tools.post_write_check_secs
+    };
+    let writes = calls.iter().any(|(_, n, a)| {
+        tools.get(n).is_some_and(|t| matches!(t.call_kind(a), ToolKind::Write | ToolKind::Exec)) && n != "recall"
+    });
+    if !writes || nexo_tools::project::check_command_within(cwd, Some(cwd)).is_none() {
+        return None;
+    }
+    let root = cwd.to_path_buf();
+    let files = tokio::task::spawn_blocking(move || nexo_tools::postcheck::snapshot(&root)).await.ok()?;
+    Some(StepBefore { files, secs })
+}
+
+/// After a step: when it changed source files and did not prove itself, the project's check runs once and its
+/// result joins the last call that changed files.
+#[allow(clippy::too_many_arguments)]
+async fn step_check(
+    state: &Shared,
+    tools: &ToolSet,
+    cwd: &Path,
+    calls: &[(String, String, Value)],
+    verdicts: &[(Verdict, Why)],
+    results: &mut [Option<Part>],
+    before: StepBefore,
+    cancel: &CancellationToken,
+) {
+    use nexo_tools::{postcheck, project};
+    // the model ran a check itself in this step (or asked for one with `check`): that is the proof
+    let proved = calls.iter().zip(verdicts).any(|((_, n, a), (v, _))| {
+        matches!(v, Verdict::Run)
+            && (a.get("check").and_then(Value::as_str).is_some_and(|c| !c.trim().is_empty())
+                || (n == "bash" && a.get("command").and_then(Value::as_str).is_some_and(project::is_check_command)))
+    });
+    if proved {
+        return;
+    }
+    let root = cwd.to_path_buf();
+    let Ok(after) = tokio::task::spawn_blocking(move || postcheck::snapshot(&root)).await else { return };
+    let changed = postcheck::changed(&before.files, &after);
+    let Some(first) = changed.first() else { return };
+    // the call that changed them: the last that ran as an edit, a write or a command
+    let Some(at) = calls.iter().zip(verdicts).enumerate().rev().find_map(|(i, ((_, n, a), (v, _)))| {
+        let kind = tools.get(n).map(|t| t.call_kind(a));
+        (matches!(v, Verdict::Run) && matches!(kind, Some(ToolKind::Write | ToolKind::Exec))).then_some(i)
+    }) else {
+        return;
+    };
+    let dir = first.parent().unwrap_or(cwd);
+    let Some(check) = project::check_command_within(dir, Some(cwd)) else { return };
+    let (guard, perm) = {
+        let st = state.lock().await;
+        (st.post.clone(), st.perm.clone())
+    };
+    let cap = std::time::Duration::from_secs(before.secs.max(1));
+    let text = if let Some(report) =
+        without_tests(&guard, &perm, &check, cwd, cap, tools.get("bash").is_some(), &changed).await
+    {
+        report
+    } else if let Some(bash) = tools.get("bash") {
+        let mut ctx = ToolContext::new(check.dir.clone());
+        ctx.sandbox = state.lock().await.sandbox.clone();
+        ctx.cancel = cancel.child_token();
+        let t0 = Instant::now();
+        let out = bash.run(serde_json::json!({"command": check.command, "timeout": before.secs.max(1)}), &ctx).await;
+        let timed_out = out.content.contains("[killed: timed out after");
+        guard.record_run(&check.command, &check.dir, timed_out);
+        let exit = match &out.display {
+            ToolDisplay::Shell { exit_code, .. } => *exit_code,
+            _ => None,
+        };
+        let text = postcheck::report(&check.command, exit, timed_out, t0.elapsed().as_secs_f64(), cap, &out.content);
+        guard.remember(&check.command, postcheck::fingerprint(&after), &text);
+        text
+    } else {
+        return;
+    };
+    if let Some(Part::ToolResult { content, .. }) = results[at].as_mut() {
+        match content.first_mut() {
+            Some(Part::Text { text: t }) => t.push_str(&text),
+            _ => content.push(Part::text(text.trim_start().to_string())),
+        }
+    }
+}
+
+/// When the project's command is not run after a step: why, with the compiler's word on each changed file
+/// in its place (what the edit alone would have given). None where the command runs.
+async fn without_tests(
+    guard: &nexo_tools::postcheck::Guard,
+    perm: &Policy,
+    check: &nexo_tools::project::Check,
+    cwd: &Path,
+    cap: std::time::Duration,
+    has_bash: bool,
+    changed: &[PathBuf],
+) -> Option<String> {
+    // the project's command is a command like any other: it runs only where the policy lets the model run it
+    let note = if let Some(note) = guard.skip_note(&check.command, &check.dir, cap) {
+        note
+    } else {
+        match perm.decide("bash", ToolKind::Exec, &serde_json::json!({"command": check.command}), cwd) {
+            Decision::Allow if has_bash => return None,
+            Decision::Allow => format!("\ncheck: {} | not run: no command tool", check.command),
+            Decision::Ask => {
+                format!("\ncheck: {} | not run: commands are asked about in this mode; run it yourself", check.command)
+            }
+            Decision::Deny(why) => format!("\ncheck: {} | not run: denied by a rule ({why})", check.command),
+        }
+    };
+    let mut diag = String::new();
+    for f in changed.iter().take(5) {
+        diag.push_str(&nexo_tools::edit_check::report(f).await);
+    }
+    Some(format!("{diag}{note}"))
 }
 
 /// One call: its permission result, its run, and its line in the audit log.
@@ -207,7 +366,7 @@ pub(super) async fn run_call(
             };
             // what a file looked like before the agent writes it, for a rewind
             if tool.kind() == ToolKind::Write {
-                if let Some(p) = args.get("path").and_then(Value::as_str) {
+                for p in nexo_core::tool::call_paths(args).iter().map(String::as_str) {
                     let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) };
                     let before = pre_image(&path);
                     let mut st = state.lock().await;
@@ -233,14 +392,27 @@ pub(super) async fn run_call(
                 }
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
-            let (jobs, seen, perm, rules_cwd, sandbox, vision) = {
+            let (jobs, seen, perm, rules_cwd, sandbox, vision, post_check, check_secs) = {
                 let st = state.lock().await;
                 let (provider, _, model) = st.target.get();
                 // a picture is withheld only where the model catalogue says the model cannot see it
                 let vision = nexo_providers::catalogue::cached()
                     .and_then(|c| c.lookup(&provider, &model).and_then(|e| e.vision))
                     .unwrap_or(true);
-                (st.jobs.clone(), st.seen.clone(), st.perm.clone(), cwd.to_path_buf(), st.sandbox.clone(), vision)
+                let check_secs = st.config.tools.post_write_check_secs;
+                // the per-edit diagnostics give way only where the step-level check will run
+                let post_check = st.config.tools.post_write_check
+                    && nexo_tools::project::check_command_within(cwd, Some(cwd)).is_some();
+                (
+                    st.jobs.clone(),
+                    st.seen.clone(),
+                    st.perm.clone(),
+                    cwd.to_path_buf(),
+                    st.sandbox.clone(),
+                    vision,
+                    post_check,
+                    check_secs,
+                )
             };
             let ctx = ToolContext {
                 cwd: cwd.to_path_buf(),
@@ -253,6 +425,8 @@ pub(super) async fn run_call(
                 seen,
                 sandbox,
                 vision,
+                post_check,
+                check_secs,
                 check: Some(Arc::new(move |tool: &str, kind, args: &Value| {
                     match perm.decide(tool, kind, args, &rules_cwd) {
                         Decision::Allow => nexo_core::tool::Check::Allow,
@@ -266,6 +440,8 @@ pub(super) async fn run_call(
                 crate::recall::answer(&state.lock().await.history, args)
             } else if name == "goal_brief" {
                 goal_brief(state, args).await
+            } else if let Some(recorded) = repeated_check(state, name, args, cwd).await {
+                recorded
             } else {
                 tokio::select! {
                     o = tool.run(args.clone(), &ctx) => o,
@@ -405,5 +581,58 @@ pub(super) async fn digest(
             notice(events, Level::Warn, format!("{e}; the output goes as it is"));
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod step_check_tests {
+    use super::*;
+    use crate::permission::Policy;
+    use nexo_tools::postcheck::Guard;
+
+    fn crate_with_error() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(d.path().join("src")).unwrap();
+        let f = d.path().join("src/lib.rs");
+        std::fs::write(&f, "pub fn f() -> i32 { \"x\" }\n").unwrap();
+        (d, f)
+    }
+
+    fn policy(mode: PermissionMode, deny: &[&str]) -> Policy {
+        Policy { mode, allow: vec![], deny: deny.iter().map(|s| s.to_string()).collect() }
+    }
+
+    #[tokio::test]
+    async fn the_step_check_is_not_run_where_commands_are_asked_about_or_denied() {
+        let (d, f) = crate_with_error();
+        let check = nexo_tools::project::check_command_within(d.path(), Some(d.path())).unwrap();
+        let cap = Duration::from_secs(45);
+        let g = Guard::new();
+        let ask = policy(PermissionMode::AcceptEdits, &[]);
+        let r = without_tests(&g, &ask, &check, d.path(), cap, true, std::slice::from_ref(&f)).await.unwrap();
+        assert!(r.contains("| not run: commands are asked about"), "{r}");
+        let deny = policy(PermissionMode::Auto, &["bash(cargo test*)"]);
+        let r = without_tests(&g, &deny, &check, d.path(), cap, true, std::slice::from_ref(&f)).await.unwrap();
+        assert!(r.contains("| not run: denied"), "{r}");
+        for p in [policy(PermissionMode::Auto, &[]), Policy { allow: vec!["bash(cargo test*)".into()], ..ask }] {
+            assert!(without_tests(&g, &p, &check, d.path(), cap, true, std::slice::from_ref(&f)).await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_skipped_check_still_carries_the_compiler_diagnostics() {
+        let (d, f) = crate_with_error();
+        let check = nexo_tools::project::check_command_within(d.path(), Some(d.path())).unwrap();
+        let cap = Duration::from_secs(45);
+        let g = Guard::new();
+        g.record_run(&check.command, &check.dir, true);
+        let auto = policy(PermissionMode::Auto, &[]);
+        let r = without_tests(&g, &auto, &check, d.path(), cap, true, &[f]).await.unwrap();
+        assert!(r.contains("diagnostics:") && r.contains("| skipped |"), "{r}");
     }
 }

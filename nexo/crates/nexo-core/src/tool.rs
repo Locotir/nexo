@@ -153,6 +153,10 @@ pub struct ToolContext {
     pub sandbox: crate::sandbox::SandboxSettings,
     /// Whether the model in use can look at pictures (false only where the model catalogue says it cannot).
     pub vision: bool,
+    /// The agent runs the compiler and test check once per step after a change: `edit` and `write` leave it out.
+    pub post_check: bool,
+    /// Seconds a `check` command of `edit` or `write` may take.
+    pub check_secs: u64,
 }
 
 /// What the permission rules would do with a call, without asking anyone.
@@ -180,6 +184,8 @@ impl ToolContext {
             check: None,
             sandbox: Default::default(),
             vision: true,
+            post_check: false,
+            check_secs: 45,
         }
     }
 
@@ -260,13 +266,19 @@ impl ToolSet {
     }
 }
 
-/// The files a file tool call names: `path`, then each entry of `paths` (a `read` of several files),
-/// without repeats, empty names left out.
+/// The files a file tool call names: `path`, then each entry of `paths` (a `read` of several files) and
+/// the `path` of each entry of `files` (an `edit` of several files), without repeats, empty names left out.
 pub fn call_paths(args: &Value) -> Vec<String> {
     let one = args.get("path").and_then(Value::as_str);
     let many = args.get("paths").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    let files = args
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.get("path").and_then(Value::as_str));
     let mut out: Vec<String> = Vec::new();
-    for p in one.into_iter().chain(many).map(str::trim).filter(|p| !p.is_empty()) {
+    for p in one.into_iter().chain(many).chain(files).map(str::trim).filter(|p| !p.is_empty()) {
         if !out.iter().any(|q| q == p) {
             out.push(p.to_string());
         }

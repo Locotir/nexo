@@ -123,3 +123,52 @@ async fn a_run_stops_at_its_step_limit() {
     assert!(!rec.finished, "{rec:?}");
     assert_eq!(rec.stop, Some(nexo_bench::client::Stop::MaxSteps));
 }
+
+/// Edits two files in one call, then says it is done.
+struct EditTwo;
+
+#[async_trait]
+impl ModelClient for EditTwo {
+    async fn stream(&self, _: &ProviderConfig, req: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        let last = req.messages.last().expect("a message");
+        let asked = last.role == Role::User && last.content.iter().all(|p| matches!(p, Part::Text { .. }));
+        let evs = if asked {
+            let args = json!({"files": [
+                {"path": "src/lib.rs", "edits": [{"old_string": "a - b", "new_string": "a * b"}]},
+                {"path": "src/other.rs", "old_string": "1", "new_string": "2"}
+            ]});
+            vec![
+                StreamEvent::ToolCallStart { id: "c1".into(), name: "edit".into() },
+                StreamEvent::ToolCallEnd { id: "c1".into(), name: "edit".into(), args },
+                StreamEvent::Finish(FinishReason::ToolUse),
+                StreamEvent::Done,
+            ]
+        } else {
+            vec![StreamEvent::TextDelta("done".into()), StreamEvent::Finish(FinishReason::Stop), StreamEvent::Done]
+        };
+        Ok(Box::pin(futures::stream::iter(evs)))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_edit_call_of_two_files_comes_back_with_the_projects_test_result() {
+    let out = tempfile::tempdir().unwrap();
+    let bench = bench(Arc::new(EditTwo), 100, out.path());
+    let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
+    task.files = vec![
+        ("Cargo.toml".into(), "[package]\nname = \"calc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n".into()),
+        ("src/lib.rs".into(), "pub mod other;\npub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}\n\n#[cfg(test)]\nmod t {\n    #[test]\n    fn adds() {\n        assert_eq!(super::add(2, 3), 5);\n    }\n}\n".into()),
+        ("src/other.rs".into(), "pub const ONE: i32 = 1;\n".into()),
+    ];
+    task.turns = vec![(0, "fix add".into())];
+    task.setup = None;
+    task.sealed = false;
+    task.mask = &[];
+    task.check = |_| nexo_bench::check::Outcome { ok: false, score: 0.0, detail: String::new() };
+    let rec = run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap();
+    // one call changed two files and the run took two requests: no step went to asking for the test
+    assert_eq!((rec.requests, rec.tool_calls, rec.tool_errors), (2, 1, 0), "{rec:?}");
+    let transcript = std::fs::read_to_string(out.path().join(&rec.transcript)).unwrap();
+    assert!(transcript.contains("edited 2 files: src/lib.rs, src/other.rs"), "{transcript}");
+    assert!(transcript.contains("check: cargo test -q --offline | exit 101"), "{transcript}");
+}
