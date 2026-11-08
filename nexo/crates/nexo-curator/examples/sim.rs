@@ -7,7 +7,7 @@
 //! the last K) priced with `--price` (`live`: deepseek-flash 0.3/0.006/1.2 $ per M, `legacy`: the replay's
 //! 0.28/0.028, input only).
 
-use nexo_curator::sim::behave::{analytic, auto_family, monte_carlo, Context, ParamSet};
+use nexo_curator::sim::behave::{analytic, auto_family, monte_carlo, probe, Context, ParamSet};
 use nexo_curator::sim::events::{run, Run};
 use nexo_curator::sim::input::load;
 use nexo_curator::sim::price::Prices;
@@ -180,11 +180,15 @@ fn run_cmd(mut args: impl Iterator<Item = String>) {
         });
         let fam = if family == "auto" { auto_family(&session.requests) } else { family.as_str() };
         let p = set.get(fam);
-        let r = run(&session.requests, &spec, prices, life, slots).unwrap_or_else(|e| {
+        let mut r = run(&session.requests, &spec, prices, life, slots).unwrap_or_else(|e| {
             eprintln!("{path}: {e}");
             std::process::exit(1);
         });
         let cx = Context::measure(&session.requests, &spec, prices, max_steps);
+        if let Err(e) = probe(&mut r, &session.requests, &spec, life, slots) {
+            eprintln!("{path}: {e}");
+            std::process::exit(1);
+        }
         let a = analytic(&r, p, set.r_den, &cx);
         let m = (mc > 0).then(|| {
             monte_carlo(&session.requests, &spec, &cx, life, slots, p, set.r_den, mc, seed).unwrap_or_else(|e| {

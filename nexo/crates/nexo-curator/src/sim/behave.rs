@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use super::events::{Event, Kind, Run, Stepper};
+use super::events::{Event, Foot, Kind, Run, Stepper};
 use super::input::{reply_to, text_of, Request};
 use super::price::{tokens_of, Prices};
 
@@ -167,6 +167,8 @@ impl Context {
 pub struct Expect {
     pub extra_steps: f64,
     pub extra_cost: f64,
+    /// The part of `extra_cost` that the fetches cost (the rest is the wandering steps).
+    pub fetch_cost: f64,
     pub p_fail: f64,
     /// The part of `p_fail` that comes from passing `max_steps`.
     pub p_cap: f64,
@@ -201,8 +203,86 @@ fn over(s: usize, extra: usize, max_steps: usize) -> bool {
     s <= max_steps && s + extra > max_steps
 }
 
+/// One replay of the probe: its task number and the extra (miss, hit) input tokens it measured.
+type Tally = (usize, (i64, i64));
+
+/// Fills `run.feet`: for each `cited` or `denied` event the session is replayed with the call and result that
+/// fetch it, first that one only (`alone`), then it and every event before it (`joint` is the difference to
+/// the replay without it), and the extra input tokens over the open loop are kept. The curator reacts to what
+/// was fetched (it cuts the new result, ages it, and may drop the copy the history holds), so what a fetch
+/// costs is what the replay shows, and fetches that share content cost less together. `analytic` weighs the
+/// two by how many of the other events are fetched. Run it once per session and spec: the footprints do not
+/// depend on the parameters or the prices.
+pub fn probe(run: &mut Run, requests: &[Request], spec: &str, life: f64, slots: usize) -> Result<(), String> {
+    let sites = run.events.iter().filter(|e| branches(e)).count();
+    let tasks = 2 * sites;
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(tasks).max(1);
+    let base = &*run;
+    let found: Vec<Result<Vec<Tally>, String>> = std::thread::scope(|sc| {
+        let handles: Vec<_> = (0..threads)
+            .map(|w| {
+                sc.spawn(move || {
+                    (w..tasks)
+                        .step_by(threads)
+                        .map(|t| {
+                            let k = t / 2;
+                            let pick = move |j: usize| if t % 2 == 0 { j == k } else { j <= k };
+                            replay(requests, spec, life, slots, pick).map(|(m, h)| (t, (m - base.miss, h - base.hit)))
+                        })
+                        .collect::<Result<Vec<_>, String>>()
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("a probe thread")).collect()
+    });
+    let mut total = vec![(0, 0); tasks];
+    for part in found {
+        for (t, f) in part? {
+            total[t] = f;
+        }
+    }
+    run.feet = (0..sites)
+        .map(|k| {
+            let before = if k == 0 { (0, 0) } else { total[2 * k - 1] };
+            let after = total[2 * k + 1];
+            Foot { alone: total[2 * k], joint: (after.0 - before.0, after.1 - before.1) }
+        })
+        .collect();
+    Ok(())
+}
+
+/// The session with the fetch of every branching event `j` (counted as the replay meets them) for which
+/// `pick(j)` holds, and nothing else: the (miss, hit) input tokens it sends.
+fn replay(
+    requests: &[Request],
+    spec: &str,
+    life: f64,
+    slots: usize,
+    pick: impl Fn(usize) -> bool,
+) -> Result<(i64, i64), String> {
+    let s = requests.len();
+    let mut st = Stepper::new(spec, life, slots)?;
+    let (mut k, mut inserts) = (0usize, Vec::<(usize, Vec<Value>)>::new());
+    for (i, q) in requests.iter().enumerate() {
+        let mut msgs = splice(&q.messages, &inserts);
+        let events = st.send(q, &msgs, reply_to(requests, i), i + 1, s, q.out_tokens.unwrap_or(0))?;
+        for e in events.iter().filter(|e| branches(e)) {
+            if pick(k) {
+                inserts.push((q.messages.len(), source_pair(&msgs, e.mi, &format!("simx{k}"))));
+                msgs = splice(&q.messages, &inserts);
+                st.send(q, &msgs, None, i + 1, s, 0)?;
+            }
+            k += 1;
+        }
+    }
+    Ok((st.run.miss, st.run.hit))
+}
+
 /// The expectation of the extra steps, the extra cost and the chance of failing, from the events of an
 /// open-loop pass (`SIMULATOR-SPEC.md` 2.4). The cap uses a normal approximation of the extra steps.
+/// A fetch costs its measured footprint (`probe`) when `run.feet` holds one per event, else an estimate from
+/// the event alone (the missing tokens once as a miss, the protected requests as hits), which is rough:
+/// the curator cuts what is fetched and drops copies the history holds, so the estimate misses by tens of percent.
 pub fn analytic(run: &Run, p: Params, r_den: f64, cx: &Context) -> Expect {
     let n = run.requests.max(1) as f64;
     let (v_bar, m_bar) = (run.hit as f64 / n, run.miss as f64 / n);
@@ -210,16 +290,34 @@ pub fn analytic(run: &Run, p: Params, r_den: f64, cx: &Context) -> Expect {
     let step = cx.prices.hit * v_bar + cx.prices.miss * m_bar + cx.prices.out * o_bar;
     let (beta, mu) = (p.beta_eff(), p.mu.max(1.0));
     let (mut steps, mut cost, mut var, mut ok, mut count) = (0.0, 0.0, 0.0, 1.0, 0);
+    let mut fetch_cost = 0.0;
+    // how likely each other event is fetched
+    let sites = run.events.iter().filter(|e| branches(e)).count().max(1) as f64;
+    let w = run
+        .events
+        .iter()
+        .filter(|e| branches(e))
+        .map(|e| if e.kind == Kind::Denied { r_den } else { p.r }.clamp(0.0, 1.0))
+        .sum::<f64>()
+        / sites;
     for e in run.events.iter().filter(|e| branches(e)) {
         let r = if e.kind == Kind::Denied { r_den } else { p.r }.clamp(0.0, 1.0);
         let v_t = run.views.get(e.t.wrapping_sub(1)).copied().unwrap_or(0) as f64;
-        let s_e = e.s_e as f64;
-        let fetch = cx.prices.hit * v_t
-            + cx.prices.miss * (cx.c_out + s_e)
-            + cx.prices.out * cx.c_out
-            + cx.prices.hit * s_e * cx.protect.min(e.s_rest) as f64;
+        let input = match run.feet.get(count) {
+            // the replay: the tokens the fetch request and the requests after it sent more
+            Some(f) => {
+                let tokens = |a: (i64, i64)| cx.prices.miss * a.0 as f64 + cx.prices.hit * a.1 as f64;
+                (1.0 - w) * tokens(f.alone) + w * tokens(f.joint)
+            }
+            None => {
+                let s_e = e.s_e as f64;
+                cx.prices.hit * (v_t + s_e * cx.protect.min(e.s_rest) as f64) + cx.prices.miss * (cx.c_out + s_e)
+            }
+        };
+        let fetch = input + cx.prices.out * cx.c_out;
         steps += r + (1.0 - r) * beta;
         cost += r * fetch + (1.0 - r) * beta * step;
+        fetch_cost += r * fetch;
         var += r * (1.0 - r) + (1.0 - r) * beta * (1.0 + mu);
         ok *= 1.0 - (1.0 - r) * p.phi;
         count += 1;
@@ -235,6 +333,7 @@ pub fn analytic(run: &Run, p: Params, r_den: f64, cx: &Context) -> Expect {
     Expect {
         extra_steps: steps,
         extra_cost: cost / 1e6,
+        fetch_cost: fetch_cost / 1e6,
         p_fail: 1.0 - ok * (1.0 - p_cap),
         p_cap,
         events: count,

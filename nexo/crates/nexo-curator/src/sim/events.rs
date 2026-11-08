@@ -281,6 +281,15 @@ pub fn events_of(t: usize, s: usize, history: &[Value], view: &[Value], cited: &
     out
 }
 
+/// The extra input tokens (miss, hit) over the whole session that fetching one event adds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Foot {
+    /// With that fetch only.
+    pub alone: (i64, i64),
+    /// On top of the fetches of every event before it.
+    pub joint: (i64, i64),
+}
+
 /// The result of one open-loop pass of a session through the curator.
 #[derive(Debug, Clone, Default)]
 pub struct Run {
@@ -296,6 +305,9 @@ pub struct Run {
     pub hit: i64,
     /// Output tokens the transcript records (0 for a fixture).
     pub out: i64,
+    /// Per `cited` or `denied` event, in order: what fetching it costs in input tokens, the re-cuts after it
+    /// included (`behave::probe`). Empty until probed.
+    pub feet: Vec<Foot>,
     pub blind: (i64, i64),
     pub denied: (i64, i64),
     pub input_cost: f64,

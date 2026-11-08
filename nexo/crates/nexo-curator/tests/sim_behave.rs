@@ -1,10 +1,11 @@
 #![cfg(feature = "sim")]
 //! The behaviour layer of the session simulator (`nexo_curator::sim::behave`).
 
-use nexo_curator::sim::behave::{analytic, monte_carlo, Context, Params};
+use nexo_curator::sim::behave::{analytic, monte_carlo, probe, Context, Params};
 use nexo_curator::sim::events::{run, Run};
 use nexo_curator::sim::input::{load, Session};
 use nexo_curator::sim::price::Prices;
+use nexo_curator::D_SPEC;
 
 const SPEC: &str = "protect=1;still=0";
 
@@ -86,4 +87,71 @@ fn monte_carlo_with_r_one_inserts_the_pair_and_agrees() {
     assert!((m.extra_cost - a.extra_cost).abs() <= 0.15 * a.extra_cost, "{} vs {}", m.extra_cost, a.extra_cost);
     let z = monte_carlo(&s.requests, SPEC, &c, 0.0, 0, params(0.0, 0.0, 0.0), 0.0, 4, 1).unwrap();
     assert_eq!((z.extra_steps, z.extra_cost), (0.0, 0.0));
+}
+
+fn real(file: &str) -> Session {
+    load(&format!("{}/tests/fixtures/{file}", env!("CARGO_MANIFEST_DIR"))).expect("the fixture loads")
+}
+
+fn probed(s: &Session) -> (Run, Context) {
+    let mut open = run(&s.requests, D_SPEC, Prices::LIVE, 0.0, 0).expect("a run");
+    probe(&mut open, &s.requests, D_SPEC, 0.0, 0).expect("a probe");
+    let c = Context::measure(&s.requests, D_SPEC, Prices::LIVE, 40);
+    (open, c)
+}
+
+fn within(a: f64, b: f64, tol: f64) -> bool {
+    (a - b).abs() <= tol * b.abs().max(1e-12)
+}
+
+/// The cost of a fetch is more than the tokens of the event: the curator cuts the new result and drops
+/// copies, so the estimate from the event alone is off by tens of percent, and the replayed footprint
+/// (the fetch request, the requests after it, the re-cuts) agrees with the Monte Carlo.
+#[test]
+fn the_probed_footprint_agrees_with_the_monte_carlo_where_the_estimate_does_not() {
+    let p = params(1.0, 0.0, 0.0);
+    let mut worst_estimate: f64 = 0.0;
+    for file in ["bench-long-D-0.jsonl", "bench-marathon-D.jsonl", "bench-dir-Ddir-4.jsonl"] {
+        let s = real(file);
+        let (open, c) = probed(&s);
+        let sites = open.events.iter().filter(|e| matches!(e.kind.name(), "cited" | "denied")).count();
+        assert!(sites >= 1 && open.feet.len() == sites, "{file}: {sites} events, {} feet", open.feet.len());
+        let mut estimate = open.clone();
+        estimate.feet.clear();
+        let (a, e) = (analytic(&open, p, 1.0, &c), analytic(&estimate, p, 1.0, &c));
+        let m = monte_carlo(&s.requests, D_SPEC, &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
+        assert!(within(a.extra_cost, m.extra_cost, 0.05), "{file}: probed {} vs mc {}", a.extra_cost, m.extra_cost);
+        assert!(within(a.extra_steps, m.extra_steps, 0.05), "{file}: {} vs {}", a.extra_steps, m.extra_steps);
+        worst_estimate = worst_estimate.max((e.extra_cost - m.extra_cost).abs() / m.extra_cost);
+        // what is fetched stays input: the fetches cost all of it, the output of the calls included
+        assert!(within(a.fetch_cost, a.extra_cost, 1e-9), "{a:?}");
+    }
+    assert!(worst_estimate > 0.15, "the estimate from the event alone was off by {worst_estimate}");
+}
+
+/// A session where the agent asks again for the same result twice: together the fetches cost less than the
+/// sum of each alone, and the replay says by how much.
+#[test]
+fn fetches_that_share_content_cost_less_together_than_alone() {
+    let s = real("bench-marathon-D.jsonl");
+    let (open, _) = probed(&s);
+    let tokens = |a: (i64, i64)| a.0 + a.1;
+    let alone: i64 = open.feet.iter().map(|f| tokens(f.alone)).sum();
+    let joint: i64 = open.feet.iter().map(|f| tokens(f.joint)).sum();
+    assert!(joint < alone, "alone {alone}, joint {joint}");
+}
+
+/// At a fraction of the fetches the analytic cost is still the Monte Carlo's where events do not feed back
+/// on each other (one fetch site), and the weights of alone and joint are the two ends.
+#[test]
+fn a_fraction_of_the_fetches_costs_that_fraction() {
+    for file in ["bench-long-D-0.jsonl", "bench-dir-Ddir-4.jsonl"] {
+        let s = real(file);
+        let (open, c) = probed(&s);
+        let p = params(0.3, 0.0, 0.0);
+        let a = analytic(&open, p, 0.3, &c);
+        let m = monte_carlo(&s.requests, D_SPEC, &c, 0.0, 0, p, 0.3, 100, 1).expect("mc");
+        assert!(within(a.extra_cost, m.extra_cost, 0.05), "{file}: {} vs {}", a.extra_cost, m.extra_cost);
+        assert!(within(a.extra_steps, m.extra_steps, 0.05), "{file}: {} vs {}", a.extra_steps, m.extra_steps);
+    }
 }
