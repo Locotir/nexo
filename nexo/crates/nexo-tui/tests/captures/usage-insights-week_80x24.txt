@@ -14,7 +14,7 @@
               │                set more aside.                   │
               │ ███▎░░░░  41%  Bash output                       │
               │                top: cargo test · 18 runs         │
-              │                Pipe through head or tail, or     │
+              │                Pipe through head or tail, or let │
               │ Tab · ↑↓ · d w m · Esc close  ↓                  │
               ╰──────────────────────────────────────────────────╯
 

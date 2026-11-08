@@ -11,8 +11,8 @@
    │ 1 - let x = 1;                                                            ┃
    └ 1 + let x = 2;                                                            ┃
                                                                                ┃
- ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing     ┃
-   in=… out=… cache=…) · from config                                           ┃
+ ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=…┃
+   out=… cache=…) · from config                                                ┃
                                                                                ┃
  ◇ compacted 2 messages                                                        ┃
                                                                                ┃

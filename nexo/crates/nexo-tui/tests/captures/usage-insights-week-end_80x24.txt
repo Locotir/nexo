@@ -2,8 +2,8 @@
 │ ●─╮ ╭─●   ne╭ usage ──────────────────────────────────────[✗]──╮         │
 │   ╰●╯     de│  1 Context   2 Usage   3 Session                 │         │
 │ ●─╯ ╰─●   /t│ ──────────────────────────────────────────────── │         │
-│             │                or edits early in the prompt      │         │
-│ /model sets │                re-send everything.               │         │
+│             │                edits early in the prompt re-send │         │
+│ /model sets │                everything.                       │         │
 ╰─────────────│ ██████▍░  80%  of spend on model-x  $4.10        │─────────╯
               │                Use a cheaper model for routine   │
               │                steps.                            │

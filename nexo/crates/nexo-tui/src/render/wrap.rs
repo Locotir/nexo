@@ -198,15 +198,18 @@ impl Wrapper<'_> {
         if word.is_empty() {
             return;
         }
+        // the space that ends a word may hang past the edge: only the letters must fit
+        let body = word.trim_end_matches(' ');
         let w = width(word);
-        if self.cur_w + w > self.limit() && !self.at_start {
+        let bw = width(body);
+        if self.cur_w + bw > self.limit() && !self.at_start {
             self.soft();
         }
-        if self.cur_w + w > self.limit() {
+        if self.cur_w + bw > self.limit() {
             // wider than a whole line: cut by graphemes
             let mut piece = String::new();
             let mut pw = 0;
-            for g in word.graphemes(true) {
+            for g in body.graphemes(true) {
                 let gw = width(g);
                 if self.cur_w + pw + gw > self.limit() && pw > 0 {
                     self.cur.push(Span::styled(std::mem::take(&mut piece), style));
@@ -216,6 +219,8 @@ impl Wrapper<'_> {
                 piece.push_str(g);
                 pw += gw;
             }
+            piece.push_str(&word[body.len()..]);
+            pw += w - bw;
             if !piece.is_empty() {
                 self.cur.push(Span::styled(piece, style));
                 self.cur_w += pw;
@@ -355,6 +360,15 @@ mod tests {
     }
 
     #[test]
+    fn a_word_that_ends_exactly_at_the_edge_stays_on_the_line() {
+        let runs = [("aaaa bbbb cc".to_string(), Style::default())];
+        let t: Vec<String> = wrap_runs(&runs, 9, &[], &[]).iter().map(text).collect();
+        assert_eq!(t, vec!["aaaa bbbb", "cc"]);
+        let t: Vec<String> = wrap_runs(&runs, 4, &[], &[]).iter().map(text).collect();
+        assert_eq!(t, vec!["aaaa", "bbbb", "cc"]);
+    }
+
+    #[test]
     fn keeps_prefixes_and_newlines() {
         let runs = [("a\nb c".to_string(), Style::default())];
         let p = [Span::raw("> ")];
@@ -374,14 +388,14 @@ mod cont_tests {
     #[test]
     fn marks_the_rows_the_layout_wrapped_and_the_spaces_it_trimmed() {
         let runs = [("one  two three".to_string(), Style::default())];
-        let (lines, conts) = wrap_runs_ex(&runs, 8, &[], &[Span::raw("  ")]);
+        let (lines, conts) = wrap_runs_ex(&runs, 7, &[], &[Span::raw("  ")]);
         assert_eq!(lines.len(), 3);
         assert_eq!(conts, vec![Cont { line: 1, gap: 2, deco: 2 }, Cont { line: 2, gap: 1, deco: 2 }]);
         let runs = [("abcdefghij".to_string(), Style::default())];
         let (_, conts) = wrap_runs_ex(&runs, 5, &[], &[]);
         assert_eq!(conts, vec![Cont { line: 1, gap: 0, deco: 0 }]);
         let (lines, conts) = wrap_plain_ex("a\nb c d e", 3, Style::default(), &[]);
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 3);
         assert!(conts.iter().all(|c| c.line >= 2), "a hard newline is not a wrap");
     }
 }

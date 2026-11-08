@@ -17,8 +17,8 @@
                      │ █▉░░░░░░  24%  Cache misses                                                ┃
                      │                23 re-sends · 310k tokens                                   ┃
                      │                2 expected rebuilds not counted                             ┃
-                     │                Pauses past the cache lifetime or edits early in the        ┃
-                     │                prompt re-send everything.                                  ┃
+                     │                Pauses past the cache lifetime or edits early in the prompt ┃
+                     │                re-send everything.                                         ┃
                      │ ██████▍░  80%  of spend on model-x  $4.10                                  ┃
                      │                Use a cheaper model for routine steps.                      ┃
                      │ █▊░░░░░░  22%  Curator left out 1.20M                                      ┃
