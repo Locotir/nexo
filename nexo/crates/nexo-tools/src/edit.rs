@@ -106,7 +106,7 @@ impl Tool for Edit {
         let count = text.matches(old).count();
         let replace_all = bool_arg(&args, "replace_all");
         let edited = match count {
-            0 => return ToolOutput::error(format!("edit: `old_string` not found in {shown}; read the file and copy the text exactly")),
+            0 => return ToolOutput::error(not_found(&text, old, &shown)),
             1 => text.replacen(old, new, 1),
             _ if replace_all => text.replace(old, new),
             n => {
@@ -125,6 +125,53 @@ impl Tool for Edit {
             // the whole file, before and after: the diff numbers from its first line
             .with_display(ToolDisplay::Diff { path: shown, old: text, new: edited, start_line: 1 })
     }
+}
+
+/// A way to cut whitespace from the ends of a line.
+type Trim = fn(&str) -> &str;
+
+/// Lines shown from the file when `old_string` matches it only up to whitespace.
+const NEAR_LINES: usize = 30;
+
+/// Where `old` sits in `text` when it differs only in the spaces and tabs around its lines: its
+/// first line (1-based), the file's own text there, and which ends differ. `None` when no single
+/// place matches, so a hint never points at the wrong copy.
+fn near_miss<'a>(text: &'a str, old: &str) -> Option<(usize, Vec<&'a str>, &'static str)> {
+    let want: Vec<&str> = old.lines().collect();
+    if want.iter().all(|l| l.trim().is_empty()) {
+        return None;
+    }
+    let have: Vec<&str> = text.lines().collect();
+    let rules: [(Trim, &str); 2] =
+        [(str::trim_end, "at the ends of lines"), (str::trim, "in the indentation or at the ends of lines")];
+    for (norm, what) in rules {
+        let mut hits = have
+            .windows(want.len())
+            .enumerate()
+            .filter(|(_, w)| w.iter().zip(&want).all(|(a, b)| norm(a) == norm(b)))
+            .map(|(i, _)| i);
+        if let (Some(i), None) = (hits.next(), hits.next()) {
+            return Some((i + 1, have[i..i + want.len()].to_vec(), what));
+        }
+    }
+    None
+}
+
+/// The not-found error, with the file's own text when one place matches up to whitespace.
+fn not_found(text: &str, old: &str, shown: &str) -> String {
+    let Some((first, lines, what)) = near_miss(text, old) else {
+        return format!("edit: `old_string` not found in {shown}; read the file and copy the text exactly");
+    };
+    let last = first + lines.len() - 1;
+    let at = if last == first { format!("line {first} matches") } else { format!("lines {first}-{last} match") };
+    let mut body: String = lines.iter().take(NEAR_LINES).map(|l| format!("{l}\n")).collect();
+    if lines.len() > NEAR_LINES {
+        body.push_str(&format!("… {} more lines\n", lines.len() - NEAR_LINES));
+    }
+    format!(
+        "edit: `old_string` not found in {shown} as given; {at} it except for spaces or tabs \
+         {what}. The file has there:\n{body}Copy this text exactly (whitespace included) into `old_string`."
+    )
 }
 
 /// `old` and `new` as they fit `text`'s line ends: as given when `old` is found so, else with
@@ -174,6 +221,32 @@ pub fn unified(old: &str, new: &str, name: &str) -> (usize, usize, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_miss_only_in_whitespace_shows_the_files_own_text_and_where() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let file = "fn a() {\n\tlet x = 1;  \n\tx\n}\nfn b() {\n    let y = 2;\n}\n";
+        std::fs::write(d.path().join("a.rs"), file).unwrap();
+        // trailing spaces in the file
+        let out = Edit.run(json!({"path": "a.rs", "old_string": "\tlet x = 1;\n\tx", "new_string": "z"}), &c).await;
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("lines 2-3 match it except for spaces or tabs at the ends of lines"),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("The file has there:\n\tlet x = 1;  \n\tx\nCopy"), "{}", out.content);
+        // tabs given where the file has spaces
+        let out = Edit.run(json!({"path": "a.rs", "old_string": "\tlet y = 2;", "new_string": "z"}), &c).await;
+        assert!(out.content.contains("as given; line 6 matches it"), "{}", out.content);
+        assert!(out.content.contains("in the indentation"), "{}", out.content);
+        // two places that match up to whitespace: no hint, so it never points at the wrong one
+        std::fs::write(d.path().join("b.rs"), "  x\n\tx\n").unwrap();
+        let out = Edit.run(json!({"path": "b.rs", "old_string": "x ", "new_string": "z"}), &c).await;
+        assert!(out.content.ends_with("read the file and copy the text exactly"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(d.path().join("a.rs")).unwrap(), file, "nothing written");
+    }
 
     #[tokio::test]
     async fn replaces_exactly_one_occurrence_and_reports_a_diff() {
