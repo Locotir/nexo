@@ -233,3 +233,25 @@ fn a_small_topic_stays_in_the_view() {
     // the topics are still told apart, only none is left out
     assert!(seen > 2, "{seen} zones");
 }
+
+#[test]
+fn a_request_naming_a_file_read_under_another_topic_gets_that_read_back() {
+    // the second topic read `sulvulko_bordekul.py`; the request that names it comes while the first topic
+    // is the one the view holds: its read comes back, though no other step of that topic does
+    let mut cur = Curator::new("").unwrap();
+    let mut msgs: Vec<Value> = Vec::new();
+    let mut text = String::new();
+    for line in include_str!("fixtures/synthetic-g2-t40-s3.jsonl").lines() {
+        let rec: Value = serde_json::from_str(line).unwrap();
+        let req = &rec["req"];
+        let Some(new) = req.get("new") else { continue };
+        msgs.truncate(req["base"].as_u64().unwrap() as usize);
+        msgs.extend(new.as_array().unwrap().iter().cloned());
+        let r = cur.view(0, &msgs, 0.0).unwrap();
+        if serde_json::to_string(new).unwrap().contains("Set SELDEKUL_1_PORT in sulvulko_bordekul.py") {
+            text = serde_json::to_string(&r.view).unwrap();
+            break;
+        }
+    }
+    assert!(text.contains("nako_kuldolbor1"), "the read of the named file is missing from the view");
+}

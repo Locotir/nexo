@@ -153,6 +153,8 @@ impl Engine {
         // only a list being worked through: a later request already took up one of the files it names
         let through = files.iter().flatten().any(|f| listed(f) && taken(f));
         let pending = |f: &Vec<String>| through && listed(f) && !taken(f);
+        // what the view sends: a read under another topic is not in it, whatever the step says
+        let sent: FxHashSet<usize> = self.visible().iter().copied().collect();
         let mut back = 0;
         let mut named: Vec<(usize, Vec<usize>, bool)> = Vec::new();
         for (i, own) in files.iter().enumerate() {
@@ -170,7 +172,13 @@ impl Engine {
                 .filter(|&u| self.tr.units[u].kind == UKind::Result)
                 .collect();
             let gone = self.steps[i].at.is_none() && !res.is_empty() && res.iter().all(|u| self.led.contains(u));
-            named.push((i, res, !self.steps[i].out && !gone));
+            let apart = self.steps[i].at.is_none() && self.steps[i].msgs.iter().all(|m| !sent.contains(m));
+            // a step the view does not send (another topic's) comes back only as a read of the file: the greps,
+            // edits and runs on it were not the read the request names, and bringing them all costs more than it saves
+            if apart && !res.iter().any(|&u| !self.read_paths(u).is_empty()) {
+                continue;
+            }
+            named.push((i, res, !self.steps[i].out && !gone && !apart));
         }
         // reads by parts (`sed -n 40,400p`, `400,800p`) are not copies of each other: each may stay or come
         // back, newest first, within the budget (`named_take`)

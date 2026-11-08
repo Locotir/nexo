@@ -273,11 +273,12 @@ fn the_long_session_ends_with_the_reference_stats() {
     // result brought before the reply wrote it): 127 chunks leave and the cache misses 63747 (miss_close 22583).
     // Closing is priced by the need a step still has (five horizons learned over many sessions): it closes 43
     // steps, not 47, each a larger cut, and the cache misses 64020 (miss_close 22288).
-    // The ledger keeps the rows of a table of values (decimals and long numbers between bars or commas) instead of
-    // dropping them as data: 117 lines, not 58, and the cache misses 65141 (the anchor 1840, was 1364).
+    // A file read under another topic comes back when the request names it, and only that read: it closes 50 steps,
+    // recalls 4. With the ledger keeping the rows of a table of values (117 lines, not 58; the anchor 1840, was 1364)
+    // the cache misses 59524 (miss_close 17895).
     let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
         "dropped_chunks": 127, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 117,
-        "cap_rewrites": 1, "miss_cap": 22073, "miss": 65141, "miss_fresh": 17298, "closed_steps": 43, "miss_close": 23512, "recalled_steps": 5,
+        "cap_rewrites": 1, "miss_cap": 22073, "miss": 59524, "miss_fresh": 17298, "closed_steps": 50, "miss_close": 17895, "recalled_steps": 4,
         "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1, "miss_anchor": 1840, "miss_switch": 1840});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
