@@ -3724,6 +3724,7 @@ impl App {
             },
             Command::Prompt => self.send(AgentCommand::ShowPrompt),
             Command::PromptEdit => self.prompt_edit(),
+            Command::Memory { user } => self.memory_edit(user),
             Command::Pricing(None) => self.send(AgentCommand::ShowModel),
             Command::Pricing(Some(args)) => match parse_pricing(&args) {
                 Ok(pricing) => {
@@ -4227,6 +4228,29 @@ impl App {
                 self.notice(Level::Error, format!("cannot write {}: {e}", path.display()));
                 return;
             }
+        }
+        self.edit_request = Some(path);
+    }
+
+    /// `/memory [user]`: the instructions file the agent reads, in $EDITOR. The project's is the nearest
+    /// one nexo reads (a new `AGENTS.md` here when there is none); the person's own starts, when new,
+    /// with what the other tools' files said, so that nothing nexo read is lost.
+    pub fn memory_edit(&mut self, user: bool) {
+        let path = if user {
+            let config = nexo_core::paths::config_dir();
+            let (path, seed) = nexo_core::compat::user_file(&config, nexo_core::compat::foreign_home().as_deref());
+            if let Some(seed) = seed {
+                if let Err(e) = std::fs::create_dir_all(&config).and_then(|()| std::fs::write(&path, seed)) {
+                    self.notice(Level::Error, format!("cannot write {}: {e}", path.display()));
+                    return;
+                }
+            }
+            path
+        } else {
+            nexo_core::compat::project_file(&self.cwd)
+        };
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
         }
         self.edit_request = Some(path);
     }
@@ -7013,6 +7037,17 @@ mod tests {
         assert!(a.bell_request.as_deref().is_some_and(|t| t.starts_with("nexo: done after")), "{:?}", a.bell_request);
     }
 
+    #[test]
+    fn memory_opens_the_projects_instructions_without_asking_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "Rules.").unwrap();
+        let (mut a, mut rx) = app();
+        a.cwd = dir.path().to_path_buf();
+        a.run_command(Command::Memory { user: false });
+        assert!(rx.try_recv().is_err());
+        assert_eq!(a.edit_request.as_deref(), Some(dir.path().join("CLAUDE.md").as_path()));
+    }
     #[test]
     fn prompt_edit_creates_the_preferences_file_when_it_is_missing() {
         let dir = tempfile::tempdir().unwrap();

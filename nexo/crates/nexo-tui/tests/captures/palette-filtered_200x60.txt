@@ -49,10 +49,10 @@
 
 
 
-
  /model                [name]                             switch model, or set one up step by step (checked against the server)
  /mouse                                                   mouse capture on or off (off: the terminal's own selection works)
  /permissions  (mode)  [ask|accept-edits|plan|auto|read…  set the permission mode
+ /memory               [user]                             edit the instructions the agent reads: the project's file, or with `user` your o…
  /shared-memory        [id|off] [focus]                   bring what another session knows into this one, with your next message; `list` s…
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo

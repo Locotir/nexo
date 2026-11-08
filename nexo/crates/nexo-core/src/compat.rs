@@ -88,6 +88,41 @@ pub fn instructions(cwd: &Path, config_dir: &Path, home: Option<&Path>) -> Vec<I
     out
 }
 
+/// The project file `/memory` opens in `cwd`: the nearest instructions file nexo reads, from `cwd` up
+/// to the repository root, or `AGENTS.md` in `cwd` when there is none yet.
+pub fn project_file(cwd: &Path) -> PathBuf {
+    let mut p = Some(cwd);
+    while let Some(d) = p {
+        for name in ["NEXO.md", "AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md"] {
+            if d.join(name).is_file() {
+                return d.join(name);
+            }
+        }
+        if d.join(".git").exists() {
+            break;
+        }
+        p = d.parent();
+    }
+    cwd.join("AGENTS.md")
+}
+
+/// The user file `/memory user` opens: nexo's own in `config_dir`, and when it does not exist yet,
+/// the text to start it with: what the other tools' files under `home` say, which nexo reads in its
+/// place until it exists and never after.
+pub fn user_file(config_dir: &Path, home: Option<&Path>) -> (PathBuf, Option<String>) {
+    if let Some(p) = ["NEXO.md", "AGENTS.md"].iter().map(|n| config_dir.join(n)).find(|p| p.is_file()) {
+        return (p, None);
+    }
+    let mut fallback = Vec::new();
+    if let Some(h) = home {
+        for rel in [".codex/AGENTS.md", ".claude/CLAUDE.md"] {
+            push(&mut fallback, h.join(rel), "user fallback");
+        }
+    }
+    let seed = fallback.iter().map(|i| i.text.trim_end()).collect::<Vec<_>>().join("\n\n");
+    (config_dir.join("AGENTS.md"), (!seed.is_empty()).then(|| format!("{seed}\n")))
+}
+
 fn push(out: &mut Vec<Instruction>, path: PathBuf, origin: &'static str) {
     if !path.is_file() {
         return;
@@ -571,6 +606,26 @@ mod tests {
         assert_eq!((got[0].text.as_str(), got[0].origin), ("own", "user"));
     }
 
+    #[test]
+    fn memory_opens_the_nearest_project_file_and_starts_the_users_own_from_the_fallback() {
+        let (p, cfg) = (repo(), tempfile::tempdir().unwrap());
+        let sub = p.path().join("web");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(project_file(&sub), sub.join("AGENTS.md"), "none yet: a new one where the person is");
+        w(p.path().join("CLAUDE.md"), "Root rules.");
+        assert_eq!(project_file(&sub), p.path().join("CLAUDE.md"));
+        w(sub.join("NEXO.md"), "Web rules.");
+        assert_eq!(project_file(&sub), sub.join("NEXO.md"));
+
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(user_file(cfg.path(), Some(home.path())), (cfg.path().join("AGENTS.md"), None));
+        w(home.path().join(".claude/CLAUDE.md"), "Answer in Spanish.");
+        let (path, seed) = user_file(cfg.path(), Some(home.path()));
+        assert_eq!(path, cfg.path().join("AGENTS.md"));
+        assert_eq!(seed.as_deref(), Some("Answer in Spanish.\n"), "what nexo read stays");
+        w(cfg.path().join("NEXO.md"), "Mine.");
+        assert_eq!(user_file(cfg.path(), Some(home.path())), (cfg.path().join("NEXO.md"), None));
+    }
     #[test]
     fn imports_are_relative_limited_and_never_cycle() {
         let (p, cfg) = (repo(), tempfile::tempdir().unwrap());

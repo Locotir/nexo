@@ -373,7 +373,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
             match outcome {
                 Ok(()) => app.notice(
                     nexo_core::agent::Level::Info,
-                    format!("prompt saved to {}; it applies from the next request", path.display()),
+                    format!("{} saved; it applies from the next request", path.display()),
                 ),
                 Err(e) => app.notice(nexo_core::agent::Level::Error, format!("editor: {e}")),
             }

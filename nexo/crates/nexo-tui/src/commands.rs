@@ -47,6 +47,12 @@ pub const COMMANDS: &[Spec] = &[
         "show the system prompt as the model receives it; `edit` opens it in $EDITOR",
     ),
     spec(
+        "memory",
+        &["instructions"],
+        "[user]",
+        "edit the instructions the agent reads: the project's file, or with `user` your own",
+    ),
+    spec(
         "pricing",
         &["price", "prices"],
         "[in=… out=… cache=… write=…]",
@@ -157,6 +163,10 @@ pub enum Command {
     Plan(Option<String>),
     Prompt,
     PromptEdit,
+    /// `/memory [user]`: the project's instructions file, or the person's own, in $EDITOR.
+    Memory {
+        user: bool,
+    },
     Pricing(Option<String>),
     Mouse,
     Timestamps,
@@ -278,6 +288,11 @@ pub fn parse(line: &str) -> Option<Command> {
             Some(a) => Command::BadArgument("prompt".into(), a.to_string()),
             None => Command::Prompt,
         },
+        "memory" | "instructions" => match arg.as_deref() {
+            None => Command::Memory { user: false },
+            Some("user") => Command::Memory { user: true },
+            Some(a) => Command::BadArgument("memory".into(), a.to_string()),
+        },
         "pricing" => Command::Pricing(arg),
         "mouse" => Command::Mouse,
         "timestamps" => Command::Timestamps,
@@ -386,7 +401,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         "session",
         &["fork", "tree", "rewind", "undo", "undelete", "rename", "msg", "export", "goal", "shared-memory", "queue"],
     ),
-    ("model", &["provider", "login", "fast", "pricing", "prompt", "budget"]),
+    ("model", &["provider", "login", "fast", "pricing", "prompt", "memory", "budget"]),
     (
         "context and tools",
         &[
@@ -449,6 +464,7 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
             ("read-only", "read everything, write nothing"),
         ],
         "prompt" => &[("edit", "open the system prompt in $EDITOR")],
+        "memory" => &[("user", "your own instructions, for every project")],
         "copy" => &[("code", "the last code block of the last reply")],
         "goal" => &[
             ("pause", "hold the goal: nothing more starts for it"),
@@ -467,7 +483,7 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
 /// Whether the command's argument is one of a known set: Enter runs the
 /// selected value. Elsewhere the list is only a suggestion and Enter sends what was typed.
 pub fn closed_args(name: &str) -> bool {
-    matches!(name, "permissions" | "effort" | "theme" | "prompt" | "copy" | "resume")
+    matches!(name, "permissions" | "effort" | "theme" | "prompt" | "memory" | "copy" | "resume")
 }
 
 /// Whether the palette offers values for the command's argument at all.
@@ -575,6 +591,9 @@ mod tests {
         assert_eq!(parse("/rename parser de pesos"), Some(Command::Rename(Some("parser de pesos".into()))));
         assert_eq!(parse("/add-dir ../lib"), Some(Command::AddDir(Some("../lib".into()))));
         assert_eq!(parse("/add-dir"), Some(Command::AddDir(None)));
+        assert_eq!(parse("/memory"), Some(Command::Memory { user: false }));
+        assert_eq!(parse("/memory user"), Some(Command::Memory { user: true }));
+        assert_eq!(parse("/memory all"), Some(Command::BadArgument("memory".into(), "all".into())));
         assert_eq!(parse("/title"), Some(Command::Rename(None)));
         assert_eq!(parse("/diff"), Some(Command::Diff));
         assert_eq!(parse("/back"), Some(Command::Rewind));
