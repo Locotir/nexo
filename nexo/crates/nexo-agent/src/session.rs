@@ -1280,6 +1280,7 @@ pub fn tree(metas: &[SessionMeta]) -> Vec<(usize, SessionMeta)> {
 
 pub fn title_of(text: &str) -> String {
     let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let line = short_paths(line);
     let mut t: String = line.chars().take(60).collect();
     if line.chars().count() > 60 {
         t.push('…');
@@ -1287,11 +1288,74 @@ pub fn title_of(text: &str) -> String {
     t
 }
 
+/// A long path written in full (`/home/me/shots/a.png`, quoted, `@`-prefixed or a `file://` URL), as a
+/// dropped or attached file comes, shortened to its file name: the title keeps the words around it.
+fn short_paths(line: &str) -> String {
+    const LONG: usize = 30;
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if !words.iter().any(|w| w.len() > LONG || w.starts_with(['\'', '"']) || w.starts_with("@'")) {
+        return line.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        let (at, rest) = w.strip_prefix('@').map_or(("", w), |r| ("@", r));
+        let mut whole = rest.to_string();
+        let mut j = i;
+        if let Some(q) = rest.chars().next().filter(|c| matches!(c, '\'' | '"')) {
+            while !(whole.len() > 1 && whole.ends_with(q)) && j + 1 < words.len() {
+                j += 1;
+                whole.push(' ');
+                whole.push_str(words[j]);
+            }
+            if !(whole.len() > 1 && whole.ends_with(q)) {
+                j = i;
+                whole = rest.to_string();
+            }
+        }
+        let inner = whole.trim_matches(['\'', '"']);
+        let inner = inner.strip_prefix("file://").unwrap_or(inner);
+        let name = inner.rsplit(['/', '\\']).find(|s| !s.is_empty());
+        match name {
+            Some(name) if inner.len() > LONG && absolute(inner) => {
+                out.push(format!("{at}{name}"));
+                i = j + 1;
+            }
+            _ => {
+                out.push(w.to_string());
+                i += 1;
+            }
+        }
+    }
+    out.join(" ")
+}
+
+/// `/a/b`, `~/a` or `C:\a`.
+fn absolute(p: &str) -> bool {
+    let b = p.as_bytes();
+    p.starts_with('/')
+        || p.starts_with("~/")
+        || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nexo_core::tool::ToolDisplay;
 
+    #[test]
+    fn a_long_path_in_the_first_request_is_titled_by_its_file_name() {
+        let shot = "/tmp/claude-1000/project/scratchpad/My Shots/a b.png";
+        assert_eq!(title_of(&format!("what is this? '{shot}'")), "what is this? a b.png");
+        assert_eq!(title_of("look at @/home/someone/work/project/src/main.rs please"), "look at @main.rs please");
+        assert_eq!(title_of("open file:///home/someone/Pictures/screenshots/x.png"), "open x.png");
+        assert_eq!(title_of(r"why C:\Users\someone\Pictures\Screenshots\err.png"), "why err.png");
+        // short paths and plain quotes stay as written
+        assert_eq!(title_of("why is /usr/bin/env missing"), "why is /usr/bin/env missing");
+        assert_eq!(title_of("rename 'old name' to new"), "rename 'old name' to new");
+        assert_eq!(title_of("an 'unclosed /very/long/path/that/goes/on/and/on.rs"), "an 'unclosed on.rs");
+    }
     #[test]
     fn sessions_born_in_the_same_second_are_all_saved() {
         // 3000 ids drawn in a few seconds from 65536 per second: some draw the same one
