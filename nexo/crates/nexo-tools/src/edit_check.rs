@@ -30,6 +30,9 @@ pub async fn report(file: &Path) -> String {
 }
 
 pub(crate) async fn report_within(file: &Path, limit: Duration) -> String {
+    if crate::data_check::is_data(file) {
+        return crate::data_check::report(file);
+    }
     let lines = match found(file, limit).await {
         Some(l) if !l.is_empty() => l,
         _ => return String::new(),
@@ -158,6 +161,37 @@ mod tests {
         let f = d.path().join("src/lib.rs");
         std::fs::write(&f, body).unwrap();
         (d, f)
+    }
+
+    #[tokio::test]
+    async fn csv_check_reports_rows_columns_and_ragged_lines() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("data.csv");
+        std::fs::write(&f, "id,name,qty\n1,a,2\n2,\"b, c\",3\n3,d\n4,e,5\n").unwrap();
+        let r = report_within(&f, LIMIT).await;
+        assert_eq!(r, "\ncheck: data.csv | 5 rows × 3 columns | ragged rows: 1 (line 4 has 2)", "{r}");
+        std::fs::write(&f, "a;b\n1;2\n3;4\n").unwrap();
+        assert_eq!(report_within(&f, LIMIT).await, "\ncheck: data.csv | 3 rows × 2 columns | ragged rows: 0");
+        let t = d.path().join("d.tsv");
+        std::fs::write(&t, "a\tb\n1\t2\n").unwrap();
+        assert_eq!(report_within(&t, LIMIT).await, "\ncheck: d.tsv | 2 rows × 2 columns | ragged rows: 0");
+    }
+
+    #[tokio::test]
+    async fn json_check_reports_the_first_error_with_its_line() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("c.json");
+        std::fs::write(&f, "{\n  \"a\": 1,\n  \"b\": ,\n}\n").unwrap();
+        let r = report_within(&f, LIMIT).await;
+        assert!(r.starts_with("\ncheck: c.json | invalid JSON at line 3"), "{r}");
+        std::fs::write(&f, "{\"a\": [1, 2]}").unwrap();
+        assert_eq!(report_within(&f, LIMIT).await, "\ncheck: c.json | valid JSON");
+        let t = d.path().join("c.toml");
+        std::fs::write(&t, "a = 1\nb = \n").unwrap();
+        assert!(report_within(&t, LIMIT).await.starts_with("\ncheck: c.toml | invalid TOML at line 2"));
+        let y = d.path().join("c.yaml");
+        std::fs::write(&y, "a:\n\t- b\n").unwrap();
+        assert!(report_within(&y, LIMIT).await.starts_with("\ncheck: c.yaml | invalid YAML at line 2"));
     }
 
     #[test]

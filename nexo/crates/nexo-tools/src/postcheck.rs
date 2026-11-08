@@ -22,7 +22,8 @@ pub const MAX_FILES: usize = 5000;
 /// Extensions of the files whose change makes a step "changed code".
 const SOURCE: &[&str] = &[
     "rs", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "go", "java", "kt", "c", "h", "cc", "cpp", "hpp", "cs", "rb",
-    "php", "swift", "scala", "sh", "toml", "json", "yaml", "yml", "sql", "lua", "zig", "ex", "exs", "hs", "ml",
+    "php", "swift", "scala", "sh", "toml", "json", "yaml", "yml", "csv", "tsv", "sql", "lua", "zig", "ex", "exs", "hs",
+    "ml",
 ];
 /// Folders that hold build output, dependencies or tool state, never walked.
 const SKIP_DIRS: &[&str] =
@@ -139,6 +140,24 @@ pub fn tail(text: &str) -> String {
     out
 }
 
+/// What a check that passed without running a test says.
+pub const ZERO_TESTS: &str = "0 tests ran: it compiles, nothing exercised";
+
+/// Whether the output of a passing check says no test ran and nothing else needs the model's eyes: the
+/// summary lines of cargo (`0 passed; 0 failed`), pytest (`no tests ran`), go (`[no test files]`) or
+/// jest (`No tests found`), and no warnings.
+pub fn ran_no_tests(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    if lower.contains("warning") {
+        return false;
+    }
+    let results: Vec<&str> = output.lines().filter(|l| l.trim_start().starts_with("test result:")).collect();
+    if !results.is_empty() {
+        return results.iter().all(|l| l.contains(" 0 passed; 0 failed"));
+    }
+    lower.contains("no tests ran") || lower.contains("no tests found") || lower.contains("collected 0 items")
+}
+
 /// `\ncheck: cargo test -q | exit 1 | 3.2 s\n<tail>`: how a check is reported.
 pub fn report(command: &str, exit: Option<i32>, timed_out: bool, secs: f64, cap: Duration, output: &str) -> String {
     let code = match (exit, timed_out) {
@@ -146,7 +165,7 @@ pub fn report(command: &str, exit: Option<i32>, timed_out: bool, secs: f64, cap:
         (None, true) => format!("killed at the {} s cap", cap.as_secs()),
         (None, false) => "none".into(),
     };
-    let body = tail(output);
+    let body = if exit == Some(0) && ran_no_tests(output) { ZERO_TESTS.to_string() } else { tail(output) };
     let body = if body.is_empty() { "(no output)".to_string() } else { body };
     format!("\ncheck: {command} | exit {code} | {secs:.1} s\n{body}")
 }
@@ -240,6 +259,18 @@ pub async fn run_own(command: &str, ctx: &nexo_core::ToolContext) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_tests_are_said_in_one_sentence() {
+        let out = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let r = report("cargo test -q", Some(0), false, 1.0, Duration::from_secs(45), out);
+        assert_eq!(r, "\ncheck: cargo test -q | exit 0 | 1.0 s\n0 tests ran: it compiles, nothing exercised");
+        // tests that ran are shown as they are, and so is a failure
+        let ran = "running 2 tests\n\ntest result: ok. 2 passed; 0 failed; 0 ignored\n";
+        assert!(report("cargo test", Some(0), false, 1.0, Duration::from_secs(45), ran).contains("2 passed"));
+        let bad = "running 0 tests\nerror: could not compile\n";
+        assert!(!report("cargo test", Some(101), false, 1.0, Duration::from_secs(45), bad).contains("0 tests ran"));
+    }
 
     #[tokio::test]
     async fn post_write_check_skips_a_command_that_exceeded_the_cap_before() {

@@ -91,23 +91,29 @@ impl Tool for Write {
         if let Err(e) = write_atomic(&path, content.as_bytes()).await {
             return ToolOutput::error(format!("write: cannot write {shown}: {e}"));
         }
+        if tokio::fs::read(&path).await.ok().as_deref() != Some(content.as_bytes()) {
+            return ToolOutput::error(format!(
+                "write: {shown} is not as intended after the write; read it before going on"
+            ));
+        }
         ctx.seen.mark(&path);
         let lines = content.lines().count();
         let what = if old.is_some() { "replaced" } else { "created" };
         let now = match &old {
-            Some(o) if !huge => crate::edit::around(o, content),
-            _ => String::new(),
+            Some(o) if !huge => crate::edit::now_text(o, content),
+            _ => crate::edit::whole(content).unwrap_or_default(),
         };
-        let now = if now.is_empty() { String::new() } else { format!("\nchanged lines:\n{now}") };
+        let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
         let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&path).await };
         let proof = match str_arg(&args, "check").filter(|c| !c.trim().is_empty()) {
             Some(c) => crate::postcheck::run_own(c, ctx).await,
             None => String::new(),
         };
         ToolOutput::ok(format!(
-            "{what} {shown}: file now has {} ({} bytes){now}{diag}{proof}",
+            "{what} {shown}: file now has {} ({} bytes), {}{now}{diag}{proof}",
             nexo_core::count(lines, "line"),
-            content.len()
+            content.len(),
+            crate::edit::VERIFIED
         ))
         .with_display(ToolDisplay::Diff {
             path: shown,
@@ -153,14 +159,20 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = ToolContext::new(d.path().to_path_buf());
         let out = Write.run(json!({"path": "n.txt", "content": "a\nb\nc\n"}), &c).await;
-        assert_eq!(out.content, "created n.txt: file now has 3 lines (6 bytes)");
-        let out = Write.run(json!({"path": "n.txt", "content": "a\nB\nc\nd\n"}), &c).await;
         assert!(
-            out.content.starts_with("replaced n.txt: file now has 4 lines (8 bytes)\nchanged lines:\n"),
+            out.content.starts_with("created n.txt: file now has 3 lines (6 bytes), applied and verified on disk"),
             "{}",
             out.content
         );
-        assert!(out.content.contains("     2│ B\n     3│ c\n     4│ d\n"), "{}", out.content);
+        let out = Write.run(json!({"path": "n.txt", "content": "a\nB\nc\nd\n"}), &c).await;
+        assert!(
+            out.content.starts_with(
+                "replaced n.txt: file now has 4 lines (8 bytes), applied and verified on disk\nfile now:\n"
+            ),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("     1│ a\n     2│ B\n     3│ c\n     4│ d\n"), "{}", out.content);
     }
 
     #[tokio::test]

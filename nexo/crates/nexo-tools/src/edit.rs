@@ -11,6 +11,10 @@ use crate::util::{
 
 /// Lines of the unified diff shown to the model.
 const DIFF_LINES: usize = 80;
+/// A file of at most this many lines comes back whole after a change.
+pub const WHOLE_LINES: usize = 80;
+/// What the first line of a change's result says once the file was read back and is as intended.
+pub const VERIFIED: &str = "applied and verified on disk";
 
 pub struct Edit;
 
@@ -129,9 +133,12 @@ async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Result<Done, Str
         Err(e) => return Err(e),
     };
     write_atomic(&path, edited.as_bytes()).await.map_err(|e| format!("edit: cannot write {shown}: {e}"))?;
+    if tokio::fs::read(&path).await.ok().as_deref() != Some(edited.as_bytes()) {
+        return Err(format!("edit: {shown} is not as intended after the write; read it before going on"));
+    }
     ctx.seen.mark(&path);
     let (added, removed, diff) = unified(&text, &edited, &shown);
-    let now = around(&text, &edited);
+    let now = now_text(&text, &edited);
     let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
     Ok(Done { shown, path, note, added, removed, diff, now, old: text, new: edited })
 }
@@ -147,7 +154,7 @@ async fn run_one(args: &Value, ctx: &ToolContext) -> ToolOutput {
     // a step-level check after the whole step replaces the per-edit one
     let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&d.path).await };
     ToolOutput::ok(format!(
-        "edited {}{}: +{} −{} lines\n{}{}{diag}",
+        "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{diag}",
         d.shown, d.note, d.added, d.removed, d.diff, d.now
     ))
     // the whole file, before and after: the diff numbers from its first line
@@ -180,7 +187,7 @@ async fn run_files(args: &Value, ctx: &ToolContext) -> ToolOutput {
             Ok(d) => {
                 let diag = if ctx.post_check { String::new() } else { crate::edit_check::report(&d.path).await };
                 text.push_str(&format!(
-                    "edited {}{}: +{} −{} lines\n{}{}{diag}\n",
+                    "edited {}{}: +{} −{} lines, {VERIFIED}\n{}{}{diag}\n",
                     d.shown, d.note, d.added, d.removed, d.diff, d.now
                 ));
                 done.push(d.shown);
@@ -400,6 +407,25 @@ const SNIPPET_LINES: usize = 40;
 /// Characters kept of a line in the snippet.
 const SNIPPET_LINE_CHARS: usize = 200;
 
+/// The whole of `text`, numbered as `read` numbers it, when it is short enough to be shown whole: at most
+/// [`WHOLE_LINES`] lines, none cut. None otherwise. The agent uses it to know a file was shown whole.
+pub fn whole(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() || lines.len() > WHOLE_LINES || lines.iter().any(|l| l.chars().count() > SNIPPET_LINE_CHARS) {
+        return None;
+    }
+    Some(lines.iter().enumerate().map(|(i, l)| format!("{:>6}│ {l}\n", i + 1)).collect())
+}
+
+/// What a changed file shows of itself: all of it when short, else the changed regions with context.
+/// Empty when nothing changed.
+pub fn now_text(old: &str, new: &str) -> String {
+    if old == new {
+        return String::new();
+    }
+    whole(new).unwrap_or_else(|| around(old, new))
+}
+
 /// The file as it is now around what changed, numbered as `read` numbers it: each changed
 /// region with `CONTEXT` lines either side, gaps and a cut at `SNIPPET_LINES` lines marked `…`.
 /// Empty when nothing changed.
@@ -475,7 +501,7 @@ mod tests {
         std::fs::write(d.path().join("a.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
         let out = Edit.run(json!({"path": "a.rs", "old_string": "fn b() {}", "new_string": "fn b() { 1 }"}), &c).await;
         assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.starts_with("edited a.rs: +1 −1 lines\n"), "{}", out.content);
+        assert!(out.content.starts_with("edited a.rs: +1 −1 lines, applied and verified on disk\n"), "{}", out.content);
         assert!(out.content.contains("-fn b() {}\n+fn b() { 1 }"));
         assert_eq!(std::fs::read_to_string(d.path().join("a.rs")).unwrap(), "fn a() {}\nfn b() { 1 }\nfn c() {}\n");
         assert!(matches!(out.display, ToolDisplay::Diff { start_line: 1, .. }));
@@ -637,10 +663,31 @@ mod around_tests {
     use super::*;
 
     #[tokio::test]
+    async fn short_files_come_back_whole_after_an_edit() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let short: String = (1..=60).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(d.path().join("s.txt"), &short).unwrap();
+        let out = Edit.run(json!({"path": "s.txt", "old_string": "line30\n", "new_string": "thirty\n"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.lines().next().unwrap().contains("applied and verified on disk"), "{}", out.content);
+        for i in [1, 29, 30, 31, 60] {
+            let want = if i == 30 { "thirty".to_string() } else { format!("line{i}") };
+            assert!(out.content.contains(&format!("{i:>6}│ {want}\n")), "line {i}: {}", out.content);
+        }
+        assert!(!out.content.contains("…"), "{}", out.content);
+        let long: String = (1..=200).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(d.path().join("l.txt"), &long).unwrap();
+        let out = Edit.run(json!({"path": "l.txt", "old_string": "line100\n", "new_string": "hundred\n"}), &c).await;
+        assert!(out.content.contains("   100│ hundred\n"), "{}", out.content);
+        assert!(!out.content.contains("│ line1\n") && !out.content.contains("│ line200\n"), "{}", out.content);
+    }
+
+    #[tokio::test]
     async fn the_result_shows_the_numbered_lines_around_the_change() {
         let d = tempfile::tempdir().unwrap();
         let c = ToolContext::new(d.path().to_path_buf());
-        let file: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        let file: String = (1..=200).map(|i| format!("line{i}\n")).collect();
         std::fs::write(d.path().join("a.txt"), &file).unwrap();
         let out = Edit.run(json!({"path": "a.txt", "old_string": "line10\n", "new_string": "ten\nten b\n"}), &c).await;
         assert!(!out.is_error, "{}", out.content);

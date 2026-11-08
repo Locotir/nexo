@@ -20,6 +20,18 @@ pub const MAX_TIMEOUT_S: u64 = 600;
 /// Characters of output kept (head and tail).
 pub const MAX_OUTPUT_CHARS: usize = 30_000;
 
+/// The scratch folder of a session, in the OS temp folder, outside the project: `$NEXO_TMP` in its commands.
+pub fn tmp_dir(session: &str) -> std::path::PathBuf {
+    let id: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(40).collect();
+    let id = if id.is_empty() { "main".to_string() } else { id };
+    std::env::temp_dir().join(format!("nexo-tmp-{}-{id}", std::process::id()))
+}
+
+/// Removes a session's scratch folder; the agent calls it when a turn ends.
+pub fn wipe_tmp(session: &str) {
+    let _ = std::fs::remove_dir_all(tmp_dir(session));
+}
+
 pub struct Bash;
 
 #[async_trait]
@@ -39,7 +51,8 @@ impl Tool for Bash {
                  command runs as a job while you go on working: the call returns its job id at once, a job that looks stuck may be stopped, you are told \
                  when it ends, and the `jobs` tool reads its output or stops it. Background jobs end with the session; \
                  `detach: true` keeps a service running after it. \
-                 To wait, set `wait_until`, never `sleep` a fixed time.",
+                 To wait, set `wait_until`, never `sleep` a fixed time. \
+                 Temp files go in $NEXO_TMP, wiped at turn end.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
                     "bash" => "Git Bash on Windows: POSIX shell, Windows paths work as C:/...",
@@ -115,7 +128,8 @@ impl Tool for Bash {
             }
         }
         let mut output = Capture::new();
-        let end = run_command(command, &ctx.cwd, &sandbox, Some(timeout), &ctx.cancel, |l| {
+        let tmp = tmp_dir(&ctx.session_id);
+        let end = run_command(command, &ctx.cwd, &sandbox, Some(timeout), &ctx.cancel, Some(&tmp), |l| {
             ctx.report(l);
             output.push(l);
         })
@@ -458,7 +472,7 @@ fn background(command: &str, ctx: &ToolContext, sandbox: nexo_core::sandbox::San
     let (line, cwd) = (command.to_string(), ctx.cwd.clone());
     tokio::spawn(async move {
         let cancel = job.cancel();
-        let end = run_command(&line, &cwd, &sandbox, None, &cancel, |l| job.line(l)).await;
+        let end = run_command(&line, &cwd, &sandbox, None, &cancel, None, |l| job.line(l)).await;
         match end {
             End::Exited(c) => job.finish(c == 0, format!("exit {c}")),
             End::Signalled => job.finish(false, "killed by a signal"),
@@ -655,6 +669,7 @@ async fn run_command(
     sandbox: &nexo_core::sandbox::SandboxSettings,
     timeout: Option<Duration>,
     cancel: &CancellationToken,
+    tmp: Option<&std::path::Path>,
     mut on_line: impl FnMut(&str),
 ) -> End {
     let mut cmd = match build_command(command, cwd, sandbox, false) {
@@ -662,6 +677,10 @@ async fn run_command(
         Err(e) => return End::Failed(e),
     };
     cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    if let Some(tmp) = tmp {
+        let _ = std::fs::create_dir_all(tmp);
+        cmd.env("NEXO_TMP", tmp);
+    }
     #[cfg(unix)]
     cmd.process_group(0);
     let mut child = match cmd.spawn() {
@@ -754,7 +773,7 @@ pub(crate) async fn prove(
 ) -> Proof {
     let t0 = std::time::Instant::now();
     let mut output = Capture::new();
-    let end = run_command(command, cwd, sandbox, Some(timeout), cancel, |l| output.push(l)).await;
+    let end = run_command(command, cwd, sandbox, Some(timeout), cancel, None, |l| output.push(l)).await;
     let mut text = output.text();
     let (exit, timed_out) = match end {
         End::Exited(c) => (Some(c), false),
@@ -904,6 +923,25 @@ fn prints_lines(script: &str) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nexo_tmp_is_wiped_at_turn_end() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(d.path().to_path_buf());
+        c.session_id = "tmp-test-session".into();
+        let out = Bash.run(json!({"command": "echo probe > \"$NEXO_TMP/probe.txt\" && echo \"$NEXO_TMP\""}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        let dir = std::path::PathBuf::from(out.content.trim());
+        assert!(dir.join("probe.txt").is_file(), "{dir:?}");
+        assert!(!dir.starts_with(d.path()), "the folder is not in the project");
+        wipe_tmp("tmp-test-session");
+        assert!(!dir.exists(), "{dir:?} is gone after the turn");
+        // a later command gets a fresh one
+        let out = Bash.run(json!({"command": "echo again > \"$NEXO_TMP/p2\"; ls \"$NEXO_TMP\""}), &c).await;
+        assert_eq!(out.content.trim(), "p2");
+        wipe_tmp("tmp-test-session");
+    }
+
     use super::*;
 
     #[test]

@@ -172,3 +172,58 @@ async fn one_edit_call_of_two_files_comes_back_with_the_projects_test_result() {
     assert!(transcript.contains("edited 2 files: src/lib.rs, src/other.rs"), "{transcript}");
     assert!(transcript.contains("check: cargo test -q --offline | exit 101"), "{transcript}");
 }
+
+/// Edits a file, reads the same file back, then says it is done.
+#[derive(Default)]
+struct EditThenRead {
+    calls: Mutex<u32>,
+}
+
+#[async_trait]
+impl ModelClient for EditThenRead {
+    async fn stream(&self, _: &ProviderConfig, _: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        let call = |name: &str, args: serde_json::Value| {
+            vec![
+                StreamEvent::ToolCallStart { id: format!("c{n}"), name: name.into() },
+                StreamEvent::ToolCallEnd { id: format!("c{n}"), name: name.into(), args },
+                StreamEvent::Finish(FinishReason::ToolUse),
+                StreamEvent::Done,
+            ]
+        };
+        let evs = match n {
+            1 => call("edit", json!({"path": "notes.txt", "old_string": "beta", "new_string": "BETA"})),
+            2 => call("read", json!({"path": "notes.txt"})),
+            _ => {
+                vec![StreamEvent::TextDelta("done".into()), StreamEvent::Finish(FinishReason::Stop), StreamEvent::Done]
+            }
+        };
+        Ok(Box::pin(futures::stream::iter(evs)))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_of_an_unchanged_file_already_shown_is_answered_in_one_line() {
+    let out = tempfile::tempdir().unwrap();
+    let bench = bench(Arc::new(EditThenRead::default()), 100, out.path());
+    let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
+    task.files = vec![("notes.txt".into(), "alpha\nbeta\ngamma\n".into())];
+    task.turns = vec![(0, "capitalise beta".into())];
+    task.setup = None;
+    task.sealed = false;
+    task.mask = &[];
+    task.check = |_| nexo_bench::check::Outcome { ok: false, score: 0.0, detail: String::new() };
+    let rec = run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap();
+    assert_eq!((rec.requests, rec.tool_calls, rec.tool_errors), (3, 2, 0), "{rec:?}");
+    let transcript = std::fs::read_to_string(out.path().join(&rec.transcript)).unwrap();
+    // the edit came back with the whole short file; the read is a one-liner, not the lines again
+    assert!(transcript.contains("applied and verified on disk"), "{transcript}");
+    assert!(transcript.contains("unchanged since shown above (3 lines)"), "{transcript}");
+    // each step logs the whole conversation; the last one has the file's lines once
+    let last = transcript.lines().last().unwrap();
+    assert_eq!(last.matches("3│ gamma").count(), 1, "the file is in the conversation once: {last}");
+}

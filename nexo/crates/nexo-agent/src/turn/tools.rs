@@ -160,6 +160,13 @@ async fn repeated_check(state: &Shared, name: &str, args: &Value, cwd: &Path) ->
     )))
 }
 
+/// The paths an `edit` or `write` call names.
+fn changed_paths(args: &Value) -> Vec<String> {
+    let one = args.get("path").and_then(Value::as_str).map(str::to_string);
+    let many = args.get("files").and_then(Value::as_array).into_iter().flatten();
+    one.into_iter().chain(many.filter_map(|f| f.get("path").and_then(Value::as_str).map(str::to_string))).collect()
+}
+
 /// The files before a step that may change code, when a check after it is wanted.
 struct StepBefore {
     files: nexo_tools::postcheck::Snapshot,
@@ -183,7 +190,10 @@ async fn step_before(
     let writes = calls.iter().any(|(_, n, a)| {
         tools.get(n).is_some_and(|t| matches!(t.call_kind(a), ToolKind::Write | ToolKind::Exec)) && n != "recall"
     });
-    if !writes || nexo_tools::project::check_command_within(cwd, Some(cwd)).is_none() {
+    // without a project check, only a command can change a data file unseen by the tools that report it
+    let runs_command = calls.iter().any(|(_, n, a)| tools.get(n).is_some_and(|t| t.call_kind(a) == ToolKind::Exec));
+    let has_check = nexo_tools::project::check_command_within(cwd, Some(cwd)).is_some();
+    if !writes || !(has_check || runs_command) {
         return None;
     }
     let root = cwd.to_path_buf();
@@ -226,7 +236,10 @@ async fn step_check(
         return;
     };
     let dir = first.parent().unwrap_or(cwd);
-    let Some(check) = project::check_command_within(dir, Some(cwd)) else { return };
+    let Some(check) = project::check_command_within(dir, Some(cwd)) else {
+        data_check(cwd, calls, &changed, results, at);
+        return;
+    };
     let (guard, perm) = {
         let st = state.lock().await;
         (st.post.clone(), st.perm.clone())
@@ -254,6 +267,38 @@ async fn step_check(
     } else {
         return;
     };
+    if let Some(Part::ToolResult { content, .. }) = results[at].as_mut() {
+        match content.first_mut() {
+            Some(Part::Text { text: t }) => t.push_str(&text),
+            _ => content.push(Part::text(text.trim_start().to_string())),
+        }
+    }
+}
+
+/// A project without a check command: the data files a command changed, checked by their format and
+/// reported with the result of the call that changed them (those `edit` and `write` changed report themselves).
+fn data_check(
+    cwd: &Path,
+    calls: &[(String, String, Value)],
+    changed: &[PathBuf],
+    results: &mut [Option<Part>],
+    at: usize,
+) {
+    let own: Vec<PathBuf> = calls
+        .iter()
+        .filter(|(_, n, _)| n == "edit" || n == "write")
+        .flat_map(|(_, _, a)| changed_paths(a))
+        .map(|p| if Path::new(&p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) })
+        .collect();
+    let text: String = changed
+        .iter()
+        .filter(|f| nexo_tools::data_check::is_data(f) && f.is_file() && !own.contains(f))
+        .take(5)
+        .map(|f| nexo_tools::data_check::report(f))
+        .collect();
+    if text.is_empty() {
+        return;
+    }
     if let Some(Part::ToolResult { content, .. }) = results[at].as_mut() {
         match content.first_mut() {
             Some(Part::Text { text: t }) => t.push_str(&text),
@@ -501,6 +546,14 @@ pub(super) async fn run_call(
                         let span = args.get("command").and_then(Value::as_str).and_then(crate::reads::shell_print);
                         let printed = crate::reads::printed(&out);
                         span.and_then(|(_, span)| st.reads.after_lines(path, p, span, id, printed))
+                    }
+                    ("edit" | "write", _) if !out.is_error => {
+                        // the result carries a short file whole: a later read of it, unchanged, needs no lines
+                        for p in changed_paths(args) {
+                            let path = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { cwd.join(&p) };
+                            st.reads.after_change(&path, id);
+                        }
+                        None
                     }
                     _ => None,
                 }

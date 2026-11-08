@@ -78,6 +78,9 @@ fn tool_guidance(tools: &ToolSet) -> String {
     if has("ls") || has("bash") {
         lines.push("- The Project block is current: use it, not `ls` or `find`. A file the request names is already attached, whole.");
     }
+    if has("bash") && (has("edit") || has("write")) {
+        lines.push("- Calls in a message run in order; one check follows the last change.");
+    }
     if has("skill") {
         lines.push("- `skill`: skills are folders of ready-made instructions; when a task matches one in the tool's list, load it before you start.");
     }

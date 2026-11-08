@@ -92,6 +92,18 @@ impl Reads {
         self.seen.insert(path, Seen { hash: digest(bytes), pieces, noted: false });
     }
 
+    /// After `edit` or `write` changed `path`: what the model knew of it is gone, and when the result of
+    /// call `call_id` holds the file whole (a short one) the model has all of it.
+    pub fn after_change(&mut self, path: &Path, call_id: &str) {
+        let Ok(bytes) = std::fs::read(path) else { return };
+        let text = String::from_utf8_lossy(&bytes);
+        let pieces = match nexo_tools::edit::whole(&text) {
+            Some(_) => vec![Piece { start: 1, end: text.lines().count(), anchor: call_id.to_string() }],
+            None => Vec::new(),
+        };
+        self.seen.insert(path.to_path_buf(), Seen { hash: digest(&bytes), pieces, noted: false });
+    }
+
     /// After a successful `read` of `path` (lines from `offset`, `limit` of them):
     /// the note the model gets instead of the output when it has those lines already.
     pub fn after_read(
@@ -161,8 +173,9 @@ impl Reads {
             };
             seen.noted = true;
             return Some(format!(
-                "{shown}: unchanged since you last saw it, so the lines are not repeated: {whence}. \
-                 If that is no longer in the conversation, ask again and you get it in full."
+                "{shown}: unchanged since shown above ({}); not repeated: {whence}. \
+                 If that is no longer in the conversation, ask again and you get it in full.",
+                nexo_core::count(end + 1 - start, "line")
             ));
         }
         seen.noted = false;

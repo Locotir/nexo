@@ -910,6 +910,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     let st = state.lock().await;
                     (st.config.hooks.clone(), st.cwd.clone(), st.session.id().to_string())
                 };
+                // scratch files of the commands of this turn (`$NEXO_TMP`) go with it
+                nexo_tools::bash::wipe_tmp(&sid);
                 if crate::hooks::listens(&hooks, "turn_end") {
                     let events = events.clone();
                     let sid = sid.clone();
