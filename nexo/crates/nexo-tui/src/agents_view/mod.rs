@@ -271,6 +271,14 @@ pub struct AgentsView {
     still: bool,
     /// The nudge being written for the selected session.
     edit: Option<String>,
+    /// The session the nudge being written is for: (key, name). It stays that one if the selection moves.
+    edit_for: Option<(String, String)>,
+    /// Nudges put aside with Esc, by session, so `n` picks them up again.
+    drafts: HashMap<String, String>,
+    /// The column the arrows hold while the selection goes up and down over rows of different lengths.
+    want_col: Option<usize>,
+    /// The view keeps the selection in sight; the wheel lets go of it until the selection moves again.
+    follow: bool,
     /// One line of news from the last action.
     note: Option<String>,
     /// The selected session's details are open.
@@ -312,6 +320,10 @@ impl AgentsView {
             grid: Vec::new(),
             still,
             edit: None,
+            edit_for: None,
+            drafts: HashMap::new(),
+            want_col: None,
+            follow: true,
             note: None,
             open: false,
             policy_page: false,
@@ -440,11 +452,43 @@ impl AgentsView {
 
     /// Replaces the rows as a poll would (tests drive the motion with it).
     pub fn set_rows(&mut self, rows: Vec<AgentRow>) {
+        let keep = self.selected_row().map(|r| r.key);
         self.rows = rows;
+        self.retarget(keep);
+    }
+
+    /// After the sessions changed: the selection goes with its session (not its index) when that is still
+    /// shown, else it stays near where it was.
+    fn retarget(&mut self, keep: Option<String>) {
+        let shown = self.shown();
+        self.selected = match keep.and_then(|k| shown.iter().position(|r| r.key == k)) {
+            Some(i) => i,
+            None => self.selected.min(shown.len().saturating_sub(1)),
+        };
     }
 
     pub fn rows(&self) -> &[AgentRow] {
         &self.rows
+    }
+
+    /// The key of the selected session.
+    pub fn selected_key(&self) -> Option<String> {
+        self.selected_row().map(|r| r.key)
+    }
+
+    /// Where each session was drawn last (the pointer hits).
+    pub fn card_rects(&self) -> Vec<(usize, Rect)> {
+        self.cards.clone()
+    }
+
+    /// The selected session's details are open.
+    pub fn details_open(&self) -> bool {
+        self.open
+    }
+
+    /// How far the policy page is scrolled.
+    pub fn policy_scroll(&self) -> usize {
+        self.policy_scroll
     }
 
     /// Draws the glyphs the panel makes itself in their ASCII forms (or not).
@@ -466,9 +510,10 @@ impl AgentsView {
         let feed = panel.mail_feed(now - 3600);
         self.ingest_mail(feed, &rows, now);
         self.seen = v;
+        let keep = self.selected_row().map(|r| r.key);
         self.rows = rows;
         self.clock = clock;
-        self.selected = self.selected.min(self.shown().len().saturating_sub(1));
+        self.retarget(keep);
         changed
     }
 
@@ -532,6 +577,7 @@ impl AgentsView {
             return self.edit_key(key);
         }
         self.note = None;
+        self.follow = true;
         if self.policy_page {
             return self.policy_key(key);
         }
@@ -560,16 +606,16 @@ impl AgentsView {
             KeyCode::Char('n') => self.start_nudge(),
             KeyCode::Char('p') => self.toggle_pause(false),
             KeyCode::Char('P') => self.toggle_pause(true),
-            KeyCode::Left | KeyCode::Char('h') => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
-                self.selected = (self.selected + 1).min(n.saturating_sub(1))
-            }
+            KeyCode::Left | KeyCode::Char('h') => self.step(-1, false),
+            KeyCode::Right | KeyCode::Char('l') => self.step(1, false),
+            KeyCode::Tab => self.step(1, true),
+            KeyCode::BackTab => self.step(-1, true),
             KeyCode::Up | KeyCode::Char('k') => self.step_rows(-1),
             KeyCode::Down | KeyCode::Char('j') => self.step_rows(1),
-            KeyCode::Home => self.selected = 0,
-            KeyCode::End => self.selected = n.saturating_sub(1),
-            KeyCode::PageUp => self.step_rows(-3),
-            KeyCode::PageDown => self.step_rows(3),
+            KeyCode::Home | KeyCode::Char('g') => self.jump(0),
+            KeyCode::End | KeyCode::Char('G') => self.jump(n.saturating_sub(1)),
+            KeyCode::PageUp => self.step_rows(-(self.page_rows() as i32)),
+            KeyCode::PageDown => self.step_rows(self.page_rows() as i32),
             _ => {}
         }
         ModalOut::Nothing
@@ -577,17 +623,48 @@ impl AgentsView {
 
     /// `s`: all, then nexo only, then external only, kept for the rest of the session.
     fn cycle_filter(&mut self) {
+        let keep = self.selected_row().map(|r| r.key);
         self.filter = self.filter.next();
         if let Some(m) = &self.memory {
             m.store(self.filter.to_u8(), Ordering::Relaxed);
         }
+        // the same session stays selected when the new filter still lists it, else the first
         self.selected = 0;
+        self.want_col = None;
+        let still = keep.filter(|k| self.shown().iter().any(|r| &r.key == k));
+        self.retarget(still);
         self.scroll = 0;
         self.open = false;
         self.note = Some(format!("showing {}", self.filter.label()));
     }
 
-    /// Moves the selection `delta` rows of cards (or lines) up or down, keeping its column.
+    /// One card back or on in reading order; `wrap` (Tab) goes round at the ends, the arrows stop there.
+    fn step(&mut self, delta: i32, wrap: bool) {
+        let n = self.shown().len() as i32;
+        if n == 0 {
+            return;
+        }
+        let to = self.selected as i32 + delta;
+        self.selected = if wrap { to.rem_euclid(n) } else { to.clamp(0, n - 1) } as usize;
+        self.want_col = None;
+    }
+
+    /// To the card at `i` (Home, End).
+    fn jump(&mut self, i: usize) {
+        self.selected = i;
+        self.want_col = None;
+    }
+
+    /// How many rows of cards (or lines) the last draw showed: what a page moves by.
+    fn page_rows(&self) -> usize {
+        let mut ys: Vec<u16> = self.cards.iter().map(|(_, r)| r.y).collect();
+        ys.sort_unstable();
+        ys.dedup();
+        ys.len().max(1)
+    }
+
+    /// Moves the selection `delta` rows of cards (or lines) up or down, keeping its column even across a
+    /// shorter row.
     fn step_rows(&mut self, delta: i32) {
         let at = self
             .grid
@@ -595,6 +672,7 @@ impl AgentsView {
             .enumerate()
             .find_map(|(r, row)| row.iter().position(|i| *i == self.selected).map(|c| (r, c)));
         let Some((r, c)) = at else { return };
+        let c = *self.want_col.get_or_insert(c);
         let to = (r as i32 + delta).clamp(0, self.grid.len() as i32 - 1) as usize;
         let row = &self.grid[to];
         self.selected = row[c.min(row.len() - 1)];
@@ -604,10 +682,12 @@ impl AgentsView {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => self.policy_page = false,
             KeyCode::Up | KeyCode::Char('k') => self.policy_scroll = self.policy_scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.policy_scroll += 1,
+            KeyCode::Down | KeyCode::Char('j') => self.policy_scroll = self.policy_scroll.saturating_add(1),
             KeyCode::PageUp => self.policy_scroll = self.policy_scroll.saturating_sub(10),
-            KeyCode::PageDown => self.policy_scroll += 10,
-            KeyCode::Home => self.policy_scroll = 0,
+            KeyCode::PageDown => self.policy_scroll = self.policy_scroll.saturating_add(10),
+            KeyCode::Home | KeyCode::Char('g') => self.policy_scroll = 0,
+            // the page clamps the scroll to its last line when it draws
+            KeyCode::End | KeyCode::Char('G') => self.policy_scroll = usize::MAX / 2,
             _ => {}
         }
         ModalOut::Nothing
@@ -651,29 +731,49 @@ impl AgentsView {
             self.note = Some("a sub-agent takes no message; write to its session".into());
             return;
         }
-        self.edit = Some(panel.template(&row.key));
+        let text = self.drafts.remove(&row.key).unwrap_or_else(|| panel.template(&row.key));
+        self.edit_for = Some((row.key.clone(), row.name.clone()));
+        self.edit = Some(text);
     }
 
     fn edit_key(&mut self, key: KeyEvent) -> ModalOut {
         let Some(text) = self.edit.as_mut() else { return ModalOut::Nothing };
         match key.code {
-            KeyCode::Esc => self.edit = None,
+            // one level back: the half-written message is put aside, `n` on that session picks it up again
+            KeyCode::Esc => {
+                let text = self.edit.take().unwrap_or_default();
+                if let Some((k, _)) = self.edit_for.take() {
+                    if !text.trim().is_empty() {
+                        self.drafts.insert(k, text);
+                        self.note = Some("message kept: n picks it up again".into());
+                    }
+                }
+            }
             KeyCode::Backspace => {
                 text.pop();
             }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let kept = text.trim_end().rfind(char::is_whitespace).map_or(0, |i| i + 1);
+                text.truncate(kept);
+            }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => text.push(c),
             KeyCode::Enter => {
+                // it goes to the session it was started for, wherever the selection is now
+                let for_key = self.edit_for.as_ref().map(|(k, _)| k.clone());
+                let target = for_key.and_then(|k| self.rows.iter().find(|r| r.key == k).cloned());
+                // that session went away meanwhile: the field stays open, nothing is sent
+                let (Some(row), Some(panel)) = (target, self.panel.clone()) else { return ModalOut::Nothing };
                 let text = self.edit.take().unwrap_or_default();
-                if let (Some(row), Some(panel)) = (self.selected_row(), &self.panel) {
-                    if !text.trim().is_empty() {
-                        panel.nudge(&row.key, &text);
-                        self.fly_key = Some(row.key.clone());
-                        self.note = Some(if row.source == SourceKind::Nexo {
-                            format!("message sent to {}", row.name)
-                        } else {
-                            format!("nudge queued for {}; it goes out when the session stops", row.name)
-                        });
-                    }
+                self.edit_for = None;
+                if !text.trim().is_empty() {
+                    panel.nudge(&row.key, &text);
+                    self.fly_key = Some(row.key.clone());
+                    self.note = Some(if row.source == SourceKind::Nexo {
+                        format!("message sent to {}", row.name)
+                    } else {
+                        format!("nudge queued for {}; it goes out when the session stops", row.name)
+                    });
                 }
                 self.refresh();
             }
@@ -691,16 +791,32 @@ impl AgentsView {
         } else if let Some(row) = self.selected_row() {
             panel.pause(Some(&row.key), !row.paused);
             self.note = Some(format!("{} {}", row.name, if row.paused { "resumed" } else { "paused" }));
+        } else {
+            self.note = Some("no session to pause".into());
         }
         self.refresh();
     }
 
+    /// A click on the close box closes. A click outside closes too, except while a message is being written
+    /// (it would be lost). A click on a card selects it; a second click on the selected card opens its details.
     pub fn click(&mut self, x: u16, y: u16) -> ModalOut {
-        if contains(self.close, x, y) || !contains(self.window, x, y) {
+        if contains(self.close, x, y) {
             return ModalOut::Close;
         }
-        if let Some((i, _)) = self.cards.iter().find(|(_, r)| contains(*r, x, y)) {
-            self.selected = *i;
+        if !contains(self.window, x, y) {
+            return if self.edit.is_some() { ModalOut::Nothing } else { ModalOut::Close };
+        }
+        if self.edit.is_some() || self.policy_page {
+            return ModalOut::Nothing;
+        }
+        if let Some(i) = self.cards.iter().find(|(_, r)| contains(*r, x, y)).map(|(i, _)| *i) {
+            if self.selected == i {
+                self.open = !self.open;
+            } else {
+                self.selected = i;
+            }
+            self.want_col = None;
+            self.follow = true;
         }
         ModalOut::Nothing
     }
@@ -710,8 +826,16 @@ impl AgentsView {
         std::mem::replace(&mut self.hover, on) != on
     }
 
+    /// The wheel: the policy page by lines, the sessions by a strip of cards (or lines), the selection staying
+    /// where it is until it moves again.
     pub fn scroll_by(&mut self, delta: i32) {
-        self.scroll = (self.scroll as i32 + delta).max(0) as usize;
+        if self.policy_page {
+            self.policy_scroll = (self.policy_scroll as i32 + delta).max(0) as usize;
+            return;
+        }
+        let step = if matches!(self.drawn, Layout::List) { delta } else { delta.signum() };
+        self.scroll = (self.scroll as i32 + step).max(0) as usize;
+        self.follow = false;
     }
 
     // ---------------------------------------------------------------- drawing
@@ -845,10 +969,21 @@ impl AgentsView {
                 theme.dim2(),
             ))
         } else if let Some(t) = &self.edit {
-            let shown = truncate(&format!("message › {t}▏"), foot.width.saturating_sub(24) as usize);
+            // the end of the text is what is being typed: it is the part kept when the line is long
+            let gone = self.edit_for.as_ref().is_some_and(|(k, _)| !self.rows.iter().any(|r| &r.key == k));
+            let tails: [&str; 3] = if gone {
+                ["  session gone · Esc keeps it", "  gone · Esc", ""]
+            } else {
+                ["  Enter send · Esc cancel", "  Enter · Esc", ""]
+            };
+            let w = foot.width as usize;
+            // the longest tail that still leaves 12 columns for the message
+            let tail = tails.into_iter().find(|s| w >= width(s) + 12).unwrap_or("");
+            let shown =
+                tail_of(&format!("message › {t}▏"), w.saturating_sub(width(tail)), "message › ".chars().count());
             Line::from(vec![
                 Span::styled(shown, theme.style(theme.accent)),
-                Span::styled("  Enter send · Esc cancel", theme.dim2()),
+                Span::styled(tail, if gone { theme.style(theme.warn) } else { theme.dim2() }),
             ])
         } else if let Some(n) = &self.note {
             Line::from(Span::styled(truncate(n, foot.width as usize), theme.style(theme.accent2)))
@@ -864,7 +999,12 @@ impl AgentsView {
                     "Esc close",
                 ]
             } else {
-                &["←↑↓→ move · s source · +/- zoom · Esc close", "s source · Esc close", "Esc close"]
+                &[
+                    "←↑↓→ move · Enter open · s source · +/- zoom · Esc close",
+                    "←↑↓→ move · s source · +/- zoom · Esc close",
+                    "s source · Esc close",
+                    "Esc close",
+                ]
             };
             let hint = hints.iter().find(|h| width(h) <= room).copied().unwrap_or("Esc close");
             Line::from(vec![
@@ -877,11 +1017,13 @@ impl AgentsView {
 
     fn more_below(&self, body: Rect) -> &'static str {
         let last = self.cards.iter().map(|(i, _)| *i).max().map_or(0, |i| i + 1);
+        let first = self.cards.iter().map(|(i, _)| *i).min().unwrap_or(0);
         let _ = body;
-        if last < self.shown().len() {
-            "  ↓ more"
-        } else {
-            ""
+        match (first > 0, last < self.shown().len()) {
+            (true, true) => "  ↑↓ more",
+            (true, false) => "  ↑ more",
+            (false, true) => "  ↓ more",
+            (false, false) => "",
         }
     }
 
@@ -961,4 +1103,26 @@ impl AgentsView {
         }
         left
     }
+}
+
+/// The last `room` columns of `text`, with an ellipsis in front when something was cut; the first `keep`
+/// characters (a label) are always kept.
+fn tail_of(text: &str, room: usize, keep: usize) -> String {
+    if width(text) <= room {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(keep).collect();
+    let rest: Vec<char> = text.chars().skip(keep).collect();
+    let mut budget = room.saturating_sub(width(&head) + 1);
+    let mut tail: Vec<char> = Vec::new();
+    for c in rest.iter().rev() {
+        let w = width(&c.to_string());
+        if w > budget {
+            break;
+        }
+        budget -= w;
+        tail.push(*c);
+    }
+    tail.reverse();
+    format!("{head}…{}", tail.into_iter().collect::<String>())
 }

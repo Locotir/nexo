@@ -123,11 +123,14 @@ impl AgentsView {
         // a group's first row brings its header along
         let sel_top = if sel > 0 && matches!(bands[sel - 1], Band::Header(_)) { sel - 1 } else { sel };
         let fits = |from: usize, to: usize| Self::span(&bands, from, to + 1, item_h, tight) <= body.height;
-        if sel_top < self.scroll {
-            self.scroll = sel_top;
-        }
-        while self.scroll < sel && !fits(self.scroll, sel) {
-            self.scroll += 1;
+        // after the wheel the view stays where the user put it, even if the selection is out of sight
+        if self.follow {
+            if sel_top < self.scroll {
+                self.scroll = sel_top;
+            }
+            while self.scroll < sel && !fits(self.scroll, sel) {
+                self.scroll += 1;
+            }
         }
         // never scroll past the point where the last strip is at the foot
         let mut last_first = bands.len().saturating_sub(1);

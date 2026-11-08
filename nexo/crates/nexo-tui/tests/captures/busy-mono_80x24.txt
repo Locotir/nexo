@@ -13,7 +13,7 @@
 │  ✓ done       ▢ docs                        ◉⇡■  2h 01m  Bash  gh release c… │
 │                                                                              │
 │ /home/dev/project · default · n1                                             │
-│ ←↑↓→ move · s source · +/- zoom · Esc close                                  │
+│ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 

@@ -16,7 +16,7 @@
 │                                                                              │
 │                                                                              │
 │ /home/dev/project · default · this-session                                   │
-│ ←↑↓→ move · s source · +/- zoom · Esc close  ↓ more                          │
+│ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close  ↓ more             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything

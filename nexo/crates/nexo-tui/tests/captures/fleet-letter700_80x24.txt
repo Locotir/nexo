@@ -15,7 +15,7 @@
 │  ◐ stalled    ▢ nightly-fixer                   40m 00s  Read  tests/long_r… │
 │                                                                              │
 │ /home/dev/project · default · n1                                             │
-│ ←↑↓→ move · s source · +/- zoom · Esc close                                  │
+│ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 ─ ask ──────────────────────────────────────────────────────────────────────────
