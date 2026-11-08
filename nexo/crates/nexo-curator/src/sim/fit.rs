@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use super::behave::{analytic, auto_family, Context, ParamSet};
+use super::behave::{analytic, auto_family, probe, Context, ParamSet};
 use super::events::{run, Kind, Tool};
 use super::input::{load, reply_to, Request};
 use super::price::{tokens_of, Cache, Prices};
@@ -1031,7 +1031,8 @@ pub fn predict_row(
     let base = prices_for(r);
     let prices = Prices { miss: base.miss * k, hit: base.hit * k, out: base.out };
     let cost_plain = prices.dollars(miss, hit) + prices.output(o);
-    let cur = run(&s.requests, spec, prices, life, slots)?;
+    let mut cur = run(&s.requests, spec, prices, life, slots)?;
+    probe(&mut cur, &s.requests, spec, life, slots)?;
     let cx = Context::measure(&s.requests, spec, prices, r.max_steps);
     let a = analytic(&cur, set.get(&family), set.r_den, &cx);
     Ok(Prediction {
