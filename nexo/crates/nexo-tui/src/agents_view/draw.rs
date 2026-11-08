@@ -196,7 +196,11 @@ impl AgentsView {
             Self::empty_state(f, body, theme);
             return;
         }
-        let bands = Self::bands(groups, cols, matches!(layout, Layout::Cards { .. }));
+        let mut bands = Self::bands(groups, cols, matches!(layout, Layout::Cards { .. }));
+        // one body row: a session beats the header of its group
+        if body.height < 2 {
+            bands.retain(|b| matches!(b, Band::Row(_)));
+        }
         self.grid = bands.iter().filter_map(|b| if let Band::Row(r) = b { Some(r.clone()) } else { None }).collect();
         // the strip that holds the selection, and the first strip that keeps it in sight
         let sel = bands.iter().position(|b| matches!(b, Band::Row(r) if r.contains(&self.selected))).unwrap_or(0);

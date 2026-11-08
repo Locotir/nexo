@@ -610,9 +610,9 @@ impl AgentsView {
         }
     }
 
-    /// What keeps the window the same window: the zoom, the filter and the page, not the cursor.
-    pub fn size_key(&self) -> (u8, u8, bool) {
-        (self.zoom as u8, self.filter as u8, self.policy_page)
+    /// What keeps the window the same window: the zoom, the filter, the page and whether any session has arrived yet (the first poll can land after the first draw), not the cursor.
+    pub fn size_key(&self) -> (u8, u8, bool, bool) {
+        (self.zoom as u8, self.filter as u8, self.policy_page, self.rows.is_empty())
     }
 
     // ---------------------------------------------------------------- input
@@ -1061,7 +1061,11 @@ impl AgentsView {
             let room = (foot.width as usize).saturating_sub(width(more));
             let hints: &[&str] = if self.panel.is_some() {
                 &[
-                    "←↑↓→ move · s source · Enter open · n message · o policy · p/P pause · +/- zoom · Esc",
+                    if self.open {
+                        "←↑↓→ move · s source · Enter close · n message · o policy · p/P pause · +/- zoom · Esc"
+                    } else {
+                        "←↑↓→ move · s source · Enter open · n message · o policy · p/P pause · +/- zoom · Esc"
+                    },
                     "←↑↓→ move · s source · n message · o policy · p pause · +/- zoom · Esc close",
                     "s source · n message · p pause · Esc close",
                     "s source · Esc close",

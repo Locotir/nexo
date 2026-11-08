@@ -758,3 +758,40 @@ fn a_scrolled_list_says_how_many_sessions_sit_above_and_below() {
     let middle = window_lines(&mut a, 80, 24).join("\n");
     assert!(middle.contains("↑ ") && middle.contains(" ↓ "), "{middle}");
 }
+
+#[test]
+fn the_window_is_measured_again_when_sessions_arrive_after_it_opened() {
+    let mut a = scene(vec![]);
+    let before = window_lines(&mut a, 120, 40).len();
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    v.set_rows(rows());
+    let after = window_lines(&mut a, 120, 40);
+    assert!(after.len() > before, "{before} lines before, {} after", after.len());
+    assert!(after.iter().any(|l| l.contains("api-migration")), "{}", after.join("\n"));
+}
+
+#[test]
+fn a_tiny_terminal_keeps_a_session_line_and_drops_the_group_header() {
+    let mut a = scene(rows());
+    let text = window_lines(&mut a, 36, 9).join("\n");
+    assert!(text.contains("project"), "{text}");
+}
+
+#[test]
+fn the_footer_says_enter_close_while_the_details_are_open() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_d, panel) = live_panel();
+    let t = std::time::Instant::now();
+    let mut v = AgentsView::new(Some(panel), true);
+    while v.rows().is_empty() && t.elapsed().as_secs() < 6 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        v.refresh();
+    }
+    let mut a = app();
+    a.modal = Some(Modal::Agents(Box::new(v)));
+    assert!(capture(&mut a, 140, 30).join("\n").contains("Enter open"));
+    let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
+    v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let text = capture(&mut a, 140, 30).join("\n");
+    assert!(text.contains("Enter close") && !text.contains("Enter open"), "{text}");
+}
