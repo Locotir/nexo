@@ -994,6 +994,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     }
     fire(&state, "session_end", Some("exit"), serde_json::json!({"reason": "exit"})).await;
     state.lock().await.policy.shutdown().await;
+    // a task still holding the state (a hook, a suggestion) must not keep the lock past the exit
+    state.lock().await.session.release();
     emit(&events, AgentEvent::Shutdown);
     Ok(())
 }

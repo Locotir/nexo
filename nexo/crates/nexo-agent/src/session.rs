@@ -133,6 +133,8 @@ pub struct Session {
     /// The pid of the nexo that took the lock over, once one has: nothing more is saved by this
     /// session, even after that nexo lets the lock go (its history and this one have parted).
     lost: Option<String>,
+    /// Let go by [`Session::release`]: the agent has stopped, and nothing more is saved.
+    closed: bool,
     /// The length of the file after this session's own last write: a longer file, or another one,
     /// holds lines of somebody else.
     size: u64,
@@ -140,6 +142,19 @@ pub struct Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl Session {
+    /// Lets the session go when the agent stops: its lock is removed, and a session opened and left
+    /// without a word is removed from the list. A task still holding the session when the process
+    /// exits (exiting runs no destructors) would otherwise leave the lock behind. Nothing is saved
+    /// after this; a second call does nothing.
+    pub fn release(&mut self) {
+        if std::mem::replace(&mut self.closed, true) {
+            return;
+        }
         // opened and left without a word: nothing worth keeping in the list
         let empty = self.file.is_some()
             && self.locked
@@ -152,6 +167,7 @@ impl Drop for Session {
         let lock = lock_path(&self.path);
         if self.locked && std::fs::read_to_string(&lock).is_ok_and(|t| t == stamp()) {
             let _ = std::fs::remove_file(&lock);
+            self.locked = false;
         }
         if empty && std::fs::read_to_string(&lock).is_err() {
             let _ = std::fs::remove_file(&self.path);
@@ -682,6 +698,7 @@ impl Session {
             touched: std::time::Instant::now(),
             open_tail: false,
             lost: None,
+            closed: false,
             size,
         })
     }
@@ -715,6 +732,7 @@ impl Session {
             touched: std::time::Instant::now(),
             open_tail: false,
             lost: None,
+            closed: false,
             size: 0,
         }
     }
@@ -782,6 +800,7 @@ impl Session {
             // a process killed mid-write leaves a last line without its end
             open_tail: bytes.last().is_some_and(|b| *b != b'\n'),
             lost: None,
+            closed: false,
             size: bytes.len() as u64,
         })
     }
@@ -791,6 +810,9 @@ impl Session {
     pub fn claim(&mut self) -> anyhow::Result<()> {
         if self.file.is_none() {
             return Ok(());
+        }
+        if self.closed {
+            anyhow::bail!("session {} was closed when the agent stopped: nothing more is saved", self.meta.id);
         }
         if let Some(pid) = &self.lost {
             anyhow::bail!(
@@ -1642,6 +1664,31 @@ mod tests {
         assert_eq!(mode(s.path()), 0o600);
         s.rewind(0).unwrap();
         assert_eq!(mode(s.path()), 0o600, "the rewritten file too");
+    }
+
+    #[test]
+    fn a_released_session_leaves_no_lock_even_while_still_held() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        s.append(&Message::user("hi")).unwrap();
+        let lock = lock_path(s.path());
+        assert!(lock.exists());
+        // the agent stopped while a task still holds the session: the process may exit now
+        s.release();
+        assert!(!lock.exists());
+        assert!(s.path().exists(), "a session with a message stays");
+        assert!(s.append(&Message::user("late")).is_err(), "nothing is saved after the release");
+        assert!(!lock.exists(), "a late write does not take the lock again");
+        s.release();
+        drop(s);
+        let names: Vec<_> = std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        // one opened and left without a word goes from the list at once
+        let mut e = Session::create_in(d.path(), Path::new("/p"), "mock", "m").unwrap();
+        e.claim().unwrap();
+        let p = e.path().to_path_buf();
+        e.release();
+        assert!(!p.exists() && !lock_path(&p).exists());
     }
 
     #[test]
