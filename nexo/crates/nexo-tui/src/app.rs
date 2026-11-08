@@ -4721,6 +4721,9 @@ impl App {
                 self.input.replace_range(p.start, &choice);
                 if run {
                     self.submit();
+                } else if choice.ends_with('/') {
+                    // a folder picked with Tab lists its own folders next, so a path is built step by step
+                    self.refresh_palette();
                 }
             }
         }
@@ -5884,6 +5887,18 @@ mod tests {
         assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Tree));
         a.modal_out(ModalOut::Pick { kind: PickKind::Tree, value: "s2".into() });
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::Resume { id }) if id == "s2"));
+    }
+
+    #[test]
+    fn a_folder_taken_with_tab_lists_its_own_folders_next() {
+        let (mut a, _rx) = app();
+        a.input.set_text("/add-dir sr");
+        a.refresh_palette();
+        assert_eq!(a.palette.as_ref().and_then(|p| p.current()), Some("src/"));
+        a.palette_accept(false);
+        assert_eq!(a.input.text(), "/add-dir src/");
+        let next = a.palette.as_ref().and_then(|p| p.current()).unwrap_or("");
+        assert!(next.starts_with("src/") && next.len() > 4, "the folders of src/ are listed: {next:?}");
     }
 
     #[test]
