@@ -154,7 +154,7 @@ fn golden_fixtures() {
         .filter(|n| n.ends_with(".jsonl"))
         .collect();
     names.sort();
-    assert_eq!(names.len(), 20);
+    assert_eq!(names.len(), 21);
     let only = std::env::var("FIXTURE").unwrap_or_default();
     names.retain(|n| only.is_empty() || n.contains(&only));
     // each fixture is its own conversation: they replay side by side, a thread each, longest first
@@ -281,4 +281,26 @@ fn the_long_session_ends_with_the_reference_stats() {
         "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1, "miss_anchor": 1840, "miss_switch": 1840});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
+}
+
+#[test]
+fn the_real_audit_ends_with_the_reference_stats() {
+    // A real session (a bench run of a security audit of a small Rust crate, 26 requests, prose and std code,
+    // paths scrubbed), kept to tell words the model knows (std names) from words only the history holds.
+    // Replay with `REPLAY_LOST=all` forgets 16 words in 5 replies: 7 std names, 9 private (ids, names of the
+    // crate, file names). Fixed so that a change that moves what is cut shows up here.
+    let path = format!("{}/tests/fixtures/real-session-vault-audit.jsonl", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut cur = Curator::new("").unwrap();
+    let mut msgs: Vec<Value> = Vec::new();
+    let mut last = Value::Null;
+    for line in text.lines() {
+        let rec: Value = serde_json::from_str(line).unwrap();
+        let req = &rec["req"];
+        msgs.truncate(req["base"].as_u64().unwrap() as usize);
+        msgs.extend(req["new"].as_array().unwrap().iter().cloned());
+        last = cur
+            .answer(&serde_json::json!({"op": "view", "system_tokens": req["system_tokens"], "messages": msgs}), 0.0);
+    }
+    assert_eq!(last["stats"], serde_json::json!({"birth_saved": 0, "live_dropped": 3, "miss_live": 708, "miss": 708}));
 }
