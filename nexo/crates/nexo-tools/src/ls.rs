@@ -21,13 +21,12 @@ impl Tool for Ls {
         ToolSpec {
             name: "ls".into(),
             description: "List one directory: subdirectories first (with a trailing `/`), then files with \
-                          their sizes. Use `glob` to find files by name across a tree and `grep` to find \
-                          text."
+                          their sizes."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The directory, absolute or relative to the working directory. Default: the working directory."}
+                    "path": {"type": "string", "description": "The directory. Default: the working directory."}
                 }
             }),
         }

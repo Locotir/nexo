@@ -45,8 +45,7 @@ impl Tool for Jobs {
                 `background: true`, sub-agents started with `task` and `background: true`). \
                 action \"list\": every job and its state. action \"output\": what job `id` printed since \
                 the last read, and its state; with `wait` (seconds, at most 600) it first waits for the \
-                job to end. action \"kill\": stop job `id`. Keep working while jobs run, and read them \
-                when you need their result or are told they ended."
+                job to end. action \"kill\": stop job `id`."
                 .into(),
             parameters: json!({
                 "type": "object",

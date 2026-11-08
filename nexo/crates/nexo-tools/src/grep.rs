@@ -37,8 +37,7 @@ impl Tool for Grep {
                           directory or in one file; gitignored and binary files are skipped. Returns \
                           `path:line: text` per match (with `context` lines around each when asked), or \
                           only the matching files with `files_only`. At most `max_results` matches \
-                          (default 200). `multiline` lets a pattern span lines. Use it to find \
-                          definitions, usages and error strings before reading."
+                          (default 200). `multiline` lets a pattern span lines."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -46,7 +45,7 @@ impl Tool for Grep {
                     "pattern": {"type": "string", "description": "The regular expression, e.g. `fn \\w+\\(`."},
                     "path": {"type": "string", "description": "A directory or a file. Default: the working directory."},
                     "glob": {"type": "string", "description": "Only files whose name matches, e.g. `*.rs`; with a `/` or `**` the path under `path` is matched, e.g. `src/**/*.ts`."},
-                    "case_insensitive": {"type": "boolean", "description": "Ignore case. Default false."},
+                    "case_insensitive": {"type": "boolean", "description": "Ignore case."},
                     "context": {"type": "integer", "minimum": 0, "description": "Lines shown before and after each match. Default 0."},
                     "files_only": {"type": "boolean", "description": "List the matching files instead of the lines."},
                     "max_results": {"type": "integer", "minimum": 1, "description": "Matches returned at most. Default 200."},

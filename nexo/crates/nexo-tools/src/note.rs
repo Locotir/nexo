@@ -36,11 +36,9 @@ impl Tool for Note {
         ToolSpec {
             name: "note".into(),
             description: "Keep what you learnt before older messages leave this context. Write one line per item: \
-                          `Finding: ...` for a fact a result settled (a value, a formula, an address, a format, the \
-                          cause of an error), `Plan: ...` for what is left (it replaces the previous plan), \
+                          `Finding: ...` for a fact a result settled, `Plan: ...` for what is left (it replaces the previous plan), \
                           `Rule: ...` for an instruction the user gave that holds for the whole session. The lines \
-                          are kept with the first message, in your words, for as long as the session lasts; the \
-                          tool changes nothing else. Send it in the same response as your next tool call after a \
+                          are kept with the first message, in your words, for as long as the session lasts. Send it in the same response as your next tool call after a \
                           result settles something, and when the context asks for it; never as a response of \
                           its own, and never after your final result."
                 .into(),

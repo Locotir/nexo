@@ -480,7 +480,7 @@ impl Tool for Diagnostics {
                 .into(),
             parameters: json!({
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "The file, absolute or relative to the working directory."}},
+                "properties": {"path": {"type": "string", "description": "The file."}},
                 "required": ["path"]
             }),
         }

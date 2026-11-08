@@ -27,15 +27,14 @@ impl Tool for Read {
             name: "read".into(),
             description: "Read a text file. Returns its lines numbered (`   12│ text`), at most `limit` \
                           lines from line `offset` (1-based); the default is the first 2000 lines, and a \
-                          line longer than 2000 characters is cut. Use `grep` to find where something is \
-                          and `read` with `offset`/`limit` to look at that part of a large file. A PNG, JPEG, GIF, WebP, PPM, PGM \
+                          line longer than 2000 characters is cut. A PNG, JPEG, GIF, WebP, PPM, PGM \
                           or BMP file is shown as an image (at most 5 MB and 2000 px); a Jupyter notebook as its cells and outputs. Directories and other \
                           binary files are refused (use `ls` for a directory)."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file to read, absolute or relative to the working directory."},
+                    "path": {"type": "string", "description": "The file; relative paths start at the working directory."},
                     "offset": {"type": "integer", "minimum": 1, "description": "First line to return (1-based). Default 1."},
                     "limit": {"type": "integer", "minimum": 1, "description": "Lines to return. Default 2000."}
                 },

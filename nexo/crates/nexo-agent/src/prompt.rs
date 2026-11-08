@@ -75,26 +75,24 @@ pub fn with_directives(system: String, cfg: &AgentConfig, directives: Option<&st
 fn tool_guidance(tools: &ToolSet) -> String {
     let mut lines = Vec::new();
     let has = |n: &str| tools.get(n).is_some();
-    if has("note") {
-        lines.push("- `note`: when a result settles a fact (a value, a formula, an address, a format, the cause of an error), keep it with `note` as one line `Finding: ...`; keep what is left as one line `Plan: ...` and the user's standing instructions as `Rule: ...`. Older messages leave the context; the notes stay with the first message. Send it in the same response as your next tool call, never as a response of its own, and never after the final result.");
+    if has("read") || has("grep") {
+        lines.push("- Fewer steps: calls to `read`, `grep`, `glob`, `ls` and the web tools in one message run at the same time, so send every independent look together; several changes to one file go in one `edit` call (`edits`).");
     }
-    if has("diagnostics") {
-        lines.push("- `diagnostics`: after you edit a source file, ask its language server what is wrong with it (errors and warnings with their lines); it can be the one check.");
+    if has("note") {
+        lines.push("- `note`: keep each settled fact as `Finding: ...`, what is left as `Plan: ...`, the user's standing instructions as `Rule: ...`. Send it with your next tool call, never as a response of its own.");
     }
     if has("task") {
-        lines.push("- `task`: hand self-contained work to a sub-agent; only its short report comes back, so your own context stays small. Use it when a question needs reading across many files or a whole directory (`explore`, the default), when there are several independent searches or checks (one task call each, all in ONE message, so they run at the same time), for a long side job while you go on (`background: true`), and whenever the person asks for sub-agents or parallel work. `general` can also edit and run commands. Do it yourself when one or two reads or a single search will answer. The sub-agent sees nothing of this conversation: put all it needs in `prompt` (the goal, the files, what is ruled out, what to report).");
+        lines.push("- `task`: use it when a question needs reading across many files, for several independent searches or checks (one call each, all in ONE message), for a long side job (`background: true`), and whenever the person asks for sub-agents or parallel work. Do it yourself when one or two reads or a single search will answer. The sub-agent sees nothing of this conversation: put all it needs in `prompt`.");
     }
     if has("skill") {
-        lines.push("- `skill`: skills are folders of ready-made instructions; the tool's description lists them. When a task matches one, load it by name before you start and follow it.");
-    }
-    if has("ask_user") {
-        lines.push("- `ask_user`: when a choice is the person's to make (an approach, a name, which of several things), ask with a few options, the one you recommend first. Not for what you can find out yourself.");
+        lines.push("- `skill`: skills are folders of ready-made instructions; when a task matches one in the tool's list, load it before you start.");
     }
     if has("web_search") {
-        lines.push("- `web_search`: search the web for anything current or outside the repository (library docs and versions, error messages, APIs). Do not answer such questions from memory when you can check.");
+        lines
+            .push("- `web_search`: check anything current or outside the repository instead of answering from memory.");
     }
     if has("web_fetch") {
-        lines.push("- `web_fetch`: read a page as Markdown. Open the best results before relying on them, read on with `start` when a page is cut, and cite the URLs you used.");
+        lines.push("- `web_fetch`: open the best results before relying on them and cite their URLs.");
     }
     let mcp: Vec<&str> = tools.names().filter(|n| n.starts_with("mcp__")).collect();
     if !mcp.is_empty() {
@@ -309,7 +307,7 @@ mod tests {
     #[test]
     fn the_web_tools_get_their_guidance_only_when_present() {
         let with = tool_guidance(&nexo_tools::builtin());
-        assert!(with.contains("`web_search`: search the web") && with.contains("cite the URLs"), "{with}");
+        assert!(with.contains("`web_search`: check anything current") && with.contains("cite their URLs"), "{with}");
         let off = nexo_core::config::WebConfig { enabled: false, ..Default::default() };
         let without = tool_guidance(&nexo_tools::builtin_with(&off));
         assert!(!without.contains("web_"), "{without}");
@@ -330,5 +328,36 @@ mod tests {
         std::env::remove_var("NEXO_CONFIG_DIR");
         assert!(p.contains("Use tabs.") && p.contains("Tabs are four wide."), "{p}");
         assert!(p.contains("- web/AGENTS.md") && !p.contains("Web rules."), "{p}");
+    }
+}
+
+#[cfg(test)]
+mod size_budget {
+    use super::*;
+
+    /// Characters of every built-in tool spec (name, description, parameter schema) plus the tool guidance.
+    fn tool_text_chars() -> usize {
+        let set = nexo_tools::builtin();
+        let specs: usize = set
+            .specs()
+            .iter()
+            .map(|s| s.name.len() + s.description.len() + serde_json::to_string(&s.parameters).unwrap().len())
+            .sum();
+        specs + tool_guidance(&set).len()
+    }
+
+    /// 10565 characters (about 2600 tokens) when this budget was set; it may grow 10% and no more.
+    /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
+    /// model already knows about shells and search tools.
+    #[test]
+    fn the_tool_text_stays_within_its_budget() {
+        let n = tool_text_chars();
+        assert!(n <= 11_620, "tool descriptions and guidance take {n} characters; the budget is 11620");
+    }
+
+    #[test]
+    fn the_guidance_names_what_saves_steps() {
+        let g = tool_guidance(&nexo_tools::builtin());
+        assert!(g.contains("run at the same time") && g.contains("`edits`"), "{g}");
     }
 }

@@ -19,8 +19,7 @@ impl Tool for Recall {
         ToolSpec {
             name: "recall".into(),
             description: "Bring back, exactly as it was, a message this context left out: give the name it was \
-                          left out under (`m00042`). Use it instead of running a command again when you need what \
-                          it printed. `from` and `to` (lines, from 1) take part of a long message."
+                          left out under (`m00042`). Cheaper than running the command again. `from` and `to` (lines, from 1) take part of a long message."
                 .into(),
             parameters: json!({
                 "type": "object",

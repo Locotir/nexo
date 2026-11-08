@@ -33,14 +33,10 @@ impl Tool for Bash {
             name: "bash".into(),
             description: format!(
                 "Run a shell command ({}) in the working directory and return its output \
-                 (stdout and stderr interleaved) and exit code. Use it to build, test, run git, \
-                 and for anything the other tools do not cover; use `read`, `grep`, `glob` and \
-                 `ls` for a single look instead of cat, grep, find and ls; chain several steps with `&&` in \
-                 one call. Do not run builds or tests the project may not have set up. The command is killed after `timeout` \
+                 (stdout and stderr interleaved) and exit code. Prefer `read`, `grep`, `glob`, `ls` for plain looks at files. The command is killed after `timeout` \
                  seconds (default 120, at most 600); long output is cut in the middle, keeping \
-                 the head and the tail. Avoid interactive commands. With `background: true` the \
-                 command runs as a job while you go on working (servers, watchers, long builds and \
-                 test suites): the call returns its job id at once, a job that runs long may be stopped if it looks stuck, you are told \
+                 the head and the tail. With `background: true` the \
+                 command runs as a job while you go on working: the call returns its job id at once, a job that runs long may be stopped if it looks stuck, you are told \
                  when it ends, and the `jobs` tool reads its output or stops it. Background jobs end when the session \
                  ends; add `detach: true` for a service that must keep running after the task ends.",
                 match nexo_core::shell::shell().kind {
@@ -54,10 +50,10 @@ impl Tool for Bash {
                 "properties": {
                     "command": {"type": "string", "description": "The command line to run."},
                     "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds before the command is killed. Default 120."},
-                    "description": {"type": "string", "description": "A few words on what the command does (shown to the person)."},
-                    "background": {"type": "boolean", "description": "Run it as a background job and return at once. Default false."},
-                    "detach": {"type": "boolean", "description": "With `background`: start it in its own session, output to a log file, and leave it running when nexo exits. Stop it by pid. Default false."},
-                    "unsandboxed": {"type": "boolean", "description": "Only when the OS sandbox is on and a command failed because of it: run this one outside the sandbox. The person is asked first. Default false."}
+                    "description": {"type": "string", "description": "A few words on what it does, shown to the person."},
+                    "background": {"type": "boolean", "description": "Run it as a background job and return at once."},
+                    "detach": {"type": "boolean", "description": "With `background`: start it in its own session, output to a log file, and leave it running when nexo exits. Stop it by pid."},
+                    "unsandboxed": {"type": "boolean", "description": "Only when the OS sandbox is on and a command failed because of it: run this one outside the sandbox. The person is asked first."}
                 },
                 "required": ["command"]
             }),

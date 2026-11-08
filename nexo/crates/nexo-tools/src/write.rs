@@ -26,13 +26,12 @@ impl Tool for Write {
         ToolSpec {
             name: "write".into(),
             description: "Write a whole file, creating it and its parent directories, or replacing its \
-                          content. Prefer `edit` to change part of an existing file: it is smaller and \
-                          keeps what you did not mean to touch."
+                          content. Prefer `edit` for part of an existing file."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file to write, absolute or relative to the working directory."},
+                    "path": {"type": "string", "description": "The file."},
                     "content": {"type": "string", "description": "The complete new content of the file."}
                 },
                 "required": ["path", "content"]

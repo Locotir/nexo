@@ -26,16 +26,15 @@ impl Tool for Edit {
                           occur exactly once; include a few surrounding lines to make it unique, or set \
                           `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
                           `edits`, a list of {old_string, new_string, replace_all} applied in order; if one fails \
-                          nothing is written. Read the file first so the text is current. Answers with the lines \
-                          changed and a unified diff."
+                          nothing is written. Answers with the changed lines and a diff."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file to edit, absolute or relative to the working directory."},
+                    "path": {"type": "string", "description": "The file."},
                     "old_string": {"type": "string", "description": "The exact text to replace."},
                     "new_string": {"type": "string", "description": "The text that replaces it (empty to delete)."},
-                    "replace_all": {"type": "boolean", "description": "Replace every occurrence. Default false."},
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence."},
                     "edits": {"type": "array", "description": "Instead of the three above: several changes to this file, applied in order.", "items": {"type": "object", "properties": {
                         "old_string": {"type": "string"},
                         "new_string": {"type": "string"},

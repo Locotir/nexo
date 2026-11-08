@@ -31,7 +31,7 @@ impl Tool for Glob {
             description: "Find files by name pattern under a directory (gitignored files are skipped), \
                           newest first. A pattern without a `/` matches file names anywhere in the tree \
                           (`*.rs`); one with a `/` or `**` matches the path relative to the directory \
-                          (`src/**/*.rs`). At most 500 results. Use `grep` to search inside files."
+                          (`src/**/*.rs`). At most 500 results."
                 .into(),
             parameters: json!({
                 "type": "object",
