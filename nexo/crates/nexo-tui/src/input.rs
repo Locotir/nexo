@@ -669,7 +669,6 @@ impl Input {
             KeyCode::Char('u') if ctrl => {
                 self.editor.cancel_selection();
                 self.editor.delete_line_by_head();
-                self.hist = None;
                 return Edit::Changed;
             }
             // undo and redo of the draft's edits
@@ -717,18 +716,14 @@ impl Input {
             _ => {}
         }
         if self.delete_chip(key) {
-            self.hist = None;
             return Edit::Changed;
         }
         let before = self.editor.cursor();
-        let changed = self.editor.input(key);
+        self.editor.input(key);
         let now = self.editor.cursor();
         let to = self.snap(now, Some(now > before));
         if to != now {
             self.editor.move_cursor(CursorMove::Jump(to.0 as u16, to.1 as u16));
-        }
-        if changed {
-            self.hist = None;
         }
         Edit::Changed
     }
@@ -780,7 +775,6 @@ impl Input {
     /// Takes the ghost the draft showed: its text goes in at the cursor.
     pub fn accept_complete(&mut self, suffix: &str) {
         self.editor.insert_str(suffix);
-        self.hist = None;
     }
 
     fn history_up(&mut self) -> Edit {
@@ -1068,6 +1062,21 @@ mod tests {
         assert_eq!(i.text(), "draft");
     }
 
+    #[test]
+    fn editing_a_recalled_entry_keeps_the_stash_and_the_browse_position() {
+        let mut i = Input::new("");
+        i.push_history("first");
+        i.push_history("second");
+        i.set_text("half-written message");
+        i.key(k(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(i.text(), "second");
+        i.key(k(KeyCode::Char('!'), KeyModifiers::NONE));
+        i.key(k(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(i.text(), "first", "Up continues from the browsed index");
+        i.key(k(KeyCode::Down, KeyModifiers::NONE));
+        i.key(k(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(i.text(), "half-written message");
+    }
     #[test]
     fn replaces_the_word_at_the_cursor() {
         let mut i = Input::new("");
