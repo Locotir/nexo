@@ -15,10 +15,16 @@
 //! - forgotten: the distinctive words (names, paths, long numbers) of each reply that the whole history
 //!   held but the view the curator built for that request did not. The agent wrote them from material the
 //!   curator had left out, so a view that loses more of them risks more wrong answers or reads again.
-//! - blind: the tokens of results of the latest request the agent had not yet written about (no text, no `note` since it read
-//!   them) that the view left out, as a share of all such tokens, summed over the requests. The agent
-//!   writes its next text from them; when it paraphrases, `forgotten` sees no copied word, so a view can
+//! - blind: the tokens of results of the latest request the agent had not yet written about (no text, no `note`,
+//!   and no call drawing on a word of the result since it read them) that the view left out, counted by the
+//!   share of the result's lines the view lacks anywhere, as a share of all such tokens, summed over the requests.
+//!   Every oracle is scored with blind, denied and forgotten words too; the "fair oracle" (digested, lines
+//!   used later) is the reference the view's cost is compared with.
+//!   The agent writes its next text from them; when it paraphrases, `forgotten` sees no copied word, so a view can
 //!   drop what is still being read and look lossless.
+//! - short numbers: numbers of three digits and decimals, which `forgotten` does not see, copied by a reply,
+//!   held by the history and absent from the view (own line).
+//! - the cost is also priced with a provider that keeps prefixes for 3600 s (own line, view and plain).
 //! - denied: the tokens of the results the agent has just asked for that the view does not send in their place
 //!   (a pointer to a copy above, a note that they were left out), as a share of all such tokens. `blind` finds
 //!   the lines anywhere in the view; this asks whether the agent got the reading it asked for.
@@ -249,6 +255,45 @@ fn forgotten(reply: &Value, history: &[Value], view: &[Value], system: &str) -> 
     (copied.into_iter().filter(|w| !seen.contains(w)).collect(), n)
 }
 
+/// The short numbers of `text` that `distinctive_words` does not see: three-digit numbers and decimals
+/// (coins, counts, line numbers, prices), standing alone (not inside a word or a version string).
+fn short_numbers(text: &str) -> HashSet<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut found = HashSet::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+            i += 1;
+        }
+        let run: String = chars[start..i].iter().collect();
+        let run = run.trim_end_matches('.');
+        let alone = (start == 0 || !chars[start - 1].is_alphanumeric())
+            && chars.get(start + run.chars().count()).is_none_or(|c| !c.is_alphanumeric());
+        let decimal = run.matches('.').count() == 1 && !run.starts_with('.');
+        if alone && ((run.len() == 3 && run.bytes().all(|b| b.is_ascii_digit())) || decimal) {
+            found.insert(run.to_string());
+        }
+    }
+    found
+}
+
+/// The short numbers of `reply` that `history` holds but neither `view` nor `system` does, and how many of
+/// its short numbers `history` holds.
+fn forgotten_short(reply: &Value, history: &[Value], view: &[Value], system: &str) -> (usize, usize) {
+    let numbers_of =
+        |msgs: &[Value]| -> HashSet<String> { msgs.iter().flat_map(|m| short_numbers(&text_of(m))).collect() };
+    let mut seen = numbers_of(view);
+    seen.extend(short_numbers(system));
+    let held = numbers_of(history);
+    let copied: Vec<String> = short_numbers(&text_of(reply)).into_iter().filter(|n| held.contains(n)).collect();
+    (copied.iter().filter(|n| !seen.contains(*n)).count(), copied.len())
+}
+
 /// Whether `m` is the agent writing: an assistant message with text, or a `note` call.
 fn wrote(m: &Value) -> bool {
     m["role"] == "assistant"
@@ -260,6 +305,23 @@ fn wrote(m: &Value) -> bool {
             }),
             _ => false,
         }
+}
+
+/// Whether the agent has written about a result whose distinctive words are `result` in `later`: a later
+/// assistant message with text or a `note` call, or a call whose arguments draw on a word of the result
+/// (it read the result and acted on it, as a model that writes no text between calls does).
+fn wrote_about(later: &[Value], result: &HashSet<String>) -> bool {
+    later.iter().any(|m| {
+        wrote(m)
+            || (m["role"] == "assistant"
+                && match &m["content"] {
+                    Value::Array(blocks) => blocks
+                        .iter()
+                        .filter(|b| b["type"] == "tool_use")
+                        .any(|b| distinctive_words(&b["input"].to_string()).iter().any(|w| result.contains(w))),
+                    _ => false,
+                })
+    })
 }
 
 /// Where the latest request starts in `msgs`: the person's last message with text.
@@ -276,10 +338,12 @@ fn latest_request(msgs: &[Value]) -> usize {
 }
 
 /// The tokens of results of the latest request in `history` (after the person's last message) that the agent
-/// has not written about yet (no text and no `note` call in a later assistant message) that `view` leaves out (it keeps under half of their segments), and the tokens
-/// of all such results. The agent is still reading those: what it writes next draws on them, and a reply
-/// that paraphrases them shows no copied word for `forgotten` to catch. Results under `SMALL_RESULT` tokens
-/// are left out of both counts, as the engine leaves them in place.
+/// has not written about yet (no text, no `note` call, and no call that draws on a word of the result, in a
+/// later assistant message) that `view` leaves out, and the tokens of all such results. A result counts for
+/// the share of its lines (segments) the view lacks anywhere, so a copy elsewhere in the view shows the line.
+/// The agent is still reading those: what it writes next draws on them, and a reply that paraphrases them
+/// shows no copied word for `forgotten` to catch. Results under `SMALL_RESULT` tokens are left out of both
+/// counts, as the engine leaves them in place.
 fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
     const SMALL_RESULT: i64 = 100;
     let shown: HashSet<String> = view.iter().flat_map(segments).collect();
@@ -287,19 +351,21 @@ fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
     let (mut missing, mut open) = (0, 0);
     for (k, m) in history.iter().enumerate().skip(start) {
         let Some(Value::Array(blocks)) = m.get("content") else { continue };
-        if history[k + 1..].iter().any(wrote) {
-            continue;
-        }
         for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
             let one = json!({"role": "user", "content": [b]});
             let tokens = tokens_of(&one);
             if tokens < SMALL_RESULT {
                 continue;
             }
+            let words: HashSet<String> = distinctive_words(&text_of(&one)).into_iter().collect();
+            if wrote_about(&history[k + 1..], &words) {
+                continue;
+            }
             open += tokens;
             let segs = segments(&one);
-            if 2 * segs.iter().filter(|s| shown.contains(*s)).count() < segs.len() {
-                missing += tokens;
+            if !segs.is_empty() {
+                let lacks = segs.iter().filter(|s| !shown.contains(*s)).count() as i64;
+                missing += tokens * lacks / segs.len() as i64;
             }
         }
     }
@@ -424,6 +490,26 @@ fn bound(requests: &[Request], once: bool) -> (i64, i64) {
     (miss, hit)
 }
 
+/// How an oracle tells that the agent has digested a result: it may cut only what the agent has dealt with.
+#[derive(Clone, Copy, PartialEq)]
+enum Digest {
+    /// Cuts any result seen before.
+    No,
+    /// Only after a later reply with text or a `note` call (the engine's own definition).
+    Text,
+    /// Also after a call whose arguments draw on a word of the result.
+    Evidence,
+}
+
+/// What an oracle's views lose, scored as the curator's views are: `blind` and `denied` (missing, all
+/// tokens) and forgotten words.
+#[derive(Default)]
+struct Loss {
+    blind: (i64, i64),
+    denied: (i64, i64),
+    forgotten: usize,
+}
+
 /// The input cost (miss, hit tokens) of an oracle that knows the replies to come and cuts whole results, as
 /// a curator does: a result message seen before (not new in this request) and holding no distinctive word a
 /// reply from this request on copies may go, as a short stub. It is priced with the same prefix cache as the
@@ -436,7 +522,7 @@ fn bound(requests: &[Request], once: bool) -> (i64, i64) {
 /// (any seen result may then go), so only what is never used again leaves: the finest cut a curator could
 /// make, still paying the cache it breaks. With a larger `chunk` it keeps or drops runs of that many lines
 /// whole (a run stays when one of its lines is used later); 0 keeps nothing of a result it cuts.
-fn oracle(requests: &[Request], batched: bool, chunk: usize, digested: bool) -> (i64, i64, Vec<(i64, i64)>) {
+fn oracle(requests: &[Request], batched: bool, chunk: usize, digest: Digest) -> (i64, i64, Vec<(i64, i64)>, Loss) {
     let said: Vec<HashSet<String>> = (0..requests.len())
         .map(|i| {
             reply_to(requests, i).map(|m| distinctive_words(&text_of(m)).into_iter().collect()).unwrap_or_default()
@@ -449,6 +535,7 @@ fn oracle(requests: &[Request], batched: bool, chunk: usize, digested: bool) -> 
     let mut words: HashMap<String, Vec<String>> = HashMap::new();
     let mut cut: HashMap<String, Value> = HashMap::new();
     let (mut prev, mut miss, mut hit, mut per) = (Vec::<Value>::new(), 0i64, 0i64, Vec::new());
+    let mut loss = Loss::default();
     for (i, r) in requests.iter().enumerate() {
         let new = i.checked_sub(1).map_or(0, |p| requests[p].messages.len());
         let keys: Vec<String> = r.messages.iter().map(Value::to_string).collect();
@@ -456,9 +543,15 @@ fn oracle(requests: &[Request], batched: bool, chunk: usize, digested: bool) -> 
         let may: Vec<usize> = (0..new.min(keys.len()))
             .filter(|&j| has_result(&r.messages[j]) && !cut.contains_key(&keys[j]))
             .filter(|&j| {
-                !digested
+                digest == Digest::No
                     || j < start
-                    || r.messages[j + 1..].iter().any(wrote)
+                    || match digest {
+                        Digest::Evidence => {
+                            let ws: HashSet<String> = distinctive_words(&text_of(&r.messages[j])).into_iter().collect();
+                            wrote_about(&r.messages[j + 1..], &ws)
+                        }
+                        _ => r.messages[j + 1..].iter().any(wrote),
+                    }
                     || repeats(&r.messages[..j], &r.messages[j])
             })
             .filter(|&j| {
@@ -474,7 +567,7 @@ fn oracle(requests: &[Request], batched: bool, chunk: usize, digested: bool) -> 
             let stub = |j: usize| {
                 let m = &r.messages[j];
                 // a result whose lines an earlier one holds is left out whole: the earlier copy stays
-                let again = digested && repeats(&r.messages[..j], m);
+                let again = digest != Digest::No && repeats(&r.messages[..j], m);
                 let shrink = |text: String| {
                     let kept: Vec<&str> = if chunk > 0 && !again {
                         // runs of `chunk` lines stay or go whole: a run stays when one of its lines is used later
@@ -519,6 +612,15 @@ fn oracle(requests: &[Request], batched: bool, chunk: usize, digested: bool) -> 
         }
         let view: Vec<Value> =
             r.messages.iter().zip(&keys).map(|(m, k)| cut.get(k).cloned().unwrap_or_else(|| m.clone())).collect();
+        for (acc, (a, b)) in
+            [(&mut loss.blind, blind(&r.messages, &view)), (&mut loss.denied, denied(&r.messages, &view))]
+        {
+            acc.0 += a;
+            acc.1 += b;
+        }
+        if let Some(said) = reply_to(requests, i) {
+            loss.forgotten += forgotten(said, &r.messages, &view, &r.system).0.len();
+        }
         let h = cached(&prev, &view) + if i > 0 { r.system_tokens as i64 } else { 0 };
         let all = view.iter().map(tokens_of).sum::<i64>() + r.system_tokens as i64;
         hit += h;
@@ -526,7 +628,7 @@ fn oracle(requests: &[Request], batched: bool, chunk: usize, digested: bool) -> 
         per.push((all - h, h));
         prev = view;
     }
-    (miss, hit, per)
+    (miss, hit, per, loss)
 }
 
 /// Whether every result line of `m` (8 characters or more, trimmed) is already in a result of `before`:
@@ -1626,6 +1728,11 @@ fn main() {
     // a prefix cache, message by message: what a view it holds sent unchanged at the start is a hit
     let (mut prev_view, mut sum_miss, mut sum_hit, mut per_view) = (Vec::<Value>::new(), 0i64, 0i64, Vec::new());
     let (mut cache, mut plain_cache) = (Cache { life, sent: Vec::new() }, Cache { life, sent: Vec::new() });
+    // the same two with a provider that keeps prefixes for an hour (one slot or `--life` shows the other end)
+    let (mut long_cache, mut long_plain) =
+        (Cache { life: 3600.0, sent: Vec::new() }, Cache { life: 3600.0, sent: Vec::new() });
+    let (mut long_miss, mut long_hit, mut long_plain_miss, mut long_plain_hit) = (0i64, 0i64, 0i64, 0i64);
+    let (mut short_lost, mut short_copied) = (0usize, 0usize);
     let (mut replies, mut lost_replies, mut lost_words, mut lost_first) = (0, 0, 0, Vec::<String>::new());
     let mut tally = nexo_curator::LostTally::default();
     let mut copied_words = 0;
@@ -1658,6 +1765,9 @@ fn main() {
         }
         if let Some(said) = reply_to(&requests, i) {
             let (lost, held) = forgotten(said, &r.messages, &reply.view, &r.system);
+            let (lost_short, held_short) = forgotten_short(said, &r.messages, &reply.view, &r.system);
+            short_lost += lost_short;
+            short_copied += held_short;
             copied_words += held;
             tally.add(i + 1, &lost);
             replies += 1;
@@ -1705,6 +1815,13 @@ fn main() {
         let hit = plain_cache.send(&r.messages, r.system_tokens as i64, at);
         plain_hit += hit;
         plain_miss += raw + r.system_tokens as i64 - hit;
+        let all_view = reply.view.iter().map(tokens_of).sum::<i64>() + r.system_tokens as i64;
+        let hit = long_cache.send(&reply.view, r.system_tokens as i64, at);
+        long_hit += hit;
+        long_miss += all_view - hit;
+        let hit = long_plain.send(&r.messages, r.system_tokens as i64, at);
+        long_plain_hit += hit;
+        long_plain_miss += raw + r.system_tokens as i64 - hit;
         // REPLAY_MISS=1 prints the tokens each request misses in the cache, this view and plain
         if std::env::var("REPLAY_MISS").is_ok_and(|v| v == "1") {
             println!("r{} miss view {} plain {}", i + 1, per_view[i].0, raw + r.system_tokens as i64 - hit);
@@ -1749,20 +1866,31 @@ fn main() {
     let (once_miss, once_hit) = bound(&requests, true);
     let (plain, now, low) = (dollars(plain_miss, plain_hit), dollars(sum_miss, sum_hit), dollars(low_miss, low_hit));
     println!(
+        "prefix cache kept 3600 s: input cost {:.4} $ (plain {:.4} $)",
+        dollars(long_miss, long_hit),
+        dollars(long_plain_miss, long_plain_hit)
+    );
+    println!(
         "efficiency: {:.1}% of the most a view can save (plain {plain:.4} $, this view {now:.4} $, least with nothing forgotten {low:.4} $)",
         if plain > low { 100.0 * (plain - now) / (plain - low) } else { 100.0 }
     );
-    for (chunk, digested, what) in [
-        (0, false, "whole results"),
-        (1, false, "results down to the lines used later"),
-        (1, true, "results the agent has written about down to the lines used later"),
+    let share = |part: i64, whole: i64| if whole > 0 { 100.0 * part as f64 / whole as f64 } else { 0.0 };
+    let mut fair = None;
+    for (chunk, digest, what) in [
+        (0, Digest::No, "whole results"),
+        (1, Digest::No, "results down to the lines used later"),
+        (1, Digest::Text, "results the agent has written about down to the lines used later"),
+        (1, Digest::Evidence, "results the agent has written or acted on down to the lines used later"),
     ] {
-        let (or, per) = [false, true]
-            .map(|b| oracle(&requests, b, chunk, digested))
-            .map(|(m, h, per)| (dollars(m, h), per))
+        let (or, per, loss) = [false, true]
+            .map(|b| oracle(&requests, b, chunk, digest))
+            .map(|(m, h, per, loss)| (dollars(m, h), per, loss))
             .into_iter()
-            .fold((f64::MAX, Vec::new()), |a, b| if b.0 < a.0 { b } else { a });
-        if digested && std::env::var("REPLAY_GAP").is_ok_and(|v| v == "1") {
+            .fold((f64::MAX, Vec::new(), Loss::default()), |a, b| if b.0 < a.0 { b } else { a });
+        if digest == Digest::Text {
+            fair = Some(or);
+        }
+        if digest == Digest::Text && std::env::var("REPLAY_GAP").is_ok_and(|v| v == "1") {
             // the requests where this view costs most over the fair oracle, in millionths of a dollar
             let mut gaps: Vec<(usize, f64, f64)> = per_view
                 .iter()
@@ -1776,8 +1904,22 @@ fn main() {
             }
         }
         println!(
-            "oracle that cuts {what}: {or:.4} $; this view reaches {:.1}% of what it saves over plain",
-            if plain > or { 100.0 * (plain - now) / (plain - or) } else { 100.0 }
+            "oracle that cuts {what}: {or:.4} $; this view reaches {:.1}% of what it saves over plain; blind {} of {} tokens ({:.1}%), denied {} of {} ({:.1}%), forgotten {} words",
+            if plain > or { 100.0 * (plain - now) / (plain - or) } else { 100.0 },
+            loss.blind.0,
+            loss.blind.1,
+            share(loss.blind.0, loss.blind.1),
+            loss.denied.0,
+            loss.denied.1,
+            share(loss.denied.0, loss.denied.1),
+            loss.forgotten
+        );
+    }
+    if let Some(fair) = fair {
+        println!(
+            "fair oracle (reference: digested, lines used later): {fair:.4} $; this view {now:.4} $ is {:+.4} $ ({:+.1}%) from it",
+            now - fair,
+            if fair > 0.0 { 100.0 * (now - fair) / fair } else { 0.0 }
         );
     }
     if std::env::var("REPLAY_CHUNKS").is_ok_and(|v| v == "1") {
@@ -1785,7 +1927,7 @@ fn main() {
         for chunk in [2, 4, 8, 16, 32, 64] {
             let or = [false, true]
                 .map(|b| {
-                    let (m, h, _) = oracle(&requests, b, chunk, false);
+                    let (m, h, _, _) = oracle(&requests, b, chunk, Digest::No);
                     dollars(m, h)
                 })
                 .into_iter()
@@ -1833,9 +1975,11 @@ fn main() {
     } else {
         println!("forgotten by kind: 0 numbers, 0 ids/paths, 0 other; 0 distinct");
     }
-    let share = |part: i64, whole: i64| if whole > 0 { 100.0 * part as f64 / whole as f64 } else { 0.0 };
     println!(
-        "blind: {blind_tokens} of {open_tokens} tokens of results not yet written about were left out ({:.1}%)",
+        "forgotten short numbers (3 digits, decimals): {short_lost} of {short_copied} the replies took from the history"
+    );
+    println!(
+        "blind: {blind_tokens} of {open_tokens} tokens of results not yet written about or acted on were left out ({:.1}%)",
         share(blind_tokens, open_tokens)
     );
     println!(
@@ -1925,4 +2069,46 @@ fn shape(view: &[Value]) -> String {
         }
     }
     view.iter().map(|m| walk(m).to_string()).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn history(call: Value) -> Vec<Value> {
+        let listing = (0..40).map(|i| format!("quillmark_module_{i}.rs")).collect::<Vec<_>>().join("\n");
+        vec![
+            json!({"role": "user", "content": "list the files"}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "ls", "input": {"p": "."}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": listing}]}),
+            call,
+        ]
+    }
+
+    fn dropped(h: &[Value]) -> Vec<Value> {
+        let mut view = h.to_vec();
+        view[2] = json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "[out]"}]});
+        view
+    }
+
+    #[test]
+    fn blind_is_zero_when_a_later_call_drew_on_the_result() {
+        let credited = history(json!({"role": "assistant", "content": [
+            {"type": "tool_use", "id": "b", "name": "cat", "input": {"path": "quillmark_module_7.rs"}}]}));
+        let h = credited;
+        assert_eq!(blind(&h, &dropped(&h)), (0, 0));
+        let unrelated = history(json!({"role": "assistant", "content": [
+            {"type": "tool_use", "id": "b", "name": "cat", "input": {"path": "somewhere_else.rs"}}]}));
+        let (missing, open) = blind(&unrelated, &dropped(&unrelated));
+        assert!(open > 0 && missing == open, "an unread result left out is blind: {missing} of {open}");
+        assert_eq!(blind(&unrelated, &unrelated), (0, open));
+    }
+
+    #[test]
+    fn short_numbers_are_three_digits_and_decimals_standing_alone() {
+        let found = short_numbers("paid 250 coins, rate 0.75, v1.2 and abc123 and 1234 and 12");
+        let mut found: Vec<_> = found.into_iter().collect();
+        found.sort();
+        assert_eq!(found, ["0.75", "250"]);
+    }
 }

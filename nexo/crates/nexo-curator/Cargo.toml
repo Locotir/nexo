@@ -13,3 +13,7 @@ regex = { workspace = true }
 fancy-regex = { workspace = true }
 rustc-hash = { workspace = true }
 indexmap = { workspace = true }
+
+[[example]]
+name = "replay"
+test = true
