@@ -510,7 +510,7 @@ pub enum AgentEvent {
         messages_total: usize,
         policy: String,
         note: Option<String>,
-        /// What the policy is doing, for the title bar: "curator −38%",
+        /// What the policy is doing, for the title bar: "curator +2 in -5 out",
         /// "curator idle", "curator off", "plain", "compact".
         #[serde(default)]
         label: String,

@@ -372,7 +372,7 @@ async fn play(events: &nexo_core::agent::EventTx, commands: &mut nexo_core::agen
         messages_total: 8,
         policy: "curator".into(),
         note: Some("2 messages left the view".into()),
-        label: "curator −50%".into(),
+        label: "curator +2 in -1 out".into(),
         detail: Some("curator: this call sends 7.4k tokens of the 14.9k tokens kept (50% less)".into()),
     });
     let _ = events.send(AgentEvent::Notice {

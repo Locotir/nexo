@@ -121,7 +121,7 @@ fn fill(a: &mut App) {
         messages_total: 4,
         policy: "curator".into(),
         note: None,
-        label: "curator −27%".into(),
+        label: "curator +1 in".into(),
         detail: None,
     });
     a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "compacted 2 messages".into() });
@@ -178,14 +178,14 @@ fn the_layout_at_100_by_30() {
         wide[wide.len() - 1]
     );
     assert!(wide[wide.len() - 1].contains("81% cached · 1 call"), "{}", wide[wide.len() - 1]);
-    let mid = draw(&mut a, 140, 30);
+    let mid = draw(&mut a, 150, 30);
     let mid = &mid[mid.len() - 1];
     assert!(
         mid.contains("81% cached") && !mid.contains("/tmp/project"),
         "the directory goes before the cache share: {mid}"
     );
     assert!(
-        wide[wide.len() - 1].contains("━━━━━──━ 69% 6.2k/9.0k curator −27% │ mem 9.0k"),
+        wide[wide.len() - 1].contains("━━━━━──━ 69% 6.2k/9.0k curator +1 in │ session 9.0k tok"),
         "{}",
         wide[wide.len() - 1]
     );
@@ -197,7 +197,7 @@ fn the_layout_at_100_by_30() {
         narrow[narrow.len() - 1]
     );
     assert!(
-        !narrow[narrow.len() - 1].contains("mem "),
+        !narrow[narrow.len() - 1].contains("session "),
         "the memory goes before the gauge: {}",
         narrow[narrow.len() - 1]
     );

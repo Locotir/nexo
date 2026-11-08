@@ -239,23 +239,18 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         let counts = if guessed { fmt_k(num) } else { format!("{}/{}", fmt_k(num), fmt_k(den)) };
         (cells, Seg { text: counts, style: base.fg(theme.dim) })
     };
-    // what the policy does ("curator −38%", "curator idle"), not only its name
+    // what the policy does ("curator", "curator +2 in -5 out", "curator idle"), not only its name
     let policy = app
         .context
         .as_ref()
         .map(|c| if c.label.is_empty() { c.policy.clone() } else { c.label.clone() })
         .filter(|p| !p.is_empty());
-    // what the curator keeps out of the view, when the events say so
-    let kept = app.context.as_ref().filter(|c| c.history_tokens > c.view_tokens).map(|c| Seg {
-        text: format!("kept out {:>5}", fmt_k(c.history_tokens - c.view_tokens)),
-        style: base.fg(theme.info),
-    });
-    // the whole memory kept, in tokens; what each call sends is the gauge
+    // every token of the session so far (what each call sends is the gauge); "tok" so nobody reads it as RAM
     let mem = app
         .context
         .as_ref()
         .filter(|c| c.history_tokens > 0)
-        .map(|c| Seg { text: format!("mem {}", fmt_k(c.history_tokens)), style: base.fg(theme.warn2) })
+        .map(|c| Seg { text: format!("session {} tok", fmt_k(c.history_tokens)), style: base.fg(theme.warn2) })
         // a loaded conversation the curator is still counting
         .or_else(|| {
             (app.context.is_none() && app.context_wait)
@@ -373,11 +368,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                     }
                 }
                 "cache" if k.extra && !extra.is_empty() => {
-                    let mut g: Vec<Seg> = extra.iter().map(|e| Seg { text: e.text.clone(), style: e.style }).collect();
-                    // the savings go first when the bar narrows, with the directory
-                    if let (true, Some(kp)) = (k.dir, &kept) {
-                        g.push(Seg { text: format!(" · {}", kp.text), style: kp.style });
-                    }
+                    let g: Vec<Seg> = extra.iter().map(|e| Seg { text: e.text.clone(), style: e.style }).collect();
                     out.push(g);
                 }
                 _ => {}
@@ -1442,7 +1433,7 @@ pub fn hints_shown(app: &App) -> bool {
 
 /// What the memory figure says while the curator is still counting a loaded conversation.
 fn mem_waiting(spinner: usize) -> String {
-    format!("mem {} computing…", SPINNER[(spinner / 2) % SPINNER.len()])
+    format!("session {} counting…", SPINNER[(spinner / 2) % SPINNER.len()])
 }
 
 /// The right part of the hint bar with everything on it.

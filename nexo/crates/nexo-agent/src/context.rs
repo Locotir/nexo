@@ -95,7 +95,7 @@ pub trait ContextPolicy: Send {
 }
 
 /// What the interface shows of the context policy: a short label for the title
-/// bar (`curator −38%`, `curator idle`, `plain`, and `curator off` when `auto`
+/// bar (`curator`, `curator idle`, `plain`, and `curator off` when `auto`
 /// or `curator` fell back to everything) and the line `/context` and `/status` print.
 pub fn describe(policy: &dyn ContextPolicy, history_tokens: u64, view_tokens: u64) -> (String, String) {
     let name = policy.name();
@@ -113,10 +113,10 @@ pub fn describe(policy: &dyn ContextPolicy, history_tokens: u64, view_tokens: u6
             // ASCII only: a sign and a word read the same in every terminal
             let mut tag = String::new();
             if a > 0 {
-                tag.push_str(&format!("  +{a} in"));
+                tag.push_str(&format!(" +{a} in"));
             }
             if r > 0 {
-                tag.push_str(&format!("  -{r} out"));
+                tag.push_str(&format!(" -{r} out"));
             }
             let what = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
             let line = format!(
@@ -136,7 +136,8 @@ fn describe_base(policy: &dyn ContextPolicy, name: &str, history_tokens: u64, vi
             let saved = saving(history_tokens, view_tokens);
             if saved > 0 {
                 (
-                    format!("curator −{saved}%"),
+                    // the share saved is in the detail; on the bar it reads as noise once the history is huge
+                    "curator".to_string(),
                     format!(
                         "curator: this call sends {} of the {} kept ({saved}% less)",
                         k(view_tokens),
@@ -566,20 +567,20 @@ mod tests {
         let mut c = BuiltIn::new("").unwrap();
         c.view(0, &history()).await.unwrap();
         let (label, detail) = describe(&c, 100_000, 62_000);
-        assert!(label.starts_with("curator −38%  +") && label.ends_with(" in"), "{label}");
+        assert!(label.starts_with("curator +") && label.ends_with(" in"), "{label}");
         assert!(label[label.find('+').unwrap()..].is_ascii(), "{label}");
         assert!(detail.contains("This call:") && detail.contains("put in"), "{detail}");
         c.moved = (2, 5);
-        assert_eq!(describe(&c, 100_000, 62_000).0, "curator −38%  +2 in  -5 out");
+        assert_eq!(describe(&c, 100_000, 62_000).0, "curator +2 in -5 out");
         c.moved = (0, 0);
-        assert_eq!(describe(&c, 100_000, 62_000).0, "curator −38%");
+        assert_eq!(describe(&c, 100_000, 62_000).0, "curator");
     }
 
     #[test]
     fn the_label_says_what_the_policy_does() {
         let c = BuiltIn::new("").unwrap();
         let (label, detail) = describe(&c, 100_000, 62_000);
-        assert_eq!(label, "curator −38%");
+        assert_eq!(label, "curator");
         assert!(detail.contains("62k tokens of the 100k tokens"), "{detail}");
         let (label, detail) = describe(&c, 20_000, 19_900);
         assert_eq!(label, "curator idle");

@@ -95,18 +95,20 @@ fn rgb(hex: u32) -> Color {
 }
 
 impl Theme {
-    /// nexo's own colours (Monokai's) on Monokai's warm charcoal ground.
+    /// nexo's own colours (Monokai's) over the terminal's own ground: the window and the status bar
+    /// paint no background, so a transparent or tinted terminal shows through.
     pub fn nexo() -> Theme {
         Theme {
             name: "nexo",
-            description: "the default colours on the Monokai charcoal ground (#272822)",
-            bg: rgb(0x272822),
+            description:
+                "the default colours over the terminal's own background (transparent terminals stay transparent)",
+            bg: Color::Reset,
             bg_alt: rgb(0x2f302a),
             code_bg: rgb(0x2f302a),
             highlight_fg: rgb(0x272822),
             diff_add_bg: rgb(0x2f3b1c),
             diff_del_bg: rgb(0x40202b),
-            bar_bg: rgb(0x1e1f1a),
+            bar_bg: Color::Reset,
             modal_bg: rgb(0x2b2c26),
             ..Theme::dark()
         }
@@ -938,6 +940,12 @@ pub fn light_background(colorfgbg: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_nexo_theme_leaves_the_terminal_ground_alone() {
+        let t = super::Theme::nexo();
+        assert_eq!((t.bg, t.bar_bg), (ratatui::style::Color::Reset, ratatui::style::Color::Reset));
+    }
+
+    #[test]
     fn auto_reads_the_terminal_background() {
         assert!(light_background(Some("0;15")));
         assert!(light_background(Some("0;default;7")));
@@ -965,7 +973,8 @@ mod tests {
         for n in NAMES.iter().filter(|n| **n != "mono") {
             let t = Theme::by_name(n).unwrap();
             for c in t.colours() {
-                assert!(matches!(c, Color::Rgb(..)), "{n}: {c:?} is not RGB");
+                // nexo paints no ground of its own: the terminal's shows through
+                assert!(matches!(c, Color::Rgb(..)) || (*n == "nexo" && c == Color::Reset), "{n}: {c:?} is not RGB");
             }
             assert_eq!(t.base().bg, Some(t.bg));
             assert_eq!(t.base().fg, Some(t.fg));
@@ -1115,7 +1124,10 @@ mod tests {
         // what it maps to follows the terminal the tests run in (`TERM=linux` has 16 colours)
         let ansi16 = colour_depth() == Depth::Ansi16;
         for c in t.colours() {
-            assert!(if ansi16 { !matches!(c, Color::Rgb(..)) } else { matches!(c, Color::Indexed(_)) }, "{c:?}");
+            assert!(
+                c == Color::Reset || if ansi16 { !matches!(c, Color::Rgb(..)) } else { matches!(c, Color::Indexed(_)) },
+                "{c:?}"
+            );
         }
         assert_ne!(t, Theme::nexo());
     }

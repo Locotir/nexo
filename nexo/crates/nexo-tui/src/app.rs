@@ -57,7 +57,7 @@ pub struct ContextInfo {
     pub messages_total: usize,
     pub policy: String,
     pub note: Option<String>,
-    /// What the policy is doing ("curator −38%", "curator idle") and why.
+    /// What the policy is doing ("curator", "curator +2 in -5 out", "curator idle") and why.
     pub label: String,
     pub detail: Option<String>,
 }
@@ -7262,7 +7262,7 @@ mod tests {
         assert!(a.context_wait);
         assert!(a.load() != crate::frame::Load::Idle, "the spinner needs the beat");
         let before = texts(&a);
-        assert!(before.contains("mem ⠋ computing…"), "{before}");
+        assert!(before.contains("session ⠋ counting…"), "{before}");
         a.spinner += 2;
         assert_ne!(texts(&a), before, "the frame advances with the beat");
         a.handle_agent(AgentEvent::Context {
@@ -7279,7 +7279,7 @@ mod tests {
         });
         assert!(!a.context_wait);
         let after = texts(&a);
-        assert!(after.contains("mem 1.0k") && !after.contains("computing"), "{after}");
+        assert!(after.contains("session 1.0k tok") && !after.contains("counting"), "{after}");
     }
 
     #[test]
@@ -7306,14 +7306,16 @@ mod tests {
             messages_total: 1,
             policy: "curator".into(),
             note: None,
-            label: "curator −60%".into(),
+            label: "curator +3 in".into(),
             detail: None,
         });
         let texts = |w: usize| -> Vec<String> {
             title_segments(&a, w).iter().map(|g| g.iter().map(|s| s.text.clone()).collect::<String>()).collect()
         };
         let full = texts(400);
-        assert!(full.iter().any(|t| t == "mem 1.0k"), "{full:?}");
+        assert!(full.iter().any(|t| t == "session 1.0k tok"), "{full:?}");
+        // mem and the gauge already say it; a separate "kept out" figure was the same number twice
+        assert!(!full.iter().any(|t| t.contains("kept out")), "{full:?}");
         assert!(full.iter().any(|t| t.contains("main")), "{full:?}");
         assert!(full.iter().any(|t| t.contains("◎ goal")), "{full:?}");
         let mut last = full.len();
@@ -7327,7 +7329,7 @@ mod tests {
         let first_without = |needle: &str| order.iter().position(|t| !t.iter().any(|x| x.contains(needle)));
         let dir = first_without("project-alpha").unwrap();
         let branch = first_without("main").unwrap();
-        let mem = first_without("mem ").unwrap();
+        let mem = first_without("session ").unwrap();
         let counts = first_without("/1.0k").unwrap();
         assert!(dir <= branch && branch <= mem && mem <= counts, "{dir} {branch} {mem} {counts}");
         a.session_title = "a very long session name that would eat the key hints".into();

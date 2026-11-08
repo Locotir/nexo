@@ -1,4 +1,4 @@
-//! Contrast of the status bar's stacked gauge, the "kept out" piece and the activity phase:
+//! Contrast of the status bar's stacked gauge, the info text and the activity phase:
 //! every coloured piece reads at AA (4.5:1) on the ground it is drawn on, in every colour theme.
 
 use nexo_tui::render::gauge::{stacked, Split};
@@ -78,10 +78,10 @@ fn the_light_themes_faint_text_borders_and_selection_can_be_seen() {
 }
 
 #[test]
-fn kept_out_piece_passes_aa_on_the_bar() {
+fn info_text_passes_aa_on_the_bar() {
     for t in rgb_themes() {
         let r = ratio(t.info, t.bar_bg).unwrap_or(0.0);
-        assert!(r >= 4.5, "{}: kept out ({:?}) on {:?}: {r:.2}", t.name, t.info, t.bar_bg);
+        assert!(r >= 4.5, "{}: info ({:?}) on {:?}: {r:.2}", t.name, t.info, t.bar_bg);
     }
 }
 
