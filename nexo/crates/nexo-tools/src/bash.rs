@@ -64,6 +64,14 @@ impl Tool for Bash {
         ToolKind::Exec
     }
 
+    fn call_kind(&self, args: &Value) -> ToolKind {
+        let plain = !bool_arg(args, "background") && !bool_arg(args, "detach") && !bool_arg(args, "unsandboxed");
+        match str_arg(args, "command") {
+            Some(c) if plain && only_looks(c) => ToolKind::Read,
+            _ => ToolKind::Exec,
+        }
+    }
+
     fn sandbox_holds(&self, args: &Value, sandbox: &nexo_core::sandbox::SandboxSettings) -> bool {
         !bool_arg(args, "unsandboxed") && crate::sandbox::auto_allows(sandbox)
     }
@@ -566,9 +574,148 @@ pub(crate) fn kill_group(pid: Option<u32>) {
     let _ = pid;
 }
 
+/// Whether `command` only looks at things: every part of the pipeline or list is one of the
+/// reading programs, and nothing writes (no redirection to a file, no `sed -i`, no `find -delete`,
+/// no substitution that could run something else). Such a command may run beside reads.
+fn only_looks(command: &str) -> bool {
+    let cleaned = command.replace("2>&1", " ").replace("&>/dev/null", " ").replace(">/dev/null", " ");
+    let mut segments: Vec<Vec<String>> = vec![Vec::new()];
+    let mut word = String::new();
+    let mut has_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = cleaned.chars().peekable();
+    macro_rules! end_word {
+        () => {
+            if has_word {
+                segments.last_mut().unwrap().push(std::mem::take(&mut word));
+                has_word = false;
+            }
+        };
+    }
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else if q == '"' && (c == '`' || (c == '$' && chars.peek() == Some(&'('))) {
+                    return false;
+                } else if q == '"' && c == '\\' {
+                    word.extend(chars.next());
+                } else {
+                    word.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    has_word = true;
+                }
+                '\\' => {
+                    has_word = true;
+                    word.extend(chars.next());
+                }
+                '>' | '<' | '`' | '(' | ')' | '{' | '}' => return false,
+                '$' if chars.peek() == Some(&'(') => return false,
+                '|' | ';' | '\n' => {
+                    end_word!();
+                    if c == '|' && chars.peek() == Some(&'|') {
+                        chars.next();
+                    }
+                    segments.push(Vec::new());
+                }
+                '&' => {
+                    if chars.next() != Some('&') {
+                        return false;
+                    }
+                    end_word!();
+                    segments.push(Vec::new());
+                }
+                c if c.is_whitespace() => end_word!(),
+                c => {
+                    word.push(c);
+                    has_word = true;
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return false;
+    }
+    if has_word {
+        segments.last_mut().unwrap().push(word);
+    }
+    let mut any = false;
+    for seg in segments.iter().filter(|s| !s.is_empty()) {
+        if !reads_only(seg) {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
+/// One command (its words) of the reading kind.
+fn reads_only(words: &[String]) -> bool {
+    let flags = || words[1..].iter().filter(|w| w.starts_with('-'));
+    match words[0].as_str() {
+        "cat" | "head" | "tail" | "grep" | "egrep" | "fgrep" | "rg" | "ls" | "wc" | "stat" | "file" => true,
+        "sed" => {
+            flags().any(|w| w == "-n" || w == "--quiet" || w == "--silent")
+                && !flags().any(|w| w.starts_with("--in-place") || (!w.starts_with("--") && w.contains('i')))
+                && words[1..].iter().find(|w| !w.starts_with('-')).is_some_and(|s| prints_lines(s))
+        }
+        "find" => !words[1..].iter().any(|w| {
+            matches!(
+                w.as_str(),
+                "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete" | "-fprint" | "-fprint0" | "-fprintf" | "-fls"
+            )
+        }),
+        "git" => {
+            matches!(words.get(1).map(String::as_str), Some("log" | "diff" | "status" | "show"))
+                && !words.iter().any(|w| w.starts_with("--output") || w == "--ext-diff")
+        }
+        _ => false,
+    }
+}
+
+/// A `sed -n` script that only prints lines: `5p`, `10,20p`, `$p`, `/text/p`.
+fn prints_lines(script: &str) -> bool {
+    let Some(addr) = script.strip_suffix('p') else { return false };
+    addr.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '$')
+        || (addr.len() >= 2 && addr.starts_with('/') && addr.ends_with('/') && !addr.contains(';'))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_only_commands_are_read_kind() {
+        let kind = |c: &str| Bash.call_kind(&json!({"command": c}));
+        for (c, want) in [
+            ("cat x", ToolKind::Read),
+            ("sed -n '1,20p' src/a.rs", ToolKind::Read),
+            ("sed -i 's/a/b/' x", ToolKind::Exec),
+            ("sed -n '1w out' x", ToolKind::Exec),
+            ("cargo test", ToolKind::Exec),
+            ("cat a | grep b", ToolKind::Read),
+            ("grep -rn 'a|b' src 2>&1 | head -5", ToolKind::Read),
+            ("cat a > b", ToolKind::Exec),
+            ("cat a >> b", ToolKind::Exec),
+            ("ls -la && git log --oneline -5", ToolKind::Read),
+            ("git status", ToolKind::Read),
+            ("git checkout main", ToolKind::Exec),
+            ("find . -name '*.rs' -delete", ToolKind::Exec),
+            ("find . -name '*.rs'", ToolKind::Read),
+            ("cat a | tee b", ToolKind::Exec),
+            ("rm x", ToolKind::Exec),
+            ("cat $(echo x)", ToolKind::Exec),
+            ("tail -f log &", ToolKind::Exec),
+            ("", ToolKind::Exec),
+        ] {
+            assert_eq!(kind(c), want, "{c}");
+        }
+        assert_eq!(Bash.call_kind(&json!({"command": "cat x", "background": true})), ToolKind::Exec);
+    }
 
     #[tokio::test]
     async fn runs_and_reports_output_and_exit_code() {

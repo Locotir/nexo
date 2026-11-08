@@ -78,6 +78,7 @@ pub(super) async fn start_turn(
     attachments: Vec<Attachment>,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
+    let mut attachments = attachments;
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
     let text = match &hub {
@@ -86,6 +87,8 @@ pub(super) async fn start_turn(
     };
     {
         let mut st = state.lock().await;
+        let named = named_files(&st, &text, &attachments);
+        attachments.extend(named);
         // a server changed its tools since the last turn: they take effect now, not in the middle of one
         if let Some(h) = st.mcp.clone() {
             let st = &mut *st;
@@ -178,7 +181,9 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     if st.inbox.is_empty() {
         return false;
     }
-    while let Some((text, attachments)) = st.inbox.pop_front() {
+    while let Some((text, mut attachments)) = st.inbox.pop_front() {
+        let named = named_files(&st, &text, &attachments);
+        attachments.extend(named);
         push_user(&mut st, text, &attachments);
     }
     person_spoke(&mut st);
@@ -441,4 +446,66 @@ pub(super) async fn view_now(st: &mut State) -> View {
     let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
     emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
     view
+}
+
+/// The largest file a request attaches by naming it.
+const NAMED_FILE_BYTES: u64 = 24_000;
+/// The most files one request attaches by naming them.
+const NAMED_FILES: usize = 3;
+
+/// The files a request names (a word with a `/` or an extension) that exist under the working
+/// directory, are text of at most 24 KB and are not attached already: up to three, attached as if
+/// the person had written `@path`, so the model starts with them and needs no step to read them.
+fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachment> {
+    if !st.config.agent.attach_named_files {
+        return Vec::new();
+    }
+    let root = st.cwd.canonicalize().unwrap_or_else(|_| st.cwd.clone());
+    let mut seen: Vec<PathBuf> = explicit
+        .iter()
+        .map(|a| {
+            let p = if a.path.is_absolute() { a.path.clone() } else { st.cwd.join(&a.path) };
+            p.canonicalize().unwrap_or(p)
+        })
+        .collect();
+    let mut out = Vec::new();
+    for word in text.split_whitespace() {
+        if out.len() >= NAMED_FILES {
+            break;
+        }
+        let word = word.trim_matches(|c: char| {
+            matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?')
+        });
+        let word = word.trim_end_matches('.');
+        let looks_like_path = !word.is_empty()
+            && !word.starts_with('@')
+            && !word.contains("://")
+            && !word.contains('*')
+            && (word.contains('/')
+                || Path::new(word).extension().is_some_and(|e| !e.is_empty()) && !word.starts_with('.'));
+        if !looks_like_path {
+            continue;
+        }
+        let p = if Path::new(word).is_absolute() { PathBuf::from(word) } else { st.cwd.join(word) };
+        let Ok(real) = p.canonicalize() else { continue };
+        if !real.starts_with(&root) || seen.contains(&real) || image_type(&real).is_some() {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&real) else { continue };
+        if !meta.is_file() || meta.len() > NAMED_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&real) else { continue };
+        if String::from_utf8(bytes).is_err() {
+            continue;
+        }
+        // attached to an earlier request: the conversation holds it
+        let header = attached_header(word);
+        if st.history.iter().any(|m| m.text().contains(&header)) {
+            continue;
+        }
+        seen.push(real);
+        out.push(Attachment { path: PathBuf::from(word) });
+    }
+    out
 }

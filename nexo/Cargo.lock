@@ -1603,6 +1603,7 @@ dependencies = [
  "base64 0.23.1",
  "futures",
  "globset",
+ "ignore",
  "nexo-core",
  "nexo-curator",
  "nexo-providers",

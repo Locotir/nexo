@@ -258,6 +258,10 @@ pub struct AgentConfig {
     /// Leave out what lives on this machine: the project instructions (`NEXO.md`, `AGENTS.md`)
     /// and `~/.nexo/prompt.md`. Benchmarks set it, so a run sends the same prompt everywhere.
     pub hermetic: bool,
+    /// Files a request names by path (a word with a `/` or an extension) that exist under the working
+    /// directory, are text and at most 24 KB, up to three, are attached to it in full as if written
+    /// `@path`, so the model needs no step to read them.
+    pub attach_named_files: bool,
     /// Retries on retryable provider errors.
     pub retries: u32,
     /// Gives the model the `task` tool: a read-only sub-agent for wide searches.
@@ -323,6 +327,7 @@ impl Default for AgentConfig {
             system_prompt_file: None,
             system_prompt_extra: None,
             hermetic: false,
+            attach_named_files: true,
             retries: 4,
             subagents: true,
             parallel_tasks: true,

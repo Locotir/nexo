@@ -78,6 +78,9 @@ fn tool_guidance(tools: &ToolSet) -> String {
     if has("read") || has("grep") {
         lines.push("- Fewer steps: calls to `read`, `grep`, `glob`, `ls` and the web tools in one message run at the same time, so send every independent look together; several changes to one file go in one `edit` call (`edits`).");
     }
+    if has("ls") || has("bash") {
+        lines.push("- The Project block in the environment is current at the start of the request: use it instead of `ls` or `find` to see the layout. A file the request names by path is already attached in full at its start; do not `read` it again.");
+    }
     if has("note") {
         lines.push("- `note`: keep each settled fact as `Finding: ...`, what is left as `Plan: ...`, the user's standing instructions as `Rule: ...` (scope `project` or `user` saves it for later sessions when the user corrects the same thing twice or states a lasting preference). Send it with your next tool call, never as a response of its own.");
     }
@@ -115,7 +118,108 @@ fn environment(cwd: &Path) -> String {
         Some(d) => format!("{} ({d}), {}", std::env::consts::OS, std::env::consts::ARCH),
         None => format!("{}, {}", std::env::consts::OS, std::env::consts::ARCH),
     };
-    format!("\nSystem: {system}\nGit: {}", git_line(cwd))
+    format!("\nSystem: {system}\nGit: {}{}", git_line(cwd), project_block(cwd))
+}
+
+/// The most characters the Project block takes.
+const PROJECT_CAP: usize = 2500;
+/// The most tree entries the Project block lists.
+const PROJECT_ENTRIES: usize = 60;
+
+/// A bounded map of the project at `cwd`: its tree two levels down (directories with their file
+/// counts, files in `.gitignore` left out), the manifests with their names, and the command that
+/// checks it. Empty when the folder holds nothing worth listing.
+fn project_block(cwd: &Path) -> String {
+    use std::collections::BTreeMap;
+    let mut top: BTreeMap<String, (bool, usize)> = BTreeMap::new();
+    let mut second: BTreeMap<String, (bool, usize)> = BTreeMap::new();
+    let mut manifests = Vec::new();
+    let walk = ignore::WalkBuilder::new(cwd).require_git(false).build();
+    for e in walk.flatten().take(20_000) {
+        let Ok(rel) = e.path().strip_prefix(cwd) else { continue };
+        let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let is_dir = e.file_type().is_some_and(|t| t.is_dir());
+        if !is_dir && parts.len() <= 2 && MANIFESTS.contains(&parts[parts.len() - 1].as_str()) {
+            manifests.push(manifest_line(&parts.join("/"), e.path()));
+        }
+        let files = usize::from(!is_dir);
+        let t = top.entry(parts[0].clone()).or_insert((parts.len() > 1 || is_dir, 0));
+        t.1 += files;
+        if parts.len() >= 2 {
+            let s = second.entry(format!("{}/{}", parts[0], parts[1])).or_insert((parts.len() > 2 || is_dir, 0));
+            s.1 += files;
+        }
+    }
+    let mut lines = Vec::new();
+    let mut entries = 0;
+    'tree: for (name, (dir, n)) in &top {
+        if entries >= PROJECT_ENTRIES {
+            break;
+        }
+        lines.push(if *dir { format!("- {name}/ ({n} files)") } else { format!("- {name}") });
+        entries += 1;
+        if !*dir {
+            continue;
+        }
+        let prefix = format!("{name}/");
+        for (sub, (sdir, sn)) in second.range(prefix.clone()..).take_while(|(k, _)| k.starts_with(&prefix)) {
+            if entries >= PROJECT_ENTRIES {
+                break 'tree;
+            }
+            lines.push(if *sdir { format!("  - {sub}/ ({sn} files)") } else { format!("  - {sub}") });
+            entries += 1;
+        }
+    }
+    let total = top.len() + second.len();
+    if total > entries {
+        lines.push(format!("- ... {} more entries", total - entries));
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "\nProject (current at the start of this request; use it instead of ls or find to orient):\n{}",
+        lines.join("\n")
+    );
+    manifests.sort();
+    if !manifests.is_empty() {
+        out.push_str(&format!("\nManifests: {}", manifests.join(", ")));
+    }
+    if let Some(check) = nexo_tools::project::check_command(cwd) {
+        out.push_str(&format!("\ncheck: {check}"));
+    }
+    if out.len() > PROJECT_CAP {
+        let mut cut = PROJECT_CAP;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+    }
+    out
+}
+
+const MANIFESTS: [&str; 5] = ["Cargo.toml", "package.json", "pyproject.toml", "go.mod", "setup.cfg"];
+
+/// `Cargo.toml (name)`: the manifest's path with the project name it declares, when it has one.
+fn manifest_line(shown: &str, path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let name = if shown.ends_with("package.json") {
+        serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["name"].as_str().map(String::from))
+    } else if shown.ends_with("go.mod") {
+        text.lines().find_map(|l| l.strip_prefix("module ")).map(|m| m.trim().to_string())
+    } else {
+        text.lines().find_map(|l| {
+            let v = l.trim().strip_prefix("name")?.trim_start().strip_prefix('=')?;
+            Some(v.trim().trim_matches('"').trim_matches('\'').to_string())
+        })
+    };
+    match name {
+        Some(n) if !n.is_empty() => format!("{shown} ({n})"),
+        _ => shown.to_string(),
+    }
 }
 
 /// `PRETTY_NAME` of an os-release file, else `NAME VERSION_ID`.
@@ -197,6 +301,33 @@ mod tests {
     /// The prompt reads `prompt.md` from `NEXO_CONFIG_DIR`, one variable for the whole process:
     /// the tests that point it somewhere take turns, so one never sees another's file.
     static CONFIG_DIR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn environment_lists_the_tree_the_manifests_and_the_check_command() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::create_dir(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("src/lib.rs"), "").unwrap();
+        let e = environment(d.path());
+        assert!(e.contains("- src/ (1 files)"), "{e}");
+        assert!(e.contains("  - src/lib.rs"), "{e}");
+        assert!(e.contains("Manifests: Cargo.toml (demo)"), "{e}");
+        assert!(e.contains("\ncheck: cargo test -q"), "{e}");
+    }
+
+    #[test]
+    fn environment_block_stays_under_its_cap() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("data")).unwrap();
+        for i in 0..500 {
+            std::fs::write(d.path().join(format!("file_with_a_long_name_{i}.txt")), "").unwrap();
+            std::fs::write(d.path().join(format!("data/another_long_file_name_{i}.txt")), "").unwrap();
+        }
+        let b = project_block(d.path());
+        assert!(b.len() <= PROJECT_CAP, "{}", b.len());
+        assert!(b.matches("\n- ").count() + b.matches("\n  - ").count() <= PROJECT_ENTRIES + 1, "{b}");
+        assert!(b.contains("more entries"), "{b}");
+    }
 
     #[test]
     fn names_the_request_gives_are_kept() {

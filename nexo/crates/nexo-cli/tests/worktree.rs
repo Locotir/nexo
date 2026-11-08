@@ -92,7 +92,7 @@ fn a_clean_worktree_is_removed_on_exit() {
 
 #[test]
 fn setup_commands_run_and_included_files_are_copied() {
-    let s = setup("[agent]\nworktree_setup = [\"echo done > setup.log\"]\n");
+    let s = setup("[agent]\nattach_named_files = false\nworktree_setup = [\"echo done > setup.log\"]\n");
     std::fs::write(s.repo.path().join(".env"), "TOKEN=1\n").unwrap();
     std::fs::write(s.repo.path().join(".worktreeinclude"), ".env\n").unwrap();
     git(s.repo.path(), &["add", ".worktreeinclude"]);

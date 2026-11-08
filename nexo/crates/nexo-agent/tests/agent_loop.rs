@@ -4700,3 +4700,30 @@ async fn the_supervisor_asks_for_a_check_in_once_per_stopped_turn() {
     assert!(reqs[1].messages.last().unwrap().text().contains("nobody answered"));
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_request_naming_an_existing_file_attaches_it_once() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir(d.path().join("src")).unwrap();
+    std::fs::write(d.path().join("src/lib.rs"), "pub fn answer() -> u32 { 42 }\n").unwrap();
+    std::fs::write(d.path().join("big.txt"), "x".repeat(1_000_000)).unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(text("one")), Reply::Events(text("two")), Reply::Events(text("three"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "make `answer` in src/lib.rs return 43".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "and keep src/lib.rs tidy".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Submit { text: "what is in big.txt and missing.rs?".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let first = reqs[0].messages[0].text();
+    assert!(first.contains("@src/lib.rs (attached in full, as it is now):"), "{first}");
+    assert!(first.contains("pub fn answer() -> u32 { 42 }"), "{first}");
+    let second = reqs[1].messages.iter().filter(|m| m.role == Role::User).nth(1).unwrap().text();
+    assert!(!second.contains("attached in full"), "{second}");
+    let third = reqs[2].messages.last().unwrap().text();
+    assert!(!third.contains("attached in full") && !third.contains("xxxx"), "{third}");
+    r.stop().await;
+}
