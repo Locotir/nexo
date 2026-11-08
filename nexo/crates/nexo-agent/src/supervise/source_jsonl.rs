@@ -832,6 +832,8 @@ mod tests {
         assert_eq!(kinds(&src.poll(now() + 6)), vec![ObsKind::Activity]);
     }
 
+    // only unix can tell a replaced file from one that grew (see file_id)
+    #[cfg(unix)]
     #[test]
     fn a_log_replaced_by_a_longer_one_is_read_from_its_new_start() {
         let (d, log, mut src) = setup();
@@ -856,6 +858,7 @@ mod tests {
         assert_eq!(got[0], "Edit  /new/0");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_rotated_big_log_is_read_from_its_end_not_whole() {
         let (d, log, mut src) = setup();
