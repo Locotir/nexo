@@ -246,7 +246,11 @@ pub fn key(app: &mut App, k: KeyEvent) {
             }
             KeyCode::Tab => return app.palette_accept(false),
             KeyCode::Enter => {
-                let is_files = app.palette.as_ref().is_some_and(|p| p.kind == crate::palette::PaletteKind::Files);
+                // a Files picker with nothing to pick has no use for Enter: the line goes out
+                let is_files = app
+                    .palette
+                    .as_ref()
+                    .is_some_and(|p| p.kind == crate::palette::PaletteKind::Files && p.current().is_some());
                 return app.palette_accept(!is_files);
             }
             _ => {}
@@ -422,7 +426,11 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             if app.palette.is_some() {
                 if let Some((_, i)) = app.palette_rows.iter().find(|(r, _)| contains(*r, m.column, m.row)) {
                     let i = *i;
-                    let is_files = app.palette.as_ref().is_some_and(|p| p.kind == crate::palette::PaletteKind::Files);
+                    // a Files picker with nothing to pick has no use for Enter: the line goes out
+                    let is_files = app
+                        .palette
+                        .as_ref()
+                        .is_some_and(|p| p.kind == crate::palette::PaletteKind::Files && p.current().is_some());
                     if let Some(p) = &mut app.palette {
                         p.selected = i.min(p.len().saturating_sub(1));
                     }
