@@ -445,6 +445,9 @@ pub(super) async fn view_now(st: &mut State) -> View {
     st.last_sent = view.messages.clone();
     let call_tokens = crate::context_map::call_tokens(&st.history, &cells);
     emit(&st.events, AgentEvent::ContextMap { cells, zones, calls, call_tokens });
+    if let Some(m) = &view.memory {
+        emit(&st.events, AgentEvent::Curated { items: m.curated.clone() });
+    }
     view
 }
 

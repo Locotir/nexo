@@ -560,6 +560,75 @@ fn the_context_map_shows_the_curators_memory_by_topic() {
     assert!(all.contains("░ back · out"), "{all}");
 }
 
+fn curated_items() -> Vec<nexo_core::CuratedItem> {
+    use nexo_core::{CuratedItem, CuratedKind, CuratedState};
+    let it = |kind, label: &str, tokens, state| CuratedItem { kind, label: label.into(), tokens, state };
+    vec![
+        it(CuratedKind::Rule, "never touch main", 300, CuratedState::In),
+        it(CuratedKind::Thread, "parser rewrite", 12_400, CuratedState::In),
+        it(CuratedKind::Recalled, "src/lex.rs", 900, CuratedState::Trimmed),
+        it(CuratedKind::Memory, "old notes", 2_000, CuratedState::Out),
+    ]
+}
+
+#[test]
+fn the_context_window_lists_what_the_curator_added_sorted_with_a_total() {
+    let mut a = app();
+    fill(&mut a);
+    // before any call comes with the curator the section is not there
+    a.run_command(nexo_tui::commands::Command::Context);
+    settled(&mut a);
+    let all = draw(&mut a, 120, 60).join("\n");
+    assert!(!all.contains("Added by the curator"), "{all}");
+    a.modal = None;
+    a.handle_agent(AgentEvent::Curated { items: curated_items() });
+    a.run_command(nexo_tui::commands::Command::Context);
+    settled(&mut a);
+    let rows = draw(&mut a, 120, 60);
+    let all = rows.join("\n");
+    let at = |s: &str| rows.iter().position(|l| l.contains(s)).unwrap_or_else(|| panic!("{s} not in\n{all}"));
+    assert!(all.contains("Added by the curator (last call)"), "{all}");
+    assert!(at("thread") < at("recalled") && at("recalled") < at("rule") && at("rule") < at("total"), "{all}");
+    assert!(rows[at("thread")].contains("parser rewrite") && rows[at("thread")].contains("12.4k"), "{all}");
+    assert!(rows[at("recalled")].contains("~900"), "{all}");
+    assert!(rows[at("total")].contains("13.6k"), "{all}");
+    assert!(at("Left out") > at("total") && rows[at("Left out") + 1].contains("old notes"), "{all}");
+    // a call with nothing from the curator says so
+    a.modal = None;
+    a.handle_agent(AgentEvent::Curated { items: Vec::new() });
+    a.run_command(nexo_tui::commands::Command::Context);
+    settled(&mut a);
+    let all = draw(&mut a, 120, 60).join("\n");
+    assert!(all.contains("The curator added nothing to this call."), "{all}");
+}
+
+#[test]
+fn f3_lists_the_curator_rows_of_a_call_in_the_live_panel() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app();
+    fill(&mut a);
+    a.term_width = 120;
+    let f3 = |a: &mut App| nexo_tui::event::key(a, KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+    // nothing yet: a hint, no panel
+    f3(&mut a);
+    assert!(!a.show_live && a.live_rows.is_none());
+    a.handle_agent(AgentEvent::Curated { items: curated_items() });
+    a.handle_agent(AgentEvent::Curated { items: Vec::new() });
+    f3(&mut a);
+    assert!(a.show_live);
+    assert_eq!(a.live_rows, Some(0));
+    let all = draw(&mut a, 120, 40).join("\n");
+    assert!(all.contains("curator rows") && all.contains("The curator added nothing"), "{all}");
+    // again: the call before, with its rows
+    f3(&mut a);
+    assert_eq!(a.live_rows, Some(1));
+    let all = draw(&mut a, 120, 40).join("\n");
+    assert!(all.contains("curator rows · 1 back") && all.contains("parser rewrite"), "{all}");
+    // after the oldest, the map again
+    f3(&mut a);
+    assert_eq!(a.live_rows, None);
+}
+
 /// The open window as if it had finished growing and filling in.
 fn settled(a: &mut App) {
     if let Some(nexo_tui::modal::Modal::Info(i)) = &mut a.modal {

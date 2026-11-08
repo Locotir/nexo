@@ -22,6 +22,7 @@ mod tools;
 use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
 
+pub use engine::{keywords, label, Added, AddedKind, AddedState};
 use engine::{Engine, Params};
 use mechanical::MARK;
 
@@ -393,6 +394,8 @@ pub struct Reply {
     pub added: usize,
     /// Messages this call took out of the view or cut.
     pub removed: usize,
+    /// What the view carries beyond the conversation and what it holds back, by name and size.
+    pub curated: Vec<Added>,
 }
 
 /// The curator of one conversation.
@@ -513,7 +516,8 @@ impl Curator {
         self.paged = now;
         let memory = self.eng.memory();
         let (added, removed) = self.activity(&memory);
-        Ok(Reply { view, tokens, stats: self.eng.stats.clone(), memory, added, removed })
+        let curated = self.eng.added();
+        Ok(Reply { view, tokens, stats: self.eng.stats.clone(), memory, added, removed, curated })
     }
 
     /// The model's prices per million input tokens: uncached and read from the cache. The view is then

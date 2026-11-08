@@ -23,6 +23,10 @@ pub struct View {
 pub struct Memory {
     pub zones: Vec<nexo_core::ContextZone>,
     pub cells: Vec<MemoryCell>,
+    /// What the call carries beyond the conversation and what it holds back (set by the policy, not read
+    /// from the curator's memory).
+    #[serde(skip)]
+    pub curated: Vec<nexo_core::CuratedItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -439,7 +443,10 @@ impl ContextPolicy for BuiltIn {
         };
         let messages = r.view.into_iter().map(serde_json::from_value).collect::<Result<Vec<Message>, _>>()?;
         self.moved = (r.added, r.removed);
-        let memory = serde_json::from_value(r.memory).ok();
+        let mut memory: Option<Memory> = serde_json::from_value(r.memory).ok();
+        if let Some(m) = &mut memory {
+            m.curated = curated_items(&r.curated);
+        }
         let note = match &self.caveat {
             Some(c) if !self.told => {
                 self.told = true;
@@ -462,6 +469,31 @@ impl ContextPolicy for BuiltIn {
     /// The engine notices the rewritten history by itself and starts over on it,
     /// keeping the user's standing instructions; a fresh engine would lose them.
     fn compacted(&mut self) {}
+}
+
+/// The curator's items for the interface.
+fn curated_items(items: &[nexo_curator::Added]) -> Vec<nexo_core::CuratedItem> {
+    use nexo_core::{CuratedKind, CuratedState};
+    items
+        .iter()
+        .map(|a| nexo_core::CuratedItem {
+            kind: match a.kind {
+                nexo_curator::AddedKind::Recalled => CuratedKind::Recalled,
+                nexo_curator::AddedKind::Start => CuratedKind::Start,
+                nexo_curator::AddedKind::Rule => CuratedKind::Rule,
+                nexo_curator::AddedKind::Thread => CuratedKind::Thread,
+                nexo_curator::AddedKind::Goal => CuratedKind::Goal,
+                nexo_curator::AddedKind::Memory => CuratedKind::Memory,
+            },
+            label: a.label.clone(),
+            tokens: a.tokens.max(0) as u64,
+            state: match a.state {
+                nexo_curator::AddedState::In => CuratedState::In,
+                nexo_curator::AddedState::Trimmed => CuratedState::Trimmed,
+                nexo_curator::AddedState::Out => CuratedState::Out,
+            },
+        })
+        .collect()
 }
 
 /// The policy `cfg.policy` names (`auto`, `plain`, `compact`, `curator`;

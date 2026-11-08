@@ -258,6 +258,11 @@ pub struct App {
     /// The tokens of each tool call's output, by call id, to price the card's word.
     pub call_tokens: std::collections::HashMap<String, u64>,
     pub map_at: Option<Instant>,
+    /// What the curator added to the last model calls and held back, newest first (empty until a call
+    /// comes with the curator).
+    pub curated: Vec<Vec<nexo_core::CuratedItem>>,
+    /// `/context-live`: the call (0 the latest) whose curator rows the panel lists in place of the map.
+    pub live_rows: Option<usize>,
     pub files_area: Rect,
     /// The "panel hidden" note was shown for the current shrink.
     pub panel_hint_shown: bool,
@@ -511,6 +516,8 @@ impl App {
             marks: std::collections::HashMap::new(),
             call_tokens: std::collections::HashMap::new(),
             map_at: None,
+            curated: Vec::new(),
+            live_rows: None,
             files_area: Rect::default(),
             panel_hint_shown: false,
             editor_area: Rect::default(),
@@ -734,6 +741,8 @@ impl App {
         self.map.clear();
         self.map_zones.clear();
         self.map_changed.clear();
+        self.curated.clear();
+        self.live_rows = None;
         self.marks.clear();
         self.call_tokens.clear();
         self.queued = 0;

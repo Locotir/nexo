@@ -289,7 +289,13 @@ async fn a_text_reply_is_streamed_recorded_and_priced() {
     let evs: Vec<AgentEvent> = evs
         .into_iter()
         .filter(|e| {
-            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+            !matches!(
+                e,
+                AgentEvent::ModelLimits { .. }
+                    | AgentEvent::Effort { .. }
+                    | AgentEvent::ContextMap { .. }
+                    | AgentEvent::Curated { .. }
+            )
         })
         .collect();
     assert!(matches!(evs[0], AgentEvent::History { index: 0, .. }));
@@ -794,7 +800,13 @@ async fn a_session_is_resumed_with_its_history_and_tool_outputs() {
     let evs: Vec<AgentEvent> = evs
         .into_iter()
         .filter(|e| {
-            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+            !matches!(
+                e,
+                AgentEvent::ModelLimits { .. }
+                    | AgentEvent::Effort { .. }
+                    | AgentEvent::ContextMap { .. }
+                    | AgentEvent::Curated { .. }
+            )
         })
         .collect();
     assert!(matches!(evs[0], AgentEvent::History { index: 4, .. }));
@@ -968,7 +980,13 @@ async fn attachments_shell_model_and_clear() {
     let evs: Vec<AgentEvent> = evs
         .into_iter()
         .filter(|e| {
-            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+            !matches!(
+                e,
+                AgentEvent::ModelLimits { .. }
+                    | AgentEvent::Effort { .. }
+                    | AgentEvent::ContextMap { .. }
+                    | AgentEvent::Curated { .. }
+            )
         })
         .collect();
     match &evs[0] {
@@ -1004,7 +1022,13 @@ async fn attachments_shell_model_and_clear() {
     let evs: Vec<AgentEvent> = evs
         .into_iter()
         .filter(|e| {
-            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+            !matches!(
+                e,
+                AgentEvent::ModelLimits { .. }
+                    | AgentEvent::Effort { .. }
+                    | AgentEvent::ContextMap { .. }
+                    | AgentEvent::Curated { .. }
+            )
         })
         .collect();
     assert!(matches!(evs[0], AgentEvent::History { index: 0, .. }), "a cleared history starts over");
@@ -1058,7 +1082,13 @@ async fn resume_in_place_replaces_the_conversation_and_its_file() {
     let evs: Vec<AgentEvent> = evs
         .into_iter()
         .filter(|e| {
-            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+            !matches!(
+                e,
+                AgentEvent::ModelLimits { .. }
+                    | AgentEvent::Effort { .. }
+                    | AgentEvent::ContextMap { .. }
+                    | AgentEvent::Curated { .. }
+            )
         })
         .collect();
     assert!(matches!(evs[0], AgentEvent::History { index: 4, .. }));
@@ -1214,7 +1244,13 @@ async fn rewind_cuts_before_the_calls_and_rewrites_the_file() {
     let evs: Vec<AgentEvent> = evs
         .into_iter()
         .filter(|e| {
-            !matches!(e, AgentEvent::ModelLimits { .. } | AgentEvent::Effort { .. } | AgentEvent::ContextMap { .. })
+            !matches!(
+                e,
+                AgentEvent::ModelLimits { .. }
+                    | AgentEvent::Effort { .. }
+                    | AgentEvent::ContextMap { .. }
+                    | AgentEvent::Curated { .. }
+            )
         })
         .collect();
     assert!(matches!(evs[0], AgentEvent::History { index: 1, .. }));
@@ -1478,6 +1514,30 @@ async fn a_window_learned_smaller_gets_a_new_curated_view_before_a_compaction() 
     let reqs = client.requests();
     assert_eq!(reqs.len(), 6);
     assert!(is_summary(&reqs[4]));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn each_curator_call_reports_what_it_added_right_after_its_map_and_the_plain_policy_does_not() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("one")), Reply::Events(text("two"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.context.policy = "curator".into();
+    let mut r = start(client, cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let at = evs.iter().position(|e| matches!(e, AgentEvent::ContextMap { .. })).expect("a map");
+    // a short conversation adds nothing, and the event still says so
+    assert!(matches!(&evs[at + 1], AgentEvent::Curated { items } if items.is_empty()), "{evs:?}");
+    r.stop().await;
+
+    let client = Scripted::new(vec![Reply::Events(text("one"))]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "hello".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Curated { .. })), "{evs:?}");
     r.stop().await;
 }
 

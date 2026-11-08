@@ -16,6 +16,38 @@ impl App {
         self.dirty = true;
     }
 
+    /// A model call came with the curator: its rows join the last ones. A panel on an older call keeps
+    /// to that call.
+    pub(super) fn note_curated(&mut self, items: Vec<nexo_core::CuratedItem>) {
+        self.curated.insert(0, items);
+        self.curated.truncate(crate::curated::CALLS);
+        self.live_rows = self.live_rows.map(|k| if k == 0 { 0 } else { (k + 1).min(self.curated.len() - 1) });
+        self.dirty = true;
+    }
+
+    /// F3: the side panel lists what the curator added to the latest model call; again, the call before,
+    /// and so on; after the oldest, the map again.
+    pub fn cycle_curated(&mut self) {
+        if self.curated.is_empty() {
+            self.flash("the curator's rows come with the next model call");
+            return;
+        }
+        let next = match self.live_rows {
+            None if !self.show_live => {
+                self.toggle_live(self.term_width);
+                if !self.show_live {
+                    return;
+                }
+                Some(0)
+            }
+            None => Some(0),
+            Some(k) if k + 1 < self.curated.len() => Some(k + 1),
+            Some(_) => None,
+        };
+        self.live_rows = next;
+        self.dirty = true;
+    }
+
     /// Ctrl+B: the changed-files panel (needs a wide enough terminal).
     pub fn toggle_files(&mut self, term_width: u16) {
         if !self.show_files && term_width < FILES_PANEL_MIN_W {

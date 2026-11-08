@@ -198,6 +198,7 @@ pub fn key(app: &mut App, k: KeyEvent) {
         }
         Some(Action::Files) => return app.toggle_files(app.term_width),
         Some(Action::Diff) => return app.open_diffview(),
+        Some(Action::Curated) => return app.cycle_curated(),
         Some(Action::Redraw) => {
             app.force_clear = true;
             return;

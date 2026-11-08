@@ -187,6 +187,7 @@ mod tests {
         let mem = Memory {
             zones: vec![zone("anchor", true), zone("other", false), zone("this", true)],
             cells: vec![cell(0, "whole"), cell(1, "recalled"), cell(2, "cut")],
+            curated: Vec::new(),
         };
         let (cells, zones) = from_memory(&history, &mem).unwrap();
         assert_eq!(zones.len(), 3);

@@ -20,6 +20,7 @@ use self::recall::ReadMade;
 use self::steps::Step;
 use self::view::{Built, Visible};
 
+mod added;
 mod anchor;
 mod cache;
 mod cap;
@@ -39,6 +40,7 @@ mod stale;
 mod steps;
 mod view;
 
+pub use added::{keywords, label, Added, AddedKind, AddedState};
 pub use params::Params;
 
 /// The name of the tool whose input is a note (`Finding:`/`Plan:`/`Rule:` lines kept by the curator).

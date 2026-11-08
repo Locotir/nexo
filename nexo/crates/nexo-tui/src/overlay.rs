@@ -273,6 +273,11 @@ fn context_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
             out.extend(crate::render::wrap::wrap_plain(d, w.max(20), theme.dim(), &[Span::raw("        ")]));
         }
     }
+    // what the curator added to the last call (only once a call has come with it)
+    if let Some(items) = app.curated.first() {
+        out.push(Line::default());
+        out.extend(crate::curated::lines(theme, items, w, "Added by the curator (last call)"));
+    }
     out
 }
 

@@ -393,6 +393,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("!", "run a shell command"),
             ("Ctrl+Space / Alt+P", "open commands over a draft (the draft comes back)"),
             ("Ctrl+B", "show the side panel: goal, todo, changed files"),
+            ("F3", "list what the curator added to a model call (again: the call before)"),
             ("F4", "open or close the side diff panel (selected edit, else the latest)"),
             ("?  / F1", "show this help (empty draft)"),
         ],

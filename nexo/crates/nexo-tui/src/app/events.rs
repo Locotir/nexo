@@ -710,6 +710,7 @@ impl App {
                 self.map_zones = zones;
                 self.map_at = Some(self.now());
             }
+            AgentEvent::Curated { items } => self.note_curated(items),
             AgentEvent::Notice { level, text } => self.notice(level, text),
             AgentEvent::UpdateAvailable { behind } => self.update_ready(behind),
             AgentEvent::ModelChanged { provider, model } => {

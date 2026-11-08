@@ -1625,7 +1625,23 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![rail(), Span::styled(truncate(&text, inner_w), Style::default().add_modifier(Modifier::BOLD))])
     };
     if app.show_live {
-        lines.extend(context_map(app, inner_w, area.height as usize).into_iter().map(|mut l| {
+        let body = match app.live_rows.and_then(|k| app.curated.get(k).map(|items| (k, items))) {
+            Some((k, items)) => {
+                let title = if k == 0 { "curator rows".to_string() } else { format!("curator rows · {k} back") };
+                let mut v = crate::curated::lines(theme, items, inner_w, &title);
+                v.push(Line::default());
+                v.push(Line::from(Span::styled("F3 next call · then the map", theme.dim2())));
+                v
+            }
+            None => {
+                let mut v = context_map(app, inner_w, area.height as usize);
+                if !app.curated.is_empty() {
+                    v.push(Line::from(Span::styled("F3 curator rows", theme.dim2())));
+                }
+                v
+            }
+        };
+        lines.extend(body.into_iter().map(|mut l| {
             l.spans.insert(0, rail());
             l
         }));

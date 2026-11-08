@@ -420,6 +420,44 @@ pub struct ContextZone {
     pub card: bool,
 }
 
+/// What kind of thing the curator put in a call (or held back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CuratedKind {
+    /// A tool output kept in the history: one a step brought back, or one the view left out or cut.
+    Recalled,
+    /// The start of the request: the map of what moved out, a file it pins or one the agent wrote.
+    Start,
+    /// A standing instruction the user gave.
+    Rule,
+    /// A topic of the conversation, as a card or left out.
+    Thread,
+    /// The plan the agent wrote down.
+    Goal,
+    /// A fact the agent or the curator's ledger kept.
+    Memory,
+}
+
+/// Where an item of the curator stands in the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CuratedState {
+    In,
+    /// In the call, shortened.
+    Trimmed,
+    /// Held back (its tokens are what was held back).
+    Out,
+}
+
+/// One item the curator added to a call, or held back: its name, kind and size, never its text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CuratedItem {
+    pub kind: CuratedKind,
+    pub label: String,
+    pub tokens: u64,
+    pub state: CuratedState,
+}
+
 /// What the agent tells the interface. Every event is serialisable, so the
 /// headless mode can print them as JSON lines and a test can record them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -532,6 +570,11 @@ pub enum AgentEvent {
         /// one output; the interface prices it with the mark.
         #[serde(default)]
         call_tokens: Vec<(String, u64)>,
+    },
+    /// What the curator put in the call just prepared beyond the conversation, and what it held back
+    /// (sent with `ContextMap`; only with the curator; empty when it added nothing).
+    Curated {
+        items: Vec<CuratedItem>,
     },
     Notice {
         level: Level,

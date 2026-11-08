@@ -26,10 +26,11 @@ pub enum Action {
     Help,
     Mode,
     Diff,
+    Curated,
 }
 
 impl Action {
-    pub const ALL: [Action; 17] = [
+    pub const ALL: [Action; 18] = [
         Action::Cancel,
         Action::Quit,
         Action::Search,
@@ -47,6 +48,7 @@ impl Action {
         Action::Help,
         Action::Mode,
         Action::Diff,
+        Action::Curated,
     ];
 
     pub fn name(self) -> &'static str {
@@ -68,6 +70,7 @@ impl Action {
             Action::Help => "help",
             Action::Mode => "mode",
             Action::Diff => "diff",
+            Action::Curated => "curated",
         }
     }
 
@@ -90,6 +93,7 @@ impl Action {
             Action::Help => "f1",
             Action::Mode => "backtab",
             Action::Diff => "f4",
+            Action::Curated => "f3",
         }
     }
 }
@@ -272,6 +276,7 @@ mod tests {
         assert_eq!(k.action(&ev(KeyCode::BackTab, KeyModifiers::SHIFT)), Some(Action::Mode));
         assert_eq!(k.action(&ev(KeyCode::PageUp, KeyModifiers::NONE)), Some(Action::PageUp));
         assert_eq!(k.action(&ev(KeyCode::Char('f'), KeyModifiers::NONE)), None);
+        assert_eq!(k.action(&ev(KeyCode::F(3), KeyModifiers::NONE)), Some(Action::Curated));
     }
 
     #[test]
