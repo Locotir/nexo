@@ -146,7 +146,7 @@ pub fn words(text: &str, int: &mut Interner) -> Set {
     if text.contains(',') {
         for m in GROUPED.find_iter(text) {
             let n = m.as_str().replace(',', "");
-            let ok = py::len(&n) >= 4 && (!py::str_isdigit(&n) || distinctive(&n));
+            let ok = textops::len(&n) >= 4 && (!textops::str_isdigit(&n) || distinctive(&n));
             if ok && !common.contains(n.as_str()) {
                 out.push(int.intern(&n));
             }
