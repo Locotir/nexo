@@ -98,6 +98,7 @@ impl Tool for Write {
             _ => String::new(),
         };
         let now = if now.is_empty() { String::new() } else { format!("\nchanged lines:\n{now}") };
+        let now = format!("{now}{}", crate::edit_check::report(&path).await);
         ToolOutput::ok(format!(
             "{what} {shown}: file now has {} ({} bytes){now}",
             nexo_core::count(lines, "line"),

@@ -115,6 +115,7 @@ impl Tool for Edit {
         let (added, removed, diff) = unified(&text, &edited, &shown);
         let now = around(&text, &edited);
         let now = if now.is_empty() { String::new() } else { format!("\nfile now:\n{now}") };
+        let now = format!("{now}{}", crate::edit_check::report(&path).await);
         ToolOutput::ok(format!("edited {shown}{n}: +{added} −{removed} lines\n{diff}{now}"))
             // the whole file, before and after: the diff numbers from its first line
             .with_display(ToolDisplay::Diff { path: shown, old: text, new: edited, start_line: 1 })

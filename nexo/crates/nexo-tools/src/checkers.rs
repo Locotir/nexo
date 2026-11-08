@@ -36,7 +36,7 @@ fn is_plain_js(file: &Path) -> bool {
 }
 
 /// Runs a command to its end or the limit; kills the whole group on the limit.
-async fn run(mut cmd: tokio::process::Command, limit: Duration) -> Result<(String, String, bool), String> {
+pub(crate) async fn run(mut cmd: tokio::process::Command, limit: Duration) -> Result<(String, String, bool), String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     if let Some(env) = crate::child_env() {
         cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));

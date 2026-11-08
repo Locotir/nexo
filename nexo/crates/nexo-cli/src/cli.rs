@@ -506,6 +506,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             return Ok(setup::trash_sessions(ids, true))
         }
         Some(Cmd::Prompt { edit: false }) => {
+            nexo_tools::edit_check::set_enabled(config.tools.edit_diagnostics);
             let mut tools = nexo_tools::builtin_with(&config.web);
             if !nexo_tools::lsp::available(&cwd) {
                 tools.remove("diagnostics");

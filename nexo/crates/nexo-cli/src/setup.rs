@@ -160,6 +160,7 @@ pub async fn agent_setup(
 ) -> anyhow::Result<nexo_agent::AgentSetup> {
     let client: Arc<dyn nexo_agent::client::ModelClient> =
         Arc::new(nexo_providers::Client::new(nexo_providers::registry()));
+    nexo_tools::edit_check::set_enabled(cfg.tools.edit_diagnostics);
     let mut tools: ToolSet = nexo_tools::builtin_with(&cfg.web);
     if !nexo_tools::lsp::available(cwd) {
         tools.remove("diagnostics");
@@ -721,6 +722,9 @@ suggest = true                      # when a turn ends, a dim suggestion of your
 screen = "full"                     # full (alternate screen) | inline (finished turns go to the terminal scrollback)
 # status_line = ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "plan", "tokens", "cost"]   # pieces of the bottom bar, in order; default: all
 # status_command = "~/.config/nexo/statusline.sh"   # draws the bottom bar instead: JSON of the session on stdin, its first line (ANSI colours) shown
+
+[tools]
+edit_diagnostics = true             # after edit and write, add the compiler errors of the changed file (Rust, TypeScript, Python, Go) to the result; false: off
 
 [web]
 search = "auto"                     # auto | duckduckgo | tavily | brave | exa | searxng

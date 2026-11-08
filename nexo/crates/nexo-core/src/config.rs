@@ -27,6 +27,8 @@ pub struct Config {
     pub mcp: BTreeMap<String, McpServerConfig>,
     pub ui: UiConfig,
     pub web: WebConfig,
+    /// Behaviour of the built-in tools (`[tools]`).
+    pub tools: ToolsConfig,
     /// Mail between sessions (`[mail]`).
     pub mail: crate::mail::MailConfig,
     /// The local audit log of tool calls and model requests (`[audit]`, off by default).
@@ -462,6 +464,21 @@ impl Default for UiConfig {
             update_check: true,
             suggest: true,
         }
+    }
+}
+
+/// `[tools]`: switches of the built-in file tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// After `edit` and `write` change a source file, the compiler errors in that file are added to the result
+    /// (Rust, TypeScript, Python, Go; one bounded check, 20 s at most, nothing when the file is clean).
+    pub edit_diagnostics: bool,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> ToolsConfig {
+        ToolsConfig { edit_diagnostics: true }
     }
 }
 

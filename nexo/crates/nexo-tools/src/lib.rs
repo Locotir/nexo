@@ -10,6 +10,7 @@
 pub mod bash;
 pub mod checkers;
 pub mod edit;
+pub mod edit_check;
 pub mod glob;
 pub mod grep;
 pub mod jobs;
