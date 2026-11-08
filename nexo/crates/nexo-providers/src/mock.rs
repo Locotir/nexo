@@ -126,7 +126,9 @@ fn echo(req: &ModelRequest) -> Vec<StreamEvent> {
             out.extend(words(&format!("result: {line}")).into_iter().map(StreamEvent::TextDelta));
         }
         Some(m) => {
-            let text = m.text();
+            let full = m.text();
+            // the agent's own note about the project is not part of what the user typed
+            let text = full.split("\n\n[project at the start of this request]").next().unwrap_or(&full).to_string();
             if let Some(rest) = text.strip_prefix("tool:") {
                 let (name, args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "{}"));
                 let args: Value = serde_json::from_str(args.trim()).unwrap_or(Value::Object(Default::default()));

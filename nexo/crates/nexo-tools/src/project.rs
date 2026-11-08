@@ -37,7 +37,7 @@ pub fn check_command_within(dir: &Path, root: Option<&Path>) -> Option<Check> {
 fn check_in(d: &Path) -> Option<(String, &'static str)> {
     if d.join("Cargo.toml").is_file() {
         let offline = if offline_ok(d) { " --offline" } else { "" };
-        return Some((format!("cargo test -q{offline}"), "Cargo.toml"));
+        return Some((format!("cargo test -q{offline} --no-fail-fast"), "Cargo.toml"));
     }
     if d.join("go.mod").is_file() {
         return Some(("go test ./...".into(), "go.mod"));
@@ -134,19 +134,28 @@ mod tests {
     }
 
     #[test]
+    fn cargo_check_command_carries_no_fail_fast() {
+        let c = dir_with(&[("Cargo.toml", "[package]\nname = \"t\"\n[dependencies]\nserde = \"1\"\n")]);
+        assert_eq!(check_command(c.path()).unwrap().command, "cargo test -q --no-fail-fast");
+        let c = dir_with(&[("Cargo.toml", "[package]\nname = \"t\"\n")]);
+        assert_eq!(check_command(c.path()).unwrap().command, "cargo test -q --offline --no-fail-fast");
+        assert!(is_check_command("cargo test -q --offline --no-fail-fast"));
+    }
+
+    #[test]
     fn detects_cargo_npm_pytest_and_go_check_commands() {
         let c = dir_with(&[("Cargo.toml", "[package]\nname = \"t\"\nversion = \"0.1.0\"\n")]);
         let got = check_command(c.path()).unwrap();
         assert_eq!(
             (got.command.as_str(), got.manifest, got.dir.as_path()),
-            ("cargo test -q --offline", "Cargo.toml", c.path())
+            ("cargo test -q --offline --no-fail-fast", "Cargo.toml", c.path())
         );
         // a registry dependency: the build may need the network
         let c = dir_with(&[("Cargo.toml", "[package]\nname = \"t\"\n[dependencies]\nserde = \"1\"\n")]);
-        assert_eq!(check_command(c.path()).unwrap().command, "cargo test -q");
+        assert_eq!(check_command(c.path()).unwrap().command, "cargo test -q --no-fail-fast");
         // a path dependency alone stays offline
         let c = dir_with(&[("Cargo.toml", "[package]\nname = \"t\"\n[dependencies]\nshop = { path = \"../shop\" }\n")]);
-        assert_eq!(check_command(c.path()).unwrap().command, "cargo test -q --offline");
+        assert_eq!(check_command(c.path()).unwrap().command, "cargo test -q --offline --no-fail-fast");
 
         let n = dir_with(&[("package.json", r#"{"name":"x","scripts":{"test":"jest"}}"#)]);
         assert_eq!(check_command(n.path()).unwrap().command, "npm test -s");

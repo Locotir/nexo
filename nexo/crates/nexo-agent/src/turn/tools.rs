@@ -261,7 +261,7 @@ async fn step_check(
             ToolDisplay::Shell { exit_code, .. } => *exit_code,
             _ => None,
         };
-        let text = postcheck::report(&check.command, exit, timed_out, t0.elapsed().as_secs_f64(), cap, &out.content);
+        let text = guard.report(&check.command, exit, timed_out, t0.elapsed().as_secs_f64(), cap, &out.content);
         guard.remember(&check.command, postcheck::fingerprint(&after), &text);
         text
     } else {

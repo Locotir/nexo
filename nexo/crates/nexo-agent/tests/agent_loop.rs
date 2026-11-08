@@ -173,6 +173,9 @@ fn config(mode: PermissionMode) -> Config {
     cfg.permissions.mode = mode;
     // these tests script every call: no curator between them
     cfg.context.policy = "plain".into();
+    // and every file they read is read on purpose: nothing comes attached on its own, nothing runs at the start
+    cfg.agent.attach_budget = 0;
+    cfg.agent.check_at_start = false;
     cfg
 }
 

@@ -55,6 +55,7 @@ mod goal;
 mod guards;
 mod host;
 mod lesson;
+mod orient;
 mod round;
 mod settings;
 mod start;

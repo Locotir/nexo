@@ -170,7 +170,99 @@ async fn one_edit_call_of_two_files_comes_back_with_the_projects_test_result() {
     assert_eq!((rec.requests, rec.tool_calls, rec.tool_errors), (2, 1, 0), "{rec:?}");
     let transcript = std::fs::read_to_string(out.path().join(&rec.transcript)).unwrap();
     assert!(transcript.contains("edited 2 files: src/lib.rs, src/other.rs"), "{transcript}");
-    assert!(transcript.contains("check: cargo test -q --offline | exit 101"), "{transcript}");
+    assert!(transcript.contains("check: cargo test -q --offline --no-fail-fast | exit 101"), "{transcript}");
+}
+
+/// Records the text of every request it is sent; replies with an `edit` first when given one, then says it is done.
+struct Recorder {
+    requests: Mutex<Vec<String>>,
+    first: Option<serde_json::Value>,
+}
+
+#[async_trait]
+impl ModelClient for Recorder {
+    async fn stream(&self, _: &ProviderConfig, req: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        let text: String = req.messages.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n--\n");
+        self.requests.lock().unwrap().push(text);
+        let last = req.messages.last().expect("a message");
+        let asked = last.role == Role::User && last.content.iter().all(|p| matches!(p, Part::Text { .. }));
+        let evs = match (&self.first, asked) {
+            (Some(args), true) => vec![
+                StreamEvent::ToolCallStart { id: "c1".into(), name: "edit".into() },
+                StreamEvent::ToolCallEnd { id: "c1".into(), name: "edit".into(), args: args.clone() },
+                StreamEvent::Finish(FinishReason::ToolUse),
+                StreamEvent::Done,
+            ],
+            _ => {
+                vec![StreamEvent::TextDelta("done".into()), StreamEvent::Finish(FinishReason::Stop), StreamEvent::Done]
+            }
+        };
+        Ok(Box::pin(futures::stream::iter(evs)))
+    }
+}
+
+const CALC_MANIFEST: &str = "[package]\nname = \"calc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+const CALC_LIB: &str =
+    "pub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 3), 5);\n}\n";
+
+fn calc_task(id: &'static str, files: Vec<(String, String)>) -> nexo_bench::tasks::Task {
+    let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
+    // its own id: the working directory of a run is named after it, and the tests run side by side
+    task.id = id;
+    task.files = files;
+    task.turns = vec![(0, "fix add".into())];
+    task.setup = None;
+    task.sealed = false;
+    task.mask = &[];
+    task.check = |_| nexo_bench::check::Outcome { ok: false, score: 0.0, detail: String::new() };
+    task
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fix_lands_in_the_first_call_when_the_tests_come_with_the_request() {
+    let out = tempfile::tempdir().unwrap();
+    let edit = json!({"path": "src/lib.rs", "old_string": "a - b", "new_string": "a + b"});
+    let rec = Arc::new(Recorder { requests: Mutex::default(), first: Some(edit) });
+    let bench = bench(rec.clone(), 100, out.path());
+    let task = calc_task(
+        "fix-lands-first",
+        vec![("Cargo.toml".into(), CALC_MANIFEST.into()), ("src/lib.rs".into(), CALC_LIB.into())],
+    );
+    let r = run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap();
+    assert_eq!((r.requests, r.tool_calls, r.tool_errors), (2, 1, 0), "{r:?}");
+    let first = rec.requests.lock().unwrap()[0].clone();
+    assert!(first.contains("failed 1 of 1: adds"), "{first}");
+    assert!(first.contains("a - b"), "the small source file comes whole: {first}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_at_start_puts_the_failing_tests_in_the_first_request_with_one_cargo_run() {
+    let out = tempfile::tempdir().unwrap();
+    // two failing tests in two test binaries
+    let count = |name: &str| {
+        format!(
+            "#[test]\nfn {name}() {{\n    use std::io::Write;\n    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/runs.txt\")).unwrap();\n    writeln!(f, \"{name}\").unwrap();\n    panic!(\"{name} fails\");\n}}\n"
+        )
+    };
+    let rec = Arc::new(Recorder { requests: Mutex::default(), first: None });
+    let bench = bench(rec.clone(), 100, out.path());
+    let task = calc_task(
+        "check-at-start",
+        vec![
+            ("Cargo.toml".into(), CALC_MANIFEST.into()),
+            ("src/lib.rs".into(), count("alpha_test").replace("#[test]", "#[cfg(test)]\n#[test]")),
+            ("tests/it.rs".into(), count("beta_test")),
+        ],
+    );
+    let r = run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap();
+    assert_eq!(r.tool_calls, 0, "{r:?}");
+    let first = rec.requests.lock().unwrap()[0].clone();
+    assert!(
+        first.contains("failed 2 of 2: ") && first.contains("alpha_test") && first.contains("beta_test"),
+        "{first}"
+    );
+    // the check came once, in the request
+    assert_eq!(first.matches("\ncheck: cargo test").count(), 1, "{first}");
 }
 
 /// Edits a file, reads the same file back, then says it is done.

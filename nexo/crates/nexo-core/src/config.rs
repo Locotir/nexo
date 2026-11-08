@@ -262,6 +262,13 @@ pub struct AgentConfig {
     /// directory, are text and at most 24 KB, up to three, are attached to it in full as if written
     /// `@path`, so the model needs no step to read them.
     pub attach_named_files: bool,
+    /// Tokens of the project's small text files attached whole to each request, the named ones counted,
+    /// smallest first (nothing in `target/`, `node_modules/`, `.git/`, binaries, files over 2000 lines).
+    /// 0: none.
+    pub attach_budget: u32,
+    /// Runs the project's check (its tests) once at the start of each request, when the policy lets commands
+    /// run and the files changed since the last result, and puts the failing tests in the request.
+    pub check_at_start: bool,
     /// Retries on retryable provider errors.
     pub retries: u32,
     /// Gives the model the `task` tool: a read-only sub-agent for wide searches.
@@ -333,6 +340,8 @@ impl Default for AgentConfig {
             system_prompt_extra: None,
             hermetic: false,
             attach_named_files: true,
+            attach_budget: 6000,
+            check_at_start: true,
             retries: 4,
             subagents: true,
             parallel_tasks: true,

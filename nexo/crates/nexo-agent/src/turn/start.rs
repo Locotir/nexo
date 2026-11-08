@@ -85,10 +85,14 @@ pub(super) async fn start_turn(
         Some(h) => h.expand_mentions(text).await,
         None => text,
     };
+    // the project's check runs once, before the request is built, so its result comes with it
+    let check = orient::start_check(state, &cancel).await;
     {
         let mut st = state.lock().await;
         let named = named_files(&st, &text, &attachments);
         attachments.extend(named);
+        let small = orient::budget_files(&st, &text, &attachments);
+        attachments.extend(small.clone());
         // a server changed its tools since the last turn: they take effect now, not in the middle of one
         if let Some(h) = st.mcp.clone() {
             let st = &mut *st;
@@ -129,6 +133,8 @@ pub(super) async fn start_turn(
             emit(&st.events, AgentEvent::MemoryShared { pending: Vec::new() });
             format!("{}\n\n{text}", blocks.join("\n\n"))
         };
+        let note = orient::start_note(&small, &st.cwd, check.as_deref());
+        let text = if note.is_empty() { text } else { format!("{text}\n\n{note}") };
         push_user(&mut st, text, &attachments);
     }
     let state = state.clone();
