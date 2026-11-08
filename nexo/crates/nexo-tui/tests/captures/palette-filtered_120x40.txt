@@ -29,11 +29,11 @@
  ◇ compacted 2 messages
 
       0ms   1 step   ↑ 6.2k  ↓  340  hit 81%  $0.0031  1 read 1 edit
+
+
  /model                [name]                        switch model, or set one up step by step (checked against the ser…
- /mouse                                              mouse capture on or off (off: the terminal's own selection works)
  /permissions  (mode)  [ask|accept-edits|plan|auto…  set the permission mode
- /memory               [user]                        edit the instructions the agent reads: the project's file, or wit…
- /shared-memory        [id|off] [focus]              bring what another session knows into this one, with your next me…
+ /memory               [user|add <text>|share [id]]  edit the instructions the agent reads (the project's file, or wit…
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56

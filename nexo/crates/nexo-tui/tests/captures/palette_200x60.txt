@@ -41,19 +41,19 @@
 
 
  common ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- /model          [name]                             switch model, or set one up step by step (checked against the server)
- /permissions    [ask|accept-edits|plan|auto|read…  set the permission mode
- /resume         [session]                          pick a session to resume; with an id or a title: that one
- /plan           [text|off]                         plan mode: reads only, then a plan to approve; with text: sends it
- /compact                                           replace the history with a summary
- /clear                                             start a new session here
- /help                                              keys and commands
- /effort         [level|default]                    how much the model reasons, among the levels it takes
+ /model        [name]                             switch model, or set one up step by step (checked against the server)
+ /permissions  [ask|accept-edits|plan|auto|read…  set the permission mode
+ /resume       [session|tree|undelete]            pick a session to resume; with an id or a title: that one; `tree` shows the forks, `unde…
+ /plan         [text|off]                         plan mode: reads only, then a plan to approve; with text: sends it
+ /compact                                         replace the history with a summary
+ /clear                                           start a new session here
+ /help                                            keys and commands
+ /effort       [level|default]                    how much the model reasons, among the levels it takes
  session ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- /fork                                              continue in a new session copied from an earlier point of this one
- /tree                                              the sessions as a tree of forks; jump to one
- /rewind                                            go back to before an earlier message, files included (also Esc Esc)
-                                                               1/53                                                               42 more ↓
+ /fork                                            continue in a new session copied from an earlier point of this one
+ /rewind                                          go back to before an earlier message, files included (also Esc Esc)
+ /undo                                            undo the last request: its messages and the files it wrote
+                                                               1/45                                                               34 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                 20261102-100000-ef56

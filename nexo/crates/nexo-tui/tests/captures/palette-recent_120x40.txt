@@ -21,19 +21,19 @@
    ✓ read tests/a.rs · 2 lines  12ms ▸
    ✓ edit src/lib.rs · +1 −1  3ms
  recent ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
- /fork                                         continue in a new session copied from an earlier point of this one
- /tree                                         the sessions as a tree of forks; jump to one
- /resume         [session]                     pick a session to resume; with an id or a title: that one
+ /fork                                       continue in a new session copied from an earlier point of this one
+ /resume       [session|tree|undelete]       pick a session to resume; with an id or a title: that one; `tree` shows t…
  common ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
- /model          [name]                        switch model, or set one up step by step (checked against the server)
- /permissions    [ask|accept-edits|plan|auto…  set the permission mode
- /plan           [text|off]                    plan mode: reads only, then a plan to approve; with text: sends it
- /compact                                      replace the history with a summary
- /clear                                        start a new session here
- /help                                         keys and commands
- /effort         [level|default]               how much the model reasons, among the levels it takes
+ /model        [name]                        switch model, or set one up step by step (checked against the server)
+ /permissions  [ask|accept-edits|plan|auto…  set the permission mode
+ /plan         [text|off]                    plan mode: reads only, then a plan to approve; with text: sends it
+ /compact                                    replace the history with a summary
+ /clear                                      start a new session here
+ /help                                       keys and commands
+ /effort       [level|default]               how much the model reasons, among the levels it takes
  session ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-                                                     1/53                                                     43 more ↓
+ /rewind                                     go back to before an earlier message, files included (also Esc Esc)
+                                                     1/45                                                     35 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                 20261102-100000-ef56
