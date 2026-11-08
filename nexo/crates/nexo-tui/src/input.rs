@@ -63,7 +63,7 @@ pub fn cell_at(input: &Input, width: usize, vrow: usize, vcol: usize) -> (usize,
         used += w;
         n += 1;
     }
-    (*line, start + n)
+    input.snap((*line, start + n), None)
 }
 
 /// The `(line, first character)` each row of the layout starts at.
@@ -322,7 +322,13 @@ impl Input {
             self.editor.insert_str(text);
             return;
         }
-        let n = self.pastes.len() + 1;
+        let n = self
+            .pastes
+            .iter()
+            .filter_map(|(l, _)| l.strip_prefix("[Pasted text #")?.split(' ').next()?.parse::<usize>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
         let label = if lines > 1 {
             format!("[Pasted text #{n} +{lines} lines]")
         } else {
@@ -330,6 +336,59 @@ impl Input {
         };
         self.editor.insert_str(&label);
         self.pastes.push((label, text));
+    }
+
+    /// Where each folded paste sits in the draft: `(line, first character, end)`.
+    fn chips(&self) -> Vec<(usize, usize, usize)> {
+        let mut out = Vec::new();
+        for (row, line) in self.editor.lines().iter().enumerate() {
+            for (label, _) in &self.pastes {
+                for (b, _) in line.match_indices(label.as_str()) {
+                    let start = line[..b].chars().count();
+                    out.push((row, start, start + label.chars().count()));
+                }
+            }
+        }
+        out
+    }
+
+    /// A position inside a chip moved to its nearer edge, or to the edge `toward` says (true: the end).
+    fn snap(&self, (row, col): (usize, usize), toward: Option<bool>) -> (usize, usize) {
+        for (r, s, e) in self.chips() {
+            if r == row && col > s && col < e {
+                let end = toward.unwrap_or(col - s >= e - col);
+                return (row, if end { e } else { s });
+            }
+        }
+        (row, col)
+    }
+
+    /// Backspace, Ctrl+W or Alt+Backspace at the end of a chip, or Delete at its start: the whole chip goes, with its paste.
+    fn delete_chip(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let backward = match key.code {
+            KeyCode::Backspace if !ctrl => true,
+            KeyCode::Char('w') if ctrl => true,
+            KeyCode::Delete if !ctrl && !alt => false,
+            _ => return false,
+        };
+        if self.editor.selection_range().is_some() {
+            return false;
+        }
+        let (row, col) = self.editor.cursor();
+        let Some((_, s, e)) =
+            self.chips().into_iter().find(|&(r, s, e)| r == row && if backward { e == col } else { s == col })
+        else {
+            return false;
+        };
+        let label: String = self.editor.lines()[row].chars().skip(s).take(e - s).collect();
+        self.editor.move_cursor(CursorMove::Jump(row as u16, s as u16));
+        self.editor.delete_str(e - s);
+        if !self.text().contains(&label) {
+            self.pastes.retain(|(l, _)| *l != label);
+        }
+        true
     }
 
     /// The draft with every folded paste put back: what is sent.
@@ -586,6 +645,7 @@ impl Input {
         } else {
             start + n.saturating_sub(1)
         };
+        let (line, at) = self.snap((line, at), Some(end));
         self.editor.move_cursor(CursorMove::Jump(line as u16, at as u16));
     }
 
@@ -655,12 +715,21 @@ impl Input {
             }
             _ => {}
         }
-        if self.editor.input(key) {
+        if self.delete_chip(key) {
             self.hist = None;
-            Edit::Changed
-        } else {
-            Edit::Changed
+            return Edit::Changed;
         }
+        let before = self.editor.cursor();
+        let changed = self.editor.input(key);
+        let now = self.editor.cursor();
+        let to = self.snap(now, Some(now > before));
+        if to != now {
+            self.editor.move_cursor(CursorMove::Jump(to.0 as u16, to.1 as u16));
+        }
+        if changed {
+            self.hist = None;
+        }
+        Edit::Changed
     }
 
     /// The word being typed: the unit (letters, digits, and the joiners of a path, a flag or an
@@ -1031,5 +1100,87 @@ mod tests {
         assert_eq!(i.text(), "ello world!", "dd deletes the line");
         assert_eq!(i.key(k(KeyCode::Enter, KeyModifiers::NONE)), Edit::Submit, "Enter sends from normal mode");
         assert!(!i.vim_escape(), "Esc in normal mode is the app's (interrupt, clear)");
+    }
+
+    const CHIP: &str = "[Pasted text #1 +12 lines]";
+
+    /// "ab" + a folded paste + "cd", the cursor at the end.
+    fn chip_draft() -> Input {
+        let mut i = Input::new("");
+        for c in "ab".chars() {
+            i.key(k(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        i.insert_paste(&"x\n".repeat(12));
+        for c in "cd".chars() {
+            i.key(k(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(i.text(), format!("ab{CHIP}cd"));
+        i
+    }
+
+    fn at(i: &mut Input, col: usize) {
+        i.editor.move_cursor(CursorMove::Jump(0, col as u16));
+    }
+
+    #[test]
+    fn backspace_at_the_end_of_a_chip_removes_it_whole() {
+        let mut i = chip_draft();
+        at(&mut i, 2 + CHIP.len());
+        i.key(k(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(i.text(), "abcd");
+        assert!(i.pastes.is_empty(), "its entry goes too");
+        assert_eq!(i.full_text(), "abcd");
+    }
+
+    #[test]
+    fn delete_at_the_start_of_a_chip_removes_it_whole() {
+        let mut i = chip_draft();
+        at(&mut i, 2);
+        i.key(k(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(i.text(), "abcd");
+        assert!(i.pastes.is_empty());
+        assert_eq!(i.editor.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn ctrl_w_and_alt_backspace_remove_a_chip_whole() {
+        for m in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let code = if m == KeyModifiers::CONTROL { KeyCode::Char('w') } else { KeyCode::Backspace };
+            let mut i = chip_draft();
+            at(&mut i, 2 + CHIP.len());
+            i.key(k(code, m));
+            assert_eq!(i.text(), "abcd", "{m:?}");
+            assert!(i.pastes.is_empty(), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn the_cursor_jumps_over_a_chip() {
+        let mut i = chip_draft();
+        let end = 2 + CHIP.len();
+        at(&mut i, end);
+        i.key(k(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(i.editor.cursor(), (0, 2), "Left from the end lands before the chip");
+        i.key(k(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(i.editor.cursor(), (0, end), "Right from the start lands after it");
+        i.wrap_width = 80;
+        i.key(k(KeyCode::Home, KeyModifiers::NONE));
+        i.key(k(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(i.editor.cursor(), (0, end + 2));
+        // a click or drag inside the label goes to the nearest edge
+        assert_eq!(cell_at(&i, 80, 0, 5), (0, 2));
+        assert_eq!(cell_at(&i, 80, 0, end - 3), (0, end));
+    }
+
+    #[test]
+    fn a_new_chip_does_not_reuse_a_removed_number() {
+        let mut i = chip_draft();
+        i.insert_paste(&"y\n".repeat(12));
+        assert!(i.text().ends_with("[Pasted text #2 +12 lines]"));
+        at(&mut i, 2 + CHIP.len());
+        i.key(k(KeyCode::Backspace, KeyModifiers::NONE));
+        i.insert_paste(&"z\n".repeat(12));
+        assert!(i.text().contains("[Pasted text #3 +12 lines]"), "{}", i.text());
+        assert_eq!(i.pastes.len(), 2);
     }
 }
