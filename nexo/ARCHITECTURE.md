@@ -87,8 +87,8 @@ Tool names are lowercase; their argument keys are the common ones
 (`path`, `command`, `pattern`, `old_string`/`new_string`), which the curator's
 classifier recognises. `read` returns numbered lines (`   12│ text`) with
 `offset`/`limit`, and a PNG, JPEG, GIF or WebP file (judged by its first bytes, up to 5 MB and 2000 px) as an image in `ToolOutput.images` that each protocol sends inside the tool result (a text line only, when the model catalogue says the model cannot see); `edit` replaces one exact occurrence (or all with
-`replace_all`) and returns a `ToolDisplay::Diff` (the file before and after, `start_line` 1; a
-permission preview shows only the replaced text and carries the line where it sits); `write` creates parents;
+`replace_all`), or an `edits` list of such changes made in order on one file (one that fails writes nothing), and returns a `ToolDisplay::Diff` (the file before and after, `start_line` 1; a
+permission preview shows only the replaced text and carries the line where it sits, or the whole file for an `edits` list); `write` creates parents;
 `bash` runs `sh -c` in `cwd` with a timeout (default 120 s, max 600 s), merges
 stdout/stderr in order, caps output at 30k characters keeping head and tail,
 and streams lines as `ToolProgress`; `glob` and `grep` use the `ignore`

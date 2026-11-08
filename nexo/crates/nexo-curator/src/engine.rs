@@ -1678,23 +1678,25 @@ impl Engine {
                 // only a write leaves its text in a file to read back; a command or a prompt does not
                 let wrote = classify(get_str(b, "name"), b.get("input")).0 == Kind::Write;
                 // the text an edit replaced is gone from the file: saying the file holds it would mislead
-                let args: Map<String, Value> = args
-                    .iter()
-                    .map(|(k, v)| {
-                        let what = match (wrote, REPLACED_ARGS.contains(&k.as_str())) {
-                            (true, true) => "this edit replaced here are omitted; they are no longer in the file",
-                            (true, false) => "written here are omitted; the file on disk is current",
-                            _ => "of this argument here are omitted",
-                        };
-                        let v = match v {
-                            Value::String(s) if py::len(s) > 200 => {
-                                Value::String(format!("{MARK} {} lines {what}", s.matches('\n').count() + 1))
-                            }
-                            _ => v.clone(),
-                        };
-                        (k.clone(), v)
-                    })
-                    .collect();
+                // a list of changes (`edits: [{old_string, new_string}]`) folds each of its entries the same way
+                fn fold(k: &str, v: &Value, wrote: bool) -> Value {
+                    let what = match (wrote, REPLACED_ARGS.contains(&k)) {
+                        (true, true) => "this edit replaced here are omitted; they are no longer in the file",
+                        (true, false) => "written here are omitted; the file on disk is current",
+                        _ => "of this argument here are omitted",
+                    };
+                    match v {
+                        Value::String(s) if py::len(s) > 200 => {
+                            Value::String(format!("{MARK} {} lines {what}", s.matches('\n').count() + 1))
+                        }
+                        Value::Array(a) => Value::Array(a.iter().map(|x| fold(k, x, wrote)).collect()),
+                        Value::Object(o) => {
+                            Value::Object(o.iter().map(|(k2, x)| (k2.clone(), fold(k2, x, wrote))).collect())
+                        }
+                        _ => v.clone(),
+                    }
+                }
+                let args: Map<String, Value> = args.iter().map(|(k, v)| (k.clone(), fold(k, v, wrote))).collect();
                 out["input"] = Value::Object(args);
             }
             return Some(out);
@@ -5170,6 +5172,33 @@ mod tests {
         let call = e.view()[1].to_string();
         assert!(call.contains("lines of this argument here are omitted"), "{call} {:?}", e.stats);
         assert!(!call.contains("the file on disk is current"), "{call}");
+    }
+
+    #[test]
+    fn a_list_of_changes_folds_each_long_text_like_one_edit_does() {
+        let old = (0..40).map(|k| format!("let {} = {};", word(k), k)).collect::<Vec<_>>().join("\n");
+        let new = (0..40).map(|k| format!("let {} = {};", word(k + 70), k)).collect::<Vec<_>>().join("\n");
+        let input = json!({"path": "a.rs", "edits": [{"old_string": old, "new_string": new}, {"old_string": "a", "new_string": "b"}]});
+        let mut msgs = vec![
+            json!({"role": "user", "content": "Rename the bindings."}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "edit", "input": input}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "edited a.rs"}]}),
+        ];
+        for k in 2..8 {
+            msgs.extend(step(k, &format!("wc -l part{k}"), &format!("{k} lines")));
+        }
+        let mut whole = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+        whole.sync(&msgs);
+        let total = whole.tokens();
+        let cap = total - 1;
+        let floor = (total - est_str(&old)) as f64 / cap as f64;
+        let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;cap={cap};floor={floor}")).unwrap());
+        e.sync(&msgs);
+        let call = e.view()[1].to_string();
+        assert!(call.contains("lines this edit replaced here are omitted; they are no longer in the file"), "{call}");
+        assert!(call.contains("lines written here are omitted; the file on disk is current"), "{call}");
+        // the short change stays as it was
+        assert!(call.contains(r#"{"old_string":"a","new_string":"b"}"#), "{call}");
     }
 
     #[test]

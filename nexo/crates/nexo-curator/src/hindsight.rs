@@ -206,16 +206,18 @@ fn saving(kind: UKind, b: &Value, tokens: i64, opaque: bool) -> i64 {
     match kind {
         UKind::Result => (tokens - STUB_TOKENS).max(0),
         UKind::Thinking => tokens,
-        UKind::Call => match b.get("input") {
-            Some(Value::Object(m)) => m
-                .values()
-                .filter_map(Value::as_str)
-                .map(|v| (v.chars().count(), v))
-                .filter(|(n, _)| *n > FOLD_CHARS)
-                .map(|(n, _)| (n as i64 / 4 - STUB_TOKENS).max(0))
-                .sum(),
-            _ => 0,
-        },
+        // a list of changes (`edits: [{old_string, new_string}]`) folds each long text inside it too
+        UKind::Call => b.get("input").map_or(0, folded),
+        _ => 0,
+    }
+}
+
+/// The tokens folding the long texts of arguments `v` saves, those nested in lists and maps included.
+fn folded(v: &Value) -> i64 {
+    match v {
+        Value::String(s) if s.chars().count() > FOLD_CHARS => (s.chars().count() as i64 / 4 - STUB_TOKENS).max(0),
+        Value::Array(a) => a.iter().map(folded).sum(),
+        Value::Object(m) => m.values().map(folded).sum(),
         _ => 0,
     }
 }

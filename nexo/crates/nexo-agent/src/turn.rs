@@ -2713,6 +2713,13 @@ fn detail_of(kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay {
                 // only the replaced text is shown: where it sits in the file numbers the diff
                 let start_line = line_in_file(&file, &old);
                 ToolDisplay::Diff { path, old, new, start_line }
+            } else if args.get("edits").is_some() {
+                // several changes: the whole file as they would leave it
+                let old = std::fs::read_to_string(&file).unwrap_or_default();
+                match nexo_tools::edit::changes(args).and_then(|c| nexo_tools::edit::apply(&old, &c, &path)) {
+                    Ok((new, _)) => ToolDisplay::Diff { path, old, new, start_line: 1 },
+                    Err(_) => ToolDisplay::Plain,
+                }
             } else if let Some(content) = s("content") {
                 let old = std::fs::read_to_string(&file).unwrap_or_default();
                 ToolDisplay::Diff { path, old, new: content, start_line: 1 }

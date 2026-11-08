@@ -24,8 +24,10 @@ impl Tool for Edit {
             description: "Replace one exact occurrence of `old_string` in a file with `new_string`. \
                           `old_string` must match the file's text exactly (indentation included) and \
                           occur exactly once; include a few surrounding lines to make it unique, or set \
-                          `replace_all` to change every occurrence (renames). Read the file first so the \
-                          text is current. Answers with the lines changed and a unified diff."
+                          `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
+                          `edits`, a list of {old_string, new_string, replace_all} applied in order; if one fails \
+                          nothing is written. Read the file first so the text is current. Answers with the lines \
+                          changed and a unified diff."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -33,9 +35,14 @@ impl Tool for Edit {
                     "path": {"type": "string", "description": "The file to edit, absolute or relative to the working directory."},
                     "old_string": {"type": "string", "description": "The exact text to replace."},
                     "new_string": {"type": "string", "description": "The text that replaces it (empty to delete)."},
-                    "replace_all": {"type": "boolean", "description": "Replace every occurrence. Default false."}
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence. Default false."},
+                    "edits": {"type": "array", "description": "Instead of the three above: several changes to this file, applied in order.", "items": {"type": "object", "properties": {
+                        "old_string": {"type": "string"},
+                        "new_string": {"type": "string"},
+                        "replace_all": {"type": "boolean"}
+                    }, "required": ["old_string", "new_string"]}}
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path"]
             }),
         }
     }
@@ -46,6 +53,9 @@ impl Tool for Edit {
 
     fn summary(&self, args: &Value) -> String {
         match str_arg(args, "path") {
+            Some(p) if args.get("edits").and_then(Value::as_array).is_some_and(|e| e.len() > 1) => {
+                format!("edit {p} ({} changes)", args["edits"].as_array().map_or(0, Vec::len))
+            }
             Some(p) if bool_arg(args, "replace_all") => format!("edit {p} (all occurrences)"),
             Some(p) => format!("edit {p}"),
             None => "edit (no path)".into(),
@@ -56,17 +66,10 @@ impl Tool for Edit {
         let Some(p) = str_arg(&args, "path") else {
             return ToolOutput::error("edit: `path` is required");
         };
-        let (Some(old), Some(new)) =
-            (args.get("old_string").and_then(Value::as_str), args.get("new_string").and_then(Value::as_str))
-        else {
-            return ToolOutput::error("edit: `old_string` and `new_string` (strings) are required");
+        let changes = match changes(&args) {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::error(e),
         };
-        if old.is_empty() {
-            return ToolOutput::error("edit: `old_string` is empty; use `write` to create a file");
-        }
-        if old == new {
-            return ToolOutput::error("edit: `old_string` and `new_string` are the same");
-        }
         let path = resolve(&ctx.cwd, p);
         let shown = format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path));
         if let Ok(m) = tokio::fs::metadata(&path).await {
@@ -100,30 +103,92 @@ impl Tool for Edit {
             ))
             }
         };
-        // the file's text is matched as it is; only the strings given adapt to its line ends
-        let (old, new) = match_line_ends(&text, old, new);
-        let (old, new) = (old.as_str(), new.as_str());
-        let count = text.matches(old).count();
-        let replace_all = bool_arg(&args, "replace_all");
-        let edited = match count {
-            0 => return ToolOutput::error(not_found(&text, old, &shown)),
-            1 => text.replacen(old, new, 1),
-            _ if replace_all => text.replace(old, new),
-            n => {
-                return ToolOutput::error(format!(
-                    "edit: `old_string` occurs {n} times in {shown}; include more surrounding lines to make it unique, or set replace_all"
-                ))
-            }
+        let (edited, n) = match apply(&text, &changes, &shown) {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::error(e),
         };
         if let Err(e) = write_atomic(&path, edited.as_bytes()).await {
             return ToolOutput::error(format!("edit: cannot write {shown}: {e}"));
         }
         ctx.seen.mark(&path);
         let (added, removed, diff) = unified(&text, &edited, &shown);
-        let n = if replace_all { format!(" ({count} occurrences)") } else { String::new() };
         ToolOutput::ok(format!("edited {shown}{n}: +{added} −{removed} lines\n{diff}"))
             // the whole file, before and after: the diff numbers from its first line
             .with_display(ToolDisplay::Diff { path: shown, old: text, new: edited, start_line: 1 })
+    }
+}
+
+/// `text` with `changes` made in order, each on the text the ones before it left, and the note
+/// for the answer (" (3 changes)", " (4 occurrences)"); the error of the first that fails.
+pub fn apply(text: &str, changes: &[Change], shown: &str) -> Result<(String, String), String> {
+    let mut edited = text.to_string();
+    let mut last = 0;
+    for (i, (old, new, all)) in changes.iter().enumerate() {
+        match replace(&edited, old, new, *all, shown) {
+            Ok((t, n)) => (edited, last) = (t, n),
+            Err(e) if changes.len() > 1 => {
+                return Err(format!(
+                    "edit: change {} of {}: {}; nothing was written",
+                    i + 1,
+                    changes.len(),
+                    e.trim_start_matches("edit: ")
+                ))
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let note = match changes {
+        [(_, _, true)] => format!(" ({last} occurrences)"),
+        [_] => String::new(),
+        _ => format!(" ({} changes)", changes.len()),
+    };
+    Ok((edited, note))
+}
+
+/// One change: the text to replace, what replaces it, and whether every occurrence goes.
+pub type Change = (String, String, bool);
+
+/// The changes asked for: the one `old_string`/`new_string` pair, or
+/// each entry of `edits`.
+pub fn changes(args: &Value) -> Result<Vec<Change>, String> {
+    let one = |v: &Value, at: &str| -> Result<Change, String> {
+        let (Some(old), Some(new)) =
+            (v.get("old_string").and_then(Value::as_str), v.get("new_string").and_then(Value::as_str))
+        else {
+            return Err(format!("edit: {at}`old_string` and `new_string` (strings) are required"));
+        };
+        if old.is_empty() {
+            return Err(format!("edit: {at}`old_string` is empty; use `write` to create a file"));
+        }
+        if old == new {
+            return Err(format!("edit: {at}`old_string` and `new_string` are the same"));
+        }
+        Ok((old.to_string(), new.to_string(), bool_arg(v, "replace_all")))
+    };
+    match args.get("edits") {
+        Some(Value::Array(list)) if !list.is_empty() => {
+            if args.get("old_string").is_some() {
+                return Err("edit: give either `old_string`/`new_string` or `edits`, not both".into());
+            }
+            list.iter().enumerate().map(|(i, v)| one(v, &format!("change {}: ", i + 1))).collect()
+        }
+        Some(_) => Err("edit: `edits` must be a list of {old_string, new_string} objects".into()),
+        None => one(args, "").map(|c| vec![c]),
+    }
+}
+
+/// `text` with `old` replaced by `new` (every occurrence with `all`), and how many there were.
+fn replace(text: &str, old: &str, new: &str, all: bool, shown: &str) -> Result<(String, usize), String> {
+    // the file's text is matched as it is; only the strings given adapt to its line ends
+    let (old, new) = match_line_ends(text, old, new);
+    let (old, new) = (old.as_str(), new.as_str());
+    match text.matches(old).count() {
+        0 => Err(not_found(text, old, shown)),
+        1 => Ok((text.replacen(old, new, 1), 1)),
+        n if all => Ok((text.replace(old, new), n)),
+        n => Err(format!(
+            "edit: `old_string` occurs {n} times in {shown}; include more surrounding lines to make it unique, or set replace_all"
+        )),
     }
 }
 
@@ -361,5 +426,53 @@ mod tests {
         let out = Edit.run(json!({"path": "run.sh", "old_string": "b", "new_string": "c"}), &c).await;
         assert!(out.is_error && out.content.contains("read-only"), "{}", out.content);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "echo b\n");
+    }
+}
+
+#[cfg(test)]
+mod many_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn several_changes_go_in_one_call_and_one_that_fails_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let f = d.path().join("a.rs");
+        std::fs::write(&f, "fn a() {}\nfn b() {}\nlet x = 1; let x2 = x;\n").unwrap();
+        let edits = json!([
+            {"old_string": "fn a() {}", "new_string": "fn a() { 1 }"},
+            // the second sees the text the first left
+            {"old_string": "fn a() { 1 }\nfn b", "new_string": "fn a() { 1 }\nfn bee"},
+            {"old_string": "x", "new_string": "y", "replace_all": true}
+        ]);
+        let out = Edit.run(json!({"path": "a.rs", "edits": edits}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.starts_with("edited a.rs (3 changes): +3 −3 lines"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "fn a() { 1 }\nfn bee() {}\nlet y = 1; let y2 = y;\n");
+        assert_eq!(Edit.summary(&json!({"path": "a.rs", "edits": edits})), "edit a.rs (3 changes)");
+
+        let before = std::fs::read_to_string(&f).unwrap();
+        let bad = json!([{"old_string": "fn bee", "new_string": "fn b"}, {"old_string": "missing", "new_string": "z"}]);
+        let out = Edit.run(json!({"path": "a.rs", "edits": bad}), &c).await;
+        assert!(out.is_error);
+        assert!(out.content.starts_with("edit: change 2 of 2: `old_string` not found in a.rs"), "{}", out.content);
+        assert!(out.content.ends_with("nothing was written"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), before);
+
+        for (args, want) in [
+            (
+                json!({"path": "a.rs", "edits": [{"old_string": "", "new_string": "z"}]}),
+                "edit: change 1: `old_string` is empty",
+            ),
+            (json!({"path": "a.rs", "edits": "x"}), "edit: `edits` must be a list"),
+            (
+                json!({"path": "a.rs", "old_string": "a", "new_string": "b", "edits": [{"old_string": "a", "new_string": "b"}]}),
+                "edit: give either",
+            ),
+            (json!({"path": "a.rs"}), "edit: `old_string` and `new_string` (strings) are required"),
+        ] {
+            let out = Edit.run(args, &c).await;
+            assert!(out.is_error && out.content.starts_with(want), "{want}: {}", out.content);
+        }
     }
 }

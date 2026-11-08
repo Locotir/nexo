@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSet, ToolSpec};
-use nexo_tools::util::{bool_arg, cut_line, display_path, int_arg, outside_note, resolve, str_arg};
+use nexo_tools::util::{cut_line, display_path, int_arg, outside_note, resolve, str_arg};
 use serde_json::{json, Value};
 
 use super::rpc::Rpc;
@@ -224,46 +224,24 @@ impl Tool for EditTool {
             let Some(p) = str_arg(&args, "path") else {
                 return ToolOutput::error("edit: `path` is required");
             };
-            let (Some(old), Some(new)) =
-                (args.get("old_string").and_then(Value::as_str), args.get("new_string").and_then(Value::as_str))
-            else {
-                return ToolOutput::error("edit: `old_string` and `new_string` (strings) are required");
+            let changes = match nexo_tools::edit::changes(&args) {
+                Ok(c) => c,
+                Err(e) => return ToolOutput::error(e),
             };
-            if old.is_empty() {
-                return ToolOutput::error("edit: `old_string` is empty; use `write` to create a file");
-            }
-            if old == new {
-                return ToolOutput::error("edit: `old_string` and `new_string` are the same");
-            }
             let path = resolve(&ctx.cwd, p);
             let shown = format!("{}{}", display_path(&ctx.cwd, &path), outside_note(&ctx.cwd, &path));
             let text = match self.0.read(&path).await {
                 Ok(t) => t,
                 Err(e) => return ToolOutput::error(format!("edit: cannot read {shown}: {e}")),
             };
-            let (old, new) = nexo_tools::edit::match_line_ends(&text, old, new);
-            let (old, new) = (old.as_str(), new.as_str());
-            let count = text.matches(old).count();
-            let replace_all = bool_arg(&args, "replace_all");
-            let edited = match count {
-                0 => {
-                    return ToolOutput::error(format!(
-                        "edit: `old_string` not found in {shown}; read the file and copy the text exactly"
-                    ))
-                }
-                1 => text.replacen(old, new, 1),
-                _ if replace_all => text.replace(old, new),
-                n => {
-                    return ToolOutput::error(format!(
-                        "edit: `old_string` occurs {n} times in {shown}; include more surrounding lines to make it unique, or set replace_all"
-                    ))
-                }
+            let (edited, n) = match nexo_tools::edit::apply(&text, &changes, &shown) {
+                Ok(r) => r,
+                Err(e) => return ToolOutput::error(e),
             };
             if let Err(e) = self.0.write(&path, &edited).await {
                 return ToolOutput::error(format!("edit: cannot write {shown}: {e}"));
             }
             let (added, removed, diff) = nexo_tools::edit::unified(&text, &edited, &shown);
-            let n = if replace_all { format!(" ({count} occurrences)") } else { String::new() };
             ToolOutput::ok(format!("edited {shown}{n}: +{added} −{removed} lines\n{diff}"))
                 .with_display(ToolDisplay::Diff { path: shown, old: text, new: edited, start_line: 1 })
         })
