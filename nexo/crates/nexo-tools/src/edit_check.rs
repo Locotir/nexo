@@ -59,7 +59,7 @@ async fn found(file: &Path, limit: Duration) -> Option<Vec<String>> {
                 return None;
             }
             let mut c = tokio::process::Command::new("cargo");
-            c.args(["check", "--message-format=short", "--quiet", "--all-targets"]);
+            c.args(["check", "--message-format=short", "--quiet", "--color=never", "--all-targets"]);
             (c, dir, true)
         }
         "ts" | "tsx" | "mts" | "cts" => {
