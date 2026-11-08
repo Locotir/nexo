@@ -1,7 +1,7 @@
 #![cfg(feature = "sim")]
 //! The knob search of the session simulator (`nexo_curator::sim::search`).
 
-use nexo_curator::sim::search::{coordinate_descent, lhs, pareto, Config, Space};
+use nexo_curator::sim::search::{cli, collapsed_axes, coordinate_descent, lhs, pareto, Config, Space};
 
 const KNOBS: &str = r#"
 [float]
@@ -97,4 +97,34 @@ fn pareto_layers_fill_up_to_the_wanted_count() {
     assert!(two.iter().all(|&(_, r)| r == 1) && two.len() == 2);
     let four = pareto_layers(&pts, 4);
     assert_eq!(four.iter().filter(|&&(_, r)| r == 2).count(), 2);
+}
+
+#[test]
+fn an_axis_without_spread_is_named() {
+    let pts = [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.5, 0.0, 0.0]];
+    assert_eq!(collapsed_axes(&pts), ["extra_steps", "p_fail"]);
+    assert!(collapsed_axes(&[[1.0, 2.0, 0.1], [2.0, 1.0, 0.2]]).is_empty());
+    assert!(collapsed_axes(&[[1.0, 0.0, 0.0]]).is_empty());
+}
+
+#[test]
+fn a_missing_fixture_stops_the_search_unless_allowed() {
+    let dir = std::env::temp_dir().join(format!("sim-search-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let knobs = dir.join("knobs.toml");
+    std::fs::write(&knobs, KNOBS).unwrap();
+    let args = |extra: &[&str]| {
+        let mut v: Vec<String> =
+            ["--knobs", knobs.to_str().unwrap(), "--fixtures", dir.to_str().unwrap(), "--configs", "2", "--out"]
+                .map(String::from)
+                .to_vec();
+        v.push(dir.join("out").to_str().unwrap().to_string());
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v.into_iter()
+    };
+    let e = cli(args(&[])).expect_err("no fixture is there");
+    assert!(e.contains("not found in") && e.contains("--allow-missing"), "{e}");
+    let e = cli(args(&["--allow-missing"])).expect_err("still nothing to search on");
+    assert!(e.contains("no fixture of tier fast"), "{e}");
+    std::fs::remove_dir_all(&dir).ok();
 }

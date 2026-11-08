@@ -363,6 +363,23 @@ pub fn pareto_layers(points: &[[f64; 3]], want: usize) -> Vec<(usize, usize)> {
     out
 }
 
+/// The axes (cost, extra steps, chance of failing) on which every point is the same: they cannot tell one
+/// config from another, so a front over three axes is really over fewer.
+pub fn collapsed_axes(points: &[[f64; 3]]) -> Vec<&'static str> {
+    const NAMES: [&str; 3] = ["cost", "extra_steps", "p_fail"];
+    if points.len() < 2 {
+        return Vec::new();
+    }
+    (0..3)
+        .filter(|&a| {
+            let lo = points.iter().map(|p| p[a]).fold(f64::INFINITY, f64::min);
+            let hi = points.iter().map(|p| p[a]).fold(f64::NEG_INFINITY, f64::max);
+            hi - lo <= 1e-9 * hi.abs().max(1e-12)
+        })
+        .map(|a| NAMES[a])
+        .collect()
+}
+
 // ---- fixtures and tiers ----
 
 /// The fixtures of each tier (`SIMULATOR-SPEC.md` 4.3), as file names without `.jsonl`.
@@ -463,6 +480,20 @@ pub fn assign_folds(fixtures: &[Fixture], folds: usize) -> Vec<usize> {
 impl Setup {
     pub fn weight(&self, i: usize) -> f64 {
         self.weights.get(&self.fixtures[i].family).copied().unwrap_or(0.0)
+    }
+
+    /// The families that weigh in J and have no fixture in this setup: the search never sees their load.
+    pub fn uncovered(&self) -> Vec<(String, f64)> {
+        self.weights
+            .iter()
+            .filter(|(fam, w)| **w > 0.0 && !self.fixtures.iter().any(|f| &f.family == *fam))
+            .map(|(fam, w)| (fam.clone(), *w))
+            .collect()
+    }
+
+    /// Whether fixture `i` is outside the fast tier, which the configs were searched on.
+    pub fn unseen(&self, i: usize) -> bool {
+        !FAST.contains(&self.fixtures[i].name.as_str())
     }
 
     /// One config on one fixture: the open-loop pass and the analytic behaviour layer.
@@ -591,15 +622,17 @@ struct Opts {
     starts: usize,
     pareto_max: usize,
     pareto_min: usize,
+    allow_missing: bool,
 }
 
 const USAGE: &str = "usage: sim search [--knobs sim/knobs.toml] [--tier fast|mid|all] [--configs N] [--workers W] [--seed X]
                   [--stage lhs|coord|confirm] [--from FILE] [--folds 3] [--weights sim/weights.toml] [--params sim/params.json]
                   [--out DIR] [--fixtures DIR[:DIR...]] [--price live|legacy] [--life S] [--slots K] [--max-steps 40] [--blind-c C]
-                  [--holdout K] [--sweeps 3] [--starts 20] [--pareto-max 50] [--pareto-min 5]
-  lhs      sample N configs by Latin hypercube, score them on the tier, write configs.tsv, pareto.tsv, folds.tsv
+                  [--holdout K] [--sweeps 3] [--starts 20] [--pareto-max 50] [--pareto-min 5] [--allow-missing]
+  lhs     sample N configs by Latin hypercube, score them on the tier, write configs.tsv, pareto.tsv, folds.tsv
   coord    --from configs.tsv: coordinate descent from its best --starts configs and D_SPEC (N evaluations in all)
-  confirm  --from pareto.tsv: rerun its configs on all 21 fixtures, write confirm.tsv";
+  confirm  --from pareto.tsv: rerun its configs on all 21 fixtures, write confirm.tsv
+  A fixture of the tier that no --fixtures directory holds is an error, unless --allow-missing (then it is noted).";
 
 fn parse_opts(mut args: impl Iterator<Item = String>) -> Result<Opts, String> {
     let mut o = Opts {
@@ -625,6 +658,7 @@ fn parse_opts(mut args: impl Iterator<Item = String>) -> Result<Opts, String> {
         starts: 20,
         pareto_max: 50,
         pareto_min: 5,
+        allow_missing: false,
     };
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or_else(|| format!("{a} needs a value\n{USAGE}"));
@@ -652,6 +686,7 @@ fn parse_opts(mut args: impl Iterator<Item = String>) -> Result<Opts, String> {
             "--starts" => o.starts = num(val()?)? as usize,
             "--pareto-max" => o.pareto_max = num(val()?)? as usize,
             "--pareto-min" => o.pareto_min = num(val()?)? as usize,
+            "--allow-missing" => o.allow_missing = true,
             _ => return Err(format!("unknown option {a:?}\n{USAGE}")),
         }
     }
@@ -663,32 +698,44 @@ fn parse_opts(mut args: impl Iterator<Item = String>) -> Result<Opts, String> {
 
 fn build_setup(o: &Opts, tier_name: &str) -> Result<Setup, String> {
     let names = tier(tier_name)?;
-    let loaded = parallel_map(o.workers, names.len(), &|i| -> Result<Option<(String, Vec<Request>)>, String> {
+    // Ok(Err(name)): the fixture is in no directory
+    let loaded = parallel_map(o.workers, names.len(), &|i| -> Result<Result<(String, Vec<Request>), String>, String> {
         let Some(path) =
             o.fixtures.split(':').map(|d| format!("{d}/{}.jsonl", names[i])).find(|p| std::path::Path::new(p).exists())
         else {
-            return Ok(None);
+            return Ok(Err(names[i].to_string()));
         };
-        Ok(Some((names[i].to_string(), load(&path)?.requests)))
+        Ok(Ok((names[i].to_string(), load(&path)?.requests)))
     });
     let prices = Prices::named(&o.price).ok_or("--price takes live or legacy")?;
-    let mut fixtures = Vec::new();
+    let (mut fixtures, mut missing) = (Vec::new(), Vec::new());
     for l in loaded {
-        if let Some((name, requests)) = l? {
-            let family = auto_family(&requests).to_string();
-            let plain = plain_cost(&requests, prices, o.life, o.slots);
-            fixtures.push(Fixture { name, family, requests, max_steps: o.max_steps, plain });
+        match l? {
+            Ok((name, requests)) => {
+                let family = auto_family(&requests).to_string();
+                let plain = plain_cost(&requests, prices, o.life, o.slots);
+                fixtures.push(Fixture { name, family, requests, max_steps: o.max_steps, plain });
+            }
+            Err(name) => missing.push(name),
         }
+    }
+    if !missing.is_empty() && !o.allow_missing {
+        return Err(format!(
+            "fixtures of tier {tier_name} not found in {}: {} (a missing one changes J and the folds; --allow-missing goes on without)",
+            o.fixtures,
+            missing.join(", ")
+        ));
     }
     if fixtures.is_empty() {
         return Err(format!("no fixture of tier {tier_name} found in {}", o.fixtures));
     }
-    if fixtures.len() < names.len() {
+    if !missing.is_empty() {
         eprintln!(
-            "note: {} of {} fixtures of tier {tier_name} are missing in {}",
-            names.len() - fixtures.len(),
+            "note: {} of {} fixtures of tier {tier_name} are missing in {}: {}",
+            missing.len(),
             names.len(),
-            o.fixtures
+            o.fixtures,
+            missing.join(", ")
         );
     }
     let params = match &o.params {
@@ -794,7 +841,7 @@ fn report(
         ra.cmp(&rb).then(ja.total_cmp(&jb)).then(pool[a].spec.cmp(&pool[b].spec))
     });
     front.truncate(o.pareto_max);
-    let mut t = format!("id\t{head}\tfolds_beaten\trank\tspec\n");
+    let mut t = format!("id\t{head}\tfolds_beaten_in_sample\trank\tspec\n");
     t += &format!("D_SPEC\t{}\t-\t-\t{}\n", row_numbers(setup, &dspec.fix), dspec.spec);
     for (n, &(i, rank)) in front.iter().enumerate() {
         let s = pool[i];
@@ -808,6 +855,28 @@ fn report(
             s.spec
         );
     }
+    let mut notes = vec![format!(
+        "# {total} of {} configs are non-dominated (rank 1). Rows of rank 2 or more are dominated by a rank-1 row and are listed only to reach --pareto-min {}.",
+        all.len(),
+        o.pareto_min
+    )];
+    let collapsed = collapsed_axes(&pts);
+    if !collapsed.is_empty() {
+        notes.push(format!(
+            "# The axes {} do not vary across the configs (with r = beta = phi = 0 in the params no config adds steps or fails), so the front is over fewer axes than three.",
+            collapsed.join(" and ")
+        ));
+    }
+    for (fam, w) in setup.uncovered() {
+        notes.push(format!(
+            "# Family {fam} weighs {w} in J and has no fixture in this tier: the search never sees its load."
+        ));
+    }
+    notes.push(
+        "# folds_beaten_in_sample counts folds of the fixtures the configs were chosen on: it is not a held-out result (folds.tsv is)."
+            .to_string(),
+    );
+    t += &(notes.join("\n") + "\n");
     write(dir, "pareto.tsv", &t)?;
     println!(
         "pareto: {total} non-dominated configs of {} (listed {}, ranks 1-{}), D_SPEC row first",
@@ -815,6 +884,9 @@ fn report(
         front.len(),
         front.iter().map(|f| f.1).max().unwrap_or(1)
     );
+    for n in &notes[1..] {
+        println!("{}", n.trim_start_matches("# "));
+    }
 
     // folds: per fold, the config chosen on the other folds and how it does on the held-out one
     let mut t = String::from("fold\tfixtures\tJ_train\tJ_heldout\tdspec_J_train\tdspec_J_heldout\tbeats_dspec\tspec\n");
@@ -854,7 +926,7 @@ fn read_specs(path: &str) -> Result<Vec<(String, Vec<String>)>, String> {
     let head: Vec<&str> = lines.next().ok_or(format!("{path}: empty"))?.split('\t').collect();
     let at = head.iter().position(|h| *h == "spec").ok_or(format!("{path}: no spec column"))?;
     Ok(lines
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         .map(|l| {
             let c: Vec<String> = l.split('\t').map(str::to_string).collect();
             (c[at].clone(), c)
@@ -965,14 +1037,27 @@ pub fn cli(args: impl Iterator<Item = String>) -> Result<(), String> {
             let (scored, bad) = evaluate_all(&setup, &space, configs, o.workers);
             summary_line(&setup, &scored, bad, t1.elapsed().as_secs_f64());
             let dspec = scored.first().ok_or("D_SPEC does not run")?;
-            let mut t = format!("id\tJ_weighted\tJ_unweighted\tcost\textra_steps\tp_fail\t{}\tfolds_beaten\tbeats_dspec_all_folds\tspec\n", fold_header(&setup));
+            // The configs were chosen on the fast tier, which sits inside these 21 fixtures and their folds:
+            // the fold columns are in sample. Only the fixtures outside the fast tier were never seen.
+            let unseen = |i: usize| setup.unseen(i);
+            let n_unseen = (0..setup.fixtures.len()).filter(|&i| unseen(i)).count();
+            println!(
+                "{n_unseen} of {} fixtures are outside the fast tier (never seen by the search)",
+                setup.fixtures.len()
+            );
+            let mut t = format!(
+                "id\tJ_weighted\tJ_unweighted\tcost\textra_steps\tp_fail\t{}\tfolds_beaten_in_sample\tbeats_dspec_all_folds_in_sample\tJ_unseen_weighted\tJ_unseen_unweighted\tbeats_dspec_unseen\tspec\n",
+                fold_header(&setup)
+            );
             for (id, s) in ids.iter().zip(&scored) {
                 let a = setup.axes(&s.fix);
                 let folds: Vec<String> = (0..setup.folds).map(|k| format!("{:.6}", setup.j_fold(&s.fix, k))).collect();
                 let beaten = folds_beaten(&setup, &s.fix, &dspec.fix);
                 let all = beaten == setup.folds && id != "D_SPEC";
+                let (uw, uf) = (setup.j(&s.fix, &unseen), setup.j_flat(&s.fix, &unseen));
+                let wins = uf < setup.j_flat(&dspec.fix, &unseen);
                 t += &format!(
-                    "{id}\t{:.6}\t{:.6}\t{:.6}\t{:.4}\t{:.5}\t{}\t{beaten}/{}\t{}\t{}\n",
+                    "{id}\t{:.6}\t{:.6}\t{:.6}\t{:.4}\t{:.5}\t{}\t{beaten}/{}\t{}\t{uw:.6}\t{uf:.6}\t{}\t{}\n",
                     setup.j(&s.fix, &|_| true),
                     setup.j_flat(&s.fix, &|_| true),
                     a[0],
@@ -981,22 +1066,32 @@ pub fn cli(args: impl Iterator<Item = String>) -> Result<(), String> {
                     folds.join("\t"),
                     setup.folds,
                     if id == "D_SPEC" { "-".to_string() } else { all.to_string() },
+                    if id == "D_SPEC" { "-".to_string() } else { wins.to_string() },
                     s.spec
                 );
                 println!(
-                    "{id:>6}: J weighted {:.6}, unweighted {:.6}, folds beaten {beaten}/{}{}",
+                    "{id:>6}: J weighted {:.6}, unweighted {:.6}; in sample, folds beaten {beaten}/{}; unseen fixtures J {uw:.6} weighted, {uf:.6} unweighted{}",
                     setup.j(&s.fix, &|_| true),
                     setup.j_flat(&s.fix, &|_| true),
                     setup.folds,
                     if id == "D_SPEC" {
                         " (reference)".to_string()
-                    } else if all {
-                        " : beats D_SPEC on held-out J in all folds".into()
+                    } else if wins {
+                        " : beats D_SPEC on the unseen fixtures".into()
                     } else {
-                        String::new()
+                        " : does not beat D_SPEC on the unseen fixtures".into()
                     }
                 );
             }
+            let mut notes = Vec::new();
+            for (fam, w) in setup.uncovered() {
+                notes.push(format!("# Family {fam} weighs {w} in J and has no fixture: its load is not scored."));
+            }
+            notes.push(
+                "# folds_beaten_in_sample and beats_dspec_all_folds_in_sample use fixtures the configs were chosen on; beats_dspec_unseen (unweighted J on the fixtures outside the fast tier) is the held-out claim."
+                    .to_string(),
+            );
+            t += &(notes.join("\n") + "\n");
             write(&dir, "confirm.tsv", &t)?;
         }
         other => return Err(format!("unknown stage {other:?} (lhs, coord, confirm)\n{USAGE}")),
