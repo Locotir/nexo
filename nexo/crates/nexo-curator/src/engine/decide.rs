@@ -1,0 +1,236 @@
+//! One decision for each request: what stays in the view and what leaves.
+
+use serde_json::Value;
+
+use super::Engine;
+
+impl Engine {
+    pub fn decide(&mut self) {
+        self.own.clock += 1;
+        self.index_calls();
+        if self.dump.is_some() {
+            self.dump_rows();
+        }
+        // what the view sent before: a message of it that a step below changes without weighing the cache
+        // (it changes what the view sends, not what is weighed) still counts in `miss`
+        let sent = self.sent_vis.clone();
+        let was_sent = |mi: usize| sent.contains(&mi);
+        let mut quiet: Vec<(&'static str, usize)> = Vec::new();
+        if let Some(mi) = self.unnudged.take().filter(|&mi| was_sent(mi)) {
+            quiet.push(("miss_note", mi));
+        }
+        // the output that went whole as the latest message (`Params.fresh`) points up from now on
+        if let Some(&mi) = sent.last().filter(|&&mi| self.p.fresh != 0 && self.dups.contains_key(&mi)) {
+            if mi + 1 < self.tr.msgs.len() && self.dups_on(mi).iter().any(Option::is_some) {
+                quiet.push(("miss_fresh", mi));
+            }
+        }
+        // the provider's cache holds the last view of each topic for a while (`Params.pockets`): where it
+        // stops in the view as it stands, which cuts past it do not move
+        let (warm, warm_all, cold) =
+            if self.p.pockets != 0 { self.warm_now() } else { (usize::MAX, usize::MAX, false) };
+        self.warm = warm;
+        let nt = self.goal.turns.len();
+        // the oldest message closing steps changed in this request: the cache misses from there on
+        let mut closed: Option<usize> = None;
+        // a history with no request from the person yet has nothing to close, idle or bring back
+        if self.p.close != 0 && nt > 0 {
+            let (now, mut turned) = (self.tr.steps.len(), false);
+            while self.shut_done + 1 < nt {
+                if let Some(unused) = self.close_unused(self.shut_done, nt - 1) {
+                    for (i, s) in self.steps.iter_mut().enumerate().filter(|(_, s)| !s.out) {
+                        s.idle = if unused.contains(&i) { Some(s.idle.unwrap_or(now)) } else { None };
+                    }
+                }
+                self.shut_done += 1;
+                turned = true;
+            }
+            if self.p.live != 0 {
+                if let Some(mi) = self.live_drop(now) {
+                    quiet.push(("miss_live", mi));
+                }
+            }
+            // what the latest request asks is weighed against every step, those of the request just closed too
+            let need = self.asks(nt - 1);
+            let named_back = self.p.named != 0 && self.named_keep(turned);
+            if (turned && self.recall(&need)) || named_back {
+                closed = self.shut_lines();
+            }
+            let idle: Vec<usize> = (0..self.steps.len()).filter(|&i| self.steps[i].idle.is_some()).collect();
+            if !idle.is_empty() && self.rent_close(idle) {
+                if let Some(mi) = self.shut_lines() {
+                    closed = Some(closed.map_or(mi, |c| c.min(mi)));
+                }
+            }
+        }
+        let mut switched = false;
+        if nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread {
+            let start = self.goal.turns[nt - 1].start;
+            if !self.frozen.contains_key(&start) {
+                let text = self.cards_text();
+                if !text.is_empty() {
+                    self.frozen.insert(start, text);
+                    self.bump("cards", 1);
+                }
+                self.bump("switches", 1);
+                switched = true;
+                // the view sends the messages of another topic: the cache misses from the first that differs
+                // from what it holds (with pockets, the last view of that topic, if it lives)
+                if self.p.pockets != 0 {
+                    if warm != usize::MAX {
+                        quiet.push(("miss_switch", warm));
+                    }
+                } else {
+                    let vis = self.visible();
+                    // (the message before it joins it when they are of the same role)
+                    if let Some(p) = (0..sent.len()).find(|&p| vis.get(p) != Some(&sent[p])) {
+                        let role = |m: usize| self.tr.msgs[m].get("role").and_then(Value::as_str);
+                        let joined = p > 0 && vis.get(p).is_some_and(|&m| role(m) == role(vis[p - 1]));
+                        quiet.push((
+                            "miss_switch",
+                            if joined { vis[p - 1] } else { vis.get(p).map_or(sent[p], |&m| m.min(sent[p])) },
+                        ));
+                    }
+                }
+            }
+        }
+        // the same topic, but its last view outlived the cache: what a cache that kept it would hold is read
+        // again
+        if warm < warm_all {
+            self.bump("pocket_cold", 1);
+            if !switched {
+                quiet.push(("miss_cold", warm));
+            }
+        }
+        let t = self.tr.msgs.len();
+        if t == 0 {
+            self.warm = usize::MAX;
+            return;
+        }
+        let k = self.tr.steps.len();
+        let mut sizes = self.sizes_now();
+        let total: i64 = sizes.iter().sum();
+        // where the cache stops, the view is read again whatever is cut: what is worth cutting is weighed now
+        let due = warm != usize::MAX
+            || total - self.checked >= self.p.check
+            || k as i64 - self.checked_at as i64 >= self.p.every;
+        let held = if self.p.hold != 0 && self.p.eoq != 0 { self.held(&sizes) } else { 0 };
+        if self.p.eoq != 0 {
+            // what no cut takes: the first message and the protected tail
+            let tail = (t as i64 - self.p.protect).clamp(1, t as i64) as usize;
+            let base = (sizes[0] + sizes[tail..].iter().sum::<i64>() - held).max(0);
+            let stuck;
+            (self.cap, self.floor, stuck) = self.eoq_cap(k, base);
+            if stuck {
+                self.bump("cap_stuck", 1);
+            }
+        }
+        let mut first: Option<usize> = None;
+        let capped = self.cap != 0 && total - held > self.cap;
+        // a view the cache holds no more of than its anchor is read again whole: it is cut down to what the
+        // cap leaves now, for free, rather than later at the price of breaking the cache (`Params.pockets` 2)
+        let squeeze = self.p.pockets >= 2
+            && !capped
+            && cold
+            && self.cap != 0
+            && (total - held) as f64 > self.floor * self.cap as f64;
+        let mut over = capped || squeeze;
+        if over && self.p.cut_copies {
+            let target = self.floor * self.cap as f64 + held as f64;
+            if target != 0.0 {
+                first = self.need(t, &sizes, target, true);
+                sizes = self.sizes_now();
+            }
+            let left = sizes.iter().sum::<i64>();
+            over = left - held > 2 * self.cap || (squeeze && left as f64 > target);
+        }
+        if over {
+            if let Some(e) = self.evict(t, k, &sizes, true) {
+                first = Some(first.map_or(e, |f| f.min(e)));
+            }
+            sizes = self.sizes_now();
+            let target = self.floor * self.cap as f64 + held as f64;
+            if self.p.cut_cover && target != 0.0 && sizes.iter().sum::<i64>() as f64 > target {
+                if let Some(mi) = self.cover(t, &sizes, target) {
+                    first = Some(first.map_or(mi, |f| f.min(mi)));
+                    sizes = self.sizes_now();
+                }
+            }
+            if self.p.cut_need && target != 0.0 && sizes.iter().sum::<i64>() as f64 > target {
+                if let Some(mi) = self.need(t, &sizes, target, false) {
+                    first = Some(first.map_or(mi, |f| f.min(mi)));
+                    sizes = self.sizes_now();
+                }
+            }
+            // `leave` writes the anchor again: the first message changes with it, and with it every topic's
+            // pocket, so a squeeze leaves only when no pocket that lives holds the anchor as it is
+            if target != 0.0
+                && sizes.iter().sum::<i64>() as f64 > target
+                && (!squeeze || warm == 0)
+                && self.leave(&sizes, target)
+            {
+                first = Some(0);
+            }
+            if squeeze {
+                self.bump("pocket_squeeze", first.is_some() as i64);
+                self.miss("miss_squeeze", first, &sizes, t);
+            } else {
+                self.bump("cap_rewrites", first.is_some() as i64);
+                self.miss("miss_cap", first, &sizes, t);
+            }
+        } else if due {
+            if let Some(e) = self.evict(t, k, &sizes, false) {
+                self.miss("miss_due", Some(e), &sizes, t);
+                first = Some(first.map_or(e, |f| f.min(e)));
+            }
+        }
+        // what settles and what fits is weighed as a view rewritten from message 1 on (`first`); the cache
+        // misses from the oldest result settled, and from the anchor that `leave` writes again
+        let mut missed = first;
+        if self.fit() {
+            first.get_or_insert(1);
+            self.miss("miss_fit", Some(0), &sizes, t);
+            missed = Some(0);
+        }
+        if first.is_some() || due {
+            self.checked = self.sizes_now().iter().sum();
+            self.checked_at = k;
+        }
+        self.miss("miss_close", closed, &sizes, t);
+        if let Some(c) = closed {
+            first = Some(first.map_or(c, |f| f.min(c)));
+            missed = Some(missed.map_or(c, |f| f.min(c)));
+        }
+        if let Some(mi) = self.nudge(t) {
+            self.miss("miss_nudge", Some(mi), &sizes, t);
+            first = Some(first.map_or(mi, |f| f.min(mi)));
+            missed = Some(missed.map_or(mi, |f| f.min(mi)));
+        }
+        // a view changed from message 1 on is read again nearly whole: the anchor can change with it, as it can
+        // when no pocket that lives holds the anchor as it is (`Params.pockets`)
+        if self.refresh_rules(first.is_some_and(|f| f <= 1) || warm == 0) {
+            self.miss("miss_anchor", Some(0), &sizes, t);
+            missed = Some(0);
+        }
+        for (k, mi) in quiet {
+            self.miss(k, Some(mi), &sizes, t);
+            missed = Some(missed.map_or(mi, |f| f.min(mi)));
+        }
+        self.miss("miss", missed, &sizes, t);
+        self.sent_vis = self.visible();
+        if self.p.pockets != 0 {
+            self.keep_pocket();
+        }
+        self.warm = usize::MAX;
+    }
+
+    /// Counts under `k` the tokens of the view from message `from` on: what the provider's cache misses
+    /// when that message is the first one the view changed (`None`: no change, nothing counted).
+    fn miss(&mut self, k: &'static str, from: Option<usize>, sizes: &[i64], t: usize) {
+        if let Some(f) = from {
+            let n = sizes.len().min(t);
+            let tokens = sizes[f.min(n)..n].iter().sum();
+            self.bump(k, tokens);
+        }
+    }
+}
