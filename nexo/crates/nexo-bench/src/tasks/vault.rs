@@ -54,7 +54,6 @@ const FLAWED: [&str; 4] = ["files.rs", "query.rs", "service.rs", "wire.rs"];
 
 /// The lookalikes that are correct: a hand-written constant-time compare (`auth.rs`) and a file path
 /// built from a title that `sanitize_name` has already reduced to `[a-z0-9-]` (`export.rs`).
-#[cfg(test)]
 const DECOYS: [&str; 2] = ["auth.rs", "export.rs"];
 
 /// The crate as the request finds it.
@@ -196,8 +195,9 @@ fn modules() -> Vec<&'static str> {
     SRC.iter().filter_map(|(p, _)| p.strip_prefix("src/")).collect()
 }
 
-/// Whether SECURITY.md names exactly the four flawed modules, or what is wrong. A decoy named as
-/// fixed counts as wrong; names of test files and of files outside src/ are ignored.
+/// Whether SECURITY.md names every flawed module. Other names are not held against it: a note that
+/// a lookalike was reviewed and left alone is fair to write, and changing one is caught by
+/// [`decoys_untouched`]. Names of test files are ignored.
 fn security_notes(wd: &Path) -> Part {
     let notes = read(wd, "SECURITY.md");
     if notes.trim().is_empty() {
@@ -212,18 +212,32 @@ fn security_notes(wd: &Path) -> Part {
         .filter_map(|t| t.rsplit(['/', '\\']).next())
         .filter_map(|b| known.iter().find(|k| **k == b).copied())
         .collect();
-    let want: BTreeSet<&str> = FLAWED.into_iter().collect();
-    let missing: Vec<&&str> = want.difference(&named).collect();
-    let extra: Vec<&&str> = named.difference(&want).collect();
-    (
-        missing.is_empty() && extra.is_empty(),
-        format!(
-            "SECURITY.md should name exactly the modules with a flaw: missing {missing:?}, wrongly named {extra:?}"
-        ),
-    )
+    let missing: Vec<&str> = FLAWED.into_iter().filter(|m| !named.contains(m)).collect();
+    (missing.is_empty(), format!("SECURITY.md should name every module with a flaw: missing {missing:?}"))
 }
 
-/// The parts of the verdict: the visible tests, one exploit probe per flaw, SECURITY.md.
+/// The code of a module without whitespace and line comments, so a reformat or a review note is
+/// not a change.
+fn code_of(text: &str) -> String {
+    text.lines().flat_map(|l| l.split("//").next().unwrap_or("").chars()).filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Whether the correct lookalikes were left as they were: "fixing" one is the careless audit the
+/// task is built to catch.
+fn decoys_untouched(wd: &Path) -> Part {
+    let changed: Vec<&str> = DECOYS
+        .into_iter()
+        .filter(|d| {
+            let rel = format!("src/{d}");
+            let shipped = SRC.iter().find(|(p, _)| *p == rel).map_or("", |(_, t)| *t);
+            code_of(&read(wd, &rel)) != code_of(shipped)
+        })
+        .collect();
+    (changed.is_empty(), format!("modules without a flaw were changed as if they had one: {changed:?}"))
+}
+
+/// The parts of the verdict: the visible tests, one exploit probe per flaw, SECURITY.md, the
+/// lookalikes left alone.
 fn vault_parts(wd: &Path) -> Vec<Part> {
     let c = match Copy::of(wd) {
         Ok(c) if wd.is_dir() => c,
@@ -238,6 +252,7 @@ fn vault_parts(wd: &Path) -> Vec<Part> {
     let mut parts = vec![c.tests_pass()];
     parts.extend(c.hidden("zz_hidden_exploits", EXPLOIT_PROBE, &EXPLOITS));
     parts.push(security_notes(wd));
+    parts.push(decoys_untouched(wd));
     parts
 }
 
@@ -342,9 +357,8 @@ mod tests {
             "- `src/files.rs`: x\n- `src\\query.rs`.\n- service.rs: y\n- **wire.rs**; tests/auth.rs got a test"
         ));
         assert!(!notes("files.rs query.rs service.rs"));
-        assert!(!notes("files.rs query.rs service.rs wire.rs auth.rs"));
-        assert!(!notes("files.rs query.rs service.rs wire.rs src/export.rs"));
-        assert!(!notes("files.rs query.rs service.rs wire.rs lib.rs"));
+        // a lookalike reviewed and named as left alone is fair
+        assert!(notes("files.rs query.rs service.rs wire.rs; auth.rs was reviewed and is sound"));
         assert!(!notes("nothing to see"));
     }
 
@@ -373,6 +387,12 @@ mod tests {
         let got = (task.check)(fresh.path());
         assert!(got.ok, "{}", got.detail);
         assert_eq!(got.score, 1.0);
+        // a review note or a reformat of a lookalike is not a change; "fixing" its compare is
+        edit(fresh.path(), "src/auth.rs", "pub fn tokens_match(", "// reviewed: sound\npub fn tokens_match(");
+        assert!(decoys_untouched(fresh.path()).0);
+        edit(fresh.path(), "src/auth.rs", "    let mut diff = 0u8;\n", "    return a == b;\n    let mut diff = 0u8;\n");
+        let changed = decoys_untouched(fresh.path());
+        assert!(!changed.0 && changed.1.contains("auth.rs"), "{}", changed.1);
     }
 
     /// Slow: a careless fix of the lookalike file check breaks a visible test, and editing the
