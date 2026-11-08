@@ -63,4 +63,4 @@ with `unsandboxed: true`; that call goes through the normal permission prompt.
 - The sandbox covers the `bash` tool, its background jobs and what they start. The `!cmd` shell escape,
   MCP servers, hooks and language-server tools run as before.
 - `read-only` keeps temp directories writable, so tools that need scratch space still start.
-- `--add-dir` roots feed `sandbox_write_dirs` (`SandboxSettings.extra_dirs`) once that flag exists.
+- `--add-dir` roots feed `sandbox_write_dirs` (`SandboxSettings.extra_dirs`) (with or without `-p`).

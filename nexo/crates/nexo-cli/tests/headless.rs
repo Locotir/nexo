@@ -565,3 +565,16 @@ fn add_dir_lets_the_tools_write_outside_the_folder() {
     let out = nexo(d.path(), &["-p", "x", "--add-dir", "/nonexistent/dir"]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn add_dir_is_taken_without_print_too() {
+    let d = tempfile::tempdir().unwrap();
+    // the flag is checked before the interactive screen opens: a bad folder is named, not "needs --print"
+    let out = nexo(d.path(), &["--add-dir", "/nonexistent/dir"]);
+    assert_eq!(out.status.code(), Some(2), "{}", err(&out));
+    assert!(err(&out).contains("--add-dir /nonexistent/dir: not a folder"), "{}", err(&out));
+    // the flags that only mean something for one run still need it
+    let out = nexo(d.path(), &["--max-turns", "3"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(err(&out).contains("need --print"), "{}", err(&out));
+}

@@ -700,7 +700,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
     }
 
     if args.prompt.is_none() && args.headless.any() {
-        eprintln!("nexo: --output-format, --input-format, --max-turns, --allowed-tools, --disallowed-tools, --append-system-prompt, --add-dir and --json-schema need --print (-p)");
+        eprintln!("nexo: --output-format, --input-format, --max-turns, --allowed-tools, --disallowed-tools, --append-system-prompt and --json-schema need --print (-p)");
         return Ok(crate::headless::EXIT_USAGE);
     }
     // plain `nexo` with nothing set up opens on the locked home; a run that cannot ask says what to do
@@ -758,6 +758,21 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
 
     if let Some(prompt) = args.prompt.clone() {
         return crate::headless::run(config, cwd, picked, resume, prompt, args.json, args.headless).await;
+    }
+    if !args.headless.add_dir.is_empty() {
+        let roots = match crate::headless::add_dirs(&mut config, &cwd, &args.headless.add_dir) {
+            Ok(r) => r,
+            Err(m) => {
+                eprintln!("nexo: {m}");
+                return Ok(crate::headless::EXIT_USAGE);
+            }
+        };
+        config.enforce_managed();
+        let note = format!("You may also read and write in these folders: {}.", roots.join(", "));
+        config.agent.system_prompt_extra = Some(match config.agent.system_prompt_extra.take() {
+            Some(e) if !e.trim().is_empty() => format!("{}\n\n{note}", e.trim_end()),
+            _ => note,
+        });
     }
     interactive(config, cwd, picked, resume, unset).await
 }

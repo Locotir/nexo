@@ -65,7 +65,7 @@ pub struct Flags {
     /// With --print: text added to the end of the system prompt.
     #[arg(long, value_name = "TEXT")]
     pub append_system_prompt: Option<String>,
-    /// With --print: one more folder the tools may read and write (repeatable).
+    /// One more folder the tools may read and write (repeatable).
     #[arg(long, value_name = "PATH")]
     pub add_dir: Vec<PathBuf>,
     /// With --print: the final answer must validate against this JSON Schema (a file, or inline JSON); exit 3 if it does not.
@@ -82,7 +82,6 @@ impl Flags {
             || !self.allowed_tools.is_empty()
             || !self.disallowed_tools.is_empty()
             || self.append_system_prompt.is_some()
-            || !self.add_dir.is_empty()
             || self.json_schema.is_some()
     }
 }
@@ -130,6 +129,37 @@ fn user_text(line: &str) -> Result<Option<String>, String> {
 }
 
 /// Where the rules of a folder start: the path with forward slashes, which the rule globs read on every system.
+/// Lets the tools read and write in each of `dirs` (relative to `cwd`) besides the project, and
+/// lets a sandboxed command write there; the folders as resolved, or why one is not a folder.
+pub fn add_dirs(
+    config: &mut nexo_core::Config,
+    cwd: &std::path::Path,
+    dirs: &[PathBuf],
+) -> Result<Vec<String>, String> {
+    let mut roots = Vec::new();
+    for d in dirs {
+        let abs = if d.is_absolute() { d.clone() } else { cwd.join(d) };
+        let Ok(real) = abs.canonicalize() else { return Err(format!("--add-dir {}: not a folder", d.display())) };
+        if !real.is_dir() {
+            return Err(format!("--add-dir {}: not a folder", d.display()));
+        }
+        // the folder as given and as resolved: on Windows the two can differ (8.3 short names, `\\?\`)
+        let mut spellings = vec![rule_path(&abs), rule_path(&real)];
+        spellings.dedup();
+        for p in &spellings {
+            for tool in ["read", "grep", "glob", "ls", "write", "edit"] {
+                config.permissions.allow.push(format!("{tool}({p}/**)"));
+            }
+        }
+        // a bash command in the sandbox may write there too (a managed policy can still shut that door)
+        if !config.permissions.sandbox_write_dirs.contains(&real) {
+            config.permissions.sandbox_write_dirs.push(real.clone());
+        }
+        roots.push(real.display().to_string());
+    }
+    Ok(roots)
+}
+
 fn rule_path(p: &std::path::Path) -> String {
     let s = p.to_string_lossy();
     s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/").trim_end_matches('/').to_string()
@@ -403,27 +433,10 @@ pub async fn run(
     if let Some(t) = &flags.append_system_prompt {
         add(t);
     }
-    let mut roots = Vec::new();
-    for d in &flags.add_dir {
-        let abs = if d.is_absolute() { d.clone() } else { cwd.join(d) };
-        let Ok(real) = abs.canonicalize() else { return usage(&format!("--add-dir {}: not a folder", d.display())) };
-        if !real.is_dir() {
-            return usage(&format!("--add-dir {}: not a folder", d.display()));
-        }
-        // the folder as given and as resolved: on Windows the two can differ (8.3 short names, `\\?\`)
-        let mut spellings = vec![rule_path(&abs), rule_path(&real)];
-        spellings.dedup();
-        for p in &spellings {
-            for tool in ["read", "grep", "glob", "ls", "write", "edit"] {
-                config.permissions.allow.push(format!("{tool}({p}/**)"));
-            }
-        }
-        // a bash command in the sandbox may write there too (a managed policy can still shut that door)
-        if !config.permissions.sandbox_write_dirs.contains(&real) {
-            config.permissions.sandbox_write_dirs.push(real.clone());
-        }
-        roots.push(real.display().to_string());
-    }
+    let roots = match add_dirs(&mut config, &cwd, &flags.add_dir) {
+        Ok(r) => r,
+        Err(m) => return usage(&m),
+    };
     config.enforce_managed();
     if !roots.is_empty() {
         add(&format!("You may also read and write in these folders: {}.", roots.join(", ")));
@@ -649,5 +662,31 @@ mod tests {
         assert_eq!(t(r#"{"type":"control","x":1}"#), None);
         assert!(user_text("nope").is_err());
         assert!(user_text(r#"{"type":"user"}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod add_dir_tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_added_gets_the_file_tools_and_the_sandbox() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("other")).unwrap();
+        let mut config = nexo_core::Config::default();
+        let roots = add_dirs(&mut config, d.path(), &[PathBuf::from("other")]).unwrap();
+        let real = d.path().join("other").canonicalize().unwrap();
+        assert_eq!(roots, vec![real.display().to_string()]);
+        let p = rule_path(&real);
+        for tool in ["read", "write", "edit"] {
+            assert!(
+                config.permissions.allow.contains(&format!("{tool}({p}/**)")),
+                "{tool}: {:?}",
+                config.permissions.allow
+            );
+        }
+        assert_eq!(config.permissions.sandbox_write_dirs, vec![real]);
+        let e = add_dirs(&mut config, d.path(), &[PathBuf::from("missing")]).unwrap_err();
+        assert_eq!(e, "--add-dir missing: not a folder");
     }
 }

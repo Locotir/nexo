@@ -22,7 +22,7 @@ Headless runs are saved as sessions but marked, so they stay out of `/resume`.
 | `--allowed-tools a,b` | Offer only these tools. An entry with a pattern, such as `bash(git *)`, also allows those calls without asking. Alias `--allowedTools`. |
 | `--disallowed-tools a,b` | Take these tools away; `bash(rm *)` adds a deny rule. Alias `--disallowedTools`. |
 | `--append-system-prompt TEXT` | Added to the end of the system prompt. |
-| `--add-dir PATH` | One more folder the file tools may read and write without asking. Repeatable. |
+| `--add-dir PATH` | One more folder the file tools may read and write without asking. Repeatable; it also works without `-p`, for the interactive screen. |
 | `--json-schema FILE\|JSON` | The final answer must be JSON that validates against the schema. |
 | `--permission-mode`, `--yolo`, `--model`, `--provider`, `--cwd`, `--continue`, `--resume` | As in the interface. |
 
