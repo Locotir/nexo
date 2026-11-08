@@ -301,6 +301,83 @@ pub struct Run {
     pub input_cost: f64,
     /// Input and output.
     pub cost: f64,
+    /// Per request: the tokens of the view it was sent (system prompt included).
+    pub views: Vec<i64>,
+    /// Per request: the tokens the cache read.
+    pub hits: Vec<i64>,
+}
+
+/// A curator and a prefix cache stepped one request at a time, with the totals so far. `run` is a loop over
+/// it; the behaviour layer's Monte Carlo drives it with histories it builds itself.
+pub struct Stepper {
+    cur: crate::Curator,
+    cache: super::price::Cache,
+    pub run: Run,
+}
+
+impl Stepper {
+    pub fn new(spec: &str, life: f64, slots: usize) -> Result<Stepper, String> {
+        let mut cur = crate::Curator::new(spec).map_err(|e| format!("bad spec: {e}"))?;
+        cur.window(0);
+        Ok(Stepper { cur, cache: super::price::Cache::new(life, slots), run: Run::default() })
+    }
+
+    /// Sends one request and prices its view. With the `reply` the agent gave, also checks what the view
+    /// lacks of it and returns the events, numbered `t` of `s` (1-based). `out` is the tokens the model wrote.
+    pub fn send(
+        &mut self,
+        q: &super::input::Request,
+        messages: &[Value],
+        reply: Option<&Value>,
+        t: usize,
+        s: usize,
+        out: u64,
+    ) -> Result<Vec<Event>, String> {
+        let cur = &mut self.cur;
+        let r = &mut self.run;
+        if let Some(tools) = &q.tools {
+            cur.tools(tools);
+        }
+        let shown = cur.view(q.system_tokens, messages, q.now).map_err(|e| format!("view: {e:?}"))?;
+        let mut cited = Vec::new();
+        if let Some(said) = reply {
+            let (lost, held) = forgotten(said, messages, &shown.view, &q.system);
+            r.copied += held;
+            r.replies += 1;
+            r.forgotten += lost.len();
+            if !lost.is_empty() {
+                cited = group_cited(messages, &lost, |k, w| cur.fate(k, w).is_some());
+            }
+        }
+        let events = events_of(t, s, messages, &shown.view, &cited);
+        let (m, o) = blind(messages, &shown.view);
+        r.blind = (r.blind.0 + m, r.blind.1 + o);
+        let (m, o) = denied(messages, &shown.view);
+        r.denied = (r.denied.0 + m, r.denied.1 + o);
+        let hit = self.cache.send(&shown.view, q.system_tokens as i64, q.now);
+        // a transcript records what the model wrote, and the provider cached it with the prompt
+        if q.out_tokens.is_some() {
+            if let Some(said) = reply {
+                self.cache.extend_last(said);
+            }
+        }
+        let all = shown.view.iter().map(tokens_of).sum::<i64>() + q.system_tokens as i64;
+        r.hit += hit;
+        r.miss += all - hit;
+        r.out += out as i64;
+        r.requests += 1;
+        r.views.push(all);
+        r.hits.push(hit);
+        cur.cached(hit as u64, all as u64);
+        Ok(events)
+    }
+
+    /// Closes the run: the costs at `prices`.
+    pub fn finish(mut self, prices: super::price::Prices) -> Run {
+        self.run.input_cost = prices.dollars(self.run.miss, self.run.hit);
+        self.run.cost = self.run.input_cost + prices.output(self.run.out);
+        self.run
+    }
 }
 
 /// Feeds every request to a curator with `spec`, prices the views with a prefix cache (`life` seconds,
@@ -313,45 +390,10 @@ pub fn run(
     slots: usize,
 ) -> Result<Run, String> {
     use super::input::reply_to;
-    use crate::Curator;
-    let mut cur = Curator::new(spec).map_err(|e| format!("bad spec: {e}"))?;
-    cur.window(0);
-    let mut cache = super::price::Cache::new(life, slots);
-    let mut r = Run { requests: requests.len(), ..Run::default() };
+    let mut st = Stepper::new(spec, life, slots)?;
     for (i, q) in requests.iter().enumerate() {
-        if let Some(t) = &q.tools {
-            cur.tools(t);
-        }
-        let reply = cur.view(q.system_tokens, &q.messages, q.now).map_err(|e| format!("view: {e:?}"))?;
-        let mut cited = Vec::new();
-        if let Some(said) = reply_to(requests, i) {
-            let (lost, held) = forgotten(said, &q.messages, &reply.view, &q.system);
-            r.copied += held;
-            r.replies += 1;
-            r.forgotten += lost.len();
-            if !lost.is_empty() {
-                cited = group_cited(&q.messages, &lost, |k, w| cur.fate(k, w).is_some());
-            }
-        }
-        r.events.extend(events_of(i + 1, requests.len(), &q.messages, &reply.view, &cited));
-        let (m, o) = blind(&q.messages, &reply.view);
-        r.blind = (r.blind.0 + m, r.blind.1 + o);
-        let (m, o) = denied(&q.messages, &reply.view);
-        r.denied = (r.denied.0 + m, r.denied.1 + o);
-        let hit = cache.send(&reply.view, q.system_tokens as i64, q.now);
-        // a transcript records what the model wrote, and the provider cached it with the prompt
-        if q.out_tokens.is_some() {
-            if let Some(said) = reply_to(requests, i) {
-                cache.extend_last(said);
-            }
-        }
-        let all = reply.view.iter().map(tokens_of).sum::<i64>() + q.system_tokens as i64;
-        r.hit += hit;
-        r.miss += all - hit;
-        r.out += q.out_tokens.unwrap_or(0) as i64;
-        cur.cached(hit as u64, all as u64);
+        let ev = st.send(q, &q.messages, reply_to(requests, i), i + 1, requests.len(), q.out_tokens.unwrap_or(0))?;
+        st.run.events.extend(ev);
     }
-    r.input_cost = prices.dollars(r.miss, r.hit);
-    r.cost = r.input_cost + prices.output(r.out);
-    Ok(r)
+    Ok(st.finish(prices))
 }
