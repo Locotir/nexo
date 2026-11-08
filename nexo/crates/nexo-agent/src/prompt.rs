@@ -75,17 +75,8 @@ pub fn with_directives(system: String, cfg: &AgentConfig, directives: Option<&st
 fn tool_guidance(tools: &ToolSet) -> String {
     let mut lines = Vec::new();
     let has = |n: &str| tools.get(n).is_some();
-    if has("read") || has("grep") {
-        lines.push("- Fewer steps: calls to `read`, `grep`, `glob`, `ls` and the web tools in one message run at the same time, so send every independent look together; several changes to one file go in one `edit` call (`edits`).");
-    }
     if has("ls") || has("bash") {
-        lines.push("- The Project block in the environment is current at the start of the request: use it instead of `ls` or `find` to see the layout. A file the request names by path is already attached in full at its start; do not `read` it again.");
-    }
-    if has("note") {
-        lines.push("- `note`: keep each settled fact as `Finding: ...`, what is left as `Plan: ...`, the user's standing instructions as `Rule: ...` (scope `project` or `user` saves it for later sessions when the user corrects the same thing twice or states a lasting preference). Send it with your next tool call, never as a response of its own.");
-    }
-    if has("task") {
-        lines.push("- `task`: use it when a question needs reading across many files, for several independent searches or checks (one call each, all in ONE message), for a long side job (`background: true`), and whenever the person asks for sub-agents or parallel work. Do it yourself when one or two reads or a single search will answer. The sub-agent sees nothing of this conversation: put all it needs in `prompt`.");
+        lines.push("- The Project block is current: use it, not `ls` or `find`. A file the request names is already attached, whole.");
     }
     if has("skill") {
         lines.push("- `skill`: skills are folders of ready-made instructions; when a task matches one in the tool's list, load it before you start.");
@@ -103,10 +94,40 @@ fn tool_guidance(tools: &ToolSet) -> String {
             "- Tools named `mcp__<server>__<tool>` come from connected servers; their descriptions say what they do.",
         );
     }
+    let mut out = abilities(tools);
+    if !lines.is_empty() {
+        out.push_str(&format!("\n\nTools:\n{}", lines.join("\n")));
+    }
+    out
+}
+
+/// "You can do:" the abilities of the harness that save time, one line each, for the tools present only.
+fn abilities(tools: &ToolSet) -> String {
+    let has = |n: &str| tools.get(n).is_some();
+    let looks = ["read", "grep", "glob", "ls", "bash", "web_search", "web_fetch"].iter().any(|n| has(n));
+    let mut lines = Vec::new();
+    if looks {
+        lines.push("- Think in independent strands: independent calls go in ONE message and run at the same time (reads, searches, web, read-only and check commands); a change runs alone, in order. Never run in parallel what touches the same state.");
+    }
+    if has("bash") {
+        lines.push("- Slow jobs (builds, tests, servers, downloads) use `background: true`; keep working, then `wait_until` a condition, not a fixed sleep.");
+    }
+    if has("edit") || has("write") {
+        lines.push("- `edit` and `write` change many files in one call with its check result.");
+    }
+    if has("task") {
+        lines.push("- `task` sub-agents take side work in parallel: several searches or checks (one call each, all in ONE message), a long job (`background: true`), anything the person asks to hand off. Not for one or two reads. They see nothing of this conversation: put all they need in `prompt`.");
+    }
+    if has("recall") {
+        lines.push("- `recall` returns a message the context left out.");
+    }
+    if has("note") {
+        lines.push("- `note` keeps facts as `Finding: ...`, `Plan: ...`, `Rule: ...` (scope `project` or `user` for later sessions); send it with your next tool call.");
+    }
     if lines.is_empty() {
         return String::new();
     }
-    format!("\n\nTools:\n{}", lines.join("\n"))
+    format!("\n\nYou can do:\n{}", lines.join("\n"))
 }
 
 /// The machine and the project in two lines: the system (with the Linux distribution, which says
@@ -336,6 +357,59 @@ mod tests {
     }
 
     #[test]
+    fn the_you_can_do_section_lists_only_enabled_abilities() {
+        let all = tool_guidance(&nexo_tools::builtin());
+        for want in [
+            "You can do:",
+            "independent strands",
+            "ONE message",
+            "run at the same time",
+            "`wait_until`",
+            "touches the same state",
+            "many files",
+            "`note` keeps",
+        ] {
+            assert!(all.contains(want), "missing {want}: {all}");
+        }
+        struct Named(&'static str);
+        #[async_trait::async_trait]
+        impl nexo_core::tool::Tool for Named {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn spec(&self) -> nexo_core::provider::ToolSpec {
+                nexo_core::provider::ToolSpec {
+                    name: self.0.into(),
+                    description: String::new(),
+                    parameters: serde_json::json!({}),
+                }
+            }
+            fn kind(&self) -> nexo_core::tool::ToolKind {
+                nexo_core::tool::ToolKind::Read
+            }
+            fn summary(&self, _: &serde_json::Value) -> String {
+                String::new()
+            }
+            async fn run(&self, _: serde_json::Value, _: &nexo_core::tool::ToolContext) -> nexo_core::tool::ToolOutput {
+                nexo_core::tool::ToolOutput::ok("")
+            }
+        }
+        let with_task = tool_guidance(&nexo_tools::builtin().with(std::sync::Arc::new(Named("task"))));
+        assert!(with_task.contains("`task` sub-agents"), "{with_task}");
+        let mut few = ToolSet::new();
+        for n in ["read", "bash"] {
+            few = few.with(nexo_tools::builtin().get(n).unwrap().clone());
+        }
+        let g = tool_guidance(&few);
+        assert!(g.contains("independent strands") && g.contains("`background: true`"), "{g}");
+        assert!(
+            !g.contains("`edit`") && !g.contains("`task`") && !g.contains("`note`") && !g.contains("`recall`"),
+            "{g}"
+        );
+        assert_eq!(tool_guidance(&ToolSet::new()), "");
+    }
+
+    #[test]
     fn the_distribution_comes_from_os_release() {
         let debian = "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\n";
         assert_eq!(os_name(debian).as_deref(), Some("Debian GNU/Linux 12 (bookworm)"));
@@ -489,6 +563,6 @@ mod size_budget {
     #[test]
     fn the_guidance_names_what_saves_steps() {
         let g = tool_guidance(&nexo_tools::builtin());
-        assert!(g.contains("run at the same time") && g.contains("`edits`"), "{g}");
+        assert!(g.contains("run at the same time") && g.contains("many files"), "{g}");
     }
 }

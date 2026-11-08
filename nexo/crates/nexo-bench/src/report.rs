@@ -196,6 +196,7 @@ pub fn summary(h: &Header, records: &[Record]) -> String {
             &numbers(&rows),
         ));
     }
+    s.push_str(&time_section(records, &arms));
     let base = arms[0];
     let pairs: Vec<_> = arms[1..].iter().filter_map(|a| paired(records, base, a)).collect();
     if !pairs.is_empty() {
@@ -465,6 +466,29 @@ fn numbers(rows: &[&Record]) -> Vec<String> {
         format!("{}", sum(|r| r.counters.needless.len() as f64)),
         dup_percent(rows),
     ]
+}
+
+/// Wall time and tool time per arm, in seconds: where calls ran at once the time saved shows, not only the steps.
+fn time_section(records: &[Record], arms: &[&str]) -> String {
+    let mut s = String::from(
+        "\n## Time\n\nTotals over runs, in seconds. Tool time: one call running alone, two or more at once, and the time \
+         that overlap saved. Results from before this was recorded show `-`.\n\n\
+         | arm | wall s | tool alone s | tool at once s | saved s |\n|---|---|---|---|---|\n",
+    );
+    for arm in arms {
+        let rows: Vec<&Record> = records.iter().filter(|r| r.arm == *arm && !r.contaminated).collect();
+        let ms = |f: fn(&Record) -> u64| rows.iter().map(|r| f(r)).sum::<u64>() as f64 / 1000.0;
+        let wall = rows.iter().map(|r| if r.wall_ms > 0 { r.wall_ms as f64 / 1000.0 } else { r.wall_s }).sum::<f64>();
+        let timed = rows.iter().any(|r| r.wall_ms > 0);
+        let cell = |v: f64| if timed { format!("{v:.1}") } else { "-".into() };
+        s.push_str(&format!(
+            "| {arm} | {wall:.1} | {} | {} | {} |\n",
+            cell(ms(|r| r.tool_serial_ms)),
+            cell(ms(|r| r.tool_overlap_ms)),
+            cell(ms(|r| r.tool_saved_ms)),
+        ));
+    }
+    s
 }
 
 /// Duplicate lines over all lines tools returned, for `rows` together.
@@ -748,6 +772,18 @@ mod tests {
         let s = summary(&head(1), &recs);
         assert!(s.contains("Δ wall s |"), "{s}");
         assert!(s.contains("| +17.5 (not enough runs) |\n"), "{s}");
+    }
+
+    #[test]
+    fn the_time_section_shows_wall_time_and_what_the_overlap_saved() {
+        let mut recs = grid(1, 1);
+        recs[0].wall_ms = 20_000;
+        recs[0].tool_serial_ms = 4_000;
+        recs[0].tool_overlap_ms = 2_000;
+        recs[0].tool_saved_ms = 2_000;
+        let s = summary(&head(1), &recs);
+        assert!(s.contains("| arm | wall s | tool alone s | tool at once s | saved s |"), "{s}");
+        assert!(s.contains("| 20.0 | 4.0 | 2.0 | 2.0 |"), "{s}");
     }
 
     #[test]

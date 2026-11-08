@@ -441,6 +441,117 @@ async fn a_command_among_reads_does_not_make_the_reads_wait_for_each_other() {
     r.stop().await;
 }
 
+/// A `bash` that sleeps and notes when each command ran: shows which calls overlap.
+struct Sleepy {
+    ms: u64,
+    log: Arc<Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>>,
+}
+
+#[async_trait]
+impl Tool for Sleepy {
+    fn name(&self) -> &str {
+        "bash"
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "bash".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+    }
+    fn kind(&self) -> ToolKind {
+        ToolKind::Exec
+    }
+    fn summary(&self, _: &Value) -> String {
+        "bash".into()
+    }
+    async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        let command = args.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+        let start = std::time::Instant::now();
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(self.ms)) => {}
+            _ = ctx.cancel.cancelled() => return ToolOutput::error("cancelled"),
+        }
+        self.log.lock().unwrap().push((command.clone(), start, std::time::Instant::now()));
+        ToolOutput::ok(format!("ran {command}"))
+    }
+}
+
+/// Runs one message of `bash` calls through `Sleepy`; (seconds taken, result texts in order, what ran when).
+async fn bash_calls(
+    commands: &[&str],
+    ms: u64,
+) -> (f64, Vec<String>, Vec<(String, std::time::Instant, std::time::Instant)>) {
+    let d = tempfile::tempdir().unwrap();
+    let mut evs = Vec::new();
+    for (i, c) in commands.iter().enumerate() {
+        let id = format!("b{i}");
+        evs.push(StreamEvent::ToolCallStart { id: id.clone(), name: "bash".into() });
+        evs.push(StreamEvent::ToolCallEnd { id, name: "bash".into(), args: json!({"command": c}) });
+    }
+    evs.extend([StreamEvent::Finish(FinishReason::ToolUse), StreamEvent::Done]);
+    let client = Scripted::new(vec![Reply::Events(evs), Reply::Events(text("ok"))]);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let tools = ToolSet::new().with(Arc::new(Sleepy { ms, log: log.clone() }));
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), tools).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let t = std::time::Instant::now();
+    r.until(|e| matches!(e, AgentEvent::ToolDone { id, .. } if id == &format!("b{}", commands.len() - 1))).await;
+    let took = t.elapsed().as_secs_f64();
+    r.turn().await;
+    let reqs = client.requests();
+    let outs = reqs[1]
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .filter_map(|p| match p {
+            Part::ToolResult { call_id, content, .. } => Some(format!("{call_id}={}", text_of_parts(content))),
+            _ => None,
+        })
+        .collect();
+    r.stop().await;
+    let ran = log.lock().unwrap().clone();
+    (took, outs, ran)
+}
+
+#[tokio::test]
+async fn two_pure_checks_in_one_message_run_at_the_same_time() {
+    let (took, outs, _) = bash_calls(&["cargo test a", "git status"], 1000).await;
+    assert!(took < 1.6, "the two commands took {took:.2} s: they ran one after the other");
+    assert_eq!(outs, ["b0=ran cargo test a", "b1=ran git status"], "results keep the calls' order");
+}
+
+#[tokio::test]
+async fn a_command_that_changes_something_between_checks_keeps_the_order() {
+    let (took, outs, ran) = bash_calls(&["cargo test a", "rm -rf build", "cargo test b"], 300).await;
+    assert!(took >= 0.9, "the three commands took {took:.2} s: they overlapped");
+    assert_eq!(outs, ["b0=ran cargo test a", "b1=ran rm -rf build", "b2=ran cargo test b"]);
+    assert_eq!(ran.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["cargo test a", "rm -rf build", "cargo test b"]);
+    assert!(ran.windows(2).all(|w| w[0].2 <= w[1].1), "each command ended before the next began");
+}
+
+#[tokio::test]
+async fn an_interrupt_stops_checks_that_run_together() {
+    let d = tempfile::tempdir().unwrap();
+    let mut evs = Vec::new();
+    for (id, c) in [("b0", "cargo test a"), ("b1", "cargo test b")] {
+        evs.push(StreamEvent::ToolCallStart { id: id.into(), name: "bash".into() });
+        evs.push(StreamEvent::ToolCallEnd { id: id.into(), name: "bash".into(), args: json!({"command": c}) });
+    }
+    evs.extend([StreamEvent::Finish(FinishReason::ToolUse), StreamEvent::Done]);
+    let client = Scripted::new(vec![Reply::Events(evs)]);
+    let tools = ToolSet::new().with(Arc::new(Sleepy { ms: 30_000, log: Arc::new(Mutex::new(Vec::new())) }));
+    let mut r = start_with(client, config(PermissionMode::Auto), None, d.path(), tools).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::ToolStart { id } if id == "b1")).await;
+    r.send(AgentCommand::Interrupt);
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Interrupted);
+    let stopped = evs.iter().filter(|e| matches!(e, AgentEvent::ToolDone { output, .. } if output.is_error)).count();
+    assert_eq!(stopped, 2, "both commands stopped");
+    r.stop().await;
+}
+
 fn text_of_parts(parts: &[Part]) -> String {
     parts.iter().filter_map(|p| if let Part::Text { text } = p { Some(text.as_str()) } else { None }).collect()
 }

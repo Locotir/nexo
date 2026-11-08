@@ -77,13 +77,16 @@ pub(super) async fn run_tools(
         let v = permit_why(state, events, &gate, &cwd, id, name, tool.as_ref(), args, cancel, decision, None).await;
         verdicts.push(v);
     }
-    // every verdict is in by now: reads, searches and page fetches can overlap
+    // every verdict is in by now: reads, searches, page fetches and pure checks can overlap
     let overlaps: Vec<bool> = calls
         .iter()
         .map(|(_, n, a)| {
             tools
                 .get(n)
-                .map(|t| matches!(t.call_kind(a), ToolKind::Read | ToolKind::Search | ToolKind::Network))
+                .map(|t| {
+                    matches!(t.call_kind(a), ToolKind::Read | ToolKind::Search | ToolKind::Network)
+                        || is_pure_check(n, a)
+                })
                 .unwrap_or(false)
         })
         .collect();
@@ -122,6 +125,17 @@ pub(super) async fn run_tools(
         step_check(state, &tools, &cwd, &calls, &verdicts, &mut results, step, cancel).await;
     }
     (results.into_iter().flatten().collect(), cancelled)
+}
+
+/// A plain `bash` call that only looks or runs a build, test or lint (the classifier of `verify`): it changes
+/// nothing a neighbour call depends on, so it may overlap with other calls of its kind.
+fn is_pure_check(name: &str, args: &Value) -> bool {
+    let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
+    name == "bash"
+        && !flag("background")
+        && !flag("detach")
+        && !flag("unsandboxed")
+        && args.get("command").and_then(Value::as_str).is_some_and(verify::is_check_command)
 }
 
 /// The answer to a check command the step-level check ran already, when no source file has changed since.

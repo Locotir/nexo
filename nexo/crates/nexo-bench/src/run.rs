@@ -101,6 +101,12 @@ pub struct Record {
     pub final_view_tokens: u64,
     pub max_view_tokens: u64,
     pub wall_s: f64,
+    /// The run's wall time in ms, and the tool time in it: ms with one call running alone, ms with two or
+    /// more at once, and ms the overlap saved (the calls' time added up, less the clock's).
+    pub wall_ms: u64,
+    pub tool_serial_ms: u64,
+    pub tool_overlap_ms: u64,
+    pub tool_saved_ms: u64,
     /// Errors the agent reported (provider failures, refused requests), the first few.
     pub errors: Vec<String>,
     /// The transcript's file name, next to `results.jsonl`.
@@ -184,6 +190,7 @@ pub struct Driven {
     pub tally: Tally,
     pub stats: LoopStats,
     pub wall_s: f64,
+    pub wall_ms: u64,
     pub transcript: String,
     /// The last non-empty assistant text of each turn submitted, in order.
     pub answers: Vec<String>,
@@ -248,11 +255,13 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
         session = (!id.is_empty()).then_some(id).or(session);
     }
     let wall_s = started.elapsed().as_secs_f64();
+    let wall_ms = started.elapsed().as_millis() as u64;
     let tally = tally.lock().unwrap().clone();
     Ok(Driven {
         tally,
         stats,
         wall_s,
+        wall_ms,
         transcript: name,
         answers,
         replies,
@@ -315,6 +324,10 @@ pub fn record(
         max_view_tokens: t.views.iter().copied().max().unwrap_or(0),
         view_tokens: t.views.clone(),
         wall_s: d.wall_s,
+        wall_ms: d.wall_ms,
+        tool_serial_ms: d.stats.tool_time().0,
+        tool_overlap_ms: d.stats.tool_time().1,
+        tool_saved_ms: d.stats.tool_time().2,
         errors: d.stats.errors.iter().take(5).cloned().collect(),
         transcript: d.transcript.clone(),
         parts: Vec::new(),
@@ -509,6 +522,10 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
         final_view_tokens: 6000,
         max_view_tokens: 6000,
         wall_s: 12.5,
+        wall_ms: 12_500,
+        tool_serial_ms: 0,
+        tool_overlap_ms: 0,
+        tool_saved_ms: 0,
         errors: vec![],
         transcript: String::new(),
         parts: Vec::new(),
@@ -522,6 +539,23 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_result_line_carries_wall_ms_and_the_tool_time_split() {
+        let r = Record {
+            wall_ms: 1234,
+            tool_serial_ms: 10,
+            tool_overlap_ms: 20,
+            tool_saved_ms: 30,
+            ..sample("t", "a", 1.0, 0.1)
+        };
+        let line = serde_json::to_string(&r).unwrap();
+        for key in ["\"wall_ms\":1234", "\"tool_serial_ms\":10", "\"tool_overlap_ms\":20", "\"tool_saved_ms\":30"] {
+            assert!(line.contains(key), "{line}");
+        }
+        let old: Record = serde_json::from_str(r#"{"task":"t","wall_s":2.0}"#).unwrap();
+        assert_eq!(old.wall_ms, 0, "older results read as 0");
+    }
 
     #[test]
     fn a_run_config_uses_the_arms_policy_and_never_asks() {

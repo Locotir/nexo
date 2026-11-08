@@ -4,6 +4,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 use nexo_core::{AgentEvent, TurnEnd};
 
@@ -28,17 +29,44 @@ pub struct LoopStats {
     pub errors: Vec<String>,
     pending: HashMap<String, String>,
     seen: HashMap<String, u64>,
+    /// When the first event arrived, and the span of each tool call in ms from it.
+    origin: Option<Instant>,
+    spans: Vec<(u64, u64)>,
 }
 
 impl LoopStats {
+    /// Tool time in ms: (one call running alone, two or more at once, saved by the overlap).
+    /// The saving is the time the calls added up to, less the time the clock ran.
+    pub fn tool_time(&self) -> (u64, u64, u64) {
+        let mut edges: Vec<(u64, i32)> = self.spans.iter().flat_map(|&(a, b)| [(a, 1), (b, -1)]).collect();
+        edges.sort();
+        let (mut serial, mut overlap, mut saved) = (0, 0, 0);
+        let (mut open, mut at) = (0i32, 0u64);
+        for (t, d) in edges {
+            match open {
+                1 => serial += t - at,
+                n if n > 1 => {
+                    overlap += t - at;
+                    saved += (t - at) * (n as u64 - 1);
+                }
+                _ => {}
+            }
+            open += d;
+            at = t;
+        }
+        (serial, overlap, saved)
+    }
+
     pub fn observe(&mut self, ev: &AgentEvent) {
+        let now = self.origin.get_or_insert_with(Instant::now).elapsed().as_millis() as u64;
         match ev {
             AgentEvent::AssistantDone { .. } => self.steps += 1,
             AgentEvent::ToolCall { id, name, args, .. } => {
                 self.tool_calls += 1;
                 self.pending.insert(id.clone(), format!("{name}|{}", canonical(args)));
             }
-            AgentEvent::ToolDone { id, output, .. } => {
+            AgentEvent::ToolDone { id, output, elapsed_ms } => {
+                self.spans.push((now.saturating_sub(*elapsed_ms), now));
                 if output.is_error {
                     self.tool_errors += 1;
                 }
@@ -247,6 +275,21 @@ mod tests {
         }
         s.observe(&AgentEvent::TurnEnd { reason: TurnEnd::MaxTurns });
         assert_eq!((s.tool_errors, s.steps, s.turns, s.hit_max_steps), (1, 3, 1, true));
+    }
+
+    #[test]
+    fn tool_time_splits_into_alone_at_once_and_saved() {
+        // two calls together for 1 s, then a gap, then one call alone for 1 s
+        let s = LoopStats { spans: vec![(0, 1000), (0, 1000), (2000, 3000)], ..Default::default() };
+        assert_eq!(s.tool_time(), (1000, 1000, 1000));
+        assert_eq!(LoopStats::default().tool_time(), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_tool_done_event_adds_its_span() {
+        let mut s = LoopStats::default();
+        s.observe(&AgentEvent::ToolDone { id: "a".into(), output: ToolOutput::ok("x"), elapsed_ms: 40 });
+        assert_eq!(s.spans.len(), 1);
     }
 
     #[test]
