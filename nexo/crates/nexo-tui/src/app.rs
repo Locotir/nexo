@@ -3291,11 +3291,13 @@ impl App {
         let items = self
             .user_messages
             .iter()
+            .enumerate()
             .rev()
-            .map(|(i, text)| PickItem {
+            // the hint is the request's number as the person counts them, not its place among all messages
+            .map(|(n, (i, text))| PickItem {
                 label: text.lines().next().unwrap_or("").to_string(),
                 value: i.to_string(),
-                hint: format!("#{i}"),
+                hint: format!("#{}", n + 1),
             })
             .collect();
         self.modal = Some(Modal::Picker(Picker::new(PickKind::Rewind, "Rewind to before…", items, None)));
@@ -5894,6 +5896,11 @@ mod tests {
         assert_eq!(p.kind, PickKind::Rewind);
         assert_eq!(p.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), vec!["second ask", "first ask"]);
         assert_eq!(p.items[1].value, "0");
+        assert_eq!(
+            p.items.iter().map(|i| i.hint.as_str()).collect::<Vec<_>>(),
+            vec!["#2", "#1"],
+            "requests are counted, not messages"
+        );
         a.modal_out(ModalOut::Pick { kind: PickKind::Rewind, value: "0".into() });
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::Rewind { index: 0 })));
         assert_eq!(a.input.text(), "first ask\nwith detail");
