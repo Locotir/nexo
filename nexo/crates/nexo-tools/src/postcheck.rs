@@ -243,7 +243,7 @@ impl Guard {
         if let Some(note) = self.skip_note(command, dir, cap) {
             return note;
         }
-        let p = crate::bash::prove(command, dir, sandbox, cap, cancel).await;
+        let p = crate::bash::prove(command, dir, sandbox, cap, cancel, None).await;
         self.record_run(command, dir, p.timed_out);
         report(command, p.exit, p.timed_out, p.secs, cap, &p.output)
     }
@@ -252,7 +252,15 @@ impl Guard {
 /// The proof command of an `edit` or `write` call (its `check` argument), run in the call's folder.
 pub async fn run_own(command: &str, ctx: &nexo_core::ToolContext) -> String {
     let cap = Duration::from_secs(ctx.check_secs.max(1));
-    let p = crate::bash::prove(command, &ctx.cwd, &ctx.sandbox, cap, &ctx.cancel).await;
+    let p = crate::bash::prove(
+        command,
+        &ctx.cwd,
+        &ctx.sandbox,
+        cap,
+        &ctx.cancel,
+        Some(&crate::bash::tmp_dir(&ctx.session_id)),
+    )
+    .await;
     report(command, p.exit, p.timed_out, p.secs, cap, &p.output)
 }
 

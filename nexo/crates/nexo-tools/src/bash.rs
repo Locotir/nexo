@@ -470,9 +470,10 @@ fn background(command: &str, ctx: &ToolContext, sandbox: nexo_core::sandbox::San
     let job = ctx.jobs.start(JobKind::Shell, command);
     let id = job.id();
     let (line, cwd) = (command.to_string(), ctx.cwd.clone());
+    let tmp = tmp_dir(&ctx.session_id);
     tokio::spawn(async move {
         let cancel = job.cancel();
-        let end = run_command(&line, &cwd, &sandbox, None, &cancel, None, |l| job.line(l)).await;
+        let end = run_command(&line, &cwd, &sandbox, None, &cancel, Some(&tmp), |l| job.line(l)).await;
         match end {
             End::Exited(c) => job.finish(c == 0, format!("exit {c}")),
             End::Signalled => job.finish(false, "killed by a signal"),
@@ -770,10 +771,11 @@ pub(crate) async fn prove(
     sandbox: &nexo_core::sandbox::SandboxSettings,
     timeout: Duration,
     cancel: &CancellationToken,
+    tmp: Option<&std::path::Path>,
 ) -> Proof {
     let t0 = std::time::Instant::now();
     let mut output = Capture::new();
-    let end = run_command(command, cwd, sandbox, Some(timeout), cancel, None, |l| output.push(l)).await;
+    let end = run_command(command, cwd, sandbox, Some(timeout), cancel, tmp, |l| output.push(l)).await;
     let mut text = output.text();
     let (exit, timed_out) = match end {
         End::Exited(c) => (Some(c), false),
@@ -943,6 +945,38 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn own_checks_see_nexo_tmp() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(d.path().to_path_buf());
+        c.session_id = "tmp-own-session".into();
+        let own = crate::postcheck::run_own("echo \"[$NEXO_TMP]\"", &c).await;
+        assert!(own.contains("nexo-tmp-"), "{own}");
+        wipe_tmp("tmp-own-session");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_jobs_see_nexo_tmp() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = ToolContext::new(d.path().to_path_buf());
+        c.session_id = "tmp-bg2-session".into();
+        let marker = d.path().join("seen.txt");
+        let cmd = format!("printf %s \"$NEXO_TMP\" > '{}'", marker.display());
+        let out = Bash.run(json!({"command": cmd, "background": true}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        for _ in 0..100 {
+            if marker.is_file() && std::fs::metadata(&marker).map(|m| m.len() > 0).unwrap_or(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let seen = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert!(seen.contains("nexo-tmp-"), "NEXO_TMP in a background job: {seen:?}");
+        wipe_tmp("tmp-bg2-session");
+    }
 
     #[test]
     fn read_only_commands_are_read_kind() {
