@@ -3084,6 +3084,23 @@ async fn replies_of_only_reasoning_stop_after_two_asks() {
 }
 
 #[tokio::test]
+async fn the_ask_to_go_on_carries_the_end_of_the_reasoning_the_provider_does_not_send_back() {
+    let d = tempfile::tempdir().unwrap();
+    let long = format!("{}PLAN: write ars.R with a log-concave hull, then test it", "x".repeat(20_000));
+    let client = Scripted::new(vec![Reply::Events(thought(&long)), Reply::Events(text("done"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let note = reqs[1].messages.last().unwrap().text();
+    assert!(note.contains("PLAN: write ars.R with a log-concave hull, then test it"), "{note}");
+    // only the end of it: a note as long as the thinking would cost what the cut already cost
+    assert!(note.len() < 6_000, "{}", note.len());
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn reasoning_that_ended_on_its_own_keeps_the_room() {
     let d = tempfile::tempdir().unwrap();
     let mut done = thought("all thought out");

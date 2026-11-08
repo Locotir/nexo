@@ -274,6 +274,9 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 format!("the reply held only reasoning, with no answer and no call; asked to go on{room}"),
             );
             let note = if mute == 1 { MUTE_NOTE } else { MUTE_NOTE_AGAIN };
+            // most providers do not take reasoning back, so the next request would think from nothing
+            // and be cut again: the end of it travels in the note
+            let note = format!("{note}{}", reasoning_tail(&msg.reasoning()));
             push_results(&state, vec![Part::text(note)]).await;
             continue;
         }
@@ -486,6 +489,26 @@ pub(super) fn retry_temperature(t: Option<f32>) -> Option<f32> {
 pub(super) const MUTE_NOTE: &str =
     "<system-reminder>Your last reply held only reasoning: no answer and no tool call reached the person. \
      Go on from it now with a tool call or the answer, keeping the reasoning short.</system-reminder>";
+
+/// How much of the end of a reasoning-only reply the next ask repeats.
+const MUTE_TAIL: usize = 3000;
+
+/// The end of the reasoning, as a quoted block for the ask to go on; empty when there is none.
+fn reasoning_tail(r: &str) -> String {
+    let r = r.trim();
+    if r.is_empty() {
+        return String::new();
+    }
+    let mut from = r.len().saturating_sub(MUTE_TAIL);
+    while !r.is_char_boundary(from) {
+        from += 1;
+    }
+    let dots = if from > 0 { "..." } else { "" };
+    format!(
+        "\n<system-reminder>The end of that reasoning, repeated because it is not kept:\n{dots}{}</system-reminder>",
+        &r[from..]
+    )
+}
 
 /// The second time in a row: planning longer is what keeps failing, so the model is told to build first.
 pub(super) const MUTE_NOTE_AGAIN: &str =
