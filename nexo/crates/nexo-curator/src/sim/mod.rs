@@ -2,6 +2,9 @@
 
 pub mod behave;
 pub mod events;
+pub mod family;
 pub mod fit;
 pub mod input;
 pub mod price;
+pub mod report;
+pub mod synth;

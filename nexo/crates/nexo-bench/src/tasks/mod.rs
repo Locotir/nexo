@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::check::Outcome;
 
+mod heavy2;
 mod inventory;
 mod long2;
 pub mod padded;
@@ -67,7 +68,7 @@ pub(crate) fn always() -> Result<(), String> {
 }
 
 /// The groups `--tasks` accepts besides task ids.
-pub const GROUPS: [&str; 9] = ["all", "core", "long", "long2", "closed", "heavy", "more", "hard", "padded"];
+pub const GROUPS: [&str; 10] = ["all", "core", "long", "long2", "closed", "heavy", "heavy2", "more", "hard", "padded"];
 
 /// Every task, in the order they run.
 pub fn all() -> Vec<Task> {
@@ -78,6 +79,7 @@ pub fn all() -> Vec<Task> {
     out.extend(padded::tasks());
     out.extend(long2::tasks());
     out.push(realm::task());
+    out.extend(heavy2::tasks());
     out
 }
 
@@ -123,11 +125,12 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), every.len());
-        assert_eq!(every.len(), 25);
+        assert_eq!(every.len(), 34);
         assert_eq!(select(&["realm"]).unwrap().len(), 1);
         assert_eq!(select(&["core,realm"]).unwrap().len(), 7);
-        assert_eq!(select::<&str>(&[]).unwrap().len(), 25);
+        assert_eq!(select::<&str>(&[]).unwrap().len(), 34);
         assert_eq!(select(&["heavy"]).unwrap().len(), 3);
+        assert_eq!(select(&["heavy2"]).unwrap().len(), 9);
         assert_eq!(select(&["long2"]).unwrap().len(), 4);
         assert_eq!(select(&["closed"]).unwrap().len(), 3);
         assert!(select(&["nope"]).is_err());

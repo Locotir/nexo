@@ -1,6 +1,10 @@
 //! What a view loses: forgotten words, blind and denied results, and the events they make.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use serde_json::{json, Value};
 
@@ -11,14 +15,36 @@ use crate::distinctive_words;
 /// The words of `reply` that `history` holds but neither `view` nor `system` does, and how many of its
 /// words `history` holds.
 pub fn forgotten(reply: &Value, history: &[Value], view: &[Value], system: &str) -> (Vec<String>, usize) {
-    let words_of =
-        |msgs: &[Value]| -> HashSet<String> { msgs.iter().flat_map(|m| distinctive_words(&text_of(m))).collect() };
-    let mut seen = words_of(view);
+    let mut seen = HashSet::new();
+    for m in view {
+        seen.extend(words_of(m).iter().cloned());
+    }
     seen.extend(distinctive_words(system));
-    let held = words_of(history);
+    let mut held = HashSet::new();
+    for m in history {
+        held.extend(words_of(m).iter().cloned());
+    }
     let copied: Vec<String> = distinctive_words(&text_of(reply)).into_iter().filter(|w| held.contains(w)).collect();
     let n = copied.len();
     (copied.into_iter().filter(|w| !seen.contains(w)).collect(), n)
+}
+
+/// The distinctive words of a message. Each request sends the same history again, so the sets are kept
+/// by the hash of the text, which makes a long session linear in its size instead of quadratic.
+fn words_of(m: &Value) -> Rc<HashSet<String>> {
+    thread_local! {
+        static MEMO: RefCell<HashMap<u64, Rc<HashSet<String>>>> = RefCell::new(HashMap::new());
+    }
+    let text = text_of(m);
+    let mut h = DefaultHasher::new();
+    text.hash(&mut h);
+    let key = h.finish();
+    if let Some(w) = MEMO.with(|c| c.borrow().get(&key).cloned()) {
+        return w;
+    }
+    let w: Rc<HashSet<String>> = Rc::new(distinctive_words(&text).into_iter().collect());
+    MEMO.with(|c| c.borrow_mut().insert(key, w.clone()));
+    w
 }
 
 /// Whether `m` is the agent writing: an assistant message with text, or a `note` call.

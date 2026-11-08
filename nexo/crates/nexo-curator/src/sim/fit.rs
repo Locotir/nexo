@@ -140,6 +140,7 @@ fn find_results(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 pub fn load_rows(dirs: &[String]) -> Result<Vec<Row>, String> {
     let mut files = Vec::new();
     for d in dirs {
+        super::synth::refuse(d)?;
         let p = Path::new(d);
         if !p.exists() {
             return Err(format!("{d}: no such run directory"));
@@ -154,6 +155,9 @@ pub fn load_rows(dirs: &[String]) -> Result<Vec<Row>, String> {
         let dir = f.parent().unwrap_or(Path::new("."));
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             if let Some(r) = serde_json::from_str::<Value>(line).ok().and_then(|v| Row::parse(dir, &v)) {
+                if let Some(t) = &r.transcript {
+                    super::synth::refuse(&t.to_string_lossy())?;
+                }
                 rows.push(r);
             }
         }

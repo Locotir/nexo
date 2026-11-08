@@ -341,75 +341,9 @@ pub fn analytic(run: &Run, p: Params, r_den: f64, cx: &Context) -> Expect {
     }
 }
 
-/// The tools that read or run, for the family tagger.
-fn tagged_text(requests: &[Request]) -> Vec<(String, String, i64)> {
-    let Some(q) = requests.iter().max_by_key(|q| q.messages.len()) else { return Vec::new() };
-    let mut uses: BTreeMap<String, (String, String)> = BTreeMap::new();
-    let mut out = Vec::new();
-    for m in &q.messages {
-        let Some(blocks) = m["content"].as_array() else { continue };
-        for b in blocks {
-            if b["type"] == "tool_use" {
-                let id = b["id"].as_str().unwrap_or("").to_string();
-                let cmd = b["input"]["command"].as_str().map_or_else(|| b["input"].to_string(), str::to_string);
-                uses.insert(id, (b["name"].as_str().unwrap_or("").to_string(), cmd));
-            } else if b["type"] == "tool_result" {
-                let id = b["tool_use_id"].as_str().unwrap_or("");
-                if let Some((name, cmd)) = uses.get(id) {
-                    let t = tokens_of(&json!({"content": [b]}));
-                    let lines = text_of(&json!({"content": [b]})).lines().count();
-                    out.push((name.clone(), cmd.clone(), if lines > 200 { -t } else { t }));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// A small family tagger for `--family auto` (`SIMULATOR-SPEC.md` 7.2): the family whose commands produced
-/// the most result tokens, binary before http before logs on a tie; edit tools mean `code`; no tools, `chat`.
+/// The family of a session for `--family auto` (`family::tag`, `SIMULATOR-SPEC.md` 7.2).
 pub fn auto_family(requests: &[Request]) -> &'static str {
-    use std::sync::OnceLock;
-    static RE: OnceLock<[regex::Regex; 3]> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        [
-            regex::Regex::new(r"\b(gdb|objdump|readelf|xxd|hexdump|strings|nm|ltrace|strace|r2|disas\w*)\b|\bod\s")
-                .unwrap(),
-            regex::Regex::new(
-                r"\b(curl|wget|nc|socat)\b|HTTP/1\.|HTTP/2|Content-Type:|Set-Cookie|Authorization:|\.har\b",
-            )
-            .unwrap(),
-            regex::Regex::new(r"cargo test|make |pytest|npm test|go test|error\[|warning:|FAILED|journalctl|tail -n")
-                .unwrap(),
-        ]
-    });
-    let calls = tagged_text(requests);
-    if calls.is_empty() {
-        return "chat";
-    }
-    let mut score = [0i64; 4];
-    for (name, cmd, t) in &calls {
-        let long = *t < 0;
-        let t = t.abs();
-        let hit = (0..3).find(|&k| re[k].is_match(cmd));
-        match hit {
-            Some(k) => score[k] += t,
-            None if long => score[2] += t,
-            None if matches!(
-                name.to_ascii_lowercase().as_str(),
-                "edit" | "write" | "str_replace" | "patch" | "apply_patch"
-            ) =>
-            {
-                score[3] += t
-            }
-            None => {}
-        }
-    }
-    let best = (0..4).fold(0, |b, k| if score[k] > score[b] { k } else { b });
-    if score[best] == 0 {
-        return "code";
-    }
-    ["binary", "http", "logs", "code"][best]
+    super::family::tag(requests)
 }
 
 // ---- Monte Carlo ----

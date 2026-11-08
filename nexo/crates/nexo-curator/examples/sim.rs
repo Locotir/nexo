@@ -19,6 +19,9 @@ fn usage() -> ! {
     eprintln!("       sim fit --runs DIR... [--holdout odd|even|none] [--out params.json] [--model M|all] [--min-events N] [--seed X]");
     eprintln!("       sim predict --results R --arm plain --spec S --params P [--life S] [--slots K]");
     eprintln!("       sim check --results R --params P --spec S [--holdout even|odd|none] [--report FILE] [--life S] [--slots K]");
+    eprintln!("       sim synth [--seed S] [--steps N] [--family binary|asm|http|logs|code|chat] [--files F] [--hex-share H] [--log-share L] [--lag-mean M] [--recite P] --out X.synth.jsonl");
+    eprintln!("       sim family INPUT...");
+    eprintln!("       sim report --runs DIR... [--results R --params P --spec S] [--pareto pareto.tsv] [--model M] [--min-events N] [--out DIR] [--write-weights FILE]");
     eprintln!("       sim price --runs DIR... [--life S] [--slots K]");
     std::process::exit(2);
 }
@@ -51,6 +54,9 @@ fn main() {
         Some("predict") => predict_cmd(args),
         Some("check") => check_cmd(args),
         Some("price") => price_cmd(args),
+        Some("synth") => synth_cmd(args),
+        Some("family") => family_cmd(args),
+        Some("report") => report_cmd(args),
         _ => usage(),
     }
 }
@@ -418,4 +424,89 @@ fn price_cmd(mut args: impl Iterator<Item = String>) {
     }
     let (c, k) = price_medians(&pr);
     println!("{} plain runs (token scale per run, from its own recorded usage): median cost error {:.1} %, median cache_read error {:.1} %", pr.len(), 100.0 * c, 100.0 * k);
+}
+
+/// `sim synth`: a synthetic session for stress tests, with its planted dependencies beside it.
+fn synth_cmd(mut args: impl Iterator<Item = String>) {
+    use nexo_curator::sim::synth::{write, Synth, FAMILIES};
+    let mut p = Synth::new(1, 60, "binary");
+    let mut out = None::<String>;
+    let num = |a: Option<String>| a.and_then(|n| n.parse::<f64>().ok()).unwrap_or_else(|| usage());
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--seed" => p.seed = num(args.next()) as u64,
+            "--steps" => p.steps = num(args.next()) as usize,
+            "--family" => p.family = args.next().unwrap_or_else(|| usage()),
+            "--files" => p.files = num(args.next()) as usize,
+            "--hex-share" => p.hex_share = num(args.next()),
+            "--log-share" => p.log_share = num(args.next()),
+            "--lag-mean" => p.lag_mean = num(args.next()),
+            "--recite" => p.recite = num(args.next()),
+            "--out" => out = args.next(),
+            _ => usage(),
+        }
+    }
+    let Some(out) = out else { usage() };
+    if !FAMILIES.contains(&p.family.as_str()) {
+        die(format!("unknown family {}: one of {}", p.family, FAMILIES.join(", ")));
+    }
+    if !out.ends_with(".synth.jsonl") {
+        die(format!("{out}: a synthetic session is written to a file named *.synth.jsonl"));
+    }
+    let g = write(&p, &out).unwrap_or_else(|e| die(e));
+    println!("wrote {out}: {} requests, {} bytes, {} planted dependencies", p.steps, g.jsonl.len(), g.deps.len());
+}
+
+/// `sim report`: the per-family table (`SIMULATOR-SPEC.md` 7.4).
+fn report_cmd(mut args: impl Iterator<Item = String>) {
+    use nexo_curator::sim::report::{build, weights_toml, ReportInput};
+    let mut inp = ReportInput::default();
+    let (mut out, mut weights) = (None::<String>, None::<String>);
+    let mut in_runs = false;
+    while let Some(a) = args.next() {
+        let mut val = || args.next().unwrap_or_else(|| usage());
+        if a != "--runs" && a.starts_with("--") {
+            in_runs = false;
+        }
+        match a.as_str() {
+            "--runs" => in_runs = true,
+            "--results" => inp.results = Some(val()),
+            "--params" => inp.params = Some(val()),
+            "--spec" => inp.spec = val(),
+            "--pareto" => inp.pareto = Some(val()),
+            "--model" => inp.model = val(),
+            "--min-events" => inp.min_events = val().parse().unwrap_or_else(|_| usage()),
+            "--out" => out = Some(val()),
+            "--write-weights" => weights = Some(val()),
+            _ if a.starts_with("--") => usage(),
+            _ if in_runs => inp.runs.push(a),
+            _ => usage(),
+        }
+    }
+    if inp.runs.is_empty() {
+        usage();
+    }
+    let rep = build(&inp).unwrap_or_else(|e| die(e));
+    print!("{}", rep.table());
+    if let Some(w) = weights {
+        std::fs::write(&w, weights_toml()).unwrap_or_else(|e| die(format!("{w}: {e}")));
+        println!("wrote {w}");
+    }
+    if let Some(d) = out {
+        let _ = std::fs::create_dir_all(&d);
+        let f = format!("{d}/family-{}.md", today());
+        std::fs::write(&f, rep.markdown(&today())).unwrap_or_else(|e| die(format!("{f}: {e}")));
+        println!("wrote {f}");
+    }
+}
+
+/// `sim family`: the family of each input and its result-token shares.
+fn family_cmd(args: impl Iterator<Item = String>) {
+    use nexo_curator::sim::family::{shares, tag, FAMILIES};
+    for path in args {
+        let s = load(&path).unwrap_or_else(|e| die(e));
+        let sh = shares(&s.requests);
+        let by: Vec<String> = FAMILIES[..5].iter().map(|f| format!("{f} {:.2}", sh.share(f))).collect();
+        println!("{path}: {} ({} result tokens; {})", tag(&s.requests), sh.total, by.join(", "));
+    }
 }
