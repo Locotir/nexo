@@ -28,6 +28,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("model", &["m"], "[name]", "switch model, or set one up step by step (checked against the server)"),
     spec("provider", &["providers"], "", "the same as /model"),
     spec("login", &["signin"], "", "sign in or set a key: opens the model setup at the providers"),
+    spec("logout", &["signout"], "[provider]", "forget the key or sign-in stored for a provider (the current one)"),
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
     spec("fast", &[], "[on|off]", "switch to the model's fast version, and back"),
     spec("permissions", &["permission", "mode"], "[ask|accept-edits|plan|auto|read-only]", "set the permission mode"),
@@ -128,6 +129,8 @@ pub enum Command {
     Model(Option<String>),
     Provider,
     Login,
+    /// `/logout [provider]`: the stored key or sign-in of the provider, removed.
+    Logout(Option<String>),
     Config,
     Doctor,
     Effort(Option<String>),
@@ -220,7 +223,7 @@ pub enum GoalArg {
 }
 
 /// Names that work but are listed nowhere (not in /help, not in the palette): `(alias, command)`.
-const HIDDEN: &[(&str, &str)] = &[("agents", "panel")];
+const HIDDEN: &[(&str, &str)] = &[("agents", "panel"), ("approvals", "permissions")];
 
 /// The spec a name or alias stands for.
 pub fn lookup(name: &str) -> Option<&'static Spec> {
@@ -241,6 +244,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "model" => Command::Model(arg),
         "provider" => Command::Provider,
         "login" => Command::Login,
+        "logout" => Command::Logout(arg),
         "config" => Command::Config,
         "doctor" => Command::Doctor,
         "effort" => Command::Effort(arg),
@@ -405,7 +409,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         "session",
         &["fork", "tree", "rewind", "undo", "undelete", "rename", "msg", "export", "goal", "shared-memory", "queue"],
     ),
-    ("model", &["provider", "login", "fast", "pricing", "prompt", "memory", "note", "budget"]),
+    ("model", &["provider", "login", "logout", "fast", "pricing", "prompt", "memory", "note", "budget"]),
     (
         "context and tools",
         &[
@@ -599,6 +603,9 @@ mod tests {
         assert_eq!(parse("/memory user"), Some(Command::Memory { user: true }));
         assert_eq!(parse("/remember use tabs"), Some(Command::Remember(Some("use tabs".into()))));
         assert_eq!(parse("/note run the tests"), Some(Command::Remember(Some("run the tests".into()))));
+        assert_eq!(parse("/logout"), Some(Command::Logout(None)));
+        assert_eq!(parse("/signout openai"), Some(Command::Logout(Some("openai".into()))));
+        assert!(matches!(parse("/approvals auto"), Some(Command::Permissions(_))), "the Codex name");
         assert_eq!(parse("/memory all"), Some(Command::BadArgument("memory".into(), "all".into())));
         assert_eq!(parse("/title"), Some(Command::Rename(None)));
         assert_eq!(parse("/diff"), Some(Command::Diff));

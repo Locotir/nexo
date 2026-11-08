@@ -3685,6 +3685,7 @@ impl App {
                 self.open_setup();
                 self.flash("pick the provider to sign in or add its key");
             }
+            Command::Logout(name) => self.logout(name.as_deref()),
             Command::Config => self.show_config(),
             Command::Doctor => self.run_doctor(),
             Command::Effort(Some(level)) => {
@@ -4273,6 +4274,12 @@ impl App {
             }
             Err(e) => self.notice(Level::Error, format!("cannot write {}: {e}", path.display())),
         }
+    }
+
+    /// `/logout [provider]`: forgets the key or sign-in stored for the provider, the current one by default.
+    pub fn logout(&mut self, name: Option<&str>) {
+        let (level, text) = sign_out(&self.opts.providers, &self.provider, name, &nexo_core::auth::file());
+        self.notice(level, text);
     }
 
     /// `/mouse`: capture on or off (off lets the terminal select text by itself).
@@ -4960,6 +4967,26 @@ fn folds_alone(b: &Block) -> bool {
         b,
         Block::User { .. } | Block::Assistant { streaming: false, .. } | Block::Shell { .. } | Block::Notice { .. }
     )
+}
+
+/// Removes from the auth store `file` what is kept for `name` (else `current`) under its `auth` entry;
+/// what to tell the person. A key from an environment variable or the configuration is not nexo's to remove.
+fn sign_out(
+    providers: &[(String, nexo_core::ProviderConfig)],
+    current: &str,
+    name: Option<&str>,
+    file: &std::path::Path,
+) -> (Level, String) {
+    let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(current);
+    let entry = providers.iter().find(|(n, _)| n == name).and_then(|(_, p)| p.auth.as_deref()).unwrap_or(name);
+    match nexo_core::auth::remove_in(file, entry) {
+        Ok(true) => (Level::Info, format!("{name}: signed out, the stored key is removed; /login signs in again")),
+        Ok(false) => (
+            Level::Warn,
+            format!("{name}: nothing stored to remove (a key from an environment variable or the configuration stays)"),
+        ),
+        Err(e) => (Level::Error, format!("{name}: cannot change {}: {e}", file.display())),
+    }
 }
 
 #[cfg(test)]
@@ -7084,6 +7111,26 @@ mod tests {
         a.run_command(Command::Memory { user: false });
         assert!(rx.try_recv().is_err());
         assert_eq!(a.edit_request.as_deref(), Some(dir.path().join("CLAUDE.md").as_path()));
+    }
+
+    #[test]
+    fn logout_removes_the_providers_stored_key_under_its_auth_entry() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("auth.json");
+        let key = |k: &str| nexo_core::auth::Credential::Api { key: k.into() };
+        nexo_core::auth::set_in(&f, "deepseek", key("a")).unwrap();
+        nexo_core::auth::set_in(&f, "shared", key("b")).unwrap();
+        let mut p = nexo_core::ProviderConfig::new("other", "http://x", None);
+        p.auth = Some("shared".into());
+        let providers = vec![("other".to_string(), p)];
+        let (level, text) = sign_out(&providers, "deepseek", None, &f);
+        assert_eq!(level, Level::Info, "{text}");
+        assert!(text.starts_with("deepseek: signed out"));
+        let (level, _) = sign_out(&providers, "deepseek", Some("other"), &f);
+        assert_eq!(level, Level::Info, "the entry the provider names");
+        let (level, text) = sign_out(&providers, "deepseek", None, &f);
+        assert_eq!(level, Level::Warn, "{text}");
+        assert_eq!(std::fs::read_to_string(&f).unwrap().matches("\"key\"").count(), 0);
     }
     #[test]
     fn prompt_edit_creates_the_preferences_file_when_it_is_missing() {
