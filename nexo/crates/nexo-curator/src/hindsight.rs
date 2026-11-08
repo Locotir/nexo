@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::evidence::{self, Runs};
 use crate::json::est_media;
 use crate::msg::{blocks, flat, get_str, key_of, text_of};
-use crate::py::{self, Re};
+use crate::textops::{self, Re};
 
 /// An interned string.
 pub type Sym = u32;
@@ -106,11 +106,11 @@ const TLD: [&str; 28] = [
 static GENERAL: LazyLock<FxHashSet<&'static str>> = LazyLock::new(|| crate::GENERAL_WORDS.split_whitespace().collect());
 
 fn distinctive(w: &str) -> bool {
-    if py::len(w) < 4 {
+    if textops::len(w) < 4 {
         return false;
     }
-    if py::str_isdigit(w) {
-        if py::len(w) == 4 {
+    if textops::str_isdigit(w) {
+        if textops::len(w) == 4 {
             // int() of unicode digits: only ASCII years matter here
             if let Ok(y) = w.parse::<u32>() {
                 return !(1900..=2099).contains(&y);
@@ -118,15 +118,15 @@ fn distinctive(w: &str) -> bool {
         }
         return true;
     }
-    if w.contains('_') || w.contains('$') || w.chars().any(py::is_digit) {
+    if w.contains('_') || w.contains('$') || w.chars().any(textops::is_digit) {
         return true;
     }
     let tail = &w[w.chars().next().map_or(0, char::len_utf8)..];
-    tail != py::lower(tail) && tail != py::upper(tail)
+    tail != textops::lower(tail) && tail != textops::upper(tail)
 }
 
 fn has_ext(last: &str, list: &[&str]) -> bool {
-    let low = py::lower(last);
+    let low = textops::lower(last);
     !low.is_empty() && list.contains(&low.as_ref())
 }
 
@@ -154,7 +154,7 @@ pub fn words(text: &str, int: &mut Interner) -> Set {
     }
     for (a, b) in WORD.find_all(text) {
         let w = &text[a..b];
-        let first = py::first(w).unwrap_or(' ');
+        let first = textops::first(w).unwrap_or(' ');
         // a number in hex, as each tool writes it (`0x401140`, `$0x3039`, `0x0000000000401140`, `00401140`,
         // `41C64E6D`): its digits without the prefix and the zeros in front, in lower case, so that every
         // spelling of an address or a value is one word, and the agent's words match the listing it read.
@@ -163,16 +163,16 @@ pub fn words(text: &str, int: &mut Interner) -> Set {
         let hex = bare
             .strip_prefix("0x")
             .or_else(|| bare.strip_prefix("0X"))
-            .or_else(|| (py::is_digit(first) && bare.bytes().all(|c| c.is_ascii_hexdigit())).then_some(bare));
+            .or_else(|| (textops::is_digit(first) && bare.bytes().all(|c| c.is_ascii_hexdigit())).then_some(bare));
         if let Some(h) = hex {
             let n = h.trim_start_matches('0').to_ascii_lowercase();
-            if py::len(&n) >= 4 && (!py::str_isdigit(&n) || distinctive(&n)) && !common.contains(n.as_str()) {
+            if textops::len(&n) >= 4 && (!textops::str_isdigit(&n) || distinctive(&n)) && !common.contains(n.as_str()) {
                 out.push(int.intern(&n));
             }
             continue;
         }
-        if w.contains('/') || py::is_digit(first) {
-            let ok = py::len(w) >= 4 && (!py::str_isdigit(w) || distinctive(w));
+        if w.contains('/') || textops::is_digit(first) {
+            let ok = textops::len(w) >= 4 && (!textops::str_isdigit(w) || distinctive(w));
             if ok && !common.contains(w) {
                 out.push(int.intern(w));
             }
@@ -182,7 +182,7 @@ pub fn words(text: &str, int: &mut Interner) -> Set {
         if parts.len() > 1 {
             let last = parts[parts.len() - 1];
             if has_ext(last, &FILE_EXT) || (parts.len() > 2 && has_ext(last, &TLD)) {
-                if py::len(w) >= 4 && !common.contains(w) {
+                if textops::len(w) >= 4 && !common.contains(w) {
                     out.push(int.intern(w));
                 }
                 continue;

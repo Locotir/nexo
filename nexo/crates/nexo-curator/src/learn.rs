@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::hindsight::{set_of, words, Interner, Set, Sym, Tracer, UKind};
 use crate::mechanical::LINENO;
 use crate::msg::{get_str, key_of};
-use crate::py::{self, bisect_left, bisect_right, Re};
+use crate::textops::{self, bisect_left, bisect_right, Re};
 use crate::tools::{classify, Kind};
 
 const DECAY: f64 = 0.5;
@@ -79,7 +79,7 @@ pub const NAMES: [&str; 43] = [
 pub const UNASKED: f64 = 0.02;
 
 static ERROR: LazyLock<Re> =
-    LazyLock::new(|| Re::new(r"(error|exception|traceback|failed|failure|fatal|panic|denied|not found)", py::I));
+    LazyLock::new(|| Re::new(r"(error|exception|traceback|failed|failure|fatal|panic|denied|not found)", textops::I));
 static TOKEN: LazyLock<Re> = LazyLock::new(|| Re::new(r"[^\W_]+", 0));
 
 static STOP: LazyLock<FxHashSet<&'static str>> = LazyLock::new(|| {
@@ -115,14 +115,14 @@ fn hump_split(tok: &str) -> Vec<&str> {
 pub fn terms(text: &str, int: &mut Interner) -> Set {
     let mut out = Vec::new();
     for tok in TOKEN.findall(text) {
-        let parts = if py::str_islower(tok) { vec![tok] } else { hump_split(tok) };
+        let parts = if textops::str_islower(tok) { vec![tok] } else { hump_split(tok) };
         for part in parts {
-            if py::len(part) < 3 || py::str_isdigit(part) {
+            if textops::len(part) < 3 || textops::str_isdigit(part) {
                 continue;
             }
-            let low = py::lower(part);
+            let low = textops::lower(part);
             if !STOP.contains(low.as_ref()) {
-                out.push(int.intern(py::head(&low, 5)));
+                out.push(int.intern(textops::head(&low, 5)));
             }
         }
     }
@@ -134,7 +134,7 @@ const NOT_REQUEST: [&str; 5] = ["<system-reminder>", "<local-command", "<command
 
 /// User text written by the person.
 pub fn is_request(text: &str) -> bool {
-    !py::strip(text).is_empty() && !NOT_REQUEST.iter().any(|p| py::lstrip(text).starts_with(p))
+    !textops::strip(text).is_empty() && !NOT_REQUEST.iter().any(|p| textops::lstrip(text).starts_with(p))
 }
 
 pub fn split_paragraphs(text: &str) -> Vec<(usize, usize)> {
@@ -142,7 +142,7 @@ pub fn split_paragraphs(text: &str) -> Vec<(usize, usize)> {
     let mut out: Vec<(usize, usize)> = Vec::new();
     let mut start = 0;
     for (i, line) in lines.iter().enumerate() {
-        let blank = py::strip(&LINENO.sub_n(line, "", 1)).is_empty();
+        let blank = textops::strip(&LINENO.sub_n(line, "", 1)).is_empty();
         let n = i + 1 - start;
         if (blank && n >= 4) || n >= MAX_CHUNK_LINES {
             out.push((start, i + 1));
@@ -197,7 +197,7 @@ fn unit_chunks(tr: &Tracer, i: usize, int: &mut Interner) -> Vec<Chunk> {
                 start: a as i64,
                 end: b as i64,
                 words: words(&part, int),
-                tokens: (py::len(&part) / 4 + 1) as i64,
+                tokens: (textops::len(&part) / 4 + 1) as i64,
                 position: k as f64 / (n.max(2) - 1) as f64,
                 error: ERROR.is_match(&part),
                 terms: terms(&part, int),
@@ -325,7 +325,7 @@ impl Featurizer {
                     if let Some(p) = &path {
                         keys.push(int.intern(p));
                         if let Some((_, name)) = p.rsplit_once('/') {
-                            if py::len(name) >= 4 {
+                            if textops::len(name) >= 4 {
                                 keys.push(int.intern(name));
                             }
                         }

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use serde_json::{Map, Value};
 
 use crate::json::float_repr;
-use crate::py::repr_str;
+use crate::textops::repr_str;
 
 /// `{"type": "text", "text": s}`
 pub fn text_block(s: &str) -> Value {

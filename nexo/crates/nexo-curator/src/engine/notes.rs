@@ -8,7 +8,7 @@ use crate::hindsight::UKind;
 use crate::json::est_str;
 use crate::mechanical::MARK;
 use crate::msg::{blocks, get_str};
-use crate::py::{self, Re};
+use crate::textops::{self, Re};
 use crate::tools::{partial_read, Kind};
 
 use super::files::{basename, file_key, same_file, scratch};
@@ -19,7 +19,7 @@ use super::{Engine, NOTE_TOOL, NUDGE, NUDGE_SAID};
 pub(super) static NOTE_LINE: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
         r"^[ \t]*(?:[-*•][ \t]*|\d+[.)][ \t]*)?(?:\*\*)?(Finding|Plan|Rule)(?:\*\*)?:(?:\*\*)?[ \t]*(.+?)[ \t]*$",
-        py::M,
+        textops::M,
     )
 });
 
@@ -108,7 +108,7 @@ impl Engine {
                     let text = self.tr.unit_text(i);
                     for c in NOTE_LINE.captures_all(&text) {
                         let span = |g: usize| c[g].map_or("", |(x, y)| &text[x..y]);
-                        let line = py::head(&py::squash_ws(span(2)), NOTE_CHARS).to_string();
+                        let line = textops::head(&textops::squash_ws(span(2)), NOTE_CHARS).to_string();
                         if span(1) == "Rule" {
                             continue;
                         }
@@ -133,12 +133,12 @@ impl Engine {
                         continue;
                     }
                     let text = self.tr.unit_text(i);
-                    let text = py::strip(&text);
+                    let text = textops::strip(&text);
                     if !text.is_empty() {
                         // the first n characters, n = 4 * floor(pin / 2); a negative n counts from the end
                         let n = 4 * self.p.pin.div_euclid(2);
-                        let n = if n >= 0 { n as usize } else { (py::len(text) as i64 + n).max(0) as usize };
-                        self.pins.insert(file_key(path), (mi, path.to_string(), py::head(text, n).to_string()));
+                        let n = if n >= 0 { n as usize } else { (textops::len(text) as i64 + n).max(0) as usize };
+                        self.pins.insert(file_key(path), (mi, path.to_string(), textops::head(text, n).to_string()));
                     }
                 }
             }

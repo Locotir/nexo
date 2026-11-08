@@ -4,7 +4,7 @@ use rustc_hash::FxHashSet;
 
 use crate::hindsight::UKind;
 use crate::msg::get_str;
-use crate::py::{self};
+use crate::textops::{self};
 use crate::tools::{full_write, heredoc_writes, Kind};
 
 use super::files::{command_of, same_file};
@@ -60,6 +60,6 @@ impl Engine {
             _ => Vec::new(),
         };
         bodies.retain(|(p, _)| self.wrote.iter().any(|(k, w)| w.mi > mi && same_file(k, p)));
-        bodies.iter().flat_map(|(_, t)| t.split('\n').map(py::squash_ws)).collect()
+        bodies.iter().flat_map(|(_, t)| t.split('\n').map(textops::squash_ws)).collect()
     }
 }

@@ -8,8 +8,8 @@ use crate::json::{est, py_eq, strip_cc};
 use crate::learn::MODEL;
 use crate::mechanical::{squeeze, MARK};
 use crate::msg::{blocks, get_str, key_of};
-use crate::py::{self};
 use crate::rules::{clip, rules_in};
+use crate::textops::{self};
 use crate::tools::{classify, edit_size, full_write, heredoc_writes, printed_files, prints_files, shell_writes, Kind};
 
 use super::files::{basename, command_of, edited, file_key, forget, head_and_tail, same_file, Wrote, WROTE_TOKENS};
@@ -334,7 +334,7 @@ impl Engine {
                 for c in NOTE_LINE.captures_all(&text) {
                     let span = |g: usize| c[g].map_or("", |(x, y)| &text[x..y]);
                     if span(1) == "Rule" {
-                        self.rules.add(mi, clip(&py::squash_ws(span(2))), true);
+                        self.rules.add(mi, clip(&textops::squash_ws(span(2))), true);
                     }
                 }
             }

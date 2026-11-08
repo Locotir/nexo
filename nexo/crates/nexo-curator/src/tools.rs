@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use serde_json::Value;
 
-use crate::py::{Caps, Re, I, M, S};
+use crate::textops::{Caps, Re, I, M, S};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {

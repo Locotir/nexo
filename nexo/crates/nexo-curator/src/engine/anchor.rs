@@ -8,7 +8,7 @@ use crate::hindsight::{Sym, UKind};
 use crate::json::est_str;
 use crate::ledger::{prior, select, PER_MESSAGE};
 use crate::mechanical::MARK;
-use crate::py::{self, bisect_left};
+use crate::textops::{self, bisect_left};
 
 use super::Engine;
 
@@ -150,9 +150,9 @@ impl Engine {
                 let ask = if r == 0 {
                     "(the first request, above)".to_string()
                 } else {
-                    let s = py::squash_ws(&self.unit_text_at(r, UKind::User));
-                    if py::len(&s) > 300 {
-                        format!("{}…", py::head(&s, 300))
+                    let s = textops::squash_ws(&self.unit_text_at(r, UKind::User));
+                    if textops::len(&s) > 300 {
+                        format!("{}…", textops::head(&s, 300))
                     } else {
                         s
                     }

@@ -6,7 +6,7 @@ use crate::hindsight::UKind;
 use crate::json::est_str;
 use crate::mechanical::MARK;
 use crate::msg::{get_str, key_of};
-use crate::py::{self};
+use crate::textops::{self};
 
 use super::files::command_of;
 use super::Engine;
@@ -85,8 +85,8 @@ fn text_only(b: &Value) -> bool {
 }
 
 pub(super) fn clipped(s: &str, n: usize) -> String {
-    if py::len(s) > n {
-        format!("{}…", py::head(s, n))
+    if textops::len(s) > n {
+        format!("{}…", textops::head(s, n))
     } else {
         s.to_string()
     }
@@ -241,7 +241,7 @@ impl Engine {
         } else {
             command
         };
-        format!("`{}`", clipped(&py::squash_ws(&text), 100))
+        format!("`{}`", clipped(&textops::squash_ws(&text), 100))
     }
 
     /// The lines of tool result `i` the view sends: none when its message is not visible, else all but those

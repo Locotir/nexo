@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::hindsight::{Sym, UKind};
 use crate::json::est_str;
 use crate::msg::key_of;
-use crate::py::{self};
+use crate::textops::{self};
 use crate::tools::{prints_files, read_range, Kind};
 
 use super::files::{basename, command_of, file_key, files_in, same_file};
@@ -141,7 +141,7 @@ impl Engine {
             let (key, lines, path) = match (info.kind, &info.path) {
                 (Kind::Read, Some(p)) => (file_key(p), read_range(b.get("input")), Some(p.clone())),
                 (Kind::Exec, _) => {
-                    let c = py::squash_ws(&command_of(b));
+                    let c = textops::squash_ws(&command_of(b));
                     if c.is_empty() || !prints_files(&c) {
                         continue;
                     }

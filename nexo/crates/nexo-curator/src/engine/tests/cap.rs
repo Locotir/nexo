@@ -231,7 +231,7 @@ fn a_history_that_leaves_at_once_keeps_its_newest_lines_in_the_pool_in_order() {
     // the newest output that left is in the pool whole, the oldest is not
     let last = (0..e.start).rev().find(|&mi| output_of(&msgs, mi).is_some()).unwrap();
     let newest = output_of(&msgs, last).unwrap();
-    let first_line = crate::py::squash_ws(newest.lines().next().unwrap());
+    let first_line = crate::textops::squash_ws(newest.lines().next().unwrap());
     assert!(e.pool.iter().any(|(mi, ln, _, _)| *mi == last && *ln == first_line), "{first_line}");
     assert!(e.pool.iter().all(|(mi, _, _, _)| *mi > 3), "the first read is out of the pool");
 }

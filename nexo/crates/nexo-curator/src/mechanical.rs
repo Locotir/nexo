@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
-use crate::py::{self, Re, I};
+use crate::textops::{self, Re, I};
 
 pub const MARK: &str = "[curator]";
 
@@ -52,7 +52,7 @@ const QUOTE: usize = 40;
 
 /// The line with its variable parts masked.
 fn template(line: &str) -> String {
-    let mut t = py::strip(line).to_string();
+    let mut t = textops::strip(line).to_string();
     for (pat, rep) in MASKS.iter() {
         if let Cow::Owned(s) = pat.sub(&t, rep) {
             t = s;
@@ -63,7 +63,7 @@ fn template(line: &str) -> String {
 
 /// The decimal numbers of a line, once its identifiers (uuids, timestamps, hex) are masked.
 fn numbers(line: &str) -> Vec<f64> {
-    let mut t = py::strip(line).to_string();
+    let mut t = textops::strip(line).to_string();
     for (pat, rep) in MASKS.iter().take(MASKS.len() - 1) {
         if let Cow::Owned(s) = pat.sub(&t, rep) {
             t = s;
@@ -79,14 +79,14 @@ static HEX_NUMBER: LazyLock<Re> = LazyLock::new(|| Re::new(r"^(?:0x[0-9a-f]+|[0-
 /// Whether `line` is a row of a memory or hex dump, as `x/8xg`, `od -x` or `xxd -g 4` print one: an address
 /// and the values at it, two or more numbers in hex that make at least half of its tokens.
 fn dump_row(line: &str) -> bool {
-    let tokens: Vec<&str> = py::split_ws(line).collect();
+    let tokens: Vec<&str> = textops::split_ws(line).collect();
     let hex = tokens.iter().filter(|t| HEX_NUMBER.is_match(t)).count();
     hex >= 2 && 2 * hex >= tokens.len()
 }
 
 /// The numbers of a row of a dump: its address and the values at it, read as hex.
 fn hex_numbers(line: &str) -> Vec<f64> {
-    py::split_ws(line)
+    textops::split_ws(line)
         .filter(|t| HEX_NUMBER.is_match(t))
         .filter_map(|t| {
             let t = t.trim_end_matches([':', ',']);
@@ -284,12 +284,12 @@ fn binary(line: &str, lossy: bool) -> Cow<'_, str> {
 }
 
 fn long_line(line: &str) -> Cow<'_, str> {
-    let n = py::len(line);
+    let n = textops::len(line);
     if n <= MAX_LINE_CHARS {
         return Cow::Borrowed(line);
     }
     let cut = n - LINE_HEAD - LINE_TAIL;
-    Cow::Owned(format!("{} … {MARK} +{cut} chars … {}", py::head(line, LINE_HEAD), py::tail(line, LINE_TAIL)))
+    Cow::Owned(format!("{} … {MARK} +{cut} chars … {}", textops::head(line, LINE_HEAD), textops::tail(line, LINE_TAIL)))
 }
 
 /// Which lines of a run stand out: in a column (the words counted from the start of the line, and from its
@@ -303,7 +303,7 @@ fn odd_lines(lines: &[String]) -> Vec<bool> {
     let cols: Vec<[&str; FROM_START + FROM_END]> = lines
         .iter()
         .map(|l| {
-            let w: Vec<&str> = py::split_ws(l).collect();
+            let w: Vec<&str> = textops::split_ws(l).collect();
             let mut c = [""; FROM_START + FROM_END];
             for (k, x) in w.iter().take(FROM_START).enumerate() {
                 c[k] = x;
@@ -411,8 +411,8 @@ fn table(lines: &[String]) -> Option<(usize, Vec<String>)> {
     }
     let k = rows.len();
     let head = format!("{MARK} {k} lines of the form «{form}»; each row below holds what fills its {{}}, in order:");
-    let whole: usize = lines[..k].iter().map(|l| py::len(l) + 1).sum();
-    let short: usize = py::len(&head) + rows.iter().map(|r| py::len(r) + 1).sum::<usize>();
+    let whole: usize = lines[..k].iter().map(|l| textops::len(l) + 1).sum();
+    let short: usize = textops::len(&head) + rows.iter().map(|r| textops::len(r) + 1).sum::<usize>();
     if k < SIMILAR_RUN || 3 * short > 2 * whole {
         return None;
     }
@@ -510,7 +510,7 @@ fn group_grep(lines: Vec<String>) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len());
     let n = lines.len();
     let mut i = 0;
-    let span = |l: &str, c: &py::Caps, g: usize| c[g].map_or(String::new(), |(a, b)| l[a..b].to_string());
+    let span = |l: &str, c: &textops::Caps, g: usize| c[g].map_or(String::new(), |(a, b)| l[a..b].to_string());
     while i < n {
         let Some(m) = GREP_LINE.search(&lines[i]) else {
             out.push(lines[i].clone());
@@ -542,11 +542,11 @@ fn group_grep(lines: Vec<String>) -> Vec<String> {
 
 fn shape(line: &str) -> String {
     let mut out = String::new();
-    for t in py::split_ws(line).take(4) {
+    for t in textops::split_ws(line).take(4) {
         if !out.is_empty() {
             out.push(' ');
         }
-        let c = if py::first(t).is_some_and(py::is_digit) || NUMLIKE.is_match(t) {
+        let c = if textops::first(t).is_some_and(textops::is_digit) || NUMLIKE.is_match(t) {
             '0'
         } else if t.contains('/') {
             'P'
@@ -623,15 +623,15 @@ fn repeats(lines: Vec<String>) -> Vec<String> {
                 k -= 1;
             }
             let start = l.trim_start();
-            let q = py::head(start, QUOTE);
+            let q = textops::head(start, QUOTE);
             let cut = if q.len() < start.len() { "…" } else { "" };
             let pointer = if k == 1 {
                 format!("{MARK} … (again the first line above that starts «{q}{cut}»)")
             } else {
                 format!("{MARK} … (again the {k} lines above from the first one that starts «{q}{cut}»)")
             };
-            let run: usize = lines[i..i + k].iter().map(|x| py::len(x) + 1).sum();
-            if run >= 2 * py::len(&pointer) && !out[..j].iter().any(|x| x.trim_start().starts_with(q)) {
+            let run: usize = lines[i..i + k].iter().map(|x| textops::len(x) + 1).sum();
+            if run >= 2 * textops::len(&pointer) && !out[..j].iter().any(|x| x.trim_start().starts_with(q)) {
                 out.push(pointer);
                 i += k;
                 continue;
@@ -651,7 +651,7 @@ fn repeats(lines: Vec<String>) -> Vec<String> {
 /// short; without it only folds that lose nothing are made: repeats of the same lines go as their count or
 /// as a pointer to their first copy, and what a terminal would not show (escape sequences, redrawn frames).
 pub fn squeeze(text: &str, lossy: bool) -> Cow<'_, str> {
-    let n = py::len(text);
+    let n = textops::len(text);
     if text.is_empty() || n < MIN_SAVING {
         return Cow::Borrowed(text);
     }
@@ -675,7 +675,7 @@ pub fn squeeze(text: &str, lossy: bool) -> Cow<'_, str> {
     }
     let lines = repeats(lines);
     let result = lines.join("\n");
-    if n >= py::len(&result) + MIN_SAVING {
+    if n >= textops::len(&result) + MIN_SAVING {
         Cow::Owned(result)
     } else {
         Cow::Borrowed(text)

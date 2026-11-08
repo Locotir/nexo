@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::hindsight::UKind;
 use crate::ledger::ERROR_MARKS;
 use crate::msg::key_of;
-use crate::py::{self, Re};
+use crate::textops::{self, Re};
 use crate::tools::{shell_writes, Kind};
 
 use super::files::{basename, command_of};
@@ -32,12 +32,12 @@ pub(super) static TEST_COMMAND: LazyLock<Re> = LazyLock::new(|| {
 pub(super) static TEST_FAILED: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
         r"^\s*(?:--- FAIL:|FAIL\b|FAILED\b|FAILURES?!|Failed!|(?:\[\w+\]\s+)?BUILD FAIL|not ok \d|[✕✗✖]\s|[#ℹ]\s*fail\s+[1-9]|make(?:\[\d+\])?: \*\*\* .*\bError [1-9])|\b[1-9]\d* (?:tests? )?(?:failed|failing|failures?|errors?)\b(?![ \t]*[:=]?[ \t]*\d)|(?i:(?:^|[,;(\-]|\btests?)[ \t]*(?:failures?|failed|errors?)[ \t]*[:=][ \t]*[1-9]\d*(?=[ \t]*(?:[,.;)]|$))|[,;(][ \t]*(?:failures?|failed|errors?)[ \t]+[1-9]\d*(?=[ \t]*[,;)]))|(?i:^\s*\[?exit (?:status|code)[ \t]*:?[ \t]*[1-9]\d*\b|^(?![ \t]*(?-i:[✓✔√]|ok\s|PASS\b))[^\n]*?\b(?:failed|finished|exited) with (?:exit )?(?:code|status) [1-9]\d*\b)",
-        py::M,
+        textops::M,
     )
 });
 
 static FAILURE_LINE: LazyLock<Re> = LazyLock::new(|| {
-    Re::new(r#"FAIL|ERROR|Error|Traceback|File "|panicked|fail|assert|✗|✕|●|^\s*not ok\b|\.\w+:\d+"#, py::M)
+    Re::new(r#"FAIL|ERROR|Error|Traceback|File "|panicked|fail|assert|✗|✕|●|^\s*not ok\b|\.\w+:\d+"#, textops::M)
 });
 
 /// The name of a failing test, in the shapes runners print it: after `::`, `FAIL:`, `--- FAIL:` or `, in`
@@ -47,7 +47,7 @@ static FAILURE_LINE: LazyLock<Re> = LazyLock::new(|| {
 static FAILED_TEST: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
         r"^\s*test\s+(?:[\w$]+::)*([\w$]+)\s+\.\.\.\s+FAILED|^\s*[\w.$]+\s+>\s+([\w$]+)(?:\(\))?\s+FAILED|^\s*[●✕✗]\s+(?!Console\b|Test suite failed)(.+?)(?:\s+\(\d+(?:\.\d+)?\s*m?s\))?\s*$|^\s*rspec\s+(\S+:\d+)|^\s*not ok \d+ - (.+?)\s*$|(?:::|\b(?:FAIL|FAILED|ERROR):?\s+|---\s+FAIL:\s+|,\s+in\s+)(test_\w+|Test[A-Z_]\w*)",
-        py::M,
+        textops::M,
     )
 });
 
@@ -101,7 +101,7 @@ fn test_run(command: &str) -> String {
     };
     let mut out: Vec<&str> = Vec::new();
     let mut skip = false;
-    for t in py::split_ws(piece) {
+    for t in textops::split_ws(piece) {
         let bare = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '&');
         if std::mem::take(&mut skip) {
             continue;
@@ -122,7 +122,7 @@ pub(super) fn named_in(path: &str, failures: &[String]) -> bool {
     if stem.is_empty() || TEST_NAME.is_match(stem) {
         return false;
     }
-    let pat = format!(r"(?:\btests?_|\b){}(?:_tests?|[._](?:test|spec))?\.\w+\b", py::escape(stem));
+    let pat = format!(r"(?:\btests?_|\b){}(?:_tests?|[._](?:test|spec))?\.\w+\b", textops::escape(stem));
     let Ok(tested) = Re::try_new(&pat, 0) else { return false };
     failures.iter().any(|f| f.contains(path) || tested.find_all(f).iter().any(|&(a, b)| TEST_NAME.is_match(&f[a..b])))
 }
@@ -135,9 +135,9 @@ impl Engine {
         if last >= self.start || self.fz.by_msg(last).iter().any(|&i| self.tr.units[i].kind == UKind::Call) {
             return String::new();
         }
-        let x = py::squash_ws(&self.unit_text_at(last, UKind::Text));
-        if py::len(&x) > OUTCOME_CHARS {
-            format!("{}…", py::head(&x, OUTCOME_CHARS))
+        let x = textops::squash_ws(&self.unit_text_at(last, UKind::Text));
+        if textops::len(&x) > OUTCOME_CHARS {
+            format!("{}…", textops::head(&x, OUTCOME_CHARS))
         } else {
             x
         }
@@ -188,7 +188,7 @@ impl Engine {
                         let text = self.tr.unit_text(i);
                         if error || ERROR_MARKS.is_match(&text) || TEST_FAILED.is_match(&text) {
                             let ls: Vec<&str> =
-                                py::splitlines(&text).into_iter().filter(|x| FAILURE_LINE.is_match(x)).collect();
+                                textops::splitlines(&text).into_iter().filter(|x| FAILURE_LINE.is_match(x)).collect();
                             let f = ls.join("\n");
                             // a test failing again no longer passes
                             let again = failed_tests(&f);

@@ -15,8 +15,8 @@ mod learn;
 mod ledger;
 mod mechanical;
 mod msg;
-mod py;
 mod rules;
+mod textops;
 mod tools;
 
 use indexmap::IndexMap;

@@ -9,12 +9,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::hindsight::{words, Interner, Set, Sym, Tracer, UKind};
 use crate::json::est_str;
 use crate::msg::truthy;
-use crate::py::{self, Re};
+use crate::textops::{self, Re};
 
 pub static ERROR_MARKS: LazyLock<Re> = LazyLock::new(|| {
     Re::new(
         r"^(Traceback \(most recent call last\)|\w*Error: |error: |FAIL: |FAILED |E   )|\b[1-9]\d* failed\b|(?i:^\s*\[?exit code[ \t]*:?[ \t]*[1-9]\d*\b|^(?![ \t]*(?-i:[✓✔√]|ok\s|PASS\b))[^\n]*?\b(?:failed|finished|exited) with exit code [1-9]\d*\b)",
-        py::M,
+        textops::M,
     )
 });
 const LINE_CHARS: usize = 240;
@@ -107,9 +107,9 @@ pub fn noise(ln: &str) -> bool {
     if raw_bytes(ln) || DOT_ROW.is_match(ln) || CUT_MARK.is_match(ln) {
         return true;
     }
-    let tokens: Vec<&str> = py::split_ws(ln).collect();
+    let tokens: Vec<&str> = textops::split_ws(ln).collect();
     // one short token mixing cases, digits or symbols (`HkD$`, `AkZ4`): a string pulled out of a binary
-    if tokens.len() == 1 && py::len(ln) <= 6 {
+    if tokens.len() == 1 && textops::len(ln) <= 6 {
         let (up, low, other) = ln.chars().fold((0, 0, 0), |(u, l, o), c| {
             if c.is_ascii_uppercase() {
                 (u + 1, l, o)
@@ -120,7 +120,7 @@ pub fn noise(ln: &str) -> bool {
             }
         });
         let mixed = up > 0 && low > 0 && (other > 0 || !ln.chars().next().is_some_and(|c| c.is_ascii_uppercase()));
-        if mixed || (up > 0 && other > 0 && low == 0 && py::len(ln) <= 5) {
+        if mixed || (up > 0 && other > 0 && low == 0 && textops::len(ln) <= 5) {
             return true;
         }
     }
@@ -189,8 +189,8 @@ impl Names {
             l((t as i64 - st[5]).max(0)),
             l(st[5] - st[4]),
             if s.contains('/') { 1.0 } else { 0.0 },
-            if py::first(s).is_some_and(py::is_digit) { 1.0 } else { 0.0 },
-            (py::len(s) as f64).ln(),
+            if textops::first(s).is_some_and(textops::is_digit) { 1.0 } else { 0.0 },
+            (textops::len(s) as f64).ln(),
             l(st[6]),
         ]
     }
@@ -229,8 +229,8 @@ fn lines_but(text: &str, int: &mut Interner, skip: fn(&str) -> bool) -> Vec<(Str
         let (bare, sure) = unnumbered(ln);
         // a line with no viewer's number is its own bare text: squashed and tested once
         let numbered = bare.len() != ln.len();
-        let whole = py::squash_ws(ln);
-        let bare = if numbered { py::squash_ws(bare) } else { whole.clone() };
+        let whole = textops::squash_ws(ln);
+        let bare = if numbered { textops::squash_ws(bare) } else { whole.clone() };
         if bare.is_empty() || skip(&whole) || (numbered && skip(&bare)) {
             continue;
         }
@@ -238,15 +238,15 @@ fn lines_but(text: &str, int: &mut Interner, skip: fn(&str) -> bool) -> Vec<(Str
         if ln.is_empty() {
             continue;
         }
-        if py::len(&ln) > LINE_CHARS {
+        if textops::len(&ln) > LINE_CHARS {
             // rfind(" ", 0, LINE_CHARS + 1): a space starting before char LINE_CHARS
-            let head = py::head(&ln, LINE_CHARS + 1);
+            let head = textops::head(&ln, LINE_CHARS + 1);
             let cut = head.rfind(' ').map(|b| head[..b].chars().count());
             let n = match cut {
                 Some(c) if c > LINE_CHARS / 2 => c,
                 _ => LINE_CHARS,
             };
-            ln = format!("{}…", py::head(&ln, n));
+            ln = format!("{}…", textops::head(&ln, n));
         }
         let ws = words(&ln, int);
         if !ws.is_empty() {
@@ -331,7 +331,7 @@ pub fn select(
 /// first one, so the rows of one table or listing share a form whatever their values.
 pub fn form(ln: &str) -> String {
     let mut out = String::new();
-    for (k, t) in py::split_ws(ln).take(4).enumerate() {
+    for (k, t) in textops::split_ws(ln).take(4).enumerate() {
         let t = t.trim_start_matches(['-', '+']);
         if k == 0 {
             let mut last = ' ';

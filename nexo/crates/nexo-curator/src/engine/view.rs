@@ -10,7 +10,7 @@ use crate::hindsight::UKind;
 use crate::json::est;
 use crate::mechanical::MARK;
 use crate::msg::{blocks, get_str, text_block, text_of};
-use crate::py::{self};
+use crate::textops::{self};
 use crate::tools::{classify, Kind};
 
 use super::cache::fingerprint;
@@ -190,7 +190,7 @@ impl Engine {
                         _ => "of this argument here are omitted",
                     };
                     match v {
-                        Value::String(s) if py::len(s) > 200 => {
+                        Value::String(s) if textops::len(s) > 200 => {
                             Value::String(format!("{MARK} {} lines {what}", s.matches('\n').count() + 1))
                         }
                         Value::Array(a) => Value::Array(a.iter().map(|x| fold(k, x, wrote)).collect()),

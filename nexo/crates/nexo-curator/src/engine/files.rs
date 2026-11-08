@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::hindsight::Set;
 use crate::json::{est_str, str_chars};
 use crate::msg::py_str;
-use crate::py::{self};
+use crate::textops::{self};
 
 /// Tokens of one file the agent wrote kept in the anchor; a longer one keeps its head and tail.
 pub(super) const WROTE_TOKENS: i64 = 1500;
@@ -139,7 +139,7 @@ pub(super) fn edited(wrote: &mut IndexMap<String, Wrote>, path: &str, mi: usize,
 /// The lines of what ``old`` wrote, out of the ledger's pool: the file was written again since, and its old text
 /// would read as what the file holds.
 pub(super) fn forget(pool: &mut Vec<(usize, String, Set, f64)>, old: &Wrote) {
-    let lines: FxHashSet<String> = old.text.split('\n').map(py::squash_ws).collect();
+    let lines: FxHashSet<String> = old.text.split('\n').map(textops::squash_ws).collect();
     pool.retain(|(mi, ln, _, _)| *mi != old.mi || !lines.contains(ln));
 }
 

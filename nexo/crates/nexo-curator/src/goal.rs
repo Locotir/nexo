@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::hindsight::{Sym, Tracer, UKind};
 use crate::learn::{correct_share, is_request, Featurizer, Head};
 use crate::msg::py_str;
-use crate::py;
+use crate::textops;
 
 const PRIOR_B: f64 = -2.0;
 const PRIOR_W: [f64; 13] = [7.0, 0.0, 0.0, 1.5, 4.0, 1.5, 0.6, -0.4, -6.0, 0.0, 6.0, 0.0, -1.0];
@@ -43,11 +43,11 @@ pub fn starts_turn(tr: &Tracer, fz: &Featurizer, mi: usize) -> bool {
 
 /// `" ".join(text.split())`, cut to ``n`` characters.
 pub fn line(text: &str, n: usize) -> String {
-    let x = py::squash_ws(text);
-    if py::len(&x) <= n {
+    let x = textops::squash_ws(text);
+    if textops::len(&x) <= n {
         x
     } else {
-        format!("{}…", py::head(&x, n - 1))
+        format!("{}…", textops::head(&x, n - 1))
     }
 }
 
@@ -300,5 +300,5 @@ pub fn action(tr: &Tracer, i: usize) -> String {
         None => "?".to_string(),
         Some(v) => py_str(v),
     };
-    py::strip(&format!("{} {}", name, line(what, 70))).to_string()
+    textops::strip(&format!("{} {}", name, line(what, 70))).to_string()
 }
