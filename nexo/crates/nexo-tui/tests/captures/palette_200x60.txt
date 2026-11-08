@@ -53,7 +53,7 @@
  /fork                                              continue in a new session copied from an earlier point of this one
  /tree                                              the sessions as a tree of forks; jump to one
  /rewind                                            go back to before an earlier message, files included (also Esc Esc)
-                                                               1/57                                                               46 more ↓
+                                                               1/53                                                               42 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                 20261102-100000-ef56

@@ -3688,18 +3688,17 @@ impl App {
 
     pub fn run_command(&mut self, cmd: Command) {
         match cmd {
-            Command::Help | Command::Keys => self.modal = Some(Modal::Help { scroll: 0 }),
+            Command::Help => self.modal = Some(Modal::Help { scroll: 0 }),
             Command::Model(Some(name)) => {
                 let (provider, model) = self.model_target(name);
                 self.send(AgentCommand::SetModel { provider, model });
             }
-            Command::Model(None) | Command::Provider => self.open_setup(),
+            Command::Model(None) => self.open_setup(),
             Command::Login => {
                 self.open_setup();
                 self.flash("pick the provider to sign in or add its key");
             }
             Command::Logout(name) => self.logout(name.as_deref()),
-            Command::Config => self.show_config(),
             Command::Doctor => self.run_doctor(),
             Command::Effort(Some(level)) => {
                 let level = level.trim().to_ascii_lowercase();
@@ -3714,7 +3713,6 @@ impl App {
                 Some(other) => self.notice(Level::Warn, format!("/fast takes on or off, not `{other}`")),
             },
             Command::Permissions(Some(mode)) => self.send(AgentCommand::SetPermissionMode(mode)),
-            Command::Yolo => self.send(AgentCommand::SetPermissionMode(PermissionMode::Auto)),
             Command::Sandbox(mode) => self.send(AgentCommand::SetSandbox(mode)),
             Command::AddDir(arg) => match arg.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
                 Some(dir) => self.send(AgentCommand::AddDir(dir.into())),
@@ -4000,18 +3998,6 @@ impl App {
             Command::BadArgument(cmd, arg) => self.notice(Level::Warn, format!("/{cmd}: cannot read '{arg}'")),
         }
         self.dirty = true;
-    }
-
-    /// `/config`: where the configuration files are.
-    fn show_config(&mut self) {
-        let user = nexo_core::paths::user_config_file();
-        let mut text =
-            format!("user config: {}{}", user.display(), if user.exists() { "" } else { " (not created yet)" });
-        if let Some(p) = nexo_core::paths::project_config_file(&self.cwd) {
-            text.push_str(&format!("\nproject config: {}", p.display()));
-        }
-        text.push_str("\n/theme, /vim, /permissions and /model save their choice there; edit it by hand for the rest");
-        self.notice(Level::Info, text);
     }
 
     /// `/doctor`: the checks of `nexo doctor --offline`, run by this same program and shown here.

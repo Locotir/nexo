@@ -26,13 +26,11 @@ const fn spec(
 pub const COMMANDS: &[Spec] = &[
     spec("help", &["h", "?"], "", "keys and commands"),
     spec("model", &["m"], "[name]", "switch model, or set one up step by step (checked against the server)"),
-    spec("provider", &["providers"], "", "the same as /model"),
     spec("login", &["signin"], "", "sign in or set a key: opens the model setup at the providers"),
     spec("logout", &["signout"], "[provider]", "forget the key or sign-in stored for a provider (the current one)"),
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
     spec("fast", &[], "[on|off]", "switch to the model's fast version, and back"),
     spec("permissions", &["permission", "mode"], "[ask|accept-edits|plan|auto|read-only]", "set the permission mode"),
-    spec("yolo", &[], "", "never ask for permission (the auto mode)"),
     spec(
         "sandbox",
         &[],
@@ -87,7 +85,6 @@ pub const COMMANDS: &[Spec] = &[
     spec("commit", &[], "[hint]", "commit the staged changes (or all) with a message in the repo's style"),
     spec("pr", &["pull-request"], "[base]", "push the branch and open a pull request with gh"),
     spec("status", &["info"], "", "version, model, key, endpoint, session, configuration files"),
-    spec("config", &["settings"], "", "where the configuration files are"),
     spec("doctor", &[], "", "check the setup: files, provider, model, key"),
     spec("tools", &[], "", "the tools the model has, by kind"),
     spec("hooks", &[], "", "the hooks that are loaded, and where they come from"),
@@ -115,7 +112,6 @@ pub const COMMANDS: &[Spec] = &[
     spec("cost", &["usage"], "", "window: tokens, cost, calls"),
     spec("context", &["ctx"], "", "window: what the next call sends"),
     spec("theme", &[], "[name]", "change the colours (a picker without a name)"),
-    spec("keys", &["keybindings"], "", "the key bindings"),
     spec("copy", &[], "[code]", "copy the last reply to the clipboard; `code`: its last code block"),
     spec("context-live", &["live", "map"], "", "a live map of the context beside the transcript: what each call sends"),
     spec("quit", &["exit", "q"], "", "leave nexo"),
@@ -127,11 +123,9 @@ pub const COMMANDS: &[Spec] = &[
 pub enum Command {
     Help,
     Model(Option<String>),
-    Provider,
     Login,
     /// `/logout [provider]`: the stored key or sign-in of the provider, removed.
     Logout(Option<String>),
-    Config,
     Doctor,
     Effort(Option<String>),
     /// `/fast [on|off]`
@@ -160,7 +154,6 @@ pub enum Command {
     /// The supervisor's panel: one card per agent session.
     Panel,
     Permissions(Option<PermissionMode>),
-    Yolo,
     /// `/sandbox [mode]`: None switches it on or off.
     Sandbox(Option<nexo_core::sandbox::SandboxMode>),
     /// `/plan` turns plan mode on, `/plan text` also sends the text, `/plan off` leaves it.
@@ -205,7 +198,6 @@ pub enum Command {
     Context,
     ContextLive,
     Theme(Option<String>),
-    Keys,
     Copy(Option<String>),
     Quit,
     Unknown(String),
@@ -223,7 +215,17 @@ pub enum GoalArg {
 }
 
 /// Names that work but are listed nowhere (not in /help, not in the palette): `(alias, command)`.
-const HIDDEN: &[(&str, &str)] = &[("agents", "panel"), ("approvals", "permissions")];
+/// Names that still work but have no line of their own: each is the same as the command it points to.
+const HIDDEN: &[(&str, &str)] = &[
+    ("agents", "panel"),
+    ("approvals", "permissions"),
+    ("provider", "model"),
+    ("providers", "model"),
+    ("keys", "help"),
+    ("keybindings", "help"),
+    ("config", "status"),
+    ("settings", "status"),
+];
 
 /// The spec a name or alias stands for.
 pub fn lookup(name: &str) -> Option<&'static Spec> {
@@ -238,14 +240,16 @@ pub fn parse(line: &str) -> Option<Command> {
     let mut it = rest.splitn(2, char::is_whitespace);
     let typed = it.next().unwrap_or("").trim().to_ascii_lowercase();
     let arg = it.next().map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
+    if typed == "yolo" {
+        // the old name of `/permissions auto`
+        return Some(Command::Permissions(Some(PermissionMode::Auto)));
+    }
     let Some(spec) = lookup(&typed) else { return Some(Command::Unknown(typed)) };
     Some(match spec.name {
         "help" => Command::Help,
         "model" => Command::Model(arg),
-        "provider" => Command::Provider,
         "login" => Command::Login,
         "logout" => Command::Logout(arg),
-        "config" => Command::Config,
         "doctor" => Command::Doctor,
         "effort" => Command::Effort(arg),
         "fast" => Command::Fast(arg),
@@ -281,7 +285,6 @@ pub fn parse(line: &str) -> Option<Command> {
                 None => Command::BadArgument("permissions".into(), a),
             },
         },
-        "yolo" => Command::Yolo,
         "sandbox" => match arg {
             None => Command::Sandbox(None),
             Some(a) => match nexo_core::sandbox::SandboxMode::parse(&a) {
@@ -334,7 +337,6 @@ pub fn parse(line: &str) -> Option<Command> {
         "context" => Command::Context,
         "context-live" => Command::ContextLive,
         "theme" => Command::Theme(arg),
-        "keys" => Command::Keys,
         "copy" => Command::Copy(arg),
         "quit" => Command::Quit,
         other => Command::Unknown(other.to_string()),
@@ -409,7 +411,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         "session",
         &["fork", "tree", "rewind", "undo", "undelete", "rename", "msg", "export", "goal", "shared-memory", "queue"],
     ),
-    ("model", &["provider", "login", "logout", "fast", "pricing", "prompt", "memory", "note", "budget"]),
+    ("model", &["login", "logout", "fast", "pricing", "prompt", "memory", "note", "budget"]),
     (
         "context and tools",
         &[
@@ -432,7 +434,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "status",
         ],
     ),
-    ("settings", &["yolo", "sandbox", "add-dir", "theme", "mouse", "timestamps", "vim", "keys", "config"]),
+    ("settings", &["sandbox", "add-dir", "theme", "mouse", "timestamps", "vim"]),
     ("nexo", &["doctor", "copy", "quit"]),
 ];
 
@@ -564,7 +566,7 @@ mod tests {
         assert_eq!(parse("/permissions auto"), Some(Command::Permissions(Some(PermissionMode::Auto))));
         assert_eq!(parse("/mode auto"), Some(Command::Permissions(Some(PermissionMode::Auto))));
         assert_eq!(parse("/permissions sideways"), Some(Command::BadArgument("permissions".into(), "sideways".into())));
-        assert_eq!(parse("/yolo"), Some(Command::Yolo));
+        assert_eq!(parse("/yolo"), Some(Command::Permissions(Some(PermissionMode::Auto))));
         assert_eq!(parse("/sandbox"), Some(Command::Sandbox(None)));
         assert_eq!(
             parse("/sandbox read-only"),
@@ -620,11 +622,30 @@ mod tests {
         assert_eq!(parse("/?"), Some(Command::Help));
         assert_eq!(parse("/nope"), Some(Command::Unknown("nope".into())));
         assert_eq!(parse("/login"), Some(Command::Login));
-        assert_eq!(parse("/settings"), Some(Command::Config));
+        assert_eq!(parse("/settings"), Some(Command::Status));
         assert_eq!(parse("/doctor"), Some(Command::Doctor));
         assert_eq!(parse("hello"), None);
         assert!(names().contains(&"compact".to_string()));
         assert!(names().contains(&"resume".to_string()) && !names().contains(&"sessions".to_string()));
+    }
+
+    #[test]
+    fn the_old_names_of_repeated_commands_still_work_without_a_line_of_their_own() {
+        assert_eq!(parse("/provider"), Some(Command::Model(None)));
+        assert_eq!(parse("/providers"), Some(Command::Model(None)));
+        assert_eq!(parse("/keys"), Some(Command::Help));
+        assert_eq!(parse("/keybindings"), Some(Command::Help));
+        assert_eq!(parse("/config"), Some(Command::Status));
+        assert_eq!(parse("/yolo"), Some(Command::Permissions(Some(PermissionMode::Auto))));
+        let shown = names();
+        for old in ["provider", "keys", "config", "yolo"] {
+            assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
+        }
+        for (_, members) in GROUPS {
+            for m in *members {
+                assert!(lookup(m).is_some_and(|s| s.name == *m), "group lists /{m}, which has no line");
+            }
+        }
     }
 
     fn first(q: &str) -> (&'static str, Option<&'static str>) {
