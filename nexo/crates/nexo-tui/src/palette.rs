@@ -602,8 +602,7 @@ pub fn project_files(root: &Path, max: usize) -> Vec<String> {
 
 /// What the draft asks for at the cursor: a command palette when the first
 /// line starts with `/` and holds no space yet, the values of the command's
-/// argument while the cursor is in its first word, a file picker after the
-/// last `@` of the current word.
+/// argument while the cursor is in its first word, a file picker after a word-initial `@`.
 pub fn wanted(draft: &str, cursor: usize) -> Option<(PaletteKind, usize, String)> {
     let cursor = cursor.min(draft.len());
     let head = &draft[..cursor];
@@ -631,8 +630,12 @@ pub fn wanted(draft: &str, cursor: usize) -> Option<(PaletteKind, usize, String)
     let word_start = head.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
     let word = &head[word_start..];
     if let Some(at) = word.rfind('@') {
-        let q = &word[at + 1..];
-        return Some((PaletteKind::Files, word_start + at + 1, q.to_string()));
+        // only a word-initial `@` is a mention; `bob@m` and `git@host` are plain text
+        let opens = word[..at].chars().next_back().is_none_or(|c| "([{<\"'`".contains(c));
+        if opens {
+            let q = &word[at + 1..];
+            return Some((PaletteKind::Files, word_start + at + 1, q.to_string()));
+        }
     }
     None
 }
@@ -825,6 +828,16 @@ mod tests {
         assert_eq!(wanted("/model x", 3), None, "the cursor is in the name");
         assert_eq!(wanted("look at @src/ma", 15), Some((PaletteKind::Files, 9, "src/ma".into())));
         assert_eq!(wanted("plain text", 10), None);
+    }
+
+    #[test]
+    fn the_file_picker_opens_only_at_the_start_of_a_word() {
+        assert_eq!(wanted("ask me at bob@m", 15), None, "an email stays plain text");
+        assert_eq!(wanted("git@github.com", 14), None, "user@host stays plain text");
+        assert_eq!(wanted("@src", 4), Some((PaletteKind::Files, 1, "src".into())));
+        assert_eq!(wanted("see (@src", 9), Some((PaletteKind::Files, 6, "src".into())));
+        assert_eq!(wanted("see \"@src", 9), Some((PaletteKind::Files, 6, "src".into())));
+        assert_eq!(wanted("a\n@x", 4), Some((PaletteKind::Files, 3, "x".into())));
     }
 
     #[test]
