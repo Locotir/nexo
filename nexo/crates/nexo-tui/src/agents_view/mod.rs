@@ -745,8 +745,8 @@ impl AgentsView {
     }
 
     fn start_nudge(&mut self) {
-        let Some(row) = self.selected_row() else { return };
         let Some(panel) = &self.panel else { return self.needs_supervisor() };
+        let Some(row) = self.selected_row() else { return self.note = Some("no session selected".into()) };
         if row.parent.is_some() {
             self.note = Some("a sub-agent takes no message; write to its session".into());
             return;

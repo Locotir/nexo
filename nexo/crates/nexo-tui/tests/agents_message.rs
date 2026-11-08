@@ -133,3 +133,20 @@ fn a_paste_lands_in_the_field_on_one_line_and_is_dropped_elsewhere() {
     let row = panel.rows(nexo_agent::supervise::run::now_secs()).remove(0);
     assert_eq!(row.last_action.as_ref().map(|a| a.0.as_str()), Some("your nudge is queued"));
 }
+
+#[test]
+fn n_and_p_with_no_session_in_the_list_say_so() {
+    let panel = Arc::new(Panel::start(&Setup::none(), Policy::default(), NexoSource::default()));
+    for keys in ['n', 'p'] {
+        let v = AgentsView::new(Some(panel.clone()), true);
+        assert!(v.rows().is_empty());
+        let mut a = app();
+        a.modal = Some(Modal::Agents(Box::new(v)));
+        press(&mut a, KeyCode::Char(keys), KeyModifiers::NONE);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        draw_frame(&mut t, &mut a).unwrap();
+        let text = rows_of(t.backend().buffer()).join("\n");
+        assert!(text.contains("no session selected"), "{keys}: silent\n{text}");
+        assert!(!text.contains("message ›"), "{keys}: a field opened on nothing");
+    }
+}
