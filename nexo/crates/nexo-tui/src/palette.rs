@@ -191,7 +191,7 @@ impl Palette {
                     ranked.push(COMMANDS.len() + i);
                     self.aliases.push(None);
                     self.hits.push(h);
-                    self.groups.push((blank && k == 0).then(|| "yours".to_string()));
+                    self.groups.push((blank && k == 0).then(|| "your commands".to_string()));
                 }
                 self.ranked = ranked;
             }
@@ -306,10 +306,9 @@ impl Palette {
             PaletteKind::Commands => {
                 let (args, hint) = match COMMANDS.get(i) {
                     Some(s) => (s.hint.to_string(), s.description.to_string()),
-                    None => (
-                        String::new(),
-                        self.custom.get(i - COMMANDS.len()).map(|(_, d)| format!("{d}  · yours")).unwrap_or_default(),
-                    ),
+                    None => {
+                        (String::new(), self.custom.get(i - COMMANDS.len()).map(|(_, d)| d.clone()).unwrap_or_default())
+                    }
                 };
                 Row {
                     label: name.clone(),
@@ -718,7 +717,7 @@ mod tests {
         p.up();
         assert_eq!(p.current(), Some("deploy"));
         let v = p.view(4);
-        assert_eq!(v.entries[v.entries.len() - 2], Entry::Header("yours".into()));
+        assert_eq!(v.entries[v.entries.len() - 2], Entry::Header("your commands".into()));
         assert_eq!(v.below, 0);
         // typing drops the sections
         p.set_query("th");

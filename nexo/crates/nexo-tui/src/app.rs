@@ -4592,7 +4592,7 @@ impl App {
                                     } else {
                                         format!("{} {}", c.hint, c.description)
                                     };
-                                    (c.name.clone(), d)
+                                    (c.name.clone(), format!("{d}  · {}", custom_origin(&c.origin)))
                                 })
                                 .collect(),
                             palette::recent_commands(self.input.history()),
@@ -6715,7 +6715,7 @@ mod tests {
         let p = a.palette.as_ref().expect("the palette");
         let (rows, _) = p.rows(20);
         let row = rows.iter().find(|r| r.label == "triage").expect("the command is offered");
-        assert!(row.hint.contains("review against our rules") && row.hint.contains("yours"));
+        assert!(row.hint.contains("review against our rules") && row.hint.ends_with("· custom"));
         a.input.set_text("/triage src/lib.rs");
         a.submit();
         assert!(
@@ -8071,5 +8071,27 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::McpToggle { on: true, .. })));
         press(&mut a, 'q');
         assert!(a.modal.is_none());
+    }
+}
+
+/// Where a command of one's own comes from, as the palette shows it: `~/.claude/commands`, `project .nexo/commands`,
+/// `skill`, `plugin <name>`; `custom` when it is not known.
+fn custom_origin(origin: &str) -> String {
+    match origin.split_once(' ') {
+        Some(("user", dir)) => format!("~/{dir}"),
+        _ if origin.is_empty() => "custom".into(),
+        _ => origin.into(),
+    }
+}
+
+#[cfg(test)]
+mod custom_origin_tests {
+    #[test]
+    fn a_command_of_ones_own_names_the_folder_it_comes_from() {
+        assert_eq!(super::custom_origin("user .claude/commands"), "~/.claude/commands");
+        assert_eq!(super::custom_origin("project .nexo/commands"), "project .nexo/commands");
+        assert_eq!(super::custom_origin("plugin tidy"), "plugin tidy");
+        assert_eq!(super::custom_origin("skill"), "skill");
+        assert_eq!(super::custom_origin(""), "custom");
     }
 }
