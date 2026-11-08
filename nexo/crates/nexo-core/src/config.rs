@@ -293,9 +293,10 @@ pub struct AgentConfig {
     /// the tool choice, so it finds the prompt cache; only if the model calls a tool all the same does one
     /// more call tell the protocol that none may be called.
     pub guard_answer: bool,
-    /// A reply that has text and tool calls ends the turn when every call only verifies finished work (a read, a
-    /// search, a test or check run, a write carrying `check`), every call succeeded and the text is an answer, not
-    /// a lead-in: one request less per turn. Off by default.
+    /// A reply that has text and tool calls ends the turn when the answer is not a lead-in, this turn has changed
+    /// something (an edit, a write, a command that is not read-only) and the calls of that reply hold a check that
+    /// succeeded after the last change (a build, test or lint run, a write carrying `check`). Reads and listings
+    /// never count: one request less per turn. Off by default.
     pub close_on_verified: bool,
     /// Notes the supervisor adds to the NEXT model request when plain counting sees the session go wrong: the
     /// same call again and again, a failing command re-run unchanged, edits that undo each other, a long run

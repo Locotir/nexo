@@ -1,6 +1,7 @@
 //! Part of the agent loop; see the parent module.
 //!
-//! `agent.close_on_verified`: when are the calls of a reply only a confirmation of finished work.
+//! `agent.close_on_verified`: when a reply proves finished work: the turn changed something and a check succeeded
+//! after the last change. Reads and listings never prove anything.
 
 use super::*;
 
@@ -106,22 +107,48 @@ fn is_test_script(s: &str) -> bool {
     matches!(s, "test" | "tests" | "check" | "lint" | "verify" | "typecheck" | "type-check")
 }
 
-/// Whether the calls of one reply are all verification: reads and searches, shell runs of checks, a write
-/// carrying `check`. `kind` gives the kind of a call by its name and arguments (None: unknown tool).
-pub(super) fn all_verification(
+/// What the calls of one reply did to the work, in order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Judged {
+    /// An edit or write ran, or a shell command that is neither read-only nor a plain check.
+    pub changed: bool,
+    /// A check succeeded after the last change of this reply (or with nothing changed in it): a build, test or
+    /// lint command, or the `check` of an edit or write.
+    pub checked: bool,
+}
+
+/// Sorts the calls of one reply: reads and searches (and read-only shell commands, which `call_kind` already
+/// tells apart) count for nothing; a write changes the work and is proved only by its own `check`; a shell
+/// command that is a build, test or lint run and nothing else is a check; any other command changes the work.
+/// `ok` tells for each call whether it succeeded. `kind` gives the kind of a call by its name and arguments
+/// (None: unknown tool).
+pub(super) fn judge(
     calls: &[(String, String, Value)],
+    ok: &[bool],
     kind: impl Fn(&str, &Value) -> Option<ToolKind>,
-) -> bool {
-    !calls.is_empty()
-        && calls.iter().all(|(_, name, args)| match kind(name, args) {
-            Some(ToolKind::Read | ToolKind::Search) => true,
-            Some(ToolKind::Exec) if name == "bash" => {
-                !args.get("background").and_then(Value::as_bool).unwrap_or(false)
-                    && args.get("command").and_then(Value::as_str).is_some_and(is_check_command)
+) -> Judged {
+    let mut out = Judged::default();
+    for (i, (_, name, args)) in calls.iter().enumerate() {
+        let done = ok.get(i).copied().unwrap_or(false);
+        match kind(name, args) {
+            Some(ToolKind::Write) => {
+                out.changed = true;
+                out.checked = done && args.get("check").and_then(Value::as_str).is_some_and(|c| !c.trim().is_empty());
             }
-            Some(ToolKind::Write) => args.get("check").and_then(Value::as_str).is_some_and(|c| !c.trim().is_empty()),
-            _ => false,
-        })
+            Some(ToolKind::Exec) => {
+                let plain = name == "bash" && !args.get("background").and_then(Value::as_bool).unwrap_or(false);
+                let cmd = args.get("command").and_then(Value::as_str).unwrap_or("");
+                if plain && nexo_tools::project::is_check_command(cmd) && is_check_command(cmd) {
+                    out.checked = done;
+                } else {
+                    out.changed = true;
+                    out.checked = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -179,23 +206,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_step_is_verification_when_every_call_is() {
-        let kind = |n: &str, _: &Value| match n {
+    fn kind(n: &str, a: &Value) -> Option<ToolKind> {
+        match n {
             "read" => Some(ToolKind::Read),
             "grep" => Some(ToolKind::Search),
+            // as the shell tool tells them apart: a command that only looks is a read
+            "bash" if a["command"].as_str().is_some_and(|c| c.starts_with("grep ") || c.starts_with("ls")) => {
+                Some(ToolKind::Read)
+            }
             "bash" => Some(ToolKind::Exec),
             "edit" | "write" => Some(ToolKind::Write),
             _ => None,
-        };
-        let c = |n: &str, a: Value| ("id".to_string(), n.to_string(), a);
-        assert!(all_verification(&[c("read", json!({})), c("bash", json!({"command": "cargo test"}))], kind));
-        assert!(!all_verification(&[], kind));
-        assert!(!all_verification(&[c("bash", json!({"command": "cargo test", "background": true}))], kind));
-        assert!(!all_verification(&[c("edit", json!({}))], kind));
-        assert!(!all_verification(&[c("edit", json!({"check": "  "}))], kind));
-        assert!(all_verification(&[c("edit", json!({"check": "cargo test"}))], kind));
-        assert!(!all_verification(&[c("todo", json!({}))], kind));
-        assert!(!all_verification(&[c("read", json!({})), c("web", json!({}))], kind));
+        }
+    }
+
+    fn c(n: &str, a: Value) -> (String, String, Value) {
+        ("id".to_string(), n.to_string(), a)
+    }
+
+    #[test]
+    fn short_text_with_reads_and_no_change_is_not_a_proof() {
+        // the vuln-hunt shape: reads and listings only
+        let calls = [c("read", json!({})), c("grep", json!({})), c("bash", json!({"command": "ls -la src"}))];
+        assert_eq!(judge(&calls, &[true; 3], kind), Judged::default());
+        assert_eq!(judge(&[], &[], kind), Judged::default());
+    }
+
+    #[test]
+    fn an_edit_and_a_passing_test_in_one_reply_is_a_proof() {
+        let calls = [c("edit", json!({})), c("bash", json!({"command": "cargo test -q"}))];
+        assert_eq!(judge(&calls, &[true, true], kind), Judged { changed: true, checked: true });
+        // the test failed
+        assert_eq!(judge(&calls, &[true, false], kind), Judged { changed: true, checked: false });
+        // the test ran before the edit
+        let calls = [c("bash", json!({"command": "cargo test -q"})), c("edit", json!({}))];
+        assert_eq!(judge(&calls, &[true, true], kind), Judged { changed: true, checked: false });
+    }
+
+    #[test]
+    fn an_edit_and_then_reads_only_is_not_a_proof() {
+        let calls = [c("edit", json!({})), c("read", json!({})), c("bash", json!({"command": "git diff"}))];
+        assert_eq!(judge(&calls, &[true; 3], kind), Judged { changed: true, checked: false });
+    }
+
+    #[test]
+    fn a_write_is_proved_by_its_own_check_and_a_plain_command_is_a_change() {
+        assert_eq!(
+            judge(&[c("write", json!({"check": "cargo check"}))], &[true], kind),
+            Judged { changed: true, checked: true }
+        );
+        assert!(!judge(&[c("edit", json!({"check": "  "}))], &[true], kind).checked);
+        assert!(!judge(&[c("edit", json!({"check": "cargo check"}))], &[false], kind).checked);
+        let sh = |cmd: &str, bg: bool| judge(&[c("bash", json!({"command": cmd, "background": bg}))], &[true], kind);
+        assert_eq!(sh("rm -rf build", false), Judged { changed: true, checked: false });
+        assert_eq!(sh("cargo test", true), Judged { changed: true, checked: false });
+        assert_eq!(sh("cargo test && git commit -am x", false), Judged { changed: true, checked: false });
+        assert_eq!(sh("cargo test", false), Judged { changed: false, checked: true });
+        assert_eq!(judge(&[c("todo", json!({}))], &[true], kind), Judged::default());
     }
 }

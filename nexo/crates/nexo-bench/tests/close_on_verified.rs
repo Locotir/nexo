@@ -1,4 +1,4 @@
-//! A reply with its answer and only successful checks ends the turn (`agent.close_on_verified`): the real loop,
+//! A reply with its answer and a successful check after a change ends the turn (`agent.close_on_verified`): the real loop,
 //! a scripted model, no network.
 
 use std::collections::VecDeque;
@@ -73,11 +73,26 @@ fn bash(cmd: &str) -> Vec<StreamEvent> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn answer_with_a_passing_check_ends_the_turn_when_on() {
-    let on = run_script(vec![bash("true")], true).await;
-    assert_eq!((on.steps, on.finished), (1, true), "{on:?}");
-    let off = run_script(vec![bash("true")], false).await;
-    assert_eq!((off.steps, off.finished), (2, true), "{off:?}");
+async fn a_check_with_nothing_changed_goes_on() {
+    for cmd in ["true", "cargo --version"] {
+        let r = run_script(vec![bash(cmd)], true).await;
+        assert_eq!((r.steps, r.finished), (2, true), "{cmd}: {r:?}");
+    }
+}
+
+/// The vuln-hunt shape: a short answer-like text with reads and listings, nothing changed this turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn short_text_with_reads_goes_on() {
+    let read = reply("Nothing found in the parser so far.", Some(("read", json!({"path": "Cargo.toml"}))));
+    let r = run_script(vec![read, bash("ls")], true).await;
+    assert_eq!((r.steps, r.finished), (3, true), "{r:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_and_then_reads_only_goes_on() {
+    let edit = reply(DONE, Some(("write", json!({"path": "note.txt", "content": "x\n"}))));
+    let r = run_script(vec![edit, bash("ls")], true).await;
+    assert_eq!((r.steps, r.finished), (3, true), "{r:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -95,6 +110,8 @@ async fn a_write_without_check_goes_on_and_with_a_passing_check_ends() {
     };
     let plain = run_script(vec![w(json!({}))], true).await;
     assert_eq!((plain.steps, plain.finished), (2, true), "{plain:?}");
+    let off = run_script(vec![w(json!({"check": "true"}))], false).await;
+    assert_eq!((off.steps, off.finished), (2, true), "{off:?}");
     let checked = run_script(vec![w(json!({"check": "true"}))], true).await;
     assert_eq!((checked.steps, checked.finished), (1, true), "{checked:?}");
 }

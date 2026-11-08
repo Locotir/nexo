@@ -45,6 +45,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     let mut mute = 0u32;
     // times in a row a Stop hook asked the agent to go on (capped at STOP_HOOK_CAP)
     let mut stop_blocks = 0u32;
+    // an edit, a write or a command that changes things has run in this turn (`agent.close_on_verified`)
+    let mut changed = false;
     loop {
         // with checkpoints the limit is met after the tool round that reaches it; here only a request that went
         // on without tools (a guard's answer) stops
@@ -419,20 +421,30 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 }
             }
         }
-        // `agent.close_on_verified`: the reply holds its answer and every call only confirmed finished work, and
-        // all of them succeeded: this reply is the end of the turn, there is nothing left for another request to say
+        // `agent.close_on_verified`: this turn changed something, and the calls of this reply include a check that
+        // succeeded after the last change; with the answer in the same reply, it is the end of the turn
+        let checked = {
+            let st = state.lock().await;
+            if st.config.agent.close_on_verified {
+                let ok: Vec<bool> = if results.len() == kept.len() {
+                    results.iter().map(|p| matches!(p, Part::ToolResult { is_error: false, .. })).collect()
+                } else {
+                    vec![false; kept.len()]
+                };
+                let j = verify::judge(&kept, &ok, |n, a| st.tools.get(n).map(|t| t.call_kind(a)));
+                changed |= j.changed;
+                j.checked && ok.iter().all(|&b| b)
+            } else {
+                false
+            }
+        };
         let closing = stop.is_none()
             && !cancelled
             && answer == Answer::No
             && ck.stopping.is_none()
             && !verify::is_lead_in(&msg.text())
-            && {
-                let st = state.lock().await;
-                st.config.agent.close_on_verified
-                    && results.len() == kept.len()
-                    && results.iter().all(|p| matches!(p, Part::ToolResult { is_error: false, .. }))
-                    && verify::all_verification(&kept, |n, a| st.tools.get(n).map(|t| t.call_kind(a)))
-            };
+            && checked
+            && changed;
         if closing {
             let mut blocked = None;
             if stop_blocks < STOP_HOOK_CAP {
