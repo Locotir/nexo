@@ -29,7 +29,7 @@ impl Tool for Read {
                           lines from line `offset` (1-based); the default is the first 2000 lines, and a \
                           line longer than 2000 characters is cut. Use `grep` to find where something is \
                           and `read` with `offset`/`limit` to look at that part of a large file. A PNG, JPEG, GIF, WebP, PPM, PGM \
-                          or BMP file is shown as an image (at most 5 MB and 2000 px). Directories and other \
+                          or BMP file is shown as an image (at most 5 MB and 2000 px); a Jupyter notebook as its cells and outputs. Directories and other \
                           binary files are refused (use `ls` for a directory)."
                 .into(),
             parameters: json!({
@@ -110,6 +110,13 @@ impl Tool for Read {
             return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
         }
         let text = String::from_utf8_lossy(&bytes);
+        // a notebook is JSON whose outputs can hold megabytes of base64: show its cells as text instead
+        let notebook =
+            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ipynb")) { notebook(&text) } else { None };
+        let text = match &notebook {
+            Some((_, cells)) => std::borrow::Cow::Borrowed(cells.as_str()),
+            None => text,
+        };
         if text.is_empty() {
             return ToolOutput::ok(format!("{shown}: (empty file)")).with_display(ToolDisplay::File {
                 path: shown,
@@ -123,7 +130,12 @@ impl Tool for Read {
         if offset > total {
             return ToolOutput::error(format!("read: {shown} has {total} lines; offset {offset} is past the end"));
         }
-        let mut out = String::new();
+        let mut out = match &notebook {
+            Some((n, _)) => format!(
+                "({n} notebook cells shown as text; the file is JSON, so change cells with `bash`, e.g. `jq`)\n"
+            ),
+            None => String::new(),
+        };
         let mut raw = String::new();
         let mut n = 0usize;
         for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
@@ -196,6 +208,53 @@ fn show_raster(shown: &str, raster: Result<picture::Raster, String>, len: usize,
         .with_images(vec![ImageSource::Base64 { media_type: "image/png".into(), data }])
 }
 
+/// A Jupyter notebook's cells as plain text: each cell's source, then its outputs; a picture or
+/// other binary output becomes one line naming its type and size. `None` when it is not one.
+fn notebook(text: &str) -> Option<(usize, String)> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let cells = v.get("cells")?.as_array()?;
+    let joined = |v: Option<&Value>| -> String {
+        let s = match v {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+            _ => String::new(),
+        };
+        if s.is_empty() || s.ends_with('\n') {
+            s
+        } else {
+            s + "\n"
+        }
+    };
+    let mut out = String::new();
+    for (i, c) in cells.iter().enumerate() {
+        let kind = c.get("cell_type").and_then(Value::as_str).unwrap_or("cell");
+        out.push_str(&format!("[cell {} · {kind}]\n", i + 1));
+        out.push_str(&joined(c.get("source")));
+        let outputs = c.get("outputs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        for o in outputs {
+            out.push_str("[output]\n");
+            match o.get("output_type").and_then(Value::as_str) {
+                Some("stream") => out.push_str(&joined(o.get("text"))),
+                Some("error") => {
+                    let field = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                    out.push_str(&format!("{}: {}\n", field("ename"), field("evalue")));
+                }
+                _ => {
+                    let Some(data) = o.get("data").and_then(Value::as_object) else { continue };
+                    if let Some(t) = data.get("text/plain") {
+                        out.push_str(&joined(Some(t)));
+                    }
+                    for (mime, body) in data.iter().filter(|(m, _)| *m != "text/plain") {
+                        let size = joined(Some(body)).len();
+                        out.push_str(&format!("({mime}, {} KiB, not shown)\n", size.div_ceil(1024)));
+                    }
+                }
+            }
+        }
+    }
+    Some((cells.len(), out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +263,43 @@ mod tests {
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext::new(dir.to_path_buf())
+    }
+
+    #[tokio::test]
+    async fn a_notebook_reads_as_its_cells_without_the_base64_of_its_pictures() {
+        let d = tempfile::tempdir().unwrap();
+        let png = "A".repeat(40_000);
+        let nb = json!({"cells": [
+            {"cell_type": "markdown", "source": ["# Fit\n", "A line."]},
+            {"cell_type": "code", "source": "print(1)", "outputs": [
+                {"output_type": "stream", "text": ["1\n"]},
+                {"output_type": "display_data", "data": {"image/png": png, "text/plain": ["<Figure>"]}},
+                {"output_type": "error", "ename": "ValueError", "evalue": "bad", "traceback": ["\u{1b}[31mlong"]}
+            ]}
+        ], "metadata": {}, "nbformat": 4});
+        std::fs::write(d.path().join("fit.ipynb"), nb.to_string()).unwrap();
+        let out = Read.run(json!({"path": "fit.ipynb"}), &ctx(d.path())).await;
+        assert!(!out.is_error, "{}", out.content);
+        let c = &out.content;
+        assert!(c.starts_with("(2 notebook cells shown as text;"), "{c}");
+        for want in [
+            "│ [cell 1 · markdown]",
+            "│ # Fit",
+            "│ A line.",
+            "│ [cell 2 · code]",
+            "│ print(1)",
+            "│ 1",
+            "│ <Figure>",
+            "│ (image/png, 40 KiB, not shown)",
+            "│ ValueError: bad",
+        ] {
+            assert!(c.contains(want), "no {want:?} in\n{c}");
+        }
+        assert!(!c.contains("AAAA") && !c.contains("traceback"), "{c}");
+        // a file named .ipynb that is not a notebook reads as it is
+        std::fs::write(d.path().join("x.ipynb"), "not json\n").unwrap();
+        let out = Read.run(json!({"path": "x.ipynb"}), &ctx(d.path())).await;
+        assert_eq!(out.content, "     1│ not json\n");
     }
 
     #[tokio::test]
