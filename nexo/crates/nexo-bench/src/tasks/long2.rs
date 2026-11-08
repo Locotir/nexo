@@ -24,7 +24,7 @@ const BOOK_URL: &str = "https://www.gutenberg.org/cache/epub/2000/pg2000.txt";
 const BOOK_SHA256: &str = "8a3738c61aa507f2319fad526a886c2de74c17c7ba1d64726c53d3591fa62321";
 
 fn cache_file() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(PathBuf::from(home).join("build-cache/bench-data/pg2000.txt"))
 }
 
@@ -489,6 +489,11 @@ mod tests {
         wd
     }
 
+    /// Tests use only an already cached book: no download from the test run.
+    fn book_cached() -> bool {
+        cache_file().is_some_and(|p| cached_ok(&p))
+    }
+
     fn by_id(id: &str) -> Task {
         tasks().into_iter().find(|t| t.id == id).unwrap()
     }
@@ -514,7 +519,7 @@ mod tests {
 
     #[test]
     fn the_book_splits_into_two_parts_of_52_and_74_chapters() {
-        if ready_book().is_err() {
+        if !book_cached() {
             return;
         }
         let b = chapters(&book_raw().unwrap());
@@ -529,7 +534,7 @@ mod tests {
 
     #[test]
     fn book_tasks_build_pass_their_reference_and_fail_otherwise() {
-        if ready_book().is_err() {
+        if !book_cached() {
             return;
         }
         for id in ["quixote-windmills", "quixote-island"] {
@@ -545,7 +550,7 @@ mod tests {
 
     #[test]
     fn windmill_decoys_fail() {
-        if ready_book().is_err() {
+        if !book_cached() {
             return;
         }
         let t = by_id("quixote-windmills");
@@ -577,7 +582,7 @@ mod tests {
 
     #[test]
     fn island_decoys_fail() {
-        if ready_book().is_err() {
+        if !book_cached() {
             return;
         }
         let t = by_id("quixote-island");
