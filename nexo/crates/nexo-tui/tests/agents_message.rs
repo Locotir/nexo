@@ -49,7 +49,13 @@ fn live_panel() -> (tempfile::TempDir, Arc<Panel>) {
     let dir = tempfile::tempdir().unwrap();
     let logs = dir.path().join("logs").join("proj");
     std::fs::create_dir_all(&logs).unwrap();
-    let rec = r#"{"type":"assistant","timestamp":"2026-11-05T00:00:00Z","cwd":"/work/app","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Step one is done."}]}}"#;
+    // a record from now: older finished sessions leave the panel
+    let now = time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap();
+    let rec = format!(
+        "{}{now}{}",
+        r#"{"type":"assistant","timestamp":""#,
+        r#"","cwd":"/work/app","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Step one is done."}]}}"#
+    );
     std::fs::write(logs.join("sess-1.jsonl"), format!("{rec}\n")).unwrap();
     let setup = Setup {
         logs_root: Some(dir.path().join("logs")),
@@ -146,7 +152,8 @@ fn n_and_p_with_no_session_in_the_list_say_so() {
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         draw_frame(&mut t, &mut a).unwrap();
         let text = rows_of(t.backend().buffer()).join("\n");
-        assert!(text.contains("no session selected"), "{keys}: silent\n{text}");
+        let said = if keys == 'n' { "no session selected" } else { "no session to pause" };
+        assert!(text.contains(said), "{keys}: silent\n{text}");
         assert!(!text.contains("message ›"), "{keys}: a field opened on nothing");
     }
 }

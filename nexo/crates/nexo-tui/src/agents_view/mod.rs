@@ -196,26 +196,6 @@ fn chip_color(theme: &Theme, state: State) -> ratatui::style::Color {
     }
 }
 
-/// The last `w` columns of `s`, cut on a character, with `…` where the start was left out: the end is where
-/// the person is writing.
-fn tail(s: &str, w: usize) -> String {
-    if width(s) <= w {
-        return s.to_string();
-    }
-    let mut keep: Vec<char> = Vec::new();
-    let mut used = 1;
-    for c in s.chars().rev() {
-        let cw = width(c.encode_utf8(&mut [0; 4]));
-        if used + cw > w {
-            break;
-        }
-        keep.push(c);
-        used += cw;
-    }
-    keep.push('…');
-    keep.iter().rev().collect()
-}
-
 /// `42s`, `7m 05s`, `2h 05m`, `3d 04h`.
 fn age(secs: u64) -> String {
     match secs {
