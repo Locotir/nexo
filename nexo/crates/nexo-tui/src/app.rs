@@ -2374,7 +2374,7 @@ impl App {
             AgentEvent::SessionDeleted { id, title } => {
                 self.opts.sessions.retain(|(i, _)| *i != id);
                 let name = if title.is_empty() { id.clone() } else { title };
-                self.flash(&format!("deleted {name} · /undelete brings it back"));
+                self.flash(&format!("deleted {name} · /resume undelete brings it back"));
                 self.trashed.push(id);
             }
             AgentEvent::SessionRestored { id, title } => {
@@ -4288,7 +4288,7 @@ impl App {
     /// file (the one `/memory` opens), which the agent reads from the next request on.
     pub fn remember(&mut self, text: Option<&str>) {
         let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) else {
-            return self.notice(Level::Warn, "/note <text>: say what to remember");
+            return self.notice(Level::Warn, "/memory add <text>: say what to remember");
         };
         let path = nexo_core::compat::project_file(&self.cwd);
         let old = std::fs::read_to_string(&path).unwrap_or_default();
@@ -4316,7 +4316,7 @@ impl App {
         self.flash(if self.mouse_on {
             "mouse on: wheel scrolls, drag copies"
         } else {
-            "mouse off: the terminal's own selection works; /mouse to enable"
+            "mouse off: the terminal's own selection works; /settings mouse to enable"
         });
     }
 
@@ -5013,7 +5013,7 @@ fn sign_out(
     let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(current);
     let entry = providers.iter().find(|(n, _)| n == name).and_then(|(_, p)| p.auth.as_deref()).unwrap_or(name);
     match nexo_core::auth::remove_in(file, entry) {
-        Ok(true) => (Level::Info, format!("{name}: signed out, the stored key is removed; /login signs in again")),
+        Ok(true) => (Level::Info, format!("{name}: signed out, the stored key is removed; /model signs in again")),
         Ok(false) => (
             Level::Warn,
             format!("{name}: nothing stored to remove (a key from an environment variable or the configuration stays)"),

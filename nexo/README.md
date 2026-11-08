@@ -107,10 +107,10 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drop an image | a PNG, JPEG, GIF or WebP dragged onto the terminal arrives as its path and is attached as an image |
 | `Ctrl+G` | write the draft in `$EDITOR`; it comes back to the box |
 | `↑`/`↓` (no block selected), `Ctrl+R` | the requests sent before (kept between runs in `~/.nexo/prompt-history.jsonl`); `Ctrl+R` searches them |
-| drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/mouse` turns capture off) |
+| drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/settings mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/fast`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions` (`/approvals`), `/logout`, `/plan`, `/yolo`, `/sandbox`, `/add-dir`, `/prompt`, `/prompt edit`, `/memory [user]`, `/note`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/shared-memory`, `/todo`, `/queue`, `/undelete`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/mouse`, `/timestamps`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/fast`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions` (`/approvals`), `/logout`, `/plan`, `/sandbox`, `/add-dir`, `/prompt`, `/prompt edit`, `/memory [user|add|share]`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/todo`, `/queue`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/settings`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 
@@ -119,14 +119,14 @@ with a light sweeping across the word; the reply grows behind a blinking caret. 
 rings the terminal's bell when it ends, with a desktop notification where the terminal takes one (OSC 9/777):
 `[ui] notify_after = 0` turns it off.
 
-The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`. On the keys row, `todo d/t` opens the todo list (`/todo`), `⚙ N jobs` the jobs window with their output (`/jobs`), `⊕ mem` the shared memory that waits (`/shared-memory list`), `◷ N queued` the queued messages (`/queue`; pick one to edit it) and the session name the sessions (`/resume`); each is underlined under the pointer, and `Esc` closes the list.
+The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`. On the keys row, `todo d/t` opens the todo list (`/todo`), `⚙ N jobs` the jobs window with their output (`/jobs`), `⊕ mem` the shared memory that waits (`/memory share list`), `◷ N queued` the queued messages (`/queue`; pick one to edit it) and the session name the sessions (`/resume`); each is underlined under the pointer, and `Esc` closes the list.
 
 In the `/usage` window the **Usage** tab ends with "What's contributing to your usage?". nexo reads the sessions saved on this machine in the background and ranks what cost the most as a percentage, each row with one change under it: calls that carried over 150k tokens of context, cache misses, the tools whose output was re-sent most, spend by model and by project, and (for sessions recorded by this version) the history the curator left out. A table lists the biggest sessions by cost and cache hit, each named by its folder and the day it was last used. `d`, `w` and `m` pick today, the last 7 days or the last 30; switching never reads again. Shares overlap, so they do not add up to 100%, and the figures cover only the sessions on this machine.
 
 Scrolling eases out, new blocks fade in, dialogs and the palette pop open and a glow runs along the line
 under a working agent; `[ui] animations = false` turns all motion off (everything lands at once).
 Messages and replies carry a dim `HH:MM` at the right of their first line, and a reply its duration once it ends;
-`[ui] timestamps = false` turns it off, `/timestamps` toggles it for the session.
+`[ui] timestamps = false` turns it off, `/settings timestamps` toggles it for the session.
 
 A run of two or more tool calls (thinking in between counts) is one line while it is folded: `Made 1 edit +29 −3, read 2 files, ran 3 shell commands · 1 failed  4.2s ▸`. It reads in the present tense with a live clock while a call runs (the running call stays in view) and folds by itself once all have finished. Select it with the arrows or click it, then Enter or → opens it; `Ctrl+O` opens or folds all of them. `[ui] group_tools = false` shows every call on its own line again.
 
@@ -288,7 +288,7 @@ matcher = "edit|write"
 command = "cargo fmt >/dev/null 2>&1 || true"
 ```
 
-**Vim keys.** `/vim` (or `[ui] vim = true`) gives the editor vim's modes: `Esc` to normal mode
+**Vim keys.** `/settings vim` (or `[ui] vim = true`) gives the editor vim's modes: `Esc` to normal mode
 (`h j k l w b e 0 $ gg G x X D C dd cc u p`, `i a A I o O` back to typing, `Enter` sends), the mode shown
 by the mark (`›` typing, `▪` normal) and in the hint bar.
 

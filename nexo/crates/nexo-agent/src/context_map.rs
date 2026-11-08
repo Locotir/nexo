@@ -1,4 +1,4 @@
-//! The map `/context-live` draws: each message of the history and how much of
+//! The map `/context live` draws: each message of the history and how much of
 //! it the next model call carries; with the curator, also the zone of its
 //! memory (anchor or topic) the message is in.
 

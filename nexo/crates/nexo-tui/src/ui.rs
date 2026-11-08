@@ -1264,7 +1264,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             "type a message: it joins the turn at its next step"
         } else if let Some((id, title, _)) = app.shared.last() {
             let name = if title.is_empty() { id } else { title };
-            shared = format!("⊕ what «{name}» knows goes with your next message · /shared-memory off drops it");
+            shared = format!("⊕ what «{name}» knows goes with your next message · /memory share off drops it");
             shared.as_str()
         } else {
             "ask anything"
@@ -1491,7 +1491,7 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         " Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks · ? help".to_string()
     };
-    let suffix = if app.mouse_on { "" } else { " · mouse off · /mouse to enable" };
+    let suffix = if app.mouse_on { "" } else { " · mouse off · /settings mouse to enable" };
     let mut prefix = match (app.input.vim, app.modal.is_some()) {
         (Some(crate::input::VimMode::Normal), false) => " NORMAL · i insert ·".to_string(),
         (Some(crate::input::VimMode::Insert), false) => " INSERT · Esc normal ·".to_string(),

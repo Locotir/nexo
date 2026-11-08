@@ -410,7 +410,7 @@ pub struct UiConfig {
     pub group_tools: bool,
     /// Grey ghost text finishes the word being typed from the words of the session; → takes it.
     pub complete_words: bool,
-    /// The vim keys in the editor (`/vim` toggles them).
+    /// The vim keys in the editor (`/settings vim` toggles them).
     pub vim: bool,
     /// Ring the terminal's bell (and send a desktop notification where the terminal
     /// supports it) when a turn that took this many seconds ends; 0 turns it off.
@@ -432,7 +432,7 @@ pub struct UiConfig {
     /// the session on stdin (model, cwd, branch, tokens, context %, cost, session id) and its first
     /// line of stdout, ANSI colours included, becomes the bar. Empty: the pieces of `status_line`.
     pub status_command: String,
-    /// A dim `HH:MM` at the right of each message and reply, and a reply's duration (`/timestamps` toggles it).
+    /// A dim `HH:MM` at the right of each message and reply, and a reply's duration (`/settings timestamps` toggles it).
     pub timestamps: bool,
     /// At each start of the interface, ask GitHub whether `main` has commits past the one nexo was built from, and say so
     /// (`NEXO_NO_UPDATE_CHECK` also turns it off).

@@ -75,7 +75,7 @@ pub fn copy_with(text: &str, system: bool, tools: &[Tool]) -> Result<&'static st
         None => {
             let why = if failures.is_empty() { "no clipboard reachable".to_string() } else { failures.join("; ") };
             Err(format!(
-                "{why}. Install wl-clipboard or xclip, or use /mouse and select with the terminal (Shift+drag)"
+                "{why}. Install wl-clipboard or xclip, or use /settings mouse and select with the terminal (Shift+drag)"
             ))
         }
     }

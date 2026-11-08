@@ -26,7 +26,6 @@ const fn spec(
 pub const COMMANDS: &[Spec] = &[
     spec("help", &["h", "?"], "", "keys and commands"),
     spec("model", &["m"], "[name]", "switch model, or set one up step by step (checked against the server)"),
-    spec("login", &["signin"], "", "sign in or set a key: opens the model setup at the providers"),
     spec("logout", &["signout"], "[provider]", "forget the key or sign-in stored for a provider (the current one)"),
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
     spec("fast", &[], "[on|off]", "switch to the model's fast version, and back"),
@@ -48,18 +47,15 @@ pub const COMMANDS: &[Spec] = &[
     spec(
         "memory",
         &["instructions"],
-        "[user]",
-        "edit the instructions the agent reads: the project's file, or with `user` your own",
+        "[user|add <text>|share [id]]",
+        "edit the instructions the agent reads (the project's file, or with `user` your own); `add` writes a line, `share` brings in what another session knows",
     ),
-    spec("note", &["remember"], "<text>", "add a line to the project's instructions, read from the next request on"),
     spec(
         "pricing",
         &["price", "prices"],
         "[in=… out=… cache=… write=…]",
         "what is known of the model; with values: its prices per million tokens",
     ),
-    spec("mouse", &[], "", "mouse capture on or off (off: the terminal's own selection works)"),
-    spec("timestamps", &[], "", "the HH:MM on each message and reply, and a reply's duration, on or off"),
     spec(
         "goal",
         &["g"],
@@ -68,30 +64,27 @@ pub const COMMANDS: &[Spec] = &[
     ),
     spec("compact", &[], "", "replace the history with a summary"),
     spec("clear", &["new"], "", "start a new session here"),
-    spec("resume", &["sessions"], "[session]", "pick a session to resume; with an id or a title: that one"),
+    spec(
+        "resume",
+        &["sessions"],
+        "[session|tree|undelete]",
+        "pick a session to resume; with an id or a title: that one; `tree` shows the forks, `undelete` brings one back",
+    ),
     spec("fork", &[], "", "continue in a new session copied from an earlier point of this one"),
-    spec("tree", &[], "", "the sessions as a tree of forks; jump to one"),
     spec("rewind", &["back"], "", "go back to before an earlier message, files included (also Esc Esc)"),
     spec("undo", &["u"], "", "undo the last request: its messages and the files it wrote"),
-    spec(
-        "shared-memory",
-        &["memory-shared", "share"],
-        "[id|off] [focus]",
-        "bring what another session knows into this one, with your next message; `list` shows what waits",
-    ),
-    spec("undelete", &["restore"], "[id]", "bring back a deleted session (the last one by default)"),
     spec("init", &[], "", "have the agent study the project and write AGENTS.md"),
     spec("review", &[], "[base|commit|--staged]", "review the diff for bugs, security and missing tests (no edits)"),
     spec("commit", &[], "[hint]", "commit the staged changes (or all) with a message in the repo's style"),
     spec("pr", &["pull-request"], "[base]", "push the branch and open a pull request with gh"),
     spec("status", &["info"], "", "version, model, key, endpoint, session, configuration files"),
+    spec("settings", &[], "[mouse|timestamps|vim]", "switch the mouse capture, the message times or the vim keys on or off; alone: as /status"),
     spec("doctor", &[], "", "check the setup: files, provider, model, key"),
     spec("tools", &[], "", "the tools the model has, by kind"),
     spec("hooks", &[], "", "the hooks that are loaded, and where they come from"),
     spec("mcp", &[], "", "the MCP servers: state, tools, resources and prompts; turn on or off, log in, reconnect"),
     spec("skills", &[], "", "the skills found (name, what it does, where from); /skill-name [args] runs one"),
     spec("plugins", &[], "", "the installed plugins and what each adds (nexo plugin install adds one)"),
-    spec("vim", &[], "", "the vim keys in the editor on or off"),
     spec(
         "budget",
         &["limit", "spend"],
@@ -110,10 +103,9 @@ pub const COMMANDS: &[Spec] = &[
     spec("diff", &[], "", "browse staged, unstaged and new files"),
     spec("panel", &[], "", "live agent sessions by program: events, todo, mail; message and pause them (s filters)"),
     spec("cost", &["usage"], "", "window: tokens, cost, calls"),
-    spec("context", &["ctx"], "", "window: what the next call sends"),
+    spec("context", &["ctx"], "[live]", "window: what the next call sends; `live`: a map of it beside the transcript"),
     spec("theme", &[], "[name]", "change the colours (a picker without a name)"),
     spec("copy", &[], "[code]", "copy the last reply to the clipboard; `code`: its last code block"),
-    spec("context-live", &["live", "map"], "", "a live map of the context beside the transcript: what each call sends"),
     spec("quit", &["exit", "q"], "", "leave nexo"),
     spec("todo", &["tasks"], "", "the todo list, every item with its state"),
     spec("queue", &["queued"], "", "the requests waiting for the turn to end; pick one to edit it"),
@@ -214,22 +206,43 @@ pub enum GoalArg {
     Resume,
 }
 
-/// Names that work but are listed nowhere (not in /help, not in the palette): `(alias, command)`.
-/// Names that still work but have no line of their own: each is the same as the command it points to.
-const HIDDEN: &[(&str, &str)] = &[
-    ("agents", "panel"),
-    ("approvals", "permissions"),
-    ("provider", "model"),
-    ("providers", "model"),
-    ("keys", "help"),
-    ("keybindings", "help"),
-    ("config", "status"),
-    ("settings", "status"),
+/// Names that still work but have no line of their own (not in /help, the menu or
+/// completion): `(old name, command, arguments put before the ones typed)`. Typing
+/// the old name is the same as typing the command with those arguments.
+const HIDDEN: &[(&str, &str, &str)] = &[
+    ("agents", "panel", ""),
+    ("approvals", "permissions", ""),
+    ("provider", "model", ""),
+    ("providers", "model", ""),
+    ("login", "model", ""),
+    ("signin", "model", ""),
+    ("keys", "help", ""),
+    ("keybindings", "help", ""),
+    ("config", "status", ""),
+    ("yolo", "permissions", "auto"),
+    ("mouse", "settings", "mouse"),
+    ("timestamps", "settings", "timestamps"),
+    ("vim", "settings", "vim"),
+    ("context-live", "context", "live"),
+    ("live", "context", "live"),
+    ("map", "context", "live"),
+    ("tree", "resume", "tree"),
+    ("undelete", "resume", "undelete"),
+    ("restore", "resume", "undelete"),
+    ("shared-memory", "memory", "share"),
+    ("memory-shared", "memory", "share"),
+    ("share", "memory", "share"),
+    ("note", "memory", "add"),
+    ("remember", "memory", "add"),
 ];
+
+fn hidden(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    HIDDEN.iter().find(|(a, _, _)| *a == name)
+}
 
 /// The spec a name or alias stands for.
 pub fn lookup(name: &str) -> Option<&'static Spec> {
-    let name = HIDDEN.iter().find(|(a, _)| *a == name).map_or(name, |(_, n)| n);
+    let name = hidden(name).map_or(name, |(_, n, _)| n);
     COMMANDS.iter().find(|s| s.name == name || s.aliases.contains(&name))
 }
 
@@ -238,17 +251,25 @@ pub fn parse(line: &str) -> Option<Command> {
     let line = line.trim();
     let rest = line.strip_prefix('/')?;
     let mut it = rest.splitn(2, char::is_whitespace);
-    let typed = it.next().unwrap_or("").trim().to_ascii_lowercase();
-    let arg = it.next().map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
-    if typed == "yolo" {
-        // the old name of `/permissions auto`
-        return Some(Command::Permissions(Some(PermissionMode::Auto)));
+    let mut typed = it.next().unwrap_or("").trim().to_ascii_lowercase();
+    let mut arg = it.next().map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
+    if let Some((_, parent, before)) = hidden(&typed) {
+        // `/login` stays what it was: the model setup, with a pointer to the providers
+        if typed == "login" || typed == "signin" {
+            return Some(Command::Login);
+        }
+        if !before.is_empty() {
+            arg = Some(match arg {
+                Some(a) => format!("{before} {a}"),
+                None => before.to_string(),
+            });
+        }
+        typed = parent.to_string();
     }
     let Some(spec) = lookup(&typed) else { return Some(Command::Unknown(typed)) };
     Some(match spec.name {
         "help" => Command::Help,
         "model" => Command::Model(arg),
-        "login" => Command::Login,
         "logout" => Command::Logout(arg),
         "doctor" => Command::Doctor,
         "effort" => Command::Effort(arg),
@@ -264,7 +285,6 @@ pub fn parse(line: &str) -> Option<Command> {
         "mcp" => Command::Mcp,
         "skills" => Command::Skills,
         "plugins" => Command::Plugins,
-        "vim" => Command::Vim,
         "budget" => Command::Budget(arg),
         "panel" => Command::Panel,
         "jobs" => match arg.as_deref().map(|a| a.split_whitespace().collect::<Vec<_>>()) {
@@ -298,14 +318,16 @@ pub fn parse(line: &str) -> Option<Command> {
             Some(a) => Command::BadArgument("prompt".into(), a.to_string()),
             None => Command::Prompt,
         },
-        "memory" | "instructions" => match arg.as_deref() {
+        "memory" => match arg.as_deref() {
             None => Command::Memory { user: false },
             Some("user") => Command::Memory { user: true },
+            Some("share") => Command::Mem(None),
+            Some(a) if a.starts_with("share ") => Command::Mem(Some(a["share ".len()..].trim().to_string())),
+            Some("add") => Command::Remember(None),
+            Some(a) if a.starts_with("add ") => Command::Remember(Some(a["add ".len()..].trim().to_string())),
             Some(a) => Command::BadArgument("memory".into(), a.to_string()),
         },
         "pricing" => Command::Pricing(arg),
-        "mouse" => Command::Mouse,
-        "timestamps" => Command::Timestamps,
         "goal" => Command::Goal(match arg.as_deref() {
             None => GoalArg::Show,
             Some("off") | Some("clear") | Some("none") | Some("done") => GoalArg::Clear,
@@ -317,25 +339,34 @@ pub fn parse(line: &str) -> Option<Command> {
         "compact" => Command::Compact,
         "clear" => Command::Clear,
         "resume" => match arg {
+            Some(s) if s == "tree" => Command::Tree,
+            Some(s) if s == "undelete" => Command::Undelete(None),
+            Some(s) if s.starts_with("undelete ") => Command::Undelete(Some(s["undelete ".len()..].trim().to_string())),
             Some(s) => Command::Resume(s),
             None => Command::Sessions,
         },
         "rewind" => Command::Rewind,
         "fork" => Command::Fork,
-        "tree" => Command::Tree,
-        "undelete" | "restore" => Command::Undelete(arg),
-        "shared-memory" | "memory-shared" | "share" => Command::Mem(arg),
         "todo" => Command::Todo,
         "queue" => Command::Queue,
         "export" => Command::Export(arg),
         "rename" | "title" | "name" => Command::Rename(arg),
         "add-dir" | "adddir" => Command::AddDir(arg),
-        "note" | "remember" => Command::Remember(arg),
         "msg" | "mail" | "tell" => Command::Msg(arg),
         "diff" => Command::Diff,
         "cost" => Command::Cost,
-        "context" => Command::Context,
-        "context-live" => Command::ContextLive,
+        "context" => match arg.as_deref() {
+            None => Command::Context,
+            Some("live") => Command::ContextLive,
+            Some(a) => Command::BadArgument("context".into(), a.to_string()),
+        },
+        "settings" => match arg.as_deref() {
+            None => Command::Status,
+            Some("mouse") => Command::Mouse,
+            Some("timestamps") => Command::Timestamps,
+            Some("vim") => Command::Vim,
+            Some(a) => Command::BadArgument("settings".into(), a.to_string()),
+        },
         "theme" => Command::Theme(arg),
         "copy" => Command::Copy(arg),
         "quit" => Command::Quit,
@@ -407,34 +438,16 @@ pub fn hits(q: &str, s: &str) -> Vec<usize> {
 /// The palette's sections when nothing is typed, each with its commands in order.
 pub const GROUPS: &[(&str, &[&str])] = &[
     ("common", &["model", "permissions", "resume", "plan", "compact", "clear", "help", "effort"]),
-    (
-        "session",
-        &["fork", "tree", "rewind", "undo", "undelete", "rename", "msg", "export", "goal", "shared-memory", "queue"],
-    ),
-    ("model", &["login", "logout", "fast", "pricing", "prompt", "memory", "note", "budget"]),
+    ("session", &["fork", "rewind", "undo", "rename", "msg", "export", "goal", "queue"]),
+    ("model", &["logout", "fast", "pricing", "prompt", "memory", "budget"]),
     (
         "context and tools",
         &[
-            "context",
-            "context-live",
-            "cost",
-            "tools",
-            "hooks",
-            "mcp",
-            "skills",
-            "plugins",
-            "jobs",
-            "panel",
-            "todo",
-            "diff",
-            "init",
-            "review",
-            "commit",
-            "pr",
-            "status",
+            "context", "cost", "tools", "hooks", "mcp", "skills", "plugins", "jobs", "panel", "todo", "diff", "init",
+            "review", "commit", "pr", "status",
         ],
     ),
-    ("settings", &["sandbox", "add-dir", "theme", "mouse", "timestamps", "vim"]),
+    ("settings", &["settings", "sandbox", "add-dir", "theme"]),
     ("nexo", &["doctor", "copy", "quit"]),
 ];
 
@@ -474,7 +487,17 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
             ("read-only", "read everything, write nothing"),
         ],
         "prompt" => &[("edit", "open the system prompt in $EDITOR")],
-        "memory" => &[("user", "your own instructions, for every project")],
+        "memory" => &[
+            ("user", "your own instructions, for every project"),
+            ("add", "write one line into the project's instructions"),
+            ("share", "bring in what another session knows"),
+        ],
+        "settings" => &[
+            ("mouse", "mouse capture on or off"),
+            ("timestamps", "the time on each message on or off"),
+            ("vim", "the vim keys in the editor on or off"),
+        ],
+        "context" => &[("live", "a live map of the context beside the transcript")],
         "copy" => &[("code", "the last code block of the last reply")],
         "goal" => &[
             ("pause", "hold the goal: nothing more starts for it"),
@@ -485,7 +508,6 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
         "plan" => &[("off", "leave plan mode")],
         "budget" => &[("off", "no limit for this session")],
         "jobs" => &[("kill", "stop every background job (or `kill <id>`)")],
-        "shared-memory" => &[("off", "stop sharing another session's memory")],
         _ => &[],
     }
 }
@@ -498,7 +520,7 @@ pub fn closed_args(name: &str) -> bool {
 
 /// Whether the palette offers values for the command's argument at all.
 pub fn takes_listed_args(name: &str) -> bool {
-    matches!(name, "model" | "effort" | "theme" | "undelete" | "resume" | "rename" | "export" | "msg" | "add-dir")
+    matches!(name, "model" | "effort" | "theme" | "resume" | "rename" | "export" | "msg" | "add-dir")
         || !fixed_args(name).is_empty()
 }
 
@@ -637,7 +659,64 @@ mod tests {
         assert_eq!(parse("/keybindings"), Some(Command::Help));
         assert_eq!(parse("/config"), Some(Command::Status));
         assert_eq!(parse("/yolo"), Some(Command::Permissions(Some(PermissionMode::Auto))));
+        for (old, new) in [
+            ("/login", Command::Login),
+            ("/signin", Command::Login),
+            ("/mouse", Command::Mouse),
+            ("/timestamps", Command::Timestamps),
+            ("/vim", Command::Vim),
+            ("/settings", Command::Status),
+            ("/settings mouse", Command::Mouse),
+            ("/context live", Command::ContextLive),
+            ("/context-live", Command::ContextLive),
+            ("/live", Command::ContextLive),
+            ("/map", Command::ContextLive),
+            ("/context", Command::Context),
+            ("/tree", Command::Tree),
+            ("/resume tree", Command::Tree),
+            ("/undelete", Command::Undelete(None)),
+            ("/undelete s1", Command::Undelete(Some("s1".into()))),
+            ("/restore s1", Command::Undelete(Some("s1".into()))),
+            ("/resume undelete s1", Command::Undelete(Some("s1".into()))),
+            ("/shared-memory", Command::Mem(None)),
+            ("/shared-memory list", Command::Mem(Some("list".into()))),
+            ("/share s1 the tabs", Command::Mem(Some("s1 the tabs".into()))),
+            ("/memory-shared off", Command::Mem(Some("off".into()))),
+            ("/memory share off", Command::Mem(Some("off".into()))),
+            ("/note", Command::Remember(None)),
+            ("/note use tabs", Command::Remember(Some("use tabs".into()))),
+            ("/remember use tabs", Command::Remember(Some("use tabs".into()))),
+            ("/memory add use tabs", Command::Remember(Some("use tabs".into()))),
+            ("/resume s1", Command::Resume("s1".into())),
+        ] {
+            assert_eq!(parse(old), Some(new), "{old}");
+        }
+        assert_eq!(parse("/settings nonsense"), Some(Command::BadArgument("settings".into(), "nonsense".into())));
         let shown = names();
+        for old in [
+            "login",
+            "signin",
+            "mouse",
+            "timestamps",
+            "vim",
+            "context-live",
+            "live",
+            "map",
+            "tree",
+            "undelete",
+            "restore",
+            "shared-memory",
+            "memory-shared",
+            "share",
+            "note",
+            "remember",
+        ] {
+            assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
+            assert!(COMMANDS.iter().all(|s| !s.aliases.contains(&old)), "/{old} is still a listed alias");
+            assert!(lookup(old).is_some(), "/{old} no longer resolves");
+            assert!(GROUPS.iter().all(|(_, m)| !m.contains(&old)), "/{old} is in a menu group");
+        }
+        assert_eq!(COMMANDS.len(), 45, "the menu has grown or shrunk: update this on purpose");
         for old in ["provider", "keys", "config", "yolo"] {
             assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
         }

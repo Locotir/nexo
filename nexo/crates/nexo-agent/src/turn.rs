@@ -1332,7 +1332,7 @@ async fn fork_session(state: &Shared, index: Option<usize>) {
                 st.last_sent.clear();
             }
             let id = st.session.id().to_string();
-            notice(&st.events, Level::Info, format!("forked {from} into {id} (/tree to jump back)"));
+            notice(&st.events, Level::Info, format!("forked {from} into {id} (/resume tree to jump back)"));
         }
         Err(e) => notice(&st.events, Level::Error, format!("cannot fork the session: {e}")),
     }

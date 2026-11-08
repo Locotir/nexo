@@ -617,8 +617,13 @@ pub fn wanted(draft: &str, cursor: usize) -> Option<(PaletteKind, usize, String)
             let arg = &draft[at..];
             if cursor >= at && !arg.contains(char::is_whitespace) && !after.contains('\n') {
                 let typed = rest[..sp].to_ascii_lowercase();
-                if let Some(s) = commands::lookup(&typed).filter(|s| commands::takes_listed_args(s.name)) {
-                    return Some((PaletteKind::Args(s.name.to_string()), at, arg.to_string()));
+                // the old `/undelete` keeps offering the sessions in the trash
+                let name = match typed.as_str() {
+                    "undelete" | "restore" => Some("undelete"),
+                    _ => commands::lookup(&typed).map(|s| s.name).filter(|n| commands::takes_listed_args(n)),
+                };
+                if let Some(name) = name {
+                    return Some((PaletteKind::Args(name.to_string()), at, arg.to_string()));
                 }
             }
         }
