@@ -1,6 +1,6 @@
 //! Replays a recorded conversation through the curator, offline, and shows what it keeps and cuts.
 //!
-//! `cargo run --release -p nexo-curator --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--window N] [--save N FILE]
+//! `cargo run --release -p nexo-curator --features sim --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--window N] [--save N FILE]
 //!  [--life S] [--gap S] [--pause N:S]`
 //!
 //! `FILE` is either a golden fixture (`tests/fixtures/*.jsonl`, lines `{"now", "req", "reply"}`) or a
@@ -59,201 +59,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use nexo_curator::sim::events::{denied, forgotten, latest_request, segments, wrote};
+use nexo_curator::sim::input::{fixture_requests, names, reply_to, text_of, transcript_requests, Request};
+use nexo_curator::sim::price::{blocks_of, cached, grown, tokens_of, Cache};
 use nexo_curator::{distinctive_words, Curator};
 use serde_json::{json, Value};
-
-/// One request as the agent made it: the conversation so far and the system prompt.
-struct Request {
-    now: f64,
-    system_tokens: u64,
-    /// The system prompt's text, when the file holds it.
-    system: String,
-    messages: Vec<Value>,
-    /// The tools the host offered (their names), when the file says.
-    tools: Option<Vec<String>>,
-}
-
-/// A rough token count of a message (4 characters per token, as the engine estimates).
-fn tokens_of(v: &Value) -> i64 {
-    let text = match v.get("content") {
-        Some(Value::String(s)) => s.len(),
-        Some(c) => c.to_string().len(),
-        None => v.to_string().len(),
-    };
-    (text as i64 + 3) / 4
-}
-
-/// The content blocks of a message: a text given as a string is one text block, as the API reads it.
-fn blocks_of(m: &Value) -> Vec<Value> {
-    match m.get("content") {
-        Some(Value::Array(a)) => a.clone(),
-        Some(Value::String(s)) => vec![json!({"type": "text", "text": s})],
-        _ => Vec::new(),
-    }
-}
-
-/// The tokens of `now` a prefix cache holds after `prev` was sent: the messages sent unchanged at its
-/// start and, of the first one that changed, the blocks it still starts with. The cache matches the
-/// tokens the request starts with, not whole messages (a provider stores them in units of some tens of
-/// tokens), so a message that only grew keeps what it had.
-fn cached(prev: &[Value], now: &[Value]) -> i64 {
-    let same = now.iter().zip(prev).take_while(|(a, b)| a == b).count();
-    let hit: i64 = now[..same].iter().map(tokens_of).sum();
-    hit + match (now.get(same), prev.get(same)) {
-        (Some(a), Some(b)) => grown(a, b),
-        _ => 0,
-    }
-}
-
-/// A provider's prefix cache over time: the requests sent in the last `life` seconds, each with when it
-/// was sent (`life` 0: only the last request, as a local server with one slot).
-struct Cache {
-    life: f64,
-    sent: Vec<(Vec<Value>, f64)>,
-}
-
-impl Cache {
-    /// Sends `now` (after a system prompt of `system` tokens) at second `at`: the tokens it reads from the
-    /// cache, the most any request still held starts it with.
-    fn send(&mut self, now: &[Value], system: i64, at: f64) -> i64 {
-        let life = self.life;
-        if life > 0.0 {
-            self.sent.retain(|(_, t)| at - t <= life);
-        } else if self.sent.len() > 1 {
-            self.sent.drain(..self.sent.len() - 1);
-        }
-        let hit = self.sent.iter().map(|(v, _)| cached(v, now)).max().map_or(0, |h| h + system);
-        self.sent.push((now.to_vec(), at));
-        hit
-    }
-}
-
-/// The tokens of `now` a prefix cache holds when `before` was sent in its place: the blocks both start
-/// with, when they come from the same side.
-fn grown(now: &Value, before: &Value) -> i64 {
-    let (x, y) = (blocks_of(now), blocks_of(before));
-    let kept = x.iter().zip(&y).take_while(|(p, q)| p == q).count();
-    if now.get("role") == before.get("role") && kept > 0 {
-        tokens_of(&json!({ "content": x[..kept] }))
-    } else {
-        0
-    }
-}
-
-/// The text of a message, flattened, for printing.
-fn text_of(v: &Value) -> String {
-    let s = match v.get("content") {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .map(|b| match b.get("type").and_then(Value::as_str) {
-                Some("text") => b["text"].as_str().unwrap_or("").to_string(),
-                Some("tool_use") => {
-                    let input = match &b["input"] {
-                        Value::Object(m) => m
-                            .values()
-                            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        other => other.to_string(),
-                    };
-                    format!("{}({input})", b["name"].as_str().unwrap_or("?"))
-                }
-                Some("tool_result") => match &b["content"] {
-                    Value::String(s) => s.clone(),
-                    Value::Array(inner) => {
-                        inner.iter().filter_map(|x| x["text"].as_str()).collect::<Vec<_>>().join("\n")
-                    }
-                    other => other.to_string(),
-                },
-                _ => b.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
-    };
-    s
-}
-
-/// The requests of a golden fixture: each line's `req`, a full view or a delta on the previous one.
-fn fixture_requests(text: &str) -> Vec<Request> {
-    let mut msgs: Vec<Value> = Vec::new();
-    let mut system = String::new();
-    let mut out = Vec::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let rec: Value = serde_json::from_str(line).expect("a JSON line");
-        let req = &rec["req"];
-        if req.get("op").and_then(Value::as_str) == Some("reset") {
-            msgs.clear();
-            continue;
-        }
-        if let Some(s) = req.get("system").and_then(Value::as_str) {
-            system = s.to_string();
-        }
-        if let Some(new) = req.get("new") {
-            let base = req["base"].as_u64().unwrap_or(0) as usize;
-            msgs.truncate(base);
-            msgs.extend(new.as_array().cloned().unwrap_or_default());
-        } else if let Some(all) = req.get("messages").and_then(Value::as_array) {
-            msgs = all.clone();
-        } else {
-            continue;
-        }
-        out.push(Request {
-            now: rec["now"].as_f64().unwrap_or(0.0),
-            system_tokens: req["system_tokens"].as_u64().unwrap_or(0),
-            system: system.clone(),
-            messages: msgs.clone(),
-            tools: names(&req["tools"]),
-        });
-    }
-    out
-}
-
-/// The names in a list of tools (names or `{"name": ...}`), if `v` is one.
-fn names(v: &Value) -> Option<Vec<String>> {
-    let list = v.as_array()?;
-    Some(list.iter().filter_map(|t| t.as_str().or_else(|| t["name"].as_str())).map(str::to_string).collect())
-}
-
-/// The requests of a `nexo bench` transcript: the `messages` of each step, as the model was sent them.
-fn transcript_requests(text: &str) -> Vec<Request> {
-    let mut out = Vec::new();
-    for (i, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
-        let rec: Value = serde_json::from_str(line).expect("a JSON line");
-        let Some(msgs) = rec["messages"].as_array() else { continue };
-        let head = rec["system"].as_str().map_or(0, str::len) + rec["tools"].to_string().len();
-        out.push(Request {
-            now: 1_750_000_000.0 + 2.0 * i as f64,
-            system_tokens: (head as u64).div_ceil(4),
-            system: rec["system"].as_str().unwrap_or("").to_string(),
-            messages: msgs.clone(),
-            tools: names(&rec["tools"]),
-        });
-    }
-    out
-}
-
-/// The reply the agent gave to request `i`: the assistant message the next request adds after it, when
-/// the next request continues the same conversation.
-fn reply_to(requests: &[Request], i: usize) -> Option<&Value> {
-    let (now, next) = (&requests[i].messages, &requests.get(i + 1)?.messages);
-    let m = next.get(now.len())?;
-    (next[..now.len()] == now[..] && m["role"] == "assistant").then_some(m)
-}
-
-/// The words of `reply` that `history` holds but neither `view` nor `system` does, and how many of its
-/// words `history` holds.
-fn forgotten(reply: &Value, history: &[Value], view: &[Value], system: &str) -> (Vec<String>, usize) {
-    let words_of =
-        |msgs: &[Value]| -> HashSet<String> { msgs.iter().flat_map(|m| distinctive_words(&text_of(m))).collect() };
-    let mut seen = words_of(view);
-    seen.extend(distinctive_words(system));
-    let held = words_of(history);
-    let copied: Vec<String> = distinctive_words(&text_of(reply)).into_iter().filter(|w| held.contains(w)).collect();
-    let n = copied.len();
-    (copied.into_iter().filter(|w| !seen.contains(w)).collect(), n)
-}
 
 /// The short numbers of `text` that `distinctive_words` does not see: three-digit numbers and decimals
 /// (coins, counts, line numbers, prices), standing alone (not inside a word or a version string).
@@ -294,19 +104,6 @@ fn forgotten_short(reply: &Value, history: &[Value], view: &[Value], system: &st
     (copied.iter().filter(|n| !seen.contains(*n)).count(), copied.len())
 }
 
-/// Whether `m` is the agent writing: an assistant message with text, or a `note` call.
-fn wrote(m: &Value) -> bool {
-    m["role"] == "assistant"
-        && match &m["content"] {
-            Value::String(s) => !s.trim().is_empty(),
-            Value::Array(blocks) => blocks.iter().any(|b| {
-                (b["type"] == "text" && b["text"].as_str().is_some_and(|t| !t.trim().is_empty()))
-                    || (b["type"] == "tool_use" && b["name"] == "note")
-            }),
-            _ => false,
-        }
-}
-
 /// Whether the agent has written about a result whose distinctive words are `result` in `later`: a later
 /// assistant message with text or a `note` call, or a call whose arguments draw on a word of the result
 /// (it read the result and acted on it, as a model that writes no text between calls does).
@@ -322,19 +119,6 @@ fn wrote_about(later: &[Value], result: &HashSet<String>) -> bool {
                     _ => false,
                 })
     })
-}
-
-/// Where the latest request starts in `msgs`: the person's last message with text.
-fn latest_request(msgs: &[Value]) -> usize {
-    let asked = |m: &Value| {
-        m["role"] == "user"
-            && match &m["content"] {
-                Value::String(s) => !s.trim().is_empty(),
-                Value::Array(blocks) => blocks.iter().any(|b| b["type"] == "text"),
-                _ => false,
-            }
-    };
-    msgs.iter().rposition(asked).unwrap_or(0)
 }
 
 /// The tokens of results of the latest request in `history` (after the person's last message) that the agent
@@ -370,51 +154,6 @@ fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
         }
     }
     (missing, open)
-}
-
-/// The tokens of the tool results the agent has just asked for (the last message of the request) that the
-/// view does not send in their place, as the share of their segments the view's last message lacks, and the
-/// tokens of all such results. What the agent just asked for is what it means to read in this step: a pointer
-/// to a copy elsewhere, or a note that it was left out, holds the facts but not the reading it asked for, and
-/// `blind` misses it, as it looks for the lines anywhere in the view.
-fn denied(history: &[Value], view: &[Value]) -> (i64, i64) {
-    const SMALL_RESULT: i64 = 100;
-    let (Some(last), Some(sent)) = (history.last(), view.last()) else { return (0, 0) };
-    let Some(Value::Array(blocks)) = last.get("content") else { return (0, 0) };
-    let here: HashSet<String> = segments(sent).into_iter().collect();
-    let (mut missing, mut open) = (0, 0);
-    for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
-        let one = json!({"role": "user", "content": [b]});
-        let tokens = tokens_of(&one);
-        let segs = segments(&one);
-        if tokens < SMALL_RESULT || segs.is_empty() {
-            continue;
-        }
-        open += tokens;
-        let lacks = segs.iter().filter(|s| !here.contains(*s)).count() as i64;
-        missing += tokens * lacks / segs.len() as i64;
-    }
-    (missing, open)
-}
-
-/// The pieces a view can keep or drop, at the finest grain a curator cuts: the lines of a message's text,
-/// long lines split every `SEGMENT` bytes.
-const SEGMENT: usize = 200;
-
-fn segments(m: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in text_of(m).lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let mut rest = line;
-        while !rest.is_empty() {
-            let mut cut = rest.len().min(SEGMENT);
-            while !rest.is_char_boundary(cut) {
-                cut += 1;
-            }
-            out.push(rest[..cut].to_string());
-            rest = &rest[cut..];
-        }
-    }
-    out
 }
 
 /// The least input cost (miss, hit tokens) any view can have that forgets nothing a reply copies: at each
@@ -1727,10 +1466,9 @@ fn main() {
     let (mut sum_raw, mut sum_view) = (0i64, 0i64);
     // a prefix cache, message by message: what a view it holds sent unchanged at the start is a hit
     let (mut prev_view, mut sum_miss, mut sum_hit, mut per_view) = (Vec::<Value>::new(), 0i64, 0i64, Vec::new());
-    let (mut cache, mut plain_cache) = (Cache { life, sent: Vec::new() }, Cache { life, sent: Vec::new() });
+    let (mut cache, mut plain_cache) = (Cache::new(life, 0), Cache::new(life, 0));
     // the same two with a provider that keeps prefixes for an hour (one slot or `--life` shows the other end)
-    let (mut long_cache, mut long_plain) =
-        (Cache { life: 3600.0, sent: Vec::new() }, Cache { life: 3600.0, sent: Vec::new() });
+    let (mut long_cache, mut long_plain) = (Cache::new(3600.0, 0), Cache::new(3600.0, 0));
     let (mut long_miss, mut long_hit, mut long_plain_miss, mut long_plain_hit) = (0i64, 0i64, 0i64, 0i64);
     let (mut short_lost, mut short_copied) = (0usize, 0usize);
     let (mut replies, mut lost_replies, mut lost_words, mut lost_first) = (0, 0, 0, Vec::<String>::new());

@@ -306,7 +306,7 @@ request; tokens estimated at four characters per token):
 | `bench-results-full-0` | 8 | 6.0k | 6.4k | +6.8% |
 | **all** | | **8.52M** | **6.30M** | **−26%** |
 
-Reproduce one with `cargo run --release -p nexo-curator --example replay -- crates/nexo-curator/tests/fixtures/<file>.jsonl --quiet`
+Reproduce one with `cargo run --release -p nexo-curator --features sim --example replay -- crates/nexo-curator/tests/fixtures/<file>.jsonl --quiet`
 (from `nexo/`; the `total over all requests` line). The replay cannot show how the model would have
 reacted to the smaller view; only a live run does.
 

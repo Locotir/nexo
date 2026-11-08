@@ -3,6 +3,9 @@
 //! [`Curator`] is the goal engine run on the live path: it takes the whole conversation on every
 //! call, keeps what it learnt of the earlier messages and returns the view to send, the tokens of that view and what it did.
 
+#[cfg(feature = "sim")]
+pub mod sim;
+
 mod engine;
 mod evidence;
 mod flat;
@@ -894,7 +897,8 @@ mod tests {
     #[test]
     fn every_rewrite_of_a_sent_message_counts_its_miss() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
-        let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| Some(e.ok()?.path())).collect();
+        let mut names: Vec<_> =
+            std::fs::read_dir(dir).unwrap().filter_map(|e| Some(e.ok()?.path())).filter(|p| p.is_file()).collect();
         names.sort();
         let mut bad = Vec::new();
         for path in names {

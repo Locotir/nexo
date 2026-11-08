@@ -93,8 +93,8 @@ would have been sent:
 
 ```sh
 cd nexo
-cargo run --release -p nexo-curator --example replay -- bench-out/realm-plain-0.jsonl
-cargo run --release -p nexo-curator --example replay -- FILE --spec "eoq=20000" --every 10
+cargo run --release -p nexo-curator --features sim --example replay -- bench-out/realm-plain-0.jsonl
+cargo run --release -p nexo-curator --features sim --example replay -- FILE --spec "eoq=20000" --every 10
 ```
 
 Columns: request, messages in view, tokens of the whole history, tokens of the view, share kept,
