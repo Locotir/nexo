@@ -16,6 +16,10 @@ use serde_json::{json, Value};
 fn usage() -> ! {
     eprintln!("usage: sim events INPUT... --spec SPEC [--price live|legacy] [--life S] [--slots K] [--json]");
     eprintln!("       sim run INPUT... --spec SPEC [--params P] [--family auto|binary|http|logs|code|chat] [--mc N --seed X] [--max-steps 40] [--price live|legacy] [--life S] [--slots K] [--r R --beta B --phi F --pi P --mu M --r-den D] [--json]");
+    eprintln!("       sim fit --runs DIR... [--holdout odd|even|none] [--out params.json] [--model M|all] [--min-events N] [--seed X]");
+    eprintln!("       sim predict --results R --arm plain --spec S --params P [--life S] [--slots K]");
+    eprintln!("       sim check --results R --params P --spec S [--holdout even|odd|none] [--report FILE] [--life S] [--slots K]");
+    eprintln!("       sim price --runs DIR... [--life S] [--slots K]");
     std::process::exit(2);
 }
 
@@ -43,6 +47,10 @@ fn main() {
     match args.next().as_deref() {
         Some("events") => events_cmd(args),
         Some("run") => run_cmd(args),
+        Some("fit") => fit_cmd(args),
+        Some("predict") => predict_cmd(args),
+        Some("check") => check_cmd(args),
+        Some("price") => price_cmd(args),
         _ => usage(),
     }
 }
@@ -246,4 +254,168 @@ fn run_cmd(mut args: impl Iterator<Item = String>) {
             1.0 - tot_ok.powf(1.0 / n)
         );
     }
+}
+
+fn die(e: String) -> ! {
+    eprintln!("{e}");
+    std::process::exit(1);
+}
+
+fn today() -> String {
+    std::process::Command::new("date")
+        .arg("+%Y-%m-%d")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
+}
+
+/// The cache the price model is checked with: how many requests it keeps (see `sim price`).
+const SLOTS: usize = 0;
+
+/// `sim fit`: `params.json` from run directories.
+fn fit_cmd(mut args: impl Iterator<Item = String>) {
+    use nexo_curator::sim::fit::{fit_dirs, FitConfig, Holdout};
+    let (mut runs, mut out, mut cfg) = (Vec::new(), None::<String>, FitConfig::default());
+    let mut in_runs = false;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--runs" => in_runs = true,
+            "--holdout" => {
+                in_runs = false;
+                cfg.holdout = args.next().and_then(|h| Holdout::parse(&h)).unwrap_or_else(|| usage());
+            }
+            "--out" => {
+                in_runs = false;
+                out = Some(args.next().unwrap_or_else(|| usage()));
+            }
+            "--model" => {
+                in_runs = false;
+                let m = args.next().unwrap_or_else(|| usage());
+                cfg.model = (m != "all").then_some(m);
+            }
+            "--min-events" => cfg.min_events = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            "--seed" => cfg.seed = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            _ if a.starts_with("--") => usage(),
+            _ if in_runs => runs.push(a),
+            _ => usage(),
+        }
+    }
+    if runs.is_empty() {
+        usage();
+    }
+    let fit = fit_dirs(&runs, &cfg).unwrap_or_else(|e| die(e));
+    print!("{}", fit.table());
+    if let Some(out) = out {
+        let v = fit.params_json(&today());
+        if let Some(d) = std::path::Path::new(&out).parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        std::fs::write(&out, serde_json::to_string_pretty(&v).unwrap() + "\n")
+            .unwrap_or_else(|e| die(format!("{out}: {e}")));
+        println!("wrote {out}");
+    }
+}
+
+fn load_set(path: &str) -> ParamSet {
+    ParamSet::load(path).unwrap_or_else(|e| die(e))
+}
+
+/// `sim predict`: the plain runs of a results file through the curator and the behaviour layer.
+fn predict_cmd(mut args: impl Iterator<Item = String>) {
+    use nexo_curator::sim::fit::predict;
+    let (mut results, mut arm, mut spec, mut params, mut life, mut slots) =
+        (None::<String>, "plain".to_string(), "directives=0;nudge=0".to_string(), None::<String>, 0.0f64, SLOTS);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--results" => results = args.next(),
+            "--arm" => arm = args.next().unwrap_or_else(|| usage()),
+            "--spec" => spec = args.next().unwrap_or_else(|| usage()),
+            "--params" => params = args.next(),
+            "--life" => life = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            "--slots" => slots = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            _ => usage(),
+        }
+    }
+    let (Some(results), Some(params)) = (results, params) else { usage() };
+    let set = load_set(&params);
+    let preds = predict(&results, &arm, &spec, &set, life, slots).unwrap_or_else(|e| die(e));
+    println!(
+        "{:<22} {:<7} {:>4} {:>7} {:>7} {:>11} {:>11} {:>7}",
+        "task", "family", "rep", "events", "steps", "extra steps", "cost plain", "P[fail]"
+    );
+    for p in &preds {
+        println!(
+            "{:<22} {:<7} {:>4} {:>7} {:>7} {:>11.3} {:>11.6} {:>7.3}   cur cost {:.6}",
+            p.task, p.family, p.rep, p.events, p.steps_plain, p.extra_steps, p.cost_plain, p.p_fail, p.cost_cur
+        );
+    }
+}
+
+/// `sim check`: the section 5.2 table on the held-out half; writes the markdown report.
+fn check_cmd(mut args: impl Iterator<Item = String>) {
+    use nexo_curator::sim::fit::{check, Holdout};
+    let (mut results, mut params, mut spec, mut holdout, mut report, mut life, mut slots) = (
+        None::<String>,
+        None::<String>,
+        "directives=0;nudge=0".to_string(),
+        Holdout::Even,
+        "/home/lctr/curator-lab/sim/reports/h1-check.md".to_string(),
+        0.0f64,
+        SLOTS,
+    );
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--results" => results = args.next(),
+            "--params" => params = args.next(),
+            "--spec" => spec = args.next().unwrap_or_else(|| usage()),
+            "--holdout" => holdout = args.next().and_then(|h| Holdout::parse(&h)).unwrap_or_else(|| usage()),
+            "--report" => report = args.next().unwrap_or_else(|| usage()),
+            "--life" => life = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            "--slots" => slots = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            _ => usage(),
+        }
+    }
+    let (Some(results), Some(params)) = (results, params) else { usage() };
+    let set = load_set(&params);
+    let c = check(&results, &spec, &set, holdout, life, slots).unwrap_or_else(|e| die(e));
+    print!("{}", c.table());
+    if let Some(d) = std::path::Path::new(&report).parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    std::fs::write(&report, c.markdown(&results, &params, &spec, &today()))
+        .unwrap_or_else(|e| die(format!("{report}: {e}")));
+    println!("wrote {report}");
+}
+
+/// `sim price`: the price model on the plain arms of run directories.
+fn price_cmd(mut args: impl Iterator<Item = String>) {
+    use nexo_curator::sim::fit::{load_rows, price_check, price_medians};
+    let (mut runs, mut life, mut slots) = (Vec::new(), 0.0f64, SLOTS);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--runs" => {}
+            "--life" => life = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            "--slots" => slots = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| usage()),
+            _ if a.starts_with("--") => usage(),
+            _ => runs.push(a),
+        }
+    }
+    let rows = load_rows(&runs).unwrap_or_else(|e| die(e));
+    let pr = price_check(&rows, life, slots, None);
+    for p in &pr {
+        println!(
+            "{}: recorded {:.6} $ predicted {:.6} $ ({:+.1} %), cache_read recorded {} predicted {:.0} ({:+.1} %), own scale {:.3}",
+            p.path.rsplit('/').next().unwrap_or(&p.path),
+            p.recorded_cost,
+            p.predicted_cost,
+            100.0 * (p.predicted_cost - p.recorded_cost) / p.recorded_cost,
+            p.recorded_cache,
+            p.predicted_cache,
+            100.0 * (p.predicted_cache - p.recorded_cache as f64) / (p.recorded_cache as f64).max(1.0),
+            p.scale
+        );
+    }
+    let (c, k) = price_medians(&pr);
+    println!("{} plain runs (token scale per run, from its own recorded usage): median cost error {:.1} %, median cache_read error {:.1} %", pr.len(), 100.0 * c, 100.0 * k);
 }

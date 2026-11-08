@@ -2,5 +2,6 @@
 
 pub mod behave;
 pub mod events;
+pub mod fit;
 pub mod input;
 pub mod price;

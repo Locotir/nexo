@@ -26,3 +26,6 @@ required-features = ["sim"]
 [[example]]
 name = "sim"
 required-features = ["sim"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

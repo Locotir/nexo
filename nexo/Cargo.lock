@@ -1700,6 +1700,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
