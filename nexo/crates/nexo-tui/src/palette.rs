@@ -196,7 +196,7 @@ impl Palette {
                 self.ranked = ranked;
             }
             PaletteKind::Files => {
-                let mut r = fuzzy::rank_hits(&self.query, &self.items);
+                let mut r = fuzzy::rank_path_hits(&self.query, &self.items);
                 r.truncate(200);
                 (self.ranked, self.hits) = r.into_iter().unzip();
                 self.groups = vec![None; self.ranked.len()];

@@ -13,11 +13,11 @@
                                                                                ┃
  ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing     ┃
    in=… out=… cache=…) · from config                                           ┃
- crates/nexo-bench/src/tasks/inventory.rs
  crates/nexo-bench/src/tasks/mod.rs
  crates/nexo-bench/src/tasks/realm.rs
- crates/nexo-bench/src/tasks/realm_game.rs
  crates/nexo-bench/src/tasks/small.rs
+ crates/nexo-bench/src/tasks/inventory.rs
+ crates/nexo-bench/src/tasks/realm_game.rs
 ─ ask ──────────────────────────────────────────────────────────────────────────
 › @ta
  ↑↓ choose · Tab or Enter insert · PgUp/PgDn page · Esc close

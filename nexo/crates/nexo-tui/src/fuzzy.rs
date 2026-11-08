@@ -23,6 +23,16 @@ pub fn rank(query: &str, items: &[String]) -> Vec<usize> {
 
 /// Like [`rank`], with the character positions of `items[i]` the query matched, in order.
 pub fn rank_hits(query: &str, items: &[String]) -> Vec<(usize, Vec<usize>)> {
+    hits_by(query, items, false)
+}
+
+/// Like [`rank_hits`] for paths: of two that match as well, the shorter comes first, so `a`
+/// offers `a.txt` before `AGENTS.md`.
+pub fn rank_path_hits(query: &str, items: &[String]) -> Vec<(usize, Vec<usize>)> {
+    hits_by(query, items, true)
+}
+
+fn hits_by(query: &str, items: &[String], shorter_first: bool) -> Vec<(usize, Vec<usize>)> {
     let query = query.trim();
     if query.is_empty() {
         return (0..items.len()).map(|i| (i, Vec::new())).collect();
@@ -43,7 +53,8 @@ pub fn rank_hits(query: &str, items: &[String]) -> Vec<(usize, Vec<usize>)> {
             Some((sc, i, hits))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let len = |i: usize| if shorter_first { items[i].chars().count() } else { 0 };
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(len(a.1).cmp(&len(b.1))).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, i, h)| (i, h)).collect()
 }
 
@@ -71,5 +82,14 @@ mod tests {
         assert_eq!(r[0].0, 0);
         assert_eq!(r[0].1, vec![4, 5, 6]);
         assert_eq!(rank_hits("", &items), vec![(0, vec![]), (1, vec![])]);
+    }
+
+    #[test]
+    fn of_two_paths_that_match_as_well_the_shorter_comes_first() {
+        let items: Vec<String> = ["AGENTS.md", "a.txt", "src/app.rs"].iter().map(|s| s.to_string()).collect();
+        let r: Vec<usize> = rank_path_hits("a", &items).into_iter().map(|(i, _)| i).collect();
+        assert_eq!(r[0], 1, "a.txt before AGENTS.md for 'a': {r:?}");
+        let r: Vec<usize> = rank_hits("a", &items).into_iter().map(|(i, _)| i).collect();
+        assert_eq!(r[0], 0, "other lists keep their order on a tie");
     }
 }
