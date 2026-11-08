@@ -103,6 +103,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | `Ctrl+F`, `n`/`N` | search the transcript |
 | `Ctrl+Y` | copy the last reply |
 | `Ctrl+V` | paste: an image in the clipboard (a screenshot) is kept as a PNG and attached to the next request; text is pasted as text |
+| drop an image | a PNG, JPEG, GIF or WebP dragged onto the terminal arrives as its path and is attached as an image |
 | `Ctrl+G` | write the draft in `$EDITOR`; it comes back to the box |
 | `↑`/`↓` (no block selected), `Ctrl+R` | the requests sent before (kept between runs in `~/.nexo/prompt-history.jsonl`); `Ctrl+R` searches them |
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/mouse` turns capture off) |

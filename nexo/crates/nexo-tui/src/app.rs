@@ -3653,6 +3653,12 @@ impl App {
                 }
             }
         }
+        // an image dropped onto the terminal comes as its path: attached as `@path` would be
+        for path in crate::dropped::image_paths(text, &nexo_core::paths::home_dir()) {
+            if !out.iter().any(|a: &Attachment| a.path == path) {
+                out.push(Attachment { path });
+            }
+        }
         out
     }
 
@@ -5590,6 +5596,20 @@ mod tests {
         a.start_with("fix the failing test");
         assert!(rx.try_recv().is_err(), "nothing to send it to yet");
         assert_eq!(a.input.full_text(), "fix the failing test");
+    }
+
+    #[test]
+    fn an_image_dropped_as_its_path_is_attached() {
+        let d = tempfile::tempdir().unwrap();
+        let shot = d.path().join("shot.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let (mut a, mut rx) = app();
+        a.input.set_text(&format!("why is this red? '{}'", shot.display()));
+        a.submit();
+        match rx.try_recv() {
+            Ok(AgentCommand::Submit { attachments, .. }) => assert_eq!(attachments, vec![Attachment { path: shot }]),
+            other => panic!("{other:?}"),
+        }
     }
     #[test]
     fn commands_and_submissions_reach_the_agent() {

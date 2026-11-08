@@ -20,6 +20,7 @@ pub mod custom;
 pub mod dialog_size;
 pub mod diffkey;
 pub mod diffview;
+pub mod dropped;
 pub mod event;
 pub mod frame;
 pub mod frame_stats;
