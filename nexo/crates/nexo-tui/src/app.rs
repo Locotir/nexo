@@ -3421,10 +3421,10 @@ impl App {
         let text = self.input.full_text();
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            // Enter again with a request waiting: stop the turn so the queue runs now
+            // Enter again with a request waiting: stop the turn (the agent keeps the queue for the next message)
             if self.busy && self.queued > 0 {
                 self.send(AgentCommand::Interrupt);
-                self.flash("interrupting: the queued request runs now");
+                self.flash("stopping: the queued request goes with your next message");
                 return;
             }
             if let Some(i) = self.selected {
@@ -3468,8 +3468,13 @@ impl App {
                 return self.submit();
             }
         }
-        if trimmed.starts_with('/') {
+        if trimmed.starts_with('/') && !starts_with_path(trimmed) {
             if let Some(cmd) = commands::parse(trimmed) {
+                if let Command::Unknown(_) = cmd {
+                    // warn, but the draft stays to be fixed
+                    self.run_command(cmd);
+                    return;
+                }
                 self.input.push_history(trimmed);
                 self.input.clear();
                 self.run_command(cmd);
@@ -3491,7 +3496,7 @@ impl App {
         if self.busy {
             self.queued += 1;
             self.queued_msgs.push(trimmed.to_string());
-            self.flash("queued: joins the turn at its next step · Enter again to send it now");
+            self.flash("queued: joins the turn at its next step · Enter again to stop the turn");
         }
         self.pending_stamps.push_back(trimmed.to_string());
         if self.pending_stamps.len() > 20 {
@@ -4638,7 +4643,7 @@ impl App {
                 } else {
                     p.id.chars().take(8).collect()
                 };
-                let tail = p.cwd.rsplit('/').next().unwrap_or("");
+                let tail = p.cwd.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("");
                 let hint = if p.bypass { format!("{tail} · every tool allowed") } else { tail.to_string() };
                 (value, hint)
             })
@@ -4766,6 +4771,12 @@ pub(crate) fn clock() -> String {
     format!("{:02}:{:02}", now.hour(), now.minute())
 }
 
+/// A line that starts with a path (`/home/u/a.rs has a bug`), not a command: its first word has a second
+/// `/`, a `\`, or a `.`.
+fn starts_with_path(line: &str) -> bool {
+    line.split_whitespace().next().is_some_and(|w| w[1..].contains(['/', '\\', '.']))
+}
+
 /// The branch of the repository that holds `cwd` (a short hash when detached).
 pub fn git_branch(cwd: &std::path::Path) -> Option<String> {
     let mut dir = Some(cwd);
@@ -4774,7 +4785,7 @@ pub fn git_branch(cwd: &std::path::Path) -> Option<String> {
         if let Ok(text) = std::fs::read_to_string(&head) {
             let text = text.trim();
             return Some(match text.strip_prefix("ref: ") {
-                Some(r) => r.rsplit('/').next().unwrap_or(r).to_string(),
+                Some(r) => r.strip_prefix("refs/heads/").unwrap_or(r).to_string(),
                 None => text.chars().take(7).collect(),
             });
         }
@@ -4785,7 +4796,7 @@ pub fn git_branch(cwd: &std::path::Path) -> Option<String> {
                     if let Ok(h) = std::fs::read_to_string(std::path::Path::new(p).join("HEAD")) {
                         let h = h.trim();
                         return Some(match h.strip_prefix("ref: ") {
-                            Some(r) => r.rsplit('/').next().unwrap_or(r).to_string(),
+                            Some(r) => r.strip_prefix("refs/heads/").unwrap_or(r).to_string(),
                             None => h.chars().take(7).collect(),
                         });
                     }
@@ -8069,6 +8080,60 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(AgentCommand::McpToggle { on: true, .. })));
         press(&mut a, 'q');
         assert!(a.modal.is_none());
+    }
+
+    #[test]
+    fn a_message_starting_with_a_path_is_sent_not_taken_for_a_command() {
+        for line in ["/home/u/foo.rs has a bug", "/tmp/x.log", "/etc/hosts.d", "/foo.rs is broken", "/c\\temp\\x"] {
+            let (mut a, mut rx) = app();
+            a.input.set_text(line);
+            a.submit();
+            assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == line), "{line}");
+            assert!(a.input.is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_command_warns_and_keeps_the_draft() {
+        let (mut a, mut rx) = app();
+        a.input.set_text("/foo bar");
+        a.submit();
+        assert!(rx.try_recv().is_err());
+        assert_eq!(a.input.full_text(), "/foo bar");
+        assert!(matches!(a.blocks.last(), Some(Block::Notice { .. })));
+    }
+
+    #[test]
+    fn enter_on_an_empty_draft_with_a_queued_request_tells_the_truth() {
+        let (mut a, mut rx) = app();
+        a.busy = true;
+        a.queued = 1;
+        a.submit();
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));
+        let said = a.status.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+        assert!(said.starts_with("stopping") && !said.contains("runs now"), "{said}");
+    }
+
+    #[test]
+    fn the_branch_keeps_its_slashes_and_a_windows_cwd_shows_its_last_folder() {
+        let dir = std::env::temp_dir().join(format!("nexo-branch-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/feature/login\n").unwrap();
+        assert_eq!(git_branch(&dir).as_deref(), Some("feature/login"));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let (mut a, _rx) = app();
+        a.peers = vec![nexo_core::mail::PeerInfo {
+            id: "bbbb2222".into(),
+            name: "api".into(),
+            cwd: "C:\\Users\\dev\\api".into(),
+            pid: 1,
+            external: false,
+            bypass: false,
+            sendable: true,
+            me: false,
+        }];
+        assert_eq!(a.peer_values(), vec![("api".to_string(), "api".to_string())]);
     }
 }
 
