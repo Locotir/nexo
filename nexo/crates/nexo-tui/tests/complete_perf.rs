@@ -53,17 +53,36 @@ fn text(r: &mut Lcg, bytes: usize, vocab: &[String]) -> String {
     s
 }
 
-fn build(r: &mut Lcg, vocab: &[String], total: usize) -> (WordIndex, u64, f64) {
+/// Feeds `slices` blocks of ~1 MB into one index and times each slice. Linear work costs about the
+/// same per slice; work that re-reads what it already has costs more with every slice.
+fn build(r: &mut Lcg, vocab: &[String], slices: usize) -> (WordIndex, u64, Vec<f64>) {
     let mut w = WordIndex::new(true);
-    let t = Instant::now();
     let mut fed = 0u64;
-    while (fed as usize) < total {
-        let block = text(r, 48 * 1024, vocab);
-        fed += block.len() as u64;
-        w.feed(&block, if matches!(fed % 20, 0) { Src::User } else { Src::Other });
+    let mut times = Vec::new();
+    for _ in 0..slices {
+        let t = Instant::now();
+        let mut slice = 0usize;
+        while slice < 1 << 20 {
+            let block = text(r, 48 * 1024, vocab);
+            slice += block.len();
+            fed += block.len() as u64;
+            w.feed(&block, if matches!(fed % 20, 0) { Src::User } else { Src::Other });
+        }
+        w.flush();
+        times.push(t.elapsed().as_secs_f64());
     }
-    w.flush();
-    (w, fed, t.elapsed().as_secs_f64())
+    (w, fed, times)
+}
+
+fn best(times: &[f64]) -> f64 {
+    times.iter().copied().fold(f64::MAX, f64::min)
+}
+
+/// How much slower the late slices are than the early ones, by their fastest: a busy machine only
+/// makes samples slower, so the minimum of each half is the part of the time that is the work.
+fn growth(times: &[f64]) -> f64 {
+    let (early, late) = times.split_at(times.len() / 2);
+    best(late) / best(early)
 }
 
 #[test]
@@ -71,13 +90,29 @@ fn eight_megabytes_index_in_linear_time_and_look_up_fast() {
     let mut r = Lcg(42);
     let vocab: Vec<String> = (0..30_000).map(|i| format!("{}{}", pseudo(&mut r, 5 + i % 6), i % 97)).collect();
 
-    let (_, fed1, t1) = build(&mut r, &vocab, 1 << 20);
-    let (w, fed8, t8) = build(&mut r, &vocab, 8 << 20);
-    eprintln!("build: 1 MB in {t1:.2}s, 8 MB in {t8:.2}s (ratio {:.1}, bytes {fed1} / {fed8})", t8 / t1);
-    assert_eq!(w.stats.bytes_scanned, fed8, "every byte is scanned exactly once");
-    assert!(t8 <= t1 * 12.0, "build is linear: {t8:.2}s for 8 MB against {t1:.2}s for 1 MB");
+    // No wall-clock bound: the cost of a slice is compared with the cost of the first ones, and the
+    // best of up to three runs counts (load can only add time; quadratic work fails every run).
+    let (mut w, mut fed, mut times, mut ratio) = (WordIndex::new(true), 0, Vec::new(), f64::MAX);
+    for _ in 0..3 {
+        let (w1, fed1, t1) = build(&mut r, &vocab, 8);
+        let g = growth(&t1);
+        eprintln!(
+            "build: slices {:?} s, late/early {g:.2}",
+            t1.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()
+        );
+        if g < ratio {
+            (w, fed, times, ratio) = (w1, fed1, t1, g);
+        }
+        if ratio <= 3.0 {
+            break;
+        }
+    }
+    assert_eq!(w.stats.bytes_scanned, fed, "every byte is scanned exactly once");
+    assert!(ratio <= 3.0, "build is linear: the late megabytes cost {ratio:.1}x the early ones");
     assert!(w.len() <= CAP + CAP / 10, "the cap holds: {}", w.len());
     assert!(w.len() > CAP / 2, "and the index is big: {}", w.len());
+    // a megabyte of text costs this much; a lookup is measured against it, not against the clock
+    let unit = best(&times);
 
     // lookups: random 3-letter prefixes of words, hashes and letters
     let mut prefixes: Vec<String> = Vec::new();
@@ -99,7 +134,7 @@ fn eight_megabytes_index_in_linear_time_and_look_up_fast() {
         for _ in 0..3 {
             let t = Instant::now();
             let got = w.suggest(p).is_some();
-            best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+            best = best.min(t.elapsed().as_secs_f64());
             let _ = got;
         }
         if w.suggest(p).is_some() {
@@ -111,18 +146,20 @@ fn eight_megabytes_index_in_linear_time_and_look_up_fast() {
     let all = all.elapsed().as_secs_f64() * 1000.0;
     let (looks, scanned) = (w.stats.lookups.get(), w.stats.lookups_scanned.get());
     eprintln!(
-        "lookups: {} done, {hits} hits, worst {worst:.3} ms, mean {:.4} ms, scanned/lookup {:.0}, words {}",
+        "lookups: {} done, {hits} hits, worst {:.3} ms, mean {:.4} ms, scanned/lookup {:.0}, words {}",
         prefixes.len(),
+        worst * 1000.0,
         all / (w.stats.lookups.get() - looks0).max(1) as f64,
         scanned as f64 / looks.max(1) as f64,
         w.len()
     );
     times.sort_by(|a, b| a.total_cmp(b));
     let p99 = times[times.len() * 99 / 100];
-    eprintln!("p99 {p99:.3} ms");
-    // the p99 holds the 5 ms bound; the single worst only gets a loose one (a busy machine spikes it)
-    assert!(p99 < 5.0, "p99 lookup took {p99} ms");
-    assert!(worst < 50.0, "a lookup took {worst} ms");
+    eprintln!("p99 {:.3} ms, indexing a megabyte {:.3} s", p99 * 1000.0, unit);
+    // against the same machine's cost of indexing one megabyte: a lookup is 1/50 of it at p99
+    // and the single worst (a busy machine spikes it) a fifth
+    assert!(p99 < unit / 50.0, "p99 lookup took {:.3} ms against {unit:.3} s per megabyte", p99 * 1000.0);
+    assert!(worst < unit / 5.0, "a lookup took {:.3} ms against {unit:.3} s per megabyte", worst * 1000.0);
     assert!(scanned <= looks * 3 * SCAN_CAP as u64, "bounded scans");
 }
 
