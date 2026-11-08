@@ -152,6 +152,7 @@ only make sense together.
 | `misleading-error` | core | the error points at one file, the cause is in another |
 | `cross-session` | core | a second session needs values given only in the first |
 | `long-haul` | long | four requests: bugs, a noisy audit, and a release note that needs facts from the start |
+| `vuln-hunt` | long | audit a 2,000-line crate: the whole codebase must stay in view to find a few real flaws among lookalikes and fix them in a handful of steps |
 | `marathon` | long | nine requests: bugs, an audit, five specifications, and facts from the start |
 | `marathon-heavy` | heavy | the marathon with twenty times the examples in each specification: the history passes 200k tokens, so a summary at 100k or 200k falls in the middle of the work |
 | `marathon-noisy` | heavy | the heavy marathon plus junk: a build script that prints 150 useless notes after every edit and twelve long CI logs (400 KB) holding one fact, asked for at the very end; the history passes 200k tokens early and most of it is noise |

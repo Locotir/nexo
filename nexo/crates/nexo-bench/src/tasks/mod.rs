@@ -14,6 +14,7 @@ pub mod padded;
 pub mod realm;
 mod realm_game;
 mod small;
+mod vault;
 
 /// Builds what a task's text files cannot carry, in its working directory.
 pub type Setup = fn(&Path) -> Result<(), String>;
@@ -71,6 +72,7 @@ pub const GROUPS: [&str; 7] = ["all", "core", "long", "heavy", "more", "hard", "
 pub fn all() -> Vec<Task> {
     let mut out = small::core();
     out.extend(inventory::tasks());
+    out.extend(vault::tasks());
     out.extend(small::more());
     out.extend(padded::tasks());
     out.push(realm::task());
@@ -119,10 +121,10 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), every.len());
-        assert_eq!(every.len(), 17);
+        assert_eq!(every.len(), 18);
         assert_eq!(select(&["realm"]).unwrap().len(), 1);
         assert_eq!(select(&["core,realm"]).unwrap().len(), 7);
-        assert_eq!(select::<&str>(&[]).unwrap().len(), 17);
+        assert_eq!(select::<&str>(&[]).unwrap().len(), 18);
         assert_eq!(select(&["heavy"]).unwrap().len(), 3);
         assert!(select(&["nope"]).is_err());
     }
