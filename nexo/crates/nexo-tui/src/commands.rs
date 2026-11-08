@@ -52,6 +52,7 @@ pub const COMMANDS: &[Spec] = &[
         "[user]",
         "edit the instructions the agent reads: the project's file, or with `user` your own",
     ),
+    spec("note", &["remember"], "<text>", "add a line to the project's instructions, read from the next request on"),
     spec(
         "pricing",
         &["price", "prices"],
@@ -167,6 +168,8 @@ pub enum Command {
     Memory {
         user: bool,
     },
+    /// `/note <text>` (`/remember`): one more line in the project's instructions file.
+    Remember(Option<String>),
     Pricing(Option<String>),
     Mouse,
     Timestamps,
@@ -320,6 +323,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "export" => Command::Export(arg),
         "rename" | "title" | "name" => Command::Rename(arg),
         "add-dir" | "adddir" => Command::AddDir(arg),
+        "note" | "remember" => Command::Remember(arg),
         "msg" | "mail" | "tell" => Command::Msg(arg),
         "diff" => Command::Diff,
         "cost" => Command::Cost,
@@ -401,7 +405,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         "session",
         &["fork", "tree", "rewind", "undo", "undelete", "rename", "msg", "export", "goal", "shared-memory", "queue"],
     ),
-    ("model", &["provider", "login", "fast", "pricing", "prompt", "memory", "budget"]),
+    ("model", &["provider", "login", "fast", "pricing", "prompt", "memory", "note", "budget"]),
     (
         "context and tools",
         &[
@@ -593,6 +597,8 @@ mod tests {
         assert_eq!(parse("/add-dir"), Some(Command::AddDir(None)));
         assert_eq!(parse("/memory"), Some(Command::Memory { user: false }));
         assert_eq!(parse("/memory user"), Some(Command::Memory { user: true }));
+        assert_eq!(parse("/remember use tabs"), Some(Command::Remember(Some("use tabs".into()))));
+        assert_eq!(parse("/note run the tests"), Some(Command::Remember(Some("run the tests".into()))));
         assert_eq!(parse("/memory all"), Some(Command::BadArgument("memory".into(), "all".into())));
         assert_eq!(parse("/title"), Some(Command::Rename(None)));
         assert_eq!(parse("/diff"), Some(Command::Diff));

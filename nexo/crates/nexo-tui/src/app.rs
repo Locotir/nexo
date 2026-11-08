@@ -3725,6 +3725,7 @@ impl App {
             Command::Prompt => self.send(AgentCommand::ShowPrompt),
             Command::PromptEdit => self.prompt_edit(),
             Command::Memory { user } => self.memory_edit(user),
+            Command::Remember(text) => self.remember(text.as_deref()),
             Command::Pricing(None) => self.send(AgentCommand::ShowModel),
             Command::Pricing(Some(args)) => match parse_pricing(&args) {
                 Ok(pricing) => {
@@ -4253,6 +4254,25 @@ impl App {
             let _ = std::fs::create_dir_all(d);
         }
         self.edit_request = Some(path);
+    }
+
+    /// `/note <text>`: the text as one more list item at the end of the project's instructions
+    /// file (the one `/memory` opens), which the agent reads from the next request on.
+    pub fn remember(&mut self, text: Option<&str>) {
+        let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) else {
+            return self.notice(Level::Warn, "/note <text>: say what to remember");
+        };
+        let path = nexo_core::compat::project_file(&self.cwd);
+        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        let gap = if old.is_empty() || old.ends_with('\n') { "" } else { "\n" };
+        let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        match std::fs::write(&path, format!("{old}{gap}- {line}\n")) {
+            Ok(()) => {
+                let shown = path.strip_prefix(&self.cwd).unwrap_or(&path).display().to_string();
+                self.flash_toast(&format!("added to {shown}"));
+            }
+            Err(e) => self.notice(Level::Error, format!("cannot write {}: {e}", path.display())),
+        }
     }
 
     /// `/mouse`: capture on or off (off lets the terminal select text by itself).
@@ -7037,6 +7057,23 @@ mod tests {
         assert!(a.bell_request.as_deref().is_some_and(|t| t.starts_with("nexo: done after")), "{:?}", a.bell_request);
     }
 
+    #[test]
+    fn remember_adds_a_line_to_the_projects_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let (mut a, mut rx) = app();
+        a.cwd = dir.path().to_path_buf();
+        a.run_command(Command::Remember(Some("use tabs".into())));
+        assert_eq!(std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(), "- use tabs\n");
+        std::fs::write(dir.path().join("AGENTS.md"), "# Rules").unwrap();
+        a.run_command(Command::Remember(Some("  run the tests\n before a commit ".into())));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(),
+            "# Rules\n- run the tests before a commit\n"
+        );
+        a.run_command(Command::Remember(None));
+        assert!(rx.try_recv().is_err(), "nothing goes to the agent");
+    }
     #[test]
     fn memory_opens_the_projects_instructions_without_asking_the_agent() {
         let dir = tempfile::tempdir().unwrap();
