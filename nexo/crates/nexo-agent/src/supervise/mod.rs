@@ -19,6 +19,7 @@ pub mod source_jsonl;
 pub mod source_list;
 pub mod source_mail;
 pub mod source_nexo;
+pub mod watch;
 
 use std::collections::VecDeque;
 
@@ -29,7 +30,7 @@ pub use classify::{classify, ends_in_question, loop_signal, LoopWhy};
 pub use policy::{Loaded, Policy, Verdict};
 pub use run::{AgentRow, MailRow, Options, Panel, Setup, Supervisor};
 pub use source::{Source, SourceKind};
-pub use source_nexo::NexoSource;
+pub use source_nexo::{NexoSource, Nudge};
 
 /// Seconds since the Unix epoch.
 pub type Secs = i64;

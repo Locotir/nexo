@@ -1686,14 +1686,20 @@ impl App {
         self.tick_frame(true)
     }
 
-    /// What the supervisor wants said to this session goes in as a message of its own, once no turn is running.
+    /// What the supervisor wants said to this session, once no turn is running: the person's own panel message goes
+    /// in as their message; the rest becomes evidence for the session's own check-in.
     fn deliver_supervisor_nudges(&mut self) {
         if self.busy || !self.nexo_src.has_nudges() {
             return;
         }
-        for (_, text) in self.nexo_src.take_nudges() {
-            self.send(AgentCommand::Submit { text, attachments: vec![] });
-            self.flash("supervisor: message sent to this session");
+        for n in self.nexo_src.take_nudges() {
+            if n.manual {
+                self.send(AgentCommand::Submit { text: n.text, attachments: vec![] });
+                self.flash("your message was sent to this session");
+            } else {
+                self.send(AgentCommand::CheckIn { evidence: n.text });
+                self.flash("supervisor: checking in with this session");
+            }
         }
     }
 
@@ -2544,6 +2550,7 @@ impl App {
                     // the loop's own goal requests are not the person's: nothing to rewind to or repeat
                     if !text.starts_with(nexo_core::agent::GOAL_SET_MARK)
                         && text.trim() != nexo_core::agent::GOAL_CONTINUE_MARK
+                        && text.trim() != nexo_core::agent::SUPERVISOR_RESUME_MARK
                     {
                         self.user_messages.push((index, text.clone()));
                     }

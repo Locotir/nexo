@@ -7,7 +7,9 @@ const JOBS_END: &str = "Read the output with the `jobs` tool";
 const MEMORY_START: &str = "<memory from=\"";
 const MEMORY_END: &str = "</memory>";
 const ATTACHED: &str = "(attached in full, as it is now):";
-use nexo_core::agent::{GOAL_CONTINUE_MARK, GOAL_SET_MARK, HOOK_CONTEXT_END, HOOK_CONTEXT_START};
+use nexo_core::agent::{
+    GOAL_CONTINUE_MARK, GOAL_SET_MARK, HOOK_CONTEXT_END, HOOK_CONTEXT_START, SUPERVISOR_RESUME_MARK,
+};
 
 /// One part of a user message, as the screen shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +64,8 @@ pub fn split_user(text: &str) -> Vec<Piece> {
         out.push(Piece::Goal(Some(words.trim().to_string())));
     } else if t.trim_end() == GOAL_CONTINUE_MARK {
         out.push(Piece::Goal(None));
+    } else if t.trim_end() == SUPERVISOR_RESUME_MARK {
+        out.push(Piece::JobNote("supervisor: continuing after a check-in".into()));
     } else if !t.is_empty() {
         out.push(Piece::Text(collapse_attachments(t)));
     }

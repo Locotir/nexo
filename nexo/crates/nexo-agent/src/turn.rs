@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use nexo_core::agent::{
     AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalState, Level, TurnEnd, GOAL_BRIEF_HEAD,
-    GOAL_CONTINUE_MARK, GOAL_SET_MARK,
+    GOAL_CONTINUE_MARK, GOAL_SET_MARK, SUPERVISOR_RESUME_MARK,
 };
 use nexo_core::config::{Config, OnLimit, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
@@ -229,6 +229,12 @@ struct State {
     mail_turn: Vec<Mail>,
     /// Text hooks added for the model (SessionStart, UserPromptSubmit): it goes with the next request.
     hook_context: Vec<String>,
+    /// Notes the supervisor's watch wants on the NEXT model request only (never saved in the conversation), and
+    /// the findings of this request already said, so each is said once.
+    hidden: Vec<String>,
+    noticed: HashSet<String>,
+    /// A check-in was made for this request of the person (at most one; the person speaking opens it again).
+    checked_in: bool,
     /// How many times `agent.max_tokens` a reply may take in this request: doubled (up to 4) when a reply
     /// was cut at max_tokens while still thinking, as the reasoning had no room left for an answer or a call.
     reply_boost: u32,
@@ -458,6 +464,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         mail_wait: Vec::new(),
         mail_turn: Vec::new(),
         hook_context: Vec::new(),
+        hidden: Vec::new(),
+        noticed: HashSet::new(),
+        checked_in: false,
         reply_boost: 1,
         audit,
     }));
@@ -502,6 +511,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     // a sign-in waiting for the browser, so Esc in the setup can drop it
     let mut signing_in: Option<tokio::task::AbortHandle> = None;
     let mut cancel = CancellationToken::new();
+    // what a check-in decided, back to this loop (the only place a turn starts)
+    let (resume_tx, mut resume_rx) = tokio::sync::mpsc::unbounded_channel::<Resume>();
     loop {
         tokio::select! {
             cmd = commands.recv() => {
@@ -909,7 +920,23 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             spawn_suggest(&state);
                         }
                     }
+                    AgentCommand::CheckIn { evidence } => {
+                        if turn.is_none() {
+                            check_in(&state, Some(evidence), &resume_tx).await;
+                        }
+                    }
                     AgentCommand::Shutdown => break,
+                }
+            }
+            Some(r) = resume_rx.recv() => {
+                // the answer comes while the session is still stopped and nothing else has started since
+                let current = {
+                    let st = state.lock().await;
+                    (st.turns, st.epoch) == (r.turns, r.epoch) && st.inbox.is_empty()
+                };
+                if turn.is_none() && current {
+                    state.lock().await.hidden.push(r.text);
+                    turn = Some(start_turn(&state, SUPERVISOR_RESUME_MARK.to_string(), Vec::new(), cancel.child_token()).await);
                 }
             }
             change = job_changes.recv() => {
@@ -982,6 +1009,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     emit(&events, AgentEvent::Idle { running_jobs: jobs.running() });
                 }
+                if turn.is_none() && reason == TurnEnd::Done {
+                    check_in(&state, None, &resume_tx).await;
+                }
             }
         }
     }
@@ -1047,6 +1077,9 @@ fn install_session(st: &mut State, session: Session) {
     st.last_prompt = None;
     st.last_request = None;
     st.repeats = Default::default();
+    st.hidden.clear();
+    st.noticed.clear();
+    st.checked_in = false;
     st.epoch += 1;
     st.turn_start = 0;
     st.turns = 0;
@@ -1153,6 +1186,7 @@ fn goal_to(st: &mut State, to: GoalState, say: String) {
 
 /// A message of the person starts a turn: a goal waiting for their answer has it, and runs again.
 fn person_spoke(st: &mut State) {
+    st.checked_in = false;
     // only a person's message gives a request its checkpoints back: a goal's rounds, a mail or a job's end do not
     st.ck_used = 0;
     if st.goal.is_some() && st.goal_state == GoalState::Waiting {
@@ -1379,6 +1413,9 @@ async fn rewind(state: &Shared, index: usize) {
     st.last_prompt = None;
     st.last_request = None;
     st.repeats = Default::default();
+    st.hidden.clear();
+    st.noticed.clear();
+    st.checked_in = false;
     st.epoch += 1;
     st.turn_start = 0;
     emit(&st.events, AgentEvent::HistoryCleared);
@@ -1566,6 +1603,7 @@ async fn start_turn(
         }
         st.system = full_system(&st);
         st.turn_start = st.history.len();
+        st.noticed.clear();
         st.turns += 1;
         st.ck_stop = None;
         st.reply_boost = 1;
@@ -1771,6 +1809,9 @@ async fn prepare(
     let (_, cfg, model) = st.target.get();
     let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
+    if !st.hidden.is_empty() {
+        attach_hidden(&mut req.messages, crate::supervise::watch::hidden_block(&st.hidden));
+    }
     req.tools = specs;
     req.no_tool_call = no_tool_call;
     req.max_tokens = reply_tokens(st);
@@ -2111,6 +2152,7 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             let mut st = state.lock().await;
             if !msg.content.is_empty() {
                 st.history.push(msg.clone());
+                st.hidden.clear();
                 if let Err(e) = st.session.append(&msg) {
                     notice(&events, Level::Warn, format!("cannot save the session: {e}"));
                 }
@@ -2317,6 +2359,9 @@ async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
             }
         }
         push_results(&state, results).await;
+        if !cancelled {
+            watch_round(&state).await;
+        }
         if cancelled {
             return TurnEnd::Interrupted;
         }
@@ -2920,6 +2965,7 @@ fn add_usage_priced(
             UsageKind::Reader => "reader",
             UsageKind::Compact => "compact",
             UsageKind::Suggest => "suggest",
+            UsageKind::CheckIn => "check_in",
             UsageKind::Review => "review",
             UsageKind::Sum => "sum",
         };
@@ -4009,15 +4055,9 @@ const SUGGEST_ASK: &str = "Suggest the next message the user is most likely to s
 /// The longest reply of a prompt suggestion's request.
 const SUGGEST_TOKENS: u32 = 200;
 
-/// The request of a prompt suggestion: the last request of the conversation as it was sent (the same system
-/// prompt, tools, tool choice and messages, so the provider's cache of it is hit), the reply it got, and one
-/// more message from the person that asks for the suggestion.
-fn suggest_request(last: &ModelRequest, reply: Message, levels: &[String]) -> ModelRequest {
-    let mut req = last.clone();
-    req.messages.push(reply);
-    req.messages.push(Message::user(SUGGEST_ASK));
-    // a guess of a dozen words: no thinking first (or the least the model takes, where off is not a level it
-    // has), and a cap that keeps it cheap on any model
+/// A side request that needs a few words: no thinking first (or the least the model takes, where off is not a
+/// level it has), and a cap that keeps it cheap on any model.
+fn lean(req: &mut ModelRequest, levels: &[String], tokens: u32) {
     let has = |l: &str| levels.iter().any(|x| x == l);
     req.reasoning = Some(if has("minimal") && !has("off") && !has("none") {
         ReasoningConfig::Effort(Effort::Minimal)
@@ -4026,7 +4066,17 @@ fn suggest_request(last: &ModelRequest, reply: Message, levels: &[String]) -> Mo
     } else {
         ReasoningConfig::Off
     });
-    req.max_tokens = SUGGEST_TOKENS;
+    req.max_tokens = tokens;
+}
+
+/// The request of a prompt suggestion: the last request of the conversation as it was sent (the same system
+/// prompt, tools, tool choice and messages, so the provider's cache of it is hit), the reply it got, and one
+/// more message from the person that asks for the suggestion.
+fn suggest_request(last: &ModelRequest, reply: Message, levels: &[String]) -> ModelRequest {
+    let mut req = last.clone();
+    req.messages.push(reply);
+    req.messages.push(Message::user(SUGGEST_ASK));
+    lean(&mut req, levels, SUGGEST_TOKENS);
     req
 }
 
@@ -4057,6 +4107,116 @@ fn tidy_suggestion(text: &str) -> Option<String> {
 /// `AgentCommand::Suggest`: a guess at the person's next message, in a task of its own so the chat never waits
 /// for it. It is let go when the reply calls a tool or holds nothing, or when a new request started (or the
 /// conversation changed) while the call ran.
+/// What a check-in asks the loop to do: resume the session, with `text` as hidden context. `turns` and `epoch`
+/// tell the request it was made for, so an answer that arrives after anything else happened is let go.
+struct Resume {
+    turns: u32,
+    epoch: u64,
+    text: String,
+}
+
+const CHECK_IN_TOKENS: u32 = 400;
+
+/// Adds a note to the request about to be sent, never to the saved conversation: to the last message when it is
+/// the person's or holds tool results (as the guards' notes do), else as a message of its own.
+fn attach_hidden(messages: &mut Vec<Message>, text: String) {
+    match messages.last_mut() {
+        Some(m) if m.role == Role::User => m.content.push(Part::text(text)),
+        _ => messages.push(Message::user(text)),
+    }
+}
+
+/// The supervisor's plain counting over the request in progress, after a tool round: what it sees for the first
+/// time goes on the next request as a hidden note (`agent.watch`).
+async fn watch_round(state: &Shared) {
+    let mut st = state.lock().await;
+    if !st.config.agent.watch {
+        return;
+    }
+    let from = st.turn_start.min(st.history.len());
+    for f in crate::supervise::watch::scan_rounds(&st.history[from..]) {
+        if st.noticed.insert(f.key) {
+            st.hidden.push(f.text);
+        }
+    }
+}
+
+/// A stopped session whose work looks unfinished (or that the supervisor asks to look at itself): one background
+/// request to its own model, with the evidence, no tools offered to act on and no trace in the conversation.
+/// CONTINUE resumes the session through `tx`; DONE, or an answer that is not clear, changes nothing. At most one
+/// per request of the person, and none when something else will wake the session.
+async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::sync::mpsc::UnboundedSender<Resume>) {
+    let (req, cfg, client, retries, events, stamp) = {
+        let mut st = state.lock().await;
+        let a = &st.config.agent;
+        if !a.check_in || st.checked_in || st.perm.mode == PermissionMode::Plan {
+            return;
+        }
+        if (st.goal.is_some() && st.goal_state.is_active())
+            || !st.inbox.is_empty()
+            || !st.mail_wait.is_empty()
+            || st.jobs.running() > 0
+            || !st.jobs.untold().is_empty()
+        {
+            return;
+        }
+        let spent = budget::verdict(st.cost, budget::spent_today(), st.budget, a.max_cost_day);
+        if matches!(spent, budget::Verdict::Stop(_)) {
+            return;
+        }
+        let Some(last) = st.last_request.clone() else { return };
+        let Some(reply) = st.history.last().filter(|m| m.role == Role::Assistant && m.tool_calls().next().is_none())
+        else {
+            return;
+        };
+        let (_, cfg, model) = st.target.get();
+        if last.model != model {
+            return;
+        }
+        let from = st.turn_start.min(st.history.len());
+        let mut evidence: Vec<String> = extra.map(|e| e.chars().take(1000).collect()).into_iter().collect();
+        evidence
+            .extend(crate::supervise::watch::scan_end(&st.history[from..], &reply.text()).into_iter().map(|f| f.text));
+        evidence.retain(|e| !e.trim().is_empty());
+        if evidence.is_empty() {
+            return;
+        }
+        let mut req = last;
+        req.messages.push(reply.clone());
+        req.messages.push(Message::user(crate::supervise::watch::check_in_ask(&evidence)));
+        lean(&mut req, cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]), CHECK_IN_TOKENS);
+        st.checked_in = true;
+        (req, cfg, st.client.clone(), st.config.agent.retries, st.events.clone(), (st.turns, st.epoch))
+    };
+    let state = state.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let Ok(mut stream) = client.stream(&cfg, &req, retries).await else { return };
+        let mut c = Collector::for_model(req.model.clone());
+        while let Some(ev) = stream.next().await {
+            let failed = matches!(ev, StreamEvent::Error(_));
+            c.push(ev);
+            if failed {
+                break;
+            }
+        }
+        let msg = c.message();
+        if !c.usage.is_empty() {
+            let mut st = state.lock().await;
+            add_usage(&mut st, &events, &req.model, c.usage, Usage::default(), UsageKind::CheckIn);
+        }
+        if c.error.is_some() {
+            return;
+        }
+        if let crate::supervise::watch::Answer::Continue(next) = crate::supervise::watch::parse_answer(&msg.text()) {
+            let said = if next.is_empty() { String::new() } else { format!(": {next}") };
+            let text =
+                format!("The automatic check-in asked whether the task is finished and the answer was CONTINUE{said}");
+            let _ = tx.send(Resume { turns: stamp.0, epoch: stamp.1, text });
+        }
+    });
+}
+
 fn spawn_suggest(state: &Shared) {
     let state = state.clone();
     tokio::spawn(async move {
@@ -4281,6 +4441,9 @@ async fn clear(state: &Shared) {
     st.last_prompt = None;
     st.last_request = None;
     st.repeats = Default::default();
+    st.hidden.clear();
+    st.noticed.clear();
+    st.checked_in = false;
     st.epoch += 1;
     st.reads.clear();
     st.digests.clear();

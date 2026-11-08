@@ -287,6 +287,16 @@ pub struct AgentConfig {
     /// the tool choice, so it finds the prompt cache; only if the model calls a tool all the same does one
     /// more call tell the protocol that none may be called.
     pub guard_answer: bool,
+    /// Notes the supervisor adds to the NEXT model request when plain counting sees the session go wrong: the
+    /// same call again and again, a failing command re-run unchanged, edits that undo each other, a long run
+    /// of reads, a turn that ends with open todo items or a failed test. They ride on that request only (not
+    /// saved in the conversation) and cost no model call.
+    pub watch: bool,
+    /// When a turn ended with work that looks unfinished by those signals and nothing will wake the session
+    /// (no active goal, nothing queued), one background request asks the session's own model whether the
+    /// task is finished: DONE changes nothing, CONTINUE resumes the session with the reply as hidden context.
+    /// At most one per request of the person; it is never shown as a message and has no tools.
+    pub check_in: bool,
     /// A background shell command still running after this many seconds is weighed by one request of its
     /// own, apart from the conversation and with no tools: the command, how long it has run, how much it
     /// printed since the last look, the end of its output and the request in progress. The answer is one
@@ -321,6 +331,8 @@ impl Default for AgentConfig {
             loop_guard: 3,
             stale_guard: 6,
             guard_answer: true,
+            watch: true,
+            check_in: true,
             job_review: 600,
             worktree_setup: Vec::new(),
         }

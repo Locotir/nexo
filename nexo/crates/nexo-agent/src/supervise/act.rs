@@ -21,8 +21,6 @@ const OUTCOME_WAIT: Secs = 600;
 /// The same alert is not sent again within this time.
 const ALERT_AGAIN: Secs = 3600;
 const MAX_NUDGE: usize = 2000;
-/// What a message from the supervisor starts with in the live session.
-pub const NEXO_MARK: &str = "[supervisor]";
 
 impl Supervisor {
     /// Whether the supervisor leaves this session alone.
@@ -99,11 +97,11 @@ impl Supervisor {
         t.ask_pending.is_some() || (finished && state == State::Stalled)
     }
 
-    /// Say it to the live session: the host delivers it as a message marked as the supervisor's.
+    /// Say it to the live session: the host hands it to the session as evidence for its own check-in.
     fn nudge_nexo(&mut self, key: &str, text: &str, rule: &str, now: Secs) -> bool {
         let Some(n) = self.nexo.clone() else { return false };
         let before = self.entries.get(key).and_then(|e| e.track.last_activity);
-        n.send_nudge(key, &format!("{NEXO_MARK} {text}"), now);
+        n.send_nudge(key, text, false);
         self.ledgers.entry(key.to_string()).or_default().note_delivery(before, now);
         self.record(now, key, "internal", "nudge", rule, text, true);
         self.say(key, format!("nudged: {rule}"), now);
@@ -261,7 +259,7 @@ impl Supervisor {
         if self.nexo_target(key) && self.entries.get(key).is_some_and(|e| e.source == SourceKind::Nexo) {
             // the live session takes it at once, as a message
             if let Some(n) = self.nexo.clone() {
-                n.send_nudge(key, &format!("{NEXO_MARK} {text}"), now);
+                n.send_nudge(key, &text, true);
                 self.record(now, key, "panel", "nudge", "manual", &text, true);
                 self.say(key, "your message was sent".into(), now);
                 self.version += 1;

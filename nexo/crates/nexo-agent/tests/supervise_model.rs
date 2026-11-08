@@ -127,15 +127,16 @@ fn nexo_session(src: &NexoSource, text: &str, at: i64) {
 }
 
 #[test]
-fn a_live_session_with_an_open_question_gets_a_marked_message_once() {
+fn a_live_session_with_an_open_question_gets_evidence_for_its_check_in_once() {
     let src = NexoSource::default();
     let mut s = Setup::none().supervisor(Policy::parse("interval_secs = 0").unwrap(), src.clone());
     nexo_session(&src, "Shall I go on with the plan?", 1000);
     s.tick(1000 + 400);
     let sent = src.take_nudges();
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert_eq!(sent[0].0, "s1");
-    assert!(sent[0].1.starts_with("[supervisor] "), "{}", sent[0].1);
+    assert_eq!(sent[0].key, "s1");
+    assert!(!sent[0].manual, "an automatic nudge is not the person's message");
+    assert!(!sent[0].text.contains("[supervisor]"), "{}", sent[0].text);
     s.tick(1000 + 410);
     assert!(src.take_nudges().is_empty(), "the cool-down holds the next one back");
 }
@@ -162,4 +163,17 @@ fn a_paused_live_session_gets_nothing() {
 
 fn secret() -> String {
     format!("sk-{}", "a1B2c3D4".repeat(5))
+}
+
+#[test]
+fn a_message_typed_in_the_panel_stays_the_persons_own() {
+    let src = NexoSource::default();
+    let mut s = Setup::none().supervisor(Policy::parse("interval_secs = 0").unwrap(), src.clone());
+    nexo_session(&src, "All done.", 1000);
+    s.tick(1010);
+    s.queue_manual("s1", "please also run the linter", 1020);
+    let sent = src.take_nudges();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].manual);
+    assert_eq!(sent[0].text, "please also run the linter");
 }

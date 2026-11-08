@@ -34,9 +34,9 @@ struct Inner {
     model: Option<String>,
     /// Sub-agents still running, by key.
     running: Vec<String>,
-    /// Nudges the supervisor wants delivered to this session: session key, text, moment.
-    outbox: VecDeque<(String, String, Secs)>,
-    /// The next turn starts from a supervisor nudge, not from the person.
+    /// What the supervisor wants delivered to this session, oldest first.
+    outbox: VecDeque<Nudge>,
+    /// The next turn is the supervisor's resume after a check-in, not the person's.
     nudge_turn: bool,
     /// The next turn starts from mail of another session, not from the person.
     mail_turn: bool,
@@ -48,6 +48,16 @@ impl Inner {
     fn key(&self) -> String {
         self.key.clone().unwrap_or_else(|| LOCAL_KEY.to_string())
     }
+}
+
+/// Something the supervisor wants said to a live session. A `manual` one is a message the person typed in the
+/// panel: it goes in as their own message. Any other is evidence for the session's check-in, which asks its
+/// own model whether the task is finished and shows nothing in the conversation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nudge {
+    pub key: String,
+    pub text: String,
+    pub manual: bool,
 }
 
 /// A handle shared by the host that feeds events and the supervisor that reads them.
@@ -82,24 +92,19 @@ impl NexoSource {
     }
 
     /// The supervisor asks for a message to this session (the host delivers it).
-    pub fn send_nudge(&self, key: &str, text: &str, now: Secs) {
+    pub fn send_nudge(&self, key: &str, text: &str, manual: bool) {
         if let Ok(mut g) = self.inner.lock() {
             if g.outbox.len() >= OUTBOX_MAX {
                 g.outbox.pop_front();
             }
-            g.outbox.push_back((key.to_string(), text.to_string(), now));
+            g.outbox.push_back(Nudge { key: key.to_string(), text: text.to_string(), manual });
         }
     }
 
-    /// What the supervisor wants said to this session; the host sends each as a message. Taking some marks
-    /// the next turn as started by the supervisor, not by the person.
-    pub fn take_nudges(&self) -> Vec<(String, String)> {
+    /// What the supervisor wants said to this session; the host delivers each.
+    pub fn take_nudges(&self) -> Vec<Nudge> {
         let Ok(mut g) = self.inner.lock() else { return Vec::new() };
-        let out: Vec<(String, String)> = g.outbox.drain(..).map(|(k, t, _)| (k, t)).collect();
-        if !out.is_empty() {
-            g.nudge_turn = true;
-        }
-        out
+        g.outbox.drain(..).collect()
     }
 
     /// Whether a nudge waits for delivery.
@@ -149,6 +154,12 @@ fn translate(g: &mut Inner, ev: &AgentEvent, now: Secs) -> Vec<Observation> {
         AgentEvent::ModelChanged { model, .. } => {
             g.model = Some(model.clone());
             out.push(mk(ObsKind::Spend { usd: g.cost, model: g.model.clone() }));
+        }
+        AgentEvent::History { message, .. }
+            if message.role == nexo_core::message::Role::User
+                && message.text().trim() == nexo_core::agent::SUPERVISOR_RESUME_MARK =>
+        {
+            g.nudge_turn = true;
         }
         AgentEvent::TurnStart { .. } => {
             g.text.clear();
@@ -313,14 +324,16 @@ mod nudge_tests {
     use super::*;
 
     #[test]
-    fn a_nudge_is_taken_once_and_its_turn_is_not_the_persons() {
+    fn a_nudge_is_taken_once_and_a_resume_turn_is_not_the_persons() {
         let s = NexoSource::new();
         assert!(!s.has_nudges());
-        s.send_nudge("s1", "[supervisor] go on", 5);
+        s.send_nudge("s1", "go on", false);
         assert!(s.has_nudges());
-        assert_eq!(s.take_nudges(), vec![("s1".to_string(), "[supervisor] go on".to_string())]);
+        assert_eq!(s.take_nudges(), vec![Nudge { key: "s1".into(), text: "go on".into(), manual: false }]);
         assert!(s.take_nudges().is_empty());
         let mut me = s.clone();
+        let resume = nexo_core::message::Message::user(nexo_core::agent::SUPERVISOR_RESUME_MARK);
+        s.observe(&AgentEvent::History { index: 4, message: resume }, 9);
         s.observe(&AgentEvent::TurnStart { turn: 1 }, 10);
         let obs = me.poll(11);
         assert!(obs.iter().all(|o| o.kind != ObsKind::UserInput), "{obs:?}");

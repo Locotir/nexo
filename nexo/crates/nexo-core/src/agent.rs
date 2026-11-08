@@ -240,6 +240,14 @@ pub enum AgentCommand {
     /// Ask for a suggestion of the person's next message, made from the last request of the conversation; answered
     /// with `Suggestion`, or with nothing when there is none. The interface sends it when a turn ends.
     Suggest,
+    /// The supervisor asks the session to look at its own work once it has stopped: `evidence` is what it saw.
+    /// One background request to the session's model (no tools, never shown as a message) decides: DONE leaves
+    /// the session as it is, CONTINUE resumes it with the answer as hidden context. Ignored while a turn runs,
+    /// when a goal or a queued request will wake the session, when `agent.check_in` is off, or when this request
+    /// of the person was checked already.
+    CheckIn {
+        evidence: String,
+    },
     Shutdown,
 }
 
@@ -309,6 +317,9 @@ pub const HOOK_CONTEXT_END: &str = "</hook-context>";
 pub const GOAL_SET_MARK: &str = "[goal set]";
 /// What the loop sends in the person's place to keep a goal going.
 pub const GOAL_CONTINUE_MARK: &str = "[goal: continue]";
+/// What the loop sends in the person's place to resume a session after the supervisor's check-in said CONTINUE;
+/// what to do next travels as hidden context of that request.
+pub const SUPERVISOR_RESUME_MARK: &str = "[supervisor: continue]";
 /// How a goal the agent restated (`goal_brief`) begins.
 pub const GOAL_BRIEF_HEAD: &str = "Want: ";
 

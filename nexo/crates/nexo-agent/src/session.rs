@@ -57,6 +57,8 @@ pub enum UsageKind {
     Suggest,
     /// The look at a long background command (`job_review`).
     Review,
+    /// The supervisor's check-in on a session that stopped (`agent.check_in`).
+    CheckIn,
     /// Everything spent so far, written in one line when the file is rewritten.
     Sum,
 }
