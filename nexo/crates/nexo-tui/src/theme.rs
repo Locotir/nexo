@@ -59,8 +59,8 @@ pub struct Theme {
 }
 
 pub const NAMES: &[&str] = &[
-    "dark",
     "nexo",
+    "dark",
     "light",
     "mono",
     "catppuccin-mocha",
@@ -473,8 +473,8 @@ impl Theme {
 
     pub fn by_name(name: &str) -> Option<Theme> {
         match name.trim().to_ascii_lowercase().replace('_', "-").as_str() {
-            "dark" | "default" | "" | "ansi" => Some(Theme::dark()),
-            "nexo" => Some(Theme::nexo()),
+            "nexo" | "default" | "" => Some(Theme::nexo()),
+            "dark" | "ansi" => Some(Theme::dark()),
             "light" => Some(Theme::light()),
             "mono" | "none" | "plain" => Some(Theme::mono()),
             "catppuccin-mocha" | "catppuccin" | "mocha" => Some(Theme::catppuccin_mocha()),
@@ -487,8 +487,8 @@ impl Theme {
         }
     }
 
-    /// The theme asked for (`auto`: `light` on a light terminal background, else `dark`;
-    /// `dark` when unknown), unless `NO_COLOR` is set;
+    /// The theme asked for (`auto`: `light` on a light terminal background, else `nexo`;
+    /// `nexo` when unknown), unless `NO_COLOR` is set;
     /// mapped to the 256-colour cube when the terminal has no 24-bit colour.
     pub fn pick(name: &str) -> Theme {
         if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
@@ -499,10 +499,10 @@ impl Theme {
             if light_background(v.as_deref()) {
                 Theme::light()
             } else {
-                Theme::dark()
+                Theme::nexo()
             }
         } else {
-            Theme::by_name(name).unwrap_or_else(Theme::dark)
+            Theme::by_name(name).unwrap_or_else(Theme::nexo)
         };
         if truecolor_terminal() {
             t
@@ -964,8 +964,10 @@ mod tests {
         assert_eq!(Theme::by_name("Catppuccin").unwrap().name, "catppuccin-mocha");
         assert_eq!(Theme::by_name("tokyonight").unwrap().name, "tokyo-night");
         assert!(Theme::by_name("neon").is_none());
-        assert_eq!(Theme::by_name("").unwrap().name, "dark");
-        assert_eq!(Theme::pick("no-such-theme").name, "dark");
+        assert_eq!(Theme::by_name("").unwrap().name, "nexo", "nexo is the default theme");
+        assert_eq!(Theme::by_name("default").unwrap().name, "nexo");
+        assert_eq!(&NAMES[..2], &["nexo", "dark"], "nexo first, dark always second");
+        assert_eq!(Theme::pick("no-such-theme").name, "nexo");
     }
 
     #[test]

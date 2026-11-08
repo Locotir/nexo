@@ -708,7 +708,7 @@ policy = "auto"                     # auto (curator if found) | plain | curator 
 # curator_spec = "eoq=24000"        # settings for the curator, key=value;... (see the README)
 
 [ui]
-theme = "dark"                      # dark | nexo | light | mono | catppuccin-mocha | gruvbox | nord | dracula | solarized-dark | tokyo-night
+theme = "nexo"                      # nexo | dark | light | mono | catppuccin-mocha | gruvbox | nord | dracula | solarized-dark | tokyo-night
 notify_after = 15                   # ring when a turn this long (s) ends; 0: never
 mouse = true
 show_reasoning = true

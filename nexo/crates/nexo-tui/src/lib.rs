@@ -112,7 +112,7 @@ impl Default for TuiOptions {
             providers: Vec::new(),
             notify_after: 15,
             vim: false,
-            theme: "dark".into(),
+            theme: "nexo".into(),
             mouse: true,
             show_reasoning: true,
             timestamps: true,

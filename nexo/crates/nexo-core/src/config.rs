@@ -445,7 +445,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> UiConfig {
         UiConfig {
-            theme: "dark".into(),
+            theme: "nexo".into(),
             mouse: true,
             show_reasoning: true,
             fold_after: 12,
@@ -1287,5 +1287,13 @@ mod ui_tests {
         assert!(t.permissions.sandbox_network);
         let c = load_pair(user, "[permissions]\nsandbox = \"read-only\"\n", false);
         assert_eq!(c.permissions.sandbox, SandboxMode::ReadOnly, "a project may tighten it");
+    }
+}
+
+#[cfg(test)]
+mod theme_default_tests {
+    #[test]
+    fn a_fresh_config_uses_the_nexo_theme() {
+        assert_eq!(super::Config::default().ui.theme, "nexo");
     }
 }
