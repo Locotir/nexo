@@ -429,8 +429,12 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
     }
     plans.abort();
     drop(term);
+    let hint = app.resume_hint();
     if let Some(text) = dump {
         println!("{text}");
+    }
+    if let Some(h) = hint {
+        println!("{h}");
     }
     Ok(())
 }

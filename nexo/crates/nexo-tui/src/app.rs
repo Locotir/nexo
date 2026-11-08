@@ -4041,6 +4041,15 @@ impl App {
         }
     }
 
+    /// The line printed when the interface closes on a session something was said in: how to come back to it.
+    pub fn resume_hint(&self) -> Option<String> {
+        let id = self.session_id.as_deref()?;
+        self.blocks
+            .iter()
+            .any(|b| matches!(b, Block::User { .. }))
+            .then(|| format!("nexo --resume {id}   (or nexo -c here)"))
+    }
+
     fn nothing_chosen(&self) -> bool {
         self.locked && self.opts.provider.is_empty()
     }
@@ -5610,6 +5619,15 @@ mod tests {
             Ok(AgentCommand::Submit { attachments, .. }) => assert_eq!(attachments, vec![Attachment { path: shot }]),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn closing_on_a_session_with_a_request_says_how_to_resume_it() {
+        let (mut a, _rx) = app();
+        a.session_id = Some("20261108-050000-ab12".into());
+        assert_eq!(a.resume_hint(), None, "nothing said, nothing to resume");
+        a.push(Block::User { text: "hi".into(), at: None });
+        assert_eq!(a.resume_hint().as_deref(), Some("nexo --resume 20261108-050000-ab12   (or nexo -c here)"));
     }
     #[test]
     fn commands_and_submissions_reach_the_agent() {
