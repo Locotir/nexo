@@ -4023,6 +4023,18 @@ impl App {
     /// `/model`: the configured models to switch to, and the guided setup of a new one.
     /// The provider in use is a subscription (a login): its prices are API value, not money spent.
     /// The interface started with no provider chosen and none has been since.
+    /// The request given on the command line: sent at once, or left in the input while no model is
+    /// chosen yet, to send once one is.
+    pub fn start_with(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        self.input.set_text(text);
+        if !self.opts.provider.is_empty() {
+            self.submit();
+        }
+    }
+
     fn nothing_chosen(&self) -> bool {
         self.locked && self.opts.provider.is_empty()
     }
@@ -5086,6 +5098,7 @@ mod tests {
             status_line: vec![],
             status_command: String::new(),
             vim: false,
+            prompt: None,
             session_id: None,
             sessions: vec![],
             skills: vec![],
@@ -5567,6 +5580,17 @@ mod tests {
         assert!(!a.follow);
     }
 
+    #[test]
+    fn a_first_request_from_the_command_line_is_sent_or_kept_until_a_model_is_chosen() {
+        let (mut a, mut rx) = app();
+        a.start_with("fix the failing test");
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::Submit { text, .. }) if text == "fix the failing test"));
+        let (mut a, mut rx) = app();
+        a.opts.provider.clear();
+        a.start_with("fix the failing test");
+        assert!(rx.try_recv().is_err(), "nothing to send it to yet");
+        assert_eq!(a.input.full_text(), "fix the failing test");
+    }
     #[test]
     fn commands_and_submissions_reach_the_agent() {
         let (mut a, mut rx) = app();

@@ -32,6 +32,7 @@ fn app() -> App {
         status_line: vec![],
         status_command: String::new(),
         vim: false,
+        prompt: None,
         session_id: Some("20261106-100000-ab12".into()),
         sessions: vec![],
         skills: vec![],

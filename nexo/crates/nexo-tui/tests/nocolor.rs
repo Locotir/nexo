@@ -33,6 +33,7 @@ fn app(theme: &str) -> App {
         status_line: vec![],
         status_command: String::new(),
         vim: false,
+        prompt: None,
         session_id: Some("20261102-100000-ef56".into()),
         sessions: vec![],
         skills: vec![],

@@ -33,6 +33,7 @@ fn app() -> App {
         notify_after: 15,
         animations: false,
         vim: false,
+        prompt: None,
         session_id: Some("20261027-120000-ab12".into()),
         sessions: vec![],
         skills: vec![],

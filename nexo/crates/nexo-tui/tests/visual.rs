@@ -36,6 +36,7 @@ fn app(animations: bool) -> App {
         status_line: vec![],
         status_command: String::new(),
         vim: false,
+        prompt: None,
         session_id: Some("20261101-120000-cd34".into()),
         sessions: vec![],
         skills: vec![],

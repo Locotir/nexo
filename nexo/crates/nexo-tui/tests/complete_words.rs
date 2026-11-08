@@ -36,6 +36,7 @@ fn app_with(theme: &str, complete: bool) -> App {
         notify_after: 15,
         animations: false,
         vim: false,
+        prompt: None,
         session_id: Some("20261102-100000-ef56".into()),
         sessions: vec![],
         skills: vec![],

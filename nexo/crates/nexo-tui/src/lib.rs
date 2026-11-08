@@ -92,6 +92,8 @@ pub struct TuiOptions {
     pub status_line: Vec<String>,
     /// `[ui] status_command`: a shell command whose first line of output is the status bar; empty: the pieces.
     pub status_command: String,
+    /// The first request, given on the command line (`nexo "fix the test"`): sent once the interface opens.
+    pub prompt: Option<String>,
     pub session_id: Option<String>,
     /// `(id, title)` of earlier sessions here, newest first.
     pub sessions: Vec<(String, String)>,
@@ -121,6 +123,7 @@ impl Default for TuiOptions {
             animations: true,
             status_line: Vec::new(),
             status_command: String::new(),
+            prompt: None,
             session_id: None,
             sessions: Vec::new(),
             skills: Vec::new(),
@@ -258,6 +261,9 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
     let mut app = App::new(opts, handle.commands.clone());
     // the requests sent before, kept between runs (↑ and Ctrl+R reach them)
     app.input.persist_history(nexo_core::paths::data_dir().join("prompt-history.jsonl"));
+    if let Some(first) = app.opts.prompt.take() {
+        app.start_with(&first);
+    }
     // what is left of each subscription plan: read now and every ten minutes, and on every response
     let plans = tokio::spawn(refresh_plans(app.opts.providers.clone()));
     let mut events = Keys::spawn();

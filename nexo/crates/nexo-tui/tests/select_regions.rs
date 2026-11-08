@@ -34,6 +34,7 @@ fn app() -> App {
         status_line: vec![],
         status_command: String::new(),
         vim: false,
+        prompt: None,
         session_id: None,
         sessions: vec![],
         skills: vec![],

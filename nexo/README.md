@@ -60,6 +60,7 @@ export DEEPSEEK_API_KEY=...     # or OPENAI_API_KEY, GEMINI_API_KEY, XAI_API_KEY
 cd your/project
 nexo                            # picks the first provider whose key is present
 nexo --provider openai --model gpt-5
+nexo "fix the failing test"     # opens the session and sends this first
 nexo -p "what does this repository do?"            # headless: prints the reply
 nexo -p "run the tests and fix what fails" --permission-mode auto --json
 nexo --continue                 # resume the latest session of this directory

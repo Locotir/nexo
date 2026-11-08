@@ -86,6 +86,7 @@ mod tests {
             notify_after: 15,
             animations: false,
             vim: false,
+            prompt: None,
             session_id: None,
             sessions: vec![],
             skills: vec![],

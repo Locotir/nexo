@@ -67,6 +67,9 @@ pub struct Args {
     /// Log to this file (RUST_LOG filters).
     #[arg(long, value_name = "FILE")]
     pub log: Option<PathBuf>,
+    /// The first request: the session opens and sends it (`nexo "fix the failing test"`).
+    #[arg(value_name = "PROMPT")]
+    pub first: Option<String>,
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
 }
@@ -757,6 +760,8 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
     }
 
     if let Some(prompt) = args.prompt.clone() {
+        // `nexo "question" -p`: the question is the request
+        let prompt = if prompt.is_empty() { args.first.clone().unwrap_or_default() } else { prompt };
         return crate::headless::run(config, cwd, picked, resume, prompt, args.json, args.headless).await;
     }
     if !args.headless.add_dir.is_empty() {
@@ -774,7 +779,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             _ => note,
         });
     }
-    interactive(config, cwd, picked, resume, unset).await
+    interactive(config, cwd, picked, resume, unset, args.first.clone()).await
 }
 
 async fn interactive(
@@ -783,6 +788,7 @@ async fn interactive(
     picked: Picked,
     resume: Option<String>,
     unset: bool,
+    first: Option<String>,
 ) -> anyhow::Result<i32> {
     let (handle, ends) = channels();
     let models = setup::model_choices(&config);
@@ -823,6 +829,7 @@ async fn interactive(
         status_command: config.ui.status_command.clone(),
         notify_after: config.ui.notify_after,
         vim: config.ui.vim,
+        prompt: first,
         session_id: resume,
         sessions,
         skills: nexo_core::skills::discover(&cwd, !config.agent.hermetic),
@@ -895,6 +902,20 @@ async fn headless_collect(
 #[cfg(test)]
 mod tests {
     use super::{key_arg, price_arg};
+
+    #[test]
+    fn a_bare_word_is_the_first_request_and_a_subcommand_stays_one() {
+        use clap::Parser;
+        let a = super::Args::try_parse_from(["nexo", "fix the failing test"]).unwrap();
+        assert_eq!(a.first.as_deref(), Some("fix the failing test"));
+        assert!(a.cmd.is_none());
+        let a = super::Args::try_parse_from(["nexo", "guide"]).unwrap();
+        assert!(matches!(a.cmd, Some(super::Cmd::Guide)));
+        assert!(a.first.is_none());
+        let a = super::Args::try_parse_from(["nexo", "-c", "--model", "m", "go on"]).unwrap();
+        assert_eq!(a.first.as_deref(), Some("go on"));
+        assert!(a.continue_);
+    }
 
     #[test]
     fn bench_key_dash_reads_stdin() {
