@@ -4727,3 +4727,32 @@ async fn a_request_naming_an_existing_file_attaches_it_once() {
     assert!(!third.contains("attached in full") && !third.contains("xxxx"), "{third}");
     r.stop().await;
 }
+
+/// A request that names a key file or a denied path does not send it to the provider unasked.
+#[tokio::test]
+async fn a_named_key_file_is_not_attached() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("config")).unwrap();
+    std::fs::create_dir_all(d.path().join("secrets")).unwrap();
+    std::fs::create_dir_all(d.path().join("sql")).unwrap();
+    std::fs::write(d.path().join("config/.env"), "TOKEN=hunter2\n").unwrap();
+    std::fs::write(d.path().join("secrets/app.key"), "PRIVATEKEYDATA\n").unwrap();
+    std::fs::write(d.path().join("sql/t.sql"), "select denied_marker;\n").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("one"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.permissions.deny = vec!["read(sql/**)".into()];
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit {
+        text: "never commit config/.env, rotate secrets/app.key, fix sql/t.sql".into(),
+        attachments: vec![],
+    });
+    r.turn().await;
+    let first = client.requests()[0].messages[0].text();
+    assert!(!first.contains("attached in full"), "{first}");
+    assert!(
+        !first.contains("hunter2") && !first.contains("PRIVATEKEYDATA") && !first.contains("denied_marker"),
+        "{first}"
+    );
+    r.stop().await;
+}

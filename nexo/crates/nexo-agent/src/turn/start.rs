@@ -499,6 +499,10 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachmen
         if String::from_utf8(bytes).is_err() {
             continue;
         }
+        // the same policy as `read`: key files ask, denied paths stay out
+        if st.perm.decide("read", ToolKind::Read, &serde_json::json!({ "path": word }), &st.cwd) != Decision::Allow {
+            continue;
+        }
         // attached to an earlier request: the conversation holds it
         let header = attached_header(word);
         if st.history.iter().any(|m| m.text().contains(&header)) {
