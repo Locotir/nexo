@@ -28,8 +28,7 @@ impl Tool for Edit {
                           occur exactly once; include a few surrounding lines to make it unique, or set \
                           `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
                           `edits`, a list of {old_string, new_string, replace_all} applied in order; if one fails \
-                          nothing is written. Several files: `files`. `check` runs a test or build after. \
-                          Answers with the changed lines and a diff."
+                          nothing is written. Several files: `files`. `check` runs a test or build after."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -38,13 +37,9 @@ impl Tool for Edit {
                     "old_string": {"type": "string", "description": "The exact text to replace."},
                     "new_string": {"type": "string", "description": "The text that replaces it (empty to delete)."},
                     "replace_all": {"type": "boolean", "description": "Replace every occurrence."},
-                    "edits": {"type": "array", "description": "Instead of the three above: several changes to this file, applied in order.", "items": {"type": "object", "properties": {
-                        "old_string": {"type": "string"},
-                        "new_string": {"type": "string"},
-                        "replace_all": {"type": "boolean"}
-                    }, "required": ["old_string", "new_string"]}},
-                    "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object"}}}, "required": ["path"]}},
-                    "check": {"type": "string", "description": "Command to run after; its exit and tail come back."}
+                    "edits": {"type": "array", "description": "Several changes to this file: [{old_string, new_string, replace_all}].", "items": {"type": "object"}},
+                    "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array"}}}},
+                    "check": {"type": "string", "description": "Command to run after; exit and tail come back."}
                 },
                 "required": []
             }),
