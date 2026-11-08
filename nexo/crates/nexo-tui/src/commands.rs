@@ -258,6 +258,14 @@ pub fn parse(line: &str) -> Option<Command> {
         if typed == "login" || typed == "signin" {
             return Some(Command::Login);
         }
+        // these took no argument before the fold and ignored any typed after them
+        let ignores = matches!(
+            typed.as_str(),
+            "yolo" | "mouse" | "timestamps" | "vim" | "context-live" | "live" | "map" | "tree"
+        );
+        if ignores {
+            arg = None;
+        }
         if !before.is_empty() {
             arg = Some(match arg {
                 Some(a) => format!("{before} {a}"),
@@ -360,12 +368,13 @@ pub fn parse(line: &str) -> Option<Command> {
             Some("live") => Command::ContextLive,
             Some(a) => Command::BadArgument("context".into(), a.to_string()),
         },
-        "settings" => match arg.as_deref() {
+        "settings" => match arg.as_deref().map(|a| a.split_whitespace().collect::<Vec<_>>()).as_deref() {
             None => Command::Status,
-            Some("mouse") => Command::Mouse,
-            Some("timestamps") => Command::Timestamps,
-            Some("vim") => Command::Vim,
-            Some(a) => Command::BadArgument("settings".into(), a.to_string()),
+            // `/settings mouse off` reads as `/settings mouse`: the key is the switch
+            Some(["mouse", ..]) => Command::Mouse,
+            Some(["timestamps", ..]) => Command::Timestamps,
+            Some(["vim", ..]) => Command::Vim,
+            Some(_) => Command::BadArgument("settings".into(), arg.clone().unwrap_or_default()),
         },
         "theme" => Command::Theme(arg),
         "copy" => Command::Copy(arg),
@@ -572,6 +581,38 @@ fn distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_hidden_alias_still_takes_the_arguments_it_took_before_the_fold() {
+        // before the fold these ignored whatever followed them
+        let ignoring = ["yolo", "mouse", "timestamps", "vim", "context-live", "live", "map", "tree", "login", "signin"];
+        for (old, parent, _) in HIDDEN {
+            let bare = parse(&format!("/{old}")).unwrap();
+            assert!(!matches!(bare, Command::BadArgument(..) | Command::Unknown(_)), "/{old}: {bare:?}");
+            assert!(lookup(old).is_some_and(|s| s.name == *parent), "/{old} does not resolve to /{parent}");
+            let args: &[&str] = match (ignoring.contains(old), *parent) {
+                (true, _) => &["on", "off", "toggle", "whatever x"],
+                (_, "permissions") => &["auto", "read-only"],
+                _ => &["s1", "x y"],
+            };
+            for a in args {
+                let got = parse(&format!("/{old} {a}")).unwrap();
+                assert!(!matches!(got, Command::BadArgument(..) | Command::Unknown(_)), "/{old} {a}: {got:?}");
+                if ignoring.contains(old) {
+                    assert_eq!(got, bare, "/{old} {a}");
+                }
+            }
+        }
+        for key in ["mouse", "timestamps", "vim"] {
+            let bare = parse(&format!("/settings {key}")).unwrap();
+            for v in ["on", "off"] {
+                assert_eq!(parse(&format!("/settings {key} {v}")), Some(bare.clone()), "/settings {key} {v}");
+            }
+        }
+        assert_eq!(parse("/settings mouse off"), Some(Command::Mouse));
+        assert_eq!(parse("/yolo off"), Some(Command::Permissions(Some(PermissionMode::Auto))));
+        assert_eq!(parse("/settings nonsense on"), Some(Command::BadArgument("settings".into(), "nonsense on".into())));
+    }
 
     #[test]
     fn parses_names_aliases_and_arguments() {
