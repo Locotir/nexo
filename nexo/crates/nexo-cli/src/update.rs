@@ -543,14 +543,36 @@ fn needs_installer(exe: &Path) -> bool {
 /// Puts the new build at `exe`: a file renamed into place, so a running nexo keeps working; Windows,
 /// which cannot replace a running program, renames the old one to `.old` first.
 fn place(new: &Path, exe: &Path) -> std::io::Result<()> {
+    place_with(new, exe, cfg!(windows), |from, to| std::fs::rename(from, to))
+}
+
+/// [`place`] with the operating system and the renaming made explicit. When the new file cannot take
+/// the place (a virus scanner holding it, on Windows), the old program is put back: nexo is never left missing.
+fn place_with(
+    new: &Path,
+    exe: &Path,
+    windows: bool,
+    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let next = exe.with_extension("new");
     std::fs::copy(new, &next)?;
-    if cfg!(windows) && exe.exists() {
-        let old = exe.with_extension("old");
+    let old = exe.with_extension("old");
+    let moved = windows && exe.exists();
+    if moved {
         let _ = std::fs::remove_file(&old);
-        std::fs::rename(exe, &old)?;
+        if let Err(e) = rename(exe, &old) {
+            let _ = std::fs::remove_file(&next);
+            return Err(e);
+        }
     }
-    std::fs::rename(&next, exe)
+    if let Err(e) = rename(&next, exe) {
+        if moved {
+            let _ = rename(&old, exe);
+        }
+        let _ = std::fs::remove_file(&next);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Runs the installer script (into `dir` when given); it installs what is missing and builds.
@@ -587,6 +609,29 @@ mod tests {
         assert!(notice(1).unwrap().contains("1 new commit,"));
         assert!(notice(4).unwrap().contains("4 new commits"));
         assert!(notice(4).unwrap().contains("restart nexo"));
+    }
+
+    #[test]
+    fn a_failed_replacement_on_windows_puts_the_old_program_back() {
+        let d = tempfile::tempdir().unwrap();
+        let (exe, new) = (d.path().join("nexo.exe"), d.path().join("fresh"));
+        std::fs::write(&exe, b"old").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+        // the last step fails, as when a virus scanner holds the new file
+        let refuse_new = |from: &Path, to: &Path| {
+            if from.extension().is_some_and(|e| e == "new") {
+                Err(std::io::Error::other("held by another program"))
+            } else {
+                std::fs::rename(from, to)
+            }
+        };
+        assert!(place_with(&new, &exe, true, refuse_new).is_err());
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old", "nexo is still there");
+        assert!(!exe.with_extension("new").exists(), "no half-placed file is left");
+        // and when it works, the new program is in place with the old one beside it
+        place_with(&new, &exe, true, |a, b| std::fs::rename(a, b)).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert_eq!(std::fs::read(exe.with_extension("old")).unwrap(), b"old");
     }
 
     #[test]
