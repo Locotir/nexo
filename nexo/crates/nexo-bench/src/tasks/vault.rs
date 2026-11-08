@@ -385,7 +385,7 @@ mod tests {
             wd.path(),
             "src/files.rs",
             "        Ok(self.base.join(name))\n",
-            "        if name.contains(\"..\") || name.starts_with('/') {\n            return Err(VaultError::Invalid(\"no\".into()));\n        }\n        Ok(self.base.join(name))\n",
+            "        if name.contains(\"..\") || std::path::Path::new(name).is_absolute() {\n            return Err(VaultError::Invalid(\"no\".into()));\n        }\n        Ok(self.base.join(name))\n",
         );
         let at = |p: &str| wd.path().join(p);
         std::fs::write(at("tests/files.rs"), "").unwrap();
