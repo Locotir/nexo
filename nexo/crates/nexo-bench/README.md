@@ -17,7 +17,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--model NAME` | the model | required |
 | `--key KEY` | the API key (leave out for a local server; `-` reads it from stdin, out of the process list) | none |
 | `--protocol P` | `anthropic`, `openai-chat`, `openai-responses`, `gemini` | guessed from the address |
-| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `more`, `hard`, `padded`), or the external benchmark's `repoqa` and `canonstep` (with `--llmb`), comma separated or repeated | `all` |
+| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `long2`, `more`, `hard`, `padded`), or the external benchmark's `repoqa` and `canonstep` (with `--llmb`), comma separated or repeated | `all` |
 | `--arms LIST` | arms, comma separated or repeated (see below) | `plain,compact,curator` |
 | `--repeats N` | times each task runs with each arm | 1 |
 | `--max-steps N` | most steps (model requests that offer tools) per task | 100 |
@@ -160,6 +160,9 @@ only make sense together.
 | `three-sessions` | more | three sessions; later ones need a number and a naming rule from the first |
 | `selective-revert` | more | the first of three edits is cancelled; the old code exists only in the history |
 | `stale-doc` | more | a correction to a file is given once, early; later the file is to be followed |
+| `quixote-windmills` | long2 | is Don Quixote hallucinating in Part I chapter VIII: verbatim quotes with part and chapter from three distant places of the 2 MB Spanish novel (downloaded once, SHA-256 checked, cached in `~/build-cache/bench-data`); the other chapter VIII is the decoy |
+| `quixote-island` | long2 | the island promised to Sancho, followed over four chapters hundreds of pages apart; the closing proverb is repeated in three other chapters |
+| `share-request` | long2 | document the exact request a small notes app's own front end sends (cookie, anti-forgery header, query, body keys) from a PHP page, a script, a Flask blueprint, middleware and settings; a deprecated v1 route and an unregistered handler are decoys |
 | `padded-revert-code` | padded | `selective-revert` across three files, with over 8,000 tokens of pasted material in between |
 | `padded-revert-data` | padded | the same in a data project: undo the first of three edits to a SQL transform and a CSV |
 | `realm` | hard | reverse engineering a game binary whose rule is spread over data, binary and save |
