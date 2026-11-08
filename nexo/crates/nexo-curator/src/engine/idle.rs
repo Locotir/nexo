@@ -234,7 +234,7 @@ impl Engine {
     /// How likely a reply within `hz` steps still draws on step `i`: the most likely of its units still in
     /// the view, by the need heads (`learn::Model::need_prob`); without them, of the parts of its outputs
     /// still in the view by the keep head, none for a step with no output left.
-    fn step_need(&self, i: usize, hz: f64) -> f64 {
+    pub(super) fn step_need(&self, i: usize, hz: f64) -> f64 {
         let mut p: f64 = 0.0;
         let heads = !MODEL.need.is_empty();
         for &mi in &self.steps[i].msgs {

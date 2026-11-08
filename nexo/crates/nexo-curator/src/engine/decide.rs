@@ -16,6 +16,17 @@ impl Engine {
         let sent = self.sent_vis.clone();
         let was_sent = |mi: usize| sent.contains(&mi);
         let mut quiet: Vec<(&'static str, usize)> = Vec::new();
+        // whether the other topics leave the view: decided when the topic changes, and again at each request of that
+        // turn while it is declined (what a cut costs grows with the turn, so a declined split mostly stays so)
+        let nt = self.goal.turns.len();
+        let switch = nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread;
+        let fresh = switch && self.split_turn != nt - 1;
+        if fresh {
+            self.split = self.split_now();
+            self.split_turn = nt - 1;
+        } else if switch && !self.split {
+            self.split = self.split_now();
+        }
         if let Some(mi) = self.unnudged.take().filter(|&mi| was_sent(mi)) {
             quiet.push(("miss_note", mi));
         }
@@ -30,7 +41,6 @@ impl Engine {
         let (warm, warm_all, cold) =
             if self.p.pockets != 0 { self.warm_now() } else { (usize::MAX, usize::MAX, false) };
         self.warm = warm;
-        let nt = self.goal.turns.len();
         // the oldest message closing steps changed in this request: the cache misses from there on
         let mut closed: Option<usize> = None;
         // a history with no request from the person yet has nothing to close, idle or bring back
@@ -71,6 +81,8 @@ impl Engine {
                 if !text.is_empty() {
                     self.frozen.insert(start, text);
                     self.bump("cards", 1);
+                } else if fresh && !self.split {
+                    self.bump("split_kept", 1);
                 }
                 self.bump("switches", 1);
                 switched = true;
@@ -85,7 +97,9 @@ impl Engine {
                     // (the message before it joins it when they are of the same role)
                     if let Some(p) = (0..sent.len()).find(|&p| vis.get(p) != Some(&sent[p])) {
                         let role = |m: usize| self.tr.msgs[m].get("role").and_then(Value::as_str);
-                        let joined = p > 0 && vis.get(p).is_some_and(|&m| role(m) == role(vis[p - 1]));
+                        let joined = p > 0
+                            && (vis.get(p).is_some_and(|&m| role(m) == role(vis[p - 1]))
+                                || role(sent[p]) == role(sent[p - 1]));
                         quiet.push((
                             "miss_switch",
                             if joined { vis[p - 1] } else { vis.get(p).map_or(sent[p], |&m| m.min(sent[p])) },

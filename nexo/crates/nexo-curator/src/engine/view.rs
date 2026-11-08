@@ -31,8 +31,8 @@ pub(super) struct Built {
     pub(super) fp: u64,
 }
 
-/// The visible messages, by (messages, start, turns) they were worked out for.
-pub(super) type Visible = ((usize, usize, usize), Arc<Vec<usize>>);
+/// The visible messages, by (messages, start, turns, split) they were worked out for.
+pub(super) type Visible = ((usize, usize, usize, bool), Arc<Vec<usize>>);
 
 /// ``more`` blocks at the end of message ``m``'s content. A text block left empty (a message that came with
 /// no text) goes: providers refuse an empty text block, and what is added says more than it.
@@ -45,7 +45,7 @@ pub(super) fn add_blocks(m: &mut Value, more: impl IntoIterator<Item = Value>) {
 
 impl Engine {
     pub(super) fn visible(&mut self) -> Arc<Vec<usize>> {
-        let key = (self.tr.msgs.len(), self.start, self.goal.turns.len());
+        let key = (self.tr.msgs.len(), self.start, self.goal.turns.len(), self.split);
         if let Some((k, v)) = &self.vis {
             if *k == key {
                 return v.clone();
@@ -379,29 +379,103 @@ impl Engine {
         self.render()
     }
 
-    /// Whether the other topics leave the view: always, unless `Params.apart` asks them to hold that many
-    /// tokens together first. Below it the whole conversation stays, as without topics.
+    /// Whether the other topics leave the view. Decided once for each request (`split_now`) and kept until the
+    /// next change of topic: below that the whole conversation stays, as without topics.
     pub(super) fn apart(&self) -> bool {
+        self.split
+    }
+
+    /// The tokens each topic other than the active one holds (apart from the first message), and the tokens the
+    /// active one holds from the first message that leaves on: what a cut there reads again.
+    fn topic_tokens(&self) -> (Vec<(usize, i64)>, i64) {
+        let g = &self.goal;
+        let n = self.tr.msgs.len();
+        let spans = |k: usize| g.members[k].iter().map(move |&j| g.span(j, n));
+        let others: Vec<(usize, i64)> = g
+            .others()
+            .into_iter()
+            .map(|k| (k, spans(k).map(|(a, b)| self.sizes[a.max(1).min(b)..b].iter().sum::<i64>()).sum()))
+            .collect();
+        let first_out = others
+            .iter()
+            .flat_map(|&(k, _)| spans(k))
+            .filter(|&(a, b)| b > a.max(1) && self.sizes[a.max(1)..b].iter().any(|&s| s > 0))
+            .map(|(a, _)| a.max(1))
+            .min()
+            .unwrap_or(n);
+        let on = spans(g.active()).map(|(a, b)| self.sizes[a.max(first_out).min(b)..b].iter().sum::<i64>()).sum();
+        (others, on)
+    }
+
+    /// Whether the other topics should leave the view from this request on: an economic decision, priced
+    /// like the rent. They leave if they hold `Params.apart` tokens together (`apart <= 0`: always) and the
+    /// gain is positive: the cache reads they would cost to the horizon (`ratio` of their tokens each),
+    /// less the rewrite that cuts them (the anchor, the cards and the kept messages after the first change,
+    /// read again without the cache, at the `margin`), less the chance each is needed again times the recall
+    /// that brings it back.
+    pub(super) fn split_now(&mut self) -> bool {
         if self.p.apart <= 0 || self.goal.turns.is_empty() {
             return true;
         }
-        let g = &self.goal;
+        let (others, on) = self.topic_tokens();
+        let x: i64 = others.iter().map(|o| o.1).sum();
+        if x < self.p.apart {
+            return false;
+        }
+        let r = self.p.ratio.clamp(0.0, 1.0);
+        // the view as the whole conversation would send it
+        let held = std::mem::replace(&mut self.split, false);
+        let v = self.sizes_now().iter().sum::<i64>() as f64;
+        self.split = held;
+        let hz = self.horizon(self.tr.steps.len(), v as i64);
+        let rewrite = {
+            let cards = self.cards_body();
+            let anchor = crate::json::est_str(&self.map_text) + crate::json::est_str(&cards);
+            // (a view that is split already is read again at a change of topic either way: the other choice is the whole one)
+            if held {
+                (anchor + on) as f64 - v
+            } else {
+                (anchor + on) as f64
+            }
+        };
+        let mut gain = r * hz * x as f64 - self.p.margin * (1.0 - r) * rewrite;
+        if gain <= 0.0 {
+            return false;
+        }
+        // what each leaving topic would cost to need: the most likely of its steps, or the classifier's own
+        // doubt that the latest request is not of that topic
+        self.need_context();
         let n = self.tr.msgs.len();
-        let on: i64 = g.members[g.active()]
-            .iter()
-            .map(|&j| {
-                let (a, b) = g.span(j, n);
-                self.sizes[a.max(1)..b].iter().sum::<i64>()
-            })
-            .sum();
-        let rest: i64 = self.sizes[1.min(n)..].iter().sum::<i64>() - on;
-        rest >= self.p.apart
+        for (k, xk) in others {
+            let spans: Vec<(usize, usize)> = self.goal.members[k].iter().map(|&j| self.goal.span(j, n)).collect();
+            let mut need = self.goal.joint.get(k).copied().unwrap_or(0.0);
+            for i in 0..self.steps.len() {
+                let at = self.steps[i].place();
+                if spans.iter().any(|&(a, b)| (a..b).contains(&at)) {
+                    need = need.max(self.step_need(i, hz));
+                }
+            }
+            gain -= need * ((1.0 - r) * xk as f64 + r * v);
+            if gain <= 0.0 {
+                return false;
+            }
+        }
+        true
     }
 
     pub(super) fn cards_text(&self) -> String {
+        if self.apart() {
+            self.cards_body()
+        } else {
+            String::new()
+        }
+    }
+
+    /// The cards of the other topics, as they would be sent were they to leave.
+    fn cards_body(&self) -> String {
         let g = &self.goal;
         let others = g.others();
-        if others.is_empty() || !self.apart() {
+        if others.is_empty() {
             return String::new();
         }
         let n = self.tr.msgs.len();

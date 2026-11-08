@@ -916,7 +916,16 @@ mod tests {
                 let now = got["stats"].get("miss").and_then(Value::as_i64).unwrap_or(0);
                 if !edited {
                     if let Some(p) = (0..prev.len()).find(|&p| view.get(p) != Some(&prev[p])) {
-                        let behind: i64 = view[p..].iter().map(json::est).sum();
+                        // (a message that joined the one before it in the view changes from its first block that differs)
+                        let behind: i64 = match view.get(p) {
+                            Some(v) => {
+                                let (new, old) = (msg::blocks(v.get("content")), msg::blocks(prev[p].get("content")));
+                                let b = (0..new.len().min(old.len())).find(|&b| new[b] != old[b]).unwrap_or(0);
+                                new[b..].iter().map(json::est).sum::<i64>()
+                                    + view[p + 1..].iter().map(json::est).sum::<i64>()
+                            }
+                            None => 0,
+                        };
                         if ((now - missed) as f64) < 0.9 * behind as f64 - 50.0 {
                             bad.push(format!(
                                 "{} line {n}: changed at {p}, {} missed of {behind}",

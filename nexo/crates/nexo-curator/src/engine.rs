@@ -134,6 +134,11 @@ pub struct Engine {
     kept_tokens: i64,
     frozen: FxHashMap<usize, String>,
     vis: Option<Visible>,
+    /// Whether the other topics leave the view: decided once for each request (`split_now`), and kept until the
+    /// next change of topic.
+    split: bool,
+    /// The turn the decision was made for.
+    split_turn: usize,
     last_raw: Value,
     /// Whether the host offers a `note` tool: the request for notes names it, or asks for the lines in the reply.
     note_tool: bool,
@@ -264,6 +269,8 @@ impl Engine {
             kept_tokens: 0,
             frozen: FxHashMap::default(),
             vis: None,
+            split: false,
+            split_turn: usize::MAX,
             last_raw: Value::Null,
             note_tool: true,
             recall_tool: false,

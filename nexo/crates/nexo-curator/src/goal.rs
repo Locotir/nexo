@@ -57,6 +57,9 @@ pub struct Threads {
     pub turns: Vec<Turn>,
     pub members: Vec<Vec<usize>>,
     pub last: Vec<usize>,
+    /// For each thread, how likely the latest request belongs to it (the classifier's joint); 0 when the
+    /// request rides on a step or the thread is new.
+    pub joint: Vec<f64>,
     m: usize,
     df: FxHashMap<Sym, u32>,
     n: usize,
@@ -110,6 +113,7 @@ impl Threads {
             self.turns.push(turn(0));
             self.members.push(vec![0]);
             self.last.push(0);
+            self.joint = vec![0.0];
             return;
         }
         let weight: FxHashMap<Sym, f64> = req
@@ -187,6 +191,8 @@ impl Threads {
         }
         self.members[th].push(n);
         self.last[th] = n;
+        self.joint = if rides { Vec::new() } else { joint };
+        self.joint.resize(self.members.len(), 0.0);
         self.turns.push(turn(th));
     }
 
