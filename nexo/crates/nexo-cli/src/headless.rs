@@ -520,6 +520,7 @@ pub async fn run(
             _ = tokio::signal::ctrl_c() => {
                 interrupts += 1;
                 if interrupts > 1 {
+                    nexo_agent::audit::close_all();
                     std::process::exit(EXIT_INTERRUPTED);
                 }
                 if busy {

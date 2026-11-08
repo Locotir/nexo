@@ -43,5 +43,7 @@ fn main() {
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     let code = rt.block_on(cli::main());
+    // `exit` runs no destructors: the audit log writes what it has queued first
+    nexo_agent::audit::close_all();
     std::process::exit(code);
 }

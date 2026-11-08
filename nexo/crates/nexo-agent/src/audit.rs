@@ -117,13 +117,32 @@ pub struct Audit {
     inner: std::sync::Arc<Inner>,
 }
 
-impl Drop for Inner {
-    fn drop(&mut self) {
+/// Every writer made in this process, so `close_all` can finish them before the process exits.
+static LIVE: Mutex<Vec<std::sync::Weak<Inner>>> = Mutex::new(Vec::new());
+
+/// Writes what every audit log has queued and ends its thread. `std::process::exit` runs no
+/// destructors, so a writer a task still holds would lose its last lines; call this before it.
+/// A line sent after it is dropped.
+pub fn close_all() {
+    let live = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|e| e.into_inner()));
+    for inner in live.iter().filter_map(std::sync::Weak::upgrade) {
+        inner.close();
+    }
+}
+
+impl Inner {
+    fn close(&self) {
         // closing the channel ends the thread once it has written what is queued
         drop(self.tx.lock().unwrap_or_else(|e| e.into_inner()).take());
         if let Some(t) = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = t.join();
         }
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -172,13 +191,15 @@ impl Audit {
                 }
             })
             .ok()?;
-        Some(Audit {
-            inner: std::sync::Arc::new(Inner {
-                user: user_name(),
-                tx: Mutex::new(Some(tx)),
-                thread: Mutex::new(Some(thread)),
-            }),
-        })
+        let inner = std::sync::Arc::new(Inner {
+            user: user_name(),
+            tx: Mutex::new(Some(tx)),
+            thread: Mutex::new(Some(thread)),
+        });
+        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        live.retain(|w| w.strong_count() > 0);
+        live.push(std::sync::Arc::downgrade(&inner));
+        Some(Audit { inner })
     }
 
     fn send(&self, v: Value) {
@@ -356,6 +377,26 @@ pub fn files(cfg: &AuditConfig) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn close_all_writes_the_queued_lines_of_a_writer_still_held() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.jsonl");
+        let cfg = AuditConfig { enabled: true, path: Some(f.display().to_string()) };
+        let a = Audit::from_config(&cfg).unwrap();
+        // a task the process never drops: `exit` would not run its destructor
+        let held = a.clone();
+        let usage = Usage::default();
+        let r =
+            |call| RequestRecord { session: "s", cwd: d.path(), provider: "p", model: "m", call, usage, cost_usd: 0.0 };
+        a.request(r("main"));
+        drop(a);
+        close_all();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        // after it, a line is dropped, not left half written
+        held.request(r("late"));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), text);
+    }
     #[test]
     fn since_reads_spans_and_dates() {
         let now = time::macros::datetime!(2026-11-07 12:00:00 UTC);
