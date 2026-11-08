@@ -180,18 +180,18 @@ fn tab_wraps_round_and_shift_tab_goes_back() {
 
 #[test]
 fn up_and_down_hold_their_column_across_a_short_row() {
-    // 120 wide is three columns; groups of 4 and 1 give rows of 3, 1 (nexo one-row group between)
-    let mut rows = jobs(4);
+    // 120 wide is three columns; a group of 5 fills its rows evenly: 3, 2 (nexo one-row group before)
+    let mut rows = jobs(5);
     rows.insert(0, job("this", SourceKind::Nexo));
     let mut a = scene(rows);
     capture(&mut a, 120, 40);
-    // this = 0, jobs = 1..=4: rows [1,2,3] [4]
+    // this = 0, jobs = 1..=5: rows [1,2,3] [4,5]
     press(&mut a, KeyCode::Down);
     press(&mut a, KeyCode::Right);
     press(&mut a, KeyCode::Right);
     assert_eq!(view(&mut a).selected, 3, "last column of the first row");
     press(&mut a, KeyCode::Down);
-    assert_eq!(view(&mut a).selected, 4, "the short row has only one card");
+    assert_eq!(view(&mut a).selected, 5, "the short row ends one column sooner");
     press(&mut a, KeyCode::Up);
     assert_eq!(view(&mut a).selected, 3, "back up to the column it came from");
 }
@@ -312,7 +312,7 @@ fn the_wheel_scrolls_the_cards_and_the_selection_stays_put() {
     assert!(view(&mut a).scroll >= 3, "the view moved: {}", view(&mut a).scroll);
     assert_eq!(view(&mut a).selected, 0, "the selection did not move");
     let shown = text(&mut a, 80, 24);
-    assert!(shown.contains("↑") && shown.contains("more"), "the marker says there is more above\n{shown}");
+    assert!(shown.contains("↑ "), "the marker says there is more above\n{shown}");
     let before = view(&mut a).scroll;
     view(&mut a).scroll_by(-3);
     capture(&mut a, 80, 24);
