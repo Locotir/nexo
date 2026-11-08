@@ -8,7 +8,13 @@ use nexo_core::pricing::Pricing;
 use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 fn load(file: &Path) -> anyhow::Result<DocumentMut> {
-    let text = std::fs::read_to_string(file).unwrap_or_default();
+    // only a file that is not there starts empty: one that cannot be read (not UTF-8, locked,
+    // no permission) is an error, or the save that follows would write over everything in it
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => anyhow::bail!("cannot read {}: {e}", file.display()),
+    };
     Ok(text.parse::<DocumentMut>()?)
 }
 
@@ -128,6 +134,22 @@ mod tests {
         let t = std::fs::read_to_string(&f).unwrap();
         assert_eq!(t.matches("[providers.deepseek.context_window]").count(), 1, "{t}");
         assert!(t.contains("65536"));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_left_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        // saved by an editor in another encoding: not UTF-8, so not readable as text
+        let bytes: Vec<u8> = b"provider = \"deepseek\" # caf\xe9\n".to_vec();
+        std::fs::write(&f, &bytes).unwrap();
+        assert!(push(&f, &["permissions"], "allow", "read").is_err());
+        assert!(set(&f, &["agent"], "max_tokens", Value::from(4096)).is_err());
+        assert_eq!(std::fs::read(&f).unwrap(), bytes, "nothing was written over it");
+        // a file that is not there yet is made
+        let new = d.path().join("new.toml");
+        push(&new, &["permissions"], "allow", "read").unwrap();
+        assert!(std::fs::read_to_string(&new).unwrap().contains("read"));
     }
 
     #[test]

@@ -491,8 +491,12 @@ mod tests {
         let evs: Vec<StreamEvent> = chunks.iter().flat_map(|c| p.feed(c)).collect();
         let ends: Vec<_> = evs.iter().filter(|e| matches!(e, StreamEvent::ToolCallEnd { .. })).collect();
         assert_eq!(ends.len(), 2, "{evs:?}");
-        assert!(matches!(ends[0], StreamEvent::ToolCallEnd { id, name, args } if id == "a" && name == "read" && args["path"] == "a"));
-        assert!(matches!(ends[1], StreamEvent::ToolCallEnd { id, name, args } if id == "b" && name == "ls" && args == &json!({})));
+        assert!(
+            matches!(ends[0], StreamEvent::ToolCallEnd { id, name, args } if id == "a" && name == "read" && args["path"] == "a")
+        );
+        assert!(
+            matches!(ends[1], StreamEvent::ToolCallEnd { id, name, args } if id == "b" && name == "ls" && args == &json!({}))
+        );
     }
 
     #[test]
