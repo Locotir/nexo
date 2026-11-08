@@ -414,3 +414,42 @@ fn the_persons_own_message_sits_on_a_band_that_reaches_the_edge() {
     assert_ne!(message_bg, page_bg, "the message has no band");
     assert_eq!(buf[(start + 30, y)].bg, message_bg, "the band stops at the text");
 }
+
+#[test]
+fn esc_on_the_session_picker_leaves_nothing_of_it_on_screen() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::time::{Duration, Instant};
+    for animations in [false, true] {
+        let mut a = app();
+        a.opts.animations = animations;
+        a.opts.sessions = vec![("20261108-044309-7902".into(), "hello there".into())];
+        // well after the banner's intro, so nothing else keeps the clock running
+        let t0 = Instant::now() + Duration::from_secs(10);
+        a.fx.clock = Some(t0);
+        let mut t = Terminal::new(TestBackend::new(90, 28)).unwrap();
+        draw_frame(&mut t, &mut a).unwrap();
+        for c in "/resume".chars() {
+            nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        draw_frame(&mut t, &mut a).unwrap();
+        a.fx.clock = Some(t0 + Duration::from_millis(500));
+        a.tick_frame(false);
+        draw_frame(&mut t, &mut a).unwrap();
+        let open = rows_of(t.backend().buffer()).join("\n");
+        assert!(open.contains("hello there"), "{open}");
+        assert_eq!(a.load(), nexo_tui::frame::Load::Idle, "the pop-in is over");
+        nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.modal.is_none());
+        draw_frame(&mut t, &mut a).unwrap();
+        if animations {
+            // the leaving dialog is drawn for a moment: the loop must keep drawing, not rest for seconds
+            assert_eq!(a.load(), nexo_tui::frame::Load::Motion);
+            a.fx.clock = Some(t0 + Duration::from_millis(500 + nexo_tui::anim::POP_MS + 30));
+            a.tick_frame(false);
+            draw_frame(&mut t, &mut a).unwrap();
+        }
+        let shut = rows_of(t.backend().buffer()).join("\n");
+        assert!(!shut.contains("Sessions"), "animations={animations}\n{shut}");
+    }
+}

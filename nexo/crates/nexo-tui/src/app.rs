@@ -2992,10 +2992,15 @@ impl App {
             if m && !self.modal_was {
                 self.modal_at = Some(now);
             }
+            if (p && !self.palette_was) || (m && !self.modal_was) {
+                self.moving = true;
+            }
         }
         if self.opts.animations && self.fx.ghost.is_some() {
             if (self.palette_was && !p) || (self.modal_was && !m) {
                 self.fx.ghost_at = Some(now);
+                // the leaving is drawn frame by frame: the loop must not rest on its first frame
+                self.moving = true;
             } else if p || m {
                 self.fx.ghost_at = None;
             }
