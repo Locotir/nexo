@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::{Args, ValueEnum};
@@ -71,8 +71,42 @@ pub struct Flags {
     /// With --print: the final answer must validate against this JSON Schema (a file, or inline JSON); exit 3 if it does not.
     #[arg(long, value_name = "FILE|JSON")]
     pub json_schema: Option<String>,
+    /// Attach an image to the first request; repeat for more (`nexo -i shot.png "why is this red?"`).
+    #[arg(short = 'i', long, value_name = "FILE")]
+    pub image: Vec<PathBuf>,
 }
 
+/// The `--image` files, made absolute: each must be a PNG, JPEG, GIF or WebP file that is there.
+pub fn images(cwd: &Path, files: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    const KINDS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+    let mut out: Vec<PathBuf> = Vec::new();
+    for f in files {
+        let path = cwd.join(f);
+        if !path.is_file() {
+            return Err(format!("--image {}: no such file", f.display()));
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+        if !ext.is_some_and(|e| KINDS.contains(&e.as_str())) {
+            return Err(format!("--image {}: not a PNG, JPEG, GIF or WebP image", f.display()));
+        }
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// The first request of the interface with the `--image` files added as quoted paths, which it attaches.
+pub fn with_images(first: Option<String>, images: &[PathBuf]) -> Option<String> {
+    if images.is_empty() {
+        return first;
+    }
+    let paths: Vec<String> = images.iter().map(|p| format!("'{}'", p.display())).collect();
+    Some(match first {
+        Some(t) if !t.trim().is_empty() => format!("{} {}", t.trim_end(), paths.join(" ")),
+        _ => paths.join(" "),
+    })
+}
 impl Flags {
     /// Whether any flag was given (they are refused without --print).
     pub fn any(&self) -> bool {
@@ -373,6 +407,10 @@ pub async fn run(
     if stream_in && schema.is_some() {
         return usage("--json-schema cannot be used with --input-format stream-json");
     }
+    let mut first_images: Vec<nexo_core::agent::Attachment> = match images(&cwd, &flags.image) {
+        Ok(v) => v.into_iter().map(|path| nexo_core::agent::Attachment { path }).collect(),
+        Err(e) => return usage(&e),
+    };
     // plain stdin is part of the request
     let mut inbox: VecDeque<String> = VecDeque::new();
     if !stream_in {
@@ -485,7 +523,10 @@ pub async fn run(
                     }
                 }
                 run.r = Req::default();
-                sent_any = handle.commands.send(AgentCommand::Submit { text: msg, attachments: vec![] }).is_ok();
+                sent_any = handle
+                    .commands
+                    .send(AgentCommand::Submit { text: msg, attachments: std::mem::take(&mut first_images) })
+                    .is_ok();
                 busy = true;
             } else if stdin_rx.is_none() {
                 break;
@@ -665,5 +706,27 @@ mod add_dir_tests {
         assert_eq!(config.permissions.sandbox_write_dirs, vec![real]);
         let e = add_dirs(&mut config, d.path(), &[PathBuf::from("missing")]).unwrap_err();
         assert_eq!(e, "--add-dir missing: not a folder");
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::{images, with_images};
+    use std::path::PathBuf;
+
+    #[test]
+    fn image_files_are_checked_made_absolute_and_added_to_the_first_request() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("shot.PNG"), b"png").unwrap();
+        std::fs::write(d.path().join("notes.txt"), b"x").unwrap();
+        let shot = d.path().join("shot.PNG");
+        let got = images(d.path(), &[PathBuf::from("shot.PNG"), shot.clone()]).unwrap();
+        assert_eq!(got, vec![shot.clone()], "relative to the folder, once");
+        assert!(images(d.path(), &[PathBuf::from("gone.png")]).unwrap_err().contains("no such file"));
+        assert!(images(d.path(), &[PathBuf::from("notes.txt")]).unwrap_err().contains("not a PNG"));
+        let quoted = format!("'{}'", shot.display());
+        assert_eq!(with_images(Some("why red?".into()), &got), Some(format!("why red? {quoted}")));
+        assert_eq!(with_images(None, &got), Some(quoted));
+        assert_eq!(with_images(Some("hi".into()), &[]), Some("hi".into()));
     }
 }

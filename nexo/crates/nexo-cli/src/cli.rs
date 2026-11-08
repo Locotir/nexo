@@ -779,7 +779,14 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             _ => note,
         });
     }
-    interactive(config, cwd, picked, resume, unset, args.first.clone()).await
+    let first = match crate::headless::images(&cwd, &args.headless.image) {
+        Ok(i) => crate::headless::with_images(args.first.clone(), &i),
+        Err(m) => {
+            eprintln!("nexo: {m}");
+            return Ok(crate::headless::EXIT_USAGE);
+        }
+    };
+    interactive(config, cwd, picked, resume, unset, first).await
 }
 
 async fn interactive(
@@ -915,6 +922,9 @@ mod tests {
         let a = super::Args::try_parse_from(["nexo", "-c", "--model", "m", "go on"]).unwrap();
         assert_eq!(a.first.as_deref(), Some("go on"));
         assert!(a.continue_);
+        let a = super::Args::try_parse_from(["nexo", "-i", "a.png", "--image", "b.png", "what changed?"]).unwrap();
+        assert_eq!(a.headless.image, vec![std::path::PathBuf::from("a.png"), std::path::PathBuf::from("b.png")]);
+        assert_eq!(a.first.as_deref(), Some("what changed?"));
     }
 
     #[test]
