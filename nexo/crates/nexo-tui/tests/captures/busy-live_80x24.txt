@@ -5,12 +5,12 @@
 │ ◈ 1 permission  ↻ 1 looping  ● 2 working  ✓ 1 done             ! 1 ◉ 2 · all │
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ ▣ nexo · 2 ───────────────────────────────────────────────────────────────── │
-│ ▌● working    ▣ project               ⠁ ✎❯✘✎✔◉▤✎      2s  Edit  src/parser.… │
-│  ● working    └ ▣ explore                   ◦◎◎      1s  Grep  fn classify   │
+│ ▌● working    ▣ project                 ⠁ ✎❯✘✎✔◉▤✎   2s  Edit  src/parser.rs │
+│  ● working    └ ▣ explore                     ◦◎◎   1s  Grep  fn classify    │
 │ ▢ othertool · 3 ──────────────────────────────────────────────────────────── │
-│  ◈ permission ▢ api-migration               ✎❯⚿  1m 35s  Bash  cargo publis… │
-│  ↻ looping    ▢ scheduler                  ❯❯✗↻     30s  Bash  git pull      │
-│  ✓ done       ▢ docs                        ◉⇡■  2h 01m  Bash  gh release c… │
+│  ◈ permission ▢ api-migration                 ✎❯⚿   1m  Bash  cargo publish… │
+│  ↻ looping    ▢ scheduler                    ❯❯✗↻  30s  Bash  git pull       │
+│  ✓ done       ▢ docs                          ◉⇡■   2h  Bash  gh release cr… │
 │                                                                              │
 │ /home/dev/project · default · n1                                             │
 │ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                     │

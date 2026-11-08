@@ -4,7 +4,7 @@
 │ ▣ nexo · 2 ───────────────────────── │
 │ ▌● working    ▣ project              │
 │ /home/dev/project · default · this-… │
-│ s source · Esc close  ↓ more         │
+│ s source · Esc close  ↓ 7 more       │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────
 ›   ask anything

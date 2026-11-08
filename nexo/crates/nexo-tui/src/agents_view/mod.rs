@@ -186,6 +186,10 @@ fn attention(state: State) -> bool {
 }
 
 fn chip_color(theme: &Theme, state: State) -> ratatui::style::Color {
+    draw::legible(theme, chip_hue(theme, state))
+}
+
+fn chip_hue(theme: &Theme, state: State) -> ratatui::style::Color {
     match state {
         State::WaitingPermission => theme.warn2,
         State::WaitingAnswer => theme.accent2,
@@ -196,14 +200,54 @@ fn chip_color(theme: &Theme, state: State) -> ratatui::style::Color {
     }
 }
 
-/// `42s`, `7m 05s`, `2h 05m`, `3d 04h`.
+/// `42s`, `7m`, `2h`, `3d`: one unit, rounded down, never more than four columns.
 fn age(secs: u64) -> String {
     match secs {
         0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
-        3600..=86399 => format!("{}h {:02}m", secs / 3600, secs % 3600 / 60),
-        _ => format!("{}d {:02}h", secs / 86400, secs % 86400 / 3600),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86400),
     }
+}
+
+/// What a card spells out with no session to show: what `/panel` is and how sessions get here.
+const EMPTY_STATE: [&str; 7] = [
+    "Live board of your agent sessions.",
+    "They appear here on their own:",
+    "▣ this session, after your message",
+    "▢ other agents whose logs nexo reads",
+    "",
+    "One card each: its state, last step",
+    "and how long it has been quiet.",
+];
+
+/// A row whose text is safe to lay out: another program's names, paths and steps may hold line breaks, escape
+/// sequences or joiners that the terminal draws wider than the layout counted, and break a border.
+fn tidy(mut r: AgentRow) -> AgentRow {
+    let one = |s: &mut String| *s = crate::render::wrap::one_line(s);
+    one(&mut r.name);
+    one(&mut r.program);
+    r.last_step.iter_mut().for_each(one);
+    r.cwd.iter_mut().for_each(one);
+    r.model.iter_mut().for_each(one);
+    r.permission_mode.iter_mut().for_each(one);
+    r.last_action.iter_mut().for_each(|(what, _)| one(what));
+    r
+}
+
+/// The sessions balanced over their rows: 4 cards on 3 columns make two rows of 2, not 3 and an orphan.
+fn balanced(n: usize, cols: usize) -> usize {
+    let cols = cols.max(1);
+    if n <= cols {
+        return n.max(1);
+    }
+    n.div_ceil(n.div_ceil(cols))
+}
+
+/// `n` cells cut into `k` runs that differ by at most one, the longer ones first.
+fn split_evenly(n: u16, k: usize) -> Vec<u16> {
+    let k = k.max(1) as u16;
+    (0..k).map(|i| n / k + u16::from(i < n % k)).collect()
 }
 
 /// Where a session's idle time is rounded to, so the view repaints only when its text changes: per second
@@ -345,7 +389,7 @@ impl AgentsView {
     /// The sessions the filter keeps, grouped by program: nexo first, then each other program by name. The
     /// order is the one they are drawn in, so an index into it is what the selection holds.
     fn shown(&self) -> Vec<AgentRow> {
-        let mut v: Vec<AgentRow> = self.rows.iter().filter(|r| self.filter.keeps(r)).cloned().collect();
+        let mut v: Vec<AgentRow> = self.rows.iter().filter(|r| self.filter.keeps(r)).cloned().map(tidy).collect();
         v.sort_by_key(|r| (r.source, r.program.to_lowercase()));
         v
     }
@@ -375,14 +419,15 @@ impl AgentsView {
     }
 
     /// The strips of the body for `cols` cards across.
-    fn bands(groups: &[Group], cols: usize) -> Vec<Band> {
+    fn bands(groups: &[Group], cols: usize, balance: bool) -> Vec<Band> {
         let mut out = Vec::new();
         for (g, grp) in groups.iter().enumerate() {
             out.push(Band::Header(g));
             if grp.idx.is_empty() {
                 out.push(Band::Empty(g));
             }
-            for chunk in grp.idx.chunks(cols.max(1)) {
+            let per = if balance { balanced(grp.idx.len(), cols) } else { cols.max(1) };
+            for chunk in grp.idx.chunks(per) {
                 out.push(Band::Row(chunk.to_vec()));
             }
         }
@@ -425,7 +470,7 @@ impl AgentsView {
     /// The height of all the strips of `groups` laid out as `l`.
     fn content_h(groups: &[Group], l: Layout, card_h: u16) -> u16 {
         let (cols, item_h, tight) = Self::shape(l, card_h);
-        let bands = Self::bands(groups, cols);
+        let bands = Self::bands(groups, cols, matches!(l, Layout::Cards { .. }));
         Self::span(&bands, 0, bands.len(), item_h, tight)
     }
 
@@ -901,6 +946,8 @@ impl AgentsView {
         let spare = u16::from(area.height >= SPARE_FROM);
         let want = if self.policy_page {
             area.height
+        } else if self.rows.is_empty() && self.filter == Filter::All {
+            EMPTY_STATE.len() as u16 + CHROME + spare + pulse
         } else {
             Self::content_h(&groups, layout_for(area.height), card_h) + CHROME + spare + pulse
         };
@@ -983,7 +1030,8 @@ impl AgentsView {
                 f.render_widget(Paragraph::new(Line::from(self.detail(row, theme, detail.width as usize))), detail);
             }
         }
-        let more = self.more_below(body);
+        let more = self.more_marks();
+        let more = more.as_str();
         let line = if self.policy_page {
             Line::from(Span::styled(
                 truncate("↑↓ scroll · o or Esc back to the sessions", foot.width as usize),
@@ -1036,15 +1084,23 @@ impl AgentsView {
         f.render_widget(Paragraph::new(line), foot);
     }
 
-    fn more_below(&self, body: Rect) -> &'static str {
-        let last = self.cards.iter().map(|(i, _)| *i).max().map_or(0, |i| i + 1);
-        let first = self.cards.iter().map(|(i, _)| *i).min().unwrap_or(0);
-        let _ = body;
-        match (first > 0, last < self.shown().len()) {
-            (true, true) => "  ↑↓ more",
-            (true, false) => "  ↑ more",
-            (false, true) => "  ↓ more",
-            (false, false) => "",
+    /// `↑ 2 ↓ 3` when sessions sit out of sight above and below, so a scrolled list never looks complete.
+    fn more_marks(&self) -> String {
+        let total = self.shown().len();
+        let Some((first, last)) = self
+            .cards
+            .iter()
+            .map(|(i, _)| *i)
+            .fold(None, |m: Option<(usize, usize)>, i| Some(m.map_or((i, i), |(a, b)| (a.min(i), b.max(i)))))
+        else {
+            return String::new();
+        };
+        let below = total.saturating_sub(last + 1);
+        match (first, below) {
+            (0, 0) => String::new(),
+            (0, n) => format!("  ↓ {n} more"),
+            (n, 0) => format!("  ↑ {n} above"),
+            (a, b) => format!("  ↑ {a} ↓ {b}"),
         }
     }
 

@@ -3,16 +3,16 @@
 │ ◈ 1 permission  ◐ 1 stalled  ↻ 1 looping  ● 2 working  ○ 2 idle  ✓ 1 done    │
 │━──────────────────────────────────────────────────────────────────────────── │
 │✉▣ nexo · 4 ───────────────────────────────────────────────────────────────── │
-│ ▌● working    ▣ project                              2s  Edit  src/parser.rs │
-│  ● working    └ ▣ explore                            1s  Grep  fn classify   │
-│  ○ idle       └ ▣ tests                          3m 10s  Bash  cargo test -… │
-│  ○ idle       ▣ scribe                          17m 00s                      │
+│ ▌● working    ▣ project                             2s  Edit  src/parser.rs  │
+│  ● working    └ ▣ explore                           1s  Grep  fn classify    │
+│  ○ idle       └ ▣ tests                             3m  Bash  cargo test -p… │
+│  ○ idle       ▣ scribe                             17m                       │
 │ ▢ agentx · 2 ─────────────────────────────────────────────────────────────── │
-│  ◈ permission ▢ api-migration                    1m 35s  Bash  cargo publis… │
-│  ↻ looping    ▢ scheduler                           30s  Bash  git pull      │
+│  ◈ permission ▢ api-migration                       1m  Bash  cargo publish… │
+│  ↻ looping    ▢ scheduler                          30s  Bash  git pull       │
 │ ▢ othertool · 2 ──────────────────────────────────────────────────────────── │
-│  ✓ done       ▢ docs                             2h 01m  Bash  gh release c… │
-│  ◐ stalled    ▢ nightly-fixer                   40m 00s  Read  tests/long_r… │
+│  ✓ done       ▢ docs                                2h  Bash  gh release cr… │
+│  ◐ stalled    ▢ nightly-fixer                      40m  Read  tests/long_ru… │
 │                                                                              │
 │ /home/dev/project · default · n1                                             │
 │ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                     │

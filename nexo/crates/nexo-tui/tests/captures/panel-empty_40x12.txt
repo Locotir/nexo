@@ -1,8 +1,8 @@
 ╭ panel ──────────────────────────[✗]──╮
 │ no sessions          all · read-only │
 │ ──────────────────────────────────── │
-│ ▣ nexo ───────────────────────────── │
-│   no nexo sessions yet · this one s… │
+│  Live board of your agent sessions.  │
+│  They appear here on their own:      │
 │                                      │
 │ s source · Esc close                 │
 ╰──────────────────────────────────────╯

@@ -567,8 +567,13 @@ fn a_group_with_nothing_in_it_says_so() {
     let text = window(&mut scene(only_ext));
     assert!(text.contains("▣ nexo") && text.contains("no nexo sessions yet"), "{text}");
 
-    let text = window(&mut scene(vec![]));
-    assert!(text.contains("no nexo sessions yet") && text.contains("no sessions from other programs"), "{text}");
+    let mut none = scene(vec![]);
+    press(&mut none, "s");
+    let text = window(&mut none);
+    assert!(text.contains("no nexo sessions yet") && !text.contains("no sessions from other programs"), "{text}");
+    press(&mut none, "s");
+    let text = window(&mut none);
+    assert!(text.contains("no sessions from other programs found"), "{text}");
 }
 
 #[test]
@@ -588,7 +593,7 @@ fn the_arrows_walk_the_groups_in_the_order_they_are_drawn() {
     key(&mut a, KeyCode::Down);
     assert_eq!(sel(&a), 2, "down from the nexo row to the first card of the next group");
     key(&mut a, KeyCode::Down);
-    assert_eq!(sel(&a), 5, "then to the group's second row");
+    assert_eq!(sel(&a), 4, "then to the group's second row");
     key(&mut a, KeyCode::Down);
     assert_eq!(sel(&a), 6);
     key(&mut a, KeyCode::Up);
@@ -621,4 +626,135 @@ fn a_message_or_pause_key_with_no_supervisor_says_why_nothing_happened() {
         let text = window(&mut a);
         assert!(text.contains("need the supervisor"), "{keys}: silent\n{text}");
     }
+}
+
+/// Every line of the window, from its top border to its bottom one.
+fn window_lines(a: &mut App, w: u16, h: u16) -> Vec<String> {
+    let out = capture(a, w, h);
+    let from = out.iter().position(|l| l.starts_with("╭ panel")).expect("the window");
+    let to = out.iter().skip(from).position(|l| l.starts_with('╰')).expect("its foot") + from;
+    out[from..=to].to_vec()
+}
+
+#[test]
+fn names_paths_and_steps_in_any_script_are_cut_with_an_ellipsis_and_never_break_a_border() {
+    let mut odd = rows();
+    odd[0].name = "日本語のとても長い名前を持つエージェント🚀🚀🚀 and more".into();
+    odd[0].last_step =
+        Some("Edit  /srv/项目/源代码/解析器/语法分析器/very/long/path/to/lexer.rs\nsecond\x1b[31m line".into());
+    odd[2].name = "👩‍👩‍👧‍👦 family\tof\u{200b}agents with a very very long name indeed".into();
+    odd[3].program = "a-tool-with-a-program-name-far-too-long-for-a-tag".into();
+    odd[3].last_action = Some(("marked\npermission\x1b]0;title\x07".into(), NOW - 5));
+    for (w, h) in [(60, 24), (80, 24), (120, 40), (200, 60)] {
+        for keys in ["", "-", "--"] {
+            let mut a = zoomed(odd.clone(), keys);
+            let lines = window_lines(&mut a, w, h);
+            let top = lines[0].chars().count();
+            for l in &lines {
+                assert_eq!(
+                    l.chars().count(),
+                    top,
+                    "{w}x{h} '{keys}': a row is not as wide as the frame\n{}",
+                    lines.join("\n")
+                );
+                assert!(!l.contains('\x1b') && !l.contains('\t'), "{w}x{h}: raw control text\n{l}");
+            }
+            let all = lines.join("\n");
+            if keys.is_empty() && w >= 80 {
+                assert!(all.contains('…'), "{w}x{h}: a long name is cut with an ellipsis\n{all}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_state_chip_survives_a_long_name_and_stays_whole_at_the_card_s_right_edge() {
+    let mut long = rows();
+    for r in &mut long {
+        r.name = format!("{}-with-a-name-that-never-ends", r.name);
+    }
+    let all = window_lines(&mut scene(long), 120, 40).join("\n");
+    for chip in ["● working", "◈ permission", "↻ looping", "◐ stalled", "✓ done"] {
+        assert!(all.contains(&format!("{chip} │")), "chip {chip:?} lost or pushed off\n{all}");
+    }
+}
+
+#[test]
+fn cards_stretch_over_the_whole_row_and_a_group_never_ends_on_an_orphan() {
+    for (w, h) in [(120, 40), (200, 60)] {
+        let lines = window_lines(&mut scene(rows()), w, h);
+        let tops: Vec<&String> = lines.iter().filter(|l| l.contains("╭─")).collect();
+        assert!(tops.len() >= 3, "{w}x{h}: card strips\n{}", lines.join("\n"));
+        for t in &tops {
+            // the last card ends one blank column short of the frame, as the header rule does
+            if w == 200 && t.matches("╭─").count() < 4 {
+                continue;
+            }
+            assert!(t.ends_with("╮ │"), "{w}x{h}: a strip ends ragged\n{t}\n{}", lines.join("\n"));
+        }
+        // 4 cards on 3 columns: two and two, not three and one
+        if w == 120 {
+            let counts: Vec<usize> = tops.iter().map(|t| t.matches("╭─").count()).collect();
+            assert_eq!(counts, [2, 2, 2, 2], "{}", lines.join("\n"));
+        }
+    }
+}
+
+#[test]
+fn quiet_time_is_one_short_unit_and_lines_keep_it_in_one_right_aligned_column() {
+    let all = window_lines(&mut scene(rows()), 120, 40).join("\n");
+    for t in ["quiet 2s", "quiet 1m", "quiet 6m", "quiet 40m", "quiet 2h"] {
+        assert!(all.contains(t), "no {t:?}\n{all}");
+    }
+    assert!(!all.contains("m 0") && !all.contains("h 0"), "two-unit times are gone\n{all}");
+    // with the supervisor's action on the line the time stays and the cost is what gives way
+    assert!(all.contains("quiet 1m") || !all.contains("$1.25"), "the cost left before the time did\n{all}");
+    let list = window_lines(&mut zoomed(rows(), "-"), 100, 30);
+    // in the lines every time ends on the same column
+    let ends: std::collections::HashSet<usize> = [" 2s  ", " 1m  ", "40m  ", " 2h  ", " 6m  "]
+        .iter()
+        .map(|t| {
+            let l = list.iter().find(|l| l.contains(t)).unwrap_or_else(|| panic!("no {t:?}\n{}", list.join("\n")));
+            l[..l.find(t).unwrap()].chars().count()
+        })
+        .collect();
+    assert_eq!(ends.len(), 1, "{}", list.join("\n"));
+}
+
+#[test]
+fn a_session_less_panel_says_what_it_is_for_and_how_sessions_appear() {
+    for (w, h) in [(60, 24), (120, 40)] {
+        let text = window_lines(&mut scene(vec![]), w, h).join("\n");
+        for needle in ["board of your agent sessions", "appear here on their own", "this session", "other agents"] {
+            assert!(text.contains(needle), "{w}x{h}: no {needle:?}\n{text}");
+        }
+    }
+    // a filter that hides everything keeps the per-program lines instead
+    let mut a = scene(vec![]);
+    press(&mut a, "s");
+    let text = window(&mut a);
+    assert!(text.contains("no nexo sessions yet") && !text.contains("board of your"), "{text}");
+    // the smallest window still tells what it is
+    let tiny = window_lines(&mut scene(vec![]), 40, 12).join("\n");
+    assert!(tiny.contains("board of your") && tiny.contains("appear here"), "{tiny}");
+}
+
+#[test]
+fn a_scrolled_list_says_how_many_sessions_sit_above_and_below() {
+    let many: Vec<AgentRow> = (0..30)
+        .map(|i| row(&format!("k{i}"), &format!("job{i:02}"), SourceKind::External, State::Working, Some(i), None))
+        .collect();
+    let mut a = scene(many);
+    let first = window_lines(&mut a, 80, 24).join("\n");
+    assert!(first.contains(" more") && !first.contains("above"), "{first}");
+    for _ in 0..40 {
+        press(&mut a, "j");
+    }
+    let last = window_lines(&mut a, 80, 24).join("\n");
+    assert!(last.contains("above") && !last.contains(" more"), "{last}");
+    for _ in 0..12 {
+        press(&mut a, "k");
+    }
+    let middle = window_lines(&mut a, 80, 24).join("\n");
+    assert!(middle.contains("↑ ") && middle.contains(" ↓ "), "{middle}");
 }

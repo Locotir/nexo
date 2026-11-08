@@ -3,16 +3,16 @@
 │ ◈1 ◆1 ◐1 ↻1 ●2 ○1 ✓1                    ! 3 ◉ 2 · all · watching · read-only │
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ ▣ nexo · 2 ───────────────────────────────────────────────────────────────── │
-│ ▌● working    ▣ project                              2s  Edit  src/parser.rs │
-│  ● working    └ ▣ explore                            1s  Grep  fn classify   │
+│ ▌● working    ▣ project                             2s  Edit  src/parser.rs  │
+│  ● working    └ ▣ explore                           1s  Grep  fn classify    │
 │ ▢ agentx · 4 ─────────────────────────────────────────────────────────────── │
-│  ◈ permission ▢ api-migration                    1m 35s  Bash  cargo publis… │
-│  ◆ question   ▢ docs                             6m 40s  which license shou… │
-│  ◐ stalled    ▢ nightly-fixer                   40m 00s  Read  tests/long_r… │
-│  ↻ looping    ▢ scheduler                           30s  Bash  git pull      │
+│  ◈ permission ▢ api-migration                       1m  Bash  cargo publish… │
+│  ◆ question   ▢ docs                                6m  which license shoul… │
+│  ◐ stalled    ▢ nightly-fixer                      40m  Read  tests/long_ru… │
+│  ↻ looping    ▢ scheduler                          30s  Bash  git pull       │
 │ ▢ othertool · 2 ──────────────────────────────────────────────────────────── │
-│  ○ idle       ▢ refactor                        17m 00s                      │
-│  ✓ done       ▢ release                          2h 01m  Bash  gh release c… │
+│  ○ idle       ▢ refactor                           17m                       │
+│  ✓ done       ▢ release                             2h  Bash  gh release cr… │
 │                                                                              │
 │ /home/dev/project · default · this-session                                   │
 │ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                     │

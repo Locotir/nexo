@@ -21,16 +21,16 @@
 │ ◉ 2 live ▕▁▁▁▁▁▁▁▁▏  0/min  ✉ 0  $1.25  ! 3 need you                                                                                                                                                 │
 │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
 │ ▣ nexo · 2 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-│ ▌● working    ▣ project                                                                                                  2s  Edit  src/parser.rs                                                     │
-│  ● working    └ ▣ explore                                                                                                1s  Grep  fn classify                                                       │
+│ ▌● working    ▣ project                                                                                                 2s  Edit  src/parser.rs                                                      │
+│  ● working    └ ▣ explore                                                                                               1s  Grep  fn classify                                                        │
 │ ▢ agentx · 4 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-│  ◈ permission ▢ api-migration                                                                                        1m 35s  Bash  cargo publish --dry-run                                           │
-│  ◆ question   ▢ docs                                                                                                 6m 40s  which license should the README name?                                   │
-│  ◐ stalled    ▢ nightly-fixer                                                                                       40m 00s  Read  tests/long_running.rs                                             │
-│  ↻ looping    ▢ scheduler                                                                                               30s  Bash  git pull                                                          │
+│  ◈ permission ▢ api-migration                                                                                           1m  Bash  cargo publish --dry-run                                            │
+│  ◆ question   ▢ docs                                                                                                    6m  which license should the README name?                                    │
+│  ◐ stalled    ▢ nightly-fixer                                                                                          40m  Read  tests/long_running.rs                                              │
+│  ↻ looping    ▢ scheduler                                                                                              30s  Bash  git pull                                                           │
 │ ▢ othertool · 2 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-│  ○ idle       ▢ refactor                                                                                            17m 00s                                                                          │
-│  ✓ done       ▢ release                                                                                              2h 01m  Bash  gh release create v1.4                                            │
+│  ○ idle       ▢ refactor                                                                                               17m                                                                           │
+│  ✓ done       ▢ release                                                                                                 2h  Bash  gh release create v1.4                                             │
 │                                                                                                                                                                                                      │
 │ /home/dev/project · default · this-session                                                                                                                                                           │
 │ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                                                                                                                                             │

@@ -10,13 +10,54 @@ use ratatui::widgets::{Block as Box_, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use super::{
-    age, attention, chip, chip_color, AgentsView, Band, Filter, Group, Layout, BLOCK_W, BREATH_MS, CHIP_MS, GAP,
+    age, attention, chip, chip_color, split_evenly, AgentsView, Band, Filter, Group, Layout, BLOCK_W, BREATH_MS,
+    CARD_MAX_W, CHIP_MS, EMPTY_STATE, GAP,
 };
 use crate::anim::pulse;
 use crate::motion::{fade, fixed, hump, lit_style};
 use crate::panel_fx as px;
 use crate::render::wrap::{truncate, width};
 use crate::theme::Theme;
+
+/// The contrast ratio (WCAG) of two RGB colours; 21 for none that is not RGB (a mapped theme keeps its own colours).
+fn contrast(a: Color, b: Color) -> f32 {
+    let lum = |c: Color| match c {
+        Color::Rgb(r, g, b) => {
+            let f = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            Some(0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b))
+        }
+        _ => None,
+    };
+    match (lum(a), lum(b)) {
+        (Some(x), Some(y)) => (x.max(y) + 0.05) / (x.min(y) + 0.05),
+        _ => 21.0,
+    }
+}
+
+/// `c` moved towards the text colour until it reads at 4.5:1 (AA) on a card, resting and at its most lit. A hue
+/// that already reads is returned as it is; a mono theme has no hues.
+pub(super) fn legible(theme: &Theme, c: Color) -> Color {
+    if theme.mono {
+        return c;
+    }
+    let sel = theme.selection().bg.unwrap_or(theme.border);
+    let grounds = [theme.modal_bg, fade(theme, theme.modal_bg, sel, CARD_LIT_MAX)];
+    (0..=10)
+        .map(|n| crate::theme::mix(c, theme.fg, n as f32 / 10.0))
+        .find(|x| grounds.iter().all(|g| contrast(*x, *g) >= 4.5))
+        .unwrap_or(theme.fg)
+}
+
+/// How far a card's ground may go towards the selection colour: past this the dim text on it stops reading (4.5:1);
+/// the accent border says "selected" on its own.
+const CARD_LIT_MAX: f32 = 0.15;
 
 /// The ribbon cells of a line at this width: none under 44 columns, then 4, 8 and 12.
 fn list_ribbon(w: usize) -> usize {
@@ -33,6 +74,40 @@ fn dots(n: usize) -> char {
     ['⠁', '⠃', '⠇', '⠧', '⠷', '⠿', '⡿', '⣿'][n.clamp(1, 8) - 1]
 }
 
+/// The colour a chip is drawn in: a finished session is softened, an attention chip breathes towards the dim text
+/// colour by `wave` (0..1) of its depth.
+fn tone(theme: &Theme, state: State, base: Color, wave: f32) -> Color {
+    if attention(state) {
+        legible(theme, fade(theme, base, theme.dim, 0.45 * wave))
+    } else if state == State::Done {
+        fade(theme, base, theme.dim, 0.4)
+    } else {
+        base
+    }
+}
+
+/// A step cut to `room` columns. A path at its end keeps its tail (the file is what tells steps apart), the verb in
+/// front stays whole; anything else keeps its start.
+fn fit_step(step: &str, room: usize) -> String {
+    if width(step) <= room {
+        return step.to_string();
+    }
+    if let Some((head, path)) = step.rsplit_once(char::is_whitespace) {
+        let left = room.saturating_sub(width(head) + 1);
+        if path.contains('/') && left >= 6 {
+            let mut tail = String::new();
+            for g in unicode_segmentation::UnicodeSegmentation::graphemes(path, true).rev() {
+                if width(&tail) + width(g) + 1 > left {
+                    break;
+                }
+                tail.insert_str(0, g);
+            }
+            return format!("{head} …{tail}");
+        }
+    }
+    truncate(step, room)
+}
+
 impl AgentsView {
     /// The line under a header with no sessions.
     fn nothing_line(&self, group: &Group) -> &'static str {
@@ -47,15 +122,14 @@ impl AgentsView {
     fn chip_spans(&self, row: &AgentRow, theme: &Theme, now: Instant, fx: bool) -> Vec<Span<'static>> {
         let (shown, base) = self.chip_at(row, theme, now);
         let (g, label) = chip(shown);
-        let mut color = base;
+        let mut wave = 0.0;
         if fx && attention(row.state) {
             let opened = self.opened.unwrap_or(now);
             let ms = now.saturating_duration_since(opened).as_millis() % BREATH_MS;
             let phase = ms as f32 / BREATH_MS as f32 * std::f32::consts::TAU;
-            color = fade(theme, base, theme.dim, 0.45 * (0.5 - 0.5 * phase.cos()));
-        } else if row.state == State::Done {
-            color = fade(theme, base, theme.dim, 0.4);
+            wave = 0.5 - 0.5 * phase.cos();
         }
+        let color = tone(theme, row.state, base, wave);
         let mut style = theme.style(color);
         if attention(row.state) || row.state == State::Looping {
             style = style.add_modifier(Modifier::BOLD);
@@ -83,8 +157,8 @@ impl AgentsView {
 
     fn tag_color(theme: &Theme, row: &AgentRow) -> Color {
         match row.source {
-            SourceKind::Nexo => theme.accent,
-            SourceKind::External => theme.accent2,
+            SourceKind::Nexo => legible(theme, theme.accent),
+            SourceKind::External => legible(theme, theme.accent2),
         }
     }
 
@@ -116,7 +190,13 @@ impl AgentsView {
         };
         self.cols = cols;
         self.drawn = layout;
-        let bands = Self::bands(groups, cols);
+        if self.rows.is_empty() && self.filter == Filter::All {
+            self.grid.clear();
+            self.scroll = 0;
+            Self::empty_state(f, body, theme);
+            return;
+        }
+        let bands = Self::bands(groups, cols, matches!(layout, Layout::Cards { .. }));
         self.grid = bands.iter().filter_map(|b| if let Band::Row(r) = b { Some(r.clone()) } else { None }).collect();
         // the strip that holds the selection, and the first strip that keeps it in sight
         let sel = bands.iter().position(|b| matches!(b, Band::Row(r) if r.contains(&self.selected))).unwrap_or(0);
@@ -139,7 +219,12 @@ impl AgentsView {
         }
         self.scroll = self.scroll.min(last_first);
 
-        let used_w = if tight { body.width } else { card_w * cols as u16 + GAP * (cols as u16 - 1) };
+        // cards share the whole width up to their widest; blocks keep their own size
+        let used_w = match layout {
+            _ if tight => body.width,
+            Layout::Cards { .. } => body.width.min(cols as u16 * CARD_MAX_W + GAP * (cols as u16 - 1)),
+            _ => card_w * cols as u16 + GAP * (cols as u16 - 1),
+        };
         let x0 = body.x + body.width.saturating_sub(used_w) / 2;
         let mut y = body.y;
         for (n, band) in bands.iter().enumerate().skip(self.scroll) {
@@ -166,13 +251,16 @@ impl AgentsView {
                     );
                 }
                 Band::Row(items) => {
+                    let widths = Self::row_widths(layout, used_w, card_w, items.len());
+                    let mut x = x0;
                     for (c, &i) in items.iter().enumerate() {
                         let row = &shown[i];
                         let r = if tight {
                             Rect::new(body.x, y, body.width, 1)
                         } else {
-                            Rect::new(x0 + c as u16 * (card_w + GAP), y, card_w, item_h)
+                            Rect::new(x, y, widths[c], item_h)
                         };
+                        x += widths[c] + GAP;
                         let t = self.entered(&row.key, now);
                         if tight {
                             self.list_line(f, r, i, row, theme, now, fx);
@@ -195,6 +283,43 @@ impl AgentsView {
                 }
             }
             y += h;
+        }
+    }
+
+    /// No session anywhere: what the panel is for and how sessions get here, instead of two bare headers.
+    fn empty_state(f: &mut Frame, body: Rect, theme: &Theme) {
+        for (n, text) in EMPTY_STATE.iter().enumerate().take(body.height as usize) {
+            let room = body.width.saturating_sub(1) as usize;
+            let mut chars = text.chars();
+            let line = match (n, chars.next()) {
+                (0, _) => Line::from(Span::styled(truncate(text, room), theme.bold(theme.fg))),
+                (_, Some(mark @ ('▣' | '▢'))) => {
+                    let color = if mark == '▣' { theme.accent } else { theme.accent2 };
+                    let rest = chars.as_str();
+                    Line::from(vec![
+                        Span::styled(mark.to_string(), theme.bold(color)),
+                        Span::styled(truncate(rest, room.saturating_sub(1)), theme.dim()),
+                    ])
+                }
+                _ => Line::from(Span::styled(truncate(text, room), theme.dim())),
+            };
+            f.render_widget(
+                Paragraph::new(line),
+                Rect::new(body.x + 1, body.y + n as u16, body.width.saturating_sub(1), 1),
+            );
+        }
+    }
+
+    /// The widths of the `n` cards of one strip: cards stretch over the strip so no strip ends ragged, blocks keep
+    /// their size.
+    fn row_widths(layout: Layout, full_w: u16, card_w: u16, n: usize) -> Vec<u16> {
+        match layout {
+            Layout::Cards { .. } => {
+                let gaps = GAP * (n as u16).saturating_sub(1);
+                let room = full_w.min(n as u16 * CARD_MAX_W + gaps);
+                split_evenly(room.saturating_sub(gaps), n)
+            }
+            _ => vec![card_w; n],
         }
     }
 
@@ -310,7 +435,10 @@ impl AgentsView {
             out.push(s);
         }
         if let Some((what, t)) = &row.last_action {
-            out.push(Span::styled(format!("{what} · {}", self.since_action(*t)), theme.style(theme.accent2)));
+            out.push(Span::styled(
+                format!("{what} · {}", self.since_action(*t)),
+                theme.style(legible(theme, theme.accent2)),
+            ));
         }
         out
     }
@@ -320,7 +448,10 @@ impl AgentsView {
         let a = self.ascii;
         let phase = if fx { self.since_open(now) } else { 0 };
         if let Some(s) = row.retry_secs {
-            return Some(Span::styled(format!("{} retry {s}s", px::retry_frame(phase, a)), theme.style(theme.warn)));
+            return Some(Span::styled(
+                format!("{} retry {s}s", px::retry_frame(phase, a)),
+                theme.style(legible(theme, theme.warn)),
+            ));
         }
         let e = row.ribbon.last().filter(|e| e.kind == EvKind::RateLimit)?;
         let EvDetail::Wait { secs } = e.detail else { return None };
@@ -330,13 +461,16 @@ impl AgentsView {
         }
         let bar = px::drain(left, secs, 5);
         let bar = if a { bar.replace('▰', "#").replace('▱', ".") } else { bar };
-        Some(Span::styled(format!("{} {bar} {left}s", px::glyph(EvKind::RateLimit, a)), theme.style(theme.warn)))
+        Some(Span::styled(
+            format!("{} {bar} {left}s", px::glyph(EvKind::RateLimit, a)),
+            theme.style(legible(theme, theme.warn)),
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
     fn card(&self, f: &mut Frame, r: Rect, i: usize, row: &AgentRow, theme: &Theme, now: Instant, fx: bool) {
         let a = self.ascii;
-        let level = self.lit(i, row, now);
+        let level = self.lit(i, row, now).min(CARD_LIT_MAX);
         let selected = self.selected == i;
         let base = Style::default().bg(theme.modal_bg);
         let bg = lit_style(theme, base, level);
@@ -379,7 +513,7 @@ impl AgentsView {
         let bar_w = todo.map_or(0, |(d, t)| px::todo_width(d, t) + 1);
         let step_room = cw.saturating_sub(bar_w);
         let step = match &row.last_step {
-            Some(s) => Span::styled(format!("▸ {}", truncate(s, step_room.saturating_sub(2))), theme.dim()),
+            Some(s) => Span::styled(format!("▸ {}", fit_step(s, step_room.saturating_sub(2))), theme.dim()),
             None => Span::styled(truncate("▸ no step seen yet", step_room), theme.dim2()),
         };
         let mut l2 = vec![step];
@@ -403,25 +537,29 @@ impl AgentsView {
             cost = format!(" · ${c:.2}");
         }
         let quiet_part = format!(" · quiet {quiet}");
-        let left_of = |with_quiet: bool| {
-            let rest = if with_quiet { format!("{cost}{quiet_part}") } else { cost.clone() };
+        // what the left side keeps as the right one claims room: the cost goes first, the time only after it
+        let left_of = |tier: usize| {
+            let rest = match tier {
+                0 => format!("{cost}{quiet_part}"),
+                1 => quiet_part.clone(),
+                _ => cost.clone(),
+            };
             let tag_room = cw.saturating_sub(width(&rest));
             let tag = truncate(&tag, tag_room.max(3));
             (tag, rest)
         };
         let rights = self.right_of_line3(row, theme, now, fx);
-        let mut chosen: Option<(bool, Span<'static>)> = None;
+        let mut chosen: Option<(usize, Span<'static>)> = None;
         'pick: for rt in rights {
-            for with_quiet in [true, false] {
-                let (t, rest) = left_of(with_quiet);
+            for tier in 0..3 {
+                let (t, rest) = left_of(tier);
                 if width(&t) + width(&rest) + 2 + width(&rt.content) <= cw {
-                    chosen = Some((with_quiet, rt));
+                    chosen = Some((tier, rt));
                     break 'pick;
                 }
             }
         }
-        let with_quiet = !matches!(chosen, Some((false, _)));
-        let (tag, rest) = left_of(with_quiet);
+        let (tag, rest) = left_of(chosen.as_ref().map_or(0, |(tier, _)| *tier));
         let used = width(&tag) + width(&rest);
         let rest = truncate(&rest, cw.saturating_sub(used - width(&rest)));
         let mut l3 = vec![Span::styled(tag, theme.style(Self::tag_color(theme, row))), Span::styled(rest, theme.dim())];
@@ -474,7 +612,7 @@ impl AgentsView {
         let chip_w = 13usize;
         let shown_w: usize = chip.iter().map(|s| width(&s.content)).sum();
         let quiet = row.idle_secs.map(age).unwrap_or_else(|| "-".to_string());
-        let quiet_w = 7usize;
+        let quiet_w = 4usize;
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::styled(if self.selected == i { "▌" } else { " " }, theme.style(theme.accent)));
         let mut used = 1;
@@ -571,5 +709,142 @@ impl AgentsView {
         }
         let text = parts.join(" · ");
         vec![Span::styled(truncate(&text, w), theme.dim2())]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents_view::{balanced, split_evenly};
+
+    fn lum(c: Color) -> f64 {
+        let Color::Rgb(r, g, b) = c else { return 0.0 };
+        let f = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    }
+
+    fn ratio(a: Color, b: Color) -> f64 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    const STATES: [State; 7] = [
+        State::WaitingPermission,
+        State::WaitingAnswer,
+        State::Stalled,
+        State::Looping,
+        State::Working,
+        State::Idle { min: 0 },
+        State::Done,
+    ];
+
+    /// The coloured text of a card (chips, breathing and softened, tags, the supervisor's action, waits) reads at
+    /// AA on the card's ground, resting and at its most lit, in every theme that has colours; the plain, dim and
+    /// dimmer text keeps the contrast its theme promises (dark, nexo and light).
+    #[test]
+    fn card_text_reads_on_its_ground_in_every_theme() {
+        let mut weak: Vec<String> = Vec::new();
+        for name in crate::theme::NAMES {
+            let t = Theme::by_name(name).unwrap();
+            if t.mono {
+                continue;
+            }
+            let selected = t.selection().bg.unwrap_or(t.border);
+            let lit = crate::motion::fade(&t, t.modal_bg, selected, CARD_LIT_MAX);
+            for ground in [t.modal_bg, lit] {
+                let mut hues = vec![
+                    ("tag nexo", legible(&t, t.accent)),
+                    ("tag other", legible(&t, t.accent2)),
+                    ("action", legible(&t, t.accent2)),
+                    ("retry", legible(&t, t.warn)),
+                ];
+                for s in STATES {
+                    let base = chip_color(&t, s);
+                    for wave in [0.0, 1.0] {
+                        hues.push((chip(s).1, tone(&t, s, base, wave)));
+                    }
+                }
+                for (what, c) in hues {
+                    // a finished session is softened on purpose, down to 3:1
+                    let need = if what == "done" { 3.0 } else { 4.5 };
+                    let r = ratio(c, ground);
+                    if r < need {
+                        weak.push(format!("{name}: {what} is {r:.2}:1 on {ground:?}, wants {need}"));
+                    }
+                }
+            }
+            if matches!(*name, "dark" | "nexo" | "light") {
+                for (what, c, floor) in [("name", t.fg, 4.5), ("dim", t.dim, 4.0), ("dim2", t.dim2, 3.0)] {
+                    for ground in [t.modal_bg, lit] {
+                        if ratio(c, ground) < floor {
+                            weak.push(format!("{name}: {what} is {:.2}:1 on {ground:?}", ratio(c, ground)));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(weak.is_empty(), "{}", weak.join("\n"));
+    }
+
+    #[test]
+    fn a_hue_that_reads_is_left_alone_and_one_that_does_not_moves_to_the_text_colour() {
+        let t = Theme::dark();
+        assert_eq!(legible(&t, t.success), t.success);
+        let faint = Color::Rgb(0x30, 0x30, 0x30);
+        let fixed = legible(&t, faint);
+        assert!(ratio(fixed, t.modal_bg) >= 4.5, "{fixed:?}");
+        assert_eq!(legible(&Theme::mono(), faint), faint);
+    }
+
+    #[test]
+    fn quiet_times_are_one_short_unit() {
+        let got: Vec<String> =
+            [0, 2, 59, 60, 95, 3599, 3600, 7300, 86399, 86400, 400_000].map(crate::agents_view::age).into();
+        assert_eq!(got, ["0s", "2s", "59s", "1m", "1m", "59m", "1h", "2h", "23h", "1d", "4d"]);
+    }
+
+    #[test]
+    fn every_state_has_its_own_glyph_so_colour_is_never_the_only_cue() {
+        let glyphs: std::collections::HashSet<_> = STATES.iter().map(|s| chip(*s).0).collect();
+        assert_eq!(glyphs.len(), STATES.len());
+        let labels: std::collections::HashSet<_> = STATES.iter().map(|s| chip(*s).1).collect();
+        assert_eq!(labels.len(), STATES.len());
+    }
+
+    #[test]
+    fn a_step_keeps_the_end_of_its_path_and_cuts_other_text_at_the_end() {
+        assert_eq!(fit_step("Edit  src/parser.rs", 40), "Edit  src/parser.rs");
+        let cut = fit_step("Edit  crates/nexo-tui/src/agents_view/draw.rs", 24);
+        assert!(cut.starts_with("Edit  …") && cut.ends_with("view/draw.rs") || cut.ends_with("draw.rs"), "{cut}");
+        assert!(width(&cut) <= 24, "{cut}");
+        let cut = fit_step("Bash  cargo test -p parser --lib", 16);
+        assert!(cut.starts_with("Bash  cargo") && cut.ends_with('…') && width(&cut) <= 16, "{cut}");
+        // CJK path: never wider than the room
+        let cut = fit_step("Read  /项目/源代码/解析器/语法分析.rs", 20);
+        assert!(width(&cut) <= 20, "{cut}");
+    }
+
+    #[test]
+    fn rows_balance_and_cards_split_a_strip_to_the_cell() {
+        assert_eq!(balanced(4, 3), 2);
+        assert_eq!(balanced(5, 3), 3);
+        assert_eq!(balanced(7, 4), 4);
+        assert_eq!(balanced(5, 4), 3);
+        assert_eq!(balanced(1, 4), 1);
+        assert_eq!(balanced(0, 4), 1);
+        assert_eq!(split_evenly(113, 3), vec![38, 38, 37]);
+        let l = Layout::Cards { cols: 3, card_w: 37 };
+        for n in 1..=4 {
+            let w = AgentsView::row_widths(l, 116, 37, n);
+            let gaps = GAP * (n as u16 - 1);
+            assert_eq!(w.iter().sum::<u16>() + gaps, 116.min(n as u16 * CARD_MAX_W + gaps), "{n}: {w:?}");
+        }
     }
 }

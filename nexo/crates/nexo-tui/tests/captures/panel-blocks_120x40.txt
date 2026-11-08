@@ -16,12 +16,12 @@
 │                                                                                                                      │
 │      ▢ agentx · 4 ─────────────────────────────────────────────────────────────────────────────────────────────      │
 │      ▌ api-migration   ▌ docs            ▌ nightly-fixer   ▌ scheduler                                               │
-│      ▌ ◈ 1m 35s        ▌ ◆ 6m 40s        ▌ ◐ 40m 00s       ▌ ↻ 30s agentx                                            │
+│      ▌ ◈ 1m agentx     ▌ ◆ 6m agentx     ▌ ◐ 40m agentx    ▌ ↻ 30s agentx                                            │
 │      ▌ Bash  cargo …   ▌ which licens…   ▌ Read  tests/…   ▌ Bash  git pu…                                           │
 │                                                                                                                      │
 │      ▢ othertool · 2 ──────────────────────────────────────────────────────────────────────────────────────────      │
 │      ▌ refactor        ▌ release                                                                                     │
-│      ▌ ○ 17m 00s       ▌ ✓ 2h 01m                                                                                    │
+│      ▌ ○ 17m           ▌ ✓ 2h                                                                                        │
 │      ▌                 ▌ Bash  gh rel…                                                                               │
 │                                                                                                                      │
 │ /home/dev/project · default · this-session                                                                           │
