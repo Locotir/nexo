@@ -121,10 +121,13 @@ fn conversation(a: &mut App) {
     // the wall clock never reaches a capture
     a.turn_started = None;
     a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
-    // the turn time is read from the wall clock: pin it so the captures stay the same on every run
+    // the turn and thinking times are read from the wall clock: pin them so the captures stay the
+    // same on every run (a slow runner once drew the thinking line as 1ms)
     for b in a.blocks.iter_mut() {
-        if let nexo_tui::render::blocks::Block::Usage { elapsed_ms, .. } = b {
-            *elapsed_ms = 0;
+        match b {
+            nexo_tui::render::blocks::Block::Usage { elapsed_ms, .. } => *elapsed_ms = 0,
+            nexo_tui::render::blocks::Block::Reasoning { elapsed_ms, .. } => *elapsed_ms = Some(0),
+            _ => {}
         }
     }
 }
@@ -259,7 +262,12 @@ fn every_scene_at_the_four_sizes_matches_its_capture() {
             }
             match std::fs::read_to_string(&path) {
                 Ok(kept) if kept == text => {}
-                Ok(_) => wrong.push(format!("{scene_name} {w}x{h}: differs from {}", path.display())),
+                Ok(kept) => wrong.push(format!(
+                    "{scene_name} {w}x{h}: differs from {}
+{}",
+                    path.display(),
+                    first_change(&kept, &text)
+                )),
                 Err(_) => wrong.push(format!("{scene_name} {w}x{h}: no capture, run with NEXO_UPDATE_GOLDEN=1")),
             }
         }
@@ -537,4 +545,20 @@ fn the_trust_question_takes_arrows_enter_y_n_and_esc() {
     assert_eq!(answer(&[Char('y')]), (Some(true), false));
     assert_eq!(answer(&[Char('N')]), (Some(false), false));
     assert_eq!(answer(&[Esc]), (Some(false), false));
+}
+
+/// The first row that changed, kept and now, so a failure on CI shows what moved.
+fn first_change(kept: &str, now: &str) -> String {
+    let (k, n): (Vec<&str>, Vec<&str>) = (kept.lines().collect(), now.lines().collect());
+    let row = (0..k.len().max(n.len())).find(|&i| k.get(i) != n.get(i)).unwrap_or(0);
+    let show = |v: &[&str]| v.get(row).map_or("<no row>".to_string(), |s| format!("{:?}", s.trim_end()));
+    format!("  row {}: kept {}\n  row {}: now  {}", row + 1, show(&k), row + 1, show(&n))
+}
+
+#[test]
+fn a_differing_capture_names_the_first_row_that_changed() {
+    let msg = first_change("a\nb\nc\n", "a\nB\nc\n");
+    assert!(msg.contains("row 2: kept \"b\""), "{msg}");
+    assert!(msg.contains("row 2: now  \"B\""), "{msg}");
+    assert!(first_change("a\n", "a\nb\n").contains("kept <no row>"));
 }
