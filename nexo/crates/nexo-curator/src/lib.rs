@@ -287,6 +287,97 @@ pub fn distinctive_words(text: &str) -> Vec<String> {
     hindsight::words(text, &mut int).into_iter().map(|w| int.get(w).to_string()).collect()
 }
 
+/// What a distinctive word is, for a report on what was lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordKind {
+    /// Only digits and the signs of a number (`4373.25`, `1,372`, `-8500.0`).
+    Number,
+    /// An identifier, path, version or hash: it has a `/`, `\`, `_`, `-`, a dot inside, or a digit among
+    /// letters (`tools/audit.py`, `SPEC_EXAMPLES`, `sulko_dolde1`, `40114b`).
+    Identifier,
+    /// Anything else: letters only (a plain name).
+    Other,
+}
+
+/// The kind of a word from [`distinctive_words`]. Mechanical, no dictionary: the rule of the H4 notes
+/// (a digit, slash or inner dot makes a word private; a number is split off) without the word list.
+pub fn word_kind(word: &str) -> WordKind {
+    let w = word.trim_matches(|c: char| !c.is_alphanumeric());
+    if w.chars().any(|c| c.is_ascii_digit())
+        && w.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '+'))
+        && !w.contains("--")
+    {
+        return WordKind::Number;
+    }
+    // a hash: hex digits only, long enough not to be a word
+    if w.len() >= 6 && w.chars().all(|c| c.is_ascii_hexdigit()) {
+        return WordKind::Identifier;
+    }
+    let joined = w.chars().any(|c| matches!(c, '/' | '\\' | '_' | '-' | '.') || c.is_ascii_digit());
+    if joined {
+        WordKind::Identifier
+    } else {
+        WordKind::Other
+    }
+}
+
+/// What the replies forgot, by kind and by reply. The plain total (`words`) is the number the earlier
+/// tables use; the rest says what the loss is made of and whether one reply holds most of it.
+#[derive(Debug, Default, Clone)]
+pub struct LostTally {
+    /// Forgotten words in all, a word once per reply it is forgotten in.
+    pub words: usize,
+    pub numbers: usize,
+    pub identifiers: usize,
+    pub other: usize,
+    /// Distinct forgotten words over the whole conversation: one forgotten in many replies counts once.
+    distinct: std::collections::HashSet<String>,
+    /// The reply with the most forgotten words: its label and count.
+    pub largest: Option<(usize, usize)>,
+    /// Replies that forgot something.
+    pub replies: usize,
+}
+
+impl LostTally {
+    /// Counts the words forgotten in reply number `reply`.
+    pub fn add(&mut self, reply: usize, lost: &[String]) {
+        if lost.is_empty() {
+            return;
+        }
+        self.replies += 1;
+        self.words += lost.len();
+        for w in lost {
+            match word_kind(w) {
+                WordKind::Number => self.numbers += 1,
+                WordKind::Identifier => self.identifiers += 1,
+                WordKind::Other => self.other += 1,
+            }
+            self.distinct.insert(w.clone());
+        }
+        if self.largest.is_none_or(|(_, n)| lost.len() > n) {
+            self.largest = Some((reply, lost.len()));
+        }
+    }
+
+    /// Distinct forgotten words over the conversation.
+    pub fn distinct(&self) -> usize {
+        self.distinct.len()
+    }
+
+    /// Forgotten words outside the largest reply: what the loss is when one table does not dominate.
+    pub fn without_largest(&self) -> usize {
+        self.words - self.largest.map_or(0, |(_, n)| n)
+    }
+
+    /// The share, in percent, of all forgotten words that the largest reply holds.
+    pub fn share_of_largest(&self) -> f64 {
+        match self.largest {
+            Some((_, n)) if self.words > 0 => 100.0 * n as f64 / self.words as f64,
+            _ => 0.0,
+        }
+    }
+}
+
 /// What one call of the curator returns.
 #[derive(Debug, Clone)]
 pub struct Reply {
@@ -696,6 +787,38 @@ fn at<'a>(v: &'a mut Value, path: &[usize]) -> Option<&'a mut Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forgotten_word_is_a_number_an_identifier_or_other() {
+        for n in ["4373.25", "1372", "10.0", "-8500.0", "1,372"] {
+            assert_eq!(word_kind(n), WordKind::Number, "{n}");
+        }
+        for id in ["tools/audit.py", "SPEC_EXAMPLES", "sulko_dolde1", "40114b", "deadbeef", "1.2.3a", "c1-200", "a.out"]
+        {
+            assert_eq!(word_kind(id), WordKind::Identifier, "{id}");
+        }
+        for o in ["Ledgerpour", "Cargo", "fixture"] {
+            assert_eq!(word_kind(o), WordKind::Other, "{o}");
+        }
+    }
+
+    #[test]
+    fn the_tally_splits_by_kind_and_shows_how_much_one_reply_holds() {
+        let w = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let mut t = LostTally::default();
+        t.add(1, &w(&["a/b.rs", "Zorbal"]));
+        t.add(2, &[]);
+        let table: Vec<String> = (0..8).map(|i| format!("{i}00.5")).chain(["a/b.rs".to_string()]).collect();
+        t.add(3, &table);
+        assert_eq!((t.words, t.replies), (11, 2));
+        assert_eq!((t.numbers, t.identifiers, t.other), (8, 2, 1));
+        assert_eq!(t.words, t.numbers + t.identifiers + t.other);
+        assert_eq!(t.distinct(), 10, "a/b.rs forgotten in two replies counts once");
+        assert_eq!(t.largest, Some((3, 9)));
+        assert_eq!(t.without_largest(), 2);
+        assert!((t.share_of_largest() - 100.0 * 9.0 / 11.0).abs() < 1e-9);
+        assert_eq!(LostTally::default().share_of_largest(), 0.0);
+    }
 
     #[test]
     fn a_cache_cheaper_than_the_specs_ratio_is_weighed_at_its_price() {

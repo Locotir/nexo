@@ -1627,6 +1627,7 @@ fn main() {
     let (mut prev_view, mut sum_miss, mut sum_hit, mut per_view) = (Vec::<Value>::new(), 0i64, 0i64, Vec::new());
     let (mut cache, mut plain_cache) = (Cache { life, sent: Vec::new() }, Cache { life, sent: Vec::new() });
     let (mut replies, mut lost_replies, mut lost_words, mut lost_first) = (0, 0, 0, Vec::<String>::new());
+    let mut tally = nexo_curator::LostTally::default();
     let mut copied_words = 0;
     let (mut blind_tokens, mut open_tokens) = (0i64, 0i64);
     let (mut denied_tokens, mut asked_tokens) = (0i64, 0i64);
@@ -1658,6 +1659,7 @@ fn main() {
         if let Some(said) = reply_to(&requests, i) {
             let (lost, held) = forgotten(said, &r.messages, &reply.view, &r.system);
             copied_words += held;
+            tally.add(i + 1, &lost);
             replies += 1;
             if !lost.is_empty() {
                 lost_replies += 1;
@@ -1818,6 +1820,19 @@ fn main() {
         "forgotten: {lost_words} words in {lost_replies} of {replies} replies, of {copied_words} words the replies took from the history{}",
         if lost_first.is_empty() { String::new() } else { format!(" (first: {})", lost_first.join(", ")) }
     );
+    if let Some((r, n)) = tally.largest {
+        println!(
+            "forgotten by kind: {} numbers, {} ids/paths, {} other; {} distinct; largest reply r{r} holds {n} ({:.0}%), {} outside it",
+            tally.numbers,
+            tally.identifiers,
+            tally.other,
+            tally.distinct(),
+            tally.share_of_largest(),
+            tally.without_largest()
+        );
+    } else {
+        println!("forgotten by kind: 0 numbers, 0 ids/paths, 0 other; 0 distinct");
+    }
     let share = |part: i64, whole: i64| if whole > 0 { 100.0 * part as f64 / whole as f64 } else { 0.0 };
     println!(
         "blind: {blind_tokens} of {open_tokens} tokens of results not yet written about were left out ({:.1}%)",
