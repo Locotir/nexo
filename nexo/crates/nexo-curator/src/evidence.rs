@@ -172,7 +172,8 @@ static PATHISH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"[^\s"'`,;()\[\]
 pub fn paths_of(text: &str, ext_ok: &dyn Fn(&str) -> bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for m in PATHISH.find_iter(text) {
-        let mut t = m.as_str().trim_end_matches([':', '.', '!', '?']);
+        let slashed = m.as_str().replace('\\', "/");
+        let mut t = slashed.trim_end_matches([':', '.', '!', '?']);
         if t.starts_with("http") || t.contains('*') || t.starts_with('-') {
             continue;
         }
@@ -211,11 +212,18 @@ static LINE_BEFORE: LazyLock<Regex> =
 pub fn line_refs(text: &str, ext_ok: &dyn Fn(&str) -> bool) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     for m in PATHISH.find_iter(text) {
-        let raw = m.as_str().trim_end_matches(['.', '!', '?', ',']);
+        let slashed = m.as_str().replace('\\', "/");
+        let raw = slashed.trim_end_matches(['.', '!', '?', ',']);
         // `path:12` and `path#L12` are one token
         let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
         let (path, inline) = match (raw.rsplit_once(':'), raw.rsplit_once("#L")) {
-            (Some((h, t)), _) | (_, Some((h, t))) if digits(t) => (h, t.parse::<usize>().ok()),
+            (Some((h, t)), _) | (_, Some((h, t))) if digits(t) => {
+                // `path:12:5` is line 12, column 5
+                match h.rsplit_once(':') {
+                    Some((h2, l)) if digits(l) => (h2, l.parse::<usize>().ok()),
+                    _ => (h, t.parse::<usize>().ok()),
+                }
+            }
             _ => (raw, None),
         };
         let found = paths_of(path, ext_ok);
@@ -274,10 +282,13 @@ mod tests {
         assert_eq!(line_refs("look at lines 12-14 of src/store.py", &ext), [("src/store.py".to_string(), 12)]);
         assert!(line_refs("the file src/store.py is fine, line 12 of the other", &ext).is_empty());
         assert!(line_refs("example.com:8080", &ext).is_empty());
+        assert_eq!(line_refs("src/store.py:12:9", &ext), [("src/store.py".to_string(), 12)]);
+        assert_eq!(line_refs("src\\store.py:12", &ext), [("src/store.py".to_string(), 12)]);
     }
 
     #[test]
     fn paths_match_by_tail() {
+        assert_eq!(paths_of("C:\\work\\app\\b.rs", &ext), ["C:/work/app/b.rs"]);
         assert!(same_path("./a/b.rs", "a/b.rs"));
         assert!(same_path("/home/u/a/b.rs", "a/b.rs"));
         assert!(!same_path("a/xb.rs", "b.rs"));

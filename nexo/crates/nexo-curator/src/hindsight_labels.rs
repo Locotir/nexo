@@ -375,6 +375,161 @@ fn cases() -> Vec<Case> {
             ],
             used: vec!["b1"],
         },
+        // ---- hard cases found by reading what real sessions write (labelled by reading the evidence)
+        // the reply writes a windows path with backslashes for a file the call named with slashes
+        Case {
+            name: "windows path with backslashes, line reference",
+            steps: vec![
+                U("Find the bug"),
+                read("r1", "src/store.py"),
+                R("r1", numbered(STORE)),
+                A("The comparison is inverted at src\\store.py:12."),
+            ],
+            used: vec!["r1"],
+        },
+        // the file was read through a windows path; the edit names it with slashes
+        Case {
+            name: "file read with a windows path, edited with slashes",
+            steps: vec![
+                U("Tidy the helper"),
+                read("r1", "C:\\work\\app\\src\\helpers.py"),
+                R("r1", HELPERS.into()),
+                read("r2", "C:\\work\\app\\src\\other.py"),
+                R("r2", OTHER.into()),
+                C(
+                    "e1",
+                    "edit",
+                    json!({"file_path": "src/helpers.py", "old_string": "    parts = text.split()\n    return parts[0] if parts else None", "new_string": "    return (text.split() or [None])[0]"}),
+                ),
+                R("e1", "ok".into()),
+            ],
+            used: vec!["r1"],
+        },
+        // a compiler style reference with a column: the line is 12, not the column
+        Case {
+            name: "line and column reference past the end of the file",
+            steps: vec![
+                U("Find the bug"),
+                read("r1", "src/helpers.py"),
+                R("r1", numbered(HELPERS)),
+                A("The error is at src/helpers.py:40:3."),
+            ],
+            used: vec![],
+        },
+        Case {
+            name: "line and column reference inside the file",
+            steps: vec![
+                U("Find the bug"),
+                read("r1", "src/store.py"),
+                R("r1", numbered(STORE)),
+                A("The error is at src/store.py:12:9."),
+            ],
+            used: vec!["r1"],
+        },
+        // the agent writes a number with thousands separators
+        Case {
+            name: "number copied with thousands separators",
+            steps: vec![
+                U("How big is the table?"),
+                bash("b1", "sqlite3 db 'select count(*) from rows'"),
+                R("b1", "4821350".into()),
+                A("The table holds 4,821,350 rows."),
+            ],
+            used: vec!["b1"],
+        },
+        Case {
+            name: "number in the result has separators, reply has none",
+            steps: vec![
+                U("How many users?"),
+                bash("b1", "report --users"),
+                R("b1", "active users: 1,204,331\n".into()),
+                A("There are 1204331 active users."),
+            ],
+            used: vec!["b1"],
+        },
+        Case {
+            name: "small numbers with separators are not names",
+            steps: vec![
+                U("How many?"),
+                bash("b1", "report --count"),
+                R("b1", "items: 1,024\nlimit: 2,048\n".into()),
+                A("There are about 1,000 items and a limit near 2,000."),
+            ],
+            used: vec![],
+        },
+        // names with accents and prose in other languages
+        Case {
+            name: "accented identifier copied",
+            steps: vec![
+                U("Qué hace la función?"),
+                read("r1", "src/util.py"),
+                R("r1", "def calcular_año_fiscal(fecha):\n    return fecha.year + 1\n".into()),
+                A("calcular_año_fiscal suma uno al año de la fecha."),
+            ],
+            used: vec!["r1"],
+        },
+        Case {
+            name: "spanish sentence quoted",
+            steps: vec![
+                U("Qué dice la guía?"),
+                read("r1", "GUIA.md"),
+                R("r1", "Antes de la migración hay que reiniciar el servidor principal y vaciar la caché.\n".into()),
+                A("La guía indica que antes de la migración hay que reiniciar el servidor principal."),
+            ],
+            used: vec!["r1"],
+        },
+        // markdown escapes the underscores of a name
+        Case {
+            name: "escaped underscore name",
+            steps: vec![
+                U("What cleans the entries?"),
+                read("r1", "src/store.py"),
+                R("r1", STORE.into()),
+                A("The method purge\\_expired removes them."),
+            ],
+            used: vec!["r1"],
+        },
+        // negative: a reply that mentions a file only through a stock word of a listing
+        Case {
+            name: "uuid copied",
+            steps: vec![
+                U("Which build is running?"),
+                bash("b1", "tool status"),
+                R("b1", "build id 3f2a9c1e-7b44-4d0a-9e21-5c8d1b6a0f77 running".into()),
+                A("The running build is 3f2a9c1e-7b44-4d0a-9e21-5c8d1b6a0f77."),
+            ],
+            used: vec!["b1"],
+        },
+        Case {
+            name: "ip address copied",
+            steps: vec![
+                U("Where does it listen?"),
+                bash("b1", "ip addr"),
+                R("b1", "inet 192.168.14.37/24 brd 192.168.14.255".into()),
+                A("It listens on 192.168.14.37."),
+            ],
+            used: vec!["b1"],
+        },
+        Case {
+            name: "line range with an en dash",
+            steps: vec![
+                U("Find the bug"),
+                read("r1", "src/store.py"),
+                R("r1", numbered(STORE)),
+                A("Lines 10–14 of src/store.py hold the bug."),
+            ],
+            used: vec!["r1"],
+        },
+        Case {
+            name: "line reference from a diff header style",
+            steps: vec![
+                U("Find the bug"),
+                read("r1", "src/store.py"),
+                R("r1", numbered(STORE)),
+                A("The bad check is in src/store.py (line 12)."),
+            ],
+            used: vec!["r1"],
+        },
         // ---- the agent did not use the result
         Case {
             name: "common words by chance",

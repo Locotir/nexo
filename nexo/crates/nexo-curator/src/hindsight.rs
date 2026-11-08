@@ -58,6 +58,10 @@ static WORD: LazyLock<Re> = LazyLock::new(|| {
     Re::new(r"\$?0[xX][0-9a-fA-F]+|[A-Za-z_$][\w$]*(?:[./-][\w$]+)*|\d+(?:\.\d+)+|\d[0-9a-fA-F]{3,}", 0)
 });
 
+/// A number with thousands separators, its decimals included.
+static GROUPED: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b").unwrap());
+
 const FILE_EXT: [&str; 92] = [
     "py", "js", "mjs", "ts", "tsx", "jsx", "md", "json", "jsonl", "toml", "yaml", "yml", "txt", "cfg", "ini", "sh",
     "rs", "go", "java", "c", "h", "cc", "cpp", "hpp", "cs", "css", "scss", "html", "sql", "lock", "log", "csv", "xml",
@@ -130,6 +134,24 @@ fn has_ext(last: &str, list: &[&str]) -> bool {
 pub fn words(text: &str, int: &mut Interner) -> Set {
     let common = &*GENERAL;
     let mut out = Vec::new();
+    // a markdown reply escapes the underscore of a name (`purge\_expired`)
+    let unescaped;
+    let text = if text.contains("\\_") {
+        unescaped = text.replace("\\_", "_");
+        unescaped.as_str()
+    } else {
+        text
+    };
+    // a number written with thousands separators (`4,821,350`) is the number without them
+    if text.contains(',') {
+        for m in GROUPED.find_iter(text) {
+            let n = m.as_str().replace(',', "");
+            let ok = py::len(&n) >= 4 && (!py::str_isdigit(&n) || distinctive(&n));
+            if ok && !common.contains(n.as_str()) {
+                out.push(int.intern(&n));
+            }
+        }
+    }
     for (a, b) in WORD.find_all(text) {
         let w = &text[a..b];
         let first = py::first(w).unwrap_or(' ');
@@ -497,6 +519,13 @@ mod tests {
     fn words_of(text: &str) -> Vec<String> {
         let mut int = Interner::default();
         words(text, &mut int).into_iter().map(|k| int.get(k).to_string()).collect()
+    }
+
+    #[test]
+    fn separators_and_escapes_do_not_hide_a_word() {
+        assert_eq!(words_of("the table holds 4,821,350 rows"), ["4821350"]);
+        assert_eq!(words_of("total 1,234.56 and 12,345"), ["1234.56", "12345", "234.56"]);
+        assert_eq!(words_of("the method purge\\_expired runs"), ["purge_expired"]);
     }
 
     #[test]
