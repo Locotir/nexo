@@ -270,7 +270,8 @@ impl Feed for ChatParser {
                         None if !name.is_empty() => self.calls.len(),
                         None => self.calls.len().saturating_sub(1),
                     };
-                    let known = self.calls.iter().position(|k| k.0 == idx);
+                    // a new id on an index already open is another call (some servers number every parallel call 0)
+                    let known = self.calls.iter().rposition(|k| k.0 == idx && (id.is_empty() || k.1 == id));
                     match known {
                         None => {
                             let id = if id.is_empty() { format!("call_{idx}") } else { id.to_string() };
@@ -477,6 +478,21 @@ mod tests {
         assert_eq!(ends.len(), 2, "{evs:?}");
         assert!(matches!(ends[0], StreamEvent::ToolCallEnd { id, args, .. } if id == "a" && args["path"] == "a"));
         assert!(matches!(ends[1], StreamEvent::ToolCallEnd { id, name, .. } if id == "b" && name == "ls"));
+    }
+
+    #[test]
+    fn parallel_calls_that_all_say_index_zero_are_told_apart_by_id() {
+        let chunks = [
+            r#"{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"read","arguments":"{\"path\":\"a\"}"}}]}}]}"#,
+            r#"{"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"b","type":"function","function":{"name":"ls","arguments":"{}"}}]}}]}"#,
+            r#"{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+        ];
+        let mut p = ChatParser::default();
+        let evs: Vec<StreamEvent> = chunks.iter().flat_map(|c| p.feed(c)).collect();
+        let ends: Vec<_> = evs.iter().filter(|e| matches!(e, StreamEvent::ToolCallEnd { .. })).collect();
+        assert_eq!(ends.len(), 2, "{evs:?}");
+        assert!(matches!(ends[0], StreamEvent::ToolCallEnd { id, name, args } if id == "a" && name == "read" && args["path"] == "a"));
+        assert!(matches!(ends[1], StreamEvent::ToolCallEnd { id, name, args } if id == "b" && name == "ls" && args == &json!({})));
     }
 
     #[test]
