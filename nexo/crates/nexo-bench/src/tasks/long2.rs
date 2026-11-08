@@ -162,7 +162,7 @@ const EDITS: [Edit; 7] = [
 fn variant(id: &str) -> &'static str {
     let e = EDITS.iter().find(|e| e.id == id).expect("a known edit");
     let h = id.bytes().fold(SEED, |h, b| h.wrapping_mul(0x100_0000_01b3) ^ u64::from(b));
-    crate::rng::Rng::new(h).pick(e.variants)
+    crate::rng::Rng::new(h).pick::<&str>(e.variants)
 }
 
 /// The real book with the edits applied. Fails if an anchor is not found exactly once.
