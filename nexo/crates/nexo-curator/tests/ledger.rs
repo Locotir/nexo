@@ -167,3 +167,35 @@ fn the_line_that_holds_a_name_the_person_asked_about_is_kept() {
     let l = s.ledger();
     assert!(l.contains("src/net/codec.rs:88"), "{l}");
 }
+
+/// A table of examples as a spec file lists them: price, units, total.
+fn price_table() -> String {
+    let rows: String = (0..24)
+        .map(|i| format!("| {}.{:02} | {} | {}.{:02} |\n", 1 + i % 5, 17 + i * 3, 100 + i * 37, 11 + i * 29, 5 + i * 7))
+        .collect();
+    format!("## Examples\n\n| price | units | total |\n|---|---|---|\n{rows}")
+}
+
+#[test]
+fn the_rows_of_a_table_of_values_outlive_a_noisy_session() {
+    let table = price_table();
+    let mut s = Session::new("Write tests from the examples in docs/spec/05-bulk.md.");
+    s.push(bash(0, "cat docs/spec/05-bulk.md", &table));
+    s.noise(1, 90);
+    assert!(s.stat("left_messages") > 60, "{}", s.last["stats"]);
+    let l = s.ledger();
+    // the last row, far past the first few
+    assert!(l.contains(table.lines().last().unwrap()), "{l}");
+    let kept = table.lines().filter(|r| l.contains(*r)).count();
+    assert!(kept >= 20, "{kept} rows kept: {l}");
+}
+
+#[test]
+fn rows_of_small_counters_are_still_noise() {
+    let rows: String = (0..24).map(|i| format!("| {} | {} | {} |\n", i, i * 2, i % 7)).collect();
+    let mut s = Session::new("Port the billing module.");
+    s.push(bash(0, "cat counts.md", &format!("## Counts\n{rows}")));
+    s.noise(1, 90);
+    let l = s.ledger();
+    assert!(!l.contains("| 5 | 10 | 5 |"), "{l}");
+}

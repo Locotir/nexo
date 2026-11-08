@@ -26,6 +26,9 @@ pub const PER_MESSAGE: usize = 0;
 /// first few name the file's shape, the rest would only fill the anchor.
 pub const FORM_KEEP: usize = 4;
 pub const FORM_RUN: usize = 8;
+/// Rows of a table of values (`value_row`) that one run keeps: each row holds numbers no word stands for, so the
+/// first few do not name the rest.
+pub const VALUE_KEEP: usize = 80;
 /// The worth of a line the person or the agent wrote, against a line a tool returned: what they typed names
 /// what they mean to use again (a result names everything the tool saw).
 pub const SAID: f64 = 2.0;
@@ -84,6 +87,27 @@ static CUT_MARK: LazyLock<Re> = LazyLock::new(|| {
 // A row of `ls -l` for the directory itself or its parent.
 static DOT_ROW: LazyLock<Re> = LazyLock::new(|| Re::new(r"^[d-][rwxsStT-]{9}[+@.]?\s.*\s\.\.?$", 0));
 
+// A value a table holds: a decimal, or an integer of four digits or more, as a whole token (`689.07`, `4373`).
+static VALUE: LazyLock<Re> = LazyLock::new(|| Re::new(r"^[-+]?(?:\d+\.\d+|\d{4,})$", 0));
+
+/// A row of a table of values: delimited by `|` or `,`, nothing in it but numbers and bars, and two or more
+/// values (`| 4.62 | 157 | 689.07 |`). Its numbers are results (prices, totals, measurements) the agent may
+/// be asked to reproduce; a row of small counters, years, line numbers or timestamps holds none.
+pub fn value_row(ln: &str) -> bool {
+    if !ln.contains(['|', ',']) {
+        return false;
+    }
+    let mut values = 0;
+    for t in ln.split(|c: char| c.is_whitespace() || c == '|' || c == ',').filter(|t| !t.is_empty()) {
+        if VALUE.is_match(t) {
+            values += 1;
+        } else if !t.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '.') {
+            return false;
+        }
+    }
+    values >= 2
+}
+
 /// A line of raw bytes: a hexdump, a disassembly (with or without the bytes), what a binary says about itself.
 fn raw_bytes(ln: &str) -> bool {
     let bytes = HEX_TOKEN.find_all(ln).len();
@@ -129,7 +153,11 @@ pub fn noise(ln: &str) -> bool {
     if alpha <= 2 && BIG_NUMBER.is_match(ln) {
         return true;
     }
-    // a row of numbers with a label or two is data (an assignment, `NAME = [...]`, is a fact: it stays)
+    // a row of numbers with a label or two is data (an assignment, `NAME = [...]`, is a fact: it stays); a row
+    // of values (a table of prices, totals, measurements) is not: each value is a fact no word stands for
+    if value_row(ln) {
+        return false;
+    }
     alpha == 0 || (tokens.len() >= 4 && alpha * 10 < tokens.len() * 3 && !ln.contains('='))
 }
 
@@ -367,8 +395,13 @@ pub fn fold_forms(lines: Vec<(String, Set)>) -> Vec<(String, Set)> {
         while b < lines.len() && forms[b] == forms[a] {
             b += 1;
         }
-        if b - a < FORM_RUN || prose(&forms[a]) {
+        let values = lines[a..b].iter().all(|(ln, _)| value_row(ln));
+        if b - a < FORM_RUN || prose(&forms[a]) || (values && b - a <= VALUE_KEEP) {
             out.extend_from_slice(&lines[a..b]);
+        } else if values {
+            out.extend_from_slice(&lines[a..a + VALUE_KEEP - 1]);
+            let (ln, ws) = &lines[a + VALUE_KEEP - 1];
+            out.push((format!("{ln} … (+{} more rows of the same form)", b - a - VALUE_KEEP), ws.clone()));
         } else {
             out.extend_from_slice(&lines[a..a + FORM_KEEP - 1]);
             let (ln, ws) = &lines[a + FORM_KEEP - 1];
@@ -598,5 +631,38 @@ mod cut_tests {
         ] {
             assert!(!noise(s), "{s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::*;
+
+    #[test]
+    fn a_row_of_values_is_a_fact_and_a_row_of_counters_is_not() {
+        for s in ["| 4.62 | 157 | 689.07 |", "4.62, 157, 689.07", "| 0.65 | 17 | 11.05 |", "| 5.0 | 2730 | 11602.5 |"] {
+            assert!(value_row(s), "{s}");
+            assert!(!noise(s), "{s}");
+        }
+        for s in
+            ["| 1 | 2 | 3 |", "| 12 | 7 | 300 |", "|---|---|---|", "2026-11-08 12:00:01", "1.2.3", "| bolt | 4.62 |"]
+        {
+            assert!(!value_row(s), "{s}");
+        }
+        assert!(noise("| 1 | 2 | 3 |"));
+    }
+
+    #[test]
+    fn a_table_of_values_folds_late() {
+        let mut int = Interner::default();
+        let rows = |n: usize| -> String {
+            (0..n).map(|i| format!("| {}.{:02} | {} | {}.50 |\n", 1 + i, i, 20 + i, 100 + i)).collect()
+        };
+        let mut kept = |n: usize| fold_forms(lines_of(&rows(n), &mut int));
+        assert_eq!(kept(40).len(), 40);
+        assert_eq!(kept(VALUE_KEEP).len(), VALUE_KEEP);
+        let long = kept(VALUE_KEEP + 30);
+        assert_eq!(long.len(), VALUE_KEEP);
+        assert!(long[VALUE_KEEP - 1].0.ends_with("(+30 more rows of the same form)"), "{:?}", long[VALUE_KEEP - 1]);
     }
 }
