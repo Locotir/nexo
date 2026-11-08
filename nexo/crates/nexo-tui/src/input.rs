@@ -153,6 +153,8 @@ pub const PASTE_CHARS: usize = 800;
 pub enum Edit {
     /// The draft changed (or the cursor moved).
     Changed,
+    /// A history entry was recalled: the draft changed, but it is not typing.
+    Recalled,
     /// Enter on the draft.
     Submit,
     /// Nothing the editor handles.
@@ -797,7 +799,7 @@ impl Input {
         let text = self.history[next].clone();
         self.set_text(&text);
         self.hist = Some(next);
-        Edit::Changed
+        Edit::Recalled
     }
 
     fn history_down(&mut self) -> Edit {
@@ -807,13 +809,13 @@ impl Input {
                 let text = self.history[i + 1].clone();
                 self.set_text(&text);
                 self.hist = Some(i + 1);
-                Edit::Changed
+                Edit::Recalled
             }
             Some(_) => {
                 let s = self.stash.clone();
                 self.set_text(&s);
                 self.hist = None;
-                Edit::Changed
+                Edit::Recalled
             }
         }
     }

@@ -1002,3 +1002,20 @@ fn a_suggestion_is_asked_for_at_a_normal_end_and_taken_whole_by_tab_or_right() {
     press(&mut a, KeyCode::Tab);
     assert!(a.input.text().starts_with("/help"), "{}", a.input.text());
 }
+
+#[test]
+fn recalling_slash_commands_with_up_keeps_browsing_history() {
+    let (mut a, _rx) = bare();
+    a.input.push_history("/status");
+    a.input.push_history("/cost");
+    press(&mut a, KeyCode::Up);
+    assert_eq!(a.input.full_text(), "/cost");
+    assert!(a.palette.is_none(), "a recalled entry must not open the palette");
+    press(&mut a, KeyCode::Up);
+    assert_eq!(a.input.full_text(), "/status");
+    assert!(a.palette.is_none());
+    // typing on a recalled entry still opens it
+    a.input.clear();
+    press(&mut a, KeyCode::Char('/'));
+    assert!(a.palette.is_some());
+}

@@ -311,6 +311,8 @@ pub fn key(app: &mut App, k: KeyEvent) {
     match app.input.key(k) {
         Edit::Submit => app.submit(),
         Edit::Changed => app.refresh_palette(),
+        // a recalled history entry: the palette stays shut so the next Up keeps browsing
+        Edit::Recalled => app.suggestion = None,
         Edit::Ignored => {}
     }
 }
