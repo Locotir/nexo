@@ -303,9 +303,7 @@ pub fn sources(
         }
     }
     // a home kept in git: its `.claude` and `.codex` are the user folders above, not a project's
-    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let is_home = home.is_some_and(|h| real(h) == real(&root));
-    if trusted && !is_home {
+    if trusted && !crate::paths::is_home(&root, home) {
         if let Some(s) = codex_sub {
             add(root.join(".codex").join(s), "project", format!(".codex/{s}"), true);
         }

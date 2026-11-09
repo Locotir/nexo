@@ -147,6 +147,10 @@ pub fn discover_in(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool) -> Vec<
     // the project: the working directory and its parents up to the repository root
     let mut p = Some(cwd);
     while let Some(d) = p {
+        // a home kept in git: its skill folders are the person's own (listed below), not a project's
+        if crate::paths::is_home(d, Some(home)) {
+            break;
+        }
         for f in FOLDERS {
             roots.push((d.join(f), f.to_string()));
         }
@@ -302,6 +306,49 @@ mod tests {
         assert_eq!(found.len(), 3, "{found:?}");
         let project_only = discover_in(&sub, home.path(), &home.path().join(".nexo"), false);
         assert_eq!(project_only.len(), 2);
+    }
+
+    #[test]
+    fn a_home_kept_in_git_lists_its_skills_once_as_the_persons_own() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".git")).unwrap();
+        write(home.path(), ".claude/skills/x/SKILL.md", "---\nname: x\ndescription: home skill\n---\n");
+        let sub = home.path().join("notes");
+        std::fs::create_dir(&sub).unwrap();
+        let nexo = home.path().join(".nexo");
+        for cwd in [home.path(), sub.as_path()] {
+            let found = discover_in(cwd, home.path(), &nexo, true);
+            let got: Vec<_> = found.iter().map(|s| (s.name.as_str(), s.source.as_str())).collect();
+            assert_eq!(got, [("x", "~/.claude/skills")], "from {cwd:?}");
+        }
+        // with the person's folders off, the home's skills are not smuggled back in as a project's
+        assert!(discover_in(home.path(), home.path(), &nexo, false).is_empty());
+    }
+
+    #[test]
+    fn a_project_under_a_home_kept_in_git_keeps_its_own_skills() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".git")).unwrap();
+        write(home.path(), ".claude/skills/x/SKILL.md", "---\nname: x\ndescription: home skill\n---\n");
+        let proj = home.path().join("code/app");
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        write(&proj, ".claude/skills/y/SKILL.md", "---\nname: y\ndescription: project skill\n---\n");
+        let found = discover_in(&proj.join("src"), home.path(), &home.path().join(".nexo"), true);
+        let mut got: Vec<_> = found.iter().map(|s| (s.name.as_str(), s.source.as_str())).collect();
+        got.sort();
+        assert_eq!(got, [("x", "~/.claude/skills"), ("y", ".claude/skills")]);
+    }
+
+    #[test]
+    fn a_folder_outside_the_home_is_unchanged() {
+        let (home, proj) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir(proj.path().join(".git")).unwrap();
+        write(proj.path(), ".claude/skills/y/SKILL.md", "---\nname: y\ndescription: project skill\n---\n");
+        write(home.path(), ".claude/skills/x/SKILL.md", "---\nname: x\ndescription: home skill\n---\n");
+        let found = discover_in(proj.path(), home.path(), &home.path().join(".nexo"), true);
+        let mut got: Vec<_> = found.iter().map(|s| (s.name.as_str(), s.source.as_str())).collect();
+        got.sort();
+        assert_eq!(got, [("x", "~/.claude/skills"), ("y", ".claude/skills")]);
     }
 
     #[test]

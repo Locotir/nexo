@@ -118,6 +118,13 @@ pub fn project_dir(cwd: &Path) -> Option<PathBuf> {
     project_dir_in(cwd, dirs::home_dir().as_deref(), &[home_dir(), config_dir()])
 }
 
+/// Whether `dir` is the person's `home` (compared resolved). A home kept in git is still the
+/// person's own folder, never a project's.
+pub fn is_home(dir: &Path, home: Option<&Path>) -> bool {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    home.is_some_and(|h| real(h) == real(dir))
+}
+
 /// [`project_dir`] with the person's home and their own nexo folders given (tests). The search
 /// never returns one of `own` and, from a folder below `home`, stops at `home` instead of
 /// climbing out of it.
