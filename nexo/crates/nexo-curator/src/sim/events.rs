@@ -339,6 +339,12 @@ pub fn run(
         let (m, o) = denied(&q.messages, &reply.view);
         r.denied = (r.denied.0 + m, r.denied.1 + o);
         let hit = cache.send(&reply.view, q.system_tokens as i64, q.now);
+        // a transcript records what the model wrote, and the provider cached it with the prompt
+        if q.out_tokens.is_some() {
+            if let Some(said) = reply_to(requests, i) {
+                cache.extend_last(said);
+            }
+        }
         let all = reply.view.iter().map(tokens_of).sum::<i64>() + q.system_tokens as i64;
         r.hit += hit;
         r.miss += all - hit;

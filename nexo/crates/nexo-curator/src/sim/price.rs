@@ -68,6 +68,14 @@ impl Cache {
         self.sent.push((now.to_vec(), at));
         hit
     }
+
+    /// Adds what the model wrote to the request just sent: a provider caches its reply along with the prompt,
+    /// so the next request that starts with the same view and the same reply reads it from the cache.
+    pub fn extend_last(&mut self, reply: &Value) {
+        if let Some((view, _)) = self.sent.last_mut() {
+            view.push(reply.clone());
+        }
+    }
 }
 
 /// What a token costs, in dollars per million: sent without the cache (`miss`), read from it (`hit`), and

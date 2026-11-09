@@ -42,3 +42,42 @@ fn slots_keep_more_prefixes_than_one() {
     assert_eq!(one.miss + one.hit, many.miss + many.hit);
     assert!(many.hit >= one.hit);
 }
+
+/// A bench transcript with no cut in it: `n` steps, each adding a model reply and a tool result.
+fn uncut_session(n: usize) -> Vec<nexo_curator::sim::input::Request> {
+    use nexo_curator::sim::input::Request;
+    use serde_json::json;
+    let mut msgs = vec![json!({"role": "user", "content": "Fix the shipping cost in src/lib.rs."})];
+    let mut out = Vec::new();
+    for i in 0..n {
+        out.push(Request {
+            now: 1_750_000_000.0 + 2.0 * i as f64,
+            system_tokens: 1600,
+            system: String::new(),
+            messages: msgs.clone(),
+            tools: None,
+            out_tokens: Some(150),
+        });
+        let id = format!("t{i}");
+        let word = format!("step{i}");
+        msgs.push(json!({"role": "assistant", "content": [
+            {"type": "text", "text": format!("Reading part {word} of the file. {}", "plain words ".repeat(40))},
+            {"type": "tool_use", "id": id, "name": "read", "input": {"path": format!("src/part{i}.rs")}}]}));
+        msgs.push(json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": format!("{word} {}", "fn body() {} ".repeat(60))}]}));
+    }
+    out
+}
+
+#[test]
+fn the_reply_the_model_wrote_is_read_from_the_cache_next_step() {
+    use nexo_curator::sim::price::tokens_of;
+    let reqs = uncut_session(6);
+    let r = run(&reqs, "directives=0", Prices::LIVE, 0.0, 0).unwrap();
+    let size = |q: &nexo_curator::sim::input::Request| q.messages.iter().map(tokens_of).sum::<i64>() + q.system_tokens as i64;
+    // nothing is cut, so every view is the request as sent
+    assert_eq!(r.miss + r.hit, reqs.iter().map(size).sum::<i64>());
+    // a provider caches the reply with the prompt: all that each next request adds is the tool result
+    let new: i64 = reqs[1..].iter().map(|q| tokens_of(q.messages.last().unwrap())).sum();
+    assert_eq!(r.miss, size(&reqs[0]) + new);
+}
