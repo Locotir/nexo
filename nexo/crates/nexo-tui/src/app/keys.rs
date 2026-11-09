@@ -236,7 +236,9 @@ impl App {
         let now = self.now();
         let again = self.last_esc.is_some_and(|t| now.duration_since(t).as_secs_f32() < 1.5);
         self.last_esc = Some(now);
+        let after_interrupt = again && std::mem::take(&mut self.esc_interrupted);
         if self.busy && !again {
+            self.esc_interrupted = true;
             self.send(AgentCommand::Interrupt);
             self.flash("interrupting… (Esc again clears the draft)");
             return;
@@ -253,7 +255,7 @@ impl App {
             } else {
                 self.flash("Esc again to clear the draft");
             }
-        } else if again && !self.busy && !self.user_messages.is_empty() {
+        } else if again && !after_interrupt && !self.busy && !self.user_messages.is_empty() {
             self.open_rewind_picker();
         } else {
             self.selected = None;

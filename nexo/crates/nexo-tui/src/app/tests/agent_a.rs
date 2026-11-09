@@ -786,6 +786,19 @@ fn a_folder_taken_with_tab_lists_its_own_folders_next() {
 }
 
 #[test]
+fn the_esc_that_interrupted_a_turn_does_not_also_open_the_rewind_picker() {
+    let (mut a, mut rx) = app();
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user("an ask") });
+    a.busy = true;
+    a.esc();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));
+    // the turn ends before the second press of a quick Esc Esc
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Interrupted });
+    a.esc();
+    assert!(a.modal.is_none(), "a press that follows the interrupt is part of it");
+}
+
+#[test]
 fn the_rewind_picker_lists_the_persons_messages_newest_first_and_rewinds() {
     let (mut a, mut rx) = app();
     a.handle_agent(AgentEvent::History { index: 0, message: Message::user("first ask\nwith detail") });

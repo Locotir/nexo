@@ -208,6 +208,8 @@ pub struct App {
     pub moving: bool,
     last_ctrl_c: Option<Instant>,
     last_esc: Option<Instant>,
+    /// The last Esc interrupted a turn: a quick second one belongs to it, it is not a rewind.
+    esc_interrupted: bool,
     pub status: Option<(String, Instant)>,
     /// How serious the flash message is: it picks the colour and how long it stays.
     pub status_level: Level,
@@ -486,6 +488,7 @@ impl App {
             moving: false,
             last_ctrl_c: None,
             last_esc: None,
+            esc_interrupted: false,
             status: None,
             status_level: Level::Info,
             status_toasted: false,
