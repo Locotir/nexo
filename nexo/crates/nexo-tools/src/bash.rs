@@ -45,16 +45,16 @@ impl Tool for Bash {
             name: "bash".into(),
             description: format!(
                 "Run a shell command ({}) in the working directory; returns its output \
-                 (stdout and stderr interleaved) and exit code. The command is killed after `timeout` \
-                 seconds (default 120, at most 600); long output is cut in the middle, keeping \
-                 the head and the tail. With `background: true` the \
-                 command runs as a job while you go on working: the call returns its job id, you are told \
-                 when it ends, and the `jobs` tool reads its output or stops it. Background jobs end with the session; \
+                 (stdout and stderr interleaved) and exit code. Killed after `timeout` \
+                 seconds (default 120, at most 600); long output keeps its head \
+                 and tail. `background: true` \
+                 runs it as a job while you work: the call returns its job id, you are told \
+                 when it ends, and `jobs` reads its output or stops it. Background jobs end with the session; \
                  `detach: true` keeps a service running after it. \
                  Temp files: $NEXO_TMP.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
-                    "bash" => "Git Bash on Windows: POSIX shell, Windows paths work as C:/...",
+                    "bash" => "Git Bash on Windows: POSIX shell, C:/... paths work",
                     _ => "`sh -c`",
                 }
             ),

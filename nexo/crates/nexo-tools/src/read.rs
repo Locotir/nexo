@@ -32,9 +32,9 @@ impl Tool for Read {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".into(),
-            description: "Read text files. Returns lines numbered (`   12│ text`), at most `limit` \
-                          lines from line `offset` (1-based); the default is the first 2000 lines, and a \
-                          line longer than 2000 characters is cut. Several files at once: `paths` (each \
+            description: "Read text files: numbered lines (`   12│ text`), at most `limit` \
+                          from line `offset` (1-based), default the first 2000; a \
+                          line over 2000 characters is cut. Several files at once: `paths` (each \
                           under a `=== path ===` header; one that fails is reported in place). A PNG, JPEG, GIF, WebP, PPM, PGM \
                           or BMP file is shown as an image (at most 5 MB and 2000 px); a Jupyter notebook as its cells and outputs. Directories and other \
                           binary files are refused (use `ls` for a directory)."

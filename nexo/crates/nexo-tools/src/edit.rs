@@ -27,10 +27,9 @@ impl Tool for Edit {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit".into(),
-            description: "Replace one exact occurrence of `old_string` in a file with `new_string`. \
-                          `old_string` must match the file's text exactly (indentation included) and \
-                          occur exactly once; include a few surrounding lines to make it unique, or set \
-                          `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
+            description: "Replace `old_string` in a file with `new_string`. It must match \
+                          exactly (indentation included) and occur once; add surrounding lines to make it \
+                          unique, or set `replace_all` to change every occurrence (renames). Several changes to one file go in one call as \
                           `edits`, a list of {old_string, new_string, replace_all} applied in order; if one fails \
                           nothing is written. Several files: `files`. `check` runs a test or build after."
                 .into(),

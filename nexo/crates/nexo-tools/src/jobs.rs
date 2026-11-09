@@ -41,8 +41,8 @@ impl Tool for Jobs {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "jobs".into(),
-            description: "The background jobs of this session (commands started with `bash` and \
-                `background: true`, sub-agents started with `task` and `background: true`). \
+            description: "The background jobs of this session (`bash` commands and `task` sub-agents \
+                started with `background: true`). \
                 action \"list\": every job and its state. action \"output\": what job `id` printed since \
                 the last read, and its state; with `wait` (seconds, at most 600) it first waits for the \
                 job to end. action \"kill\": stop job `id`."
