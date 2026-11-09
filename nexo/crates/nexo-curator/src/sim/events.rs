@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use serde_json::{json, Value};
 
-use super::input::text_of;
+use super::input::{said_of, text_of};
 use super::price::tokens_of;
 use crate::distinctive_words;
 
@@ -24,7 +24,7 @@ pub fn forgotten(reply: &Value, history: &[Value], view: &[Value], system: &str)
     for m in history {
         held.extend(words_of(m).iter().cloned());
     }
-    let copied: Vec<String> = distinctive_words(&text_of(reply)).into_iter().filter(|w| held.contains(w)).collect();
+    let copied: Vec<String> = distinctive_words(&said_of(reply)).into_iter().filter(|w| held.contains(w)).collect();
     let n = copied.len();
     (copied.into_iter().filter(|w| !seen.contains(w)).collect(), n)
 }

@@ -11,6 +11,9 @@
 //! the view ends in a nudge, and what changed in the stats. At the end it prints the anchor the model would
 //! read (rules, notes, pins, ledger) and every message the view sends rebuilt rather than as it was.
 //!
+//! Reasoning blocks are not priced beyond the few characters the engine sizes them at, and are not history
+//! (they are not sent back); a reply's own reasoning counts as what it says. Each oracle line ends with the tokens it sends.
+//!
 //! Two measures help weigh a change before a live run:
 //! - forgotten: the distinctive words (names, paths, long numbers) of each reply that the whole history
 //!   held but the view the curator built for that request did not. The agent wrote them from material the
@@ -60,7 +63,7 @@
 use std::collections::{HashMap, HashSet};
 
 use nexo_curator::sim::events::{denied, forgotten, latest_request, segments, wrote};
-use nexo_curator::sim::input::{fixture_requests, names, reply_to, text_of, transcript_requests, Request};
+use nexo_curator::sim::input::{fixture_requests, names, reply_to, said_of, text_of, transcript_requests, Request};
 use nexo_curator::sim::price::{blocks_of, cached, grown, tokens_of, Cache};
 use nexo_curator::{distinctive_words, Curator};
 use serde_json::{json, Value};
@@ -100,7 +103,7 @@ fn forgotten_short(reply: &Value, history: &[Value], view: &[Value], system: &st
     let mut seen = numbers_of(view);
     seen.extend(short_numbers(system));
     let held = numbers_of(history);
-    let copied: Vec<String> = short_numbers(&text_of(reply)).into_iter().filter(|n| held.contains(n)).collect();
+    let copied: Vec<String> = short_numbers(&said_of(reply)).into_iter().filter(|n| held.contains(n)).collect();
     (copied.iter().filter(|n| !seen.contains(*n)).count(), copied.len())
 }
 
@@ -168,7 +171,7 @@ fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
 fn bound(requests: &[Request], once: bool) -> (i64, i64) {
     let said: Vec<HashSet<String>> = (0..requests.len())
         .map(|i| {
-            reply_to(requests, i).map(|m| distinctive_words(&text_of(m)).into_iter().collect()).unwrap_or_default()
+            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
         })
         .collect();
     let mut ahead: Vec<HashSet<String>> = vec![HashSet::new(); requests.len() + 1];
@@ -247,6 +250,8 @@ struct Loss {
     blind: (i64, i64),
     denied: (i64, i64),
     forgotten: usize,
+    /// The tokens of the messages it sends, over all requests (the basis of the `view` total).
+    sent: i64,
 }
 
 /// The input cost (miss, hit tokens) of an oracle that knows the replies to come and cuts whole results, as
@@ -264,7 +269,7 @@ struct Loss {
 fn oracle(requests: &[Request], batched: bool, chunk: usize, digest: Digest) -> (i64, i64, Vec<(i64, i64)>, Loss) {
     let said: Vec<HashSet<String>> = (0..requests.len())
         .map(|i| {
-            reply_to(requests, i).map(|m| distinctive_words(&text_of(m)).into_iter().collect()).unwrap_or_default()
+            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
         })
         .collect();
     let mut ahead: Vec<HashSet<String>> = vec![HashSet::new(); requests.len() + 1];
@@ -361,7 +366,9 @@ fn oracle(requests: &[Request], batched: bool, chunk: usize, digest: Digest) -> 
             loss.forgotten += forgotten(said, &r.messages, &view, &r.system).0.len();
         }
         let h = cached(&prev, &view) + if i > 0 { r.system_tokens as i64 } else { 0 };
-        let all = view.iter().map(tokens_of).sum::<i64>() + r.system_tokens as i64;
+        let sent: i64 = view.iter().map(tokens_of).sum();
+        loss.sent += sent;
+        let all = sent + r.system_tokens as i64;
         hit += h;
         miss += all - h;
         per.push((all - h, h));
@@ -420,7 +427,7 @@ fn chunk_rows(requests: &[Request]) -> (Vec<String>, Vec<(u64, String)>) {
     let mut texts: HashMap<u64, String> = HashMap::new();
     let said: Vec<HashSet<String>> = (0..requests.len())
         .map(|i| {
-            reply_to(requests, i).map(|m| distinctive_words(&text_of(m)).into_iter().collect()).unwrap_or_default()
+            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
         })
         .collect();
     let mut ahead: Vec<HashSet<String>> = vec![HashSet::new(); requests.len() + 1];
@@ -1296,7 +1303,7 @@ fn bank(path: &str, spec: &str, recall: bool, oracle: bool, dump: Option<&str>) 
         // the reply to the request before, when this one goes on from it
         if requests > 0 && base == whole.msgs.len() && new.first().is_some_and(|m| m["role"] == "assistant") {
             let said: Vec<String> =
-                distinctive_words(&text_of(&new[0])).into_iter().filter(|w| whole.bag.has(w)).collect();
+                distinctive_words(&said_of(&new[0])).into_iter().filter(|w| whole.bag.has(w)).collect();
             replies += 1;
             copied += said.len();
             for (way, sending) in [(&mut agent, &sent), (&mut curated, &view)] {
@@ -1629,6 +1636,7 @@ fn main() {
     );
     let share = |part: i64, whole: i64| if whole > 0 { 100.0 * part as f64 / whole as f64 } else { 0.0 };
     let mut fair = None;
+    let mut fair_sent = 0;
     for (chunk, digest, what) in [
         (0, Digest::No, "whole results"),
         (1, Digest::No, "results down to the lines used later"),
@@ -1642,6 +1650,7 @@ fn main() {
             .fold((f64::MAX, Vec::new(), Loss::default()), |a, b| if b.0 < a.0 { b } else { a });
         if digest == Digest::Text {
             fair = Some(or);
+            fair_sent = loss.sent;
         }
         if digest == Digest::Text && std::env::var("REPLAY_GAP").is_ok_and(|v| v == "1") {
             // the requests where this view costs most over the fair oracle, in millionths of a dollar
@@ -1657,7 +1666,7 @@ fn main() {
             }
         }
         println!(
-            "oracle that cuts {what}: {or:.4} $; this view reaches {:.1}% of what it saves over plain; blind {} of {} tokens ({:.1}%), denied {} of {} ({:.1}%), forgotten {} words",
+            "oracle that cuts {what}: {or:.4} $; this view reaches {:.1}% of what it saves over plain; blind {} of {} tokens ({:.1}%), denied {} of {} ({:.1}%), forgotten {} words; sends {} tokens",
             if plain > or { 100.0 * (plain - now) / (plain - or) } else { 100.0 },
             loss.blind.0,
             loss.blind.1,
@@ -1665,12 +1674,13 @@ fn main() {
             loss.denied.0,
             loss.denied.1,
             share(loss.denied.0, loss.denied.1),
-            loss.forgotten
+            loss.forgotten,
+            loss.sent
         );
     }
     if let Some(fair) = fair {
         println!(
-            "fair oracle (reference: digested, lines used later): {fair:.4} $; this view {now:.4} $ is {:+.4} $ ({:+.1}%) from it",
+            "fair oracle (reference: digested, lines used later): {fair:.4} $; this view {now:.4} $ is {:+.4} $ ({:+.1}%) from it; sends {fair_sent} tokens",
             now - fair,
             if fair > 0.0 { 100.0 * (now - fair) / fair } else { 0.0 }
         );

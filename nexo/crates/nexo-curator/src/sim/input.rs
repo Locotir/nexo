@@ -15,8 +15,18 @@ pub struct Request {
     pub out_tokens: Option<u64>,
 }
 
-/// The text of a message, flattened, for printing.
+/// The text of a message, flattened, for printing: what it sends. Reasoning is not sent back, so it
+/// gives no text (see `said_of`).
 pub fn text_of(v: &Value) -> String {
+    flatten(v, false)
+}
+
+/// What a reply says: `text_of` plus its reasoning, as plain text (no signature, no model).
+pub fn said_of(v: &Value) -> String {
+    flatten(v, true)
+}
+
+fn flatten(v: &Value, reasoning: bool) -> String {
     let s = match v.get("content") {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(blocks)) => blocks
@@ -41,8 +51,11 @@ pub fn text_of(v: &Value) -> String {
                     }
                     other => other.to_string(),
                 },
+                Some("thinking") if reasoning => b["thinking"].as_str().unwrap_or("").to_string(),
+                Some("thinking" | "redacted_thinking") => String::new(),
                 _ => b.to_string(),
             })
+            .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),

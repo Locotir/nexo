@@ -6,6 +6,16 @@ use serde_json::{json, Value};
 pub fn tokens_of(v: &Value) -> i64 {
     let text = match v.get("content") {
         Some(Value::String(s)) => s.len(),
+        Some(Value::Array(a)) => {
+            // The unit stays the JSON length, except a reasoning block, which is sized as the engine sizes it.
+            2 + a.len().saturating_sub(1)
+                + a.iter()
+                    .map(|b| match b.get("type").and_then(Value::as_str) {
+                        Some(t @ ("thinking" | "redacted_thinking")) => crate::json::thinking_chars(t),
+                        _ => b.to_string().len(),
+                    })
+                    .sum::<usize>()
+        }
         Some(c) => c.to_string().len(),
         None => v.to_string().len(),
     };

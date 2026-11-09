@@ -83,6 +83,11 @@ fn num_chars(n: &Number) -> usize {
     }
 }
 
+/// The characters the estimate gives a reasoning block of type `kind`: a few, as it is not sent back.
+pub fn thinking_chars(kind: &str) -> usize {
+    8 + str_chars(kind) + 1
+}
+
 /// Characters of `json.dumps(strip_cache_control(strip_media(v)))` and the number of media blocks.
 fn walk(v: &Value, strip: bool, n: &mut usize, media: &mut i64) {
     match v {
@@ -105,7 +110,7 @@ fn walk(v: &Value, strip: bool, n: &mut usize, media: &mut i64) {
                     return;
                 }
                 if let Some(t @ ("thinking" | "redacted_thinking")) = t {
-                    *n += 8 + str_chars(t) + 1;
+                    *n += thinking_chars(t);
                     return;
                 }
             }
