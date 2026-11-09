@@ -10,12 +10,10 @@ use crate::tools::Kind;
 
 use super::files::file_key;
 use super::fixes::TEST_FAILED;
-use super::Engine;
+use super::{Engine, RECALL_TOOL};
 
 /// A result this small saves next to nothing when it leaves: its stub is as long.
 const LEAVE_LEAST: i64 = 40;
-/// What `still` keeps at least, whatever the sticky set takes.
-const STILL_FLOOR: i64 = 4000;
 /// The tokens of failing runs (a command whose output shows a failure) held below `cap`, newest first: what the
 /// agent fixed is what it reports, and the lines of the failure are what it quotes.
 const FAILURE_BUDGET: i64 = 2000;
@@ -62,7 +60,9 @@ impl Engine {
                     let info = self.fz.info.get(&i);
                     let (kind, path, error) =
                         info.map_or((Kind::Other, None, false), |x| (x.kind, x.path.clone(), x.error));
-                    let mut sticky = u.msg + 1 >= t;
+                    // what the latest step returned, and what a `recall` brought back until the step after
+                    // it is answered: the agent asked for it because it works from it
+                    let mut sticky = u.msg + 1 >= t || (u.tool == RECALL_TOOL && u.msg + 3 >= t);
                     if !error && matches!(kind, Kind::Write | Kind::Exec) && (!check_seen || kind == Kind::Write) {
                         let text = self.tr.unit_text(i);
                         if !check_seen && text.contains("\ncheck: ") {
@@ -119,16 +119,11 @@ impl Engine {
         self.stk = Sticky { keep, reads, tokens, cut, failing };
     }
 
-    /// The tokens of the latest outputs the agent has not written about that a guess may not take (`still`):
-    /// what the target leaves after the sticky set, at least [`STILL_FLOOR`], and never more than `still`.
+    /// The tokens of the latest outputs the agent has not written about that no cut may take (`still`): what the
+    /// agent is working from is held whatever the system prompt, the request and the sticky set take, so a big
+    /// head does not leave it the outputs of the newest step alone. Past `hard` they leave all the same.
     pub(super) fn still_now(&self) -> i64 {
-        if self.p.still <= 0 {
-            0
-        } else if self.p.target > 0 && self.p.cap > 0 {
-            self.p.still.min((self.p.target - self.head - self.stk.tokens).max(STILL_FLOOR))
-        } else {
-            self.p.still
-        }
+        self.p.still.max(0)
     }
 
     /// Whether the sticky set holds result `i` at the given tier: 0 below `cap`, 1 below `hard`.

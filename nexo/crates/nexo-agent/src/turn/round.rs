@@ -363,7 +363,16 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let kept = calls.clone();
         let (results, cancelled) = run_tools(&state, &events, calls, &cancel).await;
         seen.push(round_hash(&asked, &results));
-        let (lines, new) = if stale_guard > 0 { fresh_count(&mut known, &results, false) } else { (0, 0) };
+        let (lines, new) = if stale_guard > 0 {
+            // the curator's view leaves outputs out: what it did not send is not something the model has seen
+            let mut shown = {
+                let st = state.lock().await;
+                (st.policy.recall() && !st.last_sent.is_empty()).then(|| known_lines(&st.last_sent))
+            };
+            fresh_count_in(&mut known, shown.as_mut(), &results, false)
+        } else {
+            (0, 0)
+        };
         if ck_on {
             ck.fresh += fresh_count(&mut known_ck, &results, true).1;
             ck.round(&asked, &results);

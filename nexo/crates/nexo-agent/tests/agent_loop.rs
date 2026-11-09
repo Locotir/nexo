@@ -998,6 +998,58 @@ async fn stale_guard_stops_rounds_that_bring_no_line_not_seen_before() {
 }
 
 #[tokio::test]
+async fn stale_guard_does_not_count_a_reread_of_what_the_curator_left_out() {
+    // two files of about 3000 tokens, a window that holds one of them: every read puts back the lines the last
+    // view had dropped, so no round stalled, and the request goes on to its answer (with the whole history in the
+    // view the same reads bring nothing new, and the guard stops them: the test above)
+    struct Lines;
+    #[async_trait]
+    impl Tool for Lines {
+        fn name(&self) -> &str {
+            "read"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "read".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+        }
+        fn kind(&self) -> ToolKind {
+            ToolKind::Read
+        }
+        fn summary(&self, args: &Value) -> String {
+            format!("read {}", args.get("path").and_then(Value::as_str).unwrap_or(""))
+        }
+        async fn run(&self, args: Value, _ctx: &ToolContext) -> ToolOutput {
+            let name = args.get("path").and_then(Value::as_str).unwrap_or("");
+            ToolOutput::ok(
+                (0..300).map(|k| format!("{name} line {k} holds its own value {}\n", k * 7)).collect::<String>(),
+            )
+        }
+    }
+    let d = tempfile::tempdir().unwrap();
+    let mut replies: Vec<Reply> = (0..6)
+        .map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": if i % 2 == 0 { "a" } else { "b" }}))))
+        .collect();
+    replies.push(Reply::Events(text("a and b read")));
+    let client = Scripted::new(replies);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.context.policy = "curator".into();
+    cfg.context.curator_spec = "eoq=0;floor=0.6;target=2500;cap=5000;hard=60000;still=0".into();
+    cfg.agent.max_turns = 20;
+    cfg.agent.loop_guard = 0;
+    cfg.agent.stale_guard = 3;
+    let mut r = start_with(client.clone(), cfg, None, d.path(), ToolSet::new().with(Arc::new(Lines))).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read a and b".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done, "{evs:?}");
+    assert_eq!(client.requests().len(), 7, "all six reads ran and the model answered");
+    assert!(
+        !evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("agent.stale_guard"))),
+        "the guard did not stop a re-read of what the view had dropped"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn a_guard_stop_asks_for_the_answer_without_tools() {
     let d = tempfile::tempdir().unwrap();
     let mut replies: Vec<Reply> =

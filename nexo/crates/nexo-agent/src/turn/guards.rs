@@ -214,6 +214,18 @@ pub(super) fn fresh_lines(known: &mut HashSet<u64>, parts: &[Part]) -> Option<bo
 /// [`fresh_lines`] as numbers: the lines counted and how many of them were new. With `norm` a line counts
 /// with its digit runs read as one mark, so a clock, a counter or a pid does not make an old line new.
 pub(super) fn fresh_count(known: &mut HashSet<u64>, parts: &[Part], norm: bool) -> (usize, usize) {
+    fresh_count_in(known, None, parts, norm)
+}
+
+/// [`fresh_count`] for a view that leaves things out: with the lines of the view the model was sent (`shown`), a
+/// line the session knows but the view did not hold counts as new, since the model had not seen it. A re-read or
+/// a `recall` of what the curator dropped is the model getting its working set back, not a round that stalled.
+pub(super) fn fresh_count_in(
+    known: &mut HashSet<u64>,
+    mut shown: Option<&mut HashSet<u64>>,
+    parts: &[Part],
+    norm: bool,
+) -> (usize, usize) {
     use std::hash::{Hash, Hasher};
     let (mut lines, mut fresh) = (0, 0);
     for p in parts {
@@ -227,8 +239,11 @@ pub(super) fn fresh_count(known: &mut HashSet<u64>, parts: &[Part], norm: bool) 
                     } else {
                         line.hash(&mut h);
                     }
+                    let h = h.finish();
                     lines += 1;
-                    fresh += usize::from(known.insert(h.finish()));
+                    let new = known.insert(h);
+                    let unseen = shown.as_deref_mut().is_some_and(|s| s.insert(h));
+                    fresh += usize::from(new || unseen);
                 }
             }
         }

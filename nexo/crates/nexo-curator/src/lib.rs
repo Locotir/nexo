@@ -64,8 +64,8 @@ pub use learn::{K_OLD, NAMES as NEED_FEATURES};
 /// the target, in one rewrite (the oldest results that are not sticky leave first), and never
 /// passes `hard=80000` (then the oldest sticky results leave too, as pointers). Sticky, by rule and with no
 /// model: the request, the agent's own text and calls, the latest `file now` of each path, the last `check:`,
-/// the latest whole read of each path and what the agent has read and not yet written about. `still` is
-/// bounded by `target` minus the system prompt and the sticky tokens (at least 4000; flat with no `cap`).
+/// the latest whole read of each path, what a `recall` brought back until the step after it, and what the agent
+/// has read and not yet written about (the latest `still` tokens of it, whatever the first message takes).
 pub const D_SPEC: &str =
     "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=40000;target=10000;hard=80000;cut=age;cards=8;stale=1;pockets=0;life=3600";
 

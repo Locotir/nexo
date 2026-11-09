@@ -53,7 +53,7 @@ fn sticky_blocks_survive_the_cut() {
 }
 
 #[test]
-fn still_is_bounded_by_the_target_less_head_and_sticky() {
+fn still_holds_the_newest_unwritten_reads_whatever_the_head_takes() {
     let build = |spec: &str, ask: &str| {
         let mut e = Engine::new(params(spec).unwrap());
         let mut msgs = vec![json!({"role": "user", "content": ask})];
@@ -64,18 +64,39 @@ fn still_is_bounded_by_the_target_less_head_and_sticky() {
         e.decide();
         e
     };
+    // the target less the head and the sticky set is no bound: `still` itself is, a request that alone takes the
+    // window or not
     let small = build("nudge=0;fresh=0;eoq=16000;still=60000;target=20000", "Say what slot 50 holds.");
-    let sticky = small.sticky_tokens();
-    assert!(sticky > 0 && sticky < 4000, "{sticky}");
-    assert_eq!(small.still_now(), 20_000 - small.head - sticky, "the window leaves what the sticky set does not take");
-    // a request that alone takes the window leaves the floor, and `still` itself caps the rest
+    assert_eq!(small.still_now(), 60_000);
     let long = format!("Say what slot 50 holds in this listing:\n{}", big(99, 25_000));
     let big_ask = build("nudge=0;fresh=0;eoq=16000;still=60000;target=20000", &long);
     assert!(big_ask.sticky_tokens() > 20_000, "{}", big_ask.sticky_tokens());
-    assert_eq!(big_ask.still_now(), 4000);
+    assert_eq!(big_ask.still_now(), 60_000);
     // no target: the flat budget as before
     let flat = build("nudge=0;fresh=0;eoq=16000;still=32000;target=0;cap=0;hard=0", "Say what slot 50 holds.");
     assert_eq!(flat.still_now(), 32_000);
+    let off = build("nudge=0;fresh=0;eoq=16000;still=0;target=20000", "Say what slot 50 holds.");
+    assert_eq!(off.still_now(), 0);
+}
+
+#[test]
+fn a_big_request_does_not_cut_the_reads_the_agent_is_working_from() {
+    // a task of 11.6k tokens, a system prompt of 3k, 9 reads of 3.5k and nothing written, on the default
+    // settings: every read is what the agent works from (`still=32000`), so none leaves although the view passes
+    // twice the target
+    let mut e = Engine::new(crate::params("").unwrap());
+    e.head = 3_000;
+    let task = format!("Find what is wrong in the parts.\n{}", big(99, 11_600));
+    let mut msgs = vec![json!({"role": "user", "content": task})];
+    for k in 1..=9 {
+        msgs.extend(step(k, &format!("cat part{k}.txt"), &big(k, 3500)));
+        e.sync(&msgs);
+        let view = sent(&e.view());
+        for j in 1..=k {
+            let mark = big(j, 3500)[..200].replace('\n', "\\n");
+            assert!(view.contains(&mark), "request {k}: read {j} left the view: {:?}", e.stats);
+        }
+    }
 }
 
 /// The tokens of the view after each request of a long run of reads, and the requests that cut.
@@ -181,4 +202,24 @@ fn a_chat_of_pasted_text_has_no_results_to_cut() {
     }
     assert!(e.tokens() > 25_000, "the view is far past the cap: {}", e.tokens());
     assert!(e.stats.get("window_cuts").is_none(), "{:?}", e.stats);
+}
+
+#[test]
+fn a_recall_result_is_not_cut_on_the_request_after_it_came() {
+    // the agent asked for a message back and got it; the next step brings a long output and the window cuts:
+    // what it asked for stays, the older read goes
+    let mut e = Engine::new(params("nudge=0;fresh=0;eoq=0;still=0;target=0;cap=20000;hard=80000").unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Read the parts and find what is wrong in them."})];
+    msgs.extend(step(1, "cat part1.txt", &big(1, 3000)));
+    let back = big(77, 3000);
+    msgs.extend(super::recall::recall_step(2, 2, None, &back));
+    let mark = |text: &str| text[..200].replace('\n', "\\n");
+    e.sync(&msgs);
+    assert!(sent(&e.view()).contains(&mark(&back)), "the request that carries it holds it");
+    msgs.extend(step(3, "cat part3.txt", &big(3, 24_000)));
+    e.sync(&msgs);
+    let view = sent(&e.view());
+    assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "the window cut: {:?}", e.stats);
+    assert!(!view.contains(&mark(&big(1, 3000))), "the older read left");
+    assert!(view.contains(&mark(&back)), "the recall result survived the cut on the next request");
 }
