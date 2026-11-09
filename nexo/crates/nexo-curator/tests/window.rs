@@ -134,6 +134,26 @@ fn each_view_counts_what_came_in_and_went_out() {
 }
 
 #[test]
+fn only_a_message_the_view_had_left_out_counts_as_back() {
+    let mut cur = Curator::new("").unwrap();
+    let mut msgs = vec![json!({"role": "user", "content": "Sum the amounts of every part."})];
+    let r = cur.view(0, &msgs, 0.0).unwrap();
+    assert_eq!((r.added, r.back), (1, 0), "the first message is new, not back");
+    msgs.extend(step(0, 5));
+    let r = cur.view(0, &msgs, 0.0).unwrap();
+    assert_eq!((r.added, r.back), (2, 0), "what the conversation appended is not the curator's move");
+    cur.window(3_000);
+    for k in 1..30 {
+        msgs.extend(step(k, 30));
+    }
+    let r = cur.view(0, &msgs, 0.0).unwrap();
+    assert!(r.removed > 0 && r.back == 0, "{} removed, {} back", r.removed, r.back);
+    // the same history again: nothing moved
+    let r = cur.view(0, &msgs, 0.0).unwrap();
+    assert_eq!((r.added, r.back, r.removed), (0, 0, 0));
+}
+
+#[test]
 fn what_leaves_says_how_to_bring_it_back_when_the_host_can() {
     let run = |tools: &[&str]| {
         let mut cur = Curator::new("").unwrap();

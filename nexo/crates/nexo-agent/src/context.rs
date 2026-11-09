@@ -82,7 +82,7 @@ pub trait ContextPolicy: Send {
     fn fits_window(&self) -> bool {
         false
     }
-    /// What the last view changed: messages put in (new or brought back) and taken out or cut.
+    /// What the last view changed: messages the curator brought back and ones it took out or cut.
     fn activity(&self) -> Option<(usize, usize)> {
         None
     }
@@ -124,7 +124,7 @@ pub fn describe(policy: &dyn ContextPolicy, history_tokens: u64, view_tokens: u6
             }
             let what = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
             let line = format!(
-                "{detail}. This call: {} put in (new or brought back), {} taken out or cut",
+                "{detail}. This call: {} brought back, {} taken out or cut",
                 what(a, "message", "messages"),
                 what(r, "message", "messages")
             );
@@ -442,7 +442,9 @@ impl ContextPolicy for BuiltIn {
             Err(e) => anyhow::bail!("the built-in curator failed: {e}"),
         };
         let messages = r.view.into_iter().map(serde_json::from_value).collect::<Result<Vec<Message>, _>>()?;
-        self.moved = (r.added, r.removed);
+        // what the curator moved: the messages the conversation appended are always "in", every call,
+        // and would hide the rest
+        self.moved = (r.back, r.removed);
         let mut memory: Option<Memory> = serde_json::from_value(r.memory).ok();
         if let Some(m) = &mut memory {
             m.curated = curated_items(&r.curated);
@@ -644,12 +646,13 @@ mod tests {
     async fn the_label_says_what_came_in_and_went_out() {
         let mut c = BuiltIn::new("").unwrap();
         c.view(0, &history()).await.unwrap();
-        let (label, detail) = describe(&c, 100_000, 62_000);
-        assert!(label.starts_with("curator +") && label.ends_with(" in"), "{label}");
-        assert!(label[label.find('+').unwrap()..].is_ascii(), "{label}");
-        assert!(detail.contains("This call:") && detail.contains("put in"), "{detail}");
+        // the first view of a history puts nothing back and takes nothing out: the conversation's own messages are new
+        assert_eq!(describe(&c, 100_000, 62_000).0, "curator");
         c.moved = (2, 5);
-        assert_eq!(describe(&c, 100_000, 62_000).0, "curator +2 in -5 out");
+        let (label, detail) = describe(&c, 100_000, 62_000);
+        assert_eq!(label, "curator +2 in -5 out");
+        assert!(label.is_ascii(), "{label}");
+        assert!(detail.contains("This call:") && detail.contains("brought back"), "{detail}");
         c.moved = (0, 0);
         assert_eq!(describe(&c, 100_000, 62_000).0, "curator");
     }

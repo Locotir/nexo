@@ -416,6 +416,9 @@ pub struct Reply {
     pub memory: Value,
     /// Messages this call put in the view: new ones and ones brought back.
     pub added: usize,
+    /// Of those, the ones that were in the conversation already and had been left out: what the curator
+    /// moved, as against what the conversation itself appended.
+    pub back: usize,
     /// Messages this call took out of the view or cut.
     pub removed: usize,
     /// What the view carries beyond the conversation and what it holds back, by name and size.
@@ -540,9 +543,9 @@ impl Curator {
         }
         self.paged = now;
         let memory = self.eng.memory();
-        let (added, removed) = self.activity(&memory);
+        let (added, back, removed) = self.activity(&memory);
         let curated = self.eng.added();
-        Ok(Reply { view, tokens, stats: self.eng.stats.clone(), memory, added, removed, curated })
+        Ok(Reply { view, tokens, stats: self.eng.stats.clone(), memory, added, back, removed, curated })
     }
 
     /// The model's prices per million input tokens: uncached and read from the cache. The view is then
@@ -610,8 +613,9 @@ impl Curator {
         self.window = tokens;
     }
 
-    /// How many messages this view put in (new or back) and took out (left out or cut) against the last.
-    fn activity(&mut self, memory: &Value) -> (usize, usize) {
+    /// How many messages this view put in (new or back), how many of those were back (they were in the
+    /// last view's history and it left them out), and how many it took out (left out or cut).
+    fn activity(&mut self, memory: &Value) -> (usize, usize, usize) {
         const OUT: u8 = 0;
         const CUT: u8 = 1;
         const WHOLE: u8 = 2;
@@ -622,17 +626,18 @@ impl Curator {
             _ => 3,
         };
         let now: Vec<u8> = memory["cells"].as_array().map(|c| c.iter().map(code).collect()).unwrap_or_default();
-        let (mut added, mut removed) = (0, 0);
+        let (mut added, mut back, mut removed) = (0, 0, 0);
         for (i, &s) in now.iter().enumerate() {
             let was = self.last.get(i).copied().unwrap_or(OUT);
             if s != OUT && was == OUT {
                 added += 1;
+                back += usize::from(i < self.last.len());
             } else if s == OUT && was != OUT || s == CUT && was == WHOLE {
                 removed += 1;
             }
         }
         self.last = now;
-        (added, removed)
+        (added, back, removed)
     }
 
     /// One request of the JSON-lines protocol the golden fixtures record (`{"op": "view" | "reset", ...}`)

@@ -1081,6 +1081,58 @@ async fn stale_guard_does_not_count_a_reread_of_what_the_curator_left_out() {
 }
 
 #[tokio::test]
+async fn the_curator_label_follows_what_each_call_moved() {
+    struct Lines;
+    #[async_trait]
+    impl Tool for Lines {
+        fn name(&self) -> &str {
+            "read"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "read".into(), description: "fake".into(), parameters: json!({"type": "object"}) }
+        }
+        fn kind(&self) -> ToolKind {
+            ToolKind::Read
+        }
+        fn summary(&self, args: &Value) -> String {
+            format!("read {}", args.get("path").and_then(Value::as_str).unwrap_or(""))
+        }
+        async fn run(&self, args: Value, _ctx: &ToolContext) -> ToolOutput {
+            let name = args.get("path").and_then(Value::as_str).unwrap_or("");
+            ToolOutput::ok(
+                (0..300).map(|k| format!("{name} line {k} holds its own value {}\n", k * 7)).collect::<String>(),
+            )
+        }
+    }
+    let d = tempfile::tempdir().unwrap();
+    let mut replies: Vec<Reply> =
+        (0..6).map(|i| Reply::Events(call(&format!("c{i}"), "read", json!({"path": format!("f{i}")})))).collect();
+    replies.push(Reply::Events(text("done")));
+    let client = Scripted::new(replies);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.context.policy = "curator".into();
+    cfg.context.curator_spec = "eoq=0;floor=0.6;target=2500;cap=5000;hard=60000;still=0".into();
+    cfg.agent.max_turns = 20;
+    cfg.agent.loop_guard = 0;
+    cfg.agent.stale_guard = 0;
+    let mut r = start_with(client.clone(), cfg, None, d.path(), ToolSet::new().with(Arc::new(Lines))).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "read the files".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let labels: Vec<String> = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::Context { label, .. } = e { Some(label.clone()) } else { None })
+        .collect();
+    assert_eq!(labels.len(), 7, "{labels:?}");
+    // what the conversation appends is not the curator's doing: nothing here came back, so no call says "in"
+    assert!(labels.iter().all(|l| !l.contains(" in")), "{labels:?}");
+    assert!(!labels[0].contains('+') && !labels[1].contains('+'), "no window pressure yet: {labels:?}");
+    // once the window is full each call takes the oldest out, and the label says so
+    assert!(labels[2..].iter().all(|l| l.contains(" out")), "{labels:?}");
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn a_guard_stop_asks_for_the_answer_without_tools() {
     let d = tempfile::tempdir().unwrap();
     let mut replies: Vec<Reply> =
