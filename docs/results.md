@@ -137,6 +137,24 @@ task for every arm so the arms are paired.
 | Hermes | 12/16 (51 to 90 %) | 14.4 | 6.60M / 6.40M / 192k | 97.0 % | 0.327 $ | 0.027 $ |
 | dsh | 11/16 (44 to 86 %) | 17.3 | 8.10M / 7.79M / 257k | 96.2 % | 0.447 $ | 0.041 $ |
 
+**Scored by cost on the common tasks.** The README ranks the arms by one rule: on the tasks every arm solved
+(first solved attempt per task and arm), the winner uses the fewest steps, tokens and dollars together. The index is
+the mean of (steps, tokens, cost), each divided by the best arm's value; 1.00 is best. Tokens are input plus output; cost
+uses the price table above. 8 common tasks in each round.
+
+| arm | A: steps | tokens | cost | index | B: steps | tokens | cost | index |
+|---|---|---|---|---|---|---|---|---|
+| nexo | 95 | 1.92M | 0.145 $ | **1.00** | 88 | 1.57M | 0.086 $ | **1.00** |
+| dsh | 109 | 2.74M | 0.149 $ | 1.20 | 112 | 2.17M | 0.136 $ | 1.41 |
+| Hermes | 123 | 3.36M | 0.153 $ | 1.37 | 111 | 2.44M | 0.127 $ | 1.44 |
+| Claude Code | 113 | 3.98M | 0.209 $ | 1.57 | 118 | 3.02M | 0.183 $ | 1.80 |
+| Codex | 111 | 4.90M | 0.237 $ | 1.78 | 100 | 3.01M | 0.133 $ | 1.54 |
+
+Round A tasks: circuit-fibsqrt, code-from-image, count-dataset-tokens, db-wal-recovery, extract-elf, fix-git,
+git-multibranch, log-summary-date-ranges. Round B: cancel-async-tasks, code-from-image, db-wal-recovery, extract-elf,
+fix-git, git-multibranch, hf-model-inference, log-summary-date-ranges. Eight tasks and one attempt each: the index
+says which arm was cheapest on these, not which is better.
+
 **Reading it.** With 16 tasks the intervals overlap for every pair, in both rounds. The arms differ on
 about 8 tasks, each with one attempt; adaptive-rejection-sampler fails for all five arms in both rounds and
 configure-git-webserver for four of five in round A. This is a tie, not a ranking.
@@ -322,7 +340,7 @@ the oracle in xl and xxl (505 against 540, 166 against 164).
 
 ## Earlier build: compaction against the curator
 
-The long-session tables below come from an earlier build of the curator (before epochs and the
+The long-session tables below were measured on 2026-11-04 on an earlier build of the curator (before epochs and the
 ceiling; commit not recorded here). They are the last measurements of these four arms and the live
 side of the comparison with compaction; they were not repeated.
 

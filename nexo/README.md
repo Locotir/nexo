@@ -6,7 +6,7 @@ A terminal coding harness for any model provider: a full-screen interface
 a built-in context curator as its default context policy.
 Written in Rust (ratatui), for Linux and Windows (both built and tested on every push; macOS is not tested).
 
-![nexo with DeepSeek: a to-do list, the cause of a failing test, the fix and the test run](docs/demo.gif)
+![nexo in the terminal: the task, the permission prompt for a command, the edit as a diff and the tests run again](docs/demo.gif)
 
 Everything it does, and the test that checks each thing: [FEATURES.md](FEATURES.md).
 

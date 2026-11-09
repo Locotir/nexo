@@ -23,11 +23,9 @@ sent only what the next step needs.
 
 [Install](#install) · [Why](#why) · [The numbers](#the-numbers) · [How the curator works](#how-the-curator-works) · [Any provider](#any-provider) · [Full documentation](nexo/README.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
-<p align="center"><img src="docs/demo.gif" width="880" alt="nexo in the terminal: the task, a to-do list in the side panel, the edit as a diff, the tests run again, and the status bar with model, mode and cost"></p>
+<p align="center"><img src="docs/demo.gif" width="880" alt="nexo in the terminal: the task, the permission prompt for a command, the edit as a diff, the tests run again, and the status bar with model, mode, context and cost"></p>
 
-![Five runs per arm: the curator solves 5 of 5 at $0.207, compaction at 200k 4 of 5 at $0.239, the whole history 4 of 5 at $0.300, compaction at 100k 2 of 5 at $0.337](docs/img/scoreboard.svg)
-
-<sub>Live runs of `marathon-heavy` and `marathon-noisy`, deepseek-flash, temperature 0, 2026-11-04, on an earlier build (before epochs); the last live run of these four arms. Every figure and its limits: [`docs/results.md`](docs/results.md).</sub>
+<sub>A replay of a recorded session on a throwaway project. A scripted provider plays back the model's replies; the tools run for real. No network, no model call.</sub>
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
@@ -52,71 +50,27 @@ curator for the next step only.
 
 ## The numbers
 
-Every figure names its date and the nexo commit it was measured at. Where the commit is not public, the row says so.
-The curator is held to not forgetting a fact the next call needs; cost comes second, so a cost that rises while
-forgotten facts fall is kept on purpose.
+Every figure names its date and the nexo commit it was measured at. The curator is held to not forgetting a fact the
+next call needs; cost comes second.
 
-**Scale, offline, no model** (`examples/scale.rs`, 1,000 topics with big pastes and questions that join facts across
-topics; 2026-11-09, nexo `cdeb98a`). Recall is the share of questions whose needed lines are in the view; the compaction
-arm summarises at 0.9 of the window. 1M never fills, so compaction there is the whole history.
-
-| Window | Curator cost | Curator prefix equal to the last request | Curator recall | Compaction cost | Compaction recall |
-|---|---|---|---|---|---|
-| 8k | $0.91 | 98.4% | **100%** | $0.19 | 0% |
-| 32k | $0.52 | 99.2% | **100%** | $0.34 | 0% |
-| 128k | $0.59 | 99.4% | **100%** | $0.97 | 0% |
-| 1M | $0.59 | 99.4% | **100%** | $2.41 | 100% |
-
-Compaction is cheaper at small windows because it has forgotten what the questions ask for (0% recall). Price: DeepSeek's.
-Replaying the 22 lab fixtures cold: 44 forgotten words, down from 93 and 125 earlier the same day, at 0.61 $ (up 2.9% from 0.59 $).
-
-**Replay of the 7 whole-history sessions in `nexo/crates/nexo-curator/tests/fixtures/`** (2026-11-09, nexo `cdeb98a`, tokens
-estimated at 4 characters each): **-19.6% tokens sent** (8.52M to 6.85M); per session from -37.0% to +6.8%. Priced with a
-prefix cache at DeepSeek's cached rate, the input cost falls 2.1% (0.2874 $ to 0.2814 $): a view that waits for an
-epoch saves tokens, not much money, on these sessions. The longest one, `bench-realm100-full`, costs 14% more.
-
-What the model is sent, request by request, replaying a recorded 81-request session through the curator
-(2026-11-09, nexo `cdeb98a`): 1.87M tokens against 2.97M (63% kept); ticks are epochs:
+**What the model is sent, request by request**, replaying a recorded 81-request session through the curator
+(2026-11-09, nexo `cdeb98a`): 1.87M tokens against 2.97M (63% kept). Ticks are epochs.
 
 ![Tokens per request: the whole history grows to 60k, the curated view is 28k at request 81, with epochs at requests 35, 56 and 76](docs/img/tokens-per-step.svg)
 
-**Live, long sessions** (2026-11-04, an earlier build before epochs, `deepseek-flash`, temperature 0; these are the last live
-runs of these arms and were not repeated):
-
-| Test | Result |
-|---|---|
-| **Two heavy sessions, four arms** (`marathon-heavy` ×3 and `marathon-noisy` ×2) | curator **5 of 5** at **\$0.207** a run; compaction at 200k 4 of 5 at \$0.239; whole history 4 of 5 at \$0.300; compaction at 100k 2 of 5 at \$0.337. Largest request: 105k against 198k to 222k |
-| **A pasted-log session** (`marathon-pasted`, one run per arm) | curator solved it at \$0.769, compaction at 200k did not (\$0.628); a repeat of the curator did not solve it (\$0.348). Too few runs to call |
-
-Each run, request by request (ticks: each summary):
-
-![marathon-heavy, three runs: the whole history climbs past 200k, compaction at 100k saws and fails 2 of 3, the curator stays under 93k and solves 3 of 3](docs/img/heavy.svg)
-
-![marathon-noisy, two runs: the curator solves both, each other arm one of two](docs/img/noisy.svg)
-
-**Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, before epochs). Five harnesses on the same 16
-Terminal-Bench tasks, one attempt per task. nexo solved 13 of 16 with its defaults and 11 of 16 with a 131k window; the
-other four solved 12 to 14 in the same rounds. The 95% intervals overlap for every pair: it is a tie, not a ranking.
-In round B the curator never acted, so this says nothing about its cutting. Method, all tables and caveats:
-[`docs/results.md`](docs/results.md#harness-race-2026-11-09).
+**Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task). Five harnesses on the
+same 16 Terminal-Bench tasks. The winner is the one that, on the tasks every harness solved, uses the fewest steps,
+tokens and dollars together. The index is the mean of each metric over the best harness's, so 1.00 is best.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/race-dark.svg">
-  <img alt="Same model, five harnesses on 16 tasks: pass rate with 95% intervals and cost per solved task. Round A (defaults): nexo 13, Codex 13, Claude Code 12, Hermes 12, dsh 13 of 16. Round B (131k window): nexo 11, Codex 14, Claude Code 12, Hermes 12, dsh 11 of 16. All intervals overlap" src="docs/img/race.svg" width="760">
+  <img alt="Five harnesses on the 8 tasks all of them solved, index of steps, tokens and cost, 1.00 is best. Round A: nexo 1.00, dsh 1.20, Hermes 1.37, Claude Code 1.57, Codex 1.78. Round B, 131k window: nexo 1.00, dsh 1.41, Hermes 1.44, Codex 1.54, Claude Code 1.80" src="docs/img/race.svg" width="760">
 </picture>
 
-nexo as a coding agent on [Aider's Polyglot benchmark](https://github.com/Aider-AI/polyglot-benchmark)
-(225 hard exercises in six languages, hidden tests, one retry that sees the failing tests), next to DeepSeek in Aider itself from [its public leaderboard](https://aider.chat/docs/leaderboards/).
-nexo ran `deepseek-chat` once on 2026-11-06 with the `plain` arm (no curator), before a fix that stopped it keeping
-replies cut at the token cap in its history; the commit is not recorded:
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="nexo/docs/polyglot-deepseek-dark.svg">
-  <img alt="Aider Polyglot, 225 exercises: nexo with deepseek-chat passes 49 % on the first try and 75 % after one retry (.49); DeepSeek V3.2-Exp in Aider, from the public leaderboard: Chat 39 % and 70 % (-e.88), Reasoner 40 % and 74 % (.30). Per language for nexo: C++ 62 then 96 %, Rust 70 then 77 %, Python 44 then 74 %, JavaScript 49 then 71 %, Java 23 then 70 %, Go 59 then 69 %" src="nexo/docs/polyglot-deepseek.svg" width="760">
-</picture>
-
-Every figure, its data and its limits (mostly one model, one author's tasks):
-[`docs/results.md`](docs/results.md). Measure it on your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
+Every harness solved 11 to 14 of the 16 tasks, a tie within noise, so this compares what a solved task costs, not skill.
+In round B the curator never acted: that lead comes from short prompts and a stable prefix. Method, all tables and caveats:
+[`docs/results.md`](docs/results.md#harness-race-2026-11-09). Older runs (compaction against the curator, 2026-11-04) are
+there too, marked with their date. Measure it on your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
 
 ## How the curator works
 
@@ -196,9 +150,9 @@ policy = "curator"               # auto | plain | compact | curator
 
 ## Everything else a coding agent needs
 
-![nexo in the terminal: the diff of the two edits, the reply with a table of the two bugs, and the 4 steps, tokens, cache hit and cost line](docs/img/tui-session.png)
+![nexo in the terminal: the diff of the two edits, the reply with a table of the two bugs, and the steps, tokens, cache hit and cost line](docs/img/tui-session.png)
 
-<sub>A real session on a throwaway project, deepseek-flash, nexo `cdeb98a`, 2026-11-09: two bugs found and fixed, 4/4 tests passing, 4 steps, $0.0015.</sub>
+<sub>A replay of a recorded deepseek-flash session on a throwaway project: two bugs found and fixed, 4 steps. A scripted provider plays back the replies; the tools run for real.</sub>
 
 - **Full-screen terminal UI**: mouse, folding transcript, search, command palette, diffs before every
   write, 16/256-colour, mono and `NO_COLOR` themes.
