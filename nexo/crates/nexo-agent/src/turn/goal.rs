@@ -217,8 +217,6 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
         return None;
     }
     st.goal_round += 1;
-    let round = st.goal_round;
-    notice(&st.events, Level::Info, format!("goal: continuing (round {round}/{max})"));
     emit_goal(&st);
     Some(GOAL_CONTINUE.to_string())
 }

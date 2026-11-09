@@ -942,8 +942,29 @@ fn a_restated_goal_reads_as_what_the_person_wants() {
             _ => None,
         })
         .collect();
-    assert_eq!(notices, ["◎ goal set: tests pls", "◎ goal · keeps going"]);
+    assert_eq!(notices, ["◎ goal set: tests pls", "◎ goal · continuing"]);
     assert!(a.user_messages.is_empty(), "nothing of the loop to rewind to");
+}
+
+#[test]
+fn a_goal_round_shows_as_one_line_with_its_round() {
+    let (mut a, _rx) = app();
+    let goal =
+        |round: u32| AgentEvent::Goal { text: Some("tests pls".into()), round, max: 5, state: GoalState::Active };
+    a.handle_agent(goal(0));
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user("[goal set] tests pls") });
+    a.handle_agent(goal(1));
+    a.handle_agent(AgentEvent::History { index: 2, message: Message::user("[goal: continue]") });
+    let notices: Vec<&str> = a
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Notice { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices, ["◎ goal set: tests pls", "◎ goal · round 1/5 · continuing"]);
+    assert!(!notices.iter().any(|n| n.contains("goal: continuing")));
 }
 
 #[test]

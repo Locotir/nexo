@@ -331,6 +331,8 @@ pub struct App {
     pub todo: Vec<TodoItem>,
     /// The goal in force: its text, rounds and state.
     pub goal: Option<Goal>,
+    /// The round a goal continuation just began, for the line that marks it in the transcript.
+    goal_round_said: Option<(u32, u32)>,
     /// The scrollbars of the last frame: the transcript's, and the one of the dialog on top.
     pub transcript_bar: Option<Bar>,
     pub modal_bar: Option<Bar>,
@@ -557,6 +559,7 @@ impl App {
             pending_stamps: VecDeque::new(),
             todo: Vec::new(),
             goal: None,
+            goal_round_said: None,
             transcript_bar: None,
             modal_bar: None,
             modal_list_first: 0,

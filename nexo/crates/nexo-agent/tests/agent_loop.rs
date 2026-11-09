@@ -1862,6 +1862,25 @@ async fn a_goal_set_while_a_turn_runs_only_pins_it() {
 }
 
 #[tokio::test]
+async fn a_goal_continuation_leaves_the_round_to_the_interface() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("first")), Reply::Events(text("GOAL DONE"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
+    r.until(|e| matches!(e, AgentEvent::ModelLimits { .. })).await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    r.send(AgentCommand::SetGoal { text: Some("finish it".into()) });
+    r.turn().await;
+    let t2 = r.turn().await;
+    assert!(user_texts(&t2).contains(&CONTINUE.to_string()));
+    assert!(t2.iter().any(|e| matches!(e, AgentEvent::Goal { round: 1, .. })));
+    assert!(
+        !t2.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("goal: continuing"))),
+        "the interface draws the line itself: {t2:?}"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn a_continuation_without_tool_calls_ends_the_goal_loop() {
     let dir = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![Reply::Events(text("working")), Reply::Events(text("nothing more to do"))]);

@@ -811,6 +811,7 @@ impl App {
                         GoalState::Done => "goal met ✓",
                     }),
                     (Some(_), Some(g)) if round > g.round => {
+                        self.goal_round_said = Some((round, max));
                         self.flash(&format!("goal: continuing, round {round}/{max}"))
                     }
                     _ => {}
@@ -1106,7 +1107,10 @@ impl App {
                                 Piece::Goal(words) => {
                                     let text = match words {
                                         Some(w) => format!("◎ goal set: {w}"),
-                                        None => "◎ goal · keeps going".to_string(),
+                                        None => match self.goal_round_said.take() {
+                                            Some((round, max)) => format!("◎ goal · round {round}/{max} · continuing"),
+                                            None => "◎ goal · continuing".to_string(),
+                                        },
                                     };
                                     self.push(Block::Notice { level: Level::Info, text });
                                 }
