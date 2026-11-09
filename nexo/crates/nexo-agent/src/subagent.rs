@@ -437,20 +437,31 @@ impl SubAgent {
     }
 }
 
-/// A provider as the `task` tool offers it: its name and the models set up for it, a few at most.
-fn offer(name: &str, cfg: &ProviderConfig) -> String {
-    let mut models: Vec<&str> = cfg.default_model.iter().map(String::as_str).collect();
-    for m in &cfg.models {
-        if !models.contains(&m.as_str()) {
-            models.push(m);
-        }
+/// The models a provider lists: its default and the others set up for it.
+fn listed(cfg: &ProviderConfig) -> impl Iterator<Item = &str> {
+    cfg.default_model.iter().chain(cfg.models.iter()).map(String::as_str)
+}
+
+/// Where a model asked for without a provider runs: `Ok(None)` on the conversation's provider (it lists
+/// the model, or nobody does), `Ok(Some(name))` on the one other provider that lists it, `Err(names)`
+/// when several others do. Names match exactly, ignoring ASCII case.
+fn provider_of<'a>(
+    model: &str,
+    main: (&str, &ProviderConfig),
+    providers: &'a std::collections::BTreeMap<String, ProviderConfig>,
+) -> Result<Option<&'a str>, Vec<&'a str>> {
+    if listed(main.1).any(|m| m.eq_ignore_ascii_case(model)) {
+        return Ok(None);
     }
-    let more = models.len() > 6;
-    models.truncate(6);
-    match (models.is_empty(), more) {
-        (true, _) => name.to_string(),
-        (false, false) => format!("{name} ({})", models.join(", ")),
-        (false, true) => format!("{name} ({}, ...)", models.join(", ")),
+    let on: Vec<&str> = providers
+        .iter()
+        .filter(|(n, c)| n.as_str() != main.0 && listed(c).any(|m| m.eq_ignore_ascii_case(model)))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    match on.len() {
+        0 => Ok(None),
+        1 => Ok(Some(on[0])),
+        _ => Err(on),
     }
 }
 
@@ -945,15 +956,14 @@ impl Tool for SubAgent {
                 "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."},
                 "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
                 "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
-                "model": {"type": "string", "description": format!("Another model for this sub-agent, only when the person asks for one; the conversation's ({main_model}) otherwise. Write it as its provider names it.")}
+                "model": {"type": "string", "description": format!("Another model for this sub-agent, only when the person asks for one; the conversation's ({main_model}) otherwise. Write it as its provider names it; a model of another provider set up here runs there.")}
             },
             "required": ["prompt"]
         });
         // another provider only when there is one to go to
         if self.providers.keys().any(|n| *n != main_provider) {
             let names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
-            let offered: Vec<String> = self.providers.iter().map(|(n, c)| offer(n, c)).collect();
-            params["properties"]["provider"] = json!({"type": "string", "enum": names, "description": format!("Another provider for this sub-agent, only when the person asks for one; the conversation's ({main_provider}) otherwise. Without `model` it runs the same model there. Set up: {}.", offered.join("; "))});
+            params["properties"]["provider"] = json!({"type": "string", "enum": names, "description": format!("Another provider for this sub-agent, only when the person asks for one; the conversation's ({main_provider}) otherwise. Without `model` it runs the same model there.")});
         }
         ToolSpec {
             name: "task".into(),
@@ -1031,6 +1041,20 @@ impl Tool for SubAgent {
             },
         };
         let model = asked_for("model").map(str::to_string);
+        // a model only another provider lists runs there, when no provider was named
+        let provider = match (provider, &model) {
+            (None, Some(m)) => {
+                let (main_provider, main_cfg, _) = self.target.get();
+                match provider_of(m, (&main_provider, &main_cfg), &self.providers) {
+                    Ok(None) => None,
+                    Ok(Some(n)) => self.providers.get_key_value(n).map(|(n, c)| (n.clone(), c.clone())),
+                    Err(on) => {
+                        return ToolOutput::error(format!("model {m} is set up on: {}; pass provider", on.join(", ")))
+                    }
+                }
+            }
+            (p, _) => p,
+        };
         let host = self.host.get().cloned();
         // SubagentStart hooks: what they print is added to the task
         let prompt_owned = {
@@ -1265,5 +1289,97 @@ mod tests {
         assert_eq!(get("odd").tools, Some(vec!["read".into(), "grep".into(), "glob".into(), "ls".into()]));
         assert_eq!(get("odd").model, None);
         assert_eq!(get("docs").prompt, "nexo docs");
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    struct Mute;
+    #[async_trait]
+    impl ModelClient for Mute {
+        async fn stream(
+            &self,
+            _: &ProviderConfig,
+            _: &ModelRequest,
+            _: u32,
+        ) -> Result<nexo_core::provider::EventStream, ProviderError> {
+            Err(ProviderError::new(ErrorKind::Other, "mute"))
+        }
+    }
+
+    fn cfg(default: &str, models: &[&str]) -> ProviderConfig {
+        ProviderConfig {
+            default_model: Some(default.into()),
+            models: models.iter().map(|m| m.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn map(list: &[(&str, ProviderConfig)]) -> BTreeMap<String, ProviderConfig> {
+        list.iter().map(|(n, c)| (n.to_string(), c.clone())).collect()
+    }
+
+    #[test]
+    fn a_model_listed_by_one_other_provider_runs_there() {
+        let all = map(&[("a", cfg("a1", &["a2"])), ("b", cfg("b1", &["shared-b"])), ("c", cfg("c1", &[]))]);
+        let main = cfg("a1", &["a2"]);
+        assert_eq!(provider_of("b1", ("a", &main), &all), Ok(Some("b")));
+        assert_eq!(provider_of("shared-b", ("a", &main), &all), Ok(Some("b")));
+    }
+
+    #[test]
+    fn a_model_of_the_main_provider_stays_there() {
+        // also when another provider lists it too
+        let all = map(&[("a", cfg("a1", &["both"])), ("b", cfg("b1", &["both"]))]);
+        let main = cfg("a1", &["both"]);
+        assert_eq!(provider_of("a1", ("a", &main), &all), Ok(None));
+        assert_eq!(provider_of("both", ("a", &main), &all), Ok(None));
+    }
+
+    #[test]
+    fn a_model_listed_by_two_others_is_an_error_naming_both() {
+        let all = map(&[("a", cfg("a1", &[])), ("b", cfg("x", &[])), ("c", cfg("c1", &["x"]))]);
+        let main = cfg("a1", &[]);
+        assert_eq!(provider_of("x", ("a", &main), &all), Err(vec!["b", "c"]));
+    }
+
+    #[test]
+    fn a_model_listed_nowhere_stays_on_the_main_provider() {
+        let all = map(&[("a", cfg("a1", &[])), ("b", cfg("b1", &[]))]);
+        let main = cfg("a1", &[]);
+        assert_eq!(provider_of("unknown", ("a", &main), &all), Ok(None));
+    }
+
+    #[test]
+    fn the_model_lookup_ignores_ascii_case() {
+        let all = map(&[("a", cfg("a1", &[])), ("b", cfg("GPT-Five", &[]))]);
+        let main = cfg("a1", &[]);
+        assert_eq!(provider_of("gpt-five", ("a", &main), &all), Ok(Some("b")));
+        assert_eq!(provider_of("A1", ("a", &main), &all), Ok(None));
+    }
+
+    #[test]
+    fn the_provider_text_does_not_grow_with_the_providers() {
+        let mut all = BTreeMap::new();
+        for p in 0..23 {
+            let models: Vec<String> = (1..6).map(|m| format!("model-{p}-{m}")).collect();
+            all.insert(
+                format!("prov{p:02}"),
+                ProviderConfig { default_model: Some(format!("model-{p}-0")), models, ..Default::default() },
+            );
+        }
+        let target = Target::new("prov00", all["prov00"].clone(), "model-0-0");
+        let sub = SubAgent::new(Arc::new(Mute), target, &ToolSet::new(), Vec::new(), Default::default())
+            .with_providers(all.clone());
+        let spec = sub.spec();
+        let desc = spec.parameters["properties"]["provider"]["description"].as_str().unwrap().to_string();
+        let total = spec.description.len() + serde_json::to_string(&spec.parameters).unwrap().len();
+        eprintln!("TASK_SPEC_BYTES {total} provider_desc {}", desc.len());
+        assert!(desc.len() < 260, "{} chars: {desc}", desc.len());
+        assert!(!desc.contains("model-"), "{desc}");
+        assert!(!desc.contains("Set up"), "{desc}");
     }
 }
