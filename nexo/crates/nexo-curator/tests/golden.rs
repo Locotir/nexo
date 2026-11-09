@@ -348,12 +348,12 @@ fn the_long_session_ends_with_the_reference_stats() {
     // `miss_switch`), and what closing took in 23 steps at any request now leaves with the window cut: the cache
     // misses 72609 (was 77829), 4 rewrites, 160 chunks leave.
     // The epoch closes first (what the agent took from a request closed, the idle outputs that pay at the price of the
-    // cache read again from where the window cut starts) and the cut takes what is left: 18 steps close, the cache
+    // cache read again from where the window cut starts) and the cut takes what is left: 20 steps close, the cache
     // misses 77789 (as before epochs, 77829) but 8 epochs read the whole view once each, and 171 chunks leave. What
     // the closing keeps for a later request, the cut did not: on the 22 recorded sessions 93 words are forgotten
     // where 125 were before the epochs.
     let want = serde_json::json!({"birth_saved": 1799, "epochs": 8, "dedup_runs": 6, "dedup_saved": 3117,
-        "miss_fresh": 17298, "miss": 77789, "dedup_asked": 24, "closed_steps": 18, "miss_close": 23967,
+        "miss_fresh": 17298, "miss": 77789, "dedup_asked": 24, "closed_steps": 20, "miss_close": 23967,
         "dropped_chunks": 171, "sup_chunks": 57, "rewrites": 3, "left_messages": 146, "ledger_lines": 462,
         "cap_rewrites": 2, "miss_cap": 36524, "recalled_steps": 2, "window_cuts": 4});
     eprintln!("stats: {}", last["stats"]);

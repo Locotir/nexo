@@ -56,6 +56,39 @@ fn an_answered_request_lets_its_steps_go_and_a_request_about_them_brings_them_ba
 }
 
 #[test]
+fn a_read_brought_back_in_a_message_that_leaves_is_out_again_and_a_request_that_names_it_brings_it_back() {
+    let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;protect=1";
+    let reply = format!("The largest is client {}.", word(529));
+    let mut e = Engine::new(params(spec).unwrap());
+    e.sync(&sessions(&reply, None));
+    e.view();
+    assert!(e.steps[0].out, "the read left");
+    let mut msgs = sessions(&reply, Some("And the smallest invoice total in the report?"));
+    e.sync(&msgs);
+    e.view();
+    assert!(!e.steps[0].out && e.steps[0].at.is_some(), "the read came back as text");
+    // more work follows, then a cut takes the message the read came back at (and every one before it)
+    for k in 3..=6 {
+        msgs.extend(step(k, &format!("wc -l part{k}.txt"), "12 lines"));
+    }
+    e.sync(&msgs);
+    e.view();
+    let at = e.steps[0].at.unwrap();
+    let sizes = e.sizes_now();
+    assert!(e.leave(&sizes, 0.0) && e.start > at, "the cut passed the message: {} {at}", e.start);
+    // none of it is in the view: the step is out, not held "in view" by a message that is gone
+    assert!(e.steps[0].out && e.steps[0].at.is_none() && e.steps[0].idle.is_none(), "{:?}", e.steps[0].at);
+    // a request that names the file brings it back anew
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+    msgs.push(json!({"role": "user", "content": "And the client of invoice total 1037 in report.txt?"}));
+    e.sync(&msgs);
+    let view = e.view();
+    let last = sent(&view[view.len() - 1..]);
+    assert!(last.contains("Brought back") && last.contains(&word(0)), "{last}");
+    assert_eq!(e.stats.get("recalled_steps"), Some(&2));
+}
+
+#[test]
 fn a_request_closed_after_a_read_came_back_to_it_keeps_what_came_back_first() {
     let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1";
     let reply = format!("The largest is client {}.", word(529));

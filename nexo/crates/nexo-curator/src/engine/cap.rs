@@ -667,6 +667,11 @@ impl Engine {
         }
         self.harvest(self.start, new_start);
         self.start = new_start;
+        // a step brought back as text in a message that left with them is out again: none of it is in the view, and a
+        // request that names it (or needs it) brings it back anew
+        for s in self.steps.iter_mut().filter(|s| !s.out && s.at.is_some_and(|a| a < new_start)) {
+            (s.out, s.at, s.idle) = (true, None, None);
+        }
         // a line on a message that left goes back on its request: the view is read again whole anyway
         if !self.shut.is_empty() {
             self.shut_lines();
