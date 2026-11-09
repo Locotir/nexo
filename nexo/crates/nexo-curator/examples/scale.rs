@@ -9,8 +9,11 @@
 //!
 //! Cold mode: `--topics N[,N2] --hops H[,H2] --seed S [--questions Q] [--stride K]` runs the cold scale session
 //! (many topics, big pastes, questions that correlate facts across topics; see `scale_gen::Cold`) and prints one
-//! line per (N, hops): N | hops | recall % | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB,
-//! then the plain arm (the whole history every request) for reference.
+//! line per (N, hops): N | hops | recall % | fijos | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB,
+//! then the plain arm (the whole history every request) for reference. `--standing K` (default 8, at most 10; 0: none)
+//! plants K standing facts early (the person says one, the agent notes one, a `cat` shows one) and spreads over the rest
+//! of the session 3 tasks for each that suppose its default without naming it ("add an alias to my shell"); the `fijos`
+//! column is the percent of those tasks whose view holds the source line of their fact.
 //! `--tokens 1M,10M,100M,1B [--max-secs 600] [--max-rss-mb 8192] [--stride K]` is the ladder: sessions of that many
 //! tokens (hops 1, 2, 3 in turn), generated on the fly from the seed and never written to disk; a step over the
 //! limits stops the ladder and says where the time and the memory went.
@@ -47,10 +50,11 @@ fn main() {
             (num.parse::<f64>().expect("tokens") * mult) as u64
         };
         let seed = get("--seed").and_then(|s| s.parse().ok()).unwrap_or(1);
-        println!("tokens totales | topics | % marcas en 1 salto | % en 2-3 saltos | vista máx | enviados | DeepSeek $ | ms/petición p50/p99 | RSS máx MB | plain");
+        println!("tokens totales | topics | % marcas en 1 salto | % en 2-3 saltos | fijos | vista máx | enviados | DeepSeek $ | ms/petición p50/p99 | RSS máx MB | plain");
         for s in list.split(',') {
             let mut p = ColdParams::for_tokens(size(s), 0, seed);
             p.questions = get("--questions").and_then(|s| s.parse().ok()).unwrap_or(60);
+            p.standing = get("--standing").and_then(|s| s.parse().ok()).unwrap_or(8);
             p.stride = get("--stride").and_then(|s| s.parse().ok()).unwrap_or((p.topics / 200).max(1));
             p.max_secs = get("--max-secs").and_then(|s| s.parse().ok()).unwrap_or(600.0);
             p.max_rss_mb = get("--max-rss-mb").and_then(|s| s.parse().ok()).unwrap_or(8192.0);
@@ -65,11 +69,14 @@ fn main() {
     if let Some(t) = get("--topics") {
         let hops = get("--hops").unwrap_or_else(|| "1".into());
         let seed = get("--seed").and_then(|s| s.parse().ok()).unwrap_or(1);
-        println!("N | hops | recall % | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB | plain");
+        println!(
+            "N | hops | recall % | fijos | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB | plain"
+        );
         for n in nums(t) {
             for h in nums(hops.clone()) {
                 let mut p = ColdParams::new(n, h, seed);
                 p.questions = get("--questions").and_then(|s| s.parse().ok()).unwrap_or(p.questions);
+                p.standing = get("--standing").and_then(|s| s.parse().ok()).unwrap_or(8);
                 p.stride = get("--stride").and_then(|s| s.parse().ok()).unwrap_or(1);
                 println!("{}", run_cold(&p).line());
             }

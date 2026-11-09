@@ -51,7 +51,7 @@ fn flat_time_chat_without_tools() {
 // The cold scale test (many topics, big pastes, cross-topic questions): small N only, the large ones run
 // from `examples/scale.rs --topics N`.
 
-use scale_gen::{cold_facts, holds, run_cold, Cold, ColdParams};
+use scale_gen::{cold_facts, fixed_fact, holds, run_cold, Cold, ColdParams, STAND_REPS};
 use serde_json::json;
 
 fn session(p: &ColdParams) -> Vec<String> {
@@ -141,4 +141,50 @@ fn cold_tokens_sizes_the_session_and_reports_hops_apart() {
     let row = run_cold(&cut);
     assert!(row.stopped.as_deref().is_some_and(|s| s.starts_with("tiempo")), "{:?}", row.stopped);
     assert!(row.line_tokens().contains("PARADO"));
+}
+
+// Standing facts: facts that override a default (a shell rc that is not ~/.bashrc, a database on another port), said
+// once early; the tasks that come later suppose the default and never name them.
+
+#[test]
+fn standing_generator_plants_each_fact_once_and_asks_after_it() {
+    let mut p = ColdParams::new(120, 1, 3);
+    p.standing = 8;
+    p.questions = 4;
+    let mut g = Cold::new(p.clone());
+    let (mut history, mut tasks, mut seen) = (String::new(), 0, Vec::new());
+    while let Some(b) = g.next_block() {
+        if let Some(lines) = &b.stand {
+            tasks += 1;
+            assert_eq!(lines.len(), 1);
+            assert!(history.contains(lines[0].as_str()), "the fact comes before the task that supposes it: {lines:?}");
+            let task = serde_json::Value::Array(b.msgs.clone()).to_string();
+            assert!(!task.contains(lines[0].as_str()), "the task does not name the fact");
+            seen.push(lines[0].clone());
+        }
+        history += &serde_json::Value::Array(b.msgs).to_string().replace("\\n", "\n");
+    }
+    assert_eq!(tasks, 8 * STAND_REPS);
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 8, "eight different facts");
+    // the three ways a fact comes into the history are all used
+    assert!(history.contains("Finding: the database (postgres) listens on port"));
+    assert!(history.contains("shell_rc = /etc/skel-"));
+    assert!(history.contains("Don't touch /srv/legacy"));
+    // 1 opening, the topics, the tasks, four per question
+    assert_eq!(session(&p).len(), 1 + 120 + tasks + 4 * 4);
+    assert_eq!(session(&p), session(&p));
+    assert_ne!(fixed_fact(1, 0).line, fixed_fact(2, 0).line);
+}
+
+#[test]
+fn standing_facts_reach_the_view_at_200_topics() {
+    let mut p = ColdParams::new(200, 1, 1);
+    p.standing = 8;
+    p.questions = 4;
+    let row = run_cold(&p);
+    assert_eq!(row.stand[1], 8 * STAND_REPS);
+    assert_eq!(row.stand[0], row.stand[1], "{}", row.line());
+    assert!(row.line().contains(" | fijos 100.0 | "), "{}", row.line());
 }

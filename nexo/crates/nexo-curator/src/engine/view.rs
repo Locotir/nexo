@@ -352,7 +352,7 @@ impl Engine {
     }
 
     pub fn tokens(&mut self) -> i64 {
-        self.sizes_now().iter().sum()
+        self.sizes_now().iter().sum::<i64>() + self.tail_tokens
     }
 
     /// The view: the visible messages, consecutive ones of the same role joined.
@@ -383,7 +383,9 @@ impl Engine {
 
     pub fn view(&mut self) -> Vec<Value> {
         self.decide();
-        self.render()
+        let mut view = self.render();
+        self.add_tail(&mut view);
+        view
     }
 
     /// Whether the other topics leave the view. Decided once for each request (`split_now`) and kept until the

@@ -19,6 +19,7 @@ mod ledger;
 mod mechanical;
 mod msg;
 mod rules;
+mod standing;
 mod textops;
 mod tools;
 

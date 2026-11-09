@@ -11,6 +11,7 @@ use crate::hindsight::{Interner, Set, Sym, Tracer};
 use crate::learn::Featurizer;
 use crate::ledger::Names;
 use crate::rules::Rules;
+use crate::standing::Standing;
 
 use self::cache::{Pocket, Probe};
 use self::dump::Dump;
@@ -39,6 +40,7 @@ mod params;
 mod recall;
 mod stale;
 mod steps;
+mod tail;
 mod view;
 mod window;
 
@@ -118,6 +120,10 @@ pub struct Engine {
     plan: Option<(usize, String)>,
     /// The person's standing instructions: session state, kept for as long as the session lasts.
     rules: Rules,
+    /// The facts that override a default, kept by target (`standing.rs`), and the tokens of the tail that carries
+    /// the due ones in the last view.
+    standing: Standing,
+    tail_tokens: i64,
     /// The anchor without the rules block (the map, the findings, the pinned files and the ledger).
     base_map: String,
     /// The rules block as the anchor has it now.
@@ -276,6 +282,8 @@ impl Engine {
             findings: Vec::new(),
             plan: None,
             rules: Rules::default(),
+            standing: Standing::default(),
+            tail_tokens: 0,
             base_map: String::new(),
             rules_shown: String::new(),
             pins: IndexMap::new(),

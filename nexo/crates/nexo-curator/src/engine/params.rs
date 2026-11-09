@@ -28,7 +28,8 @@ pub struct Params {
     pub notes: i64,
     /// Tokens the person's standing instructions take before the findings and the pinned files give
     /// way to them (0: no rules block). A rule is never dropped for its size: past this budget the other
-    /// blocks shrink instead.
+    /// blocks shrink instead. Also on or off (0): the standing facts of `standing.rs`, which override a default
+    /// and come back in the tail of the view when an action supposes the default.
     pub rules: i64,
     /// Tokens of the files the person named, as last read, and of the files the agent wrote, as last
     /// written, kept in the anchor (0: off).

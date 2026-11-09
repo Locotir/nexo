@@ -140,6 +140,7 @@ impl Engine {
         };
         if self.p.rules != 0 {
             self.take_rules(&raw);
+            self.take_standing(&raw);
         }
         if raw.get("role").and_then(Value::as_str) == Some("assistant") {
             let noted = blocks(raw.get("content")).iter().filter_map(note_text).any(|t| NOTE_LINE.is_match(&t));
@@ -349,6 +350,7 @@ impl Engine {
         let rewritten = n > 0 && (msgs.len() < n || !py_eq(&strip_cc(&msgs[n - 1]), &self.last_raw));
         if rewritten {
             let rules = std::mem::take(&mut self.rules).carried();
+            let standing = std::mem::take(&mut self.standing).carried();
             // what the host set (window, tools, time) is not part of the history, and neither is what was
             // learned of the provider: it survives the restart
             let (budget, note_tool, recall_tool) = (self.budget, self.note_tool, self.recall_tool);
@@ -359,6 +361,7 @@ impl Engine {
             *self = Engine::new(self.p.clone());
             self.dump = dump;
             self.rules = rules;
+            self.standing = standing;
             self.budget = budget;
             self.note_tool = note_tool;
             self.recall_tool = recall_tool;

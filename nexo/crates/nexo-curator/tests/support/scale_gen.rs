@@ -270,6 +270,8 @@ pub struct ColdParams {
     /// Stop the session when it has run this long (seconds) or its process holds this much memory (MB); 0: no limit.
     pub max_secs: f64,
     pub max_rss_mb: f64,
+    /// Standing facts planted early in the session (0 to 10), each asked about by 3 tasks that suppose its default.
+    pub standing: usize,
 }
 
 impl ColdParams {
@@ -284,6 +286,7 @@ impl ColdParams {
             stride: 1,
             max_secs: 0.0,
             max_rss_mb: 0.0,
+            standing: 0,
         }
     }
 
@@ -343,16 +346,92 @@ pub fn cold_facts(seed: u64, t: usize) -> [String; 3] {
 }
 
 /// A step of the session: messages to append (alternating roles, the first a user message unless noted) and,
-/// for a question block, the source lines its first message needs in the view.
+/// for a question block, the source lines its first message needs in the view; for a task block, the source
+/// line of the standing fact whose default the task supposes (`stand`).
 pub struct Block {
     pub msgs: Vec<Value>,
     pub ask: Option<Vec<String>>,
+    pub stand: Option<Vec<String>>,
+}
+
+/// Ways a standing fact reaches the history: the person says it, the agent notes it (`Finding:`), or a
+/// `cat` of a config file shows it.
+#[derive(Clone, Copy, PartialEq)]
+enum Via {
+    User,
+    Model,
+    Cat,
+}
+
+/// A standing fact that overrides a default, as planted: how each source words it, and the task that supposes
+/// the default without naming the fact.
+pub struct Fixed {
+    via: Via,
+    /// The source line the oracle looks for in the view (a `key = value` line of a config, a sentence of the
+    /// person, or what follows `Finding:` in the agent's reply).
+    pub line: String,
+    /// The request that supposes the default.
+    pub task: &'static str,
+}
+
+/// Standing facts a session can plant, at most.
+pub const FIXED_MAX: usize = 10;
+/// Tasks that suppose the default of each planted fact.
+pub const STAND_REPS: usize = 3;
+
+/// Fact `i` of a session of `seed`: wording a function of the seed and the index alone. The shell rc, the
+/// database port, the token file, the legacy folder, the search tool, the staging host, the editor config,
+/// the logs, the build output and the backups: each overrides what a model would assume.
+pub fn fixed_fact(seed: u64, i: usize) -> Fixed {
+    let v = 100 + mix(seed, i as u64, 7) % 900;
+    // (how it comes, the line, the task)
+    let (via, line, task) = match i % FIXED_MAX {
+        0 => (Via::Cat, format!("shell_rc = /etc/skel-{v}/rc"), "Add an alias to my shell."),
+        1 => (
+            Via::Model,
+            format!("the database (postgres) listens on port {}, not 5432", 6000 + v),
+            "Connect to the database and count the rows in users.",
+        ),
+        2 => (Via::Cat, format!("api_token_file = /run/secrets/api{v}"), "Rotate the API token."),
+        3 => {
+            (Via::User, format!("Don't touch /srv/legacy{v}, it is the legacy folder."), "Clean up the legacy folder.")
+        }
+        4 => (Via::Model, "searching the repo goes with rg, not grep".to_string(), "Search the repo for TODO."),
+        5 => (
+            Via::User,
+            format!("The staging server is at stage{v}.internal:8797, not localhost:8080."),
+            "Deploy to staging.",
+        ),
+        6 => {
+            (Via::Cat, format!("editor_config = /home/dev/.config/edit{v}/init.vim"), "Change a setting in my editor.")
+        }
+        7 => (
+            Via::User,
+            format!("The app logs are stored in /data/logs{v}, not /var/log/app."),
+            "Look through the app logs for errors.",
+        ),
+        8 => (
+            Via::Model,
+            format!("build artifacts are kept in /data/out{v}, not ./dist"),
+            "Copy the build artifacts to the release folder.",
+        ),
+        _ => (
+            Via::User,
+            format!("Backups are stored in /mnt/backup{v}, not /tmp."),
+            "Run a backup of the database dump.",
+        ),
+    };
+    Fixed { via, line, task }
 }
 
 pub struct Cold {
     p: ColdParams,
-    /// The next block: 0 is the opening, then the topics, then the questions with their switches.
+    /// The next block: 0 is the opening, then the topics with the standing tasks among them, then the
+    /// questions with their switches.
     next: usize,
+    /// The next topic and the next standing task to hand out.
+    t_next: usize,
+    j_next: usize,
     rng: u64,
 }
 
@@ -361,8 +440,9 @@ const SWITCHES: usize = 3;
 impl Cold {
     pub fn new(p: ColdParams) -> Cold {
         assert!(p.hops <= 3 && p.topics >= 3, "hops must be 0 to 3, and there are at least 3 topics");
+        assert!(p.standing <= FIXED_MAX && (p.standing == 0 || p.topics >= 10), "up to {FIXED_MAX} standing facts");
         let rng = splitmix(p.seed ^ 0x5CA1_E5CA) | 1;
-        Cold { p, next: 0, rng }
+        Cold { p, next: 0, t_next: 0, j_next: 0, rng }
     }
 
     /// Blocks handed out so far.
@@ -370,8 +450,28 @@ impl Cold {
         self.next
     }
 
+    /// Standing tasks in the session.
+    pub fn tasks(&self) -> usize {
+        self.p.standing * STAND_REPS
+    }
+
     pub fn total_blocks(&self) -> usize {
-        1 + self.p.topics + self.p.questions * (SWITCHES + 1)
+        1 + self.p.topics + self.tasks() + self.p.questions * (SWITCHES + 1)
+    }
+
+    /// The topics (a few percent of them, at the start) that hold the standing facts: fact `i` is in topic `plant(i)`.
+    fn span(&self) -> usize {
+        (self.p.topics / 50).max(4).min(self.p.topics)
+    }
+
+    fn plant(&self, i: usize) -> usize {
+        i * self.span() / self.p.standing.max(1)
+    }
+
+    /// The topic after which standing task `j` comes: spread from after a tenth of the topics to the last.
+    fn after(&self, j: usize) -> usize {
+        let lo = (self.span() + 1 + self.p.topics / 10).min(self.p.topics - 1);
+        lo + j * (self.p.topics - 1 - lo) / self.tasks().max(1)
     }
 
     fn rand(&mut self, n: usize) -> usize {
@@ -395,7 +495,16 @@ impl Cold {
             h = splitmix(h);
             lines.insert((h % (lines.len() as u64 + 1)) as usize, f);
         }
+        for f in self.planted(t).into_iter().filter(|f| f.via == Via::Cat) {
+            h = splitmix(h);
+            lines.insert((h % (lines.len() as u64 + 1)) as usize, f.line);
+        }
         format!("# service config, topic {t}\n{}\n", lines.join("\n"))
+    }
+
+    /// The standing facts planted in topic `t`.
+    fn planted(&self, t: usize) -> Vec<Fixed> {
+        (0..self.p.standing).filter(|&i| self.plant(i) == t).map(|i| fixed_fact(self.p.seed, i)).collect()
     }
 
     /// A big pasted text for topic `t`: a log, a numeric table or prose, never a fact line.
@@ -448,13 +557,21 @@ impl Cold {
     /// The messages of one topic: the switch, a `cat` of its config, and now and then a big paste.
     fn topic(&self, t: usize) -> Vec<Value> {
         let id = format!("t{t}");
+        let planted = self.planted(t);
+        // what the agent notes of the topic: the standing facts it found there
+        let noted: String =
+            planted.iter().filter(|f| f.via == Via::Model).map(|f| format!("\nFinding: {}", f.line)).collect();
         let mut out = vec![
             json!({"role": "user", "content": format!("Topic {t}: now look at the {} service config in /srv/t{t}.", WORDS[t % 24])}),
             json!({"role": "assistant", "content": [{"type": "text", "text": format!("Reading the config of topic {t}.")},
                 {"type": "tool_use", "id": id, "name": "bash", "input": {"command": format!("cat /srv/t{t}/service.conf")}}]}),
             json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": self.config(t)}]}),
-            json!({"role": "assistant", "content": "Checked it."}),
+            json!({"role": "assistant", "content": format!("Checked it.{noted}")}),
         ];
+        for f in planted.iter().filter(|f| f.via == Via::User) {
+            out.push(json!({"role": "user", "content": f.line}));
+            out.push(json!({"role": "assistant", "content": "Noted."}));
+        }
         if t.is_multiple_of(self.p.paste_every.max(1)) {
             out.push(json!({"role": "user", "content": format!("Also, here is what the team pasted about topic {t}:\n{}", self.paste(t))}));
             out.push(json!({"role": "assistant", "content": "Read it."}));
@@ -476,19 +593,36 @@ impl Cold {
                     json!({"role": "assistant", "content": "Ready."}),
                 ],
                 ask: None,
+                stand: None,
             });
         }
         let i = b - 1;
-        if i < self.p.topics {
-            return Some(Block { msgs: self.topic(i), ask: None });
+        let lead = self.p.topics + self.tasks();
+        if i < lead {
+            // the next topic, unless a standing task is due: the topic it follows has been handed out
+            if self.j_next < self.tasks() && self.after(self.j_next) < self.t_next {
+                let f = fixed_fact(self.p.seed, self.j_next % self.p.standing);
+                self.j_next += 1;
+                return Some(Block {
+                    msgs: vec![
+                        json!({"role": "user", "content": f.task}),
+                        json!({"role": "assistant", "content": "On it."}),
+                    ],
+                    ask: None,
+                    stand: Some(vec![f.line]),
+                });
+            }
+            self.t_next += 1;
+            return Some(Block { msgs: self.topic(self.t_next - 1), ask: None, stand: None });
         }
-        let j = (i - self.p.topics) % (SWITCHES + 1);
+        let i = i - lead;
+        let j = i % (SWITCHES + 1);
         if j < SWITCHES {
             // a switch to a fresh topic, never asked about
-            let q = (i - self.p.topics) / (SWITCHES + 1);
-            return Some(Block { msgs: self.topic(self.p.topics + q * SWITCHES + j), ask: None });
+            let q = i / (SWITCHES + 1);
+            return Some(Block { msgs: self.topic(self.p.topics + q * SWITCHES + j), ask: None, stand: None });
         }
-        let hops = if self.p.hops == 0 { 1 + (i - self.p.topics) / (SWITCHES + 1) % 3 } else { self.p.hops };
+        let hops = if self.p.hops == 0 { 1 + i / (SWITCHES + 1) % 3 } else { self.p.hops };
         let mut picked: Vec<(usize, usize)> = Vec::new();
         while picked.len() < hops {
             let t = self.rand(self.p.topics);
@@ -509,6 +643,7 @@ impl Cold {
         Some(Block {
             msgs: vec![json!({"role": "user", "content": text}), json!({"role": "assistant", "content": "Noted."})],
             ask: Some(lines),
+            stand: None,
         })
     }
 }
@@ -564,6 +699,10 @@ pub struct ColdRow {
     pub answered: usize,
     /// Questions of one fact and answered ones, and of two or three facts and answered ones.
     pub by_hops: [usize; 4],
+    /// Standing facts planted (0: the session has none), tasks that suppose their defaults, and tasks whose view held the
+    /// source line of the fact.
+    pub standing: usize,
+    pub stand: [usize; 2],
     pub calls: usize,
     pub view_max: i64,
     /// Input tokens sent (missed plus cached), with the system prompt.
@@ -591,6 +730,20 @@ impl ColdRow {
         100.0 * self.answered as f64 / self.questions.max(1) as f64
     }
 
+    /// Percent of the standing tasks whose view held the fact they suppose (`fijos`).
+    pub fn fijos(&self) -> f64 {
+        100.0 * self.stand[0] as f64 / self.stand[1].max(1) as f64
+    }
+
+    /// The `fijos` column with its separator, empty for a session without standing facts.
+    fn fijos_col(&self) -> String {
+        if self.standing > 0 {
+            format!(" | fijos {:.1}", self.fijos())
+        } else {
+            String::new()
+        }
+    }
+
     /// The ladder line (`--tokens`): tokens totales | N | % marcas en 1 salto | % en 2-3 saltos | vista máx | enviados |
     /// DeepSeek $ | ms/petición p50/p99 | RSS máx MB | plain, and, for a stopped session, why and where it went.
     pub fn line_tokens(&self) -> String {
@@ -602,11 +755,12 @@ impl ColdRow {
             }
         };
         let mut s = format!(
-            "{:.2}M tokens | {} topics | {} | {} | {} | {:.2}M | {:.4} | {:.2}/{:.2} | {:.0} | plain máx {} {:.2}M ${}",
+            "{:.2}M tokens | {} topics | {} | {}{} | {} | {:.2}M | {:.4} | {:.2}/{:.2} | {:.0} | plain máx {} {:.2}M ${}",
             self.tokens as f64 / 1e6,
             self.topics,
             r(self.by_hops[0], self.by_hops[1]),
             r(self.by_hops[2], self.by_hops[3]),
+            self.fijos_col(),
             self.view_max,
             self.sent as f64 / 1e6,
             self.usd,
@@ -631,10 +785,11 @@ impl ColdRow {
     pub fn line(&self) -> String {
         let fit = |w: i64| if self.plain_max <= w { "cabe" } else { "no cabe" };
         format!(
-            "{} | {} | {:.1} | {} | {:.2}M | {:.4} | {:.2}/{:.2} | {:.0} | plain máx {} ({} 128k, {} 1M) enviados {:.2}M {:.4} ${}",
+            "{} | {} | {:.1}{} | {} | {:.2}M | {:.4} | {:.2}/{:.2} | {:.0} | plain máx {} ({} 128k, {} 1M) enviados {:.2}M {:.4} ${}",
             self.topics,
             self.hops,
             self.recall(),
+            self.fijos_col(),
             self.view_max,
             self.sent as f64 / 1e6,
             self.usd,
@@ -679,6 +834,8 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
         plain_usd: 0.0,
         stride: p.stride.max(1),
         by_hops: [0; 4],
+        standing: p.standing,
+        stand: [0; 2],
         tokens: 0,
         stopped: None,
         secs: [0.0; 4],
@@ -691,6 +848,7 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
     let (mut view_s, mut price_s) = (0.0, 0.0);
     'session: while let Some(b) = g.next_block() {
         let mut ask = b.ask;
+        let mut stand = b.stand;
         for m in b.msgs {
             let user = m["role"] == "user";
             plain_total += tokens_of(&m);
@@ -716,7 +874,8 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
                 }
             }
             let question = ask.take();
-            if question.is_none() && !requests.is_multiple_of(p.stride.max(1)) {
+            let task = stand.take();
+            if question.is_none() && task.is_none() && !requests.is_multiple_of(p.stride.max(1)) {
                 continue;
             }
             now += 20.0;
@@ -734,6 +893,10 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
                 let k = if lines.len() == 1 { 0 } else { 2 };
                 row.by_hops[k] += ok;
                 row.by_hops[k + 1] += 1;
+            }
+            if let Some(lines) = task {
+                row.stand[0] += usize::from(holds(&reply.view, &lines));
+                row.stand[1] += 1;
             }
             let (all, cached) = sent.send(reply.view);
             let (all, cached) = (all + SYSTEM, if row.calls == 1 { 0 } else { cached + SYSTEM });
