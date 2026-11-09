@@ -21,6 +21,9 @@ const LINE_CHARS: usize = 240;
 pub const POOL: usize = 6000;
 /// Lines the ledger takes from one message at most (0: as many as pay).
 pub const PER_MESSAGE: usize = 0;
+/// What a ledger line adds to its text, in accurate tokens: the `m00001 ` label and the line break (4.3) and up to
+/// one more that `est_str` rounds off.
+const LINE_OVERHEAD: i64 = 6;
 /// Rows of one form (a table, a listing, a log) that one message holds: the ledger keeps the first `FORM_KEEP`
 /// of a run of `FORM_RUN` or more and says how many follow. The rows are on disk or one command away; the
 /// first few name the file's shape, the rest would only fill the anchor.
@@ -322,7 +325,7 @@ pub fn select(
     for (k, (_, ln, ws, weight)) in pool.iter().enumerate() {
         let v = worth(ws, &covered);
         if v > 0.0 {
-            let c = est_str(ln) + 4;
+            let c = est_str(ln) + LINE_OVERHEAD;
             heap.push(Item(-v * weight / c as f64, k, c));
         }
     }

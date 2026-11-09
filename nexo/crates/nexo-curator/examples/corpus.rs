@@ -626,7 +626,7 @@ fn write(path: &Path, s: &Session, calls: &[Call]) -> std::io::Result<()> {
         }
     }
     let mut w = BufWriter::new(std::fs::File::create(path)?);
-    let system_tokens = (s.system.len() as u64).div_ceil(4);
+    let system_tokens = nexo_core::tokens::text_tokens(&s.system);
     let mut prev: &[u32] = &[];
     for (i, c) in calls.iter().enumerate() {
         let base = common(&c.ids, prev);

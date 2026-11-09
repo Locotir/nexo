@@ -1,29 +1,17 @@
-//! Sizes of JSON values written compactly (no spaces after `,` and `:`, non-ASCII kept as is, floats
-//! in their shortest round-trip form), the token estimate built on them, and a loose equality of
-//! decoded JSON (numbers by value, `true == 1`, maps without order).
+//! The token estimate of text and of JSON values written compactly (no spaces after `,` and `:`,
+//! non-ASCII kept as is, floats in their shortest round-trip form), and a loose equality of decoded JSON
+//! (numbers by value, `true == 1`, maps without order).
 
 use serde_json::{Map, Number, Value};
 
 /// Nominal cost of an image or document block.
 pub const MEDIA_TOKENS: i64 = 1500;
 
-/// Characters of a JSON string, quotes included.
-pub fn str_chars(s: &str) -> usize {
-    let mut n = 2;
-    for &b in s.as_bytes() {
-        if b & 0xc0 != 0x80 {
-            n += 1;
-        }
-        if b < 0x20 {
-            n += match b {
-                b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 1,
-                _ => 5,
-            };
-        } else if b == b'"' || b == b'\\' {
-            n += 1;
-        }
-    }
-    n
+pub use nexo_core::tokens::{text_cost, NEWLINE, TOKEN};
+
+/// The cost of a JSON string: its text, as the quotes cost nothing.
+fn str_cost(s: &str) -> usize {
+    text_cost(s)
 }
 
 /// The shortest text of a float that reads back as it (`1.0`, `1e-05`, `1e+16`).
@@ -73,25 +61,23 @@ pub fn float_repr(x: f64) -> String {
     out
 }
 
-fn num_chars(n: &Number) -> usize {
-    if let Some(i) = n.as_i64() {
-        i.to_string().len()
+fn num_cost(n: &Number) -> usize {
+    text_cost(&if let Some(i) = n.as_i64() {
+        i.to_string()
     } else if let Some(u) = n.as_u64() {
-        u.to_string().len()
+        u.to_string()
     } else {
-        float_repr(n.as_f64().unwrap_or(0.0)).len()
-    }
+        float_repr(n.as_f64().unwrap_or(0.0))
+    })
 }
 
-/// Characters of `json.dumps(strip_cache_control(strip_media(v)))` and the number of media blocks.
+/// The cost of `json.dumps(strip_cache_control(strip_media(v)))` and the number of media blocks.
 fn walk(v: &Value, strip: bool, n: &mut usize, media: &mut i64) {
     match v {
-        Value::Null => *n += 4,
-        Value::Bool(b) => *n += if *b { 4 } else { 5 },
-        Value::Number(x) => *n += num_chars(x),
-        Value::String(s) => *n += str_chars(s),
+        Value::Null | Value::Bool(_) => *n += text_cost("null"),
+        Value::Number(x) => *n += num_cost(x),
+        Value::String(s) => *n += str_cost(s),
         Value::Array(a) => {
-            *n += 2 + a.len().saturating_sub(1);
             for x in a {
                 walk(x, strip, n, media);
             }
@@ -105,7 +91,7 @@ fn walk(v: &Value, strip: bool, n: &mut usize, media: &mut i64) {
                     return;
                 }
                 if let Some(t @ ("thinking" | "redacted_thinking")) = t {
-                    *n += 8 + str_chars(t) + 1;
+                    *n += str_cost("type") + str_cost(t);
                     return;
                 }
             }
@@ -115,46 +101,38 @@ fn walk(v: &Value, strip: bool, n: &mut usize, media: &mut i64) {
 }
 
 fn object(m: &Map<String, Value>, strip: bool, n: &mut usize, media: &mut i64, media_block: bool) {
-    let mut k = 0;
-    *n += 2;
     for (key, val) in m {
         if key == "cache_control" || (strip && key == "signature") {
             continue;
         }
-        k += 1;
-        *n += str_chars(key) + 1;
+        *n += str_cost(key);
         if media_block && key == "source" {
             if let Value::Object(src) = val {
-                let mut j = 0;
-                *n += 2;
                 for (sk, sv) in src {
                     if sk == "data" || sk == "cache_control" {
                         continue;
                     }
-                    j += 1;
-                    *n += str_chars(sk) + 1;
+                    *n += str_cost(sk);
                     walk(sv, false, n, media);
                 }
-                *n += j.max(1) - 1;
                 continue;
             }
         }
         walk(val, strip, n, media);
     }
-    *n += k.max(1) - 1;
 }
 
-/// Estimated tokens (~4 characters each), with images and documents at a nominal size.
+/// Estimated tokens ([`text_cost`] of the JSON), with images and documents at a nominal size.
 pub fn est(v: &Value) -> i64 {
     let mut n = 0;
     let mut media = 0;
     walk(v, true, &mut n, &mut media);
-    (n / 4) as i64 + MEDIA_TOKENS * media
+    (n / TOKEN) as i64 + MEDIA_TOKENS * media
 }
 
 /// `est` of a string.
 pub fn est_str(s: &str) -> i64 {
-    (str_chars(s) / 4) as i64
+    (str_cost(s) / TOKEN) as i64
 }
 
 /// `est` and the media count.
@@ -162,7 +140,7 @@ pub fn est_media(v: &Value) -> (i64, i64) {
     let mut n = 0;
     let mut media = 0;
     walk(v, true, &mut n, &mut media);
-    ((n / 4) as i64 + MEDIA_TOKENS * media, media)
+    ((n / TOKEN) as i64 + MEDIA_TOKENS * media, media)
 }
 
 /// A deep copy without `cache_control` keys.
@@ -225,11 +203,11 @@ mod tests {
 
     #[test]
     fn sizes() {
-        // {"role":"user","content":"hi"} is 30 characters
-        assert_eq!(est(&json!({"role": "user", "content": "hi"})), 7);
+        // four words of one token each: the quotes, colons and commas cost nothing
+        assert_eq!(est(&json!({"role": "user", "content": "hi"})), 4);
         let img = json!({"type": "image", "source": {"type": "base64", "data": "AAAA"}});
-        // {"type":"image","source":{"type":"base64"}}
-        assert_eq!(est(&img), 43 / 4 + 1500);
+        // the keys and words of {"type":"image","source":{"type":"base64"}}: four words and "base64" (a word and a number); the data is not counted
+        assert_eq!(est(&img), 6 + 1500);
         // an image inside a tool result counts too, at the same size, whatever its data
         let result = |parts: Value| json!({"type": "tool_result", "tool_use_id": "t", "content": parts});
         let text = json!({"type": "text", "text": "shot"});
@@ -240,7 +218,8 @@ mod tests {
         assert!((1500..1600).contains(&rise), "the nominal size and the block's few characters, not its data: {rise}");
         assert_eq!(est(&result(json!([text, big]))), est(&result(json!([text, small]))));
         assert_eq!(est_media(&result(json!([text, big, small]))).1, 2);
-        assert_eq!(est(&json!({"type": "thinking", "thinking": "x", "signature": "s"})), 19 / 4);
-        assert_eq!(est(&json!({"a": "\n\u{1}é"})), 17 / 4);
+        assert_eq!(est(&json!({"type": "thinking", "thinking": "x", "signature": "s"})), 2);
+        // a key (103), a line break (37), a control character as punctuation (73), one wide character (80)
+        assert_eq!(est(&json!({"a": "\n\u{1}é"})), 2);
     }
 }

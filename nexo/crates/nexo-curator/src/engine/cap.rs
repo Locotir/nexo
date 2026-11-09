@@ -17,7 +17,7 @@ use super::{Engine, NOTE_TOOL};
 
 /// Tool outputs shorter than this (in tokens) are never left out in place: the stub that would stand for
 /// them is a third of their size or more.
-pub(super) const SMALL_RESULT: i64 = 100;
+pub(super) const SMALL_RESULT: i64 = 130;
 
 type Proposal = (usize, usize, Vec<usize>, i64);
 

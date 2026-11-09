@@ -397,8 +397,7 @@ impl Walk {
         let Ok(o) = serde_json::from_str::<OutputLine>(line) else { return };
         // the result of a call whose message is gone (a compaction) is not in the context
         let Some((tool, cmd)) = self.calls.get(&o.call_id).cloned() else { return };
-        let chars = o.output.content.chars().count() as u64;
-        let tokens = chars.div_ceil(4);
+        let tokens = nexo_core::tokens::text_tokens(&o.output.content);
         let day = self.day;
         let t = self.day_mut(day).tools.entry(tool.clone()).or_default();
         t.runs += 1;
@@ -1128,23 +1127,26 @@ mod tests {
 
     #[test]
     fn tool_output_is_weighted_by_the_calls_that_carried_it() {
+        // a run of letters costs 0.14 token a character past the first eight, so the sizes are read back
+        let (big, small) =
+            (nexo_core::tokens::text_tokens(&"x".repeat(4_000)), nexo_core::tokens::text_tokens(&"x".repeat(400)));
         let d = digest(&[
             meta("/p", "m", T0),
             msg(0, T0, "user", text("run")),
             msg(1, T0, "assistant", call("c1", "bash", "FOO=1 cargo test --all")),
-            output("c1", 4_000), // 1000 tokens
+            output("c1", 4_000),
             usage(2_000, 0, 0, 1, 0, 0.1),
             usage(2_500, 0, 0, 1, 0, 0.1),
             msg(2, T0, "assistant", call("c2", "read_file", "")),
-            output("c2", 400), // 100 tokens
+            output("c2", 400),
             usage(3_000, 0, 0, 1, 0, 0.1),
         ]);
         let day = &d.days[&today()];
         let bash = &day.tools["bash"];
-        assert_eq!((bash.runs, bash.tokens, bash.weighted), (1, 1000, 3000));
-        assert_eq!(bash.top.get("cargo test"), Some(&3000), "the variable is left out, two words kept");
+        assert_eq!((bash.runs, bash.tokens, bash.weighted), (1, big, 3 * big));
+        assert_eq!(bash.top.get("cargo test"), Some(&(3 * big)), "the variable is left out, two words kept");
         let read = &day.tools["read_file"];
-        assert_eq!((read.tokens, read.weighted), (100, 100));
+        assert_eq!((read.tokens, read.weighted), (small, small));
         assert!(read.top.is_empty(), "an empty command is no label");
     }
 
@@ -1165,17 +1167,19 @@ mod tests {
 
     #[test]
     fn the_part_of_a_tool_is_a_share_of_the_input() {
+        // the output weighs its tokens in each of the two calls, so with an input of twice that size it is half of what was sent
+        let t = nexo_core::tokens::text_tokens(&"x".repeat(8_000));
         let d = digest(&[
             meta("/p", "m", T0),
             msg(0, T0, "assistant", call("c1", "bash", "cargo test")),
-            output("c1", 8_000), // 2000 tokens
-            usage(4_000, 0, 0, 1, 0, 0.1),
-            usage(4_000, 0, 0, 1, 0, 0.1),
+            output("c1", 8_000),
+            usage(2 * t, 0, 0, 1, 0, 0.1),
+            usage(2 * t, 0, 0, 1, 0, 0.1),
         ]);
         let r = rank(&report(vec![d]), Period::Day);
         let row = r.rows.iter().find(|r| matches!(r.kind, InsightKind::ToolOutput { .. })).unwrap();
         assert_eq!(row.kind, InsightKind::ToolOutput { tool: "bash".into(), top: Some("cargo test".into()), runs: 1 });
-        assert_eq!(row.percent(), 50); // 4000 weighted of 8000 sent
+        assert_eq!(row.percent(), 50);
     }
 
     #[test]

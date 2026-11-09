@@ -170,7 +170,7 @@ fn words(t: &str) -> Vec<String> {
 }
 
 fn estimate(req: &ModelRequest, out: &[StreamEvent]) -> Usage {
-    let input = nexo_core::message::estimate_tokens(&req.messages) + req.system.len() as u64 / 4;
+    let input = nexo_core::message::estimate_tokens(&req.messages) + nexo_core::tokens::text_tokens(&req.system);
     let output: u64 = out
         .iter()
         .map(|e| match e {

@@ -108,7 +108,7 @@ fn numbered(text: &str) -> String {
 }
 
 fn tokens(v: &Value) -> u64 {
-    v.to_string().len() as u64 / 4
+    (nexo_core::tokens::json_cost(v) / nexo_core::tokens::TOKEN) as u64
 }
 
 /// The first message of a scene: the material and how to work, without an objective.
@@ -349,7 +349,7 @@ async fn run() -> Result<(), String> {
         a.arms.len(),
         a.samples,
         probe.iter().map(tokens).sum::<u64>(),
-        system.len() / 4,
+        nexo_core::tokens::text_tokens(&system),
         tools.len()
     );
     for f in inst.material.keys() {

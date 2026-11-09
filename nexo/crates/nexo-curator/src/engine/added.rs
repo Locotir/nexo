@@ -215,7 +215,7 @@ impl Engine {
                     item(AddedKind::Goal, label(None, None, None, line), est_str(line), AddedState::In);
                 }
             }
-            let clip_at = 4 * self.p.pin.div_euclid(2);
+            let clip_at = super::notes::CHARS_PER_TOKEN * self.p.pin.div_euclid(2);
             for (_, path, text) in self.pins.values() {
                 let cut = clip_at > 0 && textops::len(text) >= clip_at as usize;
                 let state = if cut { AddedState::Trimmed } else { AddedState::In };

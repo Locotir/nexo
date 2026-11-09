@@ -273,7 +273,7 @@ pub fn fresh_tokens(msgs: &[Message]) -> u64 {
         .filter(|m| m.role == Role::User)
         .flat_map(|m| &m.content)
         .map(|p| match p {
-            Part::Text { text } if summary_part(text) => text.len() as u64 / 4,
+            Part::Text { text } if summary_part(text) => nexo_core::tokens::text_tokens(text),
             _ => 0,
         })
         .sum();
@@ -556,11 +556,13 @@ mod tests {
 
     #[test]
     fn fresh_tokens_leave_out_an_earlier_summary() {
-        let k = Kept { requests: vec!["x".repeat(4_000)], ..Default::default() };
-        let summary = Message::new(Role::User, summary_parts(&k, &"y".repeat(4_000)));
+        // text of words: a run of one letter costs a seventh of that
+        let words = |n: usize| "ab ".repeat(n);
+        let k = Kept { requests: vec![words(1_300)], ..Default::default() };
+        let summary = Message::new(Role::User, summary_parts(&k, &words(1_300)));
         let small = vec![summary.clone(), call("1", "read", "a"), result("1", "z")];
         assert!(fresh_tokens(&small) < 100, "{}", fresh_tokens(&small));
-        let big = vec![summary, call("1", "read", "a"), result("1", &"z".repeat(8_000))];
+        let big = vec![summary, call("1", "read", "a"), result("1", &words(2_700))];
         assert!(fresh_tokens(&big) >= 2_000, "{}", fresh_tokens(&big));
     }
 }

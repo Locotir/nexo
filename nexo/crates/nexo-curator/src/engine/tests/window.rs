@@ -7,7 +7,7 @@ fn big(seed: usize, tokens: usize) -> String {
     listing(seed * 1000, seed * 1000 + tokens * 4 / 60)
 }
 
-const WINDOW: &str = "nudge=0;fresh=0;eoq=0;target=0;cap=40000;hard=80000";
+const WINDOW: &str = "nudge=0;fresh=0;eoq=0;target=0;cap=52000;hard=104000";
 
 #[test]
 fn the_view_never_passes_the_deterministic_cap() {
@@ -20,10 +20,10 @@ fn the_view_never_passes_the_deterministic_cap() {
         let _ = e.view();
         let tokens = e.tokens();
         longest = longest.max(tokens);
-        assert!(tokens <= 40_000, "request {k}: the view holds {tokens} tokens");
+        assert!(tokens <= 52_000, "request {k}: the view holds {tokens} tokens");
     }
     let raw: i64 = msgs.iter().map(crate::json::est).sum();
-    assert!(raw > 80_000 && longest > 30_000, "the history is long ({raw}) and the view used its window ({longest})");
+    assert!(raw > 104_000 && longest > 39_000, "the history is long ({raw}) and the view used its window ({longest})");
     assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", e.stats);
 }
 
@@ -66,13 +66,13 @@ fn still_is_bounded_by_the_target_less_head_and_sticky() {
     };
     let small = build("nudge=0;fresh=0;eoq=16000;still=60000;target=20000", "Say what slot 50 holds.");
     let sticky = small.sticky_tokens();
-    assert!(sticky > 0 && sticky < 4000, "{sticky}");
+    assert!(sticky > 0 && sticky < 5200, "{sticky}");
     assert_eq!(small.still_now(), 20_000 - small.head - sticky, "the window leaves what the sticky set does not take");
     // a request that alone takes the window leaves the floor, and `still` itself caps the rest
     let long = format!("Say what slot 50 holds in this listing:\n{}", big(99, 25_000));
     let big_ask = build("nudge=0;fresh=0;eoq=16000;still=60000;target=20000", &long);
     assert!(big_ask.sticky_tokens() > 20_000, "{}", big_ask.sticky_tokens());
-    assert_eq!(big_ask.still_now(), 4000);
+    assert_eq!(big_ask.still_now(), 5200);
     // no target: the flat budget as before
     let flat = build("nudge=0;fresh=0;eoq=16000;still=32000;target=0;cap=0;hard=0", "Say what slot 50 holds.");
     assert_eq!(flat.still_now(), 32_000);

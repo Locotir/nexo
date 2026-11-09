@@ -165,9 +165,9 @@ struct State {
     /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
     /// length of the history then: what the `compact` policy measures the next request from.
     last_prompt: Option<(u64, usize)>,
-    /// The estimate (4 characters a token) of the prompt of the last request, and the provider's
-    /// tokens per estimated token learned so far: code, logs and other scripts hold more tokens than
-    /// 4 characters each, so the view is fitted to the window in the provider's own count.
+    /// The estimate (`nexo_core::tokens`) of the prompt of the last request, and the provider's
+    /// tokens per estimated token learned so far: the estimate is off by a tenth or so on code, logs and
+    /// tables, so the view is fitted to the window in the provider's own count.
     est_sent: u64,
     tok_ratio: Option<f64>,
     /// The mailbox other sessions write to, and the mails that reached the model: those waiting for the turn

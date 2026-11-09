@@ -24,6 +24,9 @@ pub(super) static NOTE_LINE: LazyLock<Re> = LazyLock::new(|| {
 });
 
 const NOTE_CHARS: usize = 400;
+/// Characters of a pinned file kept for each token of half the `pin` budget: about what a token holds of code
+/// by the shared estimate (the old count of 4 characters a token, over 1.3).
+pub(super) const CHARS_PER_TOKEN: i64 = 3;
 
 /// The text of a block that may carry note lines: a text block, or the input of a `note` tool call.
 pub(super) fn note_text(b: &Value) -> Option<String> {
@@ -135,8 +138,8 @@ impl Engine {
                     let text = self.tr.unit_text(i);
                     let text = textops::strip(&text);
                     if !text.is_empty() {
-                        // the first n characters, n = 4 * floor(pin / 2); a negative n counts from the end
-                        let n = 4 * self.p.pin.div_euclid(2);
+                        // the first n characters, n = 3 * floor(pin / 2); a negative n counts from the end
+                        let n = CHARS_PER_TOKEN * self.p.pin.div_euclid(2);
                         let n = if n >= 0 { n as usize } else { (textops::len(text) as i64 + n).max(0) as usize };
                         self.pins.insert(file_key(path), (mi, path.to_string(), textops::head(text, n).to_string()));
                     }

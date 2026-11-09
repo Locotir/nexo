@@ -137,7 +137,7 @@ fn right(a: &canonstep::Adapted, expected: &Map<String, Value>, obj: &str, text:
 }
 
 fn tokens(view: &[Value]) -> u64 {
-    view.iter().map(|m| m.to_string().len() as u64 / 4).sum()
+    view.iter().map(|m| (nexo_core::tokens::json_cost(m) / nexo_core::tokens::TOKEN) as u64).sum()
 }
 
 /// Two-sided exact sign test: the chance of a split at least this uneven among `b + c` coin flips.
@@ -178,7 +178,7 @@ fn checkpoints(a: &Args, inst: &canonstep::Adapted, expected: &Map<String, Value
             let mut views = vec![messages.clone()];
             for c in &mut curators {
                 c.tools(&tools);
-                views.push(c.view(system.len() as u64 / 4, messages, 0.0)?.view);
+                views.push(c.view(nexo_core::tokens::text_tokens(&system), messages, 0.0)?.view);
             }
             let reply = rec.get("reply").and_then(|r| r.get("content")).cloned().unwrap_or(Value::Null);
             let calls = reply

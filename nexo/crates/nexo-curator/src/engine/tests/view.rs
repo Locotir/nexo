@@ -144,14 +144,14 @@ fn what_is_added_to_a_message_that_came_with_no_text_leaves_no_empty_text_block(
 
 #[test]
 fn one_long_line_dense_in_tokens_is_cut_to_its_budget_without_a_panic() {
-    // control bytes weigh more than a quarter token each: the budget holds fewer characters than four a token
-    let dense = "\u{1}".repeat(100);
+    // wide characters weigh 0.8 of a token each: the budget holds fewer characters than four a token
+    let dense = "\u{20ac}".repeat(400);
     let cut = head_and_tail(&dense, 100);
-    assert!(cut.contains("characters cut") && cut.chars().filter(|c| *c == '\u{1}').count() < 100, "{cut:?}");
-    // quotes weigh half a token: the head and tail never overlap
-    let quotes = "\"".repeat(100);
-    let cut = head_and_tail(&quotes, 30);
-    assert!(cut.chars().filter(|c| *c == '"').count() < 100, "{cut:?}");
+    assert!(cut.contains("characters cut") && cut.chars().filter(|c| *c == '\u{20ac}').count() < 400, "{cut:?}");
+    // and a short budget: the head and tail never overlap
+    let wide = "\u{e9}".repeat(100);
+    let cut = head_and_tail(&wide, 30);
+    assert!(cut.chars().filter(|c| *c == '\u{e9}').count() < 100, "{cut:?}");
 }
 
 #[test]
@@ -251,7 +251,7 @@ fn a_likely_return_charges_the_cold_pocket() {
         let mut msgs = Vec::new();
         for &(t, steps) in &plan {
             let k0 = msgs.len();
-            msgs.extend(stretch(t, steps, 40, k0));
+            msgs.extend(stretch(t, steps, 52, k0));
         }
         msgs.pop();
         let mut e = Engine::new(params(&format!("{TOPICS};apart=0;{pockets}")).unwrap());
@@ -284,7 +284,7 @@ fn message_zero_becomes_a_card_when_its_thread_leaves() {
     assert!(text.contains("recall brings any of m00001"), "{text}");
     // and the view has shrunk by what the message held, were it sent as a message
     let (whole, now) = (e.sizes[0], e.sizes_now()[0]);
-    assert!(whole > 20 && now < 10, "{whole} {now}");
+    assert!(whole > 15 && now < 10, "{whole} {now}");
     assert_eq!(view[0]["role"], "user");
 }
 

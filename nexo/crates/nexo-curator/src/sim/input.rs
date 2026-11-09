@@ -103,10 +103,10 @@ pub fn transcript_requests(text: &str) -> Vec<Request> {
         if let Some(s) = rec["system"].as_str() {
             system = s.to_string();
         }
-        let head = system.len() + rec["tools"].to_string().len();
+        let head = crate::json::text_cost(&system) + crate::json::text_cost(&rec["tools"].to_string());
         out.push(Request {
             now: 1_750_000_000.0 + 2.0 * i as f64,
-            system_tokens: (head as u64).div_ceil(4),
+            system_tokens: head.div_ceil(crate::json::TOKEN) as u64,
             system: system.clone(),
             messages: msgs.clone(),
             tools: names(&rec["tools"]),

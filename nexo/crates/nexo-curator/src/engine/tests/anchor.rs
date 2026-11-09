@@ -14,7 +14,7 @@ fn only_a_read_of_a_path_weighs_as_on_disk_in_the_ledger() {
         msgs.extend(tool(k + 1, name, input, &out, false));
         msgs.push(json!({"role": "user", "content": "Go on."}));
     }
-    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    let mut e = Engine::new(params("ledger=7800;target=2000;eoq=0;nudge=0").unwrap());
     e.sync(&msgs);
     e.view();
     assert!(e.start > 0 && !e.pool.is_empty());
@@ -37,7 +37,7 @@ fn ledger_text_fits_its_budget_with_header() {
         );
         msgs.push(json!({"role": "user", "content": "Go on."}));
     }
-    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    let mut e = Engine::new(params("ledger=7800;target=2000;eoq=0;nudge=0").unwrap());
     e.sync(&msgs);
     e.view();
     assert!(e.start > 0 && !e.pool.is_empty());

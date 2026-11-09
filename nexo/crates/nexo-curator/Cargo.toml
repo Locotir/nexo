@@ -8,6 +8,7 @@ repository.workspace = true
 description = "nexo: the context curator (goal engine) as a library"
 
 [dependencies]
+nexo-core = { workspace = true }
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 regex = { workspace = true }
 fancy-regex = { workspace = true }
