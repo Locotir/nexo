@@ -115,18 +115,29 @@ pub fn prompt_base(text: &str) -> &str {
 /// the nearest ancestor of `cwd` with a `.nexo` or `.git` directory. The
 /// person's own `~/.nexo` is not a project's, so the search passes over it.
 pub fn project_dir(cwd: &Path) -> Option<PathBuf> {
+    project_dir_in(cwd, dirs::home_dir().as_deref(), &[home_dir(), config_dir()])
+}
+
+/// [`project_dir`] with the person's home and their own nexo folders given (tests). The search
+/// never returns one of `own` and, from a folder below `home`, stops at `home` instead of
+/// climbing out of it.
+fn project_dir_in(cwd: &Path, home: Option<&Path>, own: &[PathBuf]) -> Option<PathBuf> {
     // Compared resolved: Windows may spell the same folder long or short (`RUNNER~1`).
-    let real = |p: PathBuf| p.canonicalize().unwrap_or(p);
-    let own = [real(home_dir()), real(config_dir())];
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let own: Vec<PathBuf> = own.iter().map(|p| real(p)).collect();
+    let home = home.map(real).filter(|h| real(cwd).starts_with(h));
     let mut p = Some(cwd);
     while let Some(d) = p {
-        if d.join(".nexo").is_dir() && !own.contains(&real(d.join(".nexo"))) {
+        if d.join(".nexo").is_dir() && !own.contains(&real(&d.join(".nexo"))) {
             return Some(d.join(".nexo"));
         }
         // a home kept in git (a dotfiles repo) is still not a project of its own
         if d.join(".git").exists() {
             let n = d.join(".nexo");
-            return (!own.contains(&real(n.clone()))).then_some(n);
+            return (!own.contains(&real(&n))).then_some(n);
+        }
+        if home.as_deref() == Some(real(d).as_path()) {
+            break;
         }
         p = d.parent();
     }
@@ -301,5 +312,66 @@ mod tests {
         std::fs::remove_dir(d.path().join(".git")).unwrap();
         std::env::remove_var("NEXO_CONFIG_DIR");
         assert_eq!(project_dir(&work), Some(d.path().join(".nexo")));
+    }
+
+    fn dirs3() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let work = home.join("build-cache/x/y");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(home.join(".nexo")).unwrap();
+        (d, home, work)
+    }
+
+    #[test]
+    fn a_folder_below_the_home_does_not_find_the_homes_nexo_folder() {
+        let (_d, home, work) = dirs3();
+        let own = [home.join(".nexo")];
+        assert_eq!(project_dir_in(&work, Some(&home), &own), None);
+        assert_eq!(project_dir_in(&home, Some(&home), &own), None, "started in the home itself");
+    }
+
+    /// A link to the home does not hide it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_the_home_is_the_home() {
+        let (d, home, work) = dirs3();
+        let own = [home.join(".nexo")];
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        assert_eq!(project_dir_in(&link.join("build-cache/x/y"), Some(&home), &own), None);
+        assert_eq!(project_dir_in(&work, Some(&link), &own), None);
+    }
+
+    #[test]
+    fn a_project_between_the_start_and_the_home_still_wins() {
+        let (_d, home, work) = dirs3();
+        let own = [home.join(".nexo")];
+        std::fs::create_dir_all(home.join("build-cache/x/.nexo")).unwrap();
+        assert_eq!(project_dir_in(&work, Some(&home), &own), Some(home.join("build-cache/x/.nexo")));
+    }
+
+    #[test]
+    fn the_search_does_not_climb_out_of_the_home() {
+        let (d, home, work) = dirs3();
+        std::fs::create_dir_all(d.path().join(".nexo")).unwrap();
+        let own = [home.join(".nexo")];
+        assert_eq!(project_dir_in(&work, Some(&home), &own), None, "a .nexo above the home is not the project's");
+        // outside the home the search goes all the way up, as before
+        let outside = d.path().join("srv/app");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(project_dir_in(&outside, Some(&home), &own), Some(d.path().join(".nexo")));
+    }
+
+    #[test]
+    fn a_global_folder_set_elsewhere_is_skipped_and_the_homes_is_still_skipped() {
+        let (d, home, work) = dirs3();
+        let elsewhere = d.path().join("cfg/.nexo");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let own = [home.join(".nexo"), elsewhere.clone()];
+        assert_eq!(project_dir_in(&work, Some(&home), &own), None);
+        assert_eq!(project_dir_in(&d.path().join("cfg"), Some(&home), &own), None);
+        // with nothing declared own, the home's folder is just a folder with a name
+        assert_eq!(project_dir_in(&work, None, &[]), Some(home.join(".nexo")));
     }
 }

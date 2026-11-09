@@ -85,6 +85,15 @@ pub fn instructions(cwd: &Path, config_dir: &Path, home: Option<&Path>) -> Vec<I
         }
         p = d.parent();
     }
+    // a home kept in git: `~/.claude/CLAUDE.md` read as the user's must not come again as the project's
+    let mut seen: Vec<PathBuf> = Vec::new();
+    out.retain(|i| {
+        let real = i.path.canonicalize().unwrap_or_else(|_| i.path.clone());
+        !seen.contains(&real) && {
+            seen.push(real);
+            true
+        }
+    });
     out
 }
 
@@ -293,7 +302,10 @@ pub fn sources(
             add(h.join(".claude").join(s), "user", format!(".claude/{s}"), true);
         }
     }
-    if trusted {
+    // a home kept in git: its `.claude` and `.codex` are the user folders above, not a project's
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let is_home = home.is_some_and(|h| real(h) == real(&root));
+    if trusted && !is_home {
         if let Some(s) = codex_sub {
             add(root.join(".codex").join(s), "project", format!(".codex/{s}"), true);
         }
@@ -772,6 +784,29 @@ mod tests {
             ("Ship it", "[env]", "Bash(git:*)")
         );
         assert_eq!(ship.body, "claude ship", "the project's own folder beats the user's");
+    }
+
+    #[test]
+    fn a_home_kept_in_git_reads_its_dot_folders_once_as_the_persons_own() {
+        let (home, cfg) = (repo(), tempfile::tempdir().unwrap());
+        w(home.path().join(".claude/CLAUDE.md"), "c-user");
+        w(home.path().join(".claude/commands/mine.md"), "Mine.");
+        let sub = home.path().join("work");
+        std::fs::create_dir_all(&sub).unwrap();
+        let got = instructions(&sub, cfg.path(), Some(home.path()));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].origin, "user fallback");
+        let trust = cfg.path().join("trusted-projects");
+        crate::config::trust_project(home.path(), &trust).unwrap();
+        let src = sources(&sub, cfg.path(), &trust, Some(home.path()), "commands", Some("commands"), None);
+        let claude = home.path().join(".claude/commands");
+        assert_eq!(src.iter().filter(|s| s.dir == claude).count(), 1, "{src:?}");
+        assert!(src.iter().all(|s| !s.origin.starts_with("project .claude")), "{src:?}");
+        // another repository still has its own project folders
+        let other = repo();
+        crate::config::trust_project(other.path(), &trust).unwrap();
+        let src = sources(other.path(), cfg.path(), &trust, Some(home.path()), "commands", Some("commands"), None);
+        assert!(src.iter().any(|s| s.origin.starts_with("project")), "{src:?}");
     }
 }
 

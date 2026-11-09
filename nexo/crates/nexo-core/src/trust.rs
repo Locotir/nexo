@@ -95,17 +95,20 @@ pub fn gate(
     if let Some((root, file)) = &nexo {
         targets.push((root.clone(), Some(file.clone())));
     }
-    if nexo.as_ref().is_none_or(|(root, _)| *root != git_root) {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    // a home kept in git: its `.claude` and `.codex` are the person's own folders, read as theirs
+    // already (and the loading ignores them as a project's), so they are nothing to trust
+    let is_home = |root: &Path| home.is_some_and(|h| real(h) == root);
+    if nexo.as_ref().is_none_or(|(root, _)| *root != git_root) && !is_home(&git_root) {
         targets.push((git_root.clone(), None));
     }
-    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     targets.into_iter().find_map(|(root, file)| {
         if config::is_trusted(&root, trust_file) {
             return None;
         }
-        let foreign = root == git_root;
+        let foreign = root == git_root && !is_home(&root);
         let (runs, loads) = scan(cwd, &root, file.as_deref(), foreign, user_file, trust_file, policy)?;
-        let home = home.is_some_and(|h| real(h) == root);
+        let home = is_home(&root);
         Some(Gate { root, runs, loads, home })
     })
 }
@@ -282,29 +285,28 @@ mod tests {
         assert_eq!(ask(p.path(), cfg.path(), Some(&mcp_off)).unwrap().runs, ["hooks"]);
     }
 
-    /// The person's home kept in git has no `.nexo` project (its `~/.nexo` is their own folder), yet the
-    /// loading warns about its `.claude/settings.json` hooks: the question is asked for the same folder.
+    /// The person's home kept in git has no `.nexo` project (its `~/.nexo` is their own folder) and its
+    /// `~/.claude` is their own too: the loading reads none of it as a project's, so nothing is asked.
     #[test]
-    fn a_home_kept_in_git_with_claude_hooks_is_asked_about_with_the_home_caution() {
+    fn a_home_kept_in_git_is_not_asked_about_for_its_own_dot_folders() {
         let (cfg, home) = (tempfile::tempdir().unwrap(), repo());
         std::fs::create_dir_all(home.path().join(".nexo")).unwrap();
+        w(home.path().join(".claude/commands/theirs.md"), "Theirs.");
+        w(home.path().join(".claude/agents/a.md"), "Agent.");
         w(home.path().join(".claude/settings.json"), r#"{"hooks": {"Stop": [{"hooks": [{"command": "done.sh"}]}]}}"#);
         let trust = cfg.path().join("trusted-projects");
-        // the notice the loading prints names this folder
-        let (_, note) = crate::compat::claude_hooks(home.path(), &trust);
-        assert!(note.is_some());
-        let sub = home.path().join("work");
+        let user = cfg.path().join("config.toml");
+        let sub = home.path().join("work/deep");
         std::fs::create_dir_all(&sub).unwrap();
         for at in [home.path(), sub.as_path()] {
-            let g = gate(at, &cfg.path().join("config.toml"), &trust, Some(home.path()), None).unwrap();
-            assert_eq!(g.root, home.path().canonicalize().unwrap());
-            assert_eq!(g.runs, ["hooks"]);
-            assert!(g.home && g.warning().unwrap().contains("home folder"));
+            assert_eq!(gate(at, &user, &trust, Some(home.path()), None), None, "{at:?}");
         }
-        let g = gate(home.path(), &cfg.path().join("config.toml"), &trust, Some(home.path()), None).unwrap();
-        assert!(g.record(&trust).unwrap());
-        assert!(crate::compat::claude_hooks(home.path(), &trust).1.is_none(), "the notice goes with the trust");
-        assert_eq!(gate(home.path(), &cfg.path().join("config.toml"), &trust, Some(home.path()), None), None);
+        // the home is only known by the caller: any other folder kept in git is asked about
+        let other = repo();
+        w(other.path().join(".claude/commands/theirs.md"), "Theirs.");
+        let g = gate(other.path(), &user, &trust, Some(home.path()), None).unwrap();
+        assert_eq!(g.loads, ["commands"]);
+        assert!(!g.home);
     }
 
     #[test]
