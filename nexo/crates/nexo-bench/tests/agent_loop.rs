@@ -351,7 +351,7 @@ async fn six_reads_of_a_big_file_keep_the_last_request_under_the_window() {
         .map(|i| format!("line {i:05} {:x} the quick brown fox jumps over the lazy dog again\n", i * 7919 + 13))
         .collect();
     let mut last = Vec::new();
-    for arm in ["plain", "curator:cap=0;target=0;hard=0", "curator"] {
+    for arm in ["plain", "curator:cap=0;target=0;hard=0", "curator:cap=20000", "curator"] {
         let out = tempfile::tempdir().unwrap();
         let bench = bench(Arc::new(SixReads), 100, out.path());
         let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
@@ -366,5 +366,8 @@ async fn six_reads_of_a_big_file_keep_the_last_request_under_the_window() {
         last.push(rec.final_view_tokens.max(rec.max_view_tokens));
     }
     assert!(last[0] > 40_000 && last[1] > 40_000, "without a window the six reads pile up: {last:?}");
-    assert!(last[2] <= 40_000, "the default window holds the request under 40k tokens: {last:?}");
+    // The default no longer cuts at a fixed 20k: six calls on a cheap cache do not pay for a rewrite (the cost rule
+    // in `fire_point`), so it waits and the view stays what plain sends. An explicit `cap` keeps the fixed trigger.
+    assert!(last[2] <= 40_000, "a fixed cap holds the request under 40k tokens: {last:?}");
+    assert!(last[3] > 40_000, "the default waits while a rewrite does not pay: {last:?}");
 }
