@@ -33,6 +33,7 @@ pub mod recall;
 mod repeat;
 mod review;
 mod scrub;
+pub mod sent;
 pub mod session;
 pub mod session_scan;
 pub mod setup;

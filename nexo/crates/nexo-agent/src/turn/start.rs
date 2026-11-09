@@ -81,10 +81,17 @@ pub(super) async fn start_turn(
     let mut attachments = attachments;
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
+    let typed = text.clone();
     let text = match &hub {
         Some(h) => h.expand_mentions(text).await,
         None => text,
     };
+    // the expansion only appends: what follows the typed words is what nexo added
+    let mut added: Vec<AddedPart> = Vec::new();
+    let mut after = Vec::new();
+    if let Some(extra) = text.strip_prefix(typed.as_str()).map(|e| e.trim_matches('\n')).filter(|e| !e.is_empty()) {
+        after.push(AddedPart::new(AddedKind::Mention, "MCP resources", extra));
+    }
     // the project's check runs once, before the request is built, so its result comes with it
     let check = orient::start_check(state, &cancel).await;
     {
@@ -113,29 +120,48 @@ pub(super) async fn start_turn(
         let text = if ended.is_empty() || text.starts_with("[background jobs ended]") {
             text
         } else {
-            format!("{}\n\n{text}", nexo_core::jobs::ended_note(&ended))
+            let note = nexo_core::jobs::ended_note(&ended);
+            added.push(AddedPart::new(AddedKind::Jobs, "background jobs that ended", note.clone()));
+            format!("{note}\n\n{text}")
         };
         // what other sessions shared goes first, once: it is part of this request from now on
         let text = if st.hook_context.is_empty() {
             text
         } else {
-            format!(
-                "{}\n{}\n{}\n\n{text}",
+            let block = format!(
+                "{}\n{}\n{}",
                 nexo_core::agent::HOOK_CONTEXT_START,
                 std::mem::take(&mut st.hook_context).join("\n\n"),
                 nexo_core::agent::HOOK_CONTEXT_END
-            )
+            );
+            added.insert(0, AddedPart::new(AddedKind::Hook, "hook context", block.clone()));
+            format!("{block}\n\n{text}")
         };
         let text = if st.shared.is_empty() {
             text
         } else {
-            let blocks: Vec<String> = st.shared.drain(..).map(|(_, _, b)| b).collect();
+            let shared = std::mem::take(&mut st.shared);
             emit(&st.events, AgentEvent::MemoryShared { pending: Vec::new() });
+            let at = shared.iter().enumerate().map(|(i, (id, title, b))| {
+                let label = if title.is_empty() { id.clone() } else { title.clone() };
+                (i, AddedPart::new(AddedKind::Memory, format!("memory from {label}"), b.clone()))
+            });
+            for (i, part) in at {
+                added.insert(i, part);
+            }
+            let blocks: Vec<String> = shared.into_iter().map(|(_, _, b)| b).collect();
             format!("{}\n\n{text}", blocks.join("\n\n"))
         };
+        // the typed words sit between what comes before them (shared memory, hooks, jobs) and what follows
+        added.append(&mut after);
         let note = orient::start_note(&small, &st.cwd, check.as_deref());
-        let text = if note.is_empty() { text } else { format!("{text}\n\n{note}") };
-        push_user(&mut st, text, &attachments);
+        let text = if note.is_empty() {
+            text
+        } else {
+            added.push(AddedPart::new(AddedKind::StartNote, "project at the start of the request", note.clone()));
+            format!("{text}\n\n{note}")
+        };
+        push_user(&mut st, text, &attachments, added);
     }
     let state = state.clone();
     tokio::spawn(async move { run_turn(state, cancel).await })
@@ -147,9 +173,11 @@ pub(super) fn reply_tokens(st: &State) -> u32 {
     st.limits.max_tokens(st.config.agent.max_tokens.saturating_mul(st.reply_boost.max(1)))
 }
 
-/// Adds a request of the person to the conversation, its attachments expanded.
-pub(super) fn push_user(st: &mut State, text: String, attachments: &[Attachment]) {
-    let (text, images, whole) = expand_attachments(text, attachments, &st.cwd);
+/// Adds a request of the person to the conversation, its attachments expanded. `added` is what nexo put in
+/// the message besides the person's words, in the order of the message; the files it expands now are told
+/// after it, and the interface hears of all (`AgentEvent::Added`) right after the message.
+pub(super) fn push_user(st: &mut State, text: String, attachments: &[Attachment], mut added: Vec<AddedPart>) {
+    let (text, images, whole) = expand_attachments(text, attachments, &st.cwd, &mut added);
     for (path, bytes, header) in whole {
         st.reads.attached(path, &bytes, header);
     }
@@ -166,6 +194,9 @@ pub(super) fn push_user(st: &mut State, text: String, attachments: &[Attachment]
     }
     let index = st.history.len() - 1;
     emit(&st.events, AgentEvent::History { index, message: m });
+    if !added.is_empty() {
+        emit(&st.events, AgentEvent::Added { index, parts: added });
+    }
 }
 
 /// Bills the usage of an attempt the turn goes on from without keeping its reply.
@@ -182,7 +213,7 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     // jobs that ended while the tools ran: the model hears of them now
     let ended = st.jobs.take_ended();
     if !ended.is_empty() {
-        push_user(&mut st, nexo_core::jobs::ended_note(&ended), &[]);
+        push_user(&mut st, nexo_core::jobs::ended_note(&ended), &[], Vec::new());
     }
     if st.inbox.is_empty() {
         return false;
@@ -190,7 +221,7 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     while let Some((text, mut attachments)) = st.inbox.pop_front() {
         let named = named_files(&st, &text, &attachments);
         attachments.extend(named);
-        push_user(&mut st, text, &attachments);
+        push_user(&mut st, text, &attachments, Vec::new());
     }
     person_spoke(&mut st);
     // the message shows in the transcript where it joined: nothing else to say
@@ -221,14 +252,26 @@ pub(super) fn expand_attachments(
     text: String,
     attachments: &[Attachment],
     cwd: &Path,
+    added: &mut Vec<AddedPart>,
 ) -> (String, Vec<Part>, Vec<Whole>) {
     use base64::Engine;
     let mut out = text;
     let mut images = Vec::new();
     let mut whole = Vec::new();
+    // what each attachment appended to the text is what nexo added for it: told as the next one starts
+    let mut open: Option<(usize, String)> = None;
+    let close = |out: &str, open: &mut Option<(usize, String)>, added: &mut Vec<AddedPart>| {
+        if let Some((from, label)) = open.take() {
+            if out.len() > from {
+                added.push(AddedPart::new(AddedKind::File, label, out[from..].trim_matches('\n')));
+            }
+        }
+    };
     for a in attachments {
+        close(&out, &mut open, added);
         let p = if a.path.is_absolute() { a.path.clone() } else { cwd.join(&a.path) };
         let shown = a.path.display();
+        open = Some((out.len(), shown.to_string()));
         if let Some(media_type) = image_type(&p) {
             match std::fs::read(&p) {
                 Ok(bytes) if bytes.len() > IMAGE_BYTES => out.push_str(&format!(
@@ -261,6 +304,7 @@ pub(super) fn expand_attachments(
             Err(e) => out.push_str(&format!("\n\n@{shown}: not attached ({e})")),
         }
     }
+    close(&out, &mut open, added);
     (out, images, whole)
 }
 
@@ -320,7 +364,15 @@ pub(super) async fn prepare(
     let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
     if !st.hidden.is_empty() {
-        attach_hidden(&mut req.messages, crate::supervise::watch::hidden_block(&st.hidden));
+        let block = crate::supervise::watch::hidden_block(&st.hidden);
+        // the person may read what rides on this request only, apart from what they typed
+        if st.hidden.len() != st.hidden_told {
+            st.hidden_told = st.hidden.len();
+            let mut part = AddedPart::new(AddedKind::Supervisor, "supervisor note", block.clone());
+            part.request_only = true;
+            emit(&st.events, AgentEvent::Added { index: st.turn_start, parts: vec![part] });
+        }
+        attach_hidden(&mut req.messages, block);
     }
     req.tools = specs;
     req.no_tool_call = no_tool_call;

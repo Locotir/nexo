@@ -8,7 +8,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use nexo_agent::{AgentSetup, ModelClient};
-use nexo_core::agent::{channels, AgentCommand, AgentEvent, AgentHandle, CommandTx, GoalState, Level, TurnEnd};
+use nexo_core::agent::{
+    channels, AddedKind, AgentCommand, AgentEvent, AgentHandle, CommandTx, GoalState, Level, TurnEnd,
+};
 use nexo_core::config::{Config, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::message::{Message, Part, Role};
@@ -162,6 +164,83 @@ fn config_lock() -> &'static tokio::sync::Mutex<()> {
 
 fn user_config() -> Config {
     Config::parse(&std::fs::read_to_string(data_dir().join("config.toml")).unwrap_or_default()).unwrap()
+}
+
+/// What nexo puts in a message is told apart from the typed words where the two are put together, and
+/// the display adds nothing to the request: the message sent is those parts around the typed words, byte
+/// for byte.
+#[cfg(unix)]
+#[tokio::test]
+async fn what_nexo_adds_to_a_message_is_told_apart_and_the_request_is_unchanged() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("note.md"), "remember this").unwrap();
+    std::fs::write(d.path().join("small.rs"), "fn small() {}\n").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("ok")), Reply::Events(text("again"))]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.attach_budget = 4000;
+    cfg.hooks.push(hook_cfg("UserPromptSubmit", None, "echo 'it is monday'"));
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit {
+        text: "see".into(),
+        attachments: vec![nexo_core::agent::Attachment { path: PathBuf::from("note.md") }],
+    });
+    let evs = r.turn().await;
+    let at = evs.iter().position(|e| matches!(e, AgentEvent::History { index: 0, .. })).unwrap();
+    let Some(AgentEvent::Added { index: 0, parts }) = evs.get(at + 1) else { panic!("{:?}", evs.get(at + 1)) };
+    let kinds: Vec<AddedKind> = parts.iter().map(|p| p.kind).collect();
+    assert_eq!(kinds, [AddedKind::Hook, AddedKind::StartNote, AddedKind::File, AddedKind::File], "{parts:?}");
+    assert!(parts[0].text.starts_with(nexo_core::agent::HOOK_CONTEXT_START) && parts[0].text.contains("it is monday"));
+    assert!(
+        parts[1].text.starts_with("[project at the start of this request]\nattached: 1 files"),
+        "{}",
+        parts[1].text
+    );
+    assert_eq!(parts[2].label, "note.md");
+    assert!(parts[2].text.contains("remember this") && parts[3].text.contains("fn small()"), "{parts:?}");
+    assert!(parts.iter().all(|p| !p.request_only && p.tokens() > 0));
+    // the request carries the same bytes as before: the parts in front, the typed words, the parts behind
+    let sent = client.requests()[0].messages[0].text();
+    assert_eq!(
+        sent,
+        format!("{}\n\nsee\n\n{}\n\n{}\n\n{}", parts[0].text, parts[1].text, parts[2].text, parts[3].text)
+    );
+    // `/sent` gives that request back in sections
+    r.send(AgentCommand::ShowSent);
+    let evs = r.until(|e| matches!(e, AgentEvent::Sent { .. })).await;
+    let Some(AgentEvent::Sent { model, sections }) = evs.last() else { panic!() };
+    assert_eq!(model, "m1");
+    assert_eq!(sections[0].heading, "System prompt");
+    let user = sections.iter().find(|s| s.heading == "#1 user").expect("the user message");
+    assert_eq!(user.text, sent);
+    // nothing added: nothing told
+    r.send(AgentCommand::Submit { text: "plain words".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { .. })));
+    let hook_only =
+        evs.iter().find_map(|e| if let AgentEvent::Added { parts, .. } = e { Some(parts.clone()) } else { None });
+    assert!(
+        hook_only.is_some_and(|p| p.iter().all(|x| x.kind == AddedKind::Hook)),
+        "only the hook adds to a plain message"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_plain_message_is_told_as_nothing_added_and_sent_asks_before_any_request() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::ShowSent);
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(matches!(evs.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("nothing was sent yet")));
+    r.send(AgentCommand::Submit { text: "just words".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::History { index: 0, .. })));
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Added { .. })), "nothing was added: {evs:?}");
+    assert_eq!(client.requests()[0].messages[0].text(), "just words");
+    r.stop().await;
 }
 
 fn config(mode: PermissionMode) -> Config {
@@ -2756,6 +2835,13 @@ async fn another_sessions_memory_goes_with_the_next_request_and_sessions_go_to_t
     assert!(sent.starts_with(&format!("<memory from=\"{a}\"")), "{sent}");
     assert!(sent.contains("Finding: the tokenizer drops tab characters"), "{sent}");
     assert!(sent.ends_with("fix it"), "{sent}");
+    // the interface is told what came from the other session apart from the typed words, and the message
+    // sent is exactly that text in front of them
+    let told =
+        evs.iter().find_map(|e| if let AgentEvent::Added { parts, .. } = e { Some(parts.clone()) } else { None });
+    let told = told.expect("an Added event");
+    assert!(told.len() == 1 && told[0].kind == AddedKind::Memory && !told[0].request_only, "{told:?}");
+    assert_eq!(sent, format!("{}\n\nfix it", told[0].text));
     // the one in use stays; another goes to the trash and comes back
     r.send(AgentCommand::DeleteSession { id: b.clone() });
     let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;

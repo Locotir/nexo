@@ -50,6 +50,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.last_request = None;
     st.repeats = Default::default();
     st.hidden.clear();
+    st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
     st.epoch += 1;
@@ -215,6 +216,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     st.last_request = None;
     st.repeats = Default::default();
     st.hidden.clear();
+    st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
     st.epoch += 1;
@@ -325,6 +327,7 @@ pub(super) async fn clear(state: &Shared) {
     st.last_request = None;
     st.repeats = Default::default();
     st.hidden.clear();
+    st.hidden_told = 0;
     st.noticed.clear();
     st.checked_in = false;
     st.epoch += 1;

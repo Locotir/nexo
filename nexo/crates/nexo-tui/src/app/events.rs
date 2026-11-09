@@ -481,6 +481,10 @@ impl App {
                 self.context_wait = self.context.is_none();
                 self.history(index, message)
             }
+            AgentEvent::Added { parts, .. } => self.added(parts),
+            AgentEvent::Sent { model, sections } => {
+                self.modal = Some(Modal::Sent(Box::new(crate::sent_view::SentView::new(model, sections))));
+            }
             AgentEvent::TurnStart { .. } => {
                 self.suggestion = None;
                 self.busy = true;
@@ -1044,6 +1048,43 @@ impl App {
         }
     }
 
+    /// What nexo added to the message just shown: one folded line under it. Its mentions were put at the
+    /// end of the person's text, so they leave it and are said in that line.
+    pub(super) fn added(&mut self, parts: Vec<nexo_core::agent::AddedPart>) {
+        use nexo_core::agent::AddedKind;
+        if parts.is_empty() {
+            return;
+        }
+        // what a message told as it was built is exact: it takes the place of what was read back from its
+        // text; what rides one request only is a line of its own where it came
+        let (once, parts): (Vec<_>, Vec<_>) = parts.into_iter().partition(|p| p.request_only);
+        if !parts.is_empty() {
+            if let Some(i) = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })) {
+                if let Block::User { text, .. } = &mut self.blocks[i] {
+                    for p in parts.iter().filter(|p| matches!(p.kind, AddedKind::Mention)) {
+                        let left = text.replacen(p.text.trim(), "", 1);
+                        if !left.trim().is_empty() {
+                            *text = left.trim_end().to_string();
+                        }
+                    }
+                }
+                let block = Block::Added { parts, folded: true };
+                if matches!(self.blocks.get(i + 1), Some(Block::Added { .. })) {
+                    self.blocks[i + 1] = block;
+                    self.invalidate(i + 1);
+                } else {
+                    self.invalidate(i);
+                    self.push(block);
+                }
+            } else {
+                self.push(Block::Added { parts, folded: true });
+            }
+        }
+        if !once.is_empty() {
+            self.push(Block::Added { parts: once, folded: true });
+        }
+    }
+
     pub(super) fn history(&mut self, index: usize, m: Message) {
         match m.role {
             Role::User => {
@@ -1096,27 +1137,15 @@ impl App {
                         self.push(Block::User { text, at });
                     } else {
                         let mut at = at;
+                        // what nexo put around the words stays behind one folded line, not in the message
+                        let mut extra = Vec::new();
                         for p in pieces {
                             use crate::replay::Piece;
                             match p {
                                 Piece::JobNote(n) => {
                                     self.push(Block::User { text: n, at: None });
                                 }
-                                Piece::Memory { title, tokens } => {
-                                    let title = if title.is_empty() { "memory" } else { title.as_str() };
-                                    let tok = crate::render::blocks::fmt_k(tokens);
-                                    self.push(Block::Notice {
-                                        level: Level::Info,
-                                        text: format!("⊕ memory from {title} · {tok} tok"),
-                                    });
-                                }
-                                Piece::Hook(n) => {
-                                    let s = if n == 1 { "" } else { "s" };
-                                    self.push(Block::Notice {
-                                        level: Level::Info,
-                                        text: format!("↳ hook context for the model · {n} line{s}"),
-                                    });
-                                }
+                                Piece::Added(part) => extra.push(part),
                                 Piece::Summary(n) => {
                                     self.push(Block::Notice {
                                         level: Level::Info,
@@ -1137,6 +1166,9 @@ impl App {
                                     self.push(Block::User { text: t, at: at.take() });
                                 }
                             }
+                        }
+                        if !extra.is_empty() {
+                            self.push(Block::Added { parts: extra, folded: true });
                         }
                     }
                 }

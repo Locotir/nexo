@@ -1,5 +1,6 @@
 //! Turning blocks, markdown, code and diffs into pre-wrapped styled lines.
 
+pub mod added;
 pub mod blocks;
 pub mod code;
 pub mod diff;

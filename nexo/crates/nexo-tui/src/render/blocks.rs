@@ -112,6 +112,11 @@ pub enum Block {
         text: String,
         stage: nexo_core::mail::Stage,
     },
+    /// What nexo added to a message of the person beyond their words: one dim line, the texts when open.
+    Added {
+        parts: Vec<nexo_core::agent::AddedPart>,
+        folded: bool,
+    },
     /// A newer nexo is waiting on `main`: a framed card that is hard to miss.
     Update {
         behind: u32,
@@ -176,12 +181,15 @@ pub struct RenderOpts {
 
 impl Block {
     pub fn is_foldable(&self) -> bool {
-        matches!(self, Block::Tool { .. } | Block::Reasoning { .. } | Block::Group { .. })
+        matches!(self, Block::Tool { .. } | Block::Reasoning { .. } | Block::Group { .. } | Block::Added { .. })
     }
 
     pub fn toggle_fold(&mut self) -> bool {
         match self {
-            Block::Tool { folded, .. } | Block::Reasoning { folded, .. } | Block::Group { folded, .. } => {
+            Block::Tool { folded, .. }
+            | Block::Reasoning { folded, .. }
+            | Block::Group { folded, .. }
+            | Block::Added { folded, .. } => {
                 *folded = !*folded;
                 true
             }
@@ -190,7 +198,11 @@ impl Block {
     }
 
     pub fn set_fold(&mut self, v: bool) {
-        if let Block::Tool { folded, .. } | Block::Reasoning { folded, .. } | Block::Group { folded, .. } = self {
+        if let Block::Tool { folded, .. }
+        | Block::Reasoning { folded, .. }
+        | Block::Group { folded, .. }
+        | Block::Added { folded, .. } = self
+        {
             *folded = v;
         }
     }
@@ -287,6 +299,7 @@ impl Block {
                 }
                 lines
             }
+            Block::Added { parts, folded } => super::added::lines(parts, *folded, w, theme),
             Block::Reasoning { text, streaming, started, elapsed_ms, folded } => {
                 if !o.show_reasoning {
                     return (Vec::new(), meta);

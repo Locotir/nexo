@@ -213,6 +213,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             if !msg.content.is_empty() {
                 st.history.push(msg.clone());
                 st.hidden.clear();
+                st.hidden_told = 0;
                 if let Err(e) = st.session.append(&msg) {
                     notice(&events, Level::Warn, format!("cannot save the session: {e}"));
                 }

@@ -317,6 +317,8 @@ pub enum Modal {
     Mcp(Box<crate::mcp_view::McpView>),
     /// A click on `◎ goal`: the goal, its stops and a Resume button.
     Goal(Box<crate::goal_view::GoalView>),
+    /// `/sent`: the last request as it was sent, by section.
+    Sent(Box<crate::sent_view::SentView>),
     /// The start in a folder not trusted yet.
     Trust(Trust),
 }
@@ -576,6 +578,7 @@ impl Modal {
             Modal::Todo(t) => t.key(key),
             Modal::Mcp(m) => m.key(key),
             Modal::Goal(g) => g.key(key),
+            Modal::Sent(v) => v.key(key),
             Modal::Trust(t) => t.key(key),
             Modal::Info(i) => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModalOut::Close,
@@ -712,6 +715,8 @@ impl Modal {
                 Some(_) if g.can_resume() => g.resume(),
                 _ => ModalOut::Nothing,
             },
+            // a read-only window: the wheel and the keys move it
+            Modal::Sent(_) => ModalOut::Nothing,
             Modal::Info(i) => {
                 if contains(i.close, x, y) || !contains(i.window, x, y) {
                     return ModalOut::Close;
@@ -753,6 +758,7 @@ impl Modal {
             Modal::Todo(t) => t.scroll_by(delta),
             Modal::Mcp(m) => m.scroll_by(delta),
             Modal::Goal(g) => g.scroll_by(delta),
+            Modal::Sent(v) => v.scroll_by(delta),
             Modal::Trust(_) => {}
         }
     }
@@ -782,6 +788,7 @@ impl Modal {
             Modal::Todo(t) => t.scroll_to_line(off),
             Modal::Mcp(m) => m.scroll = off,
             Modal::Goal(g) => g.scroll = off,
+            Modal::Sent(v) => v.scroll = off,
             Modal::Picker(p) => pick(p, off, viewport, first),
             Modal::Setup(s) => pick(&mut s.list, off, viewport, first),
             Modal::Trust(_) => {}

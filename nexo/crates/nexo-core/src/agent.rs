@@ -145,6 +145,9 @@ pub enum AgentCommand {
     ShowTools,
     /// Ask for the hooks that are loaded and where each comes from; answered with a `Notice`.
     ShowHooks,
+    /// Ask for the last request exactly as it was sent, in sections; answered with `Sent` (a `Notice` when
+    /// nothing was sent yet).
+    ShowSent,
     /// Ask for the MCP servers with their state and lists; answered with `Mcp`.
     ShowMcp,
     /// Turn an MCP server on or off for this session (`persist`: also in the configuration); answered with `Mcp`.
@@ -491,6 +494,67 @@ pub struct CuratedItem {
     pub state: CuratedState,
 }
 
+/// What nexo put in a message of the person beyond the words they typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddedKind {
+    /// An MCP resource named with `@server:uri`.
+    Mention,
+    /// A file attached, named by the person or found by nexo.
+    File,
+    /// The note of background jobs that ended.
+    Jobs,
+    /// What a hook added for the model.
+    Hook,
+    /// Memory shared from another session.
+    Memory,
+    /// The `[project at the start of this request]` lines.
+    StartNote,
+    /// A note of the supervisor that rides on one request and is never saved.
+    Supervisor,
+}
+
+/// One piece of text nexo added to a message of the person, kept apart from their own words where the
+/// two are put together (a live session tells them as they are built; a resumed one finds them by markers).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddedPart {
+    pub kind: AddedKind,
+    /// What it is, short: a path, a title, `hook context`.
+    pub label: String,
+    /// The exact text that went to the model.
+    pub text: String,
+    /// It rides on one request only and is not in the saved conversation.
+    #[serde(default)]
+    pub request_only: bool,
+}
+
+impl AddedPart {
+    pub fn new(kind: AddedKind, label: impl Into<String>, text: impl Into<String>) -> AddedPart {
+        AddedPart { kind, label: label.into(), text: text.into(), request_only: false }
+    }
+
+    /// About how many tokens it takes (4 characters a token).
+    pub fn tokens(&self) -> u64 {
+        (self.text.len() as u64).div_ceil(4)
+    }
+}
+
+/// One section of the last request as it was sent (`/sent`): a heading, its text and its size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentSection {
+    pub heading: String,
+    /// 0: a main section (system prompt, a message); 1: a part of the one above.
+    pub depth: u8,
+    /// `curator` or `supervisor` when the context policy or the supervisor put this text in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    pub tokens: u64,
+    pub text: String,
+    /// Shown as its first lines until opened (a tool result).
+    #[serde(default)]
+    pub collapse: bool,
+}
+
 /// What the agent tells the interface. Every event is serialisable, so the
 /// headless mode can print them as JSON lines and a test can record them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -507,6 +571,18 @@ pub enum AgentEvent {
     History {
         index: usize,
         message: Message,
+    },
+    /// What nexo added to the user message at `index` of the history, beyond the person's words (sent right
+    /// after its `History`; nothing is sent when nothing was added). With `request_only` parts: notes that ride
+    /// on the request in progress and are not in the history.
+    Added {
+        index: usize,
+        parts: Vec<AddedPart>,
+    },
+    /// The last request exactly as it was sent, in sections (answers `ShowSent`).
+    Sent {
+        model: String,
+        sections: Vec<SentSection>,
     },
     TurnStart {
         turn: u32,

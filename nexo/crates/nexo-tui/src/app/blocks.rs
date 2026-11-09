@@ -400,6 +400,9 @@ impl App {
 
     /// Whether block `i` folds: cards and thinking always, anything else of more than one line.
     pub fn foldable(&mut self, i: usize) -> bool {
+        if self.companion(i).is_some() {
+            return true;
+        }
         let Some(b) = self.blocks.get(i) else { return false };
         if b.is_foldable() {
             return true;
@@ -410,7 +413,25 @@ impl App {
         self.looks[i].folded || self.lines(i, self.last_width).len() > 1
     }
 
+    /// The `+ nexo added` line that follows the message of the person at `i`: what opens and folds with it.
+    pub fn companion(&self, i: usize) -> Option<usize> {
+        (matches!(self.blocks.get(i), Some(Block::User { .. }))
+            && matches!(self.blocks.get(i + 1), Some(Block::Added { .. })))
+        .then_some(i + 1)
+    }
+
     pub fn toggle_block(&mut self, i: usize) {
+        // a message opens to what nexo added to it, and folds back; a long one with it
+        if let Some(c) = self.companion(i) {
+            let open = self.is_folded(c);
+            self.toggle_block(c);
+            if self.looks[i].folded == open && self.lines(i, self.last_width).len() > 1 {
+                self.looks[i].folded = !open;
+                self.invalidate(i);
+            }
+            self.selected = Some(i);
+            return;
+        }
         if !self.foldable(i) {
             self.selected = Some(i);
             return;
@@ -576,7 +597,8 @@ impl App {
     /// → / ← with a block selected: open it or fold it (nothing when it already is).
     pub fn open_selected(&mut self, open: bool) {
         let Some(i) = self.selected else { return };
-        if i < self.blocks.len() && self.foldable(i) && self.is_folded(i) == open {
+        let shown = self.companion(i).unwrap_or(i);
+        if i < self.blocks.len() && self.foldable(i) && self.is_folded(shown) == open {
             self.toggle_block(i);
         }
         self.scroll_into_view(i);
@@ -585,7 +607,12 @@ impl App {
     /// Whether block `i` shows only its head.
     pub fn is_folded(&self, i: usize) -> bool {
         match self.blocks.get(i) {
-            Some(Block::Tool { folded, .. } | Block::Reasoning { folded, .. } | Block::Group { folded, .. }) => *folded,
+            Some(
+                Block::Tool { folded, .. }
+                | Block::Reasoning { folded, .. }
+                | Block::Group { folded, .. }
+                | Block::Added { folded, .. },
+            ) => *folded,
             Some(_) => self.looks.get(i).is_some_and(|l| l.folded),
             None => false,
         }

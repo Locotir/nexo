@@ -53,7 +53,7 @@
  /effort       [level|default]                    how much the model reasons, among the levels it takes
  session ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  /rewind                                          go back to before an earlier message, files included (also Esc Esc)
-                                                               1/45                                                               35 more ↓
+                                                               1/46                                                               36 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                 20261102-100000-ef56

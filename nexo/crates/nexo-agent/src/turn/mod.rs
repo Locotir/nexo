@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use nexo_core::agent::{
-    AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalLog, GoalState, GoalStop, Level, TurnEnd,
-    GOAL_BRIEF_HEAD, GOAL_CONTINUE_MARK, GOAL_SET_MARK, GOAL_STOPS, SUPERVISOR_RESUME_MARK,
+    AddedKind, AddedPart, AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalLog, GoalState, GoalStop,
+    Level, TurnEnd, GOAL_BRIEF_HEAD, GOAL_CONTINUE_MARK, GOAL_SET_MARK, GOAL_STOPS, SUPERVISOR_RESUME_MARK,
 };
 use nexo_core::config::{Config, OnLimit, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
@@ -187,6 +187,8 @@ struct State {
     /// Notes the supervisor's watch wants on the NEXT model request only (never saved in the conversation), and
     /// the findings of this request already said, so each is said once.
     hidden: Vec<String>,
+    /// How many of `hidden` the interface was told of (they ride on the request, which `/sent` shows).
+    hidden_told: usize,
     noticed: HashSet<String>,
     /// A check-in was made for this request of the person (at most one; the person speaking opens it again).
     checked_in: bool,
@@ -424,6 +426,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         mail_turn: Vec::new(),
         hook_context: Vec::new(),
         hidden: Vec::new(),
+        hidden_told: 0,
         noticed: HashSet::new(),
         checked_in: false,
         reply_boost: 1,
@@ -709,6 +712,16 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     AgentCommand::ShowHooks => {
                         let st = state.lock().await;
                         notice(&events, Level::Info, crate::hooks::describe(&st.config.hooks));
+                    }
+                    AgentCommand::ShowSent => {
+                        let st = state.lock().await;
+                        match &st.last_request {
+                            Some(req) => emit(
+                                &events,
+                                AgentEvent::Sent { model: req.model.clone(), sections: crate::sent::sections(req) },
+                            ),
+                            None => notice(&events, Level::Info, "nothing was sent yet: /sent shows the last request"),
+                        }
                     }
                     AgentCommand::ShowMcp => {
                         let hub = state.lock().await.mcp.clone();

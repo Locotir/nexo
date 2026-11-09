@@ -148,6 +148,7 @@ impl App {
             Command::Pr(arg) => self.git_prompt("/pr", nexo_agent::gitcmds::pr_prompt(&self.cwd, arg.as_deref(), "gh")),
             Command::Status => self.send(AgentCommand::ShowStatus),
             Command::Tools => self.send(AgentCommand::ShowTools),
+            Command::Sent => self.send(AgentCommand::ShowSent),
             Command::Hooks => self.send(AgentCommand::ShowHooks),
             Command::Mcp => self.open_mcp(),
             Command::Skills => self.show_skills(),

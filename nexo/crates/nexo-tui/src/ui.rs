@@ -151,8 +151,10 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         };
         // the to-do and jobs windows get clear ground, so no piece of the welcome card shows beside them; the
         // others keep the text in sight (a theme preview needs it) and clear only the cells beside the box
-        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_) | Modal::Goal(_) | Modal::Trust(_)))
-        {
+        if matches!(
+            app.modal,
+            Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_) | Modal::Goal(_) | Modal::Sent(_) | Modal::Trust(_))
+        ) {
             clear_bg(f, area_for, &app.theme);
         }
         draw_modal(f, app, area_for);
@@ -2230,7 +2232,11 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width < 12 || area.height < 5 {
         return draw_too_narrow(f, &theme, area, area.width < 12);
     }
-    let cap = if matches!(modal, Modal::Todo(_)) { 76 } else { 96 };
+    let cap = match modal {
+        Modal::Todo(_) => 76,
+        Modal::Sent(_) => 120,
+        _ => 96,
+    };
     let w = (area.width.saturating_sub(4)).min(cap);
     let max_h = area.height.saturating_sub(2);
     // laid out for the width it has now, so nothing is cut while it pops open
@@ -2351,6 +2357,11 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             goal_button = button;
             (v.title(), v.lines(inner_w, &theme, nexo_core::mailbox::now_ms()), None)
         }
+        Modal::Sent(v) => {
+            let lines = v.layout(inner_w, &theme);
+            pinned = v.pinned(inner_w, &theme);
+            (v.title(), lines, None)
+        }
         Modal::Trust(t) => {
             let (lines, rows) = trust_rows(t, inner_w, &theme);
             pinned = rows;
@@ -2439,6 +2450,10 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
             v.scroll
         }
+        Modal::Sent(v) => {
+            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
+            v.scroll
+        }
         Modal::Trust(_) => 0,
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => 0,
         Modal::Picker(p) => {
@@ -2482,6 +2497,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         | Modal::Todo(_)
         | Modal::Mcp(_)
         | Modal::Goal(_)
+        | Modal::Sent(_)
         | Modal::Trust(_) => Some(0),
         Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => None,

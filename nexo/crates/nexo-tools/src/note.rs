@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 pub const MAX_CHARS: usize = 4000;
 
 /// Characters of one saved rule at most: a line, not a paragraph.
-pub const MAX_RULE: usize = 400;
+pub const MAX_RULE: usize = 200;
 
 pub struct Note;
 
@@ -169,7 +169,9 @@ fn unfit(rule: &str) -> Option<String> {
                 .to_string(),
         );
     }
-    (rule.chars().count() > MAX_RULE).then(|| format!("a rule is one line of at most {MAX_RULE} characters"))
+    (rule.chars().count() > MAX_RULE).then(|| {
+        format!("too long: keep the exact fact, drop the filler (a rule is one line of at most {MAX_RULE} characters)")
+    })
 }
 
 #[cfg(test)]
@@ -302,6 +304,10 @@ mod tests {
         // a rule is a line
         let long = Note.run(json!({"text": format!("Rule: {}", "x ".repeat(300)), "scope": "project"}), &cx).await;
         assert!(long.is_error && long.content.contains("one line"), "{}", long.content);
+        assert!(long.content.contains("too long: keep the exact fact, drop the filler"), "{}", long.content);
+        // the limit is 200 characters: 200 are kept, 201 are refused
+        assert!(unfit(&"a".repeat(MAX_RULE)).is_none());
+        assert!(unfit(&"a".repeat(MAX_RULE + 1)).is_some_and(|m| m.starts_with("too long: keep the exact fact")));
     }
 
     #[tokio::test]

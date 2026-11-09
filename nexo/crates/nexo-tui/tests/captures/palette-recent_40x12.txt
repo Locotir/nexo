@@ -5,7 +5,7 @@
  /model        switch model, or set on…
  /permissions  set the permission mode
  /plan         plan mode: reads only, …
-             1/45             40 more ↓
+             1/46             41 more ↓
 ─ ask ──────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run

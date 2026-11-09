@@ -6,7 +6,9 @@ const JOBS_NOTE: &str = "[background jobs ended]\n";
 const JOBS_END: &str = "Read the output with the `jobs` tool";
 const MEMORY_START: &str = "<memory from=\"";
 const MEMORY_END: &str = "</memory>";
+const START_NOTE: &str = "[project at the start of this request]";
 const ATTACHED: &str = "(attached in full, as it is now):";
+use nexo_core::agent::{AddedKind, AddedPart};
 use nexo_core::agent::{
     GOAL_CONTINUE_MARK, GOAL_SET_MARK, HOOK_CONTEXT_END, HOOK_CONTEXT_START, SUPERVISOR_RESUME_MARK,
 };
@@ -16,10 +18,9 @@ use nexo_core::agent::{
 pub enum Piece {
     /// A note of ended background jobs, whole (a card).
     JobNote(String),
-    /// What hooks added for the model: how many lines.
-    Hook(usize),
-    /// A block of memory shared from another session: its title and about how many tokens.
-    Memory { title: String, tokens: u64 },
+    /// What nexo put in the message besides the person's words: hooks, shared memory, the start note, a
+    /// file attached whole. Found again by its markers (a live message tells them as it builds them).
+    Added(AddedPart),
     /// What replaced the conversation before a compaction: the number of lines it takes.
     Summary(usize),
     /// The loop's own request for a goal: the person's words when it was set, None when it keeps it going.
@@ -40,9 +41,9 @@ pub fn split_user(text: &str) -> Vec<Piece> {
             t = t[end..].trim_start();
         } else if t.starts_with(HOOK_CONTEXT_START) {
             let Some(i) = t.find(HOOK_CONTEXT_END) else { break };
-            let inner = t[HOOK_CONTEXT_START.len()..i].trim();
-            out.push(Piece::Hook(inner.lines().count()));
-            t = t[i + HOOK_CONTEXT_END.len()..].trim_start();
+            let end = i + HOOK_CONTEXT_END.len();
+            out.push(Piece::Added(AddedPart::new(AddedKind::Hook, "hook context", &t[..end])));
+            t = t[end..].trim_start();
         } else if t.starts_with(MEMORY_START) {
             let Some(i) = t.find(MEMORY_END) else { break };
             let block = &t[..i + MEMORY_END.len()];
@@ -52,7 +53,8 @@ pub fn split_user(text: &str) -> Vec<Piece> {
                 .and_then(|(_, r)| r.split_once('"'))
                 .map(|(title, _)| title.trim().to_string())
                 .unwrap_or_default();
-            out.push(Piece::Memory { title, tokens: (block.len() as u64).div_ceil(4) });
+            let title = if title.is_empty() { "memory" } else { title.as_str() };
+            out.push(Piece::Added(AddedPart::new(AddedKind::Memory, format!("memory from {title}"), block)));
             t = t[block.len()..].trim_start();
         } else {
             break;
@@ -67,9 +69,53 @@ pub fn split_user(text: &str) -> Vec<Piece> {
     } else if t.trim_end() == SUPERVISOR_RESUME_MARK {
         out.push(Piece::JobNote("supervisor: continuing after a check-in".into()));
     } else if !t.is_empty() {
-        out.push(Piece::Text(collapse_attachments(t)));
+        let (typed, parts) = split_added(t);
+        out.push(Piece::Text(typed));
+        out.extend(parts.into_iter().map(Piece::Added));
     }
     out
+}
+
+/// The start of an attached file at line `i`: its path and the line after its closing fence.
+fn attached_at(lines: &[&str], i: usize) -> Option<(String, usize)> {
+    let path = lines.get(i)?.strip_prefix('@')?.strip_suffix(ATTACHED).map(str::trim_end)?;
+    let n = lines.get(i + 1).filter(|f| f.starts_with("```")).map(|f| f.len() - f.trim_start_matches('`').len())?;
+    let close = "`".repeat(n);
+    let k = lines[i + 2..].iter().position(|x| x.trim_end() == close)?;
+    Some((path.to_string(), i + k + 3))
+}
+
+/// A message's words from what nexo appended after them: the start note and the files attached whole.
+/// With neither found, or something else after them, the text is the person's whole (files shortened).
+pub fn split_added(text: &str) -> (String, Vec<AddedPart>) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let starts = |i: usize| lines[i].trim_end() == START_NOTE || attached_at(&lines, i).is_some();
+    let Some(first) = (0..lines.len()).find(|&i| starts(i)) else { return (text.to_string(), Vec::new()) };
+    let typed = lines[..first].join("\n").trim_end().to_string();
+    if typed.is_empty() {
+        return (collapse_attachments(text), Vec::new());
+    }
+    let mut parts = Vec::new();
+    let mut i = first;
+    while i < lines.len() {
+        if let Some((path, end)) = attached_at(&lines, i) {
+            parts.push(AddedPart::new(AddedKind::File, path, lines[i..end].join("\n")));
+            i = end;
+        } else if lines[i].trim_end() == START_NOTE {
+            let end = (i + 1..lines.len()).find(|&k| attached_at(&lines, k).is_some()).unwrap_or(lines.len());
+            parts.push(AddedPart::new(
+                AddedKind::StartNote,
+                "project at the start of the request",
+                lines[i..end].join("\n").trim_end(),
+            ));
+            i = end;
+        } else if lines[i].trim().is_empty() {
+            i += 1;
+        } else {
+            return (collapse_attachments(text), Vec::new());
+        }
+    }
+    (typed, parts)
 }
 
 /// The text with each file attached whole (`@path (attached in full...):` and its fence) reduced to
@@ -79,19 +125,12 @@ pub fn collapse_attachments(text: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let l = lines[i];
-        let path = l.strip_prefix('@').and_then(|r| r.strip_suffix(ATTACHED)).map(str::trim_end);
-        let fence =
-            lines.get(i + 1).filter(|f| f.starts_with("```")).map(|f| f.len() - f.trim_start_matches('`').len());
-        if let (Some(path), Some(n)) = (path, fence) {
-            let close = "`".repeat(n);
-            if let Some(k) = lines[i + 2..].iter().position(|x| x.trim_end() == close) {
-                out.push(format!("@{path} · {}", nexo_core::count(k, "line")));
-                i += k + 3;
-                continue;
-            }
+        if let Some((path, end)) = attached_at(&lines, i) {
+            out.push(format!("@{path} · {}", nexo_core::count(end - i - 3, "line")));
+            i = end;
+            continue;
         }
-        out.push(l.to_string());
+        out.push(lines[i].to_string());
         i += 1;
     }
     out.join("\n")
@@ -123,7 +162,10 @@ mod tests {
         let p = split_user(
             "<hook-context>\nLocal time: 22:51.\nSince the previous prompt: 10 min.\n</hook-context>\n\nfix the bug",
         );
-        assert_eq!(p, vec![Piece::Hook(2), Piece::Text("fix the bug".into())]);
+        let [Piece::Added(hook), Piece::Text(typed)] = &p[..] else { panic!("{p:?}") };
+        assert_eq!((hook.kind, hook.label.as_str()), (AddedKind::Hook, "hook context"));
+        assert!(hook.text.starts_with("<hook-context>") && hook.text.ends_with("</hook-context>"));
+        assert_eq!(typed, "fix the bug");
     }
 
     #[test]
@@ -136,7 +178,8 @@ mod tests {
     fn a_job_note_after_a_memory_block_is_found() {
         let mem = "<memory from=\"s-1\" title=\"the parser fix\">\nShared from another session.\n</memory>";
         let p = split_user(&format!("{mem}\n\n{NOTE}\n\nhello"));
-        assert!(matches!(&p[0], Piece::Memory { title, tokens } if title == "the parser fix" && *tokens > 0), "{p:?}");
+        let Piece::Added(m) = &p[0] else { panic!("{p:?}") };
+        assert_eq!((m.kind, m.label.as_str(), m.text.as_str()), (AddedKind::Memory, "memory from the parser fix", mem));
         assert_eq!(p[1], Piece::JobNote(NOTE.into()));
         assert_eq!(p[2], Piece::Text("hello".into()));
     }
@@ -157,6 +200,33 @@ mod tests {
         // not closed: left as it is
         let open = "@a.md (attached in full, as it is now):\n```md\nx";
         assert_eq!(collapse_attachments(open), open);
+    }
+
+    #[test]
+    fn an_old_message_with_its_start_note_and_files_inline_is_split_at_the_markers() {
+        let t = "Hola cómo estás?\n\n[project at the start of this request]\nattached: 1 files, 1883 tokens\n\n\
+                 @1-builtin-instructions.md (attached in full, as it is now):\n```md\nuno\ndos\n```";
+        let (typed, parts) = split_added(t);
+        assert_eq!(typed, "Hola cómo estás?");
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!(parts[0].kind, AddedKind::StartNote);
+        assert_eq!(parts[0].text, "[project at the start of this request]\nattached: 1 files, 1883 tokens");
+        assert_eq!((parts[1].kind, parts[1].label.as_str()), (AddedKind::File, "1-builtin-instructions.md"));
+        assert!(parts[1].text.starts_with("@1-builtin-instructions.md (attached") && parts[1].text.ends_with("```"));
+        // through split_user the words come alone, the parts after them
+        let p = split_user(t);
+        assert_eq!(p.len(), 3, "{p:?}");
+        assert_eq!(p[0], Piece::Text("Hola cómo estás?".into()));
+    }
+
+    #[test]
+    fn words_that_only_look_like_a_note_stay_whole() {
+        // nothing but additions: the text is kept, files shortened
+        let only = "@a.md (attached in full, as it is now):\n```md\nx\n```";
+        assert_eq!(split_added(only), ("@a.md · 1 line".to_string(), Vec::new()));
+        // words after a file: not what nexo appends, kept whole
+        let after = "look\n\n@a.md (attached in full, as it is now):\n```md\nx\n```\n\nthanks";
+        assert_eq!(split_added(after), ("look\n\n@a.md · 1 line\n\nthanks".to_string(), Vec::new()));
     }
 
     #[test]

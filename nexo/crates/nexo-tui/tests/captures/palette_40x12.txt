@@ -5,7 +5,7 @@
  /plan         plan mode: reads only, …
  /compact      replace the history wit…
  /clear        start a new session here
-             1/45             39 more ↓
+             1/46             40 more ↓
 ─ ask ──────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run

@@ -102,6 +102,18 @@ impl App {
             _ => 1,
         };
         self.tclick = Some((now, pos, n));
+        // a double click on a message of the person, or on the line under it, opens what nexo added
+        if n == 2 {
+            if let Some(i) = self.block_at_line(pos.line) {
+                let added = matches!(self.blocks.get(i), Some(Block::Added { .. }));
+                if added || self.companion(i).is_some() {
+                    self.toggle_block(i);
+                    self.selected = Some(i);
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
         if n >= 2 {
             self.multi_select(pos, n);
         }
@@ -290,6 +302,12 @@ impl App {
     /// A click on line `j` of block `i`: the first click selects it; a click on the head
     /// (or the `▸ more lines` under a folded one) of the selected block folds or opens it.
     pub fn click_block(&mut self, i: usize, j: usize) {
+        // the line of what nexo added opens with → or a double click, not with a single one
+        if self.companion(i).is_some() || matches!(self.blocks.get(i), Some(Block::Added { .. })) {
+            self.selected = Some(i);
+            self.dirty = true;
+            return;
+        }
         let n = self.lines(i, self.last_width).len();
         let on_head = j == 0 || (self.is_folded(i) && j + 1 == n);
         if self.selected == Some(i) && on_head {

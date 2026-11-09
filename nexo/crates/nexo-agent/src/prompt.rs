@@ -142,7 +142,7 @@ fn abilities(tools: &ToolSet) -> String {
         lines.push("- `recall` returns a message the context left out.");
     }
     if has("note") {
-        lines.push("- `note` keeps `Finding: ...`, `Plan: ...`, `Rule: ...` lines; send it with your next tool call. A lasting preference, rule or fact the person states (\"always ...\", \"my .bashrc is at ...\"), or one you find that will matter again (a non-default path or port, something not to touch), is saved as one `Rule: ...` line with `scope` `global` (all projects) or `project` (this repo), at once. Not one-off details, guesses or secrets. Tell the person in one short line what you saved.");
+        lines.push("- `note` keeps `Finding: ...`, `Plan: ...`, `Rule: ...` lines; send it with your next call. A lasting preference, rule or fact the person states (\"always ...\", \"my .bashrc is at ...\"), or one you find that matters again (a non-default path or port, something not to touch), is saved as a `Rule: ...` line (one short line: the exact fact (path, value, name, command) and the rule, no filler) with `scope` `global` (all projects) or `project` (this repo). Not one-off details, guesses or secrets. Tell the person what you saved in a line.");
     }
     if lines.is_empty() {
         return String::new();
@@ -540,6 +540,7 @@ mod tests {
             "one-off details",
             "secrets",
             "one short line",
+            "the exact fact (path, value, name, command) and the rule, no filler",
         ] {
             assert!(all.contains(want), "missing {want}: {all}");
         }

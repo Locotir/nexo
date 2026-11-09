@@ -45,6 +45,7 @@ pub mod render;
 pub mod replay;
 pub mod scrollbar;
 pub mod select;
+pub mod sent_view;
 pub mod status_cmd;
 pub mod terminal;
 pub mod theme;

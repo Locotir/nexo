@@ -97,6 +97,8 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | `Shift+↑` or `Tab` (empty draft) | select the last block: a tool call with its result, thinking, a reply or message of several lines |
 | `↑`/`↓` (a block selected) | the previous / next block, the view following it; `↓` past the last goes back to the draft |
 | `→` / `←` / `Enter` (a block selected) | open / fold / toggle it; `Esc` or typing lets it go |
+| `→` / `←` on a message, double click | your message shows only what you typed. The dim line under it, `+ nexo added · N tokens (start note, 2 files, hook…)`, says what nexo put around your words (hook context, shared memory, the start note, attached files, MCP resources; a supervisor note is marked `this request only`); `→` or a double click opens it to the exact text (long files cut with `… N more lines`), `←` or another double click folds it. Resumed sessions show the same, found again by their markers |
+| `/sent` (`/request`) | a window with the last request as the model got it: the system prompt by parts, the tools offered, then every message by role, the curator's text marked `[curator]`, a token count per section; `/` searches, `n`/`N` step, `y` copies the section, `e` opens a folded one |
 | `Ctrl+O` | fold or open every tool group, tool card and thinking block |
 | `Ctrl+T` | show or hide the model's reasoning |
 | `Ctrl+P` | interpreted view: a markdown, JSON, CSV or TSV block (and a `.md`/`.json`/`.csv` file a tool read or wrote) shows rendered instead of as source; again: the source |
@@ -110,7 +112,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/settings mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/fast`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions` (`/approvals`), `/logout`, `/plan`, `/sandbox`, `/add-dir`, `/prompt`, `/prompt edit`, `/memory [user|add|share]`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/todo`, `/queue`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/theme`, `/settings`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/fast`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions` (`/approvals`), `/logout`, `/plan`, `/sandbox`, `/add-dir`, `/prompt`, `/prompt edit`, `/memory [user|add|share]`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/todo`, `/queue`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/sent` (`/request`), `/theme`, `/settings`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 

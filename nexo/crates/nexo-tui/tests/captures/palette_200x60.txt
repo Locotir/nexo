@@ -53,7 +53,7 @@
  /fork                                            continue in a new session copied from an earlier point of this one
  /rewind                                          go back to before an earlier message, files included (also Esc Esc)
  /undo                                            undo the last request: its messages and the files it wrote
-                                                               1/45                                                               34 more ↓
+                                                               1/46                                                               35 more ↓
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close                                                                                                                 20261102-100000-ef56

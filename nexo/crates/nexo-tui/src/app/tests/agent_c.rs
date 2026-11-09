@@ -652,9 +652,12 @@ fn a_replayed_message_with_a_note_memory_and_text_becomes_cards_and_a_bubble() {
     let mem = "<memory from=\"s-1\" title=\"parser\">\nShared.\n</memory>";
     a.history(0, Message::user(format!("{mem}\n\n{note}\n\nfix it")));
     a.history(1, Message::user("[summary] The conversation before this point was replaced\n[files]"));
-    assert!(matches!(&a.blocks[base], Block::Notice { text, .. } if text.starts_with("⊕ memory from parser")));
-    assert!(matches!(&a.blocks[base + 1], Block::User { text, .. } if crate::render::blocks::is_job_note(text)));
-    assert!(matches!(&a.blocks[base + 2], Block::User { text, .. } if text == "fix it"));
+    assert!(matches!(&a.blocks[base], Block::User { text, .. } if crate::render::blocks::is_job_note(text)));
+    assert!(matches!(&a.blocks[base + 1], Block::User { text, .. } if text == "fix it"));
+    // the memory is a folded line under the words, not a card of its own
+    assert!(
+        matches!(&a.blocks[base + 2], Block::Added { parts, folded: true } if parts.len() == 1 && parts[0].label == "memory from parser")
+    );
     assert!(
         matches!(&a.blocks[base + 3], Block::Notice { text, .. } if text.starts_with("earlier conversation summarised"))
     );
@@ -976,4 +979,228 @@ fn the_goal_window_follows_the_agent_and_closes_when_the_goal_is_cleared() {
     assert!(all.contains("paused: the turn failed") && all.contains("Resume"), "{all}");
     a.handle_agent(AgentEvent::Goal { text: None, round: 0, max: 5, state: Default::default() });
     assert!(a.modal.is_none() && a.goal_log == Default::default());
+}
+
+/// A user message and what nexo added to it, as the agent tells them.
+fn said_with_additions(a: &mut App) {
+    use nexo_core::agent::{AddedKind::*, AddedPart};
+    let note = "[project at the start of this request]\nattached: 2 files";
+    a.handle_agent(AgentEvent::History {
+        index: 0,
+        message: nexo_core::message::Message::user(format!("fix the bug\n\n{note}")),
+    });
+    let file =
+        |p: &str| AddedPart::new(File, p, format!("@{p} (attached in full, as it is now):\n```rs\nfn a() {{}}\n```"));
+    let long: String = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    a.handle_agent(AgentEvent::Added {
+        index: 0,
+        parts: vec![
+            AddedPart::new(Hook, "hook context", "it is monday"),
+            AddedPart::new(StartNote, "project", note),
+            file("a.rs"),
+            AddedPart::new(File, "b.rs", long),
+        ],
+    });
+}
+
+#[test]
+fn a_line_under_the_message_says_what_nexo_added_and_opens_to_the_text() {
+    for theme in ["dark", "light"] {
+        let (mut a, _rx) = app();
+        a.opts.animations = false;
+        a.set_theme(theme, false);
+        said_with_additions(&mut a);
+        let all = frame(&mut a, 100, 40).join("\n");
+        assert!(all.contains("+ nexo added · ") && all.contains("(hook, start note, 2 files)"), "{theme}: {all}");
+        assert!(!all.contains("it is monday") && !all.contains("line 5"), "folded: only the line, {theme}: {all}");
+        // the start note left the person's block: it is said in the line
+        assert!(all.contains("fix the bug") && !all.contains("attached: 2 files"), "{theme}: {all}");
+        // Enter on the selected line opens it: each text with its label, a long one cut
+        let at = a.blocks.iter().position(|b| matches!(b, Block::Added { .. })).unwrap();
+        a.toggle_block(at);
+        let all = frame(&mut a, 100, 60).join("\n");
+        for want in [
+            "- nexo added",
+            "hook context · hook",
+            "it is monday",
+            "project · start note",
+            "b.rs · file",
+            "line 12",
+            "… 8 more lines",
+        ] {
+            assert!(all.contains(want), "{theme}: {want} in {all}");
+        }
+        assert!(!all.contains("line 13"), "{theme}: {all}");
+        a.toggle_block(at);
+        assert!(!frame(&mut a, 100, 40).join("\n").contains("it is monday"));
+    }
+}
+
+#[test]
+fn a_message_with_nothing_added_has_no_line_and_a_supervisor_note_says_it_rides_one_request() {
+    let (mut a, _rx) = app();
+    a.opts.animations = false;
+    a.handle_agent(AgentEvent::History { index: 0, message: nexo_core::message::Message::user("just words") });
+    a.handle_agent(AgentEvent::Added { index: 0, parts: vec![] });
+    assert!(!a.blocks.iter().any(|b| matches!(b, Block::Added { .. })));
+    assert!(!frame(&mut a, 100, 30).join("\n").contains("nexo added"));
+    let mut p =
+        nexo_core::agent::AddedPart::new(nexo_core::agent::AddedKind::Supervisor, "supervisor", "check the tests");
+    p.request_only = true;
+    a.handle_agent(AgentEvent::Added { index: 0, parts: vec![p] });
+    let all = frame(&mut a, 100, 30).join("\n");
+    assert!(all.contains("(supervisor note) · this request only"), "{all}");
+    assert!(all.contains("just words"), "the person's block stays as it was");
+}
+
+#[test]
+fn sent_asks_the_agent_and_the_answer_opens_a_window_with_the_sections() {
+    use nexo_core::agent::SentSection;
+    let (mut a, mut rx) = app();
+    a.opts.animations = false;
+    for cmd in ["/sent", "/request"] {
+        a.input.set_text(cmd);
+        a.submit();
+        assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShowSent)), "{cmd}");
+    }
+    let sec = |h: &str, depth: u8, tag: Option<&str>, text: &str| SentSection {
+        heading: h.into(),
+        depth,
+        tag: tag.map(str::to_string),
+        tokens: 12,
+        text: text.into(),
+        collapse: false,
+    };
+    a.handle_agent(AgentEvent::Sent {
+        model: "m1".into(),
+        sections: vec![
+            sec("System prompt", 0, None, ""),
+            sec("instruction files", 1, None, "Use tabs."),
+            sec("#1 user", 0, None, "fix it"),
+            sec("#1 user · NUDGE", 0, Some("curator"), "[curator] Before the next step, note it"),
+        ],
+    });
+    assert!(matches!(a.modal, Some(Modal::Sent(_))));
+    let all = frame(&mut a, 120, 40).join("\n");
+    for want in [
+        "request · m1 · ~",
+        "System prompt",
+        "instruction files",
+        "Use tabs.",
+        "#1 user · NUDGE",
+        "[curator]",
+        "search",
+    ] {
+        assert!(all.contains(want), "{want} in {all}");
+    }
+    press(&mut a, KeyCode::Esc);
+    assert!(a.modal.is_none());
+}
+
+/// A resumed session's message as it was stored: the words, the start note and a file, all in one text.
+fn stored_with_additions(a: &mut App) {
+    let t = "Hola cómo estás?\n\n[project at the start of this request]\nattached: 1 files, 1883 tokens\n\n\
+             @1-builtin-instructions.md (attached in full, as it is now):\n```md\nuno\ndos\ntres\n```";
+    a.handle_agent(AgentEvent::History { index: 0, message: nexo_core::message::Message::user(t) });
+}
+
+#[test]
+fn the_view_shows_only_what_the_person_typed_until_the_additions_are_opened() {
+    for theme in ["dark", "light"] {
+        // live: the words as typed, what nexo added told as it was built
+        let (mut live, _rx) = app();
+        live.opts.animations = false;
+        live.set_theme(theme, false);
+        said_with_additions(&mut live);
+        // resumed: the stored message holds all of it in one text, split at its markers
+        let (mut old, _rx) = app();
+        old.opts.animations = false;
+        old.set_theme(theme, false);
+        stored_with_additions(&mut old);
+        for (what, a) in [("live", &mut live), ("resumed", &mut old)] {
+            let all = frame(a, 100, 40).join("\n");
+            assert!(all.contains("+ nexo added · ") && all.contains("start note"), "{what} {theme}: {all}");
+            for hidden in ["project at the start", "attached: ", "builtin-instructions", "uno"] {
+                assert!(!all.contains(hidden), "{what} {theme}: {hidden:?} shows by default: {all}");
+            }
+            let words = if what == "live" { "fix the bug" } else { "Hola cómo estás?" };
+            let Some(Block::User { text, .. }) = a.blocks.iter().find(|b| matches!(b, Block::User { .. })) else {
+                panic!("no message")
+            };
+            assert_eq!(text, words, "{what} {theme}: the message holds only the typed words");
+        }
+        let all = frame(&mut old, 100, 40).join("\n");
+        assert!(all.contains("(start note, file)"), "{theme}: {all}");
+    }
+}
+
+#[test]
+fn right_opens_what_was_added_to_the_selected_message_and_left_folds_it_back() {
+    for theme in ["dark", "light"] {
+        let (mut a, _rx) = app();
+        a.opts.animations = false;
+        a.set_theme(theme, false);
+        stored_with_additions(&mut a);
+        frame(&mut a, 100, 40);
+        let user = a.blocks.iter().position(|b| matches!(b, Block::User { .. })).unwrap();
+        // a one-line message with something added can be selected: it has a line to open
+        a.selected = Some(user);
+        press(&mut a, KeyCode::Right);
+        let all = frame(&mut a, 100, 60).join("\n");
+        for want in [
+            "- nexo added",
+            "project at the start of the request · start note",
+            "attached: 1 files, 1883 tokens",
+            "1-builtin-instructions.md · file",
+            "uno",
+        ] {
+            assert!(all.contains(want), "{theme}: {want} in {all}");
+        }
+        assert_eq!(a.selected, Some(user), "the message stays selected");
+        press(&mut a, KeyCode::Right);
+        assert!(
+            frame(&mut a, 100, 60).join("\n").contains("attached: 1 files, 1883 tokens"),
+            "→ on an open one keeps it"
+        );
+        press(&mut a, KeyCode::Left);
+        let all = frame(&mut a, 100, 60).join("\n");
+        assert!(all.contains("+ nexo added") && !all.contains("attached: 1 files") && !all.contains("uno"), "{all}");
+        assert!(all.contains("Hola cómo estás?"));
+    }
+}
+
+#[test]
+fn a_double_click_on_the_message_opens_what_was_added_and_another_folds_it() {
+    let (mut a, _rx) = app();
+    a.opts.animations = false;
+    stored_with_additions(&mut a);
+    a.transcript_area = Rect::new(0, 1, 100, 30);
+    a.layout(100);
+    a.settle(30);
+    let user = a.blocks.iter().position(|b| matches!(b, Block::User { .. })).unwrap();
+    let added = a.companion(user).expect("a line under the message");
+    let row = |a: &App, i: usize| (a.offsets[i] - a.scroll) as u16 + 1;
+    let open = |a: &App| matches!(a.blocks[added], Block::Added { folded: false, .. });
+    // one click only selects
+    let r = row(&a, user);
+    a.press_at(4, r);
+    a.release_at(4, r);
+    assert_eq!(a.selected, Some(user));
+    assert!(!open(&a), "one click only selects");
+    // the second, at once, opens it, and the word under it is not what it selects
+    a.press_at(4, r);
+    a.release_at(4, r);
+    assert!(open(&a));
+    assert!(a.selection.is_none());
+    a.layout(100);
+    a.settle(30);
+    // a double click on the line of the additions folds it back
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    let r = row(&a, added);
+    a.press_at(4, r);
+    a.release_at(4, r);
+    assert!(open(&a), "a single click leaves it as it is");
+    a.press_at(4, r);
+    a.release_at(4, r);
+    assert!(!open(&a));
 }

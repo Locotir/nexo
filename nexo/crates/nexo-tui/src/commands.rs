@@ -103,6 +103,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("diff", &[], "", "browse staged, unstaged and new files"),
     spec("panel", &[], "", "live agent sessions by program: events, todo, mail; message and pause them (s filters)"),
     spec("cost", &["usage"], "", "window: tokens, cost, calls"),
+    spec("sent", &["request"], "", "window: the last request exactly as sent, by section; what nexo added, what the curator put in"),
     spec("context", &["ctx"], "[live]", "window: what the next call sends; `live`: a map of it beside the transcript"),
     spec("theme", &[], "[name]", "change the colours (a picker without a name)"),
     spec("copy", &[], "[code]", "copy the last reply to the clipboard; `code`: its last code block"),
@@ -187,6 +188,8 @@ pub enum Command {
     Msg(Option<String>),
     Diff,
     Cost,
+    /// `/sent` (`/request`): the last request as it was sent, by section.
+    Sent,
     Context,
     ContextLive,
     Theme(Option<String>),
@@ -289,6 +292,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "pr" => Command::Pr(arg),
         "status" => Command::Status,
         "tools" => Command::Tools,
+        "sent" => Command::Sent,
         "hooks" => Command::Hooks,
         "mcp" => Command::Mcp,
         "skills" => Command::Skills,
@@ -452,8 +456,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     (
         "context and tools",
         &[
-            "context", "cost", "tools", "hooks", "mcp", "skills", "plugins", "jobs", "panel", "todo", "diff", "init",
-            "review", "commit", "pr", "status",
+            "context", "sent", "cost", "tools", "hooks", "mcp", "skills", "plugins", "jobs", "panel", "todo", "diff",
+            "init", "review", "commit", "pr", "status",
         ],
     ),
     ("settings", &["settings", "sandbox", "add-dir", "theme"]),
@@ -637,6 +641,8 @@ mod tests {
         );
         assert_eq!(parse("/sandbox sideways"), Some(Command::BadArgument("sandbox".into(), "sideways".into())));
         assert_eq!(parse("/system"), Some(Command::Prompt));
+        assert_eq!(parse("/sent"), Some(Command::Sent));
+        assert_eq!(parse("/request"), Some(Command::Sent));
         assert_eq!(parse("/prompt edit"), Some(Command::PromptEdit));
         assert_eq!(parse("/pricing in=1 out=2"), Some(Command::Pricing(Some("in=1 out=2".into()))));
         assert_eq!(parse("/prices"), Some(Command::Pricing(None)));
@@ -757,7 +763,7 @@ mod tests {
             assert!(lookup(old).is_some(), "/{old} no longer resolves");
             assert!(GROUPS.iter().all(|(_, m)| !m.contains(&old)), "/{old} is in a menu group");
         }
-        assert_eq!(COMMANDS.len(), 45, "the menu has grown or shrunk: update this on purpose");
+        assert_eq!(COMMANDS.len(), 46, "the menu has grown or shrunk: update this on purpose");
         for old in ["provider", "keys", "config", "yolo"] {
             assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
         }
