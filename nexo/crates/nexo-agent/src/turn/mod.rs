@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use nexo_core::agent::{
-    AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalState, Level, TurnEnd, GOAL_BRIEF_HEAD,
-    GOAL_CONTINUE_MARK, GOAL_SET_MARK, SUPERVISOR_RESUME_MARK,
+    AgentCommand, AgentEnds, AgentEvent, Attachment, EventTx, GoalLog, GoalState, GoalStop, Level, TurnEnd,
+    GOAL_BRIEF_HEAD, GOAL_CONTINUE_MARK, GOAL_SET_MARK, GOAL_STOPS, SUPERVISOR_RESUME_MARK,
 };
 use nexo_core::config::{Config, OnLimit, ProviderConfig};
 use nexo_core::error::{ErrorKind, ProviderError};
@@ -131,6 +131,10 @@ struct State {
     goal_round: u32,
     /// Where the goal stands: only an active goal is continued when a turn ends.
     goal_state: GoalState,
+    /// What the goal panel shows: both wordings of the goal, its stops, steps and spend (see `goal_log`).
+    goal_log: GoalLog,
+    /// The session's cost when the goal was set, to tell what the goal spent.
+    goal_cost0: f64,
     /// What files looked like before the agent wrote them: `(history length at the time, file,
     /// its bytes then or None when it did not exist)`, so a rewind can put them back.
     checkpoints: Vec<(usize, PathBuf, Option<Vec<u8>>)>,
@@ -358,6 +362,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let goal = session.goal().map(String::from);
     let goal_state = session.goal_state().clone();
     if goal.is_some() {
+        emit(&events, AgentEvent::GoalLog(resumed_log(goal.as_deref())));
         emit(&events, AgentEvent::Goal { text: goal.clone(), round: 0, max: goal_rounds(), state: goal_state.clone() });
     }
     let (usage, cost) = (session.usage(), session.cost());
@@ -389,6 +394,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         live: None,
         turn_start: 0,
         turns: 0,
+        goal_log: resumed_log(goal.as_deref()),
+        goal_cost0: cost,
         goal,
         goal_round: 0,
         goal_state,

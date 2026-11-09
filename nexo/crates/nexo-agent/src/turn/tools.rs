@@ -452,7 +452,8 @@ pub(super) async fn run_call(
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
             let (jobs, seen, perm, rules_cwd, sandbox, vision, post_check, check_secs) = {
-                let st = state.lock().await;
+                let mut st = state.lock().await;
+                count_step(&mut st);
                 let (provider, _, model) = st.target.get();
                 // a picture is withheld only where the model catalogue says the model cannot see it
                 let vision = nexo_providers::catalogue::cached()

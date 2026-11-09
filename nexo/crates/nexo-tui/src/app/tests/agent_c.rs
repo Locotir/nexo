@@ -878,3 +878,102 @@ fn the_branch_keeps_its_slashes_and_a_windows_cwd_shows_its_last_folder() {
     }];
     assert_eq!(a.peer_values(), vec![("api".to_string(), "api".to_string())]);
 }
+
+fn goal_with_log(a: &mut App, state: GoalState) {
+    use nexo_core::agent::{GoalLog, GoalStop};
+    let now = nexo_core::mailbox::now_ms();
+    a.handle_agent(AgentEvent::GoalLog(GoalLog {
+        original: Some("tests green pls".into()),
+        brief: Some(
+            "Want: every test passes\nWhy: the release is blocked\nHow: fix the code\nDone when: 0 failed".into(),
+        ),
+        started_ms: now - 125_000,
+        steps: 7,
+        cost_usd: 0.0123,
+        stops: vec![GoalStop { at_ms: now - 60_000, why: "interrupted".into() }],
+        last: Some("Fixed the parser".into()),
+    }));
+    a.handle_agent(AgentEvent::Goal {
+        text: Some(
+            "Want: every test passes\nWhy: the release is blocked\nHow: fix the code\nDone when: 0 failed".into(),
+        ),
+        round: 2,
+        max: 5,
+        state,
+    });
+}
+
+#[test]
+fn a_click_on_the_goal_opens_its_window_and_esc_closes_it() {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    let (mut a, _rx) = app();
+    a.opts.animations = false;
+    goal_with_log(&mut a, GoalState::Active);
+    frame(&mut a, 120, 50);
+    let goal =
+        a.status_hits.iter().find(|(_, h)| *h == StatusHit::Goal).map(|(r, _)| *r).expect("the goal is on the bar");
+    pointer(&mut a, K::Moved, goal.x, goal.y);
+    assert_eq!(a.hover, Hover::Status(StatusHit::Goal));
+    pointer(&mut a, K::Down(MouseButton::Left), goal.x + 1, goal.y);
+    assert!(matches!(a.modal, Some(Modal::Goal(_))), "the goal opens its window, not the context");
+    let all = frame(&mut a, 120, 50).join("\n");
+    for want in [
+        "◎ goal",
+        "round 2/5",
+        "running 2 min",
+        "7 steps",
+        "you asked",
+        "tests green pls",
+        "restated",
+        "Want: every test passes",
+        "Fixed the parser",
+        "interruptions (1)",
+        "1 min ago · interrupted",
+    ] {
+        assert!(all.contains(want), "missing {want:?} in:\n{all}");
+    }
+    assert!(!all.contains("Resume"), "a goal at work has nothing to resume:\n{all}");
+    press(&mut a, KeyCode::Esc);
+    assert!(a.modal.is_none(), "Esc closes it");
+    // with no goal there is nothing to click
+    a.handle_agent(AgentEvent::Goal { text: None, round: 0, max: 5, state: Default::default() });
+    frame(&mut a, 120, 50);
+    assert!(a.status_hits.iter().all(|(_, h)| *h != StatusHit::Goal));
+}
+
+#[test]
+fn the_goal_window_of_a_paused_goal_resumes_it_with_a_click_or_a_key() {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    let (mut a, mut rx) = app();
+    a.opts.animations = false;
+    goal_with_log(&mut a, GoalState::Paused("interrupted".into()));
+    frame(&mut a, 120, 50);
+    a.open_goal();
+    let all = frame(&mut a, 120, 50).join("\n");
+    assert!(all.contains("paused: interrupted") && all.contains("Resume"), "{all}");
+    // the button is the row the pointer was given
+    let button = a.picker_rows.first().map(|(r, _)| *r).expect("the Resume button is a row");
+    pointer(&mut a, K::Down(MouseButton::Left), button.x + 2, button.y);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ResumeGoal)));
+    assert!(a.modal.is_none(), "the window closes");
+    // the key does the same
+    a.open_goal();
+    frame(&mut a, 120, 50);
+    press(&mut a, KeyCode::Char('r'));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::ResumeGoal)));
+    assert!(a.modal.is_none());
+}
+
+#[test]
+fn the_goal_window_follows_the_agent_and_closes_when_the_goal_is_cleared() {
+    let (mut a, _rx) = app();
+    a.opts.animations = false;
+    goal_with_log(&mut a, GoalState::Active);
+    a.open_goal();
+    frame(&mut a, 120, 30);
+    goal_with_log(&mut a, GoalState::Paused("the turn failed".into()));
+    let all = frame(&mut a, 120, 30).join("\n");
+    assert!(all.contains("paused: the turn failed") && all.contains("Resume"), "{all}");
+    a.handle_agent(AgentEvent::Goal { text: None, round: 0, max: 5, state: Default::default() });
+    assert!(a.modal.is_none() && a.goal_log == Default::default());
+}

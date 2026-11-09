@@ -26,6 +26,7 @@ pub mod event;
 pub mod frame;
 pub mod frame_stats;
 pub mod fuzzy;
+pub mod goal_view;
 pub mod inline;
 pub mod input;
 pub mod insights;

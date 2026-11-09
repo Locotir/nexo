@@ -315,6 +315,8 @@ pub enum Modal {
     Todo(Box<crate::todo_view::TodoView>),
     /// `/mcp`: the MCP servers, with their state and controls.
     Mcp(Box<crate::mcp_view::McpView>),
+    /// A click on `◎ goal`: the goal, its stops and a Resume button.
+    Goal(Box<crate::goal_view::GoalView>),
     /// The start in a folder not trusted yet.
     Trust(Trust),
 }
@@ -445,7 +447,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Shift+Tab", "switch mode: ask → accept-edits → plan"),
             ("/plan [text]", "plan first: the model reads, you approve, then it writes"),
-            ("Status bar", "click the model: switch · the gauge: /context · the cost: /usage"),
+            ("Status bar", "click the model: switch · the gauge: /context · the cost: /usage · the goal: its window"),
         ],
     ),
 ];
@@ -573,6 +575,7 @@ impl Modal {
             Modal::Jobs(j) => j.key(key),
             Modal::Todo(t) => t.key(key),
             Modal::Mcp(m) => m.key(key),
+            Modal::Goal(g) => g.key(key),
             Modal::Trust(t) => t.key(key),
             Modal::Info(i) => match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => ModalOut::Close,
@@ -704,6 +707,11 @@ impl Modal {
                 }
                 ModalOut::Nothing
             }
+            // the Resume button
+            Modal::Goal(g) => match rows.iter().find(|(r, _)| contains(*r, x, y)) {
+                Some(_) if g.can_resume() => g.resume(),
+                _ => ModalOut::Nothing,
+            },
             Modal::Info(i) => {
                 if contains(i.close, x, y) || !contains(i.window, x, y) {
                     return ModalOut::Close;
@@ -744,6 +752,7 @@ impl Modal {
             Modal::Jobs(j) => j.scroll_by(delta),
             Modal::Todo(t) => t.scroll_by(delta),
             Modal::Mcp(m) => m.scroll_by(delta),
+            Modal::Goal(g) => g.scroll_by(delta),
             Modal::Trust(_) => {}
         }
     }
@@ -772,6 +781,7 @@ impl Modal {
             Modal::Jobs(j) => j.scroll = off,
             Modal::Todo(t) => t.scroll_to_line(off),
             Modal::Mcp(m) => m.scroll = off,
+            Modal::Goal(g) => g.scroll = off,
             Modal::Picker(p) => pick(p, off, viewport, first),
             Modal::Setup(s) => pick(&mut s.list, off, viewport, first),
             Modal::Trust(_) => {}

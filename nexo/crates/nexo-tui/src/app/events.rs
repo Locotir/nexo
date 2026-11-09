@@ -348,6 +348,12 @@ impl App {
                 self.dirty = true;
             }
         }
+        // the goal window's clock
+        if let Some(Modal::Goal(v)) = &mut self.modal {
+            if v.tick() {
+                self.dirty = true;
+            }
+        }
         // the jobs window asks for fresh output now and then
         if let Some(Modal::Jobs(v)) = &mut self.modal {
             if let Some(cmd) = v.refresh() {
@@ -800,6 +806,7 @@ impl App {
                 }
                 self.fast = on;
             }
+            AgentEvent::GoalLog(log) => self.goal_log = log,
             AgentEvent::Goal { text, round, max, state } => {
                 match (&text, &self.goal) {
                     (None, Some(_)) => self.flash("goal cleared"),
@@ -817,6 +824,10 @@ impl App {
                     _ => {}
                 }
                 self.goal = text.map(|text| Goal { text, round, max, state });
+                if self.goal.is_none() {
+                    self.goal_log = Default::default();
+                }
+                self.sync_goal_view();
             }
             AgentEvent::SystemPrompt { text } => {
                 self.system_prompt = Some(text.clone());

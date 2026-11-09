@@ -326,6 +326,36 @@ pub const SUPERVISOR_RESUME_MARK: &str = "[supervisor: continue]";
 /// How a goal the agent restated (`goal_brief`) begins.
 pub const GOAL_BRIEF_HEAD: &str = "Want: ";
 
+/// One time the goal stopped short of done: when (unix ms) and why (Esc, a guard, the round limit, an error).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalStop {
+    pub at_ms: i64,
+    pub why: String,
+}
+
+/// What the goal panel shows besides the goal's state: both wordings of the goal, how long it has run,
+/// what it cost and how it was interrupted.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GoalLog {
+    /// The person's own words, as they set the goal.
+    pub original: Option<String>,
+    /// How the agent restated it (`goal_brief`), once it has.
+    pub brief: Option<String>,
+    /// When the goal was set (unix ms); 0 when it comes from a session resumed from disk.
+    pub started_ms: i64,
+    /// Tool calls made since the goal was set.
+    pub steps: u32,
+    /// What the session spent since the goal was set.
+    pub cost_usd: f64,
+    /// The times it stopped short of done, oldest first (the last [`GOAL_STOPS`] are kept).
+    pub stops: Vec<GoalStop>,
+    /// The first line of the agent's latest reply.
+    pub last: Option<String>,
+}
+
+/// How many stops a goal remembers.
+pub const GOAL_STOPS: usize = 20;
+
 /// Where a goal stands, which says what happens when a turn ends.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state", content = "why")]
@@ -722,6 +752,8 @@ pub enum AgentEvent {
         #[serde(default)]
         state: GoalState,
     },
+    /// What the goal has done so far, sent just before each `Goal` that sets, restates or moves a goal.
+    GoalLog(GoalLog),
     /// A mail of this session was written into another's inbox.
     MailSent {
         id: String,

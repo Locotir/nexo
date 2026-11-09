@@ -331,6 +331,8 @@ pub struct App {
     pub todo: Vec<TodoItem>,
     /// The goal in force: its text, rounds and state.
     pub goal: Option<Goal>,
+    /// What the goal has done so far (both wordings, stops, steps, spend), for its window.
+    pub goal_log: nexo_core::agent::GoalLog,
     /// The round a goal continuation just began, for the line that marks it in the transcript.
     goal_round_said: Option<(u32, u32)>,
     /// The scrollbars of the last frame: the transcript's, and the one of the dialog on top.
@@ -379,6 +381,8 @@ pub enum StatusHit {
     Gauge,
     /// The tokens billed and the cost: `/usage`.
     Cost,
+    /// The goal: its window.
+    Goal,
 }
 
 /// A piece of the keys row that answers a click.
@@ -560,6 +564,7 @@ impl App {
             todo: Vec::new(),
             goal: None,
             goal_round_said: None,
+            goal_log: Default::default(),
             transcript_bar: None,
             modal_bar: None,
             modal_list_first: 0,

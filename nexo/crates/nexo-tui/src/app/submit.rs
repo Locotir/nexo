@@ -260,6 +260,26 @@ impl App {
         self.modal = Some(Modal::Todo(Box::new(crate::todo_view::TodoView::new(self.todo.clone()))));
     }
 
+    /// A click on `◎ goal`: the goal's window.
+    pub fn open_goal(&mut self) {
+        match &self.goal {
+            Some(g) => {
+                self.modal =
+                    Some(Modal::Goal(Box::new(crate::goal_view::GoalView::new(g.clone(), self.goal_log.clone()))));
+            }
+            None => self.notice(Level::Info, "no goal set: /goal <text> keeps the agent on it across turns"),
+        }
+    }
+
+    /// The agent told the goal again: an open window follows it, and closes when the goal is cleared.
+    pub(super) fn sync_goal_view(&mut self) {
+        let Some(Modal::Goal(v)) = &mut self.modal else { return };
+        match &self.goal {
+            Some(g) => v.set(g.clone(), self.goal_log.clone()),
+            None => self.modal = None,
+        }
+    }
+
     /// `/mcp`: the window with the MCP servers (asks the agent for a fresh listing).
     pub fn open_mcp(&mut self) {
         self.modal = Some(Modal::Mcp(Box::new(crate::mcp_view::McpView::new(self.mcp.clone()))));

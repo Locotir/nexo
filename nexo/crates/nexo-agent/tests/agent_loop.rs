@@ -1828,6 +1828,13 @@ fn goal_state_of(evs: &[AgentEvent]) -> Option<GoalState> {
     })
 }
 
+fn last_goal_log(evs: &[AgentEvent]) -> Option<nexo_core::agent::GoalLog> {
+    evs.iter().rev().find_map(|e| match e {
+        AgentEvent::GoalLog(l) => Some(l.clone()),
+        _ => None,
+    })
+}
+
 fn user_texts(evs: &[AgentEvent]) -> Vec<String> {
     evs.iter()
         .filter_map(|e| match e {
@@ -1900,6 +1907,11 @@ async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
         "Want: every test in the workspace passes\nWhy: the release is blocked on red tests\nHow: fix the code, \
                 not the tests; keep the style\nDone when: cargo test shows 0 failed";
     assert!(t1.iter().any(|e| matches!(e, AgentEvent::Goal { text: Some(t), .. } if t == want)));
+    // the person's words are kept beside the restatement, with the call it took
+    let log = last_goal_log(&t1).expect("the goal's log is sent");
+    assert_eq!(log.original.as_deref(), Some("tests green pls"));
+    assert_eq!(log.brief.as_deref(), Some(want));
+    assert!(log.steps >= 1 && log.started_ms > 0, "{log:?}");
     let reqs = client.requests();
     assert!(reqs[0].system.contains("Goal, in the person's words: tests green pls\n"));
     assert!(reqs[0].tools.iter().any(|t| t.name == "goal_brief"));
@@ -1912,6 +1924,8 @@ async fn the_agent_restates_the_goal_and_the_restatement_is_the_goal() {
     let mut r = start(client, config(PermissionMode::Auto), Some(id), dir.path()).await;
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_of(&evs).and_then(|g| g.0), Some(want.to_string()));
+    let log = last_goal_log(&evs).expect("a resumed goal sends its log");
+    assert_eq!((log.original, log.brief.as_deref()), (None, Some(want)), "the restatement is all that was saved");
     r.stop().await;
 }
 
@@ -2122,6 +2136,13 @@ async fn esc_and_a_failed_turn_pause_the_goal_and_resume_goes_on() {
     assert_eq!(end_of(&t), TurnEnd::Error);
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { .. })).await;
     assert_eq!(goal_state_of(&evs), Some(GoalState::Paused("the turn failed".into())));
+    // each stop is kept with its reason and its time, the goal's own words are not touched
+    let log = last_goal_log(&evs).expect("the goal's log is sent");
+    let whys: Vec<&str> = log.stops.iter().map(|s| s.why.as_str()).collect();
+    assert_eq!(whys, vec!["interrupted", "the turn failed"]);
+    assert!(log.stops.iter().all(|s| s.at_ms > 0) && log.stops[0].at_ms <= log.stops[1].at_ms);
+    assert_eq!(log.original.as_deref(), Some("tidy up"));
+    assert_eq!(log.brief, None);
     r.send(AgentCommand::ResumeGoal);
     r.turn().await;
     let evs = r.until(|e| matches!(e, AgentEvent::Goal { state: GoalState::Done, .. })).await;

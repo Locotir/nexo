@@ -58,6 +58,8 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.goal = st.session.goal().map(String::from);
     st.goal_state = st.session.goal_state().clone();
     st.goal_round = 0;
+    st.goal_log = resumed_log(st.goal.as_deref());
+    st.goal_cost0 = st.cost;
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
         &st.events,
@@ -335,6 +337,7 @@ pub(super) async fn clear(state: &Shared) {
     st.turns = 0;
     let had_goal = st.goal.take().is_some();
     st.goal_round = 0;
+    st.goal_log = GoalLog::default();
     st.goal_state = GoalState::Active;
     if had_goal {
         emit_goal(&st);

@@ -465,6 +465,11 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                 let cmd = match app.status_hit(m.column) {
                     Some(StatusHit::Model) => Command::Model(None),
                     Some(StatusHit::Cost) => Command::Cost,
+                    // the goal opens its own window
+                    Some(StatusHit::Goal) => {
+                        app.open_goal();
+                        return;
+                    }
                     Some(StatusHit::Gauge) | None => Command::Context,
                 };
                 app.run_command(cmd);

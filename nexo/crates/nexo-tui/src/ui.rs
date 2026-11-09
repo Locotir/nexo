@@ -151,7 +151,8 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         };
         // the to-do and jobs windows get clear ground, so no piece of the welcome card shows beside them; the
         // others keep the text in sight (a theme preview needs it) and clear only the cells beside the box
-        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_) | Modal::Trust(_))) {
+        if matches!(app.modal, Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_) | Modal::Goal(_) | Modal::Trust(_)))
+        {
             clear_bg(f, area_for, &app.theme);
         }
         draw_modal(f, app, area_for);
@@ -673,8 +674,15 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             hits.push((Rect::new(area.x + used as u16, area.y, gw as u16, 1), h));
         }
         let m = hit.map(lit).unwrap_or_else(Modifier::empty);
+        // the goal piece answers a click of its own, inside the group of the mode
+        if let Some(at) = g.iter().position(is_goal_seg) {
+            let before: usize = g[..at].iter().map(|s| width(&s.text)).sum();
+            let gw = width(&g[at].text);
+            hits.push((Rect::new(area.x + (used + before) as u16, area.y, gw as u16, 1), StatusHit::Goal));
+        }
         for s in g {
             used += width(&s.text);
+            let m = if is_goal_seg(s) { lit(StatusHit::Goal) } else { m };
             spans.push(Span::styled(s.text.clone(), s.style.add_modifier(m)));
         }
     }
@@ -697,6 +705,11 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     }
     app.status_hits = hits;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The goal's piece of the bar: `◎ goal`, `◎ goal: your turn`, `◎ goal paused`, `✓ goal`.
+fn is_goal_seg(s: &Seg) -> bool {
+    s.text.starts_with("◎ goal") || s.text.starts_with("✓ goal")
 }
 
 /// The gauge's percentage (" 42%", " ~42%"), not another piece that ends in one.
@@ -2232,6 +2245,8 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     let mut todo_head: Option<usize> = None;
     // the rules of a permission: pinned above the buttons, never scrolled out of sight
     let mut pinned: Vec<Line<'static>> = Vec::new();
+    // the goal window: which pinned row is its Resume button
+    let mut goal_button: Option<usize> = None;
     let (title, body, buttons): (String, Vec<Line<'static>>, Option<Buttons>) = match modal {
         Modal::Permission(p) => {
             let btn_h: u16 = if max_h < 9 { 1 } else { 2 };
@@ -2330,6 +2345,12 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             todo_head = b.done_head;
             (v.title(), b.lines, None)
         }
+        Modal::Goal(v) => {
+            let (rows, button) = v.pinned(inner_w, &theme);
+            pinned = rows;
+            goal_button = button;
+            (v.title(), v.lines(inner_w, &theme, nexo_core::mailbox::now_ms()), None)
+        }
         Modal::Trust(t) => {
             let (lines, rows) = trust_rows(t, inner_w, &theme);
             pinned = rows;
@@ -2414,6 +2435,10 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
             v.scroll
         }
+        Modal::Goal(v) => {
+            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
+            v.scroll
+        }
         Modal::Trust(_) => 0,
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => 0,
         Modal::Picker(p) => {
@@ -2456,6 +2481,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         | Modal::Jobs(_)
         | Modal::Todo(_)
         | Modal::Mcp(_)
+        | Modal::Goal(_)
         | Modal::Trust(_) => Some(0),
         Modal::Picker(_) | Modal::Setup(_) => rows.map(|(first, _)| first),
         Modal::Info(_) | Modal::Agents(_) | Modal::Question(_) => None,
@@ -2513,6 +2539,9 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             for i in 0..pinned_h {
                 app.picker_rows.push((Rect::new(inner.x + 1, py + i, inner.width.saturating_sub(2), 1), i as usize));
             }
+        }
+        if let (Modal::Goal(_), Some(i)) = (&*modal, goal_button) {
+            app.picker_rows.push((Rect::new(inner.x + 1, py + i as u16, inner.width.saturating_sub(2), 1), 0));
         }
         f.render_widget(
             Paragraph::new(Text::from(pinned)),

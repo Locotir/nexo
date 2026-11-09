@@ -88,6 +88,13 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
     st.goal = text.clone();
     st.goal_round = 0;
     st.goal_state = GoalState::Active;
+    st.goal_log = match &text {
+        Some(t) => {
+            GoalLog { original: Some(t.clone()), started_ms: nexo_core::mailbox::now_ms(), ..GoalLog::default() }
+        }
+        None => GoalLog::default(),
+    };
+    st.goal_cost0 = st.cost;
     if let Err(e) = st.session.record_goal(text.as_deref()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
@@ -111,6 +118,7 @@ pub(super) async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
         return ToolOutput::error("no goal is set: carry on with the request");
     }
     st.goal = Some(brief.clone());
+    st.goal_log.brief = Some(brief.clone());
     if let Err(e) = st.session.record_goal(Some(&brief)) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
@@ -119,8 +127,43 @@ pub(super) async fn goal_brief(state: &Shared, args: &Value) -> ToolOutput {
     ToolOutput::ok("The goal now reads as restated. Go on with the work.")
 }
 
+/// The log of a goal found on disk: the person's words are not saved with the session, so a restated goal is
+/// shown as the restatement, and one never restated as the words themselves; the time it was set is not known.
+pub(super) fn resumed_log(goal: Option<&str>) -> GoalLog {
+    let mut log = GoalLog::default();
+    match goal {
+        Some(g) if g.starts_with(GOAL_BRIEF_HEAD) => log.brief = Some(g.to_string()),
+        Some(g) => log.original = Some(g.to_string()),
+        None => {}
+    }
+    log
+}
+
+/// What the goal panel shows now: the log, the spend since the goal was set and the latest reply's first line.
+pub(super) fn goal_log(st: &State) -> GoalLog {
+    let last = st
+        .history
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::Assistant)
+        .find_map(|m| m.text().lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string))
+        .map(|l| l.chars().take(200).collect());
+    GoalLog { cost_usd: (st.cost - st.goal_cost0).max(0.0), last, ..st.goal_log.clone() }
+}
+
+/// A tool call made while a goal is set counts as one of its steps.
+pub(super) fn count_step(st: &mut State) {
+    if st.goal.is_some() {
+        st.goal_log.steps += 1;
+    }
+}
+
 /// Tells the interface the goal, its round and its state.
 pub(super) fn emit_goal(st: &State) {
+    // the log goes first: the interface has it when the goal it belongs to arrives
+    if st.goal.is_some() {
+        emit(&st.events, AgentEvent::GoalLog(goal_log(st)));
+    }
     let event = AgentEvent::Goal {
         text: st.goal.clone(),
         round: st.goal_round,
@@ -135,6 +178,13 @@ pub(super) fn emit_goal(st: &State) {
 pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
     st.goal_state = to.clone();
     st.goal_round = 0;
+    // every pause is remembered with its time and reason (Esc, a guard, a limit, an error), for the goal panel
+    if let GoalState::Paused(why) = &to {
+        let stops = &mut st.goal_log.stops;
+        stops.push(GoalStop { at_ms: nexo_core::mailbox::now_ms(), why: why.clone() });
+        let extra = stops.len().saturating_sub(GOAL_STOPS);
+        stops.drain(..extra);
+    }
     if let Err(e) = st.session.record_goal_state(to) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
@@ -356,5 +406,18 @@ mod goal_tests {
             s.starts_with("base\n\nGoal, as the person means it:\nWant: a\n") && !s.contains("call `goal_brief` once")
         );
         assert!(s.contains("`[goal: continue]` comes from the loop"));
+    }
+
+    #[test]
+    fn a_goal_from_disk_shows_as_the_words_it_was_saved_in() {
+        assert_eq!(resumed_log(None), GoalLog::default());
+        let own = resumed_log(Some("tests green pls"));
+        assert_eq!((own.original.as_deref(), own.brief), (Some("tests green pls"), None));
+        let restated = resumed_log(Some("Want: green\nWhy: x\nHow: y\nDone when: z"));
+        assert_eq!(
+            (restated.original, restated.brief.as_deref()),
+            (None, Some("Want: green\nWhy: x\nHow: y\nDone when: z"))
+        );
+        assert_eq!(restated.started_ms, 0, "when it was set is not known");
     }
 }
