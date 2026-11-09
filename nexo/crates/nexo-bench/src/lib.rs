@@ -53,6 +53,8 @@ pub struct Options {
     pub temperature: Option<f32>,
     /// Run with `agent.close_on_verified` on.
     pub close_on_verified: bool,
+    /// Seconds one run may take before it is interrupted and ends as `timeout`; 0: no limit.
+    pub run_timeout: u64,
     pub out: PathBuf,
     pub skip_preflight: bool,
     /// The external benchmark's distribution, for the tasks `repoqa` and `canonstep`.
@@ -67,6 +69,11 @@ pub struct Options {
     pub polyglot: Option<PathBuf>,
     /// The languages of the task `polyglot`; empty: python, rust, go, cpp and javascript.
     pub langs: Vec<String>,
+}
+
+/// The wall time one run may take, from `--run-timeout` seconds; 0: no limit.
+pub fn run_limit(secs: u64) -> Option<std::time::Duration> {
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
 }
 
 /// The protocol an address most likely speaks: `anthropic` when the address says so (DeepSeek's
@@ -185,6 +192,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
         client,
         spent: Arc::default(),
         close_on_verified: opts.close_on_verified,
+        run_timeout: run_limit(opts.run_timeout),
     };
 
     let ctx = llmb::Ctx {
@@ -588,6 +596,7 @@ mod tests {
             window: None,
             temperature: None,
             close_on_verified: false,
+            run_timeout: 0,
             out,
             skip_preflight: false,
             llmb: None,

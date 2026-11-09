@@ -78,6 +78,7 @@ fn bench(script: Vec<Step>, max_steps: u32, on: bool, out: &std::path::Path) -> 
         client: Arc::new(Seq(Mutex::new(script.into()))),
         spent: Arc::default(),
         close_on_verified: on,
+        run_timeout: None,
     }
 }
 

@@ -71,6 +71,7 @@ fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) ->
         client,
         spent: Arc::default(),
         close_on_verified: false,
+        run_timeout: None,
     }
 }
 

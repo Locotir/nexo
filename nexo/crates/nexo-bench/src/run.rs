@@ -50,6 +50,9 @@ pub struct Bench {
     pub spent: Arc<Mutex<f64>>,
     /// Runs with `agent.close_on_verified` on.
     pub close_on_verified: bool,
+    /// The wall time one run may take; past it the agent is interrupted and the run ends as `timeout`.
+    /// None: no limit.
+    pub run_timeout: Option<Duration>,
 }
 
 /// One line of `results.jsonl`. Fields missing from older files read as their defaults.
@@ -205,6 +208,9 @@ pub struct Driven {
     pub sealed: bool,
 }
 
+/// How long an interrupted agent gets to go idle before the run gives up waiting for it.
+const GRACE: Duration = Duration::from_secs(10);
+
 /// The transcript file name of a run.
 pub fn transcript_name(task: &str, arm: &Arm, rep: u32) -> String {
     format!("{}-{}-{}.jsonl", task.replace(['/', '\\'], "_"), arm.name, rep)
@@ -228,6 +234,7 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
     config.agent.system_prompt_file = plan.system_prompt.clone();
     let since = SystemTime::now();
     let started = Instant::now();
+    let limit = bench.run_timeout.map(|t| started + t);
     let mut stats = LoopStats::default();
     let mut answers = Vec::new();
     let mut replies = Vec::new();
@@ -250,9 +257,18 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
             mail: None,
             mcp: None,
         };
-        let id =
-            converse(setup, &plan.turns, n, plan.followup.as_ref(), &mut stats, &tally, &mut answers, &mut replies)
-                .await?;
+        let id = converse(
+            setup,
+            &plan.turns,
+            n,
+            plan.followup.as_ref(),
+            limit,
+            &mut stats,
+            &tally,
+            &mut answers,
+            &mut replies,
+        )
+        .await?;
         session = (!id.is_empty()).then_some(id).or(session);
     }
     let wall_s = started.elapsed().as_secs_f64();
@@ -382,20 +398,22 @@ pub async fn run(bench: &Bench, task: &Task, arm: &Arm, rep: u32, budget_left: f
 /// the previous one is answered, none once the run is stopped. After each turn's reply, asks
 /// `followup` for a question to put in the same session, as long as it has one. Pushes each
 /// turn's last assistant text to `answers` and all its replies (the turn's, then each follow-up's)
-/// to `replies`; returns the session id, for the next session to resume.
+/// to `replies`; returns the session id, for the next session to resume. Past `limit` the turn in
+/// progress is interrupted and the run is marked `Timeout`.
 #[allow(clippy::too_many_arguments)]
 async fn converse(
     setup: AgentSetup,
     turns: &[(u32, String)],
     n: u32,
     followup: Option<&Followup>,
+    limit: Option<Instant>,
     stats: &mut LoopStats,
     tally: &Mutex<Tally>,
     answers: &mut Vec<String>,
     replies: &mut Vec<Vec<String>>,
 ) -> Result<String, String> {
     let (mut handle, ends) = channels();
-    let agent = tokio::spawn(nexo_agent::run(ends, setup));
+    let mut agent = tokio::spawn(nexo_agent::run(ends, setup));
     let mut session = String::new();
     // a resumed session first replays its history as events; only what happens from the first turn on counts
     let mut live = false;
@@ -403,7 +421,7 @@ async fn converse(
         if tally.lock().unwrap().stop.is_some() {
             break;
         }
-        let (last, idle) = ask(&mut handle, text, stats, &mut live, &mut session).await?;
+        let (last, idle) = ask(&mut handle, text, stats, &mut live, &mut session, tally, limit).await?;
         answers.push(last.clone());
         let mut asked = vec![last];
         if !idle {
@@ -414,7 +432,7 @@ async fn converse(
             if tally.lock().unwrap().stop.is_some() {
                 break;
             }
-            let (reply, idle) = ask(&mut handle, &q, stats, &mut live, &mut session).await?;
+            let (reply, idle) = ask(&mut handle, &q, stats, &mut live, &mut session, tally, limit).await?;
             asked.push(reply);
             if !idle {
                 replies.push(asked);
@@ -424,18 +442,23 @@ async fn converse(
         replies.push(asked);
     }
     let _ = handle.commands.send(AgentCommand::Shutdown);
-    let _ = tokio::time::timeout(Duration::from_secs(10), agent).await;
+    // an agent that does not shut down in time is dropped with what it runs: its commands' groups die with it
+    if tokio::time::timeout(GRACE, &mut agent).await.is_err() {
+        agent.abort();
+    }
     Ok(session)
 }
 
 /// Submits `text` and waits for the agent to go idle: the last non-empty assistant text, and
-/// whether the agent went idle (false: it shut down).
+/// whether the agent went idle (false: it shut down, or `limit` passed and the turn was cut).
 async fn ask(
     handle: &mut nexo_core::agent::AgentHandle,
     text: &str,
     stats: &mut LoopStats,
     live: &mut bool,
     session: &mut String,
+    tally: &Mutex<Tally>,
+    limit: Option<Instant>,
 ) -> Result<(String, bool), String> {
     handle
         .commands
@@ -443,7 +466,28 @@ async fn ask(
         .map_err(|_| "the agent stopped before the task was sent".to_string())?;
     let mut idle = false;
     let mut last = String::new();
-    while let Some(ev) = handle.events.recv().await {
+    // no limit: a year is as good as forever, and keeps one code path
+    let timer = tokio::time::sleep(
+        limit.map_or(Duration::from_secs(86_400 * 365), |l| l.saturating_duration_since(Instant::now())),
+    );
+    tokio::pin!(timer);
+    let mut cut = false;
+    loop {
+        let ev = tokio::select! {
+            ev = handle.events.recv() => ev,
+            _ = &mut timer => {
+                if cut {
+                    // it did not stop when interrupted: the caller shuts it down
+                    break;
+                }
+                cut = true;
+                tally.lock().unwrap().stop.get_or_insert(Stop::Timeout);
+                let _ = handle.commands.send(AgentCommand::Interrupt);
+                timer.as_mut().reset(tokio::time::Instant::now() + GRACE);
+                continue;
+            }
+        };
+        let Some(ev) = ev else { break };
         *live |= matches!(ev, AgentEvent::TurnStart { .. });
         if *live {
             stats.observe(&ev);
@@ -468,7 +512,7 @@ async fn ask(
                 let _ = handle.commands.send(AgentCommand::Answer { id: question.id, answer });
             }
             AgentEvent::Idle { .. } => {
-                idle = true;
+                idle = !cut;
                 break;
             }
             AgentEvent::Shutdown => break,
@@ -573,6 +617,7 @@ mod tests {
             client: Arc::new(nexo_providers::Client::new(nexo_providers::registry())),
             spent: Arc::default(),
             close_on_verified: false,
+            run_timeout: None,
         };
         let c = config(&bench, &Arm::parse("tight@curator:eoq=4000").unwrap());
         assert_eq!(c.provider.as_deref(), Some(PROVIDER));

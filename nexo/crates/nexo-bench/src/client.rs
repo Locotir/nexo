@@ -19,7 +19,7 @@ use nexo_core::{
 use serde::Serialize;
 use serde_json::{json, Value};
 
-/// Why a run ended. The bench itself cuts a run for `Budget` or `MaxSteps`; the rest is how the agent's
+/// Why a run ended. The bench itself cuts a run for `Budget`, `MaxSteps` or `Timeout` (its time limit); the rest is how the agent's
 /// last turn ended. Written to the record as one string (`other:<detail>` for the exits not named here);
 /// records of older benchmarks that hold null or only `budget` / `max_steps` still read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub enum Stop {
     Verified,
     /// The provider failed, or the turn broke.
     Error,
-    /// The provider timed out.
+    /// The provider timed out, or the run passed its time limit and the bench interrupted it.
     Timeout,
     /// The turn was interrupted.
     Cancelled,
@@ -92,7 +92,7 @@ pub struct Tally {
     pub steps: u32,
     pub usage: Usage,
     pub cost: f64,
-    /// Set when the bench cut the run: `Budget` or `MaxSteps`. The record's own reason is `LoopStats::stop`.
+    /// Set when the bench cut the run: `Budget`, `MaxSteps` or `Timeout`. The record's own reason is `LoopStats::stop`.
     pub stop: Option<Stop>,
     /// Requests that summarised the history (the `compact` policy), counted in `requests`.
     pub compactions: u32,
@@ -151,6 +151,7 @@ impl Recorder {
         t.stop.get_or_insert(stop.clone());
         let why = match stop {
             Stop::MaxSteps => "the task has used all its steps",
+            Stop::Timeout => "the run has used all its time",
             _ => "the benchmark's budget is spent",
         };
         Some(ProviderError::new(ErrorKind::Other, format!("bench: {why}")))

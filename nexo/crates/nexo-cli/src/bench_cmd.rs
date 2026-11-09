@@ -51,6 +51,9 @@ pub struct BenchArgs {
     /// End a turn on the reply that holds the answer and a passing check after a change (agent.close_on_verified).
     #[arg(long)]
     pub close_on_verified: bool,
+    /// Seconds one run may take before it is interrupted, its commands killed and its record says `timeout` (0: no limit).
+    #[arg(long, value_name = "SECS", default_value_t = 1200)]
+    pub run_timeout: u64,
     /// The model's context window in tokens (default: what nexo knows of it), e.g. 8000 for a small model.
     #[arg(long)]
     pub window: Option<u32>,
@@ -115,6 +118,7 @@ impl BenchArgs {
             window: self.window,
             temperature: self.temperature,
             close_on_verified: self.close_on_verified,
+            run_timeout: self.run_timeout,
             out: self.out.clone(),
             skip_preflight: self.skip_preflight,
             llmb: self.llmb.clone(),

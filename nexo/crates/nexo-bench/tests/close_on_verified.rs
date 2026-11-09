@@ -61,6 +61,7 @@ async fn run_script(script: Vec<Vec<StreamEvent>>, on: bool) -> nexo_bench::run:
         client: Arc::new(Seq(Mutex::new(script.into()))),
         spent: Arc::default(),
         close_on_verified: on,
+        run_timeout: None,
     };
     let task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap()
