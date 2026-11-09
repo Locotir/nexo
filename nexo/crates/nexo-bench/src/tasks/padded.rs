@@ -473,6 +473,11 @@ fn later_totals() -> [String; 2] {
     [money_text().1, stock_text().1]
 }
 
+/// The chat tasks, which run only when named: they are no `Task` (no files) and no group has them.
+pub fn chat_tasks() -> Vec<ChatTask> {
+    vec![chat_task()]
+}
+
 pub fn chat_task() -> ChatTask {
     ChatTask {
         id: "padded-revert-chat",

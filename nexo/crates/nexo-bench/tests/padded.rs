@@ -226,3 +226,15 @@ fn chat_style_replay_hides_the_first_topic() {
         "Z042 | base",
     );
 }
+
+#[test]
+fn the_chat_is_built_the_same_every_time_and_ends_on_the_revert() {
+    let (a, b) = (padded::chat_task(), padded::chat_task());
+    assert_eq!(a.turns, b.turns);
+    assert_eq!(a.turns.len(), (a.reference)().len());
+    assert!(a.turns.last().unwrap().1.contains("Go back to the first"));
+    assert_eq!(padded::chat_tasks().len(), 1);
+    // it is no group member and no file task: only its id selects it
+    assert!(tasks::all().iter().all(|t| t.id != a.id));
+    assert!(tasks::select(&["padded"]).unwrap().iter().all(|t| t.id != a.id));
+}

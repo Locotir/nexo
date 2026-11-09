@@ -21,7 +21,7 @@ pub struct BenchArgs {
     /// anthropic | openai-chat | openai-responses | gemini (default: guessed from the address).
     #[arg(long)]
     pub protocol: Option<String>,
-    /// Task ids or groups (all, core, long, heavy, more, hard, padded), the external benchmark's repoqa and canonstep (with --llmb), or polyglot (Aider's exercises, see --polyglot),
+    /// Task ids or groups (all, core, long, heavy, more, hard, padded), the chat task padded-revert-chat (named only), the external benchmark's repoqa and canonstep (with --llmb), or polyglot (Aider's exercises, see --polyglot),
     /// comma separated or repeated.
     #[arg(long, value_name = "TASKS", value_delimiter = ',', default_value = "all")]
     pub tasks: Vec<String>,

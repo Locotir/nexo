@@ -167,6 +167,7 @@ only make sense together.
 | `share-request` | long2 | document the exact request a small notes app's own front end sends (cookie, anti-forgery header, query, body keys) from a PHP page, a script, a Flask blueprint, middleware and settings; a deprecated v1 route and an unregistered handler are decoys |
 | `padded-revert-code` | padded | `selective-revert` across three files, with over 8,000 tokens of pasted material in between |
 | `padded-revert-data` | padded | the same in a data project: undo the first of three edits to a SQL transform and a CSV |
+| `padded-revert-chat` | named only | the same with no tools and no files: a chat of pasted tables (a rate card, an exchange table, a stock table) where the last message asks for the answer of the first one again; graded on the answers, no model judge |
 | `realm` | hard | reverse engineering a game binary whose rule is spread over data, binary and save |
 
 Multi-session tasks restart the agent between sessions and resume the saved session, as `nexo --resume`

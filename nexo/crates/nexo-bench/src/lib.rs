@@ -115,7 +115,8 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let (poly, rest) = take_polyglot(&opts.tasks);
     let temperature = temperature_of(opts.temperature, poly);
     let (llmb_names, nexo_names) = split_tasks(&rest);
-    let tasks = if nexo_names.is_empty() && (!llmb_names.is_empty() || poly) {
+    let (chats, nexo_names) = take_chats(&nexo_names);
+    let tasks = if nexo_names.is_empty() && (!llmb_names.is_empty() || poly || !chats.is_empty()) {
         Vec::new()
     } else {
         tasks::select(&nexo_names).map_err(anyhow::Error::msg)?
@@ -202,6 +203,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
     let units: Vec<Unit> = tasks
         .iter()
         .map(Unit::Nexo)
+        .chain(chats.iter().map(Unit::Chat))
         .chain(llmb_jobs.iter().map(Unit::Llmb))
         .chain(poly_jobs.iter().map(Unit::Polyglot))
         .collect();
@@ -222,6 +224,7 @@ pub async fn run(opts: Options) -> anyhow::Result<i32> {
                 eprintln!("bench: {} with {} (repeat {rep})", unit.name(), a.name);
                 let done = match unit {
                     Unit::Nexo(task) => run::run(&bench, task, a, rep, left).await,
+                    Unit::Chat(task) => tasks::padded::run_chat(&bench, task, a, rep, left).await,
                     Unit::Llmb(job) => llmb::run(&bench, &ctx, job, a, rep, left).await,
                     Unit::Polyglot(job) => match &poly_ctx {
                         Some(pc) => polyglot::run(&bench, pc, job, a, rep, left).await,
@@ -315,6 +318,7 @@ pub fn arm_order<T>(arms: &[T], rep: u32, unit: usize) -> Vec<&T> {
 /// What one iteration runs: one of nexo's tasks, or an instance of the external benchmark.
 enum Unit<'a> {
     Nexo(&'a tasks::Task),
+    Chat(&'a tasks::padded::ChatTask),
     Llmb(&'a llmb::Job),
     Polyglot(&'a polyglot::Job),
 }
@@ -323,6 +327,7 @@ impl Unit<'_> {
     fn name(&self) -> String {
         match self {
             Unit::Nexo(t) => t.id.to_string(),
+            Unit::Chat(t) => t.id.to_string(),
             Unit::Llmb(j) => j.name(),
             Unit::Polyglot(j) => j.name(),
         }
@@ -386,6 +391,21 @@ pub fn split_tasks(names: &[String]) -> (Vec<&'static str>, Vec<String>) {
         }
     }
     (llmb_names, rest)
+}
+
+/// The chat tasks (no tools, graded on the answers) taken out of nexo's task names, and the other names.
+/// They run only when named, so the groups keep their tasks.
+pub fn take_chats(names: &[String]) -> (Vec<tasks::padded::ChatTask>, Vec<String>) {
+    let mut chats: Vec<tasks::padded::ChatTask> = Vec::new();
+    let mut rest = Vec::new();
+    for n in names.iter().flat_map(|n| n.split(',')).map(str::trim).filter(|n| !n.is_empty()) {
+        match tasks::padded::chat_tasks().into_iter().find(|c| c.id == n) {
+            Some(c) if !chats.iter().any(|k| k.id == c.id) => chats.push(c),
+            Some(_) => {}
+            None => rest.push(n.to_string()),
+        }
+    }
+    (chats, rest)
 }
 
 /// `nexo bench report`: report.html in `out` from the results.jsonl of `inputs` (default: `out`).
@@ -555,6 +575,13 @@ mod tests {
     fn llmb_task_names_are_split_off() {
         let (l, r) = split_tasks(&["repoqa,core".into(), "canonstep".into(), "repoqa".into()]);
         assert_eq!(l, vec!["repoqa", "canonstep"]);
+        assert_eq!(r, vec!["core".to_string()]);
+    }
+
+    #[test]
+    fn chat_task_names_are_split_off() {
+        let (c, r) = take_chats(&["padded-revert-chat,core".into(), "padded-revert-chat".into()]);
+        assert_eq!(c.iter().map(|t| t.id).collect::<Vec<_>>(), vec!["padded-revert-chat"]);
         assert_eq!(r, vec!["core".to_string()]);
     }
 
