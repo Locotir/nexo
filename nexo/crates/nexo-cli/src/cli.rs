@@ -157,6 +157,12 @@ pub enum Cmd {
         /// Open your preferences (~/.nexo/prompt.md, added after the built-in prompt) in $VISUAL or $EDITOR (else Notepad on Windows, nano or vi elsewhere), creating it on first use.
         #[arg(long)]
         edit: bool,
+        /// Print the tool definitions as the model gets them (name, description, JSON parameters) instead of the prompt.
+        #[arg(long, conflicts_with_all = ["edit", "builtin"])]
+        tools: bool,
+        /// Print only nexo's own part of the prompt: the built-in text and tool guidance, no instruction files or preferences.
+        #[arg(long, conflicts_with_all = ["edit", "tools"])]
+        builtin: bool,
     },
     /// Show or set the prices of a model (per million tokens).
     Pricing {
@@ -505,24 +511,33 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }) }) => {
             return Ok(setup::trash_sessions(ids, true))
         }
-        Some(Cmd::Prompt { edit: false }) => {
-            nexo_tools::edit_check::set_enabled(config.tools.edit_diagnostics);
-            let mut tools = nexo_tools::builtin_with(&config.web);
-            if !nexo_tools::lsp::available(&cwd) {
-                tools.remove("diagnostics");
-            }
-            if let Some(t) = nexo_tools::skill::tool(nexo_core::skills::discover(&cwd, !config.agent.hermetic)) {
-                tools.add(t);
-            }
-            let base = nexo_agent::prompt::system_prompt(&cwd, &config.agent, &tools);
+        Some(Cmd::Prompt { edit: false, tools: show_tools, builtin }) => {
+            let tools = setup::prompt_tools(&config, &cwd);
             // what the session would get: `auto` is the built-in curator, told which tools there are
             let specs = tools.specs();
             let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-            let directives = nexo_agent::context::from_config(&config.context).directives(&names);
-            println!("{}", nexo_agent::prompt::with_directives(base, &config.agent, directives));
+            let policy = nexo_agent::context::from_config(&config.context);
+            let directives = policy.directives(&names);
+            if *show_tools {
+                // as `turn::offered` hands them out: `exit_plan` only in plan mode, `goal_brief` only with a goal,
+                // `recall` only when the policy offers it
+                let specs: Vec<_> = specs
+                    .into_iter()
+                    .filter(|s| {
+                        !matches!(s.name.as_str(), "exit_plan" | "goal_brief")
+                            && (policy.recall() || s.name != "recall")
+                    })
+                    .collect();
+                println!("{}", nexo_agent::prompt::tool_definitions(&specs));
+            } else if *builtin {
+                println!("{}", nexo_agent::prompt::builtin_part(&tools, directives));
+            } else {
+                let base = nexo_agent::prompt::system_prompt(&cwd, &config.agent, &tools);
+                println!("{}", nexo_agent::prompt::with_directives(base, &config.agent, directives));
+            }
             return Ok(0);
         }
-        Some(Cmd::Prompt { edit: true }) => return setup::edit_prompt(&config),
+        Some(Cmd::Prompt { edit: true, .. }) => return setup::edit_prompt(&config),
         Some(Cmd::Pricing { model, set }) => {
             let set = if set.is_empty() { None } else { Some(set.join(",")) };
             return setup::pricing_cmd(

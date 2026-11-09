@@ -29,6 +29,8 @@ pub struct Config {
     pub web: WebConfig,
     /// Behaviour of the built-in tools (`[tools]`).
     pub tools: ToolsConfig,
+    /// What nexo reads of other coding agents' files (`[compat]`).
+    pub compat: CompatConfig,
     /// Mail between sessions (`[mail]`).
     pub mail: crate::mail::MailConfig,
     /// The local audit log of tool calls and model requests (`[audit]`, off by default).
@@ -518,6 +520,22 @@ impl Default for ToolsConfig {
     }
 }
 
+/// `[compat]`: the other coding agents' files nexo reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompatConfig {
+    /// Reads Claude Code's files: `~/.claude/CLAUDE.md` (when nexo has no user file of its own), `~/.claude`
+    /// commands, agents and skills, and in a project `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`,
+    /// `.claude/commands`, `.claude/agents`, `.claude/skills` and `.claude/settings.json` hooks. `false`: none of it.
+    pub claude_code: bool,
+}
+
+impl Default for CompatConfig {
+    fn default() -> CompatConfig {
+        CompatConfig { claude_code: true }
+    }
+}
+
 /// The web tools: `web_search` and `web_fetch`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -565,6 +583,8 @@ impl Config {
                 cfg.notices.push(note);
             }
         }
+        // before anything reads a Claude Code file: the hooks below, the skills, the instructions
+        crate::compat::set_claude_code(cfg.compat.claude_code);
         // the project's `.claude/settings.json` hooks, when the project is trusted
         let (claude, note) = crate::compat::claude_hooks(cwd, &paths::trusted_projects_file());
         cfg.hooks.extend(claude);
@@ -1235,6 +1255,20 @@ cache_read = 0.028
         p.pricing.insert("gpt-4o*".into(), Pricing { input: 2.0, ..Default::default() });
         assert_eq!(p.pricing_for("gpt-4o-mini").unwrap().input, 2.0);
         assert_eq!(p.pricing_for("gpt-4-turbo").unwrap().input, 1.0);
+    }
+
+    #[test]
+    fn compat_claude_code_is_on_unless_the_file_turns_it_off() {
+        assert!(Config::default().compat.claude_code);
+        assert!(Config::parse("[ui]\ntheme = 'nord'\n").unwrap().compat.claude_code);
+        let text = "[compat]\nclaude_code = false\n";
+        let off = Config::parse(text).unwrap();
+        assert!(!off.compat.claude_code);
+        assert_eq!(unread_keys(text, &off), None, "the key is one nexo reads");
+        // a project's file can turn it off key by key, the user's other settings stay
+        let mut user = Config::parse("model = 'a'\n").unwrap();
+        user.merge(off, &toml::from_str(text).unwrap());
+        assert!(!user.compat.claude_code && user.model.as_deref() == Some("a"));
     }
 
     #[test]

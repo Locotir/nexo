@@ -7,6 +7,21 @@
 //! project's foreign commands and agents are left out until the project is trusted, like nexo's.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether Claude Code's files are read at all (`[compat] claude_code`): `CLAUDE.md`, `CLAUDE.local.md`,
+/// `.claude/` in the project and `~/.claude` in the home. Process wide, set once when the configuration is loaded.
+static CLAUDE_CODE: AtomicBool = AtomicBool::new(true);
+
+/// Turns the reading of Claude Code's files on or off for this process (`[compat] claude_code`).
+pub fn set_claude_code(on: bool) {
+    CLAUDE_CODE.store(on, Ordering::Relaxed);
+}
+
+/// Whether Claude Code's files are read (on unless `[compat] claude_code = false`).
+pub fn claude_code() -> bool {
+    CLAUDE_CODE.load(Ordering::Relaxed)
+}
 
 /// How many imports may be nested in one another.
 const IMPORT_DEPTH: usize = 5;
@@ -52,12 +67,17 @@ fn read(p: &Path) -> Option<String> {
 /// User level: `NEXO.md` or `AGENTS.md` in `config_dir`; only when neither exists, the other
 /// tools' `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (under `home`).
 pub fn instructions(cwd: &Path, config_dir: &Path, home: Option<&Path>) -> Vec<Instruction> {
+    instructions_with(cwd, config_dir, home, claude_code())
+}
+
+/// [`instructions`] with Claude Code's files read (`claude`) or left out.
+fn instructions_with(cwd: &Path, config_dir: &Path, home: Option<&Path>, claude: bool) -> Vec<Instruction> {
     let mut out = Vec::new();
     let own: Vec<PathBuf> =
         ["NEXO.md", "AGENTS.md"].iter().map(|n| config_dir.join(n)).filter(|p| p.is_file()).collect();
     if own.is_empty() {
         if let Some(h) = home {
-            for rel in [".codex/AGENTS.md", ".claude/CLAUDE.md"] {
+            for rel in fallbacks(claude) {
                 push(&mut out, h.join(rel), "user fallback");
             }
         }
@@ -72,14 +92,16 @@ pub fn instructions(cwd: &Path, config_dir: &Path, home: Option<&Path>) -> Vec<I
         let agents = d.join("AGENTS.md");
         let had_agents = agents.is_file();
         push(&mut out, agents, "project");
-        if !had_agents {
+        if !had_agents && claude {
             if d.join("CLAUDE.md").is_file() {
                 push(&mut out, d.join("CLAUDE.md"), "project");
             } else {
                 push(&mut out, d.join(".claude").join("CLAUDE.md"), "project");
             }
         }
-        push(&mut out, d.join("CLAUDE.local.md"), "project (local)");
+        if claude {
+            push(&mut out, d.join("CLAUDE.local.md"), "project (local)");
+        }
         if d.join(".git").exists() {
             break;
         }
@@ -100,10 +122,14 @@ pub fn instructions(cwd: &Path, config_dir: &Path, home: Option<&Path>) -> Vec<I
 /// The project file `/memory` opens in `cwd`: the nearest instructions file nexo reads, from `cwd` up
 /// to the repository root, or `AGENTS.md` in `cwd` when there is none yet.
 pub fn project_file(cwd: &Path) -> PathBuf {
+    project_file_with(cwd, claude_code())
+}
+
+fn project_file_with(cwd: &Path, claude: bool) -> PathBuf {
     let mut p = Some(cwd);
     while let Some(d) = p {
         for name in ["NEXO.md", "AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md"] {
-            if d.join(name).is_file() {
+            if (claude || !name.contains("CLAUDE")) && d.join(name).is_file() {
                 return d.join(name);
             }
         }
@@ -119,17 +145,30 @@ pub fn project_file(cwd: &Path) -> PathBuf {
 /// the text to start it with: what the other tools' files under `home` say, which nexo reads in its
 /// place until it exists and never after.
 pub fn user_file(config_dir: &Path, home: Option<&Path>) -> (PathBuf, Option<String>) {
+    user_file_with(config_dir, home, claude_code())
+}
+
+fn user_file_with(config_dir: &Path, home: Option<&Path>, claude: bool) -> (PathBuf, Option<String>) {
     if let Some(p) = ["NEXO.md", "AGENTS.md"].iter().map(|n| config_dir.join(n)).find(|p| p.is_file()) {
         return (p, None);
     }
     let mut fallback = Vec::new();
     if let Some(h) = home {
-        for rel in [".codex/AGENTS.md", ".claude/CLAUDE.md"] {
+        for rel in fallbacks(claude) {
             push(&mut fallback, h.join(rel), "user fallback");
         }
     }
     let seed = fallback.iter().map(|i| i.text.trim_end()).collect::<Vec<_>>().join("\n\n");
     (config_dir.join("AGENTS.md"), (!seed.is_empty()).then(|| format!("{seed}\n")))
+}
+
+/// The other tools' user files read in place of nexo's own, under the home folder.
+fn fallbacks(claude: bool) -> &'static [&'static str] {
+    if claude {
+        &[".codex/AGENTS.md", ".claude/CLAUDE.md"]
+    } else {
+        &[".codex/AGENTS.md"]
+    }
 }
 
 fn push(out: &mut Vec<Instruction>, path: PathBuf, origin: &'static str) {
@@ -204,6 +243,10 @@ fn expand_imports(text: &str, dir: &Path, depth: usize, stack: &mut Vec<PathBuf>
 /// Instruction files below the project root that are not loaded (those in a folder the agent
 /// is not working in), as paths relative to the root; the agent reads one when it works there.
 pub fn nested_instructions(cwd: &Path) -> Vec<PathBuf> {
+    nested_instructions_with(cwd, claude_code())
+}
+
+fn nested_instructions_with(cwd: &Path, claude: bool) -> Vec<PathBuf> {
     let root = project_root(cwd);
     let loaded: Vec<&Path> = cwd.ancestors().take_while(|d| d.starts_with(&root)).collect();
     let mut found = Vec::new();
@@ -213,7 +256,12 @@ pub fn nested_instructions(cwd: &Path) -> Vec<PathBuf> {
             break;
         }
         let name = e.file_name().to_string_lossy();
-        if !matches!(name.as_ref(), "AGENTS.md" | "CLAUDE.md" | "CLAUDE.local.md") || !e.path().is_file() {
+        let wanted = match name.as_ref() {
+            "AGENTS.md" => true,
+            "CLAUDE.md" | "CLAUDE.local.md" => claude,
+            _ => false,
+        };
+        if !wanted || !e.path().is_file() {
             continue;
         }
         let Some(parent) = e.path().parent() else { continue };
@@ -268,6 +316,19 @@ pub struct Source {
 /// project folders, then nexo's own user folder and nexo's project folder. A project's folders
 /// are left out until the project is trusted.
 pub fn sources(
+    cwd: &Path,
+    config_dir: &Path,
+    trust_file: &Path,
+    home: Option<&Path>,
+    nexo_sub: &str,
+    claude_sub: Option<&str>,
+    codex_sub: Option<&str>,
+) -> Vec<Source> {
+    let claude_sub = claude_sub.filter(|_| claude_code());
+    sources_with(cwd, config_dir, trust_file, home, nexo_sub, claude_sub, codex_sub)
+}
+
+fn sources_with(
     cwd: &Path,
     config_dir: &Path,
     trust_file: &Path,
@@ -486,6 +547,9 @@ pub fn hooks_from_events(
 /// A project at the home folder has none: its `.claude/settings.json` is Claude Code's own user file, and
 /// its hooks are written for Claude Code sessions, not for this one.
 pub fn claude_hooks(cwd: &Path, trust_file: &Path) -> (Vec<crate::config::HookConfig>, Option<String>) {
+    if !claude_code() {
+        return (Vec::new(), None);
+    }
     claude_hooks_in(cwd, trust_file, dirs::home_dir().as_deref())
 }
 
@@ -737,6 +801,55 @@ mod tests {
         w(cfg.path().join("NEXO.md"), "Mine.");
         assert_eq!(user_file(cfg.path(), Some(home.path())), (cfg.path().join("NEXO.md"), None));
     }
+    #[test]
+    fn with_claude_code_off_no_file_of_it_is_read() {
+        let (p, cfg, home) = (repo(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        w(home.path().join(".claude/CLAUDE.md"), "c-user");
+        w(home.path().join(".codex/AGENTS.md"), "x-user");
+        w(p.path().join("CLAUDE.md"), "claude");
+        w(p.path().join("CLAUDE.local.md"), "mine");
+        w(p.path().join("web/CLAUDE.md"), "web");
+        w(p.path().join("web/AGENTS.md"), "web agents");
+        let texts = |claude| -> Vec<String> {
+            instructions_with(p.path(), cfg.path(), Some(home.path()), claude).into_iter().map(|i| i.text).collect()
+        };
+        assert_eq!(texts(true), ["x-user", "c-user", "claude", "mine"]);
+        assert_eq!(texts(false), ["x-user"], "the codex file and nexo's own stay");
+        w(p.path().join("AGENTS.md"), "agents");
+        assert_eq!(texts(false), ["x-user", "agents"]);
+        assert_eq!(
+            nested_instructions_with(p.path(), true),
+            [PathBuf::from("web/AGENTS.md"), PathBuf::from("web/CLAUDE.md")]
+        );
+        assert_eq!(nested_instructions_with(p.path(), false), [PathBuf::from("web/AGENTS.md")]);
+
+        let bare = repo();
+        w(bare.path().join("CLAUDE.md"), "Root rules.");
+        assert_eq!(project_file_with(bare.path(), true), bare.path().join("CLAUDE.md"));
+        assert_eq!(project_file_with(bare.path(), false), bare.path().join("AGENTS.md"));
+        let (path, seed) = user_file_with(cfg.path(), Some(home.path()), false);
+        assert_eq!((path, seed.as_deref()), (cfg.path().join("AGENTS.md"), Some("x-user\n")));
+        let (_, seed) = user_file_with(cfg.path(), Some(home.path()), true);
+        assert_eq!(seed.as_deref(), Some("x-user\n\nc-user\n"));
+    }
+
+    #[test]
+    fn with_claude_code_off_its_command_and_agent_folders_are_not_sources() {
+        let (p, cfg, home) = (repo(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let trust = cfg.path().join("trusted");
+        std::fs::write(&trust, format!("{}\n", p.path().canonicalize().unwrap().display())).unwrap();
+        let dirs = |claude_sub| -> Vec<String> {
+            sources_with(p.path(), cfg.path(), &trust, Some(home.path()), "commands", claude_sub, Some("prompts"))
+                .into_iter()
+                .map(|s| s.origin)
+                .collect()
+        };
+        assert!(dirs(Some("commands")).iter().any(|o| o.contains(".claude")));
+        let off = dirs(None);
+        assert!(off.iter().all(|o| !o.contains(".claude")), "{off:?}");
+        assert!(off.iter().any(|o| o.contains(".codex")), "{off:?}");
+    }
+
     #[test]
     fn imports_are_relative_limited_and_never_cycle() {
         let (p, cfg) = (repo(), tempfile::tempdir().unwrap());

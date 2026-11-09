@@ -160,6 +160,10 @@ max_cost_day = 5.0   # dollars per day, all sessions
   `Bash` to `bash`...). A model nexo's provider does not offer, or `inherit`, uses the current model.
 - `/status` lists where each came from. `NEXO_COMPAT_HOME` points the home lookup elsewhere (empty: off); a custom
   `NEXO_CONFIG_DIR` also turns off the other tools' home folders.
+- Not wanted: `[compat] claude_code = false` in `~/.nexo/config.toml` makes nexo ignore every Claude Code source:
+  `~/.claude/CLAUDE.md`, `~/.claude` commands, agents and skills, and in a project `CLAUDE.md`, `CLAUDE.local.md`,
+  `.claude/CLAUDE.md`, `.claude/commands`, `.claude/agents`, `.claude/skills` and the hooks of `.claude/settings.json`.
+  Codex's files and nexo's own are read as before. Default `true`.
 
 **Commands of your own.** A markdown file in `~/.nexo/commands/` or in the project's `.nexo/commands/`
 (once the project is trusted: `nexo config trust`) is a command named after it: `.nexo/commands/review.md` is `/review`. Its text is sent as the request, with
@@ -676,7 +680,9 @@ deny rule refuses it, and another site no rule allows is not read on the way
 
 ### Your own system prompt
 
-`nexo prompt` prints the prompt as it would be sent from the directory;
+`nexo prompt` prints the prompt as it would be sent from the directory
+(`--builtin`: only nexo's own part, with no instruction files or preferences; `--tools`: the tool definitions
+the model gets, each with its description and JSON parameters);
 The prompt has two layers. The built-in one always comes first: how to work,
 the tools, subagents. Then come the directory, date, tool guidance and project
 instructions (`NEXO.md`, `AGENTS.md`), and last your preferences:

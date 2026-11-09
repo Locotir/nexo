@@ -150,6 +150,40 @@ pub fn model_choices(cfg: &Config) -> Vec<(String, String)> {
     out
 }
 
+/// The tools a session starts with from `cwd` (what `nexo prompt` describes): the built-in ones, the skill
+/// tool, `task` when sub-agents are on and `ask_user`. MCP servers and mail are not started for it.
+pub fn prompt_tools(cfg: &Config, cwd: &Path) -> ToolSet {
+    nexo_tools::edit_check::set_enabled(cfg.tools.edit_diagnostics);
+    let mut tools: ToolSet = nexo_tools::builtin_with(&cfg.web);
+    if !nexo_tools::lsp::available(cwd) {
+        tools.remove("diagnostics");
+    }
+    if let Some(t) = nexo_tools::skill::tool(nexo_core::skills::discover(cwd, !cfg.agent.hermetic)) {
+        tools.add(t);
+    }
+    // as `nexo_agent` adds them to a session; the model named is the one `nexo` would start with
+    if cfg.agent.subagents && tools.specs().iter().any(|s| s.name == "read" || s.name == "grep") {
+        let (provider, model) = cfg.pick().unwrap_or_else(|| ("provider".into(), "model".into()));
+        let pcfg =
+            cfg.providers.get(&provider).cloned().unwrap_or_else(|| ProviderConfig::new("openai-chat", "", None));
+        let client: Arc<dyn nexo_agent::client::ModelClient> =
+            Arc::new(nexo_providers::Client::new(nexo_providers::registry()));
+        let sub = nexo_agent::subagent::SubAgent::new(
+            client,
+            nexo_agent::Target::new(provider, pcfg, model),
+            &tools,
+            nexo_agent::subagent::load(cwd),
+            Arc::default(),
+        )
+        .with_providers(cfg.providers.clone())
+        .with_parallel(cfg.agent.parallel_tasks);
+        tools.add(Arc::new(sub));
+    }
+    let (events, _unused) = tokio::sync::mpsc::unbounded_channel();
+    tools.add(Arc::new(nexo_agent::ask::AskUser::new(nexo_agent::ask::ChannelAsker::new(events))));
+    tools
+}
+
 pub async fn agent_setup(
     cfg: &Config,
     cwd: &Path,
@@ -728,6 +762,9 @@ screen = "full"                     # full (alternate screen) | inline (finished
 edit_diagnostics = true             # after edit and write, add the compiler errors of the changed file (Rust, TypeScript, Python, Go) to the result; false: off
 post_write_check = true            # after a step that changed source files, run the project test command (cargo test -q, npm test -s, pytest -q -x, go test ./...) once and add its result to the last changing call; false: off
 post_write_check_secs = 45         # seconds before that check is killed; a command that ran over is not run again by it
+
+[compat]
+# claude_code = true                # false: ignore every Claude Code file (~/.claude, CLAUDE.md, CLAUDE.local.md, .claude/ commands, agents, skills, hooks)
 
 [web]
 search = "auto"                     # auto | duckduckgo | tavily | brave | exa | searxng

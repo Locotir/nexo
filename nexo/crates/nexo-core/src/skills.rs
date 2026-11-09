@@ -143,6 +143,11 @@ fn load(dir: &Path, source: &str) -> Option<Skill> {
 /// Every skill reachable from `cwd` and the person's folders. `home` holds `.agents` and `.claude`;
 /// `nexo_dir` is nexo's own config folder (`~/.nexo`). With `user` false the person's folders are skipped.
 pub fn discover_in(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool) -> Vec<Skill> {
+    discover_with(cwd, home, nexo_dir, user, crate::compat::claude_code())
+}
+
+/// [`discover_in`] with the `.claude/skills` folders read (`claude`) or left out.
+fn discover_with(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool, claude: bool) -> Vec<Skill> {
     let mut roots: Vec<(PathBuf, String)> = Vec::new();
     // the project: the working directory and its parents up to the repository root
     let mut p = Some(cwd);
@@ -151,7 +156,7 @@ pub fn discover_in(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool) -> Vec<
         if crate::paths::is_home(d, Some(home)) {
             break;
         }
-        for f in FOLDERS {
+        for f in FOLDERS.iter().filter(|f| claude || !f.starts_with(".claude")) {
             roots.push((d.join(f), f.to_string()));
         }
         if d.join(".git").exists() {
@@ -166,7 +171,9 @@ pub fn discover_in(cwd: &Path, home: &Path, nexo_dir: &Path, user: bool) -> Vec<
     if user {
         roots.push((nexo_dir.join("skills"), "~/.nexo/skills".into()));
         roots.push((home.join(".agents/skills"), "~/.agents/skills".into()));
-        roots.push((home.join(".claude/skills"), "~/.claude/skills".into()));
+        if claude {
+            roots.push((home.join(".claude/skills"), "~/.claude/skills".into()));
+        }
     }
     let mut out: Vec<Skill> = Vec::new();
     for (root, source) in roots {
@@ -397,5 +404,22 @@ mod tests {
                 && t.ends_with("Arguments: now")
         );
         assert_eq!(find(&[s], "/S").map(|s| s.name.as_str()), Some("s"));
+    }
+
+    #[test]
+    fn with_claude_code_off_its_skill_folders_are_not_read() {
+        let (home, proj) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir_all(proj.path().join(".git")).unwrap();
+        write(proj.path(), ".claude/skills/p/SKILL.md", "---\nname: p\ndescription: project\n---\n");
+        write(proj.path(), ".agents/skills/a/SKILL.md", "---\nname: a\ndescription: agents\n---\n");
+        write(home.path(), ".claude/skills/h/SKILL.md", "---\nname: h\ndescription: home\n---\n");
+        let names = |claude| -> Vec<String> {
+            discover_with(proj.path(), home.path(), &home.path().join(".nexo"), true, claude)
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        };
+        assert_eq!(names(true), ["a", "p", "h"]);
+        assert_eq!(names(false), ["a"]);
     }
 }

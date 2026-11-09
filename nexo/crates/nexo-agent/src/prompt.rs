@@ -67,6 +67,27 @@ pub fn with_directives(system: String, cfg: &AgentConfig, directives: Option<&st
     }
 }
 
+/// Only what nexo itself writes of the prompt (`nexo prompt --builtin`): the built-in text, the guidance for
+/// `tools` and the context policy's directives. No directory, date, project, instruction file or preference.
+pub fn builtin_part(tools: &ToolSet, directives: Option<&str>) -> String {
+    let mut out = format!("{}{}", built_in(), tool_guidance(tools));
+    if let Some(d) = directives {
+        out.push_str(&format!("\n\n{d}"));
+    }
+    out
+}
+
+/// The tools as the model gets them (`nexo prompt --tools`): per tool a `=== name ===` line, its description
+/// as it is, and its parameters as the JSON schema it is sent with.
+pub fn tool_definitions(specs: &[nexo_core::provider::ToolSpec]) -> String {
+    let mut out = String::new();
+    for s in specs {
+        let params = serde_json::to_string_pretty(&s.parameters).unwrap_or_default();
+        out.push_str(&format!("=== {} ===\ndescription:\n{}\nparameters:\n{params}\n\n", s.name, s.description));
+    }
+    out.trim_end().to_string()
+}
+
 /// The guidance for the tools present, by name.
 fn tool_guidance(tools: &ToolSet) -> String {
     let mut lines = Vec::new();
@@ -609,5 +630,33 @@ mod size_budget {
     fn the_guidance_names_what_saves_steps() {
         let g = tool_guidance(&nexo_tools::builtin());
         assert!(g.contains("run at the same time") && g.contains("many files"), "{g}");
+    }
+
+    #[test]
+    fn the_built_in_part_has_neither_the_machine_nor_the_files() {
+        let tools = nexo_tools::builtin();
+        let b = builtin_part(&tools, Some("Directive text."));
+        assert!(b.starts_with(built_in()) && b.contains("You can do:") && b.ends_with("Directive text."), "{b}");
+        for not in ["Working directory", "Date:", "Instructions from", "The person's preferences", "System:"] {
+            assert!(!b.contains(not), "{not}: {b}");
+        }
+        assert_eq!(builtin_part(&ToolSet::new(), None), built_in());
+    }
+
+    #[test]
+    fn tool_definitions_show_name_description_and_parameters_of_each_tool() {
+        let tools = nexo_tools::builtin();
+        let specs = tools.specs();
+        let text = tool_definitions(&specs);
+        assert_eq!(text.matches("\n=== ").count() + 1, specs.len());
+        for s in &specs {
+            assert!(
+                text.contains(&format!("=== {} ===\ndescription:\n{}\nparameters:\n{{", s.name, s.description)),
+                "{}",
+                s.name
+            );
+        }
+        assert!(text.contains("\"type\": \"object\""), "{text}");
+        assert_eq!(tool_definitions(&[]), "");
     }
 }

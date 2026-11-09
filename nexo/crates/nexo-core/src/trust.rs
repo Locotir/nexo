@@ -153,9 +153,10 @@ fn scan(
     if foreign {
         // the same reading as the notice of the loading (`compat::claude_hooks`)
         hooks |= hooks_ok && crate::compat::claude_hooks(cwd, trust_file).1.is_some();
-        commands |=
-            commands_ok && (has_md(&root.join(".claude/commands"), 0) || has_md(&root.join(".codex/prompts"), 0));
-        agents |= has_md(&root.join(".claude/agents"), 0);
+        let claude = crate::compat::claude_code();
+        commands |= commands_ok
+            && ((claude && has_md(&root.join(".claude/commands"), 0)) || has_md(&root.join(".codex/prompts"), 0));
+        agents |= claude && has_md(&root.join(".claude/agents"), 0);
     }
     if hooks {
         runs.push("hooks");
