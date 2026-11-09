@@ -40,6 +40,8 @@ pub(super) struct Step {
     pub(super) tokens: i64,
     /// The model call since which no request has used it (`None`: in use, or out).
     pub(super) idle: Option<usize>,
+    /// How many times it was brought back as text (by a request that names its file, or by `recall`).
+    pub(super) backs: u8,
 }
 
 impl Step {
@@ -189,7 +191,7 @@ impl Engine {
         for &w in &about {
             *self.step_df.entry(w).or_default() += 1;
         }
-        Step { a, msgs, read, about, aimed, did, out: false, at: None, tokens: 0, idle: None }
+        Step { a, msgs, read, about, aimed, did, out: false, at: None, tokens: 0, idle: None, backs: 0 }
     }
 
     /// Step `i` as text: what each call did, and each output whole.

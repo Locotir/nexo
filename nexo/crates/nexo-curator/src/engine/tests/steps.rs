@@ -57,7 +57,7 @@ fn an_answered_request_lets_its_steps_go_and_a_request_about_them_brings_them_ba
 
 #[test]
 fn a_read_brought_back_in_a_message_that_leaves_is_out_again_and_a_request_that_names_it_brings_it_back() {
-    let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;protect=1";
+    let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;protect=1;named=16000";
     let reply = format!("The largest is client {}.", word(529));
     let mut e = Engine::new(params(spec).unwrap());
     e.sync(&sessions(&reply, None));
@@ -86,6 +86,50 @@ fn a_read_brought_back_in_a_message_that_leaves_is_out_again_and_a_request_that_
     let last = sent(&view[view.len() - 1..]);
     assert!(last.contains("Brought back") && last.contains(&word(0)), "{last}");
     assert_eq!(e.stats.get("recalled_steps"), Some(&2));
+}
+
+#[test]
+fn a_read_cut_after_it_came_back_is_not_brought_back_again_by_a_name_many_reads_share() {
+    // six reads of a file of the same name in six folders; each request names that file and no folder. The first
+    // request brings the reads back, an epoch cuts them, and the next requests name the file again: the same
+    // reads do not come back over and over (a view rewritten at every request), a request that names a folder does
+    let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;protect=1;named=16000";
+    let mut msgs = Vec::new();
+    for k in 1..=6 {
+        msgs.push(json!({"role": "user", "content": format!("Read the notes of folder{k}.")}));
+        msgs.extend(step(k, &format!("cat folder{k}/notes.txt"), &format!("{} {}", word(40 * k), word(40 * k + 1))));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Noted."}]}));
+    }
+    let mut e = Engine::new(params(spec).unwrap());
+    e.sync(&msgs);
+    e.view();
+    let mut recalled = Vec::new();
+    for r in 0..3 {
+        msgs.push(json!({"role": "user", "content": "What does notes.txt say?"}));
+        e.sync(&msgs);
+        e.view();
+        // work, the answer, and an epoch that takes the message the reads came back at
+        msgs.extend(step(10 + r, "date", "Fri Oct 31 10:00:00 UTC 2026"));
+        msgs.extend(step(20 + r, "uptime", "10:00 up 3 days"));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+        e.sync(&msgs);
+        e.view();
+        recalled.push(e.stats.get("recalled_steps").copied().unwrap_or(0));
+        let sizes = e.sizes_now();
+        e.leave(&sizes, 0.0);
+    }
+    assert!(recalled[1] > 0, "the reads came back: {recalled:?}");
+    assert!(
+        e.steps[..6].iter().all(|s| s.backs <= 2),
+        "{:?}",
+        e.steps[..6].iter().map(|s| s.backs).collect::<Vec<_>>()
+    );
+    assert_eq!(recalled[2], recalled[1], "no read came back again at the next request: {recalled:?}");
+    // a request that names one folder brings that read back
+    msgs.push(json!({"role": "user", "content": "And the notes.txt of folder3?"}));
+    e.sync(&msgs);
+    let view = e.view();
+    assert!(sent(&view[view.len() - 1..]).contains(&word(120)), "{}", sent(&view[view.len() - 1..]));
 }
 
 #[test]

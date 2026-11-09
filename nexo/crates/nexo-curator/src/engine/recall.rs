@@ -126,6 +126,7 @@ impl Engine {
             let text = self.step_text(i);
             let s = &mut self.steps[i];
             (s.out, s.at, s.tokens, s.idle) = (false, Some(last), est_str(&text), None);
+            s.backs = s.backs.saturating_add(1);
         }
         if !back.is_empty() {
             self.bump("recalled_steps", back.len() as i64);

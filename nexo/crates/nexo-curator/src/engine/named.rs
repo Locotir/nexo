@@ -140,6 +140,7 @@ impl Engine {
         let asked: FxHashSet<String> = name_parts(&self.unit_text_at(start, UKind::User)).into_iter().collect();
         let files = self.step_files();
         let last = self.tr.msgs.len() - 1;
+        let need = self.asks(self.goal.turns.len() - 1);
         // `mission`: the files the thread's first message names that no later request of it named yet
         let thread = self.goal.active();
         let parts: Vec<FxHashSet<String>> = if self.p.mission != 0 {
@@ -178,7 +179,14 @@ impl Engine {
             if apart && !res.iter().any(|&u| !self.read_paths(u).is_empty()) {
                 continue;
             }
-            named.push((i, res, !self.steps[i].out && !gone && !apart));
+            let in_view = !self.steps[i].out && !gone && !apart;
+            // a read brought back and cut again by an epoch comes back by its file name only when the request names
+            // something of its own (a word few steps hold): a name many reads share (`service.conf` of every
+            // folder) would bring them all back at every request
+            if !in_view && self.steps[i].backs >= 1 && self.steps[i].aimed.is_disjoint(&need) {
+                continue;
+            }
+            named.push((i, res, in_view));
         }
         // reads by parts (`sed -n 40,400p`, `400,800p`) are not copies of each other: each may stay or come
         // back, newest first, within the budget (`named_take`)
@@ -194,6 +202,7 @@ impl Engine {
                 let text = self.step_text(i);
                 let s = &mut self.steps[i];
                 (s.out, s.at, s.tokens, s.idle) = (false, Some(last), est_str(&text), None);
+                s.backs = s.backs.saturating_add(1);
                 back += 1;
             }
         }
