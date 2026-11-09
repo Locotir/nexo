@@ -193,7 +193,7 @@ fn a_session_where_the_agent_never_writes_still_has_a_bounded_view() {
         ));
     }
     let most = |spec: &str| {
-        let mut e = Engine::new(params(&format!("nudge=0;protect=0;eoq=500;hold=1;{spec}")).unwrap());
+        let mut e = Engine::new(params(&format!("nudge=0;protect=0;eoq=500;hold=1;target=20000;{spec}")).unwrap());
         let mut most = 0;
         for n in (1..=msgs.len()).step_by(2) {
             e.sync(&msgs[..n]);

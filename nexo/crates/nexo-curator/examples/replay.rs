@@ -1529,6 +1529,13 @@ fn main() {
         blind_tokens += missing;
         open_tokens += open;
         max_view = max_view.max(reply.tokens + cur.head_tokens() as i64);
+        // REPLAY_VIEW=N names each request whose view (head included) passes N tokens
+        if let Some(n) = std::env::var("REPLAY_VIEW").ok().and_then(|v| v.parse::<i64>().ok()) {
+            let seen = reply.tokens + cur.head_tokens() as i64;
+            if seen > n {
+                println!("r{} view {seen} tokens, sticky {}", i + 1, cur.sticky_tokens());
+            }
+        }
         max_sticky = max_sticky.max(cur.sticky_tokens());
         for b in cur.cut_blocks() {
             first_cut.entry(b).or_insert(i);
@@ -1741,7 +1748,14 @@ fn main() {
             .map(text_of)
             .collect();
         let lines: HashSet<&str> = text.lines().map(str::trim).filter(|l| l.chars().count() >= 16).collect();
-        cited += lines.iter().filter(|l| replies.iter().any(|r| r.contains(**l))).count();
+        let hit: Vec<&&str> = lines.iter().filter(|l| replies.iter().any(|r| r.contains(**l))).collect();
+        // REPLAY_CITED=1 names the lines of a cut block that a later reply cites
+        if std::env::var("REPLAY_CITED").is_ok_and(|v| v == "1") {
+            for l in &hit {
+                println!("cited after the cut at r{}: m{mi} b{bi}: {l}", at + 1);
+            }
+        }
+        cited += hit.len();
     }
     println!(
         "window: max view {max_view} tokens, sticky set at most {max_sticky} tokens, {} blocks cut, sticky lines dropped (lines of a cut block cited by a later reply): {cited}",

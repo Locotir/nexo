@@ -705,7 +705,7 @@ the same on every request, so they stay in the cache, and a raw prompt file
 [context]
 policy = "curator"                   # auto | plain | compact | curator
 # curator_spec = "eoq=15000;ledger=10000"   # change the engine's settings
-# working_set = "20000/40000/80000"         # target/cap/hard tokens of the view (the default)
+# working_set = "10000/40000/80000"         # target/cap/hard tokens of the view (the default)
 ```
 
 `--curator-spec SPEC` (or `NEXO_CURATOR_SPEC`) sets them for one run, over the file.

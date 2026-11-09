@@ -7,7 +7,13 @@ use nexo_curator::sim::input::{load, Session};
 use nexo_curator::sim::price::Prices;
 use nexo_curator::D_SPEC;
 
-const SPEC: &str = "protect=1;still=0";
+const SPEC: &str = "protect=1;still=0;target=0;cap=0;hard=0";
+
+/// The default spec without the working window these fixtures were measured with: the simulator's events and
+/// their cost shape depend on how much a cut leaves, and the tests here probe the simulator, not the window.
+fn dspec() -> String {
+    format!("{D_SPEC};target=0;cap=0;hard=0")
+}
 
 fn session(file: &str) -> Session {
     load(&format!("{}/tests/fixtures/sim/{file}", env!("CARGO_MANIFEST_DIR"))).expect("the fixture loads")
@@ -94,9 +100,9 @@ fn real(file: &str) -> Session {
 }
 
 fn probed(s: &Session) -> (Run, Context) {
-    let mut open = run(&s.requests, D_SPEC, Prices::LIVE, 0.0, 0).expect("a run");
-    probe(&mut open, &s.requests, D_SPEC, 0.0, 0).expect("a probe");
-    let c = Context::measure(&s.requests, D_SPEC, Prices::LIVE, 40);
+    let mut open = run(&s.requests, &dspec(), Prices::LIVE, 0.0, 0).expect("a run");
+    probe(&mut open, &s.requests, &dspec(), 0.0, 0).expect("a probe");
+    let c = Context::measure(&s.requests, &dspec(), Prices::LIVE, 40);
     (open, c)
 }
 
@@ -119,7 +125,7 @@ fn the_probed_footprint_agrees_with_the_monte_carlo_where_the_estimate_does_not(
         let mut estimate = open.clone();
         estimate.feet.clear();
         let (a, e) = (analytic(&open, p, 1.0, &c), analytic(&estimate, p, 1.0, &c));
-        let m = monte_carlo(&s.requests, D_SPEC, &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
+        let m = monte_carlo(&s.requests, &dspec(), &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
         assert!(within(a.extra_cost, m.extra_cost, 0.05), "{file}: probed {} vs mc {}", a.extra_cost, m.extra_cost);
         assert!(within(a.extra_steps, m.extra_steps, 0.05), "{file}: {} vs {}", a.extra_steps, m.extra_steps);
         worst_estimate = worst_estimate.max((e.extra_cost - m.extra_cost).abs() / m.extra_cost);
@@ -150,7 +156,7 @@ fn a_fraction_of_the_fetches_costs_that_fraction() {
         let (open, c) = probed(&s);
         let p = params(0.3, 0.0, 0.0);
         let a = analytic(&open, p, 0.3, &c);
-        let m = monte_carlo(&s.requests, D_SPEC, &c, 0.0, 0, p, 0.3, 100, 1).expect("mc");
+        let m = monte_carlo(&s.requests, &dspec(), &c, 0.0, 0, p, 0.3, 100, 1).expect("mc");
         assert!(within(a.extra_cost, m.extra_cost, 0.05), "{file}: {} vs {}", a.extra_cost, m.extra_cost);
         assert!(within(a.extra_steps, m.extra_steps, 0.05), "{file}: {} vs {}", a.extra_steps, m.extra_steps);
     }
@@ -189,7 +195,7 @@ fn probe_marks_the_events_a_fetch_removes_and_the_steps_agree_with_the_monte_car
     let s = real("synthetic-g3-t8-s1.jsonl");
     let (open, c) = probed(&s);
     let p = params(1.0, 0.0, 0.0);
-    let m = monte_carlo(&s.requests, D_SPEC, &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
+    let m = monte_carlo(&s.requests, &dspec(), &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
     let gone = open.feet.iter().filter(|f| f.gone).count();
     assert!(gone > 0, "no event was marked as removed: {} events", open.feet.len());
     assert!(!open.feet[0].gone, "the first event always happens");

@@ -78,9 +78,9 @@ fn only_2_cuts_a_view_whose_pocket_is_gone() {
     let tokens = |rs: &[Reply]| rs.iter().map(|r| r.tokens).sum::<i64>();
     // (a view that stays under the cap has no squeeze to show: the marathon holds more than the cap leaves)
     let f = "bench-marathon-full.jsonl";
-    let off = replay(f, "", |_| 4000.0, |_, _| None);
-    let one = replay(f, "pockets=1", |_| 4000.0, |_, _| None);
-    let two = replay(f, "pockets=2", |_| 4000.0, |_, _| None);
+    let off = replay(f, "target=20000", |_| 4000.0, |_, _| None);
+    let one = replay(f, "target=20000;pockets=1", |_| 4000.0, |_, _| None);
+    let two = replay(f, "target=20000;pockets=2", |_| 4000.0, |_, _| None);
     assert_eq!(last(&one, "pocket_squeeze"), 0);
     assert!(tokens(&one) <= tokens(&off));
     assert!(last(&two, "pocket_squeeze") >= 1);

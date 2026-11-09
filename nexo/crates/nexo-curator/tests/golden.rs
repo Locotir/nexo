@@ -188,6 +188,58 @@ fn golden_fixtures() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+/// The tokens of the largest view of fixture ``name`` (system prompt included) and the sticky set at that request.
+fn widest(name: &str) -> (i64, i64) {
+    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut cur = Curator::new("").unwrap();
+    let mut msgs: Vec<Value> = Vec::new();
+    let (mut most, mut sticky) = (0, 0);
+    for line in text.lines() {
+        let rec: Value = serde_json::from_str(line).unwrap();
+        let req = &rec["req"];
+        let send = if let Some(new) = req.get("new") {
+            let base = req["base"].as_u64().unwrap() as usize;
+            msgs.truncate(base);
+            msgs.extend(new.as_array().unwrap().iter().cloned());
+            serde_json::json!({"op": "view", "system_tokens": req.get("system_tokens").cloned().unwrap_or(Value::Null), "messages": msgs})
+        } else {
+            req.clone()
+        };
+        let got = cur.answer(&send, rec["now"].as_f64().unwrap_or(0.0));
+        let seen = got["tokens"].as_i64().unwrap_or(0) + cur.head_tokens() as i64;
+        if seen > most {
+            (most, sticky) = (seen, cur.sticky_tokens());
+        }
+    }
+    (most, sticky)
+}
+
+/// The window on the recorded sessions: a view passes the cap only when what the agent is working from alone
+/// is larger (`edge` holds a 62k-token request), and a session whose agent keeps reading without writing
+/// (realm100, marathon) is cut to the target in a batch, not left at the cap.
+#[test]
+fn the_window_holds_on_every_fixture() {
+    let dir = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".jsonl"))
+        .collect();
+    names.sort();
+    let mut bad = Vec::new();
+    for n in &names {
+        let (most, sticky) = widest(n);
+        if most > 40_000 && most > sticky + 8_000 {
+            bad.push(format!("{n}: the view reached {most} tokens with a sticky set of {sticky}"));
+        }
+        if (n.contains("realm100") || n.contains("marathon-D")) && most > 30_000 {
+            bad.push(format!("{n}: the view reached {most} tokens, past one and a half times twice the target"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
 #[test]
 fn the_comparison_sees_differences() {
     let mut d = Vec::new();
@@ -276,13 +328,14 @@ fn the_long_session_ends_with_the_reference_stats() {
     // A file read under another topic comes back when the request names it, and only that read: it closes 50 steps,
     // recalls 4. With the ledger keeping the rows of a table of values (117 lines, not 58; the anchor 1840, was 1364)
     // the cache misses 59524 (miss_close 17895).
-    // The working window (`target=20000`, `cap=40000`, `hard=80000`; `cut=age`): the priced cap fires at twice the
-    // target and lands on the target, the cut at `cap` lands on the target too (one batch): 5 rewrites, and the cache
-    // misses 129898 (miss_cap 109633); 37 chunks leave by the deterministic cap, the oldest results that are not sticky.
-    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 17298,
-        "miss": 129898, "dedup_asked": 24, "dropped_chunks": 189, "sup_chunks": 44, "rewrites": 5,
-        "left_messages": 90, "ledger_lines": 431, "cap_rewrites": 3, "miss_cap": 109633, "recalled_steps": 2,
-        "closed_steps": 0, "miss_close": 2967, "split_kept": 1, "switches": 40, "window_cuts": 37});
+    // The working window (`target=10000`, `cap=40000`, `hard=80000`; `cut=age`): the view is let grow to 20k tokens
+    // and cut to 10k in one rewrite, and the latest unread results (`still`) are bounded by the target too, so
+    // 13 rewrites and the cache misses 136746 (miss_cap 107970), 372 chunks leave by the window.
+    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 16031,
+        "miss": 136746, "dedup_asked": 24, "window_cuts": 372, "rewrites": 13, "miss_cap": 107970,
+        "dropped_chunks": 17, "left_messages": 208, "ledger_lines": 638, "cap_rewrites": 3, "recalled_steps": 3,
+        "closed_steps": 18, "miss_close": 6693, "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1,
+        "miss_switch": 8500, "sup_chunks": 4});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }
@@ -306,7 +359,10 @@ fn the_real_audit_ends_with_the_reference_stats() {
         last = cur
             .answer(&serde_json::json!({"op": "view", "system_tokens": req["system_tokens"], "messages": msgs}), 0.0);
     }
-    // the 20k target fires at 40k (twice the target) and this session stays under it: nothing is cut (it was 3
-    // idle drops and 708 missed tokens before the window)
-    assert_eq!(last["stats"], serde_json::json!({"birth_saved": 0}));
+    // the 10k target cuts once, when the view passes 20k (it was 3 idle drops and 708 missed tokens before)
+    assert_eq!(
+        last["stats"],
+        serde_json::json!({"birth_saved": 0, "window_cuts": 89, "rewrites": 1, "miss_cap": 12571, "miss": 13148,
+            "live_dropped": 2, "miss_live": 577})
+    );
 }

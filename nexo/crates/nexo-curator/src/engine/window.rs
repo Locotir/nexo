@@ -100,12 +100,12 @@ impl Engine {
     }
 
     /// The tokens of the latest outputs the agent has not written about that a guess may not take (`still`):
-    /// what the window leaves after the sticky set, at least [`STILL_FLOOR`], and never more than `still`.
+    /// what the target leaves after the sticky set, at least [`STILL_FLOOR`], and never more than `still`.
     pub(super) fn still_now(&self) -> i64 {
         if self.p.still <= 0 {
             0
         } else if self.p.target > 0 && self.p.cap > 0 {
-            self.p.still.min((self.p.cap - self.head - self.stk.tokens).max(STILL_FLOOR))
+            self.p.still.min((self.p.target - self.head - self.stk.tokens).max(STILL_FLOOR))
         } else {
             self.p.still
         }
@@ -116,8 +116,8 @@ impl Engine {
         self.stk.keep.contains(&i) || (tier == 0 && (self.stk.reads.contains(&i) || self.tr.units[i].msg >= unwritten))
     }
 
-    /// Past `cap` the oldest results the sticky set does not hold leave, oldest first, whatever the cache
-    /// costs; past `hard` the oldest the sticky set holds besides the latest `file now` of each path and
+    /// Past `cap` (or twice the `target`) the oldest results the sticky set does not hold leave, oldest first,
+    /// until the view is down to the target, whatever the cache costs; past `hard` the oldest the sticky set holds besides the latest `file now` of each path and
     /// the last check leave too (their note says how to bring them back). The first message changed.
     pub(super) fn window_cut(&mut self) -> Option<usize> {
         if self.p.cap <= 0 {
@@ -125,11 +125,15 @@ impl Engine {
         }
         let sizes = self.sizes_now();
         let mut total: i64 = sizes.iter().sum::<i64>() + self.head;
-        if total <= self.p.cap {
+        // the cut starts at `cap`, or at twice the target when that comes first, and lands on the target: one
+        // rewrite buys a stretch of requests with a view that stays small, not a trim at every request
+        let (start, land) = match self.p.target {
+            t if t > 0 => (self.p.cap.min(2 * t), t),
+            _ => (self.p.cap, self.p.cap),
+        };
+        if total <= start {
             return None;
         }
-        // a cut lands on the target, not on the cap, so the next requests do not cut again
-        let land = if self.p.target > 0 { self.p.target } else { self.p.cap };
         self.refresh_sticky();
         let unwritten = self.still_from(&sizes);
         let vis = self.visible();
