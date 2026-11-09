@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="356" viewBox="0 0 760 356" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" role="img" aria-labelledby="t d">
 <title id="t">Where the curator sits</title>
-<desc id="d">The whole history stays on disk. On every call the nexo curator builds the view for the next step: it squeezes noise at birth, keeps one thread per goal, cuts old material in batches only when it pays, keeps an anchor that never drops, drops stale reads first, can keep a cached view per topic, and gives a resumed session the same view. The model gets the anchor, cards of earlier goals and the recent work.</desc>
+<desc id="d">The whole history stays on disk. On every call the nexo curator builds the view for the next step: it squeezes noise at birth, keeps one thread per goal, rewrites the view only at an epoch, when keeping growth costs more than a new prefix, keeps an anchor that never drops, drops stale reads first, can keep a cached view per topic, and gives a resumed session the same view. The model gets the anchor, cards of earlier goals and the recent work.</desc>
 <style>
 .bg{fill:#fcfcfb}.tile{fill:#f3f2ee}.cur{fill:#eef4fc;stroke:#2a78d6;stroke-width:1.5}.t1{fill:#0b0b0b}.t2{fill:#52514e}.t3{fill:#76756f}
 .hb{fill:#bdbcb4}.hn{fill:#dddcd5}.dot{fill:#2a78d6}.ar{stroke:#898781;stroke-width:1.5;fill:none;stroke-linecap:round;stroke-linejoin:round}
@@ -33,7 +33,7 @@
 <text x="254" y="104" class="t1" font-weight="600">nexo curator</text>
 <rect class="dot" x="254" y="121" width="6" height="6" rx="1"/><text x="268" y="128" class="t1" font-weight="600">Squeeze at birth</text><text x="268" y="141" class="t3" font-size="11">progress bars and repeats never enter</text>
 <rect class="dot" x="254" y="147" width="6" height="6" rx="1"/><text x="268" y="154" class="t1" font-weight="600">One thread per goal</text><text x="268" y="167" class="t3" font-size="11">a finished goal becomes a frozen card</text>
-<rect class="dot" x="254" y="173" width="6" height="6" rx="1"/><text x="268" y="180" class="t1" font-weight="600">Cut in batches, when it pays</text><text x="268" y="193" class="t3" font-size="11">saving beats one cache rewrite</text>
+<rect class="dot" x="254" y="173" width="6" height="6" rx="1"/><text x="268" y="180" class="t1" font-weight="600">Rewrite at epochs, when it pays</text><text x="268" y="193" class="t3" font-size="11">growth costs more than a new prefix</text>
 <rect class="dot" x="254" y="199" width="6" height="6" rx="1"/><text x="268" y="206" class="t1" font-weight="600">An anchor that never drops</text><text x="268" y="219" class="t3" font-size="11">rules, notes, pins, ledger, map</text>
 <rect class="dot" x="254" y="225" width="6" height="6" rx="1"/><text x="268" y="232" class="t1" font-weight="600">Stale reads go first</text><text x="268" y="245" class="t3" font-size="11">a file read before it was edited</text>
 <rect class="dot" x="254" y="251" width="6" height="6" rx="1"/><text x="268" y="258" class="t1" font-weight="600">Cache pockets (opt-in)</text><text x="268" y="271" class="t3" font-size="11">one cached view per topic</text>
@@ -55,5 +55,5 @@
 <text x="548" y="282" class="t3" font-size="11">plus the current goal's work.</text>
 <text x="548" y="297" class="t3" font-size="11">What left is listed, with how</text>
 <text x="548" y="310" class="t3" font-size="11">to read it back.</text>
-<text x="24" y="340" class="t2">Two heavy sessions, five runs per arm: the curator solved 5 of 5 at $0.207 a run, the lowest cost of the four arms.</text>
+<text x="24" y="340" class="t2">Cold test, 1,000 topics, 128k window (2026-11-09, nexo cdeb98a): recall 100%, prefix hit 99.4%, $0.59 against $2.41 whole history.</text>
 </svg>
