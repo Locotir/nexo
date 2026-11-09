@@ -6,11 +6,16 @@
 //! `--stride`-th request calls the curator, except the `--tail` requests before each checkpoint, which are timed.
 //! Columns: `curate` is `Curator::view`; `+reply` adds serializing the memory reply (O(n) bytes by protocol);
 //! `ingest` is one call with the whole history, per 1,000 messages.
+//!
+//! Cold mode: `--topics N[,N2] --hops H[,H2] --seed S [--questions Q] [--stride K]` runs the cold scale session
+//! (many topics, big pastes, questions that correlate facts across topics; see `scale_gen::Cold`) and prints one
+//! line per (N, hops): N | hops | recall % | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB,
+//! then the plain arm (the whole history every request) for reference.
 
 #[path = "../tests/support/scale_gen.rs"]
 mod scale_gen;
 
-use scale_gen::{run, Gen, Plan, KINDS};
+use scale_gen::{run, run_cold, ColdParams, Gen, Plan, KINDS};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -26,6 +31,20 @@ fn main() {
         return;
     }
     let nums = |s: String| s.split(',').filter_map(|x| x.parse::<usize>().ok()).collect::<Vec<_>>();
+    if let Some(t) = get("--topics") {
+        let hops = get("--hops").unwrap_or_else(|| "1".into());
+        let seed = get("--seed").and_then(|s| s.parse().ok()).unwrap_or(1);
+        println!("N | hops | recall % | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB | plain");
+        for n in nums(t) {
+            for h in nums(hops.clone()) {
+                let mut p = ColdParams::new(n, h, seed);
+                p.questions = get("--questions").and_then(|s| s.parse().ok()).unwrap_or(p.questions);
+                p.stride = get("--stride").and_then(|s| s.parse().ok()).unwrap_or(1);
+                println!("{}", run_cold(&p).line());
+            }
+        }
+        return;
+    }
     let gens: Vec<String> = get("--gens")
         .map_or_else(|| KINDS.iter().map(|s| s.to_string()).collect(), |s| s.split(',').map(str::to_string).collect());
     let plan = Plan {
