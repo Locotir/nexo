@@ -1,6 +1,6 @@
 //! What the view left out and comes back: the steps a request needs, the outputs the agent asks for again.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 use crate::hindsight::{Sym, UKind};
@@ -41,7 +41,7 @@ fn message_named(name: &str) -> Option<usize> {
 }
 
 impl Engine {
-    /// The steps of the pool that cover the words of `need` not in `covered`: for each, the richest step
+    /// The steps of the pool that cover the words of `need` not in `base`: for each, the richest step
     /// that holds it (a file read whole, more than an edit that names it) and the latest (what changed).
     /// A word no holder went for or read as its own is only a topic many outputs touch (a header every
     /// file repeats, a word of the prose): its richest holder is then the one that says it most often,
@@ -50,21 +50,29 @@ impl Engine {
     pub(super) fn pick(
         &self,
         need: &FxHashSet<Sym>,
-        mut covered: FxHashSet<Sym>,
+        base: &FxHashSet<Sym>,
         pool: impl Fn(&Step) -> bool,
     ) -> Vec<usize> {
-        let mut want: Vec<Sym> = need.iter().filter(|w| !covered.contains(w)).copied().collect();
+        let mut covered: FxHashSet<Sym> = FxHashSet::default();
+        let mut want: Vec<Sym> = need.iter().filter(|w| !base.contains(w)).copied().collect();
+        // the steps of the pool that hold each word, oldest first: one pass over the steps, not one for each word
+        let mut held: FxHashMap<Sym, Vec<usize>> = want.iter().map(|&w| (w, Vec::new())).collect();
+        for (i, s) in self.steps.iter().enumerate().filter(|(_, s)| pool(s)) {
+            for (w, at) in held.iter_mut() {
+                if s.about.contains(w) {
+                    at.push(i);
+                }
+            }
+        }
         // with `aim`, the words fewest steps hold come first: the one step that has a rare word is the one
         // the request means, and what it covers needs nothing more
-        let holders = |w: &Sym| self.steps.iter().filter(|s| pool(s) && s.about.contains(w)).count();
-        want.sort_unstable_by_key(|w| (if self.p.aim != 0 { holders(w) } else { 0 }, *w));
+        want.sort_unstable_by_key(|w| (if self.p.aim != 0 { held[w].len() } else { 0 }, *w));
         let mut out = Vec::new();
         for w in want {
             if covered.contains(&w) {
                 continue;
             }
-            let mut holds: Vec<usize> =
-                (0..self.steps.len()).filter(|&i| pool(&self.steps[i]) && self.steps[i].about.contains(&w)).collect();
+            let mut holds: Vec<usize> = held.remove(&w).unwrap_or_default();
             if self.p.aim != 0 && holds.iter().any(|&i| self.steps[i].aimed.contains(&w)) {
                 holds.retain(|&i| self.steps[i].aimed.contains(&w));
             }
@@ -94,16 +102,26 @@ impl Engine {
     pub(super) fn recall(&mut self, need: &FxHashSet<Sym>) -> bool {
         let last = self.tr.msgs.len() - 1;
         let vis = self.visible();
-        let mut covered = self.words_in(vis.iter().copied(), &[UKind::Result]);
+        // the words of `need` that something in the view holds: those of an output it sends, those of a
+        // step that is not out. Only a word the request asks is looked up, not every word of the history.
+        let mut covered = FxHashSet::default();
+        for &mi in vis.iter() {
+            for &i in self.fz.by_msg(mi) {
+                let u = &self.tr.units[i];
+                if u.kind == UKind::Result {
+                    covered.extend(u.words.iter().copied().filter(|w| need.contains(w)));
+                }
+            }
+        }
         // only a closed step comes back. An open one the view does not send (it left with the history, or its
         // topic is left out) counts as seen: the ledger keeps the facts of the first, the topic of the second
         // comes back whole when the talk returns to it. Bringing them back here was measured on the 20 recorded
         // sessions: 1.9 % more input cost (up to 29 % in one), and 5 fewer forgotten words of 112 (7 fewer in
         // one, one more in two others).
         for s in self.steps.iter().filter(|s| !s.out) {
-            covered.extend(s.about.iter().copied());
+            covered.extend(need.iter().filter(|w| s.about.contains(w)).copied());
         }
-        let back = self.pick(need, covered, |s| s.out);
+        let back = self.pick(need, &covered, |s| s.out);
         for &i in &back {
             let text = self.step_text(i);
             let s = &mut self.steps[i];

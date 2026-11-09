@@ -80,6 +80,9 @@ const OUT_NAMED: usize = 24;
 /// The longest label, in characters.
 const LABEL_CHARS: usize = 48;
 
+/// The label of a text with no words to name it by.
+const NO_WORDS: &str = "(no words)";
+
 /// The longest keyword, in characters.
 const KEYWORD_CHARS: usize = 24;
 
@@ -140,8 +143,10 @@ pub fn keywords(text: &str) -> Vec<String> {
         if COMMON.contains(&low.as_str()) {
             continue;
         }
-        *counts.entry(low.clone()).or_insert(0) += 1;
-        if !seen.iter().any(|(_, _, l)| *l == low) {
+        // the first time a word is said, it is a candidate
+        let times = counts.entry(low.clone()).or_insert(0);
+        *times += 1;
+        if *times == 1 {
             seen.push((short(w).into_owned(), at, low));
         }
     }
@@ -149,8 +154,9 @@ pub fn keywords(text: &str) -> Vec<String> {
         let n = counts[low].max(1);
         identifier_weight(w) + 200 / n + w.chars().count().min(14) as i64
     };
+    let scores: Vec<i64> = seen.iter().map(score).collect();
     let mut order: Vec<usize> = (0..seen.len()).collect();
-    order.sort_by_key(|&i| (std::cmp::Reverse(score(&seen[i])), seen[i].1));
+    order.sort_by_key(|&i| (std::cmp::Reverse(scores[i]), seen[i].1));
     order.truncate(3);
     order.sort_by_key(|&i| seen[i].1);
     order.into_iter().map(|i| seen[i].0.clone()).collect()
@@ -166,9 +172,35 @@ pub fn label(thread: Option<&str>, path: Option<&str>, call: Option<&str>, text:
     }
     let words = keywords(text);
     if words.is_empty() {
-        "(no words)".to_string()
+        NO_WORDS.to_string()
     } else {
         clip(&words.join(" "))
+    }
+}
+
+/// The labels of texts alone (`label(None, None, None, text)`), kept while they stay under a size: the same
+/// findings, requests and facts are named at every request, and naming one reads all of its words.
+#[derive(Default)]
+pub(super) struct LabelMemo {
+    map: rustc_hash::FxHashMap<String, String>,
+    bytes: usize,
+}
+
+impl LabelMemo {
+    const MAX_BYTES: usize = 4 << 20;
+
+    fn of(&mut self, text: &str) -> String {
+        if let Some(l) = self.map.get(text) {
+            return l.clone();
+        }
+        let l = label(None, None, None, text);
+        if self.bytes > Self::MAX_BYTES {
+            self.map.clear();
+            self.bytes = 0;
+        }
+        self.bytes += text.len() + l.len();
+        self.map.insert(text.to_string(), l.clone());
+        l
     }
 }
 
@@ -194,25 +226,25 @@ impl Engine {
         // the standing instructions, one line each after the header
         for line in self.rules_shown.lines().skip(1) {
             let text = line.split_once(": ").map_or(line, |(_, t)| t);
-            item(AddedKind::Rule, label(None, None, None, text), est_str(line), AddedState::In);
+            item(AddedKind::Rule, self.label_memo.of(text), est_str(line), AddedState::In);
         }
         // the anchor
         if !self.base_map.is_empty() {
             let summary = self.base_map.split("\n\n").next().unwrap_or("");
             // named by the requests it lists; without any, by what it is
             let asks: Vec<&str> = summary.lines().filter(|l| l.starts_with("- ")).collect();
-            let name = if keywords(&asks.join(" ")).is_empty() {
-                "earlier messages".to_string()
-            } else {
-                label(None, None, None, &asks.join(" "))
+            let asks = asks.join(" ");
+            let name = match self.label_memo.of(&asks) {
+                l if l == NO_WORDS => "earlier messages".to_string(),
+                l => l,
             };
             item(AddedKind::Start, name, est_str(summary), AddedState::In);
             if self.p.notes != 0 {
                 for (_, line) in &self.findings {
-                    item(AddedKind::Memory, label(None, None, None, line), est_str(line), AddedState::In);
+                    item(AddedKind::Memory, self.label_memo.of(line), est_str(line), AddedState::In);
                 }
                 if let Some((_, line)) = &self.plan {
-                    item(AddedKind::Goal, label(None, None, None, line), est_str(line), AddedState::In);
+                    item(AddedKind::Goal, self.label_memo.of(line), est_str(line), AddedState::In);
                 }
             }
             let clip_at = 4 * self.p.pin.div_euclid(2);
@@ -230,7 +262,7 @@ impl Engine {
             if let Some(at) = self.base_map.rfind(&head) {
                 let text = &self.base_map[at..];
                 let body = text.split_once('\n').map_or("", |(_, rest)| rest);
-                item(AddedKind::Memory, label(None, None, None, body), est_str(text), AddedState::In);
+                item(AddedKind::Memory, self.label_memo.of(body), est_str(text), AddedState::In);
             }
         }
         // the cards of the other topics, as they were put in the messages the view sends
@@ -248,7 +280,8 @@ impl Engine {
             item(AddedKind::Recalled, label(None, None, call.as_deref(), ""), s.tokens, AddedState::In);
         }
         // held back: the other topics when they are apart, and the outputs the view does not send whole
-        let mut held: Vec<Added> = Vec::new();
+        // (the label of a topic is made for the ones that are shown: `Some(ask)`)
+        let mut held: Vec<(Added, Option<String>)> = Vec::new();
         let mut apart: FxHashSet<usize> = FxHashSet::default();
         if self.apart() {
             let g = &self.goal;
@@ -260,17 +293,15 @@ impl Engine {
                 }
                 if tokens > 0 {
                     let ask = g.ask(&self.tr, &self.fz, g.members[k][0]);
-                    held.push(Added {
-                        kind: AddedKind::Thread,
-                        label: label(Some(&ask), None, None, ""),
-                        tokens,
-                        state: AddedState::Out,
-                    });
+                    held.push((
+                        Added { kind: AddedKind::Thread, label: String::new(), tokens, state: AddedState::Out },
+                        Some(ask),
+                    ));
                 }
             }
         }
         // the same call or file left out several times is one item
-        let mut outputs: indexmap::IndexMap<String, (i64, usize)> = indexmap::IndexMap::new();
+        let mut outputs: indexmap::IndexMap<std::sync::Arc<str>, (i64, usize)> = indexmap::IndexMap::new();
         for mi in 0..n {
             let sent = seen.contains(&mi);
             if !sent && apart.contains(&mi) {
@@ -289,31 +320,52 @@ impl Engine {
                 if tokens <= 0 {
                     continue;
                 }
-                let info = self.fz.info.get(&i);
-                let path = info.and_then(|x| x.path.as_deref()).filter(|p| !p.is_empty());
-                let call =
-                    format!("{} {}", u.tool, info.and_then(|x| x.key.as_deref()).unwrap_or("")).trim().to_string();
-                let name = label(None, path, Some(&call), "");
+                // a result's name does not change: it is made once
+                let name = match self.out_names.get(&i) {
+                    Some(n) => n.clone(),
+                    None => {
+                        let info = self.fz.info.get(&i);
+                        let path = info.and_then(|x| x.path.as_deref()).filter(|p| !p.is_empty());
+                        let call = format!("{} {}", u.tool, info.and_then(|x| x.key.as_deref()).unwrap_or(""))
+                            .trim()
+                            .to_string();
+                        let n: std::sync::Arc<str> = label(None, path, Some(&call), "").into();
+                        self.out_names.insert(i, n.clone());
+                        n
+                    }
+                };
                 let e = outputs.entry(name).or_insert((0, 0));
                 e.0 += tokens;
                 e.1 += 1;
             }
         }
         for (name, (tokens, times)) in outputs {
-            let name = if times > 1 { format!("{} ×{times}", textops::head(&name, LABEL_CHARS - 5)) } else { name };
-            held.push(Added { kind: AddedKind::Recalled, label: name, tokens, state: AddedState::Out });
+            let name = if times > 1 {
+                format!("{} ×{times}", textops::head(&name, LABEL_CHARS - 5))
+            } else {
+                name.to_string()
+            };
+            held.push((Added { kind: AddedKind::Recalled, label: name, tokens, state: AddedState::Out }, None));
         }
-        held.sort_by_key(|a| std::cmp::Reverse(a.tokens));
+        held.sort_by_key(|a| std::cmp::Reverse(a.0.tokens));
         if held.len() > OUT_NAMED {
             let rest = held.split_off(OUT_NAMED);
-            held.push(Added {
-                kind: AddedKind::Recalled,
-                label: format!("{} smaller items", rest.len()),
-                tokens: rest.iter().map(|a| a.tokens).sum(),
-                state: AddedState::Out,
-            });
+            held.push((
+                Added {
+                    kind: AddedKind::Recalled,
+                    label: format!("{} smaller items", rest.len()),
+                    tokens: rest.iter().map(|a| a.0.tokens).sum(),
+                    state: AddedState::Out,
+                },
+                None,
+            ));
         }
-        out.extend(held);
+        out.extend(held.into_iter().map(|(mut a, ask)| {
+            if let Some(ask) = ask {
+                a.label = label(Some(&ask), None, None, "");
+            }
+            a
+        }));
         out
     }
 }

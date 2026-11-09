@@ -315,3 +315,20 @@ fn two_recalls_into_hidden_threads_unsplit_until_the_next_switch() {
     assert!(e.split, "{:?}", e.stats);
     assert_eq!(e.stats.get("unsplit"), Some(&1));
 }
+
+#[test]
+fn topic_changes_are_counted_as_the_turns_give_them() {
+    // six stretches (topics 0 1 0 2 1 0), the classifier splitting some of them off
+    let plan = [(0, 1), (1, 1), (0, 1), (2, 1), (1, 1), (0, 1)];
+    let (e, _) = conversation("nudge=0;eoq=0;link=0.2;apart=0", &plan, 10);
+    let turns = e.goal.assignment();
+    let (mut sw, mut back) = (0, 0);
+    for j in 1..turns.len() {
+        if turns[j].1 != turns[j - 1].1 {
+            sw += 1;
+            back += turns[..j].iter().any(|t| t.1 == turns[j].1) as usize;
+        }
+    }
+    assert_eq!(e.goal.switches(), (sw, back), "{turns:?}");
+    assert!(sw > 0, "{turns:?}");
+}

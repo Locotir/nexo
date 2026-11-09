@@ -47,7 +47,7 @@ impl Engine {
         let (ka, kb) = self.goal.span(k, n);
         let said = self.words_in(ka..kb, &[UKind::Text, UKind::Call]);
         let own = self.words_in(ka..kb, &[UKind::Result]);
-        let asked = self.words_in(std::iter::once(0).chain(self.goal.turns.iter().map(|t| t.start)), &[UKind::User]);
+        let asked = self.user_words();
         let said: FxHashSet<Sym> = said.into_iter().filter(|w| !asked.contains(w)).collect();
         // Only a word of some output shows where the request took what it knew: a request that read
         // nothing and used no output (a bare "[1, 2]", or words of the earlier replies) lets no step go.
@@ -77,7 +77,7 @@ impl Engine {
         }
         // what the latest request names stays: the steps recall would bring back for it
         let need = self.asks(j);
-        for i in self.pick(&need, FxHashSet::default(), |s| !s.out) {
+        for i in self.pick(&need, &FxHashSet::default(), |s| !s.out) {
             unused.remove(&i);
         }
         told.then_some(unused)
@@ -95,7 +95,7 @@ impl Engine {
         // with `named`, the outputs of a file the latest request names stay: the request is about that file
         let kept = if self.p.named != 0 { self.named_results() } else { FxHashSet::default() };
         let (a, _) = self.goal.span(nt - 1, n);
-        let asked = self.words_in(std::iter::once(0).chain(self.goal.turns.iter().map(|t| t.start)), &[UKind::User]);
+        let asked = self.user_words();
         let (mut said, mut wrote, mut told) = (FxHashSet::default(), 0i64, false);
         let mut idle: Vec<(usize, usize, i64)> = Vec::new();
         for mi in (a + 1..n).rev() {

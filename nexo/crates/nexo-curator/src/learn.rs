@@ -268,6 +268,25 @@ struct Act {
 /// A write that names a file, with the names written next to it.
 type CoWrite = (usize, std::sync::Arc<Vec<Sym>>);
 
+/// The results on one thing in the order they came: the message of each, and how many of the first `k` went
+/// well (`good[k]`, one more entry than there are results), so a stretch of them is counted without a walk.
+#[derive(Default)]
+struct Outcomes {
+    at: Vec<usize>,
+    good: Vec<usize>,
+}
+
+impl Outcomes {
+    fn push(&mut self, msg: usize, error: bool) {
+        let before = self.good.last().copied().unwrap_or(0);
+        if self.good.is_empty() {
+            self.good.push(0);
+        }
+        self.at.push(msg);
+        self.good.push(before + usize::from(!error));
+    }
+}
+
 #[derive(Default)]
 pub struct Featurizer {
     pub info: FxHashMap<usize, Info>,
@@ -286,8 +305,8 @@ pub struct Featurizer {
     amsg: Option<(usize, Vec<Sym>)>,
     reads: FxHashMap<String, Vec<usize>>,
     writes: FxHashMap<String, Vec<usize>>,
-    /// The results on one thing (a path, a program), in order: (message, whether it failed).
-    outcomes: FxHashMap<(u8, String), Vec<(usize, bool)>>,
+    /// The results on one thing (a path, a program), in order.
+    outcomes: FxHashMap<(u8, String), Outcomes>,
     /// Per request (as `requests` lists them), the last message with an output of its work.
     req_last_result: Vec<usize>,
     /// The messages of the thread the latest request is on, as ranges (set by the engine).
@@ -346,7 +365,7 @@ impl Featurizer {
                         self.reads.entry(p.clone()).or_default().push(u.msg);
                     }
                     if let Some(k) = &call.key {
-                        self.outcomes.entry((call.kind as u8, k.clone())).or_default().push((u.msg, error));
+                        self.outcomes.entry((call.kind as u8, k.clone())).or_default().push(u.msg, error);
                     }
                     if let Some(last) = self.req_last_result.last_mut() {
                         *last = u.msg;
@@ -467,15 +486,13 @@ impl Featurizer {
         let Some(info) = self.info.get(&i) else { return (0, false, None) };
         let Some(key) = &info.key else { return (0, false, None) };
         let Some(list) = self.outcomes.get(&(info.kind as u8, key.clone())) else { return (0, false, None) };
-        let (mut n, mut ok, mut last) = (0, false, None);
-        for &(m, err) in list {
-            if m > msg && m < t {
-                n += 1;
-                ok |= !err;
-                last = Some(m);
-            }
+        // (the messages are in order: those after `msg` and before `t` are a stretch of them)
+        let lo = list.at.partition_point(|&m| m <= msg);
+        let hi = list.at.partition_point(|&m| m < t);
+        if hi <= lo {
+            return (0, false, None);
         }
-        (n, ok, last)
+        (hi - lo, list.good[hi] > list.good[lo], Some(list.at[hi - 1]))
     }
 
     /// What knowing ``w`` is worth at the step of the current context: its rarity, times 1 if the request,
@@ -534,7 +551,10 @@ impl Featurizer {
         let created = Self::steps_between(tr, u.msg as i64, t);
         let npast = bisect_left(&u.uses, &t);
         let since = if npast > 0 { Self::steps_between(tr, u.uses[npast - 1] as i64, t) } else { created };
-        let between = |v: Option<&Vec<usize>>| v.is_some_and(|v| v.iter().any(|&w| u.msg < w && w < t));
+        // (the messages of a list are in order: the first one after the unit says whether one is before `t`)
+        let between = |v: Option<&Vec<usize>>| {
+            v.is_some_and(|v| v.get(v.partition_point(|&w| w <= u.msg)).is_some_and(|&w| w < t))
+        };
         let stale = u.kind == UKind::Result && path.is_some_and(|p| between(self.writes.get(p)));
         let superseded = u.kind == UKind::Result && path.is_some_and(|p| between(self.reads.get(p)));
         let used =
@@ -746,8 +766,8 @@ impl Model {
     /// The chance a reply within `h` steps (0 or past the longest head: ever) draws on the unit of `x`,
     /// between the two heads around `h` in the log of the horizon; `None` without need heads.
     pub fn need_prob(&self, x: &[f64], h: f64) -> Option<f64> {
-        let heads = &self.need;
-        let (ever, finite): (Vec<_>, Vec<_>) = heads.iter().partition(|(hz, _)| *hz <= 0.0);
+        // the heads are sorted by horizon with the ever (0) last: the finite ones first
+        let (finite, ever) = self.need.split_at(self.need.partition_point(|(hz, _)| *hz > 0.0));
         let last = ever.first().or(finite.last())?;
         if h <= 0.0 || finite.is_empty() || h >= finite[finite.len() - 1].0 {
             return Some(last.1.prob(x));

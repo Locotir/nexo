@@ -1,5 +1,7 @@
 //! The steps of answered requests: their words, how a request closes and the lines that say what left.
 
+use std::sync::Arc;
+
 use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
@@ -115,6 +117,20 @@ impl Engine {
             }
         }
         out
+    }
+
+    /// The distinctive words of the person's message that opened each request so far, and of the first
+    /// message (`words_in` over them, kept as the requests come).
+    pub(super) fn user_words(&mut self) -> Arc<FxHashSet<Sym>> {
+        let nt = self.goal.turns.len();
+        if self.user_turns == 0 || self.user_turns < nt {
+            let starts: Vec<usize> = (self.user_turns..nt).map(|k| self.goal.turns[k].start).collect();
+            let first = (self.user_turns == 0).then_some(0);
+            let add = self.words_in(first.into_iter().chain(starts), &[UKind::User]);
+            Arc::make_mut(&mut self.user_words).extend(add);
+            self.user_turns = nt;
+        }
+        self.user_words.clone()
     }
 
     /// The words of request `j` that point at some steps and not at all: its distinctive words and its

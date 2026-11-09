@@ -131,3 +131,37 @@ fn failed_whole_write_keeps_the_earlier_version() {
     e.sync(&msgs);
     assert_eq!(e.wrote.values().map(|w| w.mi).collect::<Vec<_>>(), vec![5]);
 }
+
+#[test]
+fn a_set_of_paths_answers_as_the_pairs_do() {
+    let paths = [
+        "a.rs",
+        "src/a.rs",
+        "/work/src/a.rs",
+        "./src/a.rs",
+        r"C:\proj\src\a.rs",
+        r"src\a.rs",
+        "lib/a.rs",
+        "/work/lib/a.rs",
+        "dir/",
+        "",
+        "/",
+        "x/y/z.txt",
+        "y/z.txt",
+        "z.txt",
+        "ya.rs",
+        "//a.rs",
+    ];
+    for k in 0..paths.len() {
+        let mut set = PathSet::default();
+        let mut held = Vec::new();
+        for held_now in 0..=3 {
+            for q in paths {
+                assert_eq!(set.has_same(q), held.iter().any(|h: &&str| same_file(h, q)), "{held:?} / {q}");
+            }
+            let next = paths[(k + held_now * 5) % paths.len()];
+            set.insert(next);
+            held.push(next);
+        }
+    }
+}

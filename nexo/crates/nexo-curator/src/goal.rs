@@ -22,6 +22,8 @@ pub struct Turn {
     tokens: i64,
     pub thread: usize,
     pub units: Vec<usize>,
+    /// What the request that opened the turn asked, as a card names it (`Threads::ask`).
+    ask: String,
 }
 
 pub fn starts_turn(tr: &Tracer, fz: &Featurizer, mi: usize) -> bool {
@@ -60,10 +62,29 @@ pub struct Threads {
     /// For each thread, how likely the latest request belongs to it (the classifier's joint); 0 when the
     /// request rides on a step or the thread is new.
     pub joint: Vec<f64>,
+    /// Topic changes so far, and those that went back to a topic seen before (`switches`).
+    sw: usize,
+    back: usize,
     m: usize,
     df: FxHashMap<Sym, u32>,
     n: usize,
     names: FxHashSet<Sym>,
+    /// The closed turns each word is in, by what the turn said (`terms`), asked (`request`) and held (`seen`),
+    /// the turns in order: a new request is scored against these, not against every turn for each word.
+    in_terms: FxHashMap<Sym, Vec<u32>>,
+    in_request: FxHashMap<Sym, Vec<u32>>,
+    in_seen: FxHashMap<Sym, Vec<u32>>,
+    /// How many turns are in those indexes.
+    indexed: usize,
+}
+
+/// What a new request shares with one turn.
+#[derive(Clone, Default)]
+struct Overlap {
+    terms: f64,
+    top: Option<f64>,
+    asked: Option<f64>,
+    seen: usize,
 }
 
 impl Threads {
@@ -90,15 +111,37 @@ impl Threads {
         }
     }
 
+    /// Moves the words of closed turn `j` into the indexes (a closed turn takes no more).
+    fn index_turn(&mut self, j: usize) {
+        let t = &mut self.turns[j];
+        let at = u32::try_from(j).expect("fewer than 2^32 turns");
+        for w in std::mem::take(&mut t.terms) {
+            self.in_terms.entry(w).or_default().push(at);
+        }
+        for w in std::mem::take(&mut t.request) {
+            self.in_request.entry(w).or_default().push(at);
+        }
+        for w in std::mem::take(&mut t.seen) {
+            self.in_seen.entry(w).or_default().push(at);
+        }
+        self.indexed = j + 1;
+    }
+
     fn open(&mut self, tr: &Tracer, fz: &Featurizer, mi: usize, head: Option<&Head>, share: Option<f64>) {
         let mut req = FxHashSet::default();
         let mut names = FxHashSet::default();
+        let mut asked = Vec::new();
         for &i in fz.by_msg(mi) {
-            if tr.units[i].kind == UKind::User && is_request(&tr.unit_text(i)) {
-                req.extend(fz.terms[i].iter().copied());
-                names.extend(tr.units[i].words.iter().copied());
+            if tr.units[i].kind == UKind::User {
+                let text = tr.unit_text(i);
+                if is_request(&text) {
+                    req.extend(fz.terms[i].iter().copied());
+                    names.extend(tr.units[i].words.iter().copied());
+                    asked.push(text);
+                }
             }
         }
+        let ask = line(&asked.join(" "), CARD_ASK);
         let n = self.turns.len();
         let turn = |thread| Turn {
             start: mi,
@@ -108,6 +151,7 @@ impl Threads {
             tokens: 0,
             thread,
             units: Vec::new(),
+            ask: ask.clone(),
         };
         if n == 0 {
             self.turns.push(turn(0));
@@ -126,29 +170,40 @@ impl Threads {
         }
         let mut joint = vec![0.0f64; self.members.len()];
         let fresh = names.iter().filter(|w| !self.names.contains(w)).count();
-        for j in 0..n {
-            let t = &self.turns[j];
-            let mut s = 0.0;
-            let mut top: Option<f64> = None;
-            for w in &req {
-                if t.terms.contains(w) {
-                    let x = weight[w];
-                    s += x;
-                    top = Some(top.map_or(x, |m: f64| m.max(x)));
-                }
+        // the turns before this request are closed: their words go to the indexes, and the request is scored
+        // against the turns it shares a word with; the others have nothing in common with it
+        while self.indexed < n {
+            self.index_turn(self.indexed);
+        }
+        // the sum of no weights, as a turn that shares no word asked for it
+        let none: f64 = std::iter::empty::<f64>().sum();
+        let mut shared = vec![Overlap::default(); n];
+        for w in &req {
+            let x = weight[w];
+            for &j in self.in_terms.get(w).into_iter().flatten() {
+                let o = &mut shared[j as usize];
+                o.terms += x;
+                o.top = Some(o.top.map_or(x, |m: f64| m.max(x)));
             }
-            let asked: f64 = req.iter().filter(|w| t.request.contains(w)).map(|w| weight[w]).sum();
+            for &j in self.in_request.get(w).into_iter().flatten() {
+                let o = &mut shared[j as usize];
+                o.asked = Some(o.asked.unwrap_or(none) + x);
+            }
+        }
+        for w in &names {
+            for &j in self.in_seen.get(w).into_iter().flatten() {
+                shared[j as usize].seen += 1;
+            }
+        }
+        for (j, (t, o)) in self.turns.iter().zip(&shared).enumerate() {
+            let (s, top, asked) = (o.terms, o.top, o.asked.unwrap_or(none));
             let prev = if j == n - 1 { 1.0 } else { 0.0 };
             let x = [
                 s / total,
                 s.ln_1p(),
                 top.unwrap_or(0.0),
                 asked / total,
-                if names.is_empty() {
-                    0.0
-                } else {
-                    names.iter().filter(|w| t.seen.contains(w)).count() as f64 / names.len() as f64
-                },
+                if names.is_empty() { 0.0 } else { o.seen as f64 / names.len() as f64 },
                 prev,
                 if t.thread == self.turns[n - 1].thread { 1.0 } else { 0.0 },
                 ((n - 1 - j) as f64).ln_1p(),
@@ -185,6 +240,11 @@ impl Threads {
         } else {
             self.members.len()
         };
+        let fresh_thread = th == self.members.len();
+        if th != self.turns[n - 1].thread {
+            self.sw += 1;
+            self.back += usize::from(!fresh_thread);
+        }
         if th == self.members.len() {
             self.members.push(Vec::new());
             self.last.push(n);
@@ -209,14 +269,7 @@ impl Threads {
 
     /// How many times the person changed topic so far, and how many of those went back to a topic seen before.
     pub fn switches(&self) -> (usize, usize) {
-        let (mut sw, mut back) = (0, 0);
-        for j in 1..self.turns.len() {
-            if self.turns[j].thread != self.turns[j - 1].thread {
-                sw += 1;
-                back += self.turns[..j].iter().any(|t| t.thread == self.turns[j].thread) as usize;
-            }
-        }
-        (sw, back)
+        (self.sw, self.back)
     }
 
     pub fn active(&self) -> usize {
@@ -228,17 +281,9 @@ impl Threads {
         (self.turns[j].start, end)
     }
 
-    pub fn ask(&self, tr: &Tracer, fz: &Featurizer, j: usize) -> String {
-        let mut parts = Vec::new();
-        for &i in fz.by_msg(self.turns[j].start) {
-            if tr.units[i].kind == UKind::User {
-                let t = tr.unit_text(i);
-                if is_request(&t) {
-                    parts.push(t);
-                }
-            }
-        }
-        line(&parts.join(" "), CARD_ASK)
+    /// What the request that opened turn `j` asked, as a card names it.
+    pub fn ask(&self, _tr: &Tracer, _fz: &Featurizer, j: usize) -> String {
+        self.turns[j].ask.clone()
     }
 
     /// The threads other than the active one, the most recently active first.

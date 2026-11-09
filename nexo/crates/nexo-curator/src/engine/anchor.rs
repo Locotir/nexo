@@ -232,6 +232,9 @@ impl Engine {
                 json!({"zone": zone[mi], "tokens": self.sizes[mi].max(1), "state": state})
             })
             .collect();
-        json!({"zones": zones, "cells": cells})
+        let mut out = serde_json::Map::new();
+        out.insert("zones".into(), Value::Array(zones));
+        out.insert("cells".into(), Value::Array(cells));
+        Value::Object(out)
     }
 }

@@ -98,7 +98,7 @@ impl Engine {
                     self.bump("split_kept", 1);
                 }
                 self.bump("switches", 1);
-                if fresh && self.goal.turns[..nt - 1].iter().any(|t| t.thread == self.goal.turns[nt - 1].thread) {
+                if fresh && self.goal.members[self.goal.turns[nt - 1].thread].len() > 1 {
                     self.bump("returns", 1);
                 }
                 switched = true;

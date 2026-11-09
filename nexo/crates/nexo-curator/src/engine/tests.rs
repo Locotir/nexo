@@ -1,4 +1,4 @@
-use super::files::{basename, file_key, files_in, head_and_tail, name_parts, same_file, scratch};
+use super::files::{basename, file_key, files_in, head_and_tail, name_parts, same_file, scratch, PathSet};
 use super::fixes::{named_in, TEST_COMMAND, TEST_FAILED};
 use super::steps::topics;
 use super::view::add_blocks;

@@ -44,6 +44,26 @@ pub(super) fn add_blocks(m: &mut Value, more: impl IntoIterator<Item = Value>) {
 }
 
 impl Engine {
+    /// Takes the units that came since the last call into `unit_first`.
+    pub(super) fn index_units(&mut self) {
+        for i in self.unit_seen..self.tr.units.len() {
+            let m = self.tr.units[i].msg;
+            debug_assert!(i == 0 || self.tr.units[i - 1].msg <= m, "units come in the order of the messages");
+            while self.unit_first.len() <= m {
+                self.unit_first.push(i);
+            }
+        }
+        self.unit_seen = self.tr.units.len();
+    }
+
+    /// The units of message `mi` (they come in the order of the messages; `index_units` first).
+    pub(super) fn unit_range(&self, mi: usize) -> std::ops::Range<usize> {
+        let end = self.unit_seen;
+        let a = self.unit_first.get(mi).copied().unwrap_or(end);
+        let b = self.unit_first.get(mi + 1).copied().unwrap_or(end);
+        a..b
+    }
+
     pub(super) fn visible(&mut self) -> Arc<Vec<usize>> {
         let key = (self.tr.msgs.len(), self.start, self.goal.turns.len(), self.split);
         if let Some((k, v)) = &self.vis {
@@ -56,7 +76,11 @@ impl Engine {
         let out: Vec<usize> = if g.turns.is_empty() {
             (0..key.0).collect()
         } else if !apart {
-            (0..key.0).filter(|mi| *mi == 0 || (*mi >= self.start && !self.shut_out.contains(mi))).collect()
+            // the first message, and from `start` on the ones not shut
+            let from = self.start.max(1);
+            let mut out = if key.0 > 0 { vec![0] } else { Vec::new() };
+            out.extend((from..key.0).filter(|mi| !self.shut_out.contains(mi)));
+            out
         } else {
             let mut out = vec![0];
             for &j in &g.members[g.active()] {
@@ -474,16 +498,24 @@ impl Engine {
         // doubt that the latest request is not of that topic
         self.need_context();
         let n = self.tr.msgs.len();
+        // the steps of each topic, by the message they stand at (the turns of a topic hold the messages of its spans)
+        let mut by_topic: Vec<Vec<usize>> = vec![Vec::new(); self.goal.members.len()];
+        for (i, s) in self.steps.iter().enumerate() {
+            if s.place() < n {
+                by_topic[self.goal.thread_at(s.place())].push(i);
+            }
+        }
         for (k, xk) in others {
-            let spans: Vec<(usize, usize)> = self.goal.members[k].iter().map(|&j| self.goal.span(j, n)).collect();
             let mut need = self.goal.joint.get(k).copied().unwrap_or(0.0);
-            for i in 0..self.steps.len() {
-                let at = self.steps[i].place();
-                if spans.iter().any(|&(a, b)| (a..b).contains(&at)) {
-                    need = need.max(self.step_need(i, hz));
+            let cost = (1.0 - r) * xk as f64 + r * v;
+            for &i in &by_topic[k] {
+                need = need.max(self.step_need(i, hz));
+                // the need only grows: once it takes the whole gain, the rest of the steps change nothing
+                if cost >= 0.0 && gain - need * cost <= 0.0 {
+                    return false;
                 }
             }
-            gain -= need * ((1.0 - r) * xk as f64 + r * v);
+            gain -= need * cost;
             if gain <= 0.0 {
                 return false;
             }

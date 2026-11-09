@@ -153,6 +153,10 @@ pub struct Engine {
     /// The messages of the view last decided, in order: what the provider cached.
     sent_vis: Arc<Vec<usize>>,
     asked: FxHashSet<Sym>,
+    /// The words of the person's own messages that opened the requests so far (and the first message), and
+    /// how many requests they cover: kept as the requests come, not read again from the history at each one.
+    user_words: Arc<FxHashSet<Sym>>,
+    user_turns: usize,
     kept_tokens: i64,
     frozen: FxHashMap<usize, String>,
     vis: Option<Visible>,
@@ -173,7 +177,7 @@ pub struct Engine {
     /// Whether the host offers the `recall` tool, which brings a message back as it was by its `m#####` name.
     recall_tool: bool,
     /// The calls that read files, each with its message and its files (kept as the units come, so that
-    /// `call_files` does not parse every call again on each request), how many units are in it, and how
+    /// `named_results` does not parse every call again on each request), how many units are in it, and how
     /// many distinct files hold each part of a name.
     calls_raw: Vec<(usize, Vec<Vec<String>>)>,
     sf: crate::flat::StepFiles,
@@ -238,6 +242,13 @@ pub struct Engine {
     probe: Option<Probe>,
     /// The hash of each message as it came (`prints`; 0: not taken yet).
     raw_fp: Vec<u64>,
+    /// The first unit of each message (`unit_range`), and how many units it has looked at.
+    unit_first: Vec<usize>,
+    unit_seen: usize,
+    /// The name of each tool result as the list of what was left out gives it (`added`).
+    out_names: FxHashMap<usize, Arc<str>>,
+    /// The labels of texts already named (`added`): the same findings and requests come back at every request.
+    label_memo: added::LabelMemo,
 }
 
 impl Engine {
@@ -301,6 +312,8 @@ impl Engine {
             unnudged: None,
             sent_vis: Arc::default(),
             asked: FxHashSet::default(),
+            user_words: Arc::default(),
+            user_turns: 0,
             kept_tokens: 0,
             frozen: FxHashMap::default(),
             vis: None,
@@ -316,6 +329,10 @@ impl Engine {
             sf: crate::flat::StepFiles::default(),
             lead_ix: crate::flat::LeadIndex::default(),
             calls_seen: 0,
+            unit_first: Vec::new(),
+            unit_seen: 0,
+            out_names: FxHashMap::default(),
+            label_memo: added::LabelMemo::default(),
             files_known: FxHashSet::default(),
             part_files: FxHashMap::default(),
             line_ids: FxHashMap::default(),

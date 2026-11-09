@@ -311,3 +311,25 @@ fn recall_holds_across_hops_at_200_topics() {
         assert_eq!(row.stand[0], row.stand[1], "standing facts stay: {}", row.line());
     }
 }
+
+// Many topics: the history grows 4 times, the time of a request must not (the session's median request).
+
+#[test]
+#[ignore]
+fn flat_time_many_topics() {
+    let runs: usize = std::env::var("SCALE_RUNS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+    let at = |topics: usize| {
+        let ms: Vec<f64> = (0..runs)
+            .map(|_| {
+                let mut p = ColdParams::new(topics, 1, 1);
+                p.questions = 10;
+                p.stride = 10;
+                run_cold(&p).p50_ms
+            })
+            .collect();
+        median(&ms)
+    };
+    let (m1, m4) = (at(1000), at(4000));
+    eprintln!("scale many topics: 1k {m1:.3} ms, 4k {m4:.3} ms, limit {:.3} ms", 2.8 * m1 + 2.0);
+    assert!(m4 <= 2.8 * m1 + 2.0, "{m4:.3} ms at 4k topics against {m1:.3} ms at 1k");
+}

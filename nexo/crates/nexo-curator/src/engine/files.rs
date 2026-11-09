@@ -153,6 +153,43 @@ pub(super) fn same_file(a: &str, b: &str) -> bool {
     a == b || under(a, b) || under(b, a)
 }
 
+/// A set of paths asked «is any of them the same file as this one» (`same_file`) in one lookup: the paths
+/// as `same_file` reads them, and every tail of them that starts after a `/`.
+#[derive(Default)]
+pub(super) struct PathSet {
+    whole: FxHashSet<String>,
+    tails: FxHashSet<String>,
+}
+
+impl PathSet {
+    fn norm(path: &str) -> String {
+        let p = slashes(path);
+        p.strip_prefix("./").unwrap_or(&p).to_string()
+    }
+
+    pub(super) fn insert(&mut self, path: &str) {
+        let p = Self::norm(path);
+        for (i, _) in p.match_indices('/') {
+            if !self.tails.contains(&p[i + 1..]) {
+                self.tails.insert(p[i + 1..].to_string());
+            }
+        }
+        self.whole.insert(p);
+    }
+
+    /// Whether some path of the set is `same_file` as `path`.
+    pub(super) fn has_same(&self, path: &str) -> bool {
+        if self.whole.is_empty() {
+            return false;
+        }
+        let p = Self::norm(path);
+        // equal, or `path` is a tail of one in the set, or one in the set is a tail of `path`
+        self.whole.contains(&p)
+            || self.tails.contains(&p)
+            || p.match_indices('/').any(|(i, _)| self.whole.contains(&p[i + 1..]))
+    }
+}
+
 /// The last component of a path, POSIX or Windows ("" for one that ends in a separator).
 pub(super) fn basename(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or("")

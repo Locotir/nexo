@@ -50,19 +50,24 @@ impl Engine {
     /// and the agent's own words are never results, so they never leave by the window.
     pub(super) fn refresh_sticky(&mut self) {
         let vis = self.visible();
+        self.index_units();
         let t = self.tr.msgs.len();
         let shown: FxHashSet<usize> = vis.iter().copied().collect();
+        // newest first, the units of the messages the view sends (not every unit of the history)
+        let mut by_age: Vec<usize> = vis.to_vec();
+        if !by_age.windows(2).all(|w| w[0] < w[1]) {
+            by_age.sort_unstable();
+            by_age.dedup();
+        }
+        let units: Vec<usize> = by_age.iter().rev().flat_map(|&mi| self.unit_range(mi).rev()).collect();
         let (mut keep, mut reads) = (FxHashSet::default(), FxHashSet::default());
         let (mut now_seen, mut read_seen) = (FxHashSet::<String>::default(), FxHashSet::<String>::default());
         let mut check_seen = false;
         let mut tokens = 0;
         let mut failing = std::mem::take(&mut self.stk.failing);
         let mut room = FAILURE_BUDGET;
-        for i in (0..self.tr.units.len()).rev() {
+        for i in units {
             let u = &self.tr.units[i];
-            if !shown.contains(&u.msg) {
-                continue;
-            }
             match u.kind {
                 UKind::User | UKind::Text | UKind::Call => tokens += u.tokens,
                 UKind::Thinking => {}

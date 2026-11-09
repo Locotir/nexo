@@ -9,7 +9,7 @@ use crate::hindsight::{Sym, UKind};
 use crate::json::est_str;
 use crate::tools::Kind;
 
-use super::files::{files_in, name_parts, same_file};
+use super::files::{files_in, name_parts, PathSet};
 use super::{Engine, NOTE_TOOL};
 
 impl Engine {
@@ -32,11 +32,21 @@ impl Engine {
         let mut out = FxHashSet::default();
         let Some(start) = self.goal.turns.last().map(|t| t.start) else { return out };
         let asked: FxHashSet<String> = name_parts(&self.unit_text_at(start, UKind::User)).into_iter().collect();
+        // each file by the parts of its name the other calls' files do not share; a file with none of its own
+        // keeps them all
+        let shared = |p: &&String| self.part_files.get(*p).copied().unwrap_or(0) > 1;
+        let names = |f: &Vec<String>| {
+            if f.iter().all(|p| shared(&p)) {
+                f.iter().all(|p| asked.contains(p))
+            } else {
+                f.iter().filter(|p| !shared(p)).all(|p| asked.contains(p))
+            }
+        };
         let cands: Vec<(Vec<usize>, bool)> = self
-            .call_files()
-            .into_iter()
+            .calls_raw
+            .iter()
             .rev()
-            .filter(|(_, files)| files.iter().any(|f| f.iter().all(|p| asked.contains(p))))
+            .filter(|(_, files)| files.iter().any(names))
             .map(|(mi, _)| {
                 let res = self.fz.by_msg(mi + 1).iter().copied().filter(|&u| self.tr.units[u].kind == UKind::Result);
                 (res.collect(), true)
@@ -67,43 +77,33 @@ impl Engine {
     /// stays whatever its size (`in_view`): keeping it adds nothing to send. Whether each is taken.
     fn named_take(&self, cands: &[(Vec<usize>, bool)]) -> Vec<bool> {
         let budget = self.p.named;
-        let (mut spent, mut covered, mut fresh) = (0i64, FxHashSet::default(), Vec::<&str>::new());
+        let (mut spent, mut covered, mut fresh) = (0i64, FxHashSet::default(), PathSet::default());
         let mut out = Vec::with_capacity(cands.len());
         for (units, in_view) in cands {
+            let tokens: i64 = units.iter().map(|&u| self.tr.units[u].tokens).sum();
+            // what does not fit is not taken whatever else is true of it: nothing more is weighed
+            if !(spent + tokens <= budget || (*in_view && spent == 0)) {
+                out.push(false);
+                continue;
+            }
             let paths: Vec<(usize, Vec<&str>)> =
                 units.iter().map(|&u| (u, self.read_paths(u))).filter(|(_, ps)| !ps.is_empty()).collect();
-            let newer = |p: &&str| fresh.iter().any(|f| same_file(f, p));
+            let newer = |p: &&str| fresh.has_same(p);
             let stale = !paths.is_empty()
                 && paths.iter().all(|(u, ps)| ps.iter().all(newer) && self.read_superseded(*u, true).is_some());
             let words: FxHashSet<Sym> = units.iter().flat_map(|&u| self.tr.units[u].words.iter().copied()).collect();
             let copy = !words.is_empty() && words.iter().all(|w| covered.contains(w));
-            let tokens: i64 = units.iter().map(|&u| self.tr.units[u].tokens).sum();
-            let fits = spent + tokens <= budget || (*in_view && spent == 0);
-            let take = !stale && !copy && fits;
+            let take = !stale && !copy;
             if take {
                 spent += tokens;
                 covered.extend(words);
-                fresh.extend(paths.into_iter().flat_map(|(_, ps)| ps));
+                for p in paths.into_iter().flat_map(|(_, ps)| ps) {
+                    fresh.insert(p);
+                }
             }
             out.push(take);
         }
         out
-    }
-
-    /// The calls that read files, each with its message and its files, each file by the parts of its name
-    /// the files the other calls read do not share (as in `step_files`); a file with no part of its own
-    /// keeps them all.
-    fn call_files(&self) -> Vec<(usize, Vec<Vec<String>>)> {
-        let shared = |p: &String| self.part_files.get(p).copied().unwrap_or(0) > 1;
-        let own = |f: &Vec<String>| {
-            let own: Vec<String> = f.iter().filter(|p| !shared(p)).cloned().collect();
-            if own.is_empty() {
-                f.clone()
-            } else {
-                own
-            }
-        };
-        self.calls_raw.iter().map(|(mi, fs)| (*mi, fs.iter().map(own).collect())).collect()
     }
 
     /// Brings `calls_raw` and the part counts up to the units that came since the last request.

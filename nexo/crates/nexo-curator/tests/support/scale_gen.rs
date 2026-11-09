@@ -953,6 +953,9 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
     let start = Instant::now();
     let (mut view_s, mut price_s) = (0.0, 0.0);
+    // `SCALE_CHECK=1`: a hash of every reply of the session goes to stderr (the same number before and after a change that
+    // must not change what the curator does)
+    let (check, mut fold) = (std::env::var_os("SCALE_CHECK").is_some(), 0u64);
     'session: while let Some(b) = g.next_block() {
         let mut ask = b.ask;
         let mut stand = b.stand;
@@ -990,6 +993,17 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
             let reply = cur.view(system as u64, &msgs, now).expect("view");
             times.push(t.elapsed().as_secs_f64() * 1000.0);
             view_s += t.elapsed().as_secs_f64();
+            if check {
+                // everything a call returns, in order: a change of behavior shows as another number
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&(fold, serde_json::to_string(&reply.view).unwrap_or_default()), &mut h);
+                std::hash::Hash::hash(
+                    &(reply.tokens, reply.memory.to_string(), format!("{:?}{:?}", reply.stats, reply.curated)),
+                    &mut h,
+                );
+                std::hash::Hash::hash(&(reply.added, reply.removed), &mut h);
+                fold = std::hash::Hasher::finish(&h);
+            }
             let priced = Instant::now();
             row.judge(&reply.view, reply.tokens, question, task);
             let (all, cached) = sent.send(reply.view);
@@ -1007,6 +1021,9 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
             plain_before = plain_all;
             price_s += priced.elapsed().as_secs_f64();
         }
+    }
+    if check {
+        eprintln!("replies hash {fold:016x}");
     }
     row.sent = miss + hit;
     row.usd = prices.dollars(miss, hit);
