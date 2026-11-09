@@ -201,6 +201,19 @@ pub fn one_line(s: &str, max: usize) -> String {
     out
 }
 
+/// Runs a test's async body on its own runtime with a time limit: past it the test fails with
+/// its name instead of hanging. The runtime is then shut down without waiting for the blocking
+/// pool: on Windows tokio reads a child's pipes in blocking threads, and a plain drop of the
+/// runtime would wait for each of them until the child (or a grandchild that inherited the pipe)
+/// ends, which for a language server kept in a static or a `sleep 60` is a hang, not a failure.
+#[cfg(test)]
+pub(crate) fn run_bounded<F: std::future::Future>(limit: std::time::Duration, name: &str, body: F) -> F::Output {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
+    let out = rt.block_on(async { tokio::time::timeout(limit, body).await });
+    rt.shutdown_background();
+    out.unwrap_or_else(|_| panic!("{name}: still running after {} s", limit.as_secs()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

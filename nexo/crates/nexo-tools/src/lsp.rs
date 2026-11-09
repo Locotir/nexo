@@ -110,7 +110,18 @@ struct Server {
     open: Mutex<HashMap<String, i64>>,
     /// The server's output ended: it exited or died.
     dead: Arc<AtomicBool>,
+    /// The server's process, for ending its whole tree on Windows (a launcher may stand in front).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pid: Option<u32>,
     _child: Child,
+}
+
+#[cfg(windows)]
+impl Drop for Server {
+    fn drop(&mut self) {
+        // `kill_on_drop` ends the process it started, not what that started; an orphan keeps the pipes open
+        crate::bash::kill_group(self.pid);
+    }
 }
 
 async fn send(stdin: &Mutex<ChildStdin>, msg: &Value) -> std::io::Result<()> {
@@ -158,6 +169,7 @@ impl Server {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("cannot start {}: {e}", cmd[0]))?;
+        let pid = child.id();
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let pending: Pending = Arc::default();
@@ -259,6 +271,7 @@ impl Server {
             busy,
             dead,
             open: Mutex::default(),
+            pid,
             _child: child,
         };
         let init = server.request("initialize", initialize_params(cmd[0], root), INIT).await?;
@@ -813,12 +826,25 @@ while True:
         publish(m["params"]["textDocument"], m["params"]["contentChanges"][0]["text"])
 "#;
 
-    /// A project with a Python file and the fake server registered as the running `pylsp` there.
-    async fn project_with_fake(text: &str) -> Option<(tempfile::TempDir, PathBuf)> {
-        if !which("python3") {
-            eprintln!("python3 is not installed: skipped");
-            return None;
+    /// A project with a Python file and the fake server registered as the running `pylsp` there. The
+    /// server leaves the table, and its process the machine, when this is dropped (even on a panic).
+    struct Fake {
+        dir: tempfile::TempDir,
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            if let Ok(mut table) = servers().try_lock() {
+                table.remove(&("pylsp".to_string(), self.dir.path().to_path_buf()));
+            }
         }
+    }
+
+    async fn project_with_fake(text: &str) -> Option<(Fake, PathBuf)> {
+        let Some(python) = ["python3", "python"].into_iter().find(|p| which(p)) else {
+            eprintln!("python is not installed: skipped");
+            return None;
+        };
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
         let script = d.path().join("fake_lsp.py");
@@ -826,41 +852,48 @@ while True:
         let file = d.path().join("m.py");
         std::fs::write(&file, text).unwrap();
         let script = script.to_string_lossy().into_owned();
-        let server = Server::start(&["python3", &script], d.path()).await.unwrap();
+        let server = Server::start(&[python, &script], d.path()).await.unwrap();
         servers().lock().await.insert(("pylsp".into(), d.path().to_path_buf()), Arc::new(server));
-        Some((d, file))
+        Some((Fake { dir: d }, file))
     }
 
-    #[tokio::test]
-    async fn an_edit_that_breaks_the_file_carries_the_server_errors() {
-        let Some((d, file)) = project_with_fake("x = 1\n").await else { return };
-        let ctx = ToolContext::new(d.path().to_path_buf());
-        ctx.seen.mark(&file);
-        let out =
-            crate::edit::Edit.run(json!({"path": "m.py", "old_string": "x = 1", "new_string": "BAD = 1"}), &ctx).await;
-        assert!(!out.is_error, "{}", out.content);
-        assert!(
-            out.content
-                .contains("\ndiagnostics:\nm.py:1:1 error: fake error (fake)\nm.py:3:5 warning: unused thing (fake)"),
-            "{}",
-            out.content
-        );
-        assert!(!out.content.contains("hint only") && !out.content.contains("second line"), "{}", out.content);
-        // fixed: nothing is appended
-        let out =
-            crate::edit::Edit.run(json!({"path": "m.py", "old_string": "BAD = 1", "new_string": "y = 1"}), &ctx).await;
-        assert!(!out.is_error && !out.content.contains("diagnostics:"), "{}", out.content);
+    #[test]
+    fn an_edit_that_breaks_the_file_carries_the_server_errors() {
+        crate::util::run_bounded(Duration::from_secs(60), "an_edit_that_breaks_the_file", async {
+            let Some((d, file)) = project_with_fake("x = 1\n").await else { return };
+            let ctx = ToolContext::new(d.dir.path().to_path_buf());
+            ctx.seen.mark(&file);
+            let out = crate::edit::Edit
+                .run(json!({"path": "m.py", "old_string": "x = 1", "new_string": "BAD = 1"}), &ctx)
+                .await;
+            assert!(!out.is_error, "{}", out.content);
+            assert!(
+                out.content.contains(
+                    "\ndiagnostics:\nm.py:1:1 error: fake error (fake)\nm.py:3:5 warning: unused thing (fake)"
+                ),
+                "{}",
+                out.content
+            );
+            assert!(!out.content.contains("hint only") && !out.content.contains("second line"), "{}", out.content);
+            // fixed: nothing is appended
+            let out = crate::edit::Edit
+                .run(json!({"path": "m.py", "old_string": "BAD = 1", "new_string": "y = 1"}), &ctx)
+                .await;
+            assert!(!out.is_error && !out.content.contains("diagnostics:"), "{}", out.content);
+        });
     }
 
-    #[tokio::test]
-    async fn a_slow_server_is_waited_for_only_a_moment_and_nothing_is_added() {
-        let Some((_d, file)) = project_with_fake("SLOW\n").await else { return };
-        let t = std::time::Instant::now();
-        assert!(quick(&file, Duration::from_millis(300)).await.is_none());
-        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
-        let t = std::time::Instant::now();
-        assert_eq!(crate::edit_check::report_within(&file, Duration::from_secs(20)).await, "");
-        assert!(t.elapsed() < QUICK + Duration::from_secs(2), "{:?}", t.elapsed());
+    #[test]
+    fn a_slow_server_is_waited_for_only_a_moment_and_nothing_is_added() {
+        crate::util::run_bounded(Duration::from_secs(60), "a_slow_server_is_waited_for", async {
+            let Some((_d, file)) = project_with_fake("SLOW\n").await else { return };
+            let t = std::time::Instant::now();
+            assert!(quick(&file, Duration::from_millis(300)).await.is_none());
+            assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            assert_eq!(crate::edit_check::report_within(&file, Duration::from_secs(20)).await, "");
+            assert!(t.elapsed() < QUICK + Duration::from_secs(2), "{:?}", t.elapsed());
+        });
     }
 
     #[tokio::test]

@@ -129,37 +129,39 @@ mod tests {
     use super::*;
     use crate::bash::Bash;
 
-    #[tokio::test]
-    async fn a_background_command_runs_on_and_is_read_and_killed() {
-        if nexo_core::shell::shell().kind == "powershell" {
-            eprintln!("the test writes POSIX shell; this system runs PowerShell: skipped");
-            return;
-        }
-        let d = tempfile::tempdir().unwrap();
-        let c = ToolContext::new(d.path().to_path_buf());
-        let t = std::time::Instant::now();
-        let out = Bash.run(json!({"command": "echo one; sleep 1; echo two", "background": true}), &c).await;
-        assert!(t.elapsed() < Duration::from_millis(800), "returns at once");
-        assert!(out.content.contains("background job 1"), "{}", out.content);
-        // the turn that started it ends: the job does not
-        c.cancel.cancel();
-        let c = ToolContext { cancel: Default::default(), ..c };
-        let out = Jobs.run(json!({"action": "output", "id": 1, "wait": 20}), &c).await;
-        assert!(out.content.starts_with("job 1: done (exit 0)"), "{}", out.content);
-        assert!(out.content.contains("one\ntwo\n"), "{}", out.content);
-        assert!(c.jobs.take_ended().is_empty(), "read whole: no notice");
+    #[test]
+    fn a_background_command_runs_on_and_is_read_and_killed() {
+        crate::util::run_bounded(Duration::from_secs(120), "a_background_command_runs_on", async {
+            if nexo_core::shell::shell().kind == "powershell" {
+                eprintln!("the test writes POSIX shell; this system runs PowerShell: skipped");
+                return;
+            }
+            let d = tempfile::tempdir().unwrap();
+            let c = ToolContext::new(d.path().to_path_buf());
+            let t = std::time::Instant::now();
+            let out = Bash.run(json!({"command": "echo one; sleep 1; echo two", "background": true}), &c).await;
+            assert!(t.elapsed() < Duration::from_millis(800), "returns at once");
+            assert!(out.content.contains("background job 1"), "{}", out.content);
+            // the turn that started it ends: the job does not
+            c.cancel.cancel();
+            let c = ToolContext { cancel: Default::default(), ..c };
+            let out = Jobs.run(json!({"action": "output", "id": 1, "wait": 20}), &c).await;
+            assert!(out.content.starts_with("job 1: done (exit 0)"), "{}", out.content);
+            assert!(out.content.contains("one\ntwo\n"), "{}", out.content);
+            assert!(c.jobs.take_ended().is_empty(), "read whole: no notice");
 
-        Bash.run(json!({"command": "sleep 60", "background": true}), &c).await;
-        Bash.run(json!({"command": "exit 3", "background": true}), &c).await;
-        let list = Jobs.run(json!({}), &c).await.content;
-        assert!(list.contains("sleep 60") && list.contains("running"), "{list}");
-        assert_eq!(Jobs.run(json!({"action": "kill", "id": 2}), &c).await.content, "job 2 stopped");
-        let out = Jobs.run(json!({"action": "output", "id": 3, "wait": 20}), &c).await;
-        assert!(out.content.starts_with("job 3: done (exit 3)"), "{}", out.content);
-        assert_eq!(c.jobs.running(), 0);
-        assert_eq!(c.jobs.get(2).unwrap().status, nexo_core::JobStatus::Killed);
-        assert!(Jobs.run(json!({"action": "output"}), &c).await.is_error);
-        assert!(Jobs.run(json!({"action": "output", "id": 9}), &c).await.is_error);
-        assert_eq!(Jobs.summary(&json!({"action": "output", "id": 2, "wait": 30})), "jobs: output 2 (wait 30 s)");
+            Bash.run(json!({"command": "sleep 60", "background": true}), &c).await;
+            Bash.run(json!({"command": "exit 3", "background": true}), &c).await;
+            let list = Jobs.run(json!({}), &c).await.content;
+            assert!(list.contains("sleep 60") && list.contains("running"), "{list}");
+            assert_eq!(Jobs.run(json!({"action": "kill", "id": 2}), &c).await.content, "job 2 stopped");
+            let out = Jobs.run(json!({"action": "output", "id": 3, "wait": 20}), &c).await;
+            assert!(out.content.starts_with("job 3: done (exit 3)"), "{}", out.content);
+            assert_eq!(c.jobs.running(), 0);
+            assert_eq!(c.jobs.get(2).unwrap().status, nexo_core::JobStatus::Killed);
+            assert!(Jobs.run(json!({"action": "output"}), &c).await.is_error);
+            assert!(Jobs.run(json!({"action": "output", "id": 9}), &c).await.is_error);
+            assert_eq!(Jobs.summary(&json!({"action": "output", "id": 2, "wait": 30})), "jobs: output 2 (wait 30 s)");
+        });
     }
 }
