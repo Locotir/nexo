@@ -50,12 +50,12 @@ Each message is processed once, when it arrives, and nothing is recomputed per c
   [`results.md`](results.md#the-need-predictor-and-the-hindsight-floor).
 - **The anchor.** After a rewrite the anchor holds, in `[curator]` blocks, what left the view, each block
   within its budget in tokens (0 turns it off):
-  - **rules** (`rules=2600`): the person's standing instructions, whole, from lines with cues such as
+  - **rules** (`rules=2000`): the person's standing instructions, whole, from lines with cues such as
     never, always, don't, must, from now on, remember, nunca, siempre, prohibido, recuerda, a partir de
     ahora, and the lines the model restates as `Rule: …`. They hold for the whole session and are never
     dropped: when the anchor is short of room the ledger shrinks instead. A correction typed once in the
     chat keeps holding long after its message left, without a system prompt or a file;
-  - **notes** (`notes=3900`): the agent's own `Finding:` and `Plan:` lines (every finding once, the
+  - **notes** (`notes=3000`): the agent's own `Finding:` and `Plan:` lines (every finding once, the
     latest plan), written in its text or passed to the `note` tool, whose call is the note itself (a model
     that only calls tools answers a tool); the directives ask for them, so a settled fact is not worked
     out again. With `nudge=N` (off by default: a request for notes made early fixed wrong readings in
@@ -65,11 +65,11 @@ Each message is processed once, when it arrives, and nothing is recomputed per c
     per N steps, only the latest request stays in view and it leaves once a note answers it). The request waits while the agent reads a file in parts (a read with a range), up to
     twice the count: with `n` the setting, it comes when `since_note ≥ n`, `since_nudge ≥ n` and
     (not mid-read or `since_note ≥ 2n`);
-  - **pins** (`pin=5200`): the files the person's requests name, whole, as last read, and the files the
+  - **pins** (`pin=4000`): the files the person's requests name, whole, as last read, and the files the
     agent itself wrote, whole as last written (up to 1,500 tokens each, head and tail kept), newest
     first, scratch files dropped first; a later edit marks a written file "re-read before trusting", a
     large edit or a failed write drops it, a new write replaces it;
-  - **the ledger** (`ledger=7800`): what the blocks above leave of 80% of the view's target goes to the
+  - **the ledger** (`ledger=6000`): what the blocks above leave of 80% of the view's target goes to the
     lines of the moved-out messages whose names (paths, identifiers, values, hosts) are most likely to be
     taken again, chosen greedily by worth per token; hexdumps and bare data stay out, and a line the
     person or the agent wrote weighs twice a tool's output;
@@ -95,16 +95,16 @@ The default spec (`D_SPEC` in the crate), with a default for every value; a test
 to it:
 
 ```
-threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=40000;ledger=7800;notes=3900;rules=2600;pin=5200;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=41600;sup=1;named=20800;mission=1;apart=14000;check=5200;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=44000;target=11000;hard=104000;cut=age;cards=8;stale=1;pockets=0;life=3600
+threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=40000;target=10000;hard=80000;cut=age;cards=8;stale=1;pockets=0;life=3600
 ```
 
 | setting | default | what it sets |
 |---|---|---|
-| `eoq=K` | `40000` | the view after a rewrite, in tokens; the cap is `K + Q*` |
-| `ledger=N` | `7800` | the ledger, at most what the blocks leave of 80% of the view's target |
-| `rules=N` | `2600` | the person's standing instructions and `Rule:` lines, whole |
-| `notes=N` | `3900` | the agent's `Finding:` and `Plan:` lines |
-| `pin=N` | `5200` | the files the request names, as last read, and the files the agent wrote, as last written |
+| `eoq=K` | `16000` | the view after a rewrite, in tokens; the cap is `K + Q*` |
+| `ledger=N` | `6000` | the ledger, at most what the blocks leave of 80% of the view's target |
+| `rules=N` | `2000` | the person's standing instructions and `Rule:` lines, whole |
+| `notes=N` | `3000` | the agent's `Finding:` and `Plan:` lines |
+| `pin=N` | `4000` | the files the request names, as last read, and the files the agent wrote, as last written |
 | `nudge=N` | `0` | steps without a note (a `Finding:`/`Plan:` line or a `note` call) before the curator asks for one (0 turns it off) |
 | `close=N` | `2` | an answered request keeps only the request and its reply; the calls made for it leave by the rent rule |
 | `margin=M` | `2.25` | a cut (idle steps, unused outputs, the cap) is made only when what it saves is `M` times what rewriting the view behind it costs |
@@ -114,11 +114,11 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=40000;led
 | `digest=1`, `hold=1` | on | what the agent has not yet written about is not idle and does not count toward the cap |
 | `dedup=3` | `3` | a run of 3+ lines already whole in the view goes as a pointer to it (`asked=3`: not when asked again, unless the same call gave the very same output: then one line says nothing changed) |
 | `fresh=1` | `1` | the output just asked for goes whole; its repeated runs go as pointers from the next request on (a pointer in a fresh output sends the agent looking for the lines) |
-| `still=41600` | `41600` | the latest outputs the agent has not written about yet (no text, no note since), up to this many tokens, leave only as an exact copy of a later output, never on a guess, cap or not; older ones past the budget may go on a guess, so the view stays bounded when the agent never writes |
+| `still=32000` | `32000` | the latest outputs the agent has not written about yet (no text, no note since), up to this many tokens, leave only as an exact copy of a later output, never on a guess, cap or not; older ones past the budget may go on a guess, so the view stays bounded when the agent never writes |
 | `stale=1` | on | past the cap, a read of a file that a later edit or write of it (one that did not fail) changed leaves with the exact copies, before any guess; its note names the file and the message of the edit, and says to read the file again (or `recall`, when the host offers it); decided only at a cut, so the view between cuts stays as sent |
-| `target=11000` | `11000` | the working window: the priced cap runs with this budget (the cut starts at twice the target and lands on it), so what the history shows dead (exact copies, reads out of date) leaves when that is cheaper than keeping it; `still` is bounded by `target` minus the system prompt and the sticky set (at least 5200; with no `cap`, `still` stays flat) |
-| `cap=44000` | `44000` | past it the oldest results the agent is not working from leave, oldest first, whatever the cache costs, down to `target` in one batch (0: off). The view stays at or under `cap` unless the sticky set alone is larger (the request, the agent's own text, the latest `file now`, the last check, the latest step); a request-named file's read is held until `hard` |
-| `hard=104000` | `104000` | past it the oldest sticky results leave too, as pointers; never the request, the agent's own messages, the latest `file now` of each path or the last `check:` |
+| `target=10000` | `10000` | the working window: the priced cap runs with this budget (the cut starts at twice the target and lands on it), so what the history shows dead (exact copies, reads out of date) leaves when that is cheaper than keeping it; `still` is bounded by `target` minus the system prompt and the sticky set (at least 4000; with no `cap`, `still` stays flat) |
+| `cap=40000` | `40000` | past it the oldest results the agent is not working from leave, oldest first, whatever the cache costs, down to `target` in one batch (0: off). The view stays at or under `cap` unless the sticky set alone is larger (the request, the agent's own text, the latest `file now`, the last check, the latest step); a request-named file's read is held until `hard` |
+| `hard=80000` | `80000` | past it the oldest sticky results leave too, as pointers; never the request, the agent's own messages, the latest `file now` of each path or the last `check:` |
 | `cut=age` | `age` | what leaves first when the priced cap cuts: the oldest (`cover`, `need`, `copies` are the others; `cover` leaves what tells the least, and forgot more on the fixtures) |
 | `pockets=0` | off | 1: the last view sent on each topic stays in the provider's cache for `life` seconds; 2: also cut a view whose pocket is gone (see Pockets above) |
 | `life=S` | `3600` | the most seconds a pocket is taken to live; 0: only the last view, as a local server with one slot |

@@ -335,7 +335,7 @@ pub(super) async fn prepare(
     Ok((req, cfg, st.client.clone(), st.config.agent.retries))
 }
 
-/// The window the view is kept under, in estimated tokens (`nexo_core::tokens`): `room` provider
+/// The window the view is kept under, in estimated tokens (4 characters a token): `room` provider
 /// tokens divided by the ratio learned, with 5% to spare; before any count, 15% to spare.
 pub(super) fn view_window(room: u32, ratio: Option<f64>) -> u64 {
     match ratio {
@@ -370,25 +370,23 @@ pub(super) fn compact_threshold(at: u64, window: Option<u32>, reply: u32) -> u64
 
 /// The tokens of the next request: the provider's count of the last one (prompt and reply) plus an
 /// estimate of what came after it, or, before any count, an estimate of the system prompt, the tools
-/// and the history (`nexo_core::tokens`).
+/// and the history (4 characters a token).
 pub(super) fn request_tokens(st: &State, specs: &[nexo_core::provider::ToolSpec]) -> u64 {
     match st.last_prompt {
         Some((tokens, len)) if len <= st.history.len() => tokens + st.history.tokens_from(len),
-        _ => fixed_tokens(&st.system, specs) + st.history.tokens(),
+        _ => {
+            let tools = serde_json::to_string(specs).map(|s| s.len() as u64).unwrap_or(0);
+            (st.system.len() as u64 + tools) / 4 + st.history.tokens()
+        }
     }
-}
-
-/// The estimated tokens of the system prompt and the tool list, which every request carries.
-pub(super) fn fixed_tokens(system: &str, specs: &[nexo_core::provider::ToolSpec]) -> u64 {
-    let tools = serde_json::to_string(specs).map_or(0, |s| nexo_core::tokens::text_cost(&s));
-    ((nexo_core::tokens::text_cost(system) + tools) / nexo_core::tokens::TOKEN) as u64
 }
 
 /// What the next call will see, announced to the interface: on every call, and
 /// when a conversation is loaded, so its numbers are there before the first call.
 pub(super) async fn view_now(st: &mut State) -> View {
     let specs = offered(st);
-    let system_tokens = fixed_tokens(&st.system, &specs);
+    let system_tokens =
+        (st.system.len() as u64 + serde_json::to_string(&specs).map(|s| s.len() as u64).unwrap_or(0)) / 4;
     let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
     st.policy.tools(&names);
     // the view never passes the model's window: what it takes less the reply, in estimated tokens

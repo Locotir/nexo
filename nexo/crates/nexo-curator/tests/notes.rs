@@ -119,9 +119,7 @@ fn a_note_line_resets_the_count() {
 
 #[test]
 fn a_note_tool_call_counts_as_a_note_and_is_kept_once_its_message_leaves() {
-    // the messages leave by the priced cap alone (`eoq`): with the working window on, the results go chunk by chunk
-    // and 300 steps of this size keep their messages (in accurate tokens each one is twice what it was)
-    let mut s = Session::new("target=0;cap=0;eoq=20000");
+    let mut s = Session::new("");
     for k in 0..5 {
         s.push(noise(k, ""));
     }
@@ -234,8 +232,8 @@ fn a_later_write_replaces_the_written_file() {
 fn the_written_files_keep_the_pin_budget_newest_first() {
     let mut s = Session::new("pin=1200");
     for k in 0..6 {
-        // about 560 tokens each
-        s.push(write(k, &format!("src/m{k}.rs"), &module(&format!("m{k}"), 20)));
+        // about 380 tokens each
+        s.push(write(k, &format!("src/m{k}.rs"), &module(&format!("m{k}"), 32)));
     }
     for k in 6..200 {
         s.push(noise(k, "Looking."));
@@ -245,7 +243,7 @@ fn the_written_files_keep_the_pin_budget_newest_first() {
     let block = &block[..block.find("\n[curator]").unwrap_or(block.len())];
     assert!(block.contains("--- src/m5.rs") && block.contains("--- src/m4.rs"), "{block}");
     assert!(!block.contains("--- src/m0.rs") && !block.contains("--- src/m1.rs"), "{block}");
-    assert!(nexo_core::tokens::text_cost(block) <= 1200 * nexo_core::tokens::TOKEN, "{}", block.len());
+    assert!(block.len() / 4 <= 1200, "{}", block.len());
     assert!(block.find("src/m5.rs").unwrap() < block.find("src/m4.rs").unwrap(), "{block}");
 }
 

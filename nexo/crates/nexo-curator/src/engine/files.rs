@@ -5,12 +5,12 @@ use rustc_hash::FxHashSet;
 use serde_json::Value;
 
 use crate::hindsight::Set;
-use crate::json::{est_str, text_cost, NEWLINE, TOKEN};
+use crate::json::{est_str, str_chars};
 use crate::msg::py_str;
 use crate::textops::{self};
 
 /// Tokens of one file the agent wrote kept in the anchor; a longer one keeps its head and tail.
-pub(super) const WROTE_TOKENS: i64 = 1950;
+pub(super) const WROTE_TOKENS: i64 = 1500;
 
 /// A file the agent wrote whole: the message and call that wrote it, its text (capped at
 /// [`WROTE_TOKENS`]) and the message of a later edit that made the text stale.
@@ -24,12 +24,14 @@ pub(super) struct Wrote {
 }
 
 /// ``text`` within ``tokens``: its head and tail lines, and how many lines were cut between them. Lines and
-/// characters are weighed as the budget is (`text_cost`), so a text dense in digits or symbols keeps less.
+/// characters are weighed as the budget is (`est_str`), so a text dense in quotes or control bytes keeps less.
 pub(super) fn head_and_tail(text: &str, tokens: i64) -> String {
     if est_str(text) <= tokens {
         return text.to_string();
     }
-    let half = tokens.max(2) as usize * TOKEN / 2;
+    let half = (tokens.max(2) * 4 / 2) as usize;
+    // what a piece adds to `str_chars`, without the two quotes of a string
+    let weight = |s: &str| str_chars(s) - 2;
     let fit = |pieces: &mut dyn Iterator<Item = usize>| {
         let (mut used, mut n) = (0, 0);
         for w in pieces {
@@ -43,14 +45,15 @@ pub(super) fn head_and_tail(text: &str, tokens: i64) -> String {
     };
     let lines: Vec<&str> = text.lines().collect();
     // at least one line goes, or the cut would only add its note
-    let head = fit(&mut lines.iter().map(|l| text_cost(l) + NEWLINE)).min(lines.len().saturating_sub(1));
-    let tail = fit(&mut lines.iter().rev().map(|l| text_cost(l) + NEWLINE)).min(lines.len().saturating_sub(head + 1));
+    let head = fit(&mut lines.iter().map(|l| weight(l) + 1)).min(lines.len().saturating_sub(1));
+    let tail = fit(&mut lines.iter().rev().map(|l| weight(l) + 1)).min(lines.len().saturating_sub(head + 1));
     if head == 0 && tail == 0 {
         // one long line, or lines each longer than half the budget: the first and last characters that fit
         let chars: Vec<char> = text.chars().collect();
-        let each = (text_cost(text) / chars.len().max(1)).max(1);
-        let a = fit(&mut std::iter::repeat(each)).min(chars.len().saturating_sub(1));
-        let b = fit(&mut std::iter::repeat(each)).min(chars.len().saturating_sub(a + 1));
+        let mut buf = [0u8; 4];
+        let mut w = |c: &char| weight(c.encode_utf8(&mut buf));
+        let a = fit(&mut chars.iter().map(&mut w)).min(chars.len().saturating_sub(1));
+        let b = fit(&mut chars.iter().rev().map(&mut w)).min(chars.len().saturating_sub(a + 1));
         let n = chars.len();
         let (a_s, b_s): (String, String) = (chars[..a].iter().collect(), chars[n - b..].iter().collect());
         return format!("{a_s}\n… {} characters cut …\n{b_s}", n - a - b);

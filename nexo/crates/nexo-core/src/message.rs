@@ -342,14 +342,14 @@ mod string_or_parts {
 /// The tokens an image counts for in [`estimate_tokens`], whatever its bytes (the curator's figure).
 pub const MEDIA_TOKENS: u64 = 1500;
 
-/// A cheap token estimate ([`crate::tokens::text_cost`] over the message's JSON, the curator's rule) with one
+/// A cheap token estimate (about four characters per token), the curator's rule with one
 /// difference: the visible text of reasoning counts here, while the curator counts a reasoning
 /// block as its type alone. Sizes agree for a history without reasoning text.
 pub fn estimate_tokens(messages: &[Message]) -> u64 {
     messages.iter().map(message_tokens).sum()
 }
 
-/// [`estimate_tokens`] of one message: the cost of its JSON, with each image at
+/// [`estimate_tokens`] of one message: the characters of its JSON over 4, with each image at
 /// [`MEDIA_TOKENS`] and the opaque data of reasoning (signatures, encrypted or withheld blocks) left out.
 pub fn message_tokens(m: &Message) -> u64 {
     let mut media = 0;
@@ -360,8 +360,7 @@ pub fn message_tokens(m: &Message) -> u64 {
     } else {
         m
     };
-    serde_json::to_value(m).map(|v| (crate::tokens::json_cost(&v) / crate::tokens::TOKEN) as u64).unwrap_or(0)
-        + MEDIA_TOKENS * media
+    serde_json::to_string(m).map(|s| s.chars().count() as u64 / 4).unwrap_or(0) + MEDIA_TOKENS * media
 }
 
 fn heavy(p: &Part) -> bool {
@@ -401,8 +400,7 @@ mod tests {
     #[test]
     fn token_estimate_counts_characters_and_gives_media_a_nominal_size() {
         let text = |s: &str| estimate_tokens(&[Message::user(s.to_string())]);
-        assert_eq!(text(&"é".repeat(400)), text(&"€".repeat(400)), "characters, not bytes");
-        assert!(text(&"é".repeat(400)) < text(&"é".repeat(800)), "and more of them cost more");
+        assert_eq!(text(&"é".repeat(400)), text(&"e".repeat(400)), "characters, not bytes");
         let image = |n: usize| {
             let source = ImageSource::Base64 { media_type: "image/png".into(), data: "A".repeat(n) };
             estimate_tokens(&[Message::new(Role::User, vec![Part::Image { source }])])

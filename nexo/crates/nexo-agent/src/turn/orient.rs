@@ -18,11 +18,9 @@ const MAX_FILES: usize = 24;
 const WALK_CAP: usize = 4000;
 /// The most characters of a check result put in the request.
 const CHECK_CHARS: usize = 1500;
-/// The size, in estimated tokens (`nexo_core::tokens`), the first model call of a request stays under with what is
-/// attached: the system prompt, the tool list, the conversation so far, the request and the files together. It is the
-/// 19 000 of the old 4-characters-a-token count (a margin below the 20k target) times 1.3, the mean ratio of the
-/// two counts on recorded sessions, so the room left for files is what it was.
-const FIRST_CALL: u64 = 24_700;
+/// The size, in estimated tokens, the first model call of a request stays under (a margin below the 20k target, for the estimate) with what is attached: the
+/// system prompt, the tool list, the conversation so far, the request and the files together.
+const FIRST_CALL: u64 = 19_000;
 
 /// The tokens a file of `len` bytes takes attached whole (four bytes a token, plus its header and fence).
 pub(super) fn attached_tokens(len: usize) -> u64 {
@@ -106,7 +104,8 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -
         return Vec::new();
     }
     // a long request leaves less room: the first call stays under FIRST_CALL tokens
-    let fixed = fixed_tokens(&st.system, &offered(st)) + nexo_core::tokens::text_tokens(text) + CHECK_CHARS as u64 / 4;
+    let tools = serde_json::to_string(&offered(st)).map_or(0, |t| t.len() as u64 / 4);
+    let fixed = st.system.len() as u64 / 4 + tools + text.len() as u64 / 4 + CHECK_CHARS as u64 / 4;
     let room = FIRST_CALL.saturating_sub(fixed + nexo_core::message::estimate_tokens(&st.history));
     let budget = budget.min(room);
     let mut skip = Vec::new();

@@ -149,11 +149,11 @@ fn lines_read_many_times_go_once_after_their_first_output_leaves() {
 
 #[test]
 fn a_pointer_that_halves_its_lines_goes_in_their_place() {
-    let mut e = reads("dedup=3;nudge=0", &[(1, 40), (11, 24)]);
+    let mut e = reads("dedup=3;nudge=0", &[(1, 40), (11, 19)]);
     let out = output(&e.view(), 4);
-    let (run, cost) = (est_str(&listing(11, 24)), est_str(&out));
+    let (run, cost) = (est_str(&listing(11, 19)), est_str(&out));
     assert!(2 * cost <= run && run < 3 * cost, "{run} {cost}");
-    assert!(out.starts_with("[curator] 14 lines left out here: the same as lines 11-24"), "{out}");
+    assert!(out.starts_with("[curator] 9 lines left out here: the same as lines 11-19"), "{out}");
 }
 
 #[test]

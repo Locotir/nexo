@@ -223,7 +223,7 @@ pub struct Unit {
     pub word_first: FxHashMap<Sym, usize>,
 }
 
-const STUB_TOKENS: i64 = 32;
+const STUB_TOKENS: i64 = 25;
 const FOLD_CHARS: usize = 200;
 
 fn saving(kind: UKind, b: &Value, tokens: i64, opaque: bool) -> i64 {
@@ -242,7 +242,7 @@ fn saving(kind: UKind, b: &Value, tokens: i64, opaque: bool) -> i64 {
 /// The tokens folding the long texts of arguments `v` saves, those nested in lists and maps included.
 fn folded(v: &Value) -> i64 {
     match v {
-        Value::String(s) if s.chars().count() > FOLD_CHARS => (crate::json::est_str(s) - STUB_TOKENS).max(0),
+        Value::String(s) if s.chars().count() > FOLD_CHARS => (s.chars().count() as i64 / 4 - STUB_TOKENS).max(0),
         Value::Array(a) => a.iter().map(folded).sum(),
         Value::Object(m) => m.values().map(folded).sum(),
         _ => 0,

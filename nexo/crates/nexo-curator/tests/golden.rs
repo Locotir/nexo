@@ -230,11 +230,10 @@ fn the_window_holds_on_every_fixture() {
     let mut bad = Vec::new();
     for n in &names {
         let (most, sticky) = widest(n);
-        // (in accurate tokens: the default `cap` is 44 000)
-        if most > 44_000 && most > sticky + 10_400 {
+        if most > 40_000 && most > sticky + 8_000 {
             bad.push(format!("{n}: the view reached {most} tokens with a sticky set of {sticky}"));
         }
-        if (n.contains("realm100") || n.contains("marathon-D")) && most > 33_000 {
+        if (n.contains("realm100") || n.contains("marathon-D")) && most > 30_000 {
             bad.push(format!("{n}: the view reached {most} tokens, past one and a half times twice the target"));
         }
     }
@@ -335,15 +334,11 @@ fn the_long_session_ends_with_the_reference_stats() {
     // measure their room to where the cut fires (twice the target), not to the target it lands on, and the output
     // of a failing run is held below the cap: 10 rewrites, the cache misses 147781 (miss_cap 114860), 336 chunks
     // leave by the window.
-    // Counted in accurate tokens (`nexo_core::tokens`, not 4 characters a token), with `target=11000`, `cap=44000`,
-    // `eoq=40000` and `apart=14000`: 16 rewrites and the cache misses 181447 (miss_cap 145667), 341 chunks leave by
-    // the window. The misses are in the new count, 1.3 times or more what they were; compare them on the old
-    // count with the replay example, as the commit that moved the count did.
-    let want = serde_json::json!({"birth_saved": 1705, "dedup_runs": 5, "dedup_saved": 4285, "miss_fresh": 15298,
-        "miss": 181447, "dedup_asked": 19, "window_cuts": 341, "rewrites": 16, "miss_cap": 145667,
-        "dropped_chunks": 20, "left_messages": 202, "ledger_lines": 426, "cap_rewrites": 2, "recalled_steps": 3,
-        "closed_steps": 37, "miss_close": 15165, "live_dropped": 1, "miss_live": 705, "cards": 1, "switches": 1,
-        "miss_switch": 8848, "sup_chunks": 8});
+    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 16031,
+        "miss": 147781, "dedup_asked": 24, "window_cuts": 336, "rewrites": 10, "miss_cap": 114860,
+        "dropped_chunks": 18, "left_messages": 206, "ledger_lines": 661, "cap_rewrites": 3, "recalled_steps": 3,
+        "closed_steps": 22, "miss_close": 8121, "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1,
+        "miss_switch": 8185, "sup_chunks": 5});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }
@@ -367,11 +362,10 @@ fn the_real_audit_ends_with_the_reference_stats() {
         last = cur
             .answer(&serde_json::json!({"op": "view", "system_tokens": req["system_tokens"], "messages": msgs}), 0.0);
     }
-    // the 11k target cuts when the view passes 22k, in accurate tokens (with 4 characters a token and a 10k target
-    // it cut once, with 89 chunks)
+    // the 10k target cuts once, when the view passes 20k (it was 3 idle drops and 708 missed tokens before)
     assert_eq!(
         last["stats"],
-        serde_json::json!({"birth_saved": 0, "window_cuts": 125, "rewrites": 3, "miss_cap": 27465, "miss": 27961,
-            "live_dropped": 1, "miss_live": 496})
+        serde_json::json!({"birth_saved": 0, "window_cuts": 89, "rewrites": 1, "miss_cap": 12571, "miss": 13148,
+            "live_dropped": 2, "miss_live": 577})
     );
 }

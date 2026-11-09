@@ -54,19 +54,19 @@ pub use learn::{K_OLD, NAMES as NEED_FEATURES};
 /// on the golden session. The output the agent has just asked for comes whole (`fresh=1`); its repeated runs go
 /// as pointers from the next request on, so no pointer sends it looking for the lines. An output the agent
 /// has not written about yet (no text and no note since) leaves only as an exact copy of a later one, never
-/// on a guess, for its latest 41600 tokens (`still=41600`): a new request does not mean the agent is done with
+/// on a guess, for its latest 32000 tokens (`still=32000`): a new request does not mean the agent is done with
 /// what it was reading. Without it, the golden session lost the reads of a request left unanswered as the
 /// next one came in, and the agent read the same file again for 180 steps. Past the budget a guess may take
 /// the oldest, so a session where the agent never writes still has a bounded view.
-/// The working window: the view aims at `target=11000` tokens (the priced cap above runs with that budget), is
-/// cut whatever the cache costs once it passes twice the target (or `cap=44000` when that comes first) down to
+/// The working window: the view aims at `target=10000` tokens (the priced cap above runs with that budget), is
+/// cut whatever the cache costs once it passes twice the target (or `cap=40000` when that comes first) down to
 /// the target, in one rewrite (the oldest results that are not sticky leave first), and never
-/// passes `hard=104000` (then the oldest sticky results leave too, as pointers). Sticky, by rule and with no
+/// passes `hard=80000` (then the oldest sticky results leave too, as pointers). Sticky, by rule and with no
 /// model: the request, the agent's own text and calls, the latest `file now` of each path, the last `check:`,
 /// the latest whole read of each path and what the agent has read and not yet written about. `still` is
-/// bounded by `target` minus the system prompt and the sticky tokens (at least 5200; flat with no `cap`).
+/// bounded by `target` minus the system prompt and the sticky tokens (at least 4000; flat with no `cap`).
 pub const D_SPEC: &str =
-    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=40000;ledger=7800;notes=3900;rules=2600;pin=5200;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=41600;sup=1;named=20800;mission=1;apart=14000;check=5200;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=44000;target=11000;hard=104000;cut=age;cards=8;stale=1;pockets=0;life=3600";
+    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=40000;target=10000;hard=80000;cut=age;cards=8;stale=1;pockets=0;life=3600";
 
 const INTS: &[&str] = &[
     "protect",
@@ -707,8 +707,7 @@ fn page(view: &mut [Value], over: i64) -> Vec<usize> {
         let Some(Value::String(s)) = at(&mut view[i], &path) else { break };
         // what is kept steps down by eighths of the text, not with the overflow: the overflow changes with
         // every request, and a text cut otherwise each time is read again without the cache each time
-        let per = n as f64 / json::est_str(s).max(1) as f64;
-        let (need, mut keep) = (n as i64 - (left as f64 * per) as i64 - 400, n as i64);
+        let (need, mut keep) = (n as i64 - left * 4 - 400, n as i64);
         while keep > need && keep > n as i64 / 8 {
             keep = keep * 7 / 8;
         }
@@ -757,7 +756,7 @@ fn page(view: &mut [Value], over: i64) -> Vec<usize> {
                 chars[t..].iter().collect::<String>()
             )
         };
-        let saved = json::est_str(s) - json::est_str(&paged);
+        let saved = (s.chars().count() as i64 - paged.chars().count() as i64) / 4;
         if saved <= 0 {
             break;
         }
@@ -994,8 +993,7 @@ mod tests {
     fn a_first_line_longer_than_what_is_kept_is_paged_by_characters() {
         let long = format!("{}\nsecond line\nthird line", "x".repeat(200_000));
         let mut view = vec![json!({"role": "user", "content": long})];
-        // a run of letters is about 28 000 tokens by `text_cost`: past 10 000 of them most of it stays
-        assert!(!page(&mut view, 10_000).is_empty());
+        assert!(!page(&mut view, 20_000).is_empty());
         let text = view[0]["content"].as_str().unwrap();
         assert!(text.contains("characters") && text.contains("third line"), "{text}");
         assert!(text.len() > 100_000, "{}", text.len());

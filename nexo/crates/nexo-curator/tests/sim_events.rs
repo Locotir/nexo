@@ -18,8 +18,7 @@ fn cut_then_cited_is_one_event() {
     assert_eq!(cited.len(), 1, "events: {:?}", r.events);
     let e = cited[0];
     assert_eq!(e.tool, Tool::Read);
-    // (1200 with 4 characters a token: the result is a table of values, which the accurate count prices higher)
-    assert!((e.s_e - 1900).abs() <= 60, "s_e {}", e.s_e);
+    assert!((e.s_e - 1200).abs() <= 60, "s_e {}", e.s_e);
     // the reply that cites comes after request 5 (the fifth request holds the idle steps)
     assert_eq!(e.t, 5);
     assert_eq!(e.words, r.forgotten);

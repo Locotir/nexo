@@ -1,16 +1,15 @@
 //! The prefix cache and the token estimates the replay prices a view sequence with.
 
-use crate::json::{est, text_cost, TOKEN};
 use serde_json::{json, Value};
 
-/// A rough token count of a message, as the engine estimates (`json::text_cost`), rounded up.
+/// A rough token count of a message (4 characters per token, as the engine estimates).
 pub fn tokens_of(v: &Value) -> i64 {
-    let cost = match v.get("content") {
-        Some(Value::String(s)) => text_cost(s),
-        Some(c) => est(c) as usize * TOKEN,
-        None => est(v) as usize * TOKEN,
+    let text = match v.get("content") {
+        Some(Value::String(s)) => s.len(),
+        Some(c) => c.to_string().len(),
+        None => v.to_string().len(),
     };
-    cost.div_ceil(TOKEN) as i64
+    (text as i64 + 3) / 4
 }
 
 /// The content blocks of a message: a text given as a string is one text block, as the API reads it.

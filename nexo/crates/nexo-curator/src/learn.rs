@@ -197,7 +197,7 @@ fn unit_chunks(tr: &Tracer, i: usize, int: &mut Interner) -> Vec<Chunk> {
                 start: a as i64,
                 end: b as i64,
                 words: words(&part, int),
-                tokens: crate::json::est_str(&part) + 1,
+                tokens: (textops::len(&part) / 4 + 1) as i64,
                 position: k as f64 / (n.max(2) - 1) as f64,
                 error: ERROR.is_match(&part),
                 terms: terms(&part, int),

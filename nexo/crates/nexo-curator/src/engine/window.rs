@@ -12,20 +12,13 @@ use super::files::file_key;
 use super::fixes::TEST_FAILED;
 use super::Engine;
 
-/// The token constants below, those of the spec in `lib.rs` and `SMALL_RESULT`, `STUB_TOKENS` and `WROTE_TOKENS` are in
-/// accurate tokens (`nexo_core::tokens`), not the old count of 4 characters a token. Most are 1.3 times what they
-/// were, the mean ratio of the two counts on real requests. `target`, `eoq` and `apart` are not: the replay fixtures
-/// hold dense numbers and ids, where the two counts differ by more, and a plain 1.3 made the window cut earlier
-/// than it did (forgotten words 227 to 351). They were set to 1.1, 2.5 and 1.75 times the old values so the 21
-/// fixtures give what they gave under the old count (forgotten 231, DeepSeek $ 0.5368, replay $ 0.8459, priced
-/// on the old count of 4 characters a token).
 /// A result this small saves next to nothing when it leaves: its stub is as long.
-const LEAVE_LEAST: i64 = 52;
+const LEAVE_LEAST: i64 = 40;
 /// What `still` keeps at least, whatever the sticky set takes.
-const STILL_FLOOR: i64 = 5200;
+const STILL_FLOOR: i64 = 4000;
 /// The tokens of failing runs (a command whose output shows a failure) held below `cap`, newest first: what the
 /// agent fixed is what it reports, and the lines of the failure are what it quotes.
-const FAILURE_BUDGET: i64 = 2600;
+const FAILURE_BUDGET: i64 = 2000;
 
 /// The sticky set as of the last request, by unit.
 #[derive(Default)]

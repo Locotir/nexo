@@ -131,10 +131,11 @@ pub struct Recorder {
     pub secrets: Vec<String>,
 }
 
-/// The size of a request in tokens when the provider gives none: the shared estimate (`nexo_core::tokens`).
+/// The size of a request in tokens when the provider gives none: its JSON chars / 4.
 pub fn estimate(req: &ModelRequest) -> u64 {
-    let tools = serde_json::to_string(&req.tools).map_or(0, |s| nexo_core::tokens::text_tokens(&s));
-    nexo_core::tokens::text_tokens(&req.system) + tools + nexo_core::message::estimate_tokens(&req.messages)
+    let tools = serde_json::to_string(&req.tools).map_or(0, |s| s.len());
+    let messages = serde_json::to_string(&req.messages).map_or(0, |s| s.len());
+    ((req.system.len() + tools + messages) / 4) as u64
 }
 
 impl Recorder {
