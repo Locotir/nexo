@@ -51,7 +51,7 @@ fn flat_time_chat_without_tools() {
 // The cold scale test (many topics, big pastes, cross-topic questions): small N only, the large ones run
 // from `examples/scale.rs --topics N`.
 
-use scale_gen::{cold_facts, fixed_fact, holds, run_cold, Cold, ColdParams, STAND_REPS};
+use scale_gen::{cold_facts, fixed_fact, holds, run_cold, run_saw, Cold, ColdParams, Saw, Sent, STAND_REPS};
 use serde_json::json;
 
 fn session(p: &ColdParams) -> Vec<String> {
@@ -118,7 +118,11 @@ fn cold_scale_runs_at_200_topics() {
         assert!(row.recall() >= 0.0 && row.recall() <= 100.0);
         let line = row.line();
         assert!(line.starts_with(&format!("200 | {hops} | ")), "{line}");
-        assert_eq!(line.matches(" | ").count(), 8, "{line}");
+        assert_eq!(line.matches(" | ").count(), 9, "{line}");
+        assert!(
+            line.contains(" | prefijo ") && row.prefix > 0.0 && row.prefix <= 100.0 && row.plain_prefix > 90.0,
+            "{line}"
+        );
     }
 }
 
@@ -187,4 +191,101 @@ fn standing_facts_reach_the_view_at_200_topics() {
     assert_eq!(row.stand[1], 8 * STAND_REPS);
     assert_eq!(row.stand[0], row.stand[1], "{}", row.line());
     assert!(row.line().contains(" | fijos 100.0 | "), "{}", row.line());
+}
+
+// The sierra arm: what other harnesses do (fill to 0.9 of the window, compact to a fixed summary, go on) and the
+// `prefijo` column (the share of each request's prefix equal to the previous request's).
+
+fn msg(role: &str, c: char) -> serde_json::Value {
+    json!({"role": role, "content": c.to_string().repeat(400)})
+}
+
+#[test]
+fn prefix_share_is_counted_on_a_hand_made_case() {
+    // 400 characters are 100 tokens
+    let (a, b, c) = (msg("user", 'a'), msg("assistant", 'b'), msg("user", 'c'));
+    let mut s = Sent::default();
+    assert_eq!(s.send(vec![a.clone(), b.clone()]), (200, 0), "nothing was sent before");
+    // the same two messages and one more: two thirds of the request are the previous request's prefix
+    assert_eq!(s.send(vec![a.clone(), b.clone(), c.clone()]), (300, 200));
+    // the second message changed: only the first is shared
+    assert_eq!(s.send(vec![a.clone(), msg("assistant", 'x'), c.clone()]), (300, 100));
+    // a shorter request is a prefix of the last one
+    assert_eq!(s.send(vec![a.clone()]), (100, 100));
+    // the first message changed: nothing is shared
+    assert_eq!(s.send(vec![msg("user", 'z'), b, c]), (300, 0));
+}
+
+#[test]
+fn saw_keeps_the_last_40_settings_and_loses_the_rest() {
+    let mut saw = Saw::default();
+    saw.push(json!({"role": "user", "content": "Go through the services."}));
+    for i in 0..60 {
+        let id = format!("c{i}");
+        saw.push(json!({"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "bash", "input": {"command": format!("cat /srv/t{i}/service.conf")}}]}));
+        saw.push(json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": format!("# config {i}\nkey{i} = value{i}\n")}]}));
+    }
+    saw.push(json!({"role": "user", "content": "What is key3?"}));
+    let before = saw.tokens();
+    assert!(!saw.compact_if_over(1_000_000, 1000), "far below 0.9 of the window nothing is compacted");
+    assert!(saw.compact_if_over(before * 9 / 10 - 1, 0), "a view past 0.9 of the window is compacted");
+    let view = saw.view();
+    let text: String = view.iter().map(nexo_curator::sim::input::text_of).collect::<Vec<_>>().join("\n");
+    assert_eq!(saw.compactions, 1);
+    assert!(text.contains("Go through the services.") && text.contains("What is key3?"));
+    assert!(text.contains("key59 = value59") && text.contains("key20 = value20"), "the last 40 lines stay");
+    assert!(!text.contains("key19 = value19") && !text.contains("key3 = value3"), "the older ones are lost");
+    assert!(view[0]["role"] == "user" && view[1]["role"] == "assistant", "the summary comes with its acknowledgement");
+    assert!(saw.tokens() < before / 4, "the view is a summary of about 2k tokens and the last request");
+}
+
+fn saw_numbers(p: &ColdParams) -> (usize, usize, [usize; 2], i64, i64, u64, usize) {
+    let r = run_saw(p);
+    (r.answered, r.questions, r.stand, r.view_max, r.sent, r.prefix.to_bits(), r.compactions)
+}
+
+#[test]
+fn saw_arm_is_deterministic() {
+    let mut p = ColdParams::new(120, 0, 5);
+    p.standing = 8;
+    p.questions = 6;
+    p.window = 32_000;
+    assert_eq!(saw_numbers(&p), saw_numbers(&p));
+    p.seed = 6;
+    assert_ne!(saw_numbers(&p), saw_numbers(&ColdParams { seed: 5, ..p.clone() }));
+}
+
+#[test]
+fn saw_fails_a_standing_fact_planted_early_and_buried() {
+    let mut p = ColdParams::new(200, 1, 1);
+    p.standing = 8;
+    p.questions = 10;
+    p.window = 16_000;
+    let row = run_saw(&p);
+    assert!(row.compactions >= 3, "{}", row.line_saw());
+    assert_eq!(row.stand[1], 8 * STAND_REPS);
+    assert!(row.stand[0] < row.stand[1], "the summary keeps 40 lines of settings: {}", row.line_saw());
+    assert!(row.fijos() < 100.0 && row.recall() < 50.0, "{}", row.line_saw());
+    assert!(row.view_max as u64 <= 16_000, "the sierra view never passes the window: {}", row.line_saw());
+    let line = row.line_saw();
+    assert_eq!(line.matches(" | ").count(), 10, "the fijos column adds one: {line}");
+    assert!(line.contains(" | prefijo ") && line.contains("sierra ventana 16k"), "{line}");
+    // the same session in a window it never fills is the whole history: nothing is lost
+    p.window = 1_000_000;
+    let row = run_saw(&p);
+    assert_eq!((row.compactions, row.fijos(), row.recall()), (0, 100.0, 100.0), "{}", row.line_saw());
+    assert!(row.prefix > 90.0, "a history that only grows keeps its prefix: {}", row.line_saw());
+}
+
+#[test]
+fn window_applies_to_the_curator_arm_too() {
+    let mut p = ColdParams::new(120, 0, 2);
+    p.standing = 0;
+    p.questions = 6;
+    p.window = 16_000;
+    let row = run_cold(&p);
+    assert!(row.view_max <= 16_000, "{}", row.line());
+    assert!(row.line().contains(" | ventana 16k"), "{}", row.line());
+    // hops 0: the recall column shows one hop and two or three hops apart
+    assert!(row.line().split(" | ").nth(2).is_some_and(|c| c.contains('/')), "{}", row.line());
 }

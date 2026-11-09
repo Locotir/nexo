@@ -272,6 +272,9 @@ pub struct ColdParams {
     pub max_rss_mb: f64,
     /// Standing facts planted early in the session (0 to 10), each asked about by 3 tasks that suppose its default.
     pub standing: usize,
+    /// The model's window in tokens for the curator arm and the sierra arm (0: the curator is unlimited and the sierra
+    /// arm runs at `SAW_WINDOW`). The plain arm is always the unlimited reference.
+    pub window: u64,
 }
 
 impl ColdParams {
@@ -287,6 +290,7 @@ impl ColdParams {
             max_secs: 0.0,
             max_rss_mb: 0.0,
             standing: 0,
+            window: 0,
         }
     }
 
@@ -666,14 +670,15 @@ pub fn peak_rss_mb() -> f64 {
 
 /// What was last sent, with the tokens of each message: the prefix cache of a one-slot provider.
 #[derive(Default)]
-struct Sent {
+pub struct Sent {
     msgs: Vec<Value>,
     tokens: Vec<i64>,
 }
 
 impl Sent {
-    /// Sends `now`; returns (all tokens, tokens read from the cache).
-    fn send(&mut self, now: Vec<Value>) -> (i64, i64) {
+    /// Sends `now`; returns (all tokens, tokens read from the cache). The cache share of a request is the share of
+    /// its prefix equal to the previous request's: the `prefijo` column.
+    pub fn send(&mut self, now: Vec<Value>) -> (i64, i64) {
         use nexo_curator::sim::price::{grown, tokens_of};
         let same = now.iter().zip(&self.msgs).take_while(|(a, b)| a == b).count();
         let mut hit: i64 = self.tokens[..same].iter().sum();
@@ -715,6 +720,13 @@ pub struct ColdRow {
     pub plain_max: i64,
     pub plain_sent: i64,
     pub plain_usd: f64,
+    /// Median over the calls of the share of each request's prefix equal to the previous request's, in percent: this
+    /// arm's and the plain arm's (the `prefijo` column).
+    pub prefix: f64,
+    pub plain_prefix: f64,
+    /// The window the arm ran at (0: none) and, for the sierra arm, the compactions it made.
+    pub window: u64,
+    pub compactions: usize,
     /// The curator was called on every this-many-th request (1: all; more: the totals above count the calls made).
     pub stride: usize,
     /// Tokens of the history when the session ended (the whole session unless it was stopped).
@@ -755,7 +767,7 @@ impl ColdRow {
             }
         };
         let mut s = format!(
-            "{:.2}M tokens | {} topics | {} | {}{} | {} | {:.2}M | {:.4} | {:.2}/{:.2} | {:.0} | plain máx {} {:.2}M ${}",
+            "{:.2}M tokens | {} topics | {} | {}{} | {} | {:.2}M | {:.4} | prefijo {:.1} | {:.2}/{:.2} | {:.0} | plain máx {} {:.2}M $ prefijo {:.1}{}",
             self.tokens as f64 / 1e6,
             self.topics,
             r(self.by_hops[0], self.by_hops[1]),
@@ -764,11 +776,13 @@ impl ColdRow {
             self.view_max,
             self.sent as f64 / 1e6,
             self.usd,
+            self.prefix,
             self.p50_ms,
             self.p99_ms,
             self.rss_mb,
             self.plain_max,
             self.plain_sent as f64 / 1e6,
+            self.plain_prefix,
             if self.stride > 1 { format!(" | stride {}", self.stride) } else { String::new() },
         );
         if let Some(why) = &self.stopped {
@@ -780,19 +794,42 @@ impl ColdRow {
         s
     }
 
-    /// The one-line report: N | hops | recall % | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB,
-    /// then the plain arm: largest request, sent, $, and whether it fits 128k and 1M windows.
+    /// The recall column: the percent of questions answered, or for a session whose questions take 1, 2 and 3 facts in
+    /// turn (`hops` 0) the percent at one hop and at two or three.
+    fn recall_col(&self) -> String {
+        if self.hops == 0 {
+            let r = |hit: usize, n: usize| 100.0 * hit as f64 / n.max(1) as f64;
+            format!("{:.1}/{:.1}", r(self.by_hops[0], self.by_hops[1]), r(self.by_hops[2], self.by_hops[3]))
+        } else {
+            format!("{:.1}", self.recall())
+        }
+    }
+
+    /// The window the arm ran at, as `128k` or `1M`.
+    pub fn window_label(w: u64) -> String {
+        match w {
+            0 => "sin tope".to_string(),
+            w if w >= 1_000_000 && w.is_multiple_of(1_000_000) => format!("{}M", w / 1_000_000),
+            w if w >= 1000 && w.is_multiple_of(1000) => format!("{}k", w / 1000),
+            w => w.to_string(),
+        }
+    }
+
+    /// The one-line report: N | hops | recall % | view máx | enviados | DeepSeek $ | prefijo % | ms/request p50/p99 |
+    /// RSS máx MB, then the plain arm (unlimited): largest request, sent, $, prefix, and whether it fits 128k and 1M
+    /// windows. `hops` 0 shows the recall at one hop and at two or three (`a/b`).
     pub fn line(&self) -> String {
         let fit = |w: i64| if self.plain_max <= w { "cabe" } else { "no cabe" };
         format!(
-            "{} | {} | {:.1}{} | {} | {:.2}M | {:.4} | {:.2}/{:.2} | {:.0} | plain máx {} ({} 128k, {} 1M) enviados {:.2}M {:.4} ${}",
+            "{} | {} | {}{} | {} | {:.2}M | {:.4} | prefijo {:.1} | {:.2}/{:.2} | {:.0} | plain máx {} ({} 128k, {} 1M) enviados {:.2}M {:.4} $ prefijo {:.1}{}{}",
             self.topics,
             self.hops,
-            self.recall(),
+            self.recall_col(),
             self.fijos_col(),
             self.view_max,
             self.sent as f64 / 1e6,
             self.usd,
+            self.prefix,
             self.p50_ms,
             self.p99_ms,
             self.rss_mb,
@@ -801,47 +838,117 @@ impl ColdRow {
             fit(1_000_000),
             self.plain_sent as f64 / 1e6,
             self.plain_usd,
+            self.plain_prefix,
+            if self.window > 0 { format!(" | ventana {}", Self::window_label(self.window)) } else { String::new() },
             if self.stride > 1 { format!(" | stride {}", self.stride) } else { String::new() },
         )
     }
+
+    /// The sierra arm's line, in the columns of `line()` up to RSS, then the window and the compactions it made.
+    pub fn line_saw(&self) -> String {
+        format!(
+            "{} | {} | {}{} | {} | {:.2}M | {:.4} | prefijo {:.1} | {:.2}/{:.2} | {:.0} | sierra ventana {}, {} compactaciones{}",
+            self.topics,
+            self.hops,
+            self.recall_col(),
+            self.fijos_col(),
+            self.view_max,
+            self.sent as f64 / 1e6,
+            self.usd,
+            self.prefix,
+            self.p50_ms,
+            self.p99_ms,
+            self.rss_mb,
+            Self::window_label(self.window),
+            self.compactions,
+            if self.stride > 1 { format!(" | stride {}", self.stride) } else { String::new() },
+        )
+    }
+
+    /// A row before any request.
+    fn blank(p: &ColdParams) -> ColdRow {
+        ColdRow {
+            topics: p.topics,
+            hops: p.hops,
+            questions: 0,
+            answered: 0,
+            calls: 0,
+            view_max: 0,
+            sent: 0,
+            usd: 0.0,
+            p50_ms: 0.0,
+            p99_ms: 0.0,
+            rss_mb: 0.0,
+            plain_max: 0,
+            plain_sent: 0,
+            plain_usd: 0.0,
+            prefix: 0.0,
+            plain_prefix: 0.0,
+            window: p.window,
+            compactions: 0,
+            stride: p.stride.max(1),
+            by_hops: [0; 4],
+            standing: p.standing,
+            stand: [0; 2],
+            tokens: 0,
+            stopped: None,
+            secs: [0.0; 4],
+        }
+    }
+
+    /// Counts one call: its view's size, and whether it held the lines of the question or of the standing task.
+    fn judge(&mut self, view: &[Value], tokens: i64, question: Option<Vec<String>>, task: Option<Vec<String>>) {
+        self.calls += 1;
+        self.view_max = self.view_max.max(tokens);
+        if let Some(lines) = question {
+            self.questions += 1;
+            let ok = usize::from(holds(view, &lines));
+            self.answered += ok;
+            let k = if lines.len() == 1 { 0 } else { 2 };
+            self.by_hops[k] += ok;
+            self.by_hops[k + 1] += 1;
+        }
+        if let Some(lines) = task {
+            self.stand[0] += usize::from(holds(view, &lines));
+            self.stand[1] += 1;
+        }
+    }
+}
+
+/// The tokens of the system prompt in the priced requests: 9000, less in a small window (an eighth of it at most).
+fn system_tokens(window: u64) -> i64 {
+    if window == 0 {
+        9000
+    } else {
+        9000.min(window as i64 / 8)
+    }
+}
+
+/// The window of the sierra arm when `--window` says none.
+pub const SAW_WINDOW: u64 = 128_000;
+
+/// The share of a request's tokens (system prompt included) equal to the previous request's, in percent.
+fn share(all: i64, cached: i64) -> f64 {
+    100.0 * cached as f64 / all.max(1) as f64
 }
 
 /// Runs the cold session: the curator sees every request (or every `stride`-th, and every question), the
 /// oracle checks each question's view, and both arms are priced at the replay's DeepSeek prices.
 pub fn run_cold(p: &ColdParams) -> ColdRow {
     use nexo_curator::sim::price::{tokens_of, Prices};
-    const SYSTEM: i64 = 9000;
+    let system = system_tokens(p.window);
     let prices = Prices::LIVE;
     let mut g = Cold::new(p.clone());
     let mut cur = Curator::new("").expect("default spec");
+    if p.window > 0 {
+        cur.window(p.window);
+    }
     let mut msgs: Vec<Value> = Vec::new();
     let mut sent = Sent::default();
     let (mut now, mut requests) = (0.0, 0usize);
-    let mut row = ColdRow {
-        topics: p.topics,
-        hops: p.hops,
-        questions: 0,
-        answered: 0,
-        calls: 0,
-        view_max: 0,
-        sent: 0,
-        usd: 0.0,
-        p50_ms: 0.0,
-        p99_ms: 0.0,
-        rss_mb: 0.0,
-        plain_max: 0,
-        plain_sent: 0,
-        plain_usd: 0.0,
-        stride: p.stride.max(1),
-        by_hops: [0; 4],
-        standing: p.standing,
-        stand: [0; 2],
-        tokens: 0,
-        stopped: None,
-        secs: [0.0; 4],
-    };
+    let mut row = ColdRow::blank(p);
     let (mut miss, mut hit, mut plain_total, mut plain_before) = (0i64, 0i64, 0i64, 0i64);
-    let mut times = Vec::new();
+    let (mut times, mut shares, mut plain_shares) = (Vec::new(), Vec::new(), Vec::new());
     // the peak memory counted below is this session's alone
     let _ = std::fs::write("/proc/self/clear_refs", "5");
     let start = Instant::now();
@@ -880,29 +987,20 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
             }
             now += 20.0;
             let t = Instant::now();
-            let reply = cur.view(SYSTEM as u64, &msgs, now).expect("view");
+            let reply = cur.view(system as u64, &msgs, now).expect("view");
             times.push(t.elapsed().as_secs_f64() * 1000.0);
             view_s += t.elapsed().as_secs_f64();
             let priced = Instant::now();
-            row.calls += 1;
-            row.view_max = row.view_max.max(reply.tokens);
-            if let Some(lines) = question {
-                row.questions += 1;
-                let ok = usize::from(holds(&reply.view, &lines));
-                row.answered += ok;
-                let k = if lines.len() == 1 { 0 } else { 2 };
-                row.by_hops[k] += ok;
-                row.by_hops[k + 1] += 1;
-            }
-            if let Some(lines) = task {
-                row.stand[0] += usize::from(holds(&reply.view, &lines));
-                row.stand[1] += 1;
-            }
+            row.judge(&reply.view, reply.tokens, question, task);
             let (all, cached) = sent.send(reply.view);
-            let (all, cached) = (all + SYSTEM, if row.calls == 1 { 0 } else { cached + SYSTEM });
+            let (all, cached) = (all + system, if row.calls == 1 { 0 } else { cached + system });
             miss += all - cached;
             hit += cached;
-            let plain_all = plain_total + SYSTEM;
+            let plain_all = plain_total + system;
+            if row.calls > 1 {
+                shares.push(share(all, cached));
+                plain_shares.push(share(plain_all, plain_before.min(plain_all)));
+            }
             row.plain_max = row.plain_max.max(plain_all);
             row.plain_sent += plain_all;
             row.plain_usd += prices.dollars(plain_all - plain_before.min(plain_all), plain_before.min(plain_all));
@@ -914,9 +1012,220 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
     row.usd = prices.dollars(miss, hit);
     row.p50_ms = pct(&times, 0.5);
     row.p99_ms = pct(&times, 0.99);
+    row.prefix = pct(&shares, 0.5);
+    row.plain_prefix = pct(&plain_shares, 0.5);
     row.rss_mb = peak_rss_mb();
     row.tokens = plain_total;
     let total = start.elapsed().as_secs_f64();
     row.secs = [view_s, (total - view_s - price_s).max(0.0), price_s, total];
+    row
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The sierra arm: what other harnesses do. The whole history goes to the model until the request would pass 0.9 of the
+// window; then everything but the last messages is replaced by a summary of a fixed size made by rules (the first
+// request, the last requests cut short, the commands run, and only the last `SAW_KV` lines of the form `key = value`)
+// and the session goes on from there: the view grows, drops, grows. What the summary does not keep is lost.
+
+/// Lines `key = value` the summary keeps, requests it quotes (each cut to `SAW_CUT` characters), commands it lists, the
+/// messages that stay after a compaction at most, and the characters of the summary at most (about 2,000 tokens).
+const SAW_KV: usize = 40;
+const SAW_REQS: usize = 8;
+const SAW_CUT: usize = 300;
+const SAW_FILES: usize = 40;
+const SAW_KEEP: usize = 20;
+const SAW_CHARS: usize = 8000;
+
+/// The sierra arm's memory: what the summary is made of, the summary, and the messages after it.
+#[derive(Default)]
+pub struct Saw {
+    first: String,
+    reqs: VecDeque<String>,
+    files: VecDeque<String>,
+    kv: VecDeque<String>,
+    summary: Option<(Value, Value)>,
+    live: Vec<Value>,
+    live_tokens: i64,
+    summary_tokens: i64,
+    pub compactions: usize,
+}
+
+/// Is `m` a request of the person (a user message that is not a tool result)?
+fn is_request(m: &Value) -> bool {
+    m["role"] == "user"
+        && match &m["content"] {
+            Value::Array(blocks) => !blocks.iter().any(|b| b["type"] == "tool_result"),
+            _ => true,
+        }
+}
+
+fn keep_last(q: &mut VecDeque<String>, item: String, n: usize) {
+    if q.back() != Some(&item) {
+        q.retain(|x| *x != item);
+        q.push_back(item);
+    }
+    while q.len() > n {
+        q.pop_front();
+    }
+}
+
+impl Saw {
+    /// Tokens of the view (the summary and what follows it), without the system prompt.
+    pub fn tokens(&self) -> i64 {
+        self.summary_tokens + self.live_tokens
+    }
+
+    /// The view: the summary (with its acknowledgement) and the messages after it.
+    pub fn view(&self) -> Vec<Value> {
+        let mut v: Vec<Value> = self.summary.iter().flat_map(|(a, b)| [a.clone(), b.clone()]).collect();
+        v.extend(self.live.iter().cloned());
+        v
+    }
+
+    pub fn push(&mut self, m: Value) {
+        self.live_tokens += nexo_curator::sim::price::tokens_of(&m);
+        self.live.push(m);
+    }
+
+    /// Compacts when the view and the system prompt pass 0.9 of the window. The messages that stay are the last
+    /// `SAW_KEEP` from a request of the person on, as many as fit in a quarter of the window, and at least the last request.
+    pub fn compact_if_over(&mut self, window: i64, system: i64) -> bool {
+        use nexo_curator::sim::price::tokens_of;
+        if (system + self.tokens()) * 10 <= window * 9 {
+            return false;
+        }
+        let n = self.live.len();
+        let mut cut = (0..n).rev().find(|&i| is_request(&self.live[i])).unwrap_or(n - 1);
+        let mut tokens: i64 = self.live[cut..].iter().map(tokens_of).sum();
+        // earlier requests join while they fit
+        for i in (0..cut).rev().filter(|&i| is_request(&self.live[i])) {
+            let more: i64 = self.live[i..cut].iter().map(tokens_of).sum();
+            if n - i > SAW_KEEP || (tokens + more) * 4 > window {
+                break;
+            }
+            (cut, tokens) = (i, tokens + more);
+        }
+        let dropped: Vec<Value> = self.live.drain(..cut).collect();
+        for m in &dropped {
+            self.read(m);
+        }
+        self.live_tokens = tokens;
+        self.compactions += 1;
+        let (up, ack) = (
+            json!({"role": "user", "content": self.text()}),
+            json!({"role": "assistant", "content": "Understood. Continuing from the summary."}),
+        );
+        self.summary_tokens = tokens_of(&up) + tokens_of(&ack);
+        self.summary = Some((up, ack));
+        true
+    }
+
+    /// Takes what the summary keeps from a message that leaves the view.
+    fn read(&mut self, m: &Value) {
+        let text = nexo_curator::sim::input::text_of(m);
+        if is_request(m) {
+            let cut: String = text.chars().take(SAW_CUT).collect();
+            if self.first.is_empty() {
+                self.first = cut.clone();
+            }
+            keep_last(&mut self.reqs, cut, SAW_REQS);
+        }
+        if let Some(blocks) = m["content"].as_array() {
+            for input in blocks.iter().filter(|b| b["type"] == "tool_use").map(|b| &b["input"]) {
+                let key = ["command", "path", "file_path", "url"].iter().find_map(|k| input[*k].as_str());
+                if let Some(c) = key {
+                    keep_last(&mut self.files, c.chars().take(SAW_CUT).collect(), SAW_FILES);
+                }
+            }
+        }
+        if m["role"] == "user" {
+            for l in text.lines().map(str::trim).filter(|l| l.contains(" = ") && !l.starts_with('#') && l.len() <= 200)
+            {
+                self.kv.push_back(l.to_string());
+                if self.kv.len() > SAW_KV {
+                    self.kv.pop_front();
+                }
+            }
+        }
+    }
+
+    /// The summary, at most `SAW_CHARS` characters.
+    fn text(&self) -> String {
+        let list = |q: &VecDeque<String>| q.iter().map(|x| format!("- {x}\n")).collect::<String>();
+        let kv: String = self.kv.iter().map(|x| format!("{x}\n")).collect();
+        let s = format!(
+            "Summary of the conversation so far.\nFirst request: {}\nRecent requests:\n{}Commands run:\n{}Settings seen:\n{kv}",
+            self.first,
+            list(&self.reqs),
+            list(&self.files)
+        );
+        s.chars().take(SAW_CHARS).collect()
+    }
+}
+
+/// Runs the sierra arm on the cold session: the history until the view would pass 0.9 of the window, then a summary
+/// that keeps the last 40 `key = value` lines and the last messages, and on. Same oracle, same columns, same prices as
+/// `run_cold`; the plain fields stay empty (the curator row carries the reference).
+pub fn run_saw(p: &ColdParams) -> ColdRow {
+    use nexo_curator::sim::price::Prices;
+    let window = if p.window > 0 { p.window } else { SAW_WINDOW };
+    let system = system_tokens(window);
+    let prices = Prices::LIVE;
+    let mut g = Cold::new(p.clone());
+    let mut saw = Saw::default();
+    let mut sent = Sent::default();
+    let mut row = ColdRow::blank(p);
+    row.window = window;
+    let (mut miss, mut hit, mut requests) = (0i64, 0i64, 0usize);
+    let (mut times, mut shares) = (Vec::new(), Vec::new());
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+    let start = Instant::now();
+    'session: while let Some(b) = g.next_block() {
+        let mut ask = b.ask;
+        let mut stand = b.stand;
+        for m in b.msgs {
+            let user = m["role"] == "user";
+            row.tokens += nexo_curator::sim::price::tokens_of(&m);
+            saw.push(m);
+            if !user {
+                continue;
+            }
+            requests += 1;
+            if requests.is_multiple_of(512) {
+                let (secs, rss) = (start.elapsed().as_secs_f64(), rss_mb());
+                if (p.max_secs > 0.0 && secs > p.max_secs) || (p.max_rss_mb > 0.0 && rss > p.max_rss_mb) {
+                    let what = if rss > p.max_rss_mb && p.max_rss_mb > 0.0 { "RSS" } else { "tiempo" };
+                    row.stopped = Some(format!("{what} sobre el tope ({requests} peticiones), RSS {rss:.0} MB"));
+                    break 'session;
+                }
+            }
+            let t = Instant::now();
+            // the compaction is checked on every request; only the calls the curator arm makes are priced
+            saw.compact_if_over(window as i64, system);
+            let question = ask.take();
+            let task = stand.take();
+            if question.is_none() && task.is_none() && !requests.is_multiple_of(p.stride.max(1)) {
+                continue;
+            }
+            let view = saw.view();
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+            row.judge(&view, saw.tokens(), question, task);
+            let (all, cached) = sent.send(view);
+            let (all, cached) = (all + system, if row.calls == 1 { 0 } else { cached + system });
+            miss += all - cached;
+            hit += cached;
+            if row.calls > 1 {
+                shares.push(share(all, cached));
+            }
+        }
+    }
+    row.sent = miss + hit;
+    row.usd = prices.dollars(miss, hit);
+    row.p50_ms = pct(&times, 0.5);
+    row.p99_ms = pct(&times, 0.99);
+    row.prefix = pct(&shares, 0.5);
+    row.compactions = saw.compactions;
+    row.rss_mb = peak_rss_mb();
+    row.secs[3] = start.elapsed().as_secs_f64();
     row
 }
