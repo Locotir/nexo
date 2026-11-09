@@ -5,7 +5,7 @@ use nexo_core::{CuratedItem, CuratedKind, CuratedState};
 use ratatui::text::{Line, Span};
 
 use crate::render::blocks::fmt_k;
-use crate::render::wrap::truncate;
+use crate::render::wrap::{truncate, width};
 use crate::theme::Theme;
 
 /// How many model calls keep their rows.
@@ -37,11 +37,39 @@ pub fn total(items: &[CuratedItem]) -> u64 {
     sorted(items, true).iter().map(|i| i.tokens).sum()
 }
 
+/// `s` cut in the middle to `w` cells, so a path keeps its start and its file name.
+fn truncate_mid(s: &str, w: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    if width(s) <= w || w < 5 {
+        return truncate(s, w);
+    }
+    let gs: Vec<&str> = s.graphemes(true).collect();
+    let (mut head, mut tail) = (String::new(), String::new());
+    let (mut hw, mut tw) = (0, 0);
+    let keep = w - 1;
+    let tail_max = keep - keep / 3;
+    for g in gs.iter().rev() {
+        if tw + width(g) > tail_max {
+            break;
+        }
+        tail.insert_str(0, g);
+        tw += width(g);
+    }
+    for g in &gs {
+        if hw + width(g) + tw > keep {
+            break;
+        }
+        head.push_str(g);
+        hw += width(g);
+    }
+    format!("{head}…{tail}")
+}
+
 fn row(theme: &Theme, i: &CuratedItem, w: usize) -> Line<'static> {
     const KIND: usize = 9;
     let size = format!("{}{}", if i.state == CuratedState::Trimmed { "~" } else { "" }, fmt_k(i.tokens));
     let name_w = w.saturating_sub(KIND + 2 + 7 + 2).max(4);
-    let name = truncate(&i.label, name_w);
+    let name = if i.label.contains('/') { truncate_mid(&i.label, name_w) } else { truncate(&i.label, name_w) };
     let pad = " ".repeat(name_w.saturating_sub(crate::render::wrap::width(&name)));
     Line::from(vec![
         Span::styled(format!("{:<KIND$}", kind_name(i.kind)), theme.dim()),
@@ -133,6 +161,18 @@ mod tests {
                 assert_eq!(width(r), first, "w={w} {t:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_long_path_keeps_its_file_name() {
+        let items =
+            vec![it(CuratedKind::Recalled, "/home/someone/projects/app/src/parser/lexer.rs", 900, CuratedState::In)];
+        let t: Vec<String> = lines(&Theme::dark(), &items, 34, "Added").iter().map(text).collect();
+        assert!(t[1].contains("lexer.rs") && t[1].contains('…'), "{t:?}");
+        let items =
+            vec![it(CuratedKind::Recalled, "read /home/someone/projects/app/src/lexer.rs ×3", 900, CuratedState::Out)];
+        let t: Vec<String> = lines(&Theme::dark(), &items, 44, "Added").iter().map(text).collect();
+        assert!(t.iter().any(|l| l.contains("lexer.rs ×3")), "{t:?}");
     }
 
     #[test]
