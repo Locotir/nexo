@@ -1,128 +1,197 @@
-# Why the context drops at every new message
+# How the curator builds the view of a call
 
-In the nexo TUI the context of a session looks like a sawtooth: it climbs while the agent works, falls at once when you send the next message, and climbs again. This is not a glitch, it is the curator working as designed. This page explains it from the code (`nexo/crates/nexo-curator`, driven by `nexo/crates/nexo-agent/src/context.rs`).
+Checked against `next` at `cdeb98a` (2026-11-09). The code is `nexo/crates/nexo-curator` (the engine in
+`engine/`), driven by `BuiltIn` in `nexo/crates/nexo-agent/src/context.rs` and the turn loop in
+`nexo/crates/nexo-agent/src/turn/start.rs`. Constants below are the defaults of `D_SPEC` in `lib.rs`.
+Diagrams show the mechanism; their numbers are illustrative, not measured.
 
-Numbers below are **illustrative** unless a constant is named. Constants are the defaults of `D_SPEC` in `lib.rs`.
+## Principles
 
-## The short version
+These are the design. A change that breaks one of them is a bug, whatever it saves.
 
-1. **The full history is never edited.** The curator only chooses the *view*, what the next model call is sent (`Curator::view` in `lib.rs`, called by `BuiltIn::view` in `context.rs` before every model call).
-2. **Inside a request the view only grows at the end**, so the provider's cache keeps hitting. Cuts are rare and batched.
-3. **When your next message arrives, the previous request is closed.** With `close=2` an answered request keeps only your message and the agent's final reply; its tool calls and outputs leave in one cut. That cut sits at the tail of the view, so it is cheap, and the rent rule approves it at once.
+1. **The curator is never switched off.** `auto`, the default, is the curator. A setting it cannot run is
+   left out and the rest still applies (`BuiltIn::lenient`), with one line in the transcript. `plain` and
+   `compact` exist as choices for comparison; nothing picks them for you.
+2. **No sawtooth, no lossy summary.** The history is never edited and nothing is rewritten by a model.
+   The view is chosen by rules over the history, and what leaves stays on disk under a name
+   (`m00042`). The view does not fall at each new message: it grows at the end and is rewritten only
+   at an epoch, when that pays (below).
+3. **Every fact the call needs goes into each call.** What a request names is looked up in an index of
+   the whole history and put in the call (the tail, below). Facts the session settled, such as a
+   non-default path or port, come back whenever an action supposes the default.
+4. **The cache prefix is stable.** Between epochs nothing before the tail changes. What is rebuilt for
+   each call goes at the end of the last message.
+5. **The view may inflate when a request needs it.** A request that names more than the normal tail
+   holds gets its lines up to 99 % of the model's window for that one call. The hard ceiling of any view
+   is 95 % of the window.
+6. **Not forgetting ranks above cost.** When a rule would save money and lose a fact the agent used,
+   the fact wins. On 2026-11-09 the ceiling and a cost rule for rewrites were kept because they cut
+   forgotten words by 37.5 % (200 to 125) although replay cost rose 5.64 % (lab log, commits `c8e39dd`
+   and `00c9329`).
 
-## One model call, step by step
+The `compact` policy and a compaction after the provider rejects a request (`Lesson::Context` in the turn
+loop) still exist in the agent. The curator does not use them: it keeps the view under the window so the
+fallback should not fire. Whether it never fires in long real sessions is not measured here (Unknown).
+
+## One model call
 
 ```mermaid
 sequenceDiagram
-    participant Host as nexo agent loop
-    participant Cur as Curator (decide + render)
+    participant Host as agent loop
+    participant Cur as Curator
     participant LLM as Provider
 
-    Host->>Cur: view(system_tokens, whole history)
-    Note over Cur: sync: index only the new messages
-    Cur->>Cur: close finished requests (close=2)
-    Cur->>Cur: live_drop: idle outputs of the open request
-    Cur->>Cur: cap check (EOQ), batched cuts (rent rule)
-    Cur-->>Host: view + tokens + stats
-    Host->>LLM: request with the view
-    LLM-->>Host: reply (text and/or tool calls)
-    Host->>Host: run tools, append results to history
-    Host->>Cur: view(...) again for the next call
+    Host->>Cur: window, prices, tools, then view(whole history)
+    Note over Cur: index only the new messages (lines by key, facts, steps)
+    Cur->>Cur: epoch due? (cost rule, ceiling)
+    alt epoch
+        Cur->>Cur: close answered requests, drop dead outputs, cut to target
+    else between epochs
+        Cur->>Cur: append only; bring back steps the request names
+    end
+    Cur->>Cur: tail: standing facts, lines the request names
+    Cur-->>Host: view, tokens, what moved
+    Host->>LLM: request
+    LLM-->>Host: reply
+    Host->>Cur: next call (the history grew at the end)
 ```
 
-Source: `Engine::sync` indexes new messages once, `Engine::decide` makes every decision, `Engine::render` builds the messages (`engine.rs`).
+The host gives the curator the model's window less the reply (`Curator::window`), scaled by the ratio of
+provider tokens to estimated tokens it has learned, with 5 % to spare (`view_window` in `start.rs`), the
+cache prices (`Curator::prices`) and the cache usage the provider reported (`Curator::usage`). The
+curator's own ceiling is 95 % of what the host gives (`CEILING` in `engine/window.rs`).
+`Engine::decide` makes every decision once per call; messages are indexed once, when they arrive.
 
-## Tokens per request across three user turns
-
-```mermaid
-xychart-beta
-    title "Context tokens per model call (illustrative)"
-    x-axis "model call" [1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
-    y-axis "tokens (k)" 0 --> 80
-    line [4, 20, 40, 55, 65, 20, 35, 50, 62, 20, 30, 45, 58]
-```
+## The view over a session
 
 ```text
- k tokens
- 65 |        /|                /|
- 55 |      /  |              /  |                 /
- 40 |    /    |   /         /   |   /           /
- 20 |  /      |__/ ________/    |__/__________/
-  4 |/        ^ turn 2 starts   ^ turn 3 starts
-    +--------------------------------------------> model calls
-      turn 1      turn 2             turn 3
+ view tokens
+ start  |            .'|              .'|
+ of cut |         .'   |           .'   |
+ target |  ____.'      |____    .'      |____
+        |  grows at   epoch   grows at  epoch
+        +--------------------------------------> model calls
 ```
 
-Each fall is a request being closed. Each climb is the next request's calls and outputs being appended.
+Between two epochs the view only grows at its end, so the provider's cache keeps hitting. At an epoch
+the view is rewritten down to `target=10000` tokens in one batch. The epoch comes when keeping the extra
+tokens costs more than sending the new prefix once, or when the view reaches the ceiling. It does not come
+because a new message arrived.
 
-## Why it falls at the turn boundary
+### When an epoch is due (`epoch_due`, `fire_point`)
 
-```mermaid
-flowchart TD
-    A[You send message N+1] --> B["decide(): shut_done + 1 < number of requests"]
-    B --> C["close_unused: with close=2 every step of request N is marked idle"]
-    C --> D{"rent_close: rent saved minus p_need x call price > margin x (1 - ratio) x tokens behind the cut ?"}
-    D -- "yes, the cut is at the tail" --> E["steps leave, one line says what left"]
-    D -- no --> F[steps stay, re-checked on later calls]
-    E --> G["view = anchor + earlier requests with their replies + request N and its reply + request N+1"]
-```
+Keeping a token in the view costs `ratio` of an uncached token on every later call: the provider's cache
+price over its input price when the host gave it, else `ratio=0.1`. A rewrite lands on `L` tokens and sends
+that prefix without the cache once, at a price of `margin x L x (1 - ratio)` with `margin=2.25`. The calls
+still to come are `ahead=0.25` times the calls so far, at least 4. The rewrite starts once the extra
+tokens, times `ratio`, times those calls, exceed that price. Past a view of 100k tokens a quality term
+is added: each token past it costs a further 0.05 of an uncached token per call (a heuristic, not a
+measured price). With a free cache the rewrite never pays. With `ahead=0` it starts at twice the target.
+A fixed `cap` (off by default) replaces the cost rule with a trigger.
 
-The rent rule (`rent_close`, `engine.rs`):
+An epoch also happens at once when the view passes the ceiling or the model's window, and for the first
+view of an engine. After an epoch the view's size is stored, and the next epoch waits for growth past it
+by the room the cost rule gives.
 
-- **Keeping costs rent.** An idle step costs `ratio` of its tokens on every call: 0.1, or the model's cached read price over its uncached price when that is lower (0.02 for a 2 % cache). A cut is credited with the rent it saves from now on, `ratio x size x horizon`, where the horizon is `ahead=0.25` times the calls so far (at least 4) and never past the point where the cap would take the step for free; the rent already paid is not counted, since it is paid either way.
-- **A step that may be needed again is worth keeping.** The rent a step saves is reduced by `p_need x call price`: the chance that a later reply still draws on its output (the need predictor in `data/model.json`, five horizons over 43 features, read at the same horizon as the rent) times the price of the cached call that would bring it back. A step whose worth exceeds its rent is not a candidate: it stays until a later check finds it idle and cheap enough. Measured on 656 recorded sessions, this leaves 7% fewer replies without a word they needed in sessions over 20 requests, at about 0.5% less cost.
-- **Cutting costs a purchase.** Everything after the cut is re-read without the cache once, `margin x (1 - ratio) x tokens behind the cut`, with `margin=2.25`.
-- The cut is chosen with the largest gain. Because the closed request is the **last** thing before your new message, almost nothing sits behind the cut, so the price is small and the cut is approved in one batch.
+### What happens at an epoch
 
-Worked example (illustrative): request N made 12 steps totalling 45k tokens; 40 model calls so far. The credit is about `0.1 x 45000 x (0.25 x 40) = 45000`. The price is `2.25 x 0.9 x 1500 = 3000` (your new message and the protected tail). Gain is large, so all 45k leave.
+All the work that waited happens together, so the cache is broken once:
 
-## Why it climbs again inside a request
+- Answered requests close (`close=2`): a request keeps its message and the agent's final reply; its tool
+  steps are weighed one by one by the rent rule, against the chance a later reply draws on them (the need
+  predictor in `data/model.json`).
+- Outputs the agent did not draw on go idle and leave when that pays (`live=1`). Exact copies, repeated
+  runs of lines, and reads made out of date by a later edit (`stale=1`) leave first.
+- The window cut (`window_cut`) takes the oldest results the sticky set does not hold, down to
+  `target`; past the ceiling the oldest sticky results leave too, as pointers, down to 90 % of it.
 
-- **Append only.** New calls and outputs are added after what was already sent. The provider's cache covers the whole earlier prefix, so each call re-reads it at `ratio` of the price.
-- **Cuts are batched.** The weighing runs only when `due`: every `check=4000` new tokens or `every=4` steps, and a cut is made only when it pays `margin` times (`decide`, `rent`).
-- **The cap.** `eoq_cap` gives `cap = K + Q*`, with `K = eoq = 16000` and `Q* = sqrt(2 (1 - ratio) K g / ratio)`, where `g` is the growth in tokens per call measured in the session. For `g = 2000`: `Q* = 24000`, `cap = 40000`. Past the cap, the view is cut down to `floor x cap` and the anchor is rewritten.
-- **Held outputs do not count toward the cap** (`held`, `still=32000`). Outputs the agent has not written about yet (no text, no note since) are what it is working from, and they leave only as exact copies of a later output, never on a guess, up to 32000 tokens. This is why a view can sit above the nominal cap during a long burst of reading, like the 65k in the picture.
-- **Idle outputs of the open request** (`live_drop`, `live=1`): an output that no later agent message drew on goes idle and leaves when the same rent rule pays.
+What the agent is working from is the sticky set, decided by rules with no model: the request, the
+agent's own text and calls, the latest `file now` of each path, the last `check:`, the latest whole read
+of each path the agent changed or the person named, a `recall` result until the step after it, and what
+the agent has read and not yet written about (the latest `still=32000` tokens of it). Failing runs are
+kept up to 2,000 tokens, since the agent reports them.
 
-## What stays, what leaves, how to get it back
+When the head and the protected tail alone do not fit the target, the economic-order-quantity cap
+(`eoq=16000`, `Engine::eoq_cap`) prices the cut instead of the target.
 
-| Piece | At the turn boundary | How the agent gets it back |
+## What the call carries beyond the view
+
+Nothing below changes the history or the cached prefix. It is built again for each call and put in the last
+message (`engine/tail.rs`).
+
+- **Standing facts** (`standing.rs`). A line of the session's own words that overrides a default (a shell
+  rc that is not `~/.bashrc`, a database on another port, a folder not to touch) is kept by target: the stems
+  of its words, the base name of its paths and its ports. When the request, the agent's last words or the
+  inputs of its last calls hold a target, the fact goes into the tail as a `Standing:` line even though
+  nobody asked for it, because the action supposes the default. The table holds 200 facts and drops none for
+  budget; a later fact on the same subject replaces it and shows the old one as `antes:`.
+- **The index** (`index.rs`, `facts.rs`). Every line of every tool output and message is indexed by its
+  keys: words, numbers of any length, paths, versions and identifiers whole. A key weighs by how rare it is
+  in the session, so a number or a name few lines hold decides and a common word decides nothing. For the
+  person's latest request, the best lines that the view does not hold whole are put in the tail as a
+  `Recall` block, grouped by message name, at most 8 per key, 40 lines and 3,000 tokens. Only the text of
+  a line is read from the history; the index stores hashes and positions.
+- **Inflation** (`INFLATE_TO=0.99`). When the request names more than that holds (40 lines, or lines from
+  8 messages or more), it gets 4 times the lines per key and 10 times the total, up to 99 % of the
+  model's window, for that call only. The next call builds its tail from the normal limits again. This is
+  the only inflate rule in the code today.
+- **Steps the request names** (`named=16000`, `engine/named.rs`). A step that read a file the latest
+  request names stays, and one already out comes back as text at the end of the view. A file is told from
+  its neighbours by the parts of its name they do not share (`assembly-C.txt` next to `assembly-A.txt`).
+  A read that an epoch cut after it came back returns by a shared file name only when the request names
+  something of its own: a name many reads share (`service.conf` of every folder) would otherwise bring all
+  of them back on every request. A step brought back in a message that leaves with an epoch leaves with it.
+- **The `recall` tool** is offered unless `recall=0`. It brings a message back as it was by its name:
+  `m` and the 1-based index in five digits, so `m00042`.
+
+## What stays in the anchor
+
+The first message carries `[curator]` blocks, each within a budget: the person's rules (`rules=2000`,
+never dropped), the agent's notes (`notes=3000`), pinned files (`pin=4000`), the ledger (`ledger=6000`) and
+the map of requests that moved out. They are rewritten only at an epoch. [`how-it-works.md`](how-it-works.md)
+describes each.
+
+| Piece | Between epochs | At an epoch |
 |---|---|---|
-| System prompt and tools | Stays (identical every call, cached) | n/a |
-| Anchor (first message), with `[curator]` blocks: rules, notes, pins, ledger, map | Stays, rewritten only on a rewrite (cap) | It is always in view |
-| Your messages | Stay, within the limits of `protect=12` and the cap | Folded into the ledger and the map only after a cap rewrite |
-| The agent's final reply of each request | Stays (it is what the agent took from the work) | In view |
-| Tool calls and outputs of a closed request | Leave (`close=2`), one line says which calls left | Run the call again, or `recall m00042` (see below) |
-| A step the new request names or needs | Comes back as text (`recall` in `engine.rs`, picked by `named`, `asks`, `pick`) | Automatic |
-| Other topics (threads) | One frozen card each, up to `cards=8` | Returning to the topic brings it back |
-| Last 12 messages (`protect=12`) | Never cut by the cap | In view |
+| System prompt and tools | Same every call | Same |
+| Anchor | Same | Rewritten if the blocks changed |
+| Person's messages and the agent's final replies | Stay | Stay |
+| Tool calls and outputs of answered requests | Stay | Leave by the rent rule, one line names what left |
+| Sticky set | Stays | Stays below the ceiling |
+| A step the request names | Comes back at the end, as text | Leaves again if no longer named |
+| Standing facts, indexed lines | In the tail, per call | Same |
+| Last 12 messages (`protect=12`) | Never cut | Never cut |
 
-The line that replaces a closed request reads (`shut_lines`):
+The line that replaces a closed request names the calls that left, and the output names (`m00042, m00043;
+recall brings any of them back as it was`) when `recall` is offered.
 
-```text
-[curator] 7 tool calls made for this request and their outputs are left out of this context:
-<calls> . The reply that closed the request follows.
-```
+## Topic cards
 
-### The `m00042` names
+When the person changes topic, the old topic can be frozen as one card (`cards=8`) so the view holds its
+account in a few lines. The split is priced (`split_now`): the cache reads the other topics would cost,
+less the rewrite, less the chance they are needed again. The split happens only without epochs. With the
+default `epoch=1` it is not made, so cards do not appear in default sessions. They remain for `epoch=0`.
+If the agent asks twice for something a split left out, the view is whole again until the next change of
+topic.
 
-Every message of the history gets the name `m` plus its 1-based index in five digits (`format!("m{:05}", mi + 1)`). When the host offers the `recall` tool, the line above also lists the output names, for example `The outputs are m00042, m00043; recall brings any of them back as it was`, and topic cards list their ranges (`m00010-m00031`).
+## Nudge
 
-Important default: the `recall` tool is offered unless the spec says `recall=0` (`BuiltIn::recall` returns `Curator::recall`, `offered` in `turn.rs`). With `recall=0` the names are not printed and the agent gets the data back by repeating the call or reading the file, as the line says.
+`nudge=0` is the default. With `nudge=N` the curator appends one request for `Finding:` and `Plan:` notes
+to the last tool result after N steps with no note, at most once per N steps, never inside the cached
+prefix (`NUDGE` and `NUDGE_SAID` in `engine.rs`). It is off because asking for notes early fixed wrong
+readings in measured runs (earlier implementation).
 
-## Cache friendliness
+## Where rules are saved
 
-- A cut breaks the provider's cache **from the first changed message onward**. The engine counts this as `miss` and prices it before cutting (`Engine::miss`).
-- That is why cuts are batched and placed late, and why `fresh=1`, `dedup`, `birth=squeeze` decide at birth rather than rewriting later.
-- With `pockets=1` or `2` (off by default) the curator also models a provider that keeps several views alive, and learns how long from the cached-token usage the provider reports (`Curator::cached`).
+The `note` tool takes a `scope`. With `session` (the default) a `Rule:` line lives in the anchor for the
+session. With `global` it is also saved to `~/.nexo/prompt.md`, and with `project` to the project's
+instructions file, or `AGENTS.md` at the project root when there is none, dated, under
+`## Remembered by nexo` (`nexo-tools/src/note.rs`, `nexo_core::compat::rules_file`). The system prompt
+tells the model when to do it (`nexo-agent/src/prompt.rs`). These files are read into the prompt of later
+sessions; the curator's `rules` block is what holds a rule within one.
 
-## Nudges and cards, briefly
+## What is not confirmed here
 
-- **Nudge** (`nudge=0`, off by default): if on, after N steps without a `Finding:` or `Plan:` note the curator appends one request for notes to the last tool result, at most once per N steps (`Engine::nudge`). Notes survive in the anchor when the outputs leave.
-- **Cards**: when the new request starts another topic, the old topic is frozen as one card (`cards_text`, `frozen`), which keeps its cached text stable.
-
-## What I could not confirm from the code
-
-- Exactly what makes up the ~20k floor in a given session. By the code it is the system prompt and tools, the anchor, earlier requests with their replies, the request just closed (request plus reply) and the new request. Whether the TUI counter includes the system prompt and tool definitions was not checked (`head_tokens` is tracked separately in `Curator`).
-- How the `protect=12` tail interacts with `rent_close` at the turn boundary was not traced. The cap path (`eoq_cap`) excludes the tail from what a cut can take.
-- The numbers in the diagrams and the worked example are illustrative, not measured.
+- Whether a long real session ever reaches the provider-rejects fallback: not measured.
+- The topic-card mechanism has not been re-measured since epochs became the default.
+- Figures are in [`results.md`](results.md), with dates and commits.

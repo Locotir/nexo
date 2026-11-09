@@ -1,34 +1,206 @@
 # Results
 
-nexo began as a university thesis on context curation. Unless a table says otherwise, the simulated
-figures and the live runs below were measured with **an earlier implementation** of the curator, written
-for that thesis and not published, from which nexo's `nexo-curator` crate was ported. The port is checked
-against fixtures recorded from it (`nexo/crates/nexo-curator/tests/`). Its settings have been retuned
-since, so those figures describe the earlier engine, not nexo as shipped.
+Status of every number: it names its date (2026-11-09 unless said) and the nexo commit it was measured at.
+A number with no commit was measured before the commit log of this page began and is marked as such.
+The numbers of 2026-11-09 were measured on `next` at the commits named in each table; the head of `next` when
+this page was written is `cdeb98a`.
 
-The raw records named below (`experiments/...`) are **not published**; the tables here carry every
-figure they give, and they cannot be reproduced from this repository. The figures you can reproduce
-are in "Measured in nexo" and "One long run, step by step".
+Nothing is claimed that is not in a table here. Where a figure comes from a lab log that is not in this
+repository, the table says so and describes the method. Figures from the earlier implementation of the
+curator (the thesis engine from which `nexo-curator` was ported, unpublished) are labelled as such.
 
-## The hypothesis
+## What the curator is held to
 
-A curator that knows how prompt caching is billed can send each model call a much smaller context than
-the whole history, at no loss in task success, and so cut the cost of a long session by more than half;
-together with a few efficiency directives to the agent, it can also cut the number of calls and the
-wall time. What it cannot do, with the agent making the same calls, is go past a proved ceiling.
+The design (see [`context-curator.md`](context-curator.md)) puts four things above cost: the curator is
+never switched off, there is no sawtooth and no lossy summary, every fact the call needs goes into each
+call, and the cache prefix stays stable. Not forgetting ranks above cost. The tables below are read
+against that: a cost that rises while forgotten facts fall is kept on purpose.
 
-Where each claim stands:
-
-| claim | status | evidence |
+| claim | status on 2026-11-09 | where |
 |---|---|---|
-| token savings are not cost savings under a prefix cache | shown | the eager hindsight oracle removes 56% of the tokens but saves 15% of the cost |
-| a cache-aware curator saves most of the bill in simulation | shown | D saves 61.5% (5-minute cache) and 56.0% (no expiry) on unseen recorded segments |
-| it holds live, at comparable success | shown on one model | DeepSeek: −42% cost for D, −59% with the directives; 10/10 against 9/10 solved |
-| fewer calls and less time need the agent to change, not only its context | shown | D alone: −1% calls; D + directives: −23% calls, −41% time |
-| no curator sending literal text with the same calls saves more than 89.7% | proved | the ceiling below; a constructed curator reaches 89.3% |
+| a recalled fact is in the call, at any history size tried | shown in cold tests: recall 100 % at 8k to 1M windows and 1,000 topics | [Cold scale](#cold-replay-and-scale-2026-11-09) |
+| standing facts reach the calls that suppose them | shown in the same tests: 100 % | same |
+| the prefix is stable | prefix equal to the previous request's in 98.4 to 99.4 % of the median call | same |
+| the view stays under the window | shown: largest view 18.8k to 73.5k in the cold tests, windows from 8k up | same |
+| it saves money against sending everything | shown in replay (-19.6 % of tokens on the public fixtures; in the 1,000-topic test 31.57M tokens and 0.5243 $ against 374.84M and 2.3404 $ for plain, my rerun); not shown live | [Replay](#replay-of-the-public-fixtures-2026-11-09), [Live](#live-paired-runs) |
+| at the same success | not shown. The last live paired run (before epochs) failed its target | [Live](#live-paired-runs) |
+| it beats other harnesses | not shown. In the race, all five arms are within 1 to 2 tasks and the intervals overlap | [Race](#harness-race-2026-11-09) |
 
+## Cold replay and scale (2026-11-09)
 
-## What a context is used for
+**Method.** The cold tests need no model and no money. A recorded or generated session is fed to the curator
+request by request, as the host does, and what the curator would have sent is scored.
+
+- *Cold replay.* The 22 fixtures of the lab set (recorded and synthetic sessions; the public ones are in
+  `nexo/crates/nexo-curator/tests/fixtures/`) replay through `examples/replay.rs` with the default spec.
+  A shell script of the lab runs them all and sums the lines. Columns: the priced cost of the view, the
+  number of forgotten words (distinctive words of a reply that the whole history held and the view did not),
+  and the largest view. The script is not in this repository.
+- *Cold scale.* `examples/scale.rs` in cold mode generates a session of N topics with big pastes and
+  questions that correlate facts across topics, plants standing facts, and asks about them later. Columns:
+  `recall` (share of questions whose needed lines are in the view, for questions of 1 fact and of 2 to 3
+  facts), `fijos` (share of tasks that suppose a standing fact whose source line is in the view), view
+  maximum, tokens sent, cost, `prefijo` (median share of each request's prefix equal to the previous
+  request's, which is what a prefix cache reads), time per request. The model window is a flag.
+
+Reproduce the scale line for 32k (from `nexo/`):
+`cargo run --release -p nexo-curator --features sim --example scale -- --topics 1000 --hops 0 --seed 1 --window 32k`.
+I ran it at `cdeb98a` on 2026-11-09: recall 100.0/100.0, fijos 100.0, view maximum 19,579 tokens,
+31.57M tokens sent, 0.5243 $ at the example's DeepSeek price, prefix 99.2 %, 1.98 ms median and 25.92 ms p99
+per request, 93 MB at most; the plain arm of the same session sends 374.84M tokens, 2.3404 $, with a
+largest request of 310,702 tokens that does not fit 128k.
+
+**Scale, 1,000 topics, by window** (lab log, nexo `79c506d`, `next` `cdeb98a`; the 32k line reproduced above):
+
+| window | cost | prefix | recall (1 / 2-3 facts) | standing facts | largest view |
+|---|---|---|---|---|---|
+| 8k | 0.91 $ | 98.4 % | 100 / 100 % | 100 % | not recorded here |
+| 32k | 0.52 $ | 99.2 % | 100 / 100 % | 100 % | 19.6k (my rerun) |
+| 128k | 0.59 $ | 99.4 % | 100 / 100 % | 100 % | 18.8k |
+| 1M | 0.59 $ | 99.4 % | 100 / 100 % | 100 % | not recorded here |
+
+**Cold replay of 22 fixtures** (same commits): cost 0.6080 $, forgotten words 44, largest view 73.5k tokens.
+
+**What moved these numbers today**, step by step (each from the lab log, in the order measured):
+
+| change | commit | cold replay cost | forgotten | scale cost 8k / 32k / 128k / 1M |
+|---|---|---|---|---|
+| rewrite only at epochs, inflate one call | `cf3565c`, `c45cf94` | 0.5911 $ (from 0.6306) | 93 (from 125) | 32k 1.24 $, 128k and 1M 1.08 $ |
+| epoch reset of steps, and a re-read by a shared file name only when the request names something of its own | `79c506d`, `cdeb98a` | 0.6080 $ (+2.86 %) | 44 | 0.91 / 0.52 / 0.59 / 0.59 $ |
+
+Without the second fix, the same reset brought back about 200 steps per request when every folder held a
+file called `service.conf`: the 128k scale cost 2.09 $ and the prefix at 8k fell to 16 %.
+Open risks from the same log: the prefix at 32k, 128k and 1M is 0.1 to 0.2 points below the base and under
+99.5 %; one synthetic fixture (`synthetic-g2-t40-s3`) forgot 28 words before the epochs and 51 after the
+first epoch change, and was not re-checked after the later fix (Unknown); and three further planned rules
+for inflating a view (i, ii and iv in the lab log) are not written, so only the rule in `tail.rs` exists.
+
+**Speed** (lab log, `ae4b0bb`, before the epoch change, not repeated since): 10,000 topics, 84 ms median and
+199 ms p99 per request; 1M tokens of history 20 ms and 501 ms; 10M tokens, p99 4.2 s. The 200 ms goal is not
+met at 10M tokens: four loops that scan the whole history remain.
+
+## Replay of the public fixtures (2026-11-09)
+
+The 7 whole-history recordings `bench-*-full*.jsonl` replayed through the curator with its default spec at
+`cdeb98a` (`examples/replay.rs`; tokens estimated at four characters per token; I ran every line today):
+
+| fixture | requests | whole history | curator | change |
+|---|---|---|---|---|
+| `bench-realm100-full` | 100 | 3.53M | 3.48M | -1.5 % |
+| `bench-marathon4-full` | 81 | 2.97M | 1.87M | -37.0 % |
+| `bench-marathon-full` | 55 | 1.63M | 1.13M | -31.0 % |
+| `bench-dir-full-4` | 22 | 204k | 187k | -8.3 % |
+| `bench-long-full-1` | 21 | 152k | 155k | +1.8 % |
+| `bench-results-full-4` | 5 | 21.7k | 21.7k | 0.0 % |
+| `bench-results-full-0` | 8 | 6.0k | 6.4k | +6.8 % |
+| **all** | | **8.52M** | **6.85M** | **-19.6 %** |
+
+Every fixture shows `forgotten 0 words`. Reproduce one with
+`cargo run --release -p nexo-curator --features sim --example replay -- crates/nexo-curator/tests/fixtures/<file>.jsonl --quiet`
+(from `nexo/`; the `total over all requests` line). The replay cannot show how a model reacts to the view;
+only a live run does. The previous version of this page, measured on an older build, read -26 % for the same files. The
+smaller saving is probably because an epoch waits for the cost rule instead of cutting at each request
+(Inferred, not isolated); what waiting bought is in the forgotten column above.
+
+## Harness race (2026-11-09)
+
+Five harnesses on the same 16 tasks (TB-MINI, a subset of Terminal-Bench), one model (`deepseek-flash`
+through the DeepSeek API), one day. nexo was a static musl binary built from local `next` at `b99d96c`
+(before the epoch change), `max_turns=40`, curator on with its defaults. The other arms were each
+harness's own defaults in round A. Isolation: one Docker container per trial, Harbor 0.25.0, no shared
+state; this is from Harbor's code and compose files, I did not inspect a live container. Cost uses one
+price table for every arm (0.30 $ input, 0.006 $ cached input, 1.20 $ output per million tokens), not
+each harness's cost field. The balance check found no trial excluded for an empty balance.
+
+**Method.** Each task has exactly 1 valid attempt for every arm in each round (a valid attempt is one
+where the agent really ran). Start failures (setup timeouts, a missing image) and extra attempts are
+excluded and listed. nexo's 2 repetitions in round A gave 25/32 over 32 attempts; the table uses 1 attempt per
+task for every arm so the arms are paired.
+
+**Round A: defaults, 16 tasks, 1 attempt per task**
+
+| arm | passed (Wilson 95 %) | mean steps | tokens in / cached / out | cache hit | cost | cost per solved task |
+|---|---|---|---|---|---|---|
+| nexo | 13/16 (57 to 93 %) | 16.1 | 5.94M / 5.72M / 308k | 96.4 % | 0.468 $ | 0.036 $ |
+| Codex | 13/16 (57 to 93 %) | 18.4 | 11.91M / 11.62M / 354k | 97.6 % | 0.581 $ | 0.045 $ |
+| Claude Code | 12/16 (51 to 90 %) | 18.4 | 11.14M / 10.80M / 346k | 96.9 % | 0.584 $ | 0.049 $ |
+| Hermes | 12/16 (51 to 90 %) | 16.6 | 6.78M / 6.62M / 181k | 97.7 % | 0.305 $ | 0.025 $ |
+| DeepSeek harness (dsh) | 13/16 (57 to 93 %) | 17.9 | 10.40M / 10.13M / 235k | 97.4 % | 0.425 $ | 0.033 $ |
+
+**Round B: common window 131072, 16 tasks, 1 attempt per task**
+
+| arm | passed (Wilson 95 %) | mean steps | tokens in / cached / out | cache hit | cost | cost per solved task |
+|---|---|---|---|---|---|---|
+| nexo | 11/16 (44 to 86 %) | 13.9 | 4.94M / 4.79M / 312k | 97.0 % | 0.448 $ | 0.041 $ |
+| Codex | 14/16 (64 to 97 %) | 17.1 | 10.60M / 10.35M / 311k | 97.7 % | 0.509 $ | 0.036 $ |
+| Claude Code | 12/16 (51 to 90 %) | 16.9 | 9.39M / 9.01M / 375k | 96.0 % | 0.617 $ | 0.051 $ |
+| Hermes | 12/16 (51 to 90 %) | 14.4 | 6.60M / 6.40M / 192k | 97.0 % | 0.327 $ | 0.027 $ |
+| dsh | 11/16 (44 to 86 %) | 17.3 | 8.10M / 7.79M / 257k | 96.2 % | 0.447 $ | 0.041 $ |
+
+**Reading it.** With 16 tasks the intervals overlap for every pair, in both rounds. The arms differ on
+about 8 tasks, each with one attempt; adaptive-rejection-sampler fails for all five arms in both rounds and
+configure-git-webserver for four of five in round A. This is a tie, not a ranking.
+
+**In round B the curator never acted.** Its largest view was 25,936 tokens (25,777 in round A) against a
+window of 131,072, and all 222 `curated` events of round B have empty `items`. So round B tells nothing
+about the curator's cutting: nexo here is a harness with a stable prefix and short prompts (22k tokens per
+call on average, against 39k for Codex), not a curator under pressure. Prompts of 22k to 39k tokens
+are far below a 128k window, so the cap rarely had occasion to bite any arm (Inferred).
+
+**Compactions seen in the logs.** nexo 0 and 0. Codex 0 and 0 (its window was verified at 124,518 in
+round B against 258,400 in A). Claude Code 0 and 1 (one auto compaction in round B, from 99,364 tokens to
+7,954, after which that trial failed). Hermes and dsh: the window setting was applied (131072 in the
+config) but not observed, and no compaction event occurred.
+
+**Failures by kind**, paired attempts, round A / round B. nexo: 2 exit errors and 1 wrong / 1 timeout, 2 exit
+errors and 2 wrong. Codex: 3 wrong / 2 wrong. Claude Code: 2 exit errors and 2 wrong / 1 exit error and 3 wrong.
+Hermes: 1 exit error, 1 timeout and 2 wrong / 2 timeouts and 2 wrong. dsh: 1 timeout and 2 wrong / 1 timeout and 4 wrong.
+"Wrong" means the agent finished and the verifier scored 0.
+
+**Excluded.** Start failures: 34 in round A (Claude Code 16 and Codex 11 of them from agent-setup
+timeouts, none of which cost tokens) and 22 in round B (Claude Code 15, Codex 7); 21 extra valid attempts in
+round A (nexo's second repetition, 16, and 5 of Codex's). The setup timeouts came from concurrent installs
+and rate limits and were re-run with 3 times the timeout at lower concurrency.
+
+**Session-ops (one long task, nexo only), same build.** Plain 1/2 solved, score 96.67 %, 40 steps, 0.1200 $;
+curator 0/2 solved, score 90.00 %, 32 steps, 0.1145 $. No compaction or rewrite in either arm; largest view
+68,002 and 65,306 tokens. One task: no conclusion about curator against plain.
+
+**Cost of the race.** 5.3835 $ in all (5.149 $ for the 16-task rounds including extras and failures, 0.2345 $
+for session-ops).
+
+**Caveats.** The arms ran at the same time on one 14-core host with 3 trials each; wall times are not
+comparable and are not reported, and timeouts may be load-sensitive. "Steps" come from each harness's
+own log and are not exactly the same unit. nexo, Codex and Claude Code report input including cached
+tokens; for Hermes and dsh the cached and cache-write tokens were added. One model, one day, 16 tasks, one
+attempt: nothing here ranks the harnesses. To repeat it, run Harbor 0.25.0 with one container per trial on the
+16 tasks: hf-model-inference, kv-store-grpc, chess-best-move, code-from-image, cancel-async-tasks,
+count-dataset-tokens, circuit-fibsqrt, extract-elf, fix-git, git-multibranch, configure-git-webserver,
+log-summary-date-ranges, db-wal-recovery, build-pmars, adaptive-rejection-sampler, largest-eigenval.
+
+## Live paired runs
+
+The last paid paired run of the curator against plain: `deepseek-flash`, nexo `575380d` (before the epoch
+change), 2026-11-09, 5 tasks, stopped by its 4 $ budget at 12 of 19 repetitions (60 pairs, 4.002 $).
+The target set for it (H1) is not met:
+
+| measure | curator against plain | earlier paired run (H1-bis) |
+|---|---|---|
+| steps, ratio | 1.163 (plus or minus 0.080) | 0.992 (0.028) |
+| cost | +36.8 % | -0.9 % |
+| score | -6.67 points | -1.05 points |
+
+All of it comes from one task, `vuln-hunt` (plain 8.2 steps and 0.92 score at 0.404 $; curator 19.2 steps and
+0.58 at 0.877 $). The other four tasks sit at 0.85 to 1.05 times the steps with score 1.00 in both arms.
+At the run's end the curator also had 59 `done` and 1 `max_steps` stops against 60 `done` and 1 budget stop
+for plain. This run predates the cost rewrite, the 95 % ceiling, the index and the epochs; those were
+measured only in the cold tests above. A live run with them is pending (Unknown).
+
+## Theory: what a context is used for
+
+The figures in this section and the next two were measured with the earlier implementation, on recorded
+sessions, before 2026-11-09 (no commit; the exact date is not kept here). They are bounds and mechanisms,
+not a description of today's tuning.
 
 Once a session is over its future is known, so the ideal context at each step holds exactly what is
 used then or later (the counterpart of Belady's optimal cache policy). Use is traced lexically: an
@@ -50,73 +222,19 @@ recorded sessions under hindsight policies showed two things.
 | floor: what each call uses, all of it already cached | – | 81.6% |
 
 Three facts follow, and the design rests on them: removing from the end is free and from the middle is
-not; every goal of a conversation can have its own cached prefix; and within a goal the question is
+not; every goal of a conversation can have its own cached prefix (the default `epoch=1` no longer
+splits by goal); and within a goal the question is
 "needed by this request", since what a later request needs can be appended then, where it costs least.
 
-## D against the earlier engine
+## Theory: where the optimisation stops
 
-B is the earlier engine (paragraphs scored by a learned model under a fixed cap); D organises the
-conversation by goal and by request (threads of turns, described below). Replay on recorded and on
-synthetic sessions of five unrelated goals; "missed" is the share of details the agent took from older
-context that were not in what it was sent:
-
-| sessions | B | D |
-|---|---|---|
-| recorded (one project, 9 segments, 745 calls) | 32.3% saved, 4.98% missed | **34.3% saved, 4.78% missed** |
-| synthetic (8 sessions × 5 goals, 1,043 calls) | 26.0% saved, 14.76% missed | **29.6% saved, 8.32% missed** |
-
-The learned link head that decides whether a request continues an earlier thread ranks held-out pairs
-better than a fixed prior (AUC 0.856 against 0.712 on real pairs, 0.937 against 0.905 on synthetic
-ones). A fixed 60k cap saved more than no cap (21% against 16% of effective cost) but lost details at 9%
-of the steps against 1%: the cap must follow the session, which is what the economic order quantity does.
-
-## A simulated agent
-
-Replaying says what the agent would have been sent, not what it would have done without a detail it
-needed. The simulator answers that: the agent does the recorded work step by step, and when its context
-lacks something its next action uses, it spends a call getting it back (reading the file again, running
-the command again). Every request is priced with the prefix cache. Settings were chosen on training data;
-everything below is on segments the model was not trained on (1,419 calls) and synthetic sessions
-100–105 (793 calls). Saving net of every recovery call; ×: how much sooner the work ends.
-
-| simulated (saving; time) | recorded, 5-min cache | recorded, no expiry | 5 goals, 5-min cache | 5 goals, no expiry |
-|---|---|---|---|---|
-| B: the earlier engine | 37.4%, ×1.02 | 28.9%, ×0.99 | 14.6%, ×0.83 | 14.6%, ×0.83 |
-| D before the ledger (a 40k view) | 47.6%, ×1.03 | 33.0%, ×1.01 | 42.2%, ×1.12 | 47.3%, ×1.15 |
-| the same with a 10k view, no ledger | 53.6%, ×0.96 | 46.1%, ×0.93 | 43.5%, ×1.09 | 46.6%, ×1.10 |
-| **D** (a 10k view, 7k of it the ledger) | **61.5%**, ×1.09 | **56.0%**, ×1.06 | 40.2%, ×1.06 | 42.6%, ×1.07 |
-| D with an oracle ledger (same budget, perfect prediction) | 71.8%, ×1.17 | 67.4%, ×1.14 | 48.5%, ×1.14 | 50.8%, ×1.15 |
-
-(`experiments/final.json`; segment by segment in `experiments/segments.json`.) The saving grows with the
-session: D saves 42–68% on the five segments of over 40 calls and between −34% and +29% on the nine
-review-agent sessions of 11–52 calls, where a rewritten view costs more than the few re-reads it spares.
-On short synthetic sessions that switch between five unrelated goals the ledger costs 2–5 points. These
-figures are for the previous D. The default was retuned since (`eoq=16000`, `protect=12`, and the rules,
-notes and pin blocks) because a long agentic run lost its working set at every rewrite with a 10k view.
-
-The ledger holds more of what the work needs in fewer tokens:
-
-| context of each step | tokens (mean) | names it needed that it held | needed names per 1k tokens |
-|---|---|---|---|
-| everything (what the harness sends) | 133,898 | 100% | 0.033 |
-| D before the ledger (40k view) | 45,249 | 86% | 0.083 |
-| the same with a 10k view, no ledger | 23,997 | 65% | 0.119 |
-| **D** | **25,166** | **93%** | **0.162** |
-| D with an oracle ledger | 23,732 | 99% | 0.182 |
-
-That is **5.0 times as many needed names per token** as the full history, and 362 calls spent reading
-back instead of 499 with the 40k view (944 with a 10k view and no ledger; the oracle: 56).
-
-## Where the optimisation stops
-
-On the unseen recorded segments, 5-minute cache (no expiry in brackets):
+Measured with the earlier implementation on unseen recorded segments, 5-minute cache (no expiry in brackets):
 
 | step | saving | what closes the gap | who can close it |
 |---|---|---|---|
 | sending everything | 0% | | |
-| B, the earlier engine | 37.4% (28.9%) | goals, EOQ, the ledger | done: D |
-| **D** | **61.5% (56.0%)** | | |
-| D with a perfect predictor of what comes back | 71.8% (67.4%) | foresight of *which* names: the ranking saturates at AUC 0.75 | nobody with the conversation alone |
+| the earlier engine at its best (a 10k view with a ledger) | 61.5% (56.0%) | | |
+| that engine with a perfect predictor of what comes back | 71.8% (67.4%) | foresight of *which* names: the ranking saturates at AUC 0.75 | nobody with the conversation alone |
 | clairvoyant that quotes lines, sends what arrives whole | 81.6% (79.3%) | foresight of *when*: each line at the request that uses it | nobody without the next request |
 | floor for that family | 84.0% (81.8%) | the prefix cache's last two points | the provider |
 | clairvoyant that also cuts each block at arrival and pings (reachable) | 89.3% (88.1%) | foresight of what an arriving block will be needed for | nobody without the whole future |
@@ -138,12 +256,10 @@ summarising curators too: 91.0%.
 **What is left is foresight.** Deciding what to hold in a bounded view is online paging, and every
 deterministic online paging algorithm is at least `k`-competitive (Sleator and Tarjan, 1985); the rewrite
 decision is rent or buy, where no deterministic rule beats a factor 2 (Karlin, Manasse, Rudolph and
-Sleator, 1988). On these recordings the value of foresight is all-or-nothing per request: an oracle that
-knows the future of 25%, 50%, 75% or 100% of the names gives 61.8%, 63.1%, 65.7% and 71.4% against D's
-60.8% in the same run (`experiments/foresight.json`), and in that engine no model of any shape ranked the
-names better than its fixed rule (k-nearest neighbours 0.749, logistic regression 0.736, the rule 0.775);
-nexo's shipped predictor ranks whole tool steps instead of names, on more data, and does better (next
-section). Recalling,
+Sleator, 1988). On those recordings the value of foresight was all-or-nothing per request, and in that engine no model
+of any shape ranked the names better than its fixed rule (k-nearest neighbours 0.749, logistic
+regression 0.736, the rule 0.775); nexo's shipped predictor ranks whole tool steps instead of names, on
+more data, and does better (next section). Recalling,
 just in time, lines that share a name with what has just arrived lost at every budget (unseen data,
 61.8% without, 58.4% and 51.2% with 300 and 1,200 tokens per request).
 
@@ -152,10 +268,11 @@ just in time, lines that share a name with what has just arrived lost at every b
 curator makes the agent more than ×1.09 faster (Amdahl); finishing sooner needs fewer calls and shorter
 answers.
 
+
 ## The need predictor and the hindsight floor
 
-These figures are from nexo as shipped (`nexo-curator` at the commit that added the predictor), not
-from the earlier engine. The data is 656 nexo sessions recorded whole and replayed cold through the
+These figures are from nexo (`nexo-curator` at the commit that added the predictor, before the epoch
+rewrite of 2026-11-09), not from the earlier engine; the replay was not repeated since. The data is 656 nexo sessions recorded whole and replayed cold through the
 curator with its default settings and a 40-step limit per request (`examples/replay.rs --bank`), split
 by length: xs up to 5 requests (222 sessions), s up to 20 (167), m up to 80 (185), l up to 300 (63),
 xl up to 1000 (14), xxl over 1000 (5). The recordings are not published. The measure of harm is a
@@ -201,164 +318,15 @@ oracle that keeps exactly the steps used later; 936 / 1279 / 1644 against 568 in
 against 193 in xl; 72 / 173 / 174 against 42 in xxl. At a quarter of the cap the predictor is level with
 the oracle in xl and xxl (505 against 540, 166 against 164).
 
-**The floor.** At the default cap the same oracle loses 0 / 11 / 105 / 100 / 43 / 52 replies in xs to
-xxl, for 229.3 $ against the curator's 78.8 $: it breaks the cache at every request. What separates the
-curator from it after the change is almost all in the first-in-first-out window that drops the oldest
-material when the view passes the cap: of the words lost in xl and xxl sessions, 4673 and 5834 leave
-through that window against 567 and 564 through closing (1890 and 2992 before the change). Half of the
-window's losses are the assistant's own earlier messages, half are tool results.
-
 ![Replies that lost a word they needed, by session length: before, now, and the hindsight oracle](img/belady-gap.svg)
 
-**Pricing the window by need did not help.** The next step was obvious: weigh the steps at the front of
-the window with the same predictor and keep the ones worth their rent. It was pre-registered as neutral
-and measured on the 19 xl and xxl sessions against the shipped build: lost replies +0.9% in xl and
-−0.2% in xxl, cost and uncached tokens within 0.3%, better in 3 sessions, worse in 11, the same in 5;
-with the ever horizon instead, +1.2% and +0.5% lost at +0.4% cost. The 4-parallel replay of the xxl
-sessions took 265 s against 282 s. What the rule kept, `live` or the next close dropped a few calls
-later (words lost by the window fell from 5596 to 5549, by the live rule rose from 911 to 1011). The
-reason is the price: at the window's front a step's chance of reuse is at most 0.45, its mean size
-about 900 tokens, and four calls of rent already exceed what one recovery call would cost. The change
-was not kept. Where the remaining gap sits is now the window itself: the oracle keeps 2.9 times the
-dollars' worth of text to lose 50 replies where the curator loses 2700 in xxl, so under the price of
-one call per lost reply the window is close to the best a curator can do without knowing the next
-request.
+## Earlier build: compaction against the curator
 
-## Live on DeepSeek
+The long-session tables below come from an earlier build of the curator (before epochs and the
+ceiling; commit not recorded here). They are the last measurements of these four arms and the live
+side of the comparison with compaction; they were not repeated.
 
-`deepseek-chat` through its Messages endpoint, the benchmark's reference agent, the whole history
-(`full`) against D; sums over tasks of per-task means (`experiments/live/summary.json`):
-
-| tasks | runs per arm | solved: full / D | calls | time | tokens sent | cost |
-|---|---|---|---|---|---|---|
-| 3 short (`early-detail`, `noisy-log`, `plan-change`) | 6 | 6/6 · 6/6 | −5% | −5% | −56% | −46% |
-| `long-haul` | 2 | 2/2 · 2/2 | −7% | −10% | −35% | −28% |
-| `marathon` | 2 | 2/2 · 1/2 | +6% | −4% | −57% | −38% |
-| **all** | 10 | **10/10 · 9/10** | **+1%** | **−5%** | **−56%** | **−38%** |
-
-With the **efficiency directives** (one fixed paragraph at the end of the system prompt: batch
-independent calls, read only what is needed, check once, close a request in three lines saying what
-changed and why), four interleaved arms (`experiments/live/directives.jsonl`):
-
-| arm | solved | calls | time | tokens sent | cost |
-|---|---|---|---|---|---|
-| full | 10/11 | 112 | 278 s | 3.65M | $0.138 |
-| D | 9/10 | −1% | −11% | −60% | −42% |
-| **D + directives** | 8/11 | **−23%** | **−41%** | **−72%** | **−59%** |
-| full + directives (no marathon) | 8/8 | −5% | −12% | −15% | −9% |
-
-Exact permutation tests: D + directives cut time on every task (−8% to −47%; p < 0.001 relabelling the
-runs, p = 0.031 flipping the sign of the per-task differences) and cost by 59% (p < 0.001 / 0.031); D
-alone cuts cost by 42% (p = 0.005 / 0.094) but does not separate from zero in time. Every failure, in
-any arm, is the same last question of the long tasks ("which modules did you change to make the tests
-pass"), which turned out to be ambiguous: four of the six recorded failures listed, truthfully, every
-module changed, with the three expected among them.
-
-**At other prices.** The saving in dollars depends most on the price of a cached token
-(the price ratios as published in October 2026):
-
-| price of a cached token, a cache write, an output token | D | D + directives |
-|---|---|---|
-| DeepSeek V3.2 list (the test): 0.1, 1, 1.5 | −42% | −59% |
-| cached at 1/2, output ×4 | −55% | −69% |
-| cached at 1/4, output ×4 | −49% | −65% |
-| cached at 1/10, output ×8 | −35% | −57% |
-| cached at 1/10, writes ×1.25, output ×5 | −35% | −56% |
-| cached at 1/20, writes ×1.25, output ×5 | −25% | −49% |
-| cached at 1/40, writes ×1.25, output ×5 | −16% | −43% |
-
-The cheaper the cache, the less a curator saves in money; with the directives D saves 40–70% at every
-price, because fewer calls and less output are savings at any price.
-
-**New tasks, and the marathon again.** Six tasks run once per arm (`experiments/live/new-tasks.jsonl`):
-D + directives passed 5/6, the full history 4/6. On the marathon's closing question, after the map of
-moved-out requests learnt to name the files changed and the tests that failed and then passed, and the
-topic cards to carry the same account (`experiments/live/marathon-map.jsonl`):
-
-| arm | passed | requests | dollars per run |
-|---|---|---|---|
-| full history (earlier runs) | 3/3 | | 0.08–0.14 |
-| D + directives, first map | 2/7 | 57.7 | 0.049 |
-| D + directives, `eoq=20000` | 0/2 | 67.0 | 0.058 |
-| D + directives, + inline scripts and counts | 2/6 | 53.5 | 0.047 |
-| D + directives, + topic cards | **10/15** | 51.3 | 0.045 |
-
-Of the five failures with topic cards, three come from the agent cutting the first test run with
-`tail -40` (no history holds a name never shown), one from a write through a helper function (handled
-since) and one from a dropped connection (retried since). 10/15 against 3/3 gives p = 0.35: no loss is
-shown, and none is ruled out.
-
-## Measured in nexo
-
-**Replay of the public fixtures.** The 7 whole-history recordings in
-`nexo/crates/nexo-curator/tests/fixtures/` (`bench-*-full*.jsonl`), replayed offline through the curator
-with its default settings (`examples/replay.rs`: what the curator would have sent at each recorded
-request; tokens estimated at four characters per token):
-
-| fixture | requests | whole history | curator | change |
-|---|---|---|---|---|
-| `bench-realm100-full` | 100 | 3.53M | 3.59M | +1.5% |
-| `bench-marathon4-full` | 81 | 2.97M | 1.51M | −49.0% |
-| `bench-marathon-full` | 55 | 1.63M | 0.86M | −47.6% |
-| `bench-dir-full-4` | 22 | 204k | 187k | −8.3% |
-| `bench-long-full-1` | 21 | 152k | 127k | −16.5% |
-| `bench-results-full-4` | 5 | 21.7k | 21.7k | 0.0% |
-| `bench-results-full-0` | 8 | 6.0k | 6.4k | +6.8% |
-| **all** | | **8.52M** | **6.30M** | **−26%** |
-
-Reproduce one with `cargo run --release -p nexo-curator --features sim --example replay -- crates/nexo-curator/tests/fixtures/<file>.jsonl --quiet`
-(from `nexo/`; the `total over all requests` line). The replay cannot show how the model would have
-reacted to the smaller view; only a live run does.
-
-Not reproducible from this repository (the recordings are not published): on a scripted 37-call session
-through an OpenAI-compatible endpoint, the whole history sends 2.78M tokens and the curator 0.90M (−68%);
-with cached input at a tenth of the price, −42% of the input cost. Replaying 28 recorded nexo sessions of
-8 to 52 calls: −42% of the tokens sent. The engine scales with
-the history: on conversations built from real sessions (measured with the earlier reference
-implementation), one call's view takes 5 ms median / 19 ms p95 at 1M tokens of history (0.1 GB of
-memory), 6 / 23 ms at 10M (0.24 GB), 9 / 30 ms at 25M (0.5 GB) and 11 / 35 ms at 50M (0.9 GB).
-
-## Threats to validity
-
-- **One project, one person.** The recorded data is this project's own development plus synthetic
-  sessions written by its author. The protocol tunes on part of it and reports on the rest, but the rest
-  is the same project.
-- **One model, few runs.** The live test is `deepseek-chat` on tasks written by the author, two or three
-  runs per cell; the exact tests are the honest statement of what separates from zero.
-- **A lexical measure.** A need is a name that appears in the next action; influence without copying is
-  not counted. Token figures are estimated at four characters per token, low by a median factor of 1.22
-  against DeepSeek's counts, so a simulated 62% is 58–66% in the provider's tokens; the dollar figures
-  of the live runs use the server's own counts.
-- **Comparisons within one run.** The recording grew while it was measured, so only candidates run
-  together, on the same data, are compared.
-
-## One long run, step by step (nexo, 100 steps)
-
-The `realm` task (a stripped game binary whose coin rule the agent must rebuild), `deepseek-chat`,
-one run per arm, `--max-steps 100`, the nexo curator as shipped:
-
-| arm | score | cost | wall time | tokens sent (uncached + cached) | output | tool errors |
-|---|---|---|---|---|---|---|
-| plain (whole history) | 1.00% | $0.2659 | 521 s | 157k + 7.63M | 19.7k | 7 |
-| **curator** | 1.00% | **$0.1703 (−36%)** | **213 s (−59%)** | 202k + 3.84M | 15.0k | 2 |
-
-Neither arm solves the puzzle in 100 steps (the earlier 1000-step runs put the compact arm at 20.75%);
-at the same point of the work the curator spends a third less and runs in less than half the time.
-
-Replaying today's curator offline on a recorded whole-history session that is in the repository
-(`nexo/crates/nexo-curator/tests/fixtures/bench-marathon4-full.jsonl`, 81 requests; `examples/replay.rs`, see
-[`usage.md`](usage.md)) shows what it would have sent at each request:
-
-![tokens per request](img/tokens-per-step.svg)
-
-Whole session: 2.97M tokens plain, 1.51M curated (**51% kept**); at the last request 60k against 30k.
-The dips are rewrites (requests 18, 40, 47 and 73). In 5 of the 80 replies the model used a word that
-was no longer in the view (it stays on disk and can be read back). On the 100-step
-`bench-realm100-full` recording the curator finds no cut worth breaking the prompt cache for and sends
-it whole (+1.5%, table above). The replay cannot show how the model reacts to the notes and nudges;
-only a live run does.
-
-## A heavy session: compaction at 100k and 200k against the curator
+### A heavy session: compaction at 100k and 200k against the curator
 
 `marathon-heavy` (the marathon with twenty times the examples, so the history passes 200k tokens
 without any policy), `deepseek-flash`, temperature 0, three runs per arm, `--max-steps 200`.
@@ -379,7 +347,7 @@ runs stayed under its limit, so it ran as plain with fewer steps. The curator wa
 cheaper than plain in every run (−45% on the mean) and than compaction at 100k in every run; against
 compaction at 200k the means differ by less than the runs do.
 
-## A noisy session: the same four arms
+### A noisy session: the same four arms
 
 `marathon-noisy` (the heavy marathon with a noisy build script and long CI logs), `deepseek-flash`,
 temperature 0, two runs per arm, `--max-steps 200`. The second compaction-at-100k run is from a later
@@ -394,7 +362,7 @@ build (a third run of every arm was stopped by hand and is left out).
 
 ![marathon-noisy, two runs per arm](img/noisy.svg)
 
-## Both sessions together
+### Both sessions together
 
 Five runs per arm (three heavy, two noisy):
 
@@ -410,9 +378,24 @@ Five runs per arm (three heavy, two noisy):
 Five runs are few: the curator's lead in cost over compaction at 200k is smaller than the spread
 between runs. What holds in every run is that it never lost the task and never sent more than 105k.
 
-## A pasted-log session
+### A pasted-log session
 
 `marathon-pasted` (the user pastes long logs into the messages), one run per arm. The curator solved
 it ($0.769, largest request 213k); compaction at 200k did not ($0.628, three summaries). A second
 curator run on a later build did not solve it ($0.348): the hidden test did not compile against the
 interface it wrote. One run each cannot rank the arms; it is listed so no result is left out.
+
+## Threats to validity
+
+- **One project, one person.** The recorded data is this project's own development plus synthetic
+  sessions written by its author.
+- **One model, few runs.** The live tests use DeepSeek models on tasks written by the author, or on a
+  public subset of 16 tasks with one attempt. The intervals say what separates from zero.
+- **A lexical measure.** A need is a name that appears in the next action; influence without copying is
+  not counted. Token figures in replays are estimated at four characters per token, low by a median factor
+  of 1.22 against DeepSeek's counts in the earlier engine's measurement; dollar figures of live runs use
+  the server's own counts.
+- **Cold tests are generated.** The scale session is synthetic: it shows that facts reach the call and the
+  prefix holds, not how a model answers with them.
+- **Comparisons within one run.** The code moved while it was measured, so only candidates run together,
+  on the same data, are compared. The race binary predates the epoch change.

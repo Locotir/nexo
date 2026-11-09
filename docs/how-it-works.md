@@ -3,8 +3,12 @@
 
 nexo keeps the whole conversation; the curator decides the **view**, what the next model call is sent.
 Each message is processed once, when it arrives, and nothing is recomputed per call. The code is in
-`nexo/crates/nexo-curator` (`engine.rs` the view, `goal.rs` the threads, `ledger.rs` the ledger,
-`mechanical.rs` the squeeze), and its learned weights ship in `nexo-curator/data/model.json`.
+`nexo/crates/nexo-curator` (`engine.rs` and `engine/` the view, `goal.rs` the threads, `ledger.rs` the ledger,
+`mechanical.rs` the squeeze), and its learned weights ship in `nexo-curator/data/model.json`. The
+principles it keeps, in short: it is never switched off; no sawtooth and no lossy summary; every fact the
+call needs goes into the call; the cache prefix is stable; the view may inflate up to about 99 % of the
+window for a call that needs it (ceiling 95 %); not forgetting ranks above cost. Details and the code
+paths are in [`context-curator.md`](context-curator.md).
 
 - **Squeeze at birth** (`birth=squeeze`). The output of a process (a command, an unknown tool) is squeezed
   mechanically the moment it arrives, so the squeeze never breaks the cache later: ANSI codes and progress
@@ -14,40 +18,56 @@ Each message is processed once, when it arrives, and nothing is recomputed per c
   line there is content (an unrolled loop, a row of a table), and in a measured run folded repeats in an
   assembly file cost the answers that depended on them. On real output: `find` −60%, `grep -rn` −45%,
   `ls -la /usr/bin` −94%, `dpkg -l` −90%, `ps aux` −26%.
+- **Epochs** (`epoch=1`, with `target=10000`). The view is rewritten only at an epoch. Between two the
+  view only grows at its end, so the provider's cache holds all of it but the newest request. An epoch
+  comes when keeping the view's growth costs more than sending a new prefix once, or when the view
+  reaches the ceiling (below). At an epoch everything that waited happens in one batch: answered requests
+  close, dead outputs leave, the view is cut to the target. A new message from the person does not start
+  an epoch. See [`context-curator.md`](context-curator.md) for the rule and a diagram.
+- **The cost rule** (`fire_point` in `engine/window.rs`). Keeping a token costs `ρ` of an uncached token
+  on every later call (`ρ` is the provider's cache price over its input price when the host gave it, else
+  `ratio=0.1`). A rewrite that lands on `L` tokens sends that prefix uncached once, at
+  `margin × L × (1 − ρ)`, `margin=2.25`. It starts when the extra tokens times `ρ` times the calls still to
+  come (`ahead=0.25` of the calls so far, at least 4) exceed that. Past 100k tokens each token also costs
+  0.05 of an uncached token per call, a heuristic for the quality a long context loses. The rewrite lands
+  on `target`, the oldest results the agent is not working from first.
+- **The ceiling.** A view never passes 95 % of the model's window (the host gives the window less the reply,
+  scaled by the token ratio learned from the provider). Past it the oldest sticky results leave too, as
+  pointers, down to 90 % of the ceiling. Without a known window `hard` is the ceiling (0: none).
+- **The EOQ cap** (`eoq=16000`). A rewrite sends the `K` tokens that stay anew; between rewrites the view
+  grows by `g` tokens per call and each call re-reads it at `ρ`. The cost per call is least at
+  `Q* = √(2(1 − ρ)K g/ρ)`, the economic order quantity, and the cap is `K + Q*`. With a `target` the cost
+  rule above decides instead, unless the first message and the protected tail alone do not fit the target:
+  then this cap prices the cut.
 - **Threads and cards.** A turn is a request of the person and the agent's work on it. A new request
   joins the thread of the earlier turn it most likely draws on, `p(n → j) = σ(f)` from shared words and
-  names, recency and the request's length, if that reaches `link` (0.5); otherwise it opens a thread. The
-  view is the anchor (the first message), the active thread's turns, and one frozen card per other thread
-  (what was asked, done and changed). Threads only grow at the end, so each keeps its cached prefix.
-- **The adaptive floor (EOQ cap).** A rewrite sends the `K` tokens that stay anew; between rewrites the
-  view grows by `g` tokens per call and each call re-reads it at the cached price `ρ`. Rewriting after `Q`
-  tokens costs, per call, `ρ·(head + K + Q/2) + (1 − ρ)·K·g/Q`, least at `Q* = √(2(1 − ρ)K g/ρ)`, the
-  economic order quantity. With `eoq=K` the cap is `K + Q*`, from the growth measured in the session, and
-  a rewrite over the cap goes down to `floor × cap` with the floor set to `K / cap`: a fast-growing
-  session gets a higher cap and a lower floor, so the view still lands at `K` after a rewrite.
-- **Batched cuts.** Under the cap, paragraphs leave by rent or buy: a cut is made when what it saves in
-  re-reading pays for sending the rest again uncached. The check runs only when it is due (every 4,000
-  new tokens or every 4 steps, `check` and `every`), so cuts come in batches instead of breaking the
-  cache a little at every call.
-- **Closing by need** (`close=2`, `rent_close` in `engine.rs`). Once the person's next request arrives,
-  the answered one keeps its request and its reply; each tool step made for it (a call and its output)
-  is weighed on its own. Keeping a step costs rent, `ratio × its tokens` on every call to the horizon
-  (`ahead=0.25` times the calls so far, at least 4, never past the point where the cap would take it for
-  free). Against that stands what the step is worth: the chance a later reply still draws on it, times the
-  price of the call that would bring it back. A step worth more than its rent stays; the others leave in
-  one batch, the cut priced as in the rent rule. The chance comes from the need predictor in
-  `data/model.json`: five logistic heads, one per horizon (used again within 1, 4, 16 or 64 calls, or
-  ever), over 43 features of the step's output (its size, age, how many of its words no later output
-  holds, whether the same file or program was read or run again and how that went, whether the request
-  names it, whether its thread is active), fit on 452 recorded sessions (364,786 rows) and tested on 204
-  others: at the 4-call horizon log loss 0.205 against 0.325 for the base rate, AUC 0.90. What a step came
-  to be used for is traced lexically in hindsight (a reply that repeats one of its distinctive words). The
-  predictor governs closing only. The window that drops the oldest messages when the view is past the cap
-  stays first in, first out: pricing the steps at the window by the same rule was measured on the 19
-  longest recorded sessions and changed nothing (replies that lost a word +0.9% and −0.2%, cost and
-  uncached tokens within 0.3%). At the front of the window a step's chance of reuse is at most 0.45, and
-  four calls of rent already outweigh that for anything over a few hundred tokens. Figures in
+  names, recency and the request's length, if that reaches `link` (0.5); otherwise it opens a thread. With
+  `epoch=0` the view is the anchor, the active thread's turns and one frozen card per other thread (what
+  was asked, done and changed), the split being a priced decision. With the default `epoch=1` no split is
+  made and no card is built.
+- **Closing by need** (`close=2`, `rent_close` in `engine/idle.rs`). At an epoch, the answered request
+  keeps its request and its reply; each tool step made for it (a call and its output)
+  is weighed on its own. Keeping a step costs rent, `ρ × its tokens` on every call to the horizon
+  (`ahead=0.25` times the calls so far, at least 4). Against that stands what the step is worth: the chance
+  a later reply still draws on it, times the price of the call that would bring it back. A step worth more
+  than its rent stays; the others leave in one batch, the cut priced as in the cost rule. The chance comes
+  from the need predictor in `data/model.json`: five logistic heads, one per horizon (used again within
+  1, 4, 16 or 64 calls, or ever), over 43 features of the step's output (its size, age, how many of its
+  words no later output holds, whether the same file or program was read or run again and how that went,
+  whether the request names it, whether its thread is active). What a step came to be used for is traced
+  lexically in hindsight (a reply that repeats one of its distinctive words). Figures in
   [`results.md`](results.md#the-need-predictor-and-the-hindsight-floor).
+- **Standing facts and the index** (`standing.rs`, `index.rs`, `facts.rs`). Two things go in the tail of
+  the last message, built again for each call, so the cached prefix is not touched. The standing facts are
+  lines of the session that override a default (a port, a path, a folder not to touch), kept by the words and
+  paths they govern and shown as `Standing:` lines when an action supposes the default. The index holds
+  every line of the history by its keys (words, numbers, paths, versions, identifiers); the lines the
+  person's request names that the view does not hold whole are shown as a `Recall` block, the rarest keys
+  first. A request that names more than the normal tail holds gets its lines up to 99 % of the window for
+  that call only.
+- **What a request needs that left** (`named`, `recall`). A step that read a file the request names stays
+  or comes back as text at the end of the view; the model can also ask for a message by name
+  (`recall m00042`).
 - **The anchor.** After a rewrite the anchor holds, in `[curator]` blocks, what left the view, each block
   within its budget in tokens (0 turns it off):
   - **rules** (`rules=2000`): the person's standing instructions, whole, from lines with cues such as
@@ -100,7 +120,7 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 
 | setting | default | what it sets |
 |---|---|---|
-| `eoq=K` | `16000` | the view after a rewrite, in tokens; the cap is `K + Q*` |
+| `eoq=K` | `16000` | the view after a rewrite, in tokens, for the EOQ cap `K + Q*`; used when the first message and the protected tail do not fit the target |
 | `ledger=N` | `6000` | the ledger, at most what the blocks leave of 80% of the view's target |
 | `rules=N` | `2000` | the person's standing instructions and `Rule:` lines, whole |
 | `notes=N` | `3000` | the agent's `Finding:` and `Plan:` lines |

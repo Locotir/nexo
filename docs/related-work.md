@@ -140,11 +140,11 @@ Code documentation (3, 4). This is the gap the curator's cost model fills.
 
 47. [NPR] Harris, F. W. (1913). *How Many Parts to Make at Once*. Factory, The Magazine of Management
     10(2):135–136, 152; reprinted in Operations Research 38(6):947–950 (1990).
-    https://doi.org/10.1287/opre.38.6.947 — the square-root formula the cap of the view follows.
+    https://doi.org/10.1287/opre.38.6.947 — the square-root formula of the cap the curator prices a rewrite with when the first message and the protected tail do not fit the target; otherwise the rewrite follows the rent-or-buy rule of section "Online algorithms" (an epoch starts when keeping the growth costs more than sending a new prefix once).
 48. [PR] Erlenkotter, D. (1990). *Ford Whitman Harris and the Economic Order Quantity Model*. Operations
     Research 38(6):937–946. https://doi.org/10.1287/opre.38.6.937.
 49. [NPR] Zipkin, P. H. (2000). *Foundations of Inventory Management*. McGraw-Hill — the sensitivity of the
-    cost near the optimum (flat), which is why the cap's plateau is expected.
+    cost near the optimum (flat), which is why a rewrite point that is a little off costs little.
 
 ## Submodular maximisation under a budget (the ledger)
 
@@ -209,3 +209,10 @@ Code documentation (3, 4). This is the gap the curator's cost model fills.
     https://arxiv.org/abs/2407.19825.
 73. [NPR] Xu, S., Xie, W., Zhao, L., He, P. (2025). *Chain of Draft: Thinking Faster by Writing Less*.
     https://arxiv.org/abs/2502.18600.
+
+## Retrieval by rare keys (the index)
+
+74. [PR] Spärck Jones, K. (1972). *A statistical interpretation of term specificity and its application in
+    retrieval*. Journal of Documentation 28(1):11–21 (DOI unconfirmed) — inverse document frequency: the
+    curator's index weighs a key by `ln(lines / holders)`, so a number or a name few lines hold decides which
+    lines of the history a request brings back, and a word every line holds decides nothing.

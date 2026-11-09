@@ -87,6 +87,11 @@ simulated agent of an earlier, unpublished implementation.
   - the proved **lower bound** on any policy;
   - the **share of the oracle saving captured**, which is objective O7 of the
     proposal.
+- **Cold tests (no model)**: the curator's view is scored on generated sessions with questions that need
+  facts from far back (`examples/scale.rs`, cold mode). *Recall* is the share of questions whose needed
+  lines are in the view; *standing facts* the share of tasks whose supposed default has its fact in the
+  view; *prefix* the median share of a request's prefix equal to the previous request's. These do not
+  need the §2 interval: they are counts, reported with the commit.
 - **Misses**: the share of names a step needed from older context that its
   context did not hold (coverage), and those names per 1,000 tokens (density).
 - The **quality gate** is frozen on the report segments.
@@ -136,16 +141,25 @@ verdict.
 
 ## 8. Where the evidence stands (pilot, DeepSeek)
 
+This pilot is the last run scored under §2 and §3. It was measured with the earlier implementation, before
+2026-10-30 (no commit), on a different curator tuning from today's. Later evidence is in
+[`results.md`](results.md): a paired live run at `575380d` on 2026-11-09 that did not meet its target, and
+a 16-task harness race that ranks nothing. Neither was scored by §2.
+
 | Arm against `full` | Score Δ [90%] | Verdict on §2 | Dollars [90%] |
 |---|---|---|---|
 | `D` (5 tasks, 10 runs) | −10 pts [−20, 0] | **not yet shown** | −42% [−52, −27] |
 | `D-no-ledger` (4 tasks, 8 runs) | 0 pts [0, 0] | non-inferior (small sample) | −35% [−47, −20] |
 
-`D` is clearly cheaper. Whether it is as good is still open: more runs are
-needed, which §7 says.
+In that pilot `D` was cheaper. Whether it was as good was not shown: more runs were needed, which §7
+says. Today's default is not `D` of the pilot, so the pilot says nothing about it.
 
 ## 9. Change log
 
+- **2026-11-09.** Adds the cold tests of §5, and the harness race, scored apart. In the race every arm gets
+  one valid attempt per task, pass rates carry Wilson 95 % intervals, and no ranking is claimed when
+  intervals overlap. It was not pre-registered under §6, so it is reported as a comparison, not a decision.
+  The pilot of §8 is marked as the earlier engine's.
 - **2026-10-28.** First version.
   - Adds partial credit to realm and to the three new tasks.
   - Adds the non-inferiority margin of ten points.
