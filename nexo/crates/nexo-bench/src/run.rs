@@ -74,6 +74,9 @@ pub struct Record {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub compact_at: Option<u64>,
+    /// The context window forced on every arm (`--window`), none: the model's own. With it `plain` runs as
+    /// `compact` capped by the window, so it summarises when the window fills.
+    pub window: Option<u32>,
     /// 0..1.
     pub score: f64,
     /// Every check passed.
@@ -162,7 +165,18 @@ pub fn config(bench: &Bench, arm: &Arm) -> Config {
     c.context.curator_spec = arm.curator_spec();
     c.context.reader_at = arm.reader_at();
     c.context.compact_at = arm.compact_at();
+    // a window forced by the bench is one the provider never enforces: a `plain` arm would simply go past it,
+    // so it compacts when the window fills, as nexo does when a provider refuses a request as too long
+    if forced_window(bench).is_some() && arm.policy == "plain" {
+        c.context.policy = "compact".into();
+        c.context.compact_at = u64::MAX;
+    }
     c
+}
+
+/// The window `--window` forced on the model, if any (the bench provider holds no other).
+pub fn forced_window(bench: &Bench) -> Option<u32> {
+    bench.provider.context_window.get(&bench.model).copied()
 }
 
 /// What one run does: the turns the agent gets in a prepared working directory, and how.
@@ -319,6 +333,7 @@ pub fn record(
         max_tokens: bench.max_tokens,
         temperature: bench.temperature,
         compact_at: (arm.policy == "compact").then(|| arm.compact_at()),
+        window: forced_window(bench),
         score,
         ok,
         detail,
@@ -545,6 +560,7 @@ pub(crate) fn sample(task: &str, arm: &str, score: f64, cost: f64) -> Record {
         max_tokens: None,
         temperature: None,
         compact_at: None,
+        window: None,
         score,
         ok: score == 1.0,
         detail: String::new(),
@@ -634,5 +650,39 @@ mod tests {
         assert_eq!(c.context.curator_spec, "");
         assert_eq!(config(&bench, &Arm::parse("compact").unwrap()).context.compact_at, crate::arm::COMPACT_AT);
         assert!(COMMIT.len() >= 7, "{COMMIT}");
+    }
+
+    #[test]
+    fn a_forced_window_makes_plain_summarise_at_the_window_and_leaves_the_curator_alone() {
+        let mut bench = Bench {
+            provider: ProviderConfig::new("anthropic", "https://example.invalid", Some(KEY_ENV)),
+            model: "deepseek-flash".into(),
+            price: crate::cost::DEEPSEEK,
+            estimated: false,
+            max_steps: 40,
+            max_tokens: None,
+            temperature: None,
+            out: PathBuf::new(),
+            hide: vec![],
+            client: Arc::new(nexo_providers::Client::new(nexo_providers::registry())),
+            spent: Arc::default(),
+            close_on_verified: false,
+            run_timeout: None,
+        };
+        // no window forced: plain stays plain
+        assert_eq!(forced_window(&bench), None);
+        assert_eq!(config(&bench, &Arm::parse("plain").unwrap()).context.policy, "plain");
+        bench.provider.context_window.insert("deepseek-flash".into(), 32_000);
+        assert_eq!(forced_window(&bench), Some(32_000));
+        let plain = config(&bench, &Arm::parse("plain").unwrap());
+        assert_eq!((plain.context.policy.as_str(), plain.context.compact_at), ("compact", u64::MAX));
+        // the agent caps the threshold by the window less the reply (nexo-agent: compact_threshold)
+        let cur = config(&bench, &Arm::parse("curator").unwrap());
+        assert_eq!((cur.context.policy.as_str(), cur.context.compact_at), ("curator", crate::arm::COMPACT_AT));
+        let own = config(&bench, &Arm::parse("compact:at=20000").unwrap());
+        assert_eq!((own.context.policy.as_str(), own.context.compact_at), ("compact", 20_000));
+        // the provider the run is configured with carries the same window for every arm
+        assert_eq!(plain.providers[PROVIDER].context_window["deepseek-flash"], 32_000);
+        assert_eq!(cur.providers[PROVIDER].context_window["deepseek-flash"], 32_000);
     }
 }

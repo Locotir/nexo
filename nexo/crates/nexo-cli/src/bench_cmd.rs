@@ -54,8 +54,9 @@ pub struct BenchArgs {
     /// Seconds one run may take before it is interrupted, its commands killed and its record says `timeout` (0: no limit).
     #[arg(long, value_name = "SECS", default_value_t = 1200)]
     pub run_timeout: u64,
-    /// The model's context window in tokens (default: what nexo knows of it), e.g. 8000 for a small model.
-    #[arg(long)]
+    /// The model's context window in tokens, the same for every arm (default: what nexo knows of it): `32k`, `32000`, `1m`.
+    /// With a window set, `plain` summarises the history when it fills (as `compact` does), the curator keeps its view under it.
+    #[arg(long, value_name = "TOKENS", value_parser = window_arg)]
     pub window: Option<u32>,
     /// Where results.jsonl, the transcripts and summary.md go.
     #[arg(long, value_name = "DIR", default_value = "./bench-out")]
@@ -151,6 +152,25 @@ fn price_arg(s: &str) -> Result<nexo_core::Pricing, String> {
     }
 }
 
+/// `--window 32k`: tokens of context, with a `k` (thousand) or `m` (million) suffix allowed.
+fn window_arg(s: &str) -> Result<u32, String> {
+    let t = s.trim().to_ascii_lowercase();
+    let (digits, unit) = match t.strip_suffix('k') {
+        Some(d) => (d, 1_000u64),
+        None => match t.strip_suffix('m') {
+            Some(d) => (d, 1_000_000),
+            None => (t.as_str(), 1),
+        },
+    };
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(unit))
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n >= 1_000)
+        .ok_or_else(|| "a window of at least 1000 tokens: 32k, 32000, 1m".to_string())
+}
+
 /// The key as given, or read from `input` when it is `-`: then it stays out of the process list and the shell
 /// history.
 fn key_arg(key: Option<&str>, mut input: impl std::io::Read) -> anyhow::Result<Option<String>> {
@@ -168,7 +188,7 @@ fn key_arg(key: Option<&str>, mut input: impl std::io::Read) -> anyhow::Result<O
 
 #[cfg(test)]
 mod tests {
-    use super::{key_arg, price_arg};
+    use super::{key_arg, price_arg, window_arg};
 
     #[test]
     fn bench_key_dash_reads_stdin() {
@@ -177,6 +197,16 @@ mod tests {
         assert_eq!(key(Some("k-456"), "ignored"), Ok(Some("k-456".to_string())));
         assert_eq!(key(None, "ignored"), Ok(None));
         assert_eq!(key(Some("-"), " \n"), Err("--key -: nothing on stdin".to_string()));
+    }
+
+    #[test]
+    fn bench_window_reads_k_and_m_suffixes() {
+        for (text, want) in [("32k", 32_000), ("32K", 32_000), ("32000", 32_000), (" 1m ", 1_000_000), ("8k", 8_000)] {
+            assert_eq!(window_arg(text), Ok(want), "{text:?}");
+        }
+        for bad in ["", "k", "0", "999", "-32k", "3.5k", "32kb", "5000000m"] {
+            assert!(window_arg(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
