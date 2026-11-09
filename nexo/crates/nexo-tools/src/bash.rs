@@ -51,7 +51,6 @@ impl Tool for Bash {
                  command runs as a job while you go on working: the call returns its job id, you are told \
                  when it ends, and the `jobs` tool reads its output or stops it. Background jobs end with the session; \
                  `detach: true` keeps a service running after it. \
-                 To wait, set `wait_until`, never `sleep` a fixed time. \
                  Temp files: $NEXO_TMP.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
