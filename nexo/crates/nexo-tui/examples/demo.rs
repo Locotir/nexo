@@ -308,7 +308,7 @@ async fn play(events: &nexo_core::agent::EventTx, commands: &mut nexo_core::agen
                 let _ = events.send(AgentEvent::PermissionResolved { id, decision });
                 break;
             }
-            Some(AgentCommand::Interrupt) => {
+            Some(AgentCommand::Interrupt | AgentCommand::InterruptRun) => {
                 let _ = events.send(AgentEvent::TurnEnd { reason: TurnEnd::Interrupted });
                 return false;
             }

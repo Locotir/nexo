@@ -642,6 +642,37 @@ async fn an_interrupt_keeps_the_partial_reply_and_the_queue_waits() {
 }
 
 #[tokio::test]
+async fn interrupt_run_stops_the_turn_and_runs_the_queued_request() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Hang(vec![StreamEvent::TextDelta("part".into())]),
+        Reply::Events(text("second")),
+        Reply::Events(text("third")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::TextDelta { .. })).await;
+    r.send(AgentCommand::Submit { text: "two".into(), attachments: vec![] });
+    r.until(|e| matches!(e, AgentEvent::Queued { pending: 1 })).await;
+    r.send(AgentCommand::InterruptRun);
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Interrupted);
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("kept"))));
+    // no further message: the queued request starts by itself
+    let evs = r.turn().await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Queued { pending: 0 })));
+    assert_eq!(text_of(&evs), "second");
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs[1].messages.last().unwrap().text(), "two", "the queued text is the request");
+    // the agent is idle again and takes the next message as usual
+    r.send(AgentCommand::Submit { text: "three".into(), attachments: vec![] });
+    assert_eq!(text_of(&r.turn().await), "third");
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn an_interrupt_cancels_a_running_tool() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![

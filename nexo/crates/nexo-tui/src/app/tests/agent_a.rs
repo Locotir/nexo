@@ -630,7 +630,7 @@ fn fast_asks_the_agent_and_the_mark_follows_its_answer() {
 }
 
 #[test]
-fn enter_on_an_empty_draft_with_a_queue_interrupts_the_turn() {
+fn enter_on_an_empty_draft_with_a_queue_sends_it_now() {
     let (mut a, mut rx) = app();
     a.handle_agent(AgentEvent::TurnStart { turn: 1 });
     a.input.set_text("second thought");
@@ -638,7 +638,7 @@ fn enter_on_an_empty_draft_with_a_queue_interrupts_the_turn() {
     assert_eq!(a.queued, 1);
     while rx.try_recv().is_ok() {}
     a.submit();
-    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::InterruptRun)));
     // nothing waiting: an empty Enter does not stop the turn
     a.queued = 0;
     a.submit();

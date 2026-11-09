@@ -139,10 +139,10 @@ impl App {
         let text = self.input.full_text();
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            // Enter again with a request waiting: stop the turn (the agent keeps the queue for the next message)
+            // Enter again with a request waiting: stop the turn and run the queued request now
             if self.busy && self.queued > 0 {
-                self.send(AgentCommand::Interrupt);
-                self.flash("stopping: the queued request goes with your next message");
+                self.send(AgentCommand::InterruptRun);
+                self.flash("sending your queued request now");
                 return;
             }
             if let Some(i) = self.selected {

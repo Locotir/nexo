@@ -846,14 +846,15 @@ fn an_unknown_command_warns_and_keeps_the_draft() {
 }
 
 #[test]
-fn enter_on_an_empty_draft_with_a_queued_request_tells_the_truth() {
+fn enter_on_an_empty_draft_with_a_queued_request_sends_it_now() {
     let (mut a, mut rx) = app();
     a.busy = true;
     a.queued = 1;
     a.submit();
-    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Interrupt)));
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::InterruptRun)));
+    assert!(rx.try_recv().is_err(), "one command");
     let said = a.status.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
-    assert!(said.starts_with("stopping") && !said.contains("runs now"), "{said}");
+    assert!(said.contains("queued request now"), "{said}");
 }
 
 #[test]

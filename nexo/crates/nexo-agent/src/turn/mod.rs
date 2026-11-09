@@ -463,6 +463,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     // a sign-in waiting for the browser, so Esc in the setup can drop it
     let mut signing_in: Option<tokio::task::AbortHandle> = None;
     let mut cancel = CancellationToken::new();
+    // the running turn was stopped to run the queued request now, not to wait for the person
+    let mut run_queue = false;
     // what a check-in decided, back to this loop (the only place a turn starts)
     let (resume_tx, mut resume_rx) = tokio::sync::mpsc::unbounded_channel::<Resume>();
     loop {
@@ -528,8 +530,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         }
                         emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                     }
-                    AgentCommand::Interrupt => {
+                    AgentCommand::Interrupt | AgentCommand::InterruptRun => {
                         if turn.is_some() {
+                            run_queue = matches!(cmd, AgentCommand::InterruptRun);
                             cancel.cancel();
                             chan_gate.deny_all("interrupted");
                             asker.drop_all();
@@ -567,6 +570,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                                 emit(&events, AgentEvent::TurnEnd { reason: TurnEnd::Interrupted });
                             }
                             cancel = CancellationToken::new();
+                            run_queue = false;
                             let mut st = state.lock().await;
                             if !st.inbox.is_empty() {
                                 st.inbox.clear();
@@ -929,14 +933,16 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     notify_hooks(&state, "turn_stopped", format!("the request ended early ({})", format!("{reason:?}").to_ascii_lowercase()));
                 }
                 cancel = CancellationToken::new();
+                let run_queue = std::mem::take(&mut run_queue);
                 // the goal takes the turn's end first (met, waiting, paused), then a queued message runs
                 goal_settle(&state, reason).await;
                 // what is left came after the turn's last model call
                 let next = {
                     let mut st = state.lock().await;
-                    // after Esc the person wanted to stop: what was queued waits for them
-                    let next = if reason == TurnEnd::Interrupted { None } else { st.inbox.pop_front() };
-                    if reason == TurnEnd::Interrupted && !st.inbox.is_empty() {
+                    // after Esc the person wanted to stop: what was queued waits for them (Enter sent it on)
+                    let waits = reason == TurnEnd::Interrupted && !run_queue;
+                    let next = if waits { None } else { st.inbox.pop_front() };
+                    if waits && !st.inbox.is_empty() {
                         notice(&events, Level::Info, format!("{} queued request(s) kept; they join your next message", st.inbox.len()));
                     }
                     if next.is_some() {
