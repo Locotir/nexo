@@ -1697,6 +1697,7 @@ version = "0.1.0"
 dependencies = [
  "fancy-regex",
  "indexmap",
+ "nexo-curator",
  "regex",
  "rustc-hash",
  "serde_json",

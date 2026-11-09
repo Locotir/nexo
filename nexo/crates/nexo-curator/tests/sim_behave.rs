@@ -133,7 +133,7 @@ fn the_probed_footprint_agrees_with_the_monte_carlo_where_the_estimate_does_not(
 /// sum of each alone, and the replay says by how much.
 #[test]
 fn fetches_that_share_content_cost_less_together_than_alone() {
-    let s = real("bench-marathon-D.jsonl");
+    let s = real("synthetic-g3-t8-s1.jsonl");
     let (open, _) = probed(&s);
     let tokens = |a: (i64, i64)| a.0 + a.1;
     let alone: i64 = open.feet.iter().map(|f| tokens(f.alone)).sum();
@@ -154,4 +154,49 @@ fn a_fraction_of_the_fetches_costs_that_fraction() {
         assert!(within(a.extra_cost, m.extra_cost, 0.05), "{file}: {} vs {}", a.extra_cost, m.extra_cost);
         assert!(within(a.extra_steps, m.extra_steps, 0.05), "{file}: {} vs {}", a.extra_steps, m.extra_steps);
     }
+}
+
+/// Two events where fetching the first puts back what the second would have cut: the second adds no step
+/// when the first is fetched, and all of its weight when nothing is.
+#[test]
+fn an_event_that_a_fetch_removes_adds_no_step_when_that_fetch_is_made() {
+    use nexo_curator::sim::events::Foot;
+    let s = session("cut-and-cite.jsonl");
+    let mut open = open_loop(&s);
+    let e = open.events.iter().find(|e| e.kind.name() == "cited").cloned().expect("one cited event");
+    open.events = vec![e.clone(), e];
+    let foot = Foot { alone: (1000, 500), joint: (1000, 500), gone: false };
+    open.feet = vec![foot, Foot { gone: true, ..foot }];
+    let c = cx(40);
+    // everything fetched: the second event is not met
+    let all = analytic(&open, params(1.0, 0.0, 0.0), 1.0, &c);
+    assert!((all.extra_steps - 1.0).abs() < 1e-12, "{all:?}");
+    // nothing fetched: the open loop, both events wander
+    let none = analytic(&open, params(0.0, 0.5, 0.0), 0.0, &c);
+    assert!((none.extra_steps - 1.0).abs() < 1e-12, "{none:?}");
+    // half fetched: the second is met half of the time
+    let half = analytic(&open, params(0.5, 0.0, 0.0), 0.5, &c);
+    assert!((half.extra_steps - (0.5 + 0.5 * 0.5)).abs() < 1e-12, "{half:?}");
+    // the failure chance sees it too
+    let blind = analytic(&open, params(0.0, 0.0, 0.2), 0.0, &c);
+    assert!((blind.p_fail - (1.0 - 0.8 * 0.8)).abs() < 1e-12, "{blind:?}");
+}
+
+/// In a real session some later events never happen once the earlier ones are fetched (the closed loop
+/// meets fewer events than the open loop), and the analytic steps are the Monte Carlo's: `probe` marks them.
+#[test]
+fn probe_marks_the_events_a_fetch_removes_and_the_steps_agree_with_the_monte_carlo() {
+    let s = real("synthetic-g3-t8-s1.jsonl");
+    let (open, c) = probed(&s);
+    let p = params(1.0, 0.0, 0.0);
+    let m = monte_carlo(&s.requests, D_SPEC, &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
+    let gone = open.feet.iter().filter(|f| f.gone).count();
+    assert!(gone > 0, "no event was marked as removed: {} events", open.feet.len());
+    assert!(!open.feet[0].gone, "the first event always happens");
+    assert_eq!(open.feet.len() - gone, m.events as usize, "events met: probe vs the Monte Carlo");
+    let a = analytic(&open, p, 1.0, &c);
+    assert!((a.extra_steps - m.extra_steps).abs() < 1e-9, "{} vs {}", a.extra_steps, m.extra_steps);
+    // without any fetch the open loop is what happens, removed events included
+    let none = analytic(&open, params(0.0, 1.0, 0.0), 0.0, &c);
+    assert!((none.extra_steps - open.feet.len() as f64 * params(0.0, 1.0, 0.0).beta_eff()).abs() < 1e-9, "{none:?}");
 }

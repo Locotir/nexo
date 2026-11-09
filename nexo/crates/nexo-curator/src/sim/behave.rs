@@ -203,16 +203,19 @@ fn over(s: usize, extra: usize, max_steps: usize) -> bool {
     s <= max_steps && s + extra > max_steps
 }
 
-/// One replay of the probe: its task number and the extra (miss, hit) input tokens it measured.
-type Tally = (usize, (i64, i64));
+/// One replay of the probe: its task number, the extra (miss, hit) input tokens it measured and how many
+/// branching events it met.
+type Tally = (usize, (i64, i64), usize);
 
 /// Fills `run.feet`: for each `cited` or `denied` event the session is replayed with the call and result that
 /// fetch it, first that one only (`alone`), then it and every event before it (`joint` is the difference to
 /// the replay without it), and the extra input tokens over the open loop are kept. The curator reacts to what
 /// was fetched (it cuts the new result, ages it, and may drop the copy the history holds), so what a fetch
 /// costs is what the replay shows, and fetches that share content cost less together. `analytic` weighs the
-/// two by how many of the other events are fetched. Run it once per session and spec: the footprints do not
-/// depend on the parameters or the prices.
+/// two by how many of the other events are fetched. The same reaction can make later events disappear (the
+/// content is back in the view, so nothing is cut again): an event the replay of every earlier fetch no longer
+/// meets is marked `gone`, and `analytic` leaves its step out when those fetches are made. Run it once per
+/// session and spec: the footprints do not depend on the parameters or the prices.
 pub fn probe(run: &mut Run, requests: &[Request], spec: &str, life: f64, slots: usize) -> Result<(), String> {
     let sites = run.events.iter().filter(|e| branches(e)).count();
     let tasks = 2 * sites;
@@ -227,7 +230,8 @@ pub fn probe(run: &mut Run, requests: &[Request], spec: &str, life: f64, slots: 
                         .map(|t| {
                             let k = t / 2;
                             let pick = move |j: usize| if t % 2 == 0 { j == k } else { j <= k };
-                            replay(requests, spec, life, slots, pick).map(|(m, h)| (t, (m - base.miss, h - base.hit)))
+                            replay(requests, spec, life, slots, pick)
+                                .map(|(m, h, met)| (t, (m - base.miss, h - base.hit), met))
                         })
                         .collect::<Result<Vec<_>, String>>()
                 })
@@ -235,31 +239,36 @@ pub fn probe(run: &mut Run, requests: &[Request], spec: &str, life: f64, slots: 
             .collect();
         handles.into_iter().map(|h| h.join().expect("a probe thread")).collect()
     });
-    let mut total = vec![(0, 0); tasks];
+    let mut total = vec![((0, 0), 0); tasks];
     for part in found {
-        for (t, f) in part? {
-            total[t] = f;
+        for (t, f, met) in part? {
+            total[t] = (f, met);
         }
     }
     run.feet = (0..sites)
         .map(|k| {
-            let before = if k == 0 { (0, 0) } else { total[2 * k - 1] };
-            let after = total[2 * k + 1];
-            Foot { alone: total[2 * k], joint: (after.0 - before.0, after.1 - before.1) }
+            let before = if k == 0 { ((0, 0), sites) } else { total[2 * k - 1] };
+            let after = total[2 * k + 1].0;
+            Foot {
+                alone: total[2 * k].0,
+                joint: (after.0 - before.0 .0, after.1 - before.0 .1),
+                // with every earlier event fetched, the replay no longer meets as many as the open loop
+                gone: before.1 <= k,
+            }
         })
         .collect();
     Ok(())
 }
 
 /// The session with the fetch of every branching event `j` (counted as the replay meets them) for which
-/// `pick(j)` holds, and nothing else: the (miss, hit) input tokens it sends.
+/// `pick(j)` holds, and nothing else: the (miss, hit) input tokens it sends and how many branching events it met.
 fn replay(
     requests: &[Request],
     spec: &str,
     life: f64,
     slots: usize,
     pick: impl Fn(usize) -> bool,
-) -> Result<(i64, i64), String> {
+) -> Result<(i64, i64, usize), String> {
     let s = requests.len();
     let mut st = Stepper::new(spec, life, slots)?;
     let (mut k, mut inserts) = (0usize, Vec::<(usize, Vec<Value>)>::new());
@@ -275,7 +284,7 @@ fn replay(
             k += 1;
         }
     }
-    Ok((st.run.miss, st.run.hit))
+    Ok((st.run.miss, st.run.hit, k))
 }
 
 /// The expectation of the extra steps, the extra cost and the chance of failing, from the events of an
@@ -291,6 +300,8 @@ pub fn analytic(run: &Run, p: Params, r_den: f64, cx: &Context) -> Expect {
     let (beta, mu) = (p.beta_eff(), p.mu.max(1.0));
     let (mut steps, mut cost, mut var, mut ok, mut count) = (0.0, 0.0, 0.0, 1.0, 0);
     let mut fetch_cost = 0.0;
+    // the chance that every event so far was either not met or fetched, which makes the later `gone` ones disappear
+    let mut all_fetched = 1.0;
     // how likely each other event is fetched
     let sites = run.events.iter().filter(|e| branches(e)).count().max(1) as f64;
     let w = run
@@ -315,11 +326,15 @@ pub fn analytic(run: &Run, p: Params, r_den: f64, cx: &Context) -> Expect {
             }
         };
         let fetch = input + cx.prices.out * cx.c_out;
-        steps += r + (1.0 - r) * beta;
-        cost += r * fetch + (1.0 - r) * beta * step;
-        fetch_cost += r * fetch;
-        var += r * (1.0 - r) + (1.0 - r) * beta * (1.0 + mu);
-        ok *= 1.0 - (1.0 - r) * p.phi;
+        // a `gone` event happens unless every event before it was fetched (all of them is the closed loop of
+        // `r = 1`; none, the open loop)
+        let here = if run.feet.get(count).is_some_and(|f| f.gone) { 1.0 - all_fetched } else { 1.0 };
+        all_fetched *= 1.0 - here * (1.0 - r);
+        steps += here * (r + (1.0 - r) * beta);
+        cost += here * (r * fetch + (1.0 - r) * beta * step);
+        fetch_cost += here * r * fetch;
+        var += here * (r * (1.0 - r) + (1.0 - r) * beta * (1.0 + mu));
+        ok *= 1.0 - here * (1.0 - r) * p.phi;
         count += 1;
     }
     let room = cx.max_steps as f64 - run.requests as f64;

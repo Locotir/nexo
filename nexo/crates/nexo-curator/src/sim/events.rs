@@ -314,6 +314,9 @@ pub struct Foot {
     pub alone: (i64, i64),
     /// On top of the fetches of every event before it.
     pub joint: (i64, i64),
+    /// With every event before it fetched, the closed loop no longer meets this one (the fetches put the
+    /// content back, so the curator cuts nothing more there): it adds no step.
+    pub gone: bool,
 }
 
 /// The result of one open-loop pass of a session through the curator.

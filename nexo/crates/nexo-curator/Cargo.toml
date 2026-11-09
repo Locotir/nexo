@@ -14,6 +14,12 @@ fancy-regex = { workspace = true }
 rustc-hash = { workspace = true }
 indexmap = { workspace = true }
 
+[dev-dependencies]
+# tests, examples and clippy --all-targets build with the simulator, so the default gate covers it; a
+# normal build does not (dev-dependencies are not unified into it)
+nexo-curator = { path = ".", features = ["sim"] }
+tempfile = { workspace = true }
+
 [features]
 # the closed-loop session simulator (src/sim, examples/sim.rs, examples/replay.rs)
 sim = []
@@ -26,6 +32,3 @@ required-features = ["sim"]
 [[example]]
 name = "sim"
 required-features = ["sim"]
-
-[dev-dependencies]
-tempfile = { workspace = true }
