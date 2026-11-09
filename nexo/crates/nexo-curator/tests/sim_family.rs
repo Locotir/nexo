@@ -6,8 +6,6 @@ use nexo_curator::sim::fit::family_of_task;
 use nexo_curator::sim::input::load;
 use nexo_curator::sim::synth::{generate, Synth};
 
-const RUNS: &str = "/home/lctr/curator-lab/runs";
-
 const DBG: &[&str] = &[
     "dbg4-1105/dbg-core-plain-0.jsonl",
     "dbg4-1105/dbg-packed-plain-0.jsonl",
@@ -78,14 +76,27 @@ fn label(path: &str) -> &'static str {
     family_of_task(stem).unwrap_or_else(|| panic!("no label for {stem}"))
 }
 
+/// The lab runs folder: `NEXO_SIM_RUNS`, when it is set and exists.
+fn runs() -> Option<String> {
+    std::env::var("NEXO_SIM_RUNS").ok().filter(|d| std::path::Path::new(d).is_dir())
+}
+
 #[test]
 fn tagger_matches_task_labels() {
+    match runs() {
+        Some(runs) => tagger_matches_lab_labels(&runs),
+        None => eprintln!("skipped: set NEXO_SIM_RUNS to the lab runs folder"),
+    }
+    generated_session_is_tagged();
+}
+
+fn tagger_matches_lab_labels(runs: &str) {
     let mut agree = 0;
     let mut all = 0;
     let mut wrong = Vec::new();
     for set in [DBG, ASM, LOGS, CODE] {
         for p in set {
-            let s = load(&format!("{RUNS}/{p}")).unwrap_or_else(|e| panic!("{e}"));
+            let s = load(&format!("{runs}/{p}")).unwrap_or_else(|e| panic!("{e}"));
             let (got, want) = (tag(&s.requests), label(p));
             all += 1;
             if got == want {
@@ -97,7 +108,9 @@ fn tagger_matches_task_labels() {
     }
     assert_eq!(all, 23 + 10 + 10 + 10);
     assert!(agree * 100 >= all * 95, "{agree}/{all} agree; wrong: {wrong:#?}");
+}
 
+fn generated_session_is_tagged() {
     // a generated session loads, with the requests and dependencies asked for
     let mut p = Synth::new(1, 60, "binary");
     p.recite = 0.5;

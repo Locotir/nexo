@@ -212,7 +212,7 @@ mod tests {
     fn a_command_reading_another_folder_is_flagged() {
         let s = scope();
         assert_eq!(s.command("sed -n '1,9p' /home/x/file"), ["/home/x/file"]);
-        assert_eq!(s.command("grep -rln foo /tmp /home/lctr"), ["/tmp", "/home/lctr"]);
+        assert_eq!(s.command("grep -rln foo /tmp /home/user"), ["/tmp", "/home/user"]);
         assert_eq!(s.command("cat /tmp/nexo-bench-AbC/../other/a.rs"), ["/tmp/nexo-bench-AbC/../other/a.rs"]);
         assert_eq!(s.command("FOO=/srv/data ls"), ["/srv/data"]);
     }

@@ -1637,7 +1637,7 @@ mod tests {
 
     #[test]
     fn ended_jobs_note_shows_as_a_compact_card() {
-        let note = "[background jobs ended]\n- job 1 `cd /home/lctr/virtmgr-shared/StorePrep && for t in a b c; do echo $t; done` done (exit 0) after 2 min 43 s, 40 lines of output\n- job 2 `false` done (exit 1) after 3 s, 1 lines of output\nRead the output with the `jobs` tool (action \"output\", the job's id).";
+        let note = "[background jobs ended]\n- job 1 `cd /home/user/project && for t in a b c; do echo $t; done` done (exit 0) after 2 min 43 s, 40 lines of output\n- job 2 `false` done (exit 1) after 3 s, 1 lines of output\nRead the output with the `jobs` tool (action \"output\", the job's id).";
         let b = Block::User { text: note.into(), at: None };
         let t = texts(&b.render(70, &Theme::dark(), opts()));
         let all = t.join("\n");

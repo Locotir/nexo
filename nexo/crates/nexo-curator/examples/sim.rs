@@ -373,7 +373,7 @@ fn check_cmd(mut args: impl Iterator<Item = String>) {
         None::<String>,
         "directives=0;nudge=0".to_string(),
         Holdout::Even,
-        "/home/lctr/curator-lab/sim/reports/h1-check.md".to_string(),
+        "sim-check.md".to_string(),
         0.0f64,
         SLOTS,
     );
