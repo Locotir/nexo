@@ -27,6 +27,15 @@ pub fn tasks() -> Vec<Task> {
     out
 }
 
+/// Ok on Linux only: gdb core files and `nasm -f elf64` objects have no counterpart elsewhere.
+pub(crate) fn linux_only(what: &str) -> Result<(), String> {
+    if cfg!(target_os = "linux") {
+        Ok(())
+    } else {
+        Err(format!("{what} needs Linux (ELF binaries and gdb core files)"))
+    }
+}
+
 /// Ok when every program in `tools` is on the `PATH`.
 pub(crate) fn have(tools: &[&str]) -> Result<(), String> {
     let path = std::env::var_os("PATH").unwrap_or_default();

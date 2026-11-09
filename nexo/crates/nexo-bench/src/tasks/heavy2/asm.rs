@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use super::{have, keyed, line};
+use super::{have, keyed, line, linux_only};
 use crate::check::{run, Outcome};
 use crate::rng::Rng;
 use crate::tasks::{files, Task};
@@ -116,7 +116,7 @@ THE FINAL ANSWER
         setup: None,
         sealed: false,
         mask: &[],
-        ready: || have(&["nasm", "cc"]),
+        ready: || linux_only("the assembly tasks").and_then(|()| have(&["nasm", "cc"])),
     }
 }
 
@@ -248,7 +248,7 @@ THE FINAL ANSWER
         setup: Some(setup_read),
         sealed: false,
         mask: &[],
-        ready: || have(&["nasm", "strip", "objdump"]),
+        ready: || linux_only("the assembly tasks").and_then(|()| have(&["nasm", "strip", "objdump"])),
     }
 }
 

@@ -9,12 +9,13 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use super::{compile_c, crash_core, have, keyed, line};
+use super::{compile_c, crash_core, have, keyed, line, linux_only};
 use crate::check::{run, Outcome};
 use crate::rng::Rng;
 use crate::tasks::{files, Task};
 
 fn ready() -> Result<(), String> {
+    linux_only("the debugger tasks")?;
     have(&["cc", "gdb", "objdump", "readelf"])
 }
 
