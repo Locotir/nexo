@@ -219,6 +219,8 @@ fn widest(name: &str) -> (i64, i64) {
 /// (`edge` holds a 62k-token request; the sticky set plus the latest 32k tokens of reads it has not written about,
 /// `still`), and a session whose agent keeps reading without writing (realm100, marathon) is cut in a batch once
 /// that working set is full, not left at the cap or the hard limit.
+/// By epochs the view also grows past the working set by what the cost rule lets it keep before the next rewrite (the
+/// `target` at most, 10k), so the batch allowed past the working set is 8k plus that.
 #[test]
 fn the_window_holds_on_every_fixture() {
     let dir = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
@@ -231,7 +233,7 @@ fn the_window_holds_on_every_fixture() {
     let mut bad = Vec::new();
     for n in &names {
         let (most, sticky) = widest(n);
-        if most > 40_000 && most > sticky + 32_000 + 8_000 {
+        if most > 40_000 && most > sticky + 32_000 + 8_000 + 10_000 {
             bad.push(format!("{n}: the view reached {most} tokens with a sticky set of {sticky}"));
         }
         if (n.contains("realm100") || n.contains("marathon-D")) && most > 50_000 {
@@ -341,11 +343,19 @@ fn the_long_session_ends_with_the_reference_stats() {
     // The cost rule in place of the fixed 20k trigger (`cap=0`, `hard=0`): the cut waits for the point where keeping the
     // extra tokens costs more than sending the new prefix, so it fires later and takes more at once: 3 rewrites, 36
     // chunks by the window, and the cache misses 77829 (miss_cap 43449), down from 104955 (miss_cap 72618).
-    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 17298,
-        "miss": 77829, "dedup_asked": 24, "dropped_chunks": 139, "sup_chunks": 34, "rewrites": 3, "left_messages": 106,
-        "ledger_lines": 322, "cap_rewrites": 2, "miss_cap": 43449, "closed_steps": 23, "miss_close": 7799,
-        "recalled_steps": 3, "window_cuts": 36, "live_dropped": 1, "miss_live": 1022, "cards": 1, "switches": 1,
-        "miss_switch": 8261});
+    // By epochs (`epoch=1`): between two rewrites the view only grows at the end, so the topic split, the closing of
+    // answered requests, the idle drops and the cuts all wait for the epoch (7 here). No split (0 cards, 0 switches, no
+    // `miss_switch`), and what closing took in 23 steps at any request now leaves with the window cut: the cache
+    // misses 72609 (was 77829), 4 rewrites, 160 chunks leave.
+    // The epoch closes first (what the agent took from a request closed, the idle outputs that pay at the price of the
+    // cache read again from where the window cut starts) and the cut takes what is left: 18 steps close, the cache
+    // misses 77789 (as before epochs, 77829) but 8 epochs read the whole view once each, and 171 chunks leave. What
+    // the closing keeps for a later request, the cut did not: on the 22 recorded sessions 93 words are forgotten
+    // where 125 were before the epochs.
+    let want = serde_json::json!({"birth_saved": 1799, "epochs": 8, "dedup_runs": 6, "dedup_saved": 3117,
+        "miss_fresh": 17298, "miss": 77789, "dedup_asked": 24, "closed_steps": 18, "miss_close": 23967,
+        "dropped_chunks": 171, "sup_chunks": 57, "rewrites": 3, "left_messages": 146, "ledger_lines": 462,
+        "cap_rewrites": 2, "miss_cap": 36524, "recalled_steps": 2, "window_cuts": 4});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }
@@ -370,6 +380,7 @@ fn the_real_audit_ends_with_the_reference_stats() {
             .answer(&serde_json::json!({"op": "view", "system_tokens": req["system_tokens"], "messages": msgs}), 0.0);
     }
     // the 10k target cuts where rewriting pays, not at a fixed 20k: this view never gets there (it was one cut at 20k,
-    // 159 chunks and 8497 missed tokens), so the 3 idle drops (708 missed tokens) are all that is left
-    assert_eq!(last["stats"], serde_json::json!({"birth_saved": 0, "live_dropped": 3, "miss_live": 708, "miss": 708}));
+    // 159 chunks and 8497 missed tokens), and by epochs the 3 idle drops (708 missed tokens) wait for an epoch that
+    // never comes: the view only grows, the cache misses nothing
+    assert_eq!(last["stats"], serde_json::json!({"birth_saved": 0, "epochs": 1}));
 }

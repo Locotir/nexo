@@ -8,7 +8,7 @@ use nexo_curator::sim::price::Prices;
 fn events(file: &str, spec: &str) -> nexo_curator::sim::events::Run {
     let path = format!("{}/tests/fixtures/sim/{file}", env!("CARGO_MANIFEST_DIR"));
     let s = load(&path).expect("the fixture loads");
-    run(&s.requests, spec, Prices::LEGACY, 0.0, 0).expect("a run")
+    run(&s.requests, &format!("{spec};epoch=0"), Prices::LEGACY, 0.0, 0).expect("a run")
 }
 
 #[test]

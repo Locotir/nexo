@@ -24,6 +24,14 @@ const PER_KEY: usize = 8;
 const LINES: usize = 40;
 const LINE_TOKENS: i64 = 3000;
 
+/// How many times more lines a request that names too many to hold brings back, for that call only (`inflate`), and the
+/// share of the model's window the call may reach with them.
+const WIDE: usize = 10;
+
+/// Messages of the history one lookup finds, from which on the request is taken to cut across the session.
+const WIDE_UNITS: usize = 8;
+const INFLATE_TO: f64 = 0.99;
+
 /// Characters of a line shown.
 const SHOWN: usize = 300;
 
@@ -75,14 +83,26 @@ impl Engine {
         let vis = self.visible();
         let hide0 = self.m0_card(self.apart());
         // the index is taken out for the lookup: deciding whether a message is whole in the view reads the engine
+        let room = self.inflate_room();
         let index = std::mem::take(&mut self.index);
         let mut whole: rustc_hash::FxHashMap<usize, bool> = rustc_hash::FxHashMap::default();
-        let picks = index.pick(PER_KEY, LINES, &mut |(u, _)| {
+        let mut skip = |(u, _): (u32, u32)| {
             let mi = self.tr.units[u as usize].msg;
             *whole.entry(mi).or_insert_with(|| {
                 vis.binary_search(&mi).is_ok() && if mi == 0 { !hide0 } else { self.message(mi).0.is_none() }
             })
-        });
+        };
+        let mut picks = index.pick(PER_KEY, LINES, &mut skip);
+        // a request that names more than the tail holds (all the ports, every owner: it cuts across the session) gets
+        // the lines it names up to the model's window, for this call only: the next one builds its tail from the
+        // normal caps again, and nothing before the tail changes, so the cache is not touched
+        let (mut budget, mut inflated) = (LINE_TOKENS, false);
+        let units: rustc_hash::FxHashSet<u32> = picks.iter().map(|p| p.0).collect();
+        if (picks.len() >= LINES || units.len() >= WIDE_UNITS) && room > LINE_TOKENS {
+            picks = index.pick(PER_KEY * 4, LINES * WIDE, &mut skip);
+            budget = room;
+            inflated = true;
+        }
         self.index = index;
         let mut texts: rustc_hash::FxHashMap<u32, Vec<&str>> = rustc_hash::FxHashMap::default();
         let units: rustc_hash::FxHashSet<u32> = picks.iter().map(|p| p.0).collect();
@@ -91,7 +111,8 @@ impl Engine {
         for (u, t) in &owned {
             texts.insert(*u, t.lines().collect());
         }
-        let (mut budget, mut seen) = (LINE_TOKENS, rustc_hash::FxHashSet::default());
+        let mut seen = rustc_hash::FxHashSet::default();
+        let first = budget;
         let mut shown: Vec<(usize, u32, u32, String)> = Vec::new();
         for (u, n) in picks {
             let Some(line) = texts.get(&u).and_then(|l| l.get(n as usize)) else { continue };
@@ -109,6 +130,10 @@ impl Engine {
             }
             shown.push((self.tr.units[u as usize].msg, u, n, line));
         }
+        if inflated {
+            self.bump("inflate_wide", 1);
+            self.bump("inflate_tokens", (first - budget).max(0));
+        }
         shown.sort_by_key(|s| (s.0, s.1, s.2));
         let (mut out, mut at): (Vec<String>, Option<usize>) = (Vec::new(), None);
         for (mi, _, _, line) in shown {
@@ -119,6 +144,15 @@ impl Engine {
             out.push(line);
         }
         out
+    }
+
+    /// Tokens a tail may take for one call without passing the model's window (0: no window known, or no room).
+    fn inflate_room(&mut self) -> i64 {
+        if self.budget <= 0 {
+            return 0;
+        }
+        let used = self.sizes_now().iter().sum::<i64>() + self.head.max(0);
+        (((self.budget + self.head.max(0)) as f64 * INFLATE_TO) as i64 - used).max(0)
     }
 
     /// Puts the standing facts due, and the lines of the history the person's request names, on the last message

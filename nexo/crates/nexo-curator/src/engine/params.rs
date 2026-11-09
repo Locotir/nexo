@@ -132,6 +132,13 @@ pub struct Params {
     /// cut down then, and a cut past where the cache stops is priced as free: cheaper after long pauses, but
     /// what is cut early is missed more (0: off, the cache holds the last view).
     pub pockets: i64,
+    /// With a `target`, the view is rewritten only at an epoch: once keeping its growth costs more than the
+    /// rewrite (`Engine::epoch_due`) or it reaches the ceiling. Between epochs it only grows at the end, so the
+    /// provider's cache holds all of it but the last request; what the request needs of the history comes in the tail
+    /// of the view (the index), not by changing messages before it. At an epoch everything that waited
+    /// happens at once: the other requests close, the dead outputs leave, the window is cut (0: each of
+    /// those happens when it pays by itself, as before).
+    pub epoch: i64,
     /// Seconds a pocket is taken to live at most (`pockets`); 0: only the last view sent, as a local server
     /// with one slot.
     pub life: f64,

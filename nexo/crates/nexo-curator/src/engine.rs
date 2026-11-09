@@ -98,6 +98,9 @@ pub struct Engine {
     gone_commands: i64,
     checked: i64,
     checked_at: usize,
+    /// The tokens of the view (head included) as the last epoch left it (`Params.epoch`): the next epoch waits
+    /// for the view to grow past it by the room the cost rule gives.
+    landed: i64,
     cap: i64,
     /// Where the cut the cap drives fires (`decide`): the room a view has to grow in is measured to here, not to
     /// the target the cut lands on.
@@ -286,6 +289,7 @@ impl Engine {
             budget: 0,
             checked: 0,
             checked_at: 0,
+            landed: 0,
             built: FxHashMap::default(),
             born: Vec::new(),
             held: FxHashMap::default(),

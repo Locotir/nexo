@@ -210,7 +210,7 @@ fn what_recall_brings_back_is_never_shortened_again() {
 #[test]
 fn a_topic_left_out_names_its_messages_for_recall() {
     let run = |tools: &[&str]| {
-        let mut cur = Curator::new("apart=0").unwrap();
+        let mut cur = Curator::new("apart=0;epoch=0").unwrap();
         cur.tools(&tools.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let mut msgs: Vec<Value> = Vec::new();
         let mut text = String::new();
@@ -274,4 +274,80 @@ fn a_request_naming_a_file_read_under_another_topic_gets_that_read_back() {
         }
     }
     assert!(text.contains("nako_kuldolbor1"), "the read of the named file is missing from the view");
+}
+
+/// A session of ``steps`` steps on ``topics`` topics in turn (the person asks about another one every ``len`` steps),
+/// viewed after every step: the views, in order.
+fn session(spec: &str, window: u64, steps: usize, len: usize) -> Vec<Vec<Value>> {
+    let mut cur = Curator::new(spec).unwrap();
+    cur.window(window);
+    let mut msgs = vec![json!({"role": "user", "content": "Sum the amounts of every part of topic 0."})];
+    let mut views = Vec::new();
+    for k in 0..steps {
+        if k > 0 && k % len == 0 {
+            msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done with that topic."}]}));
+            msgs.push(
+                json!({"role": "user", "content": format!("Now the amounts of every part of topic {}.", k / len)}),
+            );
+        }
+        msgs.extend(step(k, 60));
+        views.push(cur.view(1_000, &msgs, 0.0).unwrap().view);
+    }
+    views
+}
+
+/// The share of the tokens of each view, but its last message (which carries the tail), that the next view starts
+/// with unchanged: what the provider's cache reads.
+fn kept(views: &[Vec<Value>]) -> f64 {
+    let (mut same, mut all) = (0, 0);
+    for w in views.windows(2) {
+        let n = w[0].len() - 1;
+        let size = |m: &Value| m.to_string().len();
+        let shared: usize = w[0][..n].iter().zip(&w[1]).take_while(|(a, b)| a == b).map(|(a, _)| size(a)).sum();
+        same += shared;
+        all += w[0][..n].iter().map(size).sum::<usize>();
+    }
+    same as f64 / all as f64
+}
+
+#[test]
+fn between_epochs_a_view_is_a_prefix_of_the_next() {
+    // 200 steps of about 1.8k tokens in a window of 100k: the view is rewritten a few times, not on every call
+    let views = session("", 100_000, 200, 9);
+    let share = kept(&views);
+    assert!(share >= 0.9, "{share:.3} of the tokens of the views kept as the prefix of the next");
+    let before = kept(&session("epoch=0", 100_000, 200, 9));
+    assert!(share > before, "{share:.3} with epochs, {before:.3} without");
+}
+
+#[test]
+fn a_request_that_names_more_than_the_tail_holds_inflates_that_call_only() {
+    let mut cur = Curator::new("").unwrap();
+    cur.window(100_000);
+    let mut msgs = vec![json!({"role": "user", "content": "Keep the settings of each topic in mind."})];
+    // 24 topics, each with 12 settings, then enough work to push them out of the view
+    for k in 0..24 {
+        let id = format!("call_s{k}");
+        let out: String = (0..12).map(|i| format!("[topic {k}] setting_{i} = value_{k}_{i}\n")).collect();
+        msgs.push(json!({"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "bash", "input": {"command": format!("cat topic_{k}.conf")}}]}));
+        msgs.push(json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": out}]}));
+    }
+    for k in 0..120 {
+        msgs.extend(step(k, 60));
+        cur.view(1_000, &msgs, 0.0).unwrap();
+    }
+    let named: Vec<String> = (0..16).map(|k| format!("topic {k}")).collect();
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Ready."}]}));
+    msgs.push(json!({"role": "user", "content": format!("List every setting of {}.", named.join(", "))}));
+    let wide = cur.view(1_000, &msgs, 0.0).unwrap();
+    let lines_of =
+        |r: &nexo_curator::Reply| serde_json::to_string(&r.view.last().unwrap()).unwrap().matches("] setting_").count();
+    assert_eq!(wide.stats.get("inflate_wide"), Some(&1), "{:?}", wide.stats);
+    assert!(lines_of(&wide) > 40, "{} lines in the tail", lines_of(&wide));
+    assert!(wide.tokens < 100_000, "the inflated call stays under the window: {}", wide.tokens);
+    // the next call (a step of the same request) is back to the normal view: no inflation, no lines
+    msgs.extend(step(99, 60));
+    let next = cur.view(1_000, &msgs, 0.0).unwrap();
+    assert_eq!(next.stats.get("inflate_wide"), Some(&1), "no new inflation: {:?}", next.stats);
+    assert_eq!(lines_of(&next), 0);
 }

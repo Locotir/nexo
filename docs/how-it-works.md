@@ -95,7 +95,7 @@ The default spec (`D_SPEC` in the crate), with a default for every value; a test
 to it:
 
 ```
-threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;life=3600
+threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;epoch=1;life=3600
 ```
 
 | setting | default | what it sets |
@@ -121,6 +121,7 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `hard=0` | off | the ceiling when the model's window is unknown (0: none); with a window it is 95 % of it, never a fixed number. Past it the oldest sticky results leave too, as pointers; never the request, the agent's own messages, the latest `file now` of each path or the last `check:` |
 | `cut=age` | `age` | what leaves first when the priced cap cuts: the oldest (`cover`, `need`, `copies` are the others; `cover` leaves what tells the least, and forgot more on the fixtures) |
 | `pockets=0` | off | 1: the last view sent on each topic stays in the provider's cache for `life` seconds; 2: also cut a view whose pocket is gone (see Pockets above) |
+| `epoch=1` | on | with a `target`, the view is rewritten only at an epoch: once keeping its growth costs more than a new prefix (the cost rule above) or it reaches the ceiling. Between epochs it only grows at the end and the cache holds all of it but the last request; the closing of answered requests, the dead outputs, the topic split and the window cut all wait for the epoch. 0: each happens when it pays by itself |
 | `life=S` | `3600` | the most seconds a pocket is taken to live; 0: only the last view, as a local server with one slot |
 | `directives=N` | `0` | 1 appends the efficiency directives to the system prompt |
 | `protect=M` | `12` | the last `M` messages never leave the view |

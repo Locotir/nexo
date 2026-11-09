@@ -188,6 +188,32 @@ impl Engine {
         }
     }
 
+    /// Whether the view runs by epochs (`Params.epoch`, with a `target`).
+    pub(super) fn epochs(&self) -> bool {
+        self.p.epoch != 0 && self.p.target > 0
+    }
+
+    /// Whether this request is an epoch: the view is rewritten now. Always when the view does not run by epochs.
+    /// Otherwise when it has passed the ceiling or the model's window, or when it has grown past where the last
+    /// epoch left it by the room the cost rule gives (`fire_point` less the size it lands on): what keeping
+    /// that growth costs for the calls still to come is more than sending the new prefix once. With a fixed `cap`, as soon as
+    /// the view is past it.
+    pub(super) fn epoch_due(&mut self) -> bool {
+        if !self.epochs() {
+            return true;
+        }
+        let view = self.sizes_now().iter().sum::<i64>();
+        let total = view + self.head;
+        let (start, land) = self.window_span();
+        // the first view of an engine (also after the host rewrote the history) is laid down whole
+        if self.landed == 0 || (self.ceiling() > 0 && total > self.ceiling()) || (self.budget > 0 && view > self.budget)
+        {
+            return true;
+        }
+        // a fixed `cap` is the person's own trigger: past it the cut runs at every request, as it did before epochs
+        total > start && (self.p.cap > 0 || total - self.landed > start - land)
+    }
+
     /// The tokens of the latest outputs the agent has not written about that no cut may take (`still`): what the
     /// agent is working from is held whatever the system prompt, the request and the sticky set take, so a big
     /// head does not leave it the outputs of the newest step alone. Past the ceiling they leave all the same.
@@ -198,6 +224,32 @@ impl Engine {
     /// Whether the sticky set holds result `i` at the given tier: 0 below the target, 1 below the ceiling.
     fn holds(&self, i: usize, tier: usize, unwritten: usize) -> bool {
         self.stk.keep.contains(&i) || (tier == 0 && (self.stk.reads.contains(&i) || self.tr.units[i].msg >= unwritten))
+    }
+
+    /// The first message the window cut of this epoch changes: the oldest result the sticky set does not hold that has a
+    /// part to drop. `None` when the view does not run by epochs or is not past where the cut starts.
+    pub(super) fn cut_start(&mut self) -> Option<usize> {
+        if !self.epochs() {
+            return None;
+        }
+        let sizes = self.sizes_now();
+        if sizes.iter().sum::<i64>() + self.head <= self.window_span().0 {
+            return None;
+        }
+        self.refresh_sticky();
+        let unwritten = self.still_from(&sizes);
+        self.visible().iter().copied().find(|&mi| {
+            let pictured = has_picture(&self.tr.msgs[mi]);
+            self.fz.by_msg(mi).iter().any(|&i| {
+                let u = &self.tr.units[i];
+                u.kind == UKind::Result
+                    && (u.saving >= LEAVE_LEAST || pictured)
+                    && !self.holds(i, 0, unwritten)
+                    && (0..self.fz.chunks[i].len()).any(|j| {
+                        !self.dropped.get(&i).is_some_and(|d| d.contains(&j)) && !self.carrying.contains(&(i, j))
+                    })
+            })
+        })
     }
 
     /// Once rewriting pays (`fire_point`) the oldest results the sticky set does not hold leave, oldest first,

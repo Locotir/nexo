@@ -334,7 +334,9 @@ impl Engine {
         // 112 forgotten words are lost, so they stay as a margin.
         // what the cache no longer holds (`Params.pockets` 2) is read again closed or not: closing there costs
         // nothing, and what it saves there makes no closing before it cheaper
-        let warm = if self.p.pockets >= 2 { self.warm } else { usize::MAX };
+        // (and by epochs the window cut that comes after reads the view again from the oldest result it takes: what
+        // closes behind that message costs the cache nothing more)
+        let warm = if self.p.pockets >= 2 { self.warm } else { self.cut_start().unwrap_or(usize::MAX) };
         let (mut best, mut cut, mut paid, mut saved, mut first) = (0.0f64, None, 0.0f64, 0i64, sizes.len());
         for n in (0..cands.len()).rev() {
             paid += cands[n].1;

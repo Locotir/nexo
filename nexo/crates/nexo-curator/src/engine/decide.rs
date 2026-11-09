@@ -14,6 +14,9 @@ impl Engine {
         if self.dump.is_some() {
             self.dump_rows();
         }
+        // by epochs (`Params.epoch`) the view is rewritten only at an epoch: between two, it only grows at the end
+        let by_epoch = self.epochs();
+        let epoch = self.epoch_due();
         // what the view sent before: a message of it that a step below changes without weighing the cache
         // (it changes what the view sends, not what is weighed) still counts in `miss`
         let sent = self.sent_vis.clone();
@@ -22,7 +25,7 @@ impl Engine {
         // whether the other topics leave the view: decided when the topic changes, and again at each request of that
         // turn while it is declined (what a cut costs grows with the turn, so a declined split mostly stays so)
         let nt = self.goal.turns.len();
-        let switch = nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread;
+        let switch = !by_epoch && nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread;
         let fresh = switch && self.split_turn != nt - 1;
         if fresh {
             self.split = self.split_now();
@@ -56,7 +59,8 @@ impl Engine {
         self.warm = warm;
         // the oldest message closing steps changed in this request: the cache misses from there on
         let mut closed: Option<usize> = None;
-        // a history with no request from the person yet has nothing to close, idle or bring back
+        // a history with no request from the person yet has nothing to close, idle or bring back; by epochs what a
+        // request needs of the steps that left comes back at once, but nothing more leaves before the epoch
         if self.p.close != 0 && nt > 0 {
             let (now, mut turned) = (self.tr.steps.len(), false);
             while self.shut_done + 1 < nt {
@@ -68,7 +72,7 @@ impl Engine {
                 self.shut_done += 1;
                 turned = true;
             }
-            if self.p.live != 0 {
+            if epoch && self.p.live != 0 {
                 if let Some(mi) = self.live_drop(now) {
                     quiet.push(("miss_live", mi));
                 }
@@ -80,14 +84,14 @@ impl Engine {
                 closed = self.shut_lines();
             }
             let idle: Vec<usize> = (0..self.steps.len()).filter(|&i| self.steps[i].idle.is_some()).collect();
-            if !idle.is_empty() && self.rent_close(idle) {
+            if epoch && !idle.is_empty() && self.rent_close(idle) {
                 if let Some(mi) = self.shut_lines() {
                     closed = Some(closed.map_or(mi, |c| c.min(mi)));
                 }
             }
         }
         let mut switched = false;
-        if nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread {
+        if !by_epoch && nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread {
             let start = self.goal.turns[nt - 1].start;
             if !self.frozen.contains_key(&start) && self.unsplit_turn != nt - 1 {
                 let text = self.cards_text();
@@ -141,16 +145,17 @@ impl Engine {
         let mut sizes = self.sizes_now();
         let total: i64 = sizes.iter().sum();
         // where the cache stops, the view is read again whatever is cut: what is worth cutting is weighed now
-        let due = warm != usize::MAX
-            || total - self.checked >= self.p.check
-            || k as i64 - self.checked_at as i64 >= self.p.every;
-        if self.p.target > 0 {
+        let due = epoch
+            && (warm != usize::MAX
+                || total - self.checked >= self.p.check
+                || k as i64 - self.checked_at as i64 >= self.p.every);
+        if self.p.target > 0 && epoch {
             self.refresh_sticky();
         }
-        let held = if self.p.hold != 0 && self.p.eoq != 0 { self.held(&sizes) } else { 0 };
+        let held = if self.p.hold != 0 && self.p.eoq != 0 && epoch { self.held(&sizes) } else { 0 };
         self.guess = true;
         let mut fire = 0;
-        if self.p.eoq != 0 {
+        if self.p.eoq != 0 && epoch {
             // what no cut takes: the first message and the protected tail
             let tail = (t as i64 - self.p.protect).clamp(1, t as i64) as usize;
             let base = (sizes[0] + sizes[tail..].iter().sum::<i64>() - held).max(0);
@@ -177,10 +182,11 @@ impl Engine {
             }
         }
         let mut first: Option<usize> = None;
-        let capped = self.cap != 0 && total - held > fire.max(self.cap);
+        let capped = epoch && self.cap != 0 && total - held > fire.max(self.cap);
         // a view the cache holds no more of than its anchor is read again whole: it is cut down to what the
         // cap leaves now, for free, rather than later at the price of breaking the cache (`Params.pockets` 2)
-        let squeeze = self.p.pockets >= 2
+        let squeeze = epoch
+            && self.p.pockets >= 2
             && !capped
             && cold
             && self.cap != 0
@@ -238,7 +244,7 @@ impl Engine {
             }
         }
         // the working window: past `cap` the oldest results the agent is not working from leave, price ignored
-        if let Some(mi) = self.window_cut() {
+        if let Some(mi) = epoch.then(|| self.window_cut()).flatten() {
             first = Some(first.map_or(mi, |f| f.min(mi)));
             sizes = self.sizes_now();
             self.miss("miss_cap", Some(mi), &sizes, t);
@@ -267,7 +273,7 @@ impl Engine {
         }
         // a view changed from message 1 on is read again nearly whole: the anchor can change with it, as it can
         // when no pocket that lives holds the anchor as it is (`Params.pockets`)
-        if self.refresh_rules(first.is_some_and(|f| f <= 1) || warm == 0) {
+        if epoch && self.refresh_rules(first.is_some_and(|f| f <= 1) || warm == 0) {
             self.miss("miss_anchor", Some(0), &sizes, t);
             missed = Some(0);
         }
@@ -276,6 +282,10 @@ impl Engine {
             missed = Some(missed.map_or(mi, |f| f.min(mi)));
         }
         self.miss("miss", missed, &sizes, t);
+        if by_epoch && epoch {
+            self.landed = self.sizes_now().iter().sum::<i64>() + self.head;
+            self.bump("epochs", 1);
+        }
         self.sent_vis = self.visible();
         if self.p.pockets != 0 {
             self.keep_pocket();

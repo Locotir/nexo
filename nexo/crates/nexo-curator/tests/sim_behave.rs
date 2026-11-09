@@ -11,12 +11,12 @@ const SPEC: &str = "protect=1;still=0;target=0;cap=0;hard=0";
 
 /// The default spec, working window included: the footprint of a fetch is measured on the curator as shipped.
 fn dspec() -> String {
-    D_SPEC.to_string()
+    format!("{D_SPEC};epoch=0")
 }
 
 /// The default spec without the working window, the mode the footprint test below was first measured in.
 fn no_window() -> String {
-    format!("{D_SPEC};target=0;cap=0;hard=0")
+    format!("{D_SPEC};target=0;cap=0;hard=0;epoch=0")
 }
 
 fn session(file: &str) -> Session {

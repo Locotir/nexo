@@ -12,7 +12,7 @@ const TOPICS: &str = "synthetic-g5-t24-s0.jsonl";
 /// (`None`: it says nothing). Each request's reply.
 fn replay(f: &str, spec: &str, gap: impl Fn(usize) -> f64, read: impl Fn(usize, u64) -> Option<u64>) -> Vec<Reply> {
     let text = std::fs::read_to_string(format!("tests/fixtures/{f}")).unwrap();
-    let mut cur = Curator::new(spec).unwrap();
+    let mut cur = Curator::new(&format!("{spec};epoch=0")).unwrap();
     cur.tools(&["Bash".to_string(), "Read".to_string(), "recall".to_string()]);
     let (mut msgs, mut now, mut out) = (Vec::<Value>::new(), 0.0, Vec::new());
     for line in text.lines() {

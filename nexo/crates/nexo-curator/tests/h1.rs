@@ -11,7 +11,7 @@ const TOPICS: &str = "synthetic-g5-t24-s0.jsonl";
 /// Each request's reply and the length of the history it was made from.
 fn transcript(file: &str, spec: &str) -> Vec<(Reply, usize)> {
     let text = std::fs::read_to_string(format!("tests/transcripts/{file}")).unwrap();
-    let mut cur = Curator::new(spec).unwrap();
+    let mut cur = Curator::new(&format!("{spec};epoch=0")).unwrap();
     let mut out = Vec::new();
     for (i, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
         let rec: Value = serde_json::from_str(line).unwrap();
@@ -69,7 +69,7 @@ fn h1_code_session_is_not_split_at_the_default_ratio() {
 #[test]
 fn a_long_session_still_splits() {
     let text = std::fs::read_to_string(format!("tests/fixtures/{TOPICS}")).unwrap();
-    let mut cur = Curator::new("").unwrap();
+    let mut cur = Curator::new("epoch=0").unwrap();
     cur.tools(&["Bash".to_string(), "Read".to_string(), "recall".to_string()]);
     let (mut msgs, mut now, mut last) = (Vec::<Value>::new(), 0.0, None);
     for line in text.lines() {

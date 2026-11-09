@@ -5,7 +5,7 @@ use nexo_curator::sim::fit::{fit_dirs, FitConfig, Holdout};
 use nexo_curator::sim::input::load;
 use serde_json::{json, Value};
 
-const SPEC: &str = "protect=1;still=0";
+const SPEC: &str = "protect=1;still=0;epoch=0";
 
 fn lines(msgs: &[Value], lens: &[usize]) -> String {
     let mut s = String::new();
