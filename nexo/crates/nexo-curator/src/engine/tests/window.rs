@@ -125,3 +125,45 @@ fn the_fixed_cut_lands_on_the_target_too() {
     assert!(tokens.iter().copied().max().unwrap() > 13_000, "the view used the room up to the cap: {tokens:?}");
     assert!(cuts.len() * 4 < tokens.len(), "{cuts:?}");
 }
+
+/// A session that ran a failing test, fixed it and read on; the failing run's output is `failure`. Returns
+/// whether the last view still holds `mark` after the window cut the reads.
+fn failure_survives(failure: &str, mark: &str) -> bool {
+    let mut e = Engine::new(params(WINDOW).unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Fix the stock tests, then read the parts."})];
+    msgs.extend(step(1, "cargo test 2>&1 | tail -40", failure));
+    msgs.extend(tool(
+        2,
+        "edit",
+        json!({"path": "src/stock.rs", "old": "a", "new": "b"}),
+        "applied and verified on disk",
+        false,
+    ));
+    msgs.extend(step(3, "cargo test 2>&1 | tail -40", "test result: ok. 5 passed; 0 failed; 0 ignored"));
+    for k in 4..=40 {
+        msgs.extend(step(k, &format!("cat part{k}.txt"), &big(k, 1500)));
+        e.sync(&msgs);
+        let _ = e.view();
+    }
+    assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", e.stats);
+    let view = serde_json::to_string(&e.view()).unwrap();
+    assert!(!view.contains(&big(4, 1500)[..200].replace('\n', "\\n")), "the oldest read was cut");
+    view.contains(mark)
+}
+
+#[test]
+fn a_failing_run_outlives_the_reads_the_window_cuts() {
+    // what the agent reports at the end is what it fixed: the lines of the failure it quotes stay
+    let failure = format!(
+        "{}\nfailures:\n\n---- remove_too_many stdout ----\nthread 'remove_too_many' panicked at tests/stock.rs:28:5\n\ntest result: FAILED. 4 passed; 1 failed",
+        big(55, 400)
+    );
+    assert!(failure_survives(&failure, "remove_too_many stdout"));
+}
+
+#[test]
+fn a_failing_run_past_the_budget_leaves_with_the_rest() {
+    // the held failures are a few thousand tokens at most: a 6k-token log of one leaves like any old result
+    let failure = format!("---- remove_too_many stdout ----\nFAILED\n{}", big(77, 6000));
+    assert!(!failure_survives(&failure, "remove_too_many stdout"));
+}

@@ -2,18 +2,23 @@
 //! cache costs, and never passes `hard`. What the agent is working from (the sticky set) stays below
 //! `hard`; no model and no directive decide it, only rules over the history.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::hindsight::UKind;
+use crate::ledger::ERROR_MARKS;
 use crate::tools::Kind;
 
 use super::files::file_key;
+use super::fixes::TEST_FAILED;
 use super::Engine;
 
 /// A result this small saves next to nothing when it leaves: its stub is as long.
 const LEAVE_LEAST: i64 = 40;
 /// What `still` keeps at least, whatever the sticky set takes.
 const STILL_FLOOR: i64 = 4000;
+/// The tokens of failing runs (a command whose output shows a failure) held below `cap`, newest first: what the
+/// agent fixed is what it reports, and the lines of the failure are what it quotes.
+const FAILURE_BUDGET: i64 = 2000;
 
 /// The sticky set as of the last request, by unit.
 #[derive(Default)]
@@ -28,6 +33,8 @@ pub(super) struct Sticky {
     pub tokens: i64,
     /// Result units a window cut took parts of, oldest first (for measurement).
     pub cut: Vec<usize>,
+    /// Whether the output of each command result shows a failure, once read.
+    failing: FxHashMap<usize, bool>,
 }
 
 impl Engine {
@@ -41,6 +48,8 @@ impl Engine {
         let (mut now_seen, mut read_seen) = (FxHashSet::<String>::default(), FxHashSet::<String>::default());
         let mut check_seen = false;
         let mut tokens = 0;
+        let mut failing = std::mem::take(&mut self.stk.failing);
+        let mut room = FAILURE_BUDGET;
         for i in (0..self.tr.units.len()).rev() {
             let u = &self.tr.units[i];
             if !shown.contains(&u.msg) {
@@ -82,6 +91,17 @@ impl Engine {
                             reads.insert(i);
                         }
                     }
+                    // the output of a failing run is held below `cap` while the budget lasts
+                    if !sticky && kind == Kind::Exec && u.tokens <= room {
+                        let shows = *failing.entry(i).or_insert_with(|| {
+                            let text = self.tr.unit_text(i);
+                            error || ERROR_MARKS.is_match(&text) || TEST_FAILED.is_match(&text)
+                        });
+                        if shows {
+                            reads.insert(i);
+                            room -= u.tokens;
+                        }
+                    }
                     if sticky {
                         keep.insert(i);
                         tokens += u.tokens;
@@ -96,7 +116,7 @@ impl Engine {
             }
         }
         let cut = std::mem::take(&mut self.stk.cut);
-        self.stk = Sticky { keep, reads, tokens, cut };
+        self.stk = Sticky { keep, reads, tokens, cut, failing };
     }
 
     /// The tokens of the latest outputs the agent has not written about that a guess may not take (`still`):

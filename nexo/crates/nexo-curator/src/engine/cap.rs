@@ -113,7 +113,7 @@ impl Engine {
     pub(super) fn room(&self, k: usize, view: i64) -> f64 {
         let g = self.raw_tokens as f64 / k.max(1) as f64;
         if self.cap > 0 && g > 0.0 {
-            (self.cap - view).max(0) as f64 / g
+            (self.cap.max(self.fire) - view).max(0) as f64 / g
         } else {
             f64::INFINITY
         }

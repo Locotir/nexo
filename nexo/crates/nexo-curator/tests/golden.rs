@@ -330,12 +330,15 @@ fn the_long_session_ends_with_the_reference_stats() {
     // the cache misses 59524 (miss_close 17895).
     // The working window (`target=10000`, `cap=40000`, `hard=80000`; `cut=age`): the view is let grow to 20k tokens
     // and cut to 10k in one rewrite, and the latest unread results (`still`) are bounded by the target too, so
-    // 13 rewrites and the cache misses 136746 (miss_cap 107970), 372 chunks leave by the window.
+    // 13 rewrites and the cache misses 136746 (miss_cap 107970), 372 chunks leave by the window. Priced decisions
+    // measure their room to where the cut fires (twice the target), not to the target it lands on, and the output
+    // of a failing run is held below the cap: 10 rewrites, the cache misses 147781 (miss_cap 114860), 336 chunks
+    // leave by the window.
     let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 16031,
-        "miss": 136746, "dedup_asked": 24, "window_cuts": 372, "rewrites": 13, "miss_cap": 107970,
-        "dropped_chunks": 17, "left_messages": 208, "ledger_lines": 638, "cap_rewrites": 3, "recalled_steps": 3,
-        "closed_steps": 18, "miss_close": 6693, "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1,
-        "miss_switch": 8500, "sup_chunks": 4});
+        "miss": 147781, "dedup_asked": 24, "window_cuts": 336, "rewrites": 10, "miss_cap": 114860,
+        "dropped_chunks": 18, "left_messages": 206, "ledger_lines": 661, "cap_rewrites": 3, "recalled_steps": 3,
+        "closed_steps": 22, "miss_close": 8121, "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1,
+        "miss_switch": 8185, "sup_chunks": 5});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }

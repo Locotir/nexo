@@ -96,6 +96,9 @@ pub struct Engine {
     checked: i64,
     checked_at: usize,
     cap: i64,
+    /// Where the cut the cap drives fires (`decide`): the room a view has to grow in is measured to here, not to
+    /// the target the cut lands on.
+    fire: i64,
     floor: f64,
     /// The sticky set of the working window, as of the last cut (`window.rs`).
     stk: Sticky,
@@ -234,6 +237,7 @@ impl Engine {
         goal.link = p.link;
         Engine {
             cap: p.target,
+            fire: 2 * p.target,
             floor: p.floor,
             stk: Sticky::default(),
             head: 0,

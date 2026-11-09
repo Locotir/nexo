@@ -9,9 +9,13 @@ use nexo_curator::D_SPEC;
 
 const SPEC: &str = "protect=1;still=0;target=0;cap=0;hard=0";
 
-/// The default spec without the working window these fixtures were measured with: the simulator's events and
-/// their cost shape depend on how much a cut leaves, and the tests here probe the simulator, not the window.
+/// The default spec, working window included: the footprint of a fetch is measured on the curator as shipped.
 fn dspec() -> String {
+    D_SPEC.to_string()
+}
+
+/// The default spec without the working window, the mode the footprint test below was first measured in.
+fn no_window() -> String {
     format!("{D_SPEC};target=0;cap=0;hard=0")
 }
 
@@ -100,9 +104,13 @@ fn real(file: &str) -> Session {
 }
 
 fn probed(s: &Session) -> (Run, Context) {
-    let mut open = run(&s.requests, &dspec(), Prices::LIVE, 0.0, 0).expect("a run");
-    probe(&mut open, &s.requests, &dspec(), 0.0, 0).expect("a probe");
-    let c = Context::measure(&s.requests, &dspec(), Prices::LIVE, 40);
+    probed_with(s, &dspec())
+}
+
+fn probed_with(s: &Session, spec: &str) -> (Run, Context) {
+    let mut open = run(&s.requests, spec, Prices::LIVE, 0.0, 0).expect("a run");
+    probe(&mut open, &s.requests, spec, 0.0, 0).expect("a probe");
+    let c = Context::measure(&s.requests, spec, Prices::LIVE, 40);
     (open, c)
 }
 
@@ -115,19 +123,32 @@ fn within(a: f64, b: f64, tol: f64) -> bool {
 /// (the fetch request, the requests after it, the re-cuts) agrees with the Monte Carlo.
 #[test]
 fn the_probed_footprint_agrees_with_the_monte_carlo_where_the_estimate_does_not() {
+    // without the window: every figure agrees within 5 %
+    footprint(&no_window(), 0.0);
+    // with it (the default): the window re-cuts after a fetch in ways the replay of one fetch does not see on
+    // bench-marathon-D (7 steps analytic against 8 in the Monte Carlo), so the steps may differ by one
+    footprint(&dspec(), 1.0);
+}
+
+fn footprint(spec: &str, steps_slack: f64) {
     let p = params(1.0, 0.0, 0.0);
     let mut worst_estimate: f64 = 0.0;
     for file in ["bench-long-D-0.jsonl", "bench-marathon-D.jsonl", "bench-dir-Ddir-4.jsonl"] {
         let s = real(file);
-        let (open, c) = probed(&s);
+        let (open, c) = probed_with(&s, spec);
         let sites = open.events.iter().filter(|e| matches!(e.kind.name(), "cited" | "denied")).count();
         assert!(sites >= 1 && open.feet.len() == sites, "{file}: {sites} events, {} feet", open.feet.len());
         let mut estimate = open.clone();
         estimate.feet.clear();
         let (a, e) = (analytic(&open, p, 1.0, &c), analytic(&estimate, p, 1.0, &c));
-        let m = monte_carlo(&s.requests, &dspec(), &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
+        let m = monte_carlo(&s.requests, spec, &c, 0.0, 0, p, 1.0, 4, 1).expect("mc");
         assert!(within(a.extra_cost, m.extra_cost, 0.05), "{file}: probed {} vs mc {}", a.extra_cost, m.extra_cost);
-        assert!(within(a.extra_steps, m.extra_steps, 0.05), "{file}: {} vs {}", a.extra_steps, m.extra_steps);
+        assert!(
+            within(a.extra_steps, m.extra_steps, 0.05) || (a.extra_steps - m.extra_steps).abs() <= steps_slack,
+            "{file}: {} vs {}",
+            a.extra_steps,
+            m.extra_steps
+        );
         worst_estimate = worst_estimate.max((e.extra_cost - m.extra_cost).abs() / m.extra_cost);
         // what is fetched stays input: the fetches cost all of it, the output of the calls included
         assert!(within(a.fetch_cost, a.extra_cost, 1e-9), "{a:?}");

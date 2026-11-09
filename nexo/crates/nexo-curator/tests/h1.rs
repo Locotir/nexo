@@ -86,3 +86,19 @@ fn a_long_session_still_splits() {
     let cards = last.unwrap().stats.get("cards").copied().unwrap_or(0);
     assert!(cards >= 1, "cards {cards}");
 }
+
+/// The tokens the views of a transcript sum to.
+fn sum_views(file: &str, spec: &str) -> i64 {
+    transcript(file, spec).iter().map(|(r, _)| r.tokens).sum()
+}
+
+#[test]
+fn the_window_composes_with_the_priced_decisions_below_it() {
+    // These sessions never pass the window's 20k: the curator's own priced decisions (the split on the revert
+    // request) are what keeps their views small, and the window must not take that room from them.
+    for f in FILES {
+        let on = sum_views(f, "");
+        let off = sum_views(f, "target=0;cap=0;hard=0");
+        assert!(on * 100 <= off * 105, "{f}: views sum to {on} tokens with the window, {off} without");
+    }
+}

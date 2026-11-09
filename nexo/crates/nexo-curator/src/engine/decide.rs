@@ -157,6 +157,7 @@ impl Engine {
             let stuck;
             (self.cap, self.floor, stuck) = self.eoq_cap(k, base);
             fire = self.cap;
+            self.fire = fire;
             if stuck {
                 self.bump("cap_stuck", 1);
             }
@@ -169,6 +170,7 @@ impl Engine {
                 self.guess = total - held > self.cap;
                 // it fires at twice the target (or the priced cap if lower) and lands on the target: one batch
                 fire = fire.min(2 * self.p.target);
+                self.fire = fire;
                 self.cap = self.p.target;
                 self.floor = (cut_to / self.cap as f64).min(0.8);
             }

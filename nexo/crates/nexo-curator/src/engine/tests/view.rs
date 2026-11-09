@@ -207,7 +207,8 @@ fn conversation(spec: &str, plan: &[(usize, usize)], lines: usize) -> (Engine, V
     (e, msgs)
 }
 
-const TOPICS: &str = "nudge=0;eoq=0;link=1;ahead=0.25;margin=20;ratio=0.115;cards=2;target=0;cap=0;hard=0";
+// (the default working window is on: the topic split is a priced decision that has to compose with it)
+const TOPICS: &str = "nudge=0;eoq=0;link=1;ahead=0.25;margin=20;ratio=0.115;cards=2";
 
 /// The tokens the topics other than the active one hold.
 fn others_hold(e: &Engine) -> i64 {
