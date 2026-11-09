@@ -1045,3 +1045,40 @@ fn a_turn_closed_on_a_reply_with_its_checks_shows_the_text_as_the_answer() {
     assert!(a.blocks.iter().any(|b| matches!(b, Block::Tool { status: ToolStatus::Done, .. })));
     assert!(!a.busy);
 }
+
+#[test]
+fn a_saved_instruction_flashes_in_the_status_bar_and_its_card_stays_in_sight_in_a_folded_group() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    let call = |a: &mut App, id: &str, name: &str, out: ToolOutput| {
+        a.handle_agent(AgentEvent::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            args: serde_json::json!({}),
+            summary: name.into(),
+        });
+        a.handle_agent(AgentEvent::ToolStart { id: id.into() });
+        a.handle_agent(AgentEvent::ToolDone { id: id.into(), output: out, elapsed_ms: 1 });
+    };
+    call(&mut a, "r1", "read", ToolOutput::ok("x"));
+    let saved = ToolOutput::ok("noted 1 line; 1 new rule saved").with_display(ToolDisplay::Remembered {
+        scope: "project".into(),
+        items: vec!["tests run with `make check`".into()],
+        path: "/p/AGENTS.md".into(),
+    });
+    call(&mut a, "n1", "note", saved);
+    assert_eq!(
+        a.status.as_ref().map(|s| s.0.as_str()),
+        Some("✦ remembered (this project): tests run with `make check`")
+    );
+    let at =
+        |a: &App, id: &str| a.blocks.iter().position(|b| matches!(b, Block::Tool { id: i, .. } if i == id)).unwrap();
+    // the group of calls is folded: the read is out of sight, the saved instruction is not
+    assert!(a.blocks.iter().any(|b| matches!(b, Block::Group { folded: true, .. })));
+    assert!(a.hidden(at(&a, "r1")));
+    assert!(!a.hidden(at(&a, "n1")));
+    // a plain note (nothing saved) does not flash
+    a.status = None;
+    call(&mut a, "n2", "note", ToolOutput::ok("noted 1 line"));
+    assert!(a.status.is_none());
+}

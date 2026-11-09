@@ -20,11 +20,7 @@ pub fn built_in() -> &'static str {
     BUILT_IN.trim()
 }
 
-/// What a new `~/.nexo/prompt.md` holds: the file adds the person's own preferences after the built-in text.
-pub const PREFS_TEMPLATE: &str = "<!-- Your preferences: added after nexo's built-in prompt, which stays first (tools, subagents, how to work).
-     Write who you are, your machine and stack, how you like answers. Comments like this one are not sent.
-     A file that starts with \"You are nexo,\" replaces the built-in prompt instead (README: Your own system prompt). -->
-";
+pub use nexo_core::paths::PREFS_TEMPLATE;
 
 /// Whether a prompt file is a whole prompt of its own rather than preferences: one set in the
 /// config, or one that starts like the built-in text (the copies earlier versions made).
@@ -125,7 +121,7 @@ fn abilities(tools: &ToolSet) -> String {
         lines.push("- `recall` returns a message the context left out.");
     }
     if has("note") {
-        lines.push("- `note` keeps facts as `Finding: ...`, `Plan: ...`, `Rule: ...` (scope `project` or `user` for later sessions); send it with your next tool call.");
+        lines.push("- `note` keeps `Finding: ...`, `Plan: ...`, `Rule: ...` lines; send it with your next tool call. A lasting preference, rule or fact the person states (\"always ...\", \"my .bashrc is at ...\"), or one you find that will matter again (a non-default path or port, something not to touch), is saved as one `Rule: ...` line with `scope` `global` (all projects) or `project` (this repo), at once. Not one-off details, guesses or secrets. Tell the person in one short line what you saved.");
     }
     if lines.is_empty() {
         return String::new();
@@ -513,6 +509,51 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_tells_the_model_what_to_remember_and_where_only_when_it_has_note() {
+        let all = tool_guidance(&nexo_tools::builtin());
+        for want in [
+            "lasting preference, rule or fact",
+            "\"always ...\"",
+            "`global`",
+            "`project`",
+            "one-off details",
+            "secrets",
+            "one short line",
+        ] {
+            assert!(all.contains(want), "missing {want}: {all}");
+        }
+        assert!(!tool_guidance(&ToolSet::new()).contains("lasting preference, rule or fact"));
+    }
+
+    /// What the model saves with `note` is in the prompt of the next session (and the current one keeps its prompt, so
+    /// the cached prefix stays the same: the call itself stays in the context for it).
+    #[test]
+    fn a_saved_rule_is_in_the_prompt_of_the_next_session_and_not_of_this_one() {
+        use nexo_core::tool::{Tool, ToolContext};
+        let _turn = CONFIG_DIR.lock().unwrap_or_else(|e| e.into_inner());
+        let (cwd, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir(cwd.path().join(".git")).unwrap();
+        std::env::set_var("NEXO_CONFIG_DIR", home.path());
+        let cfg = AgentConfig::default();
+        let tools = nexo_tools::builtin();
+        let before = system_prompt(cwd.path(), &cfg, &tools);
+        let cx = ToolContext::new(cwd.path().to_path_buf());
+        let note = nexo_tools::note::Note;
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let run = |args: serde_json::Value| rt.block_on(note.run(args, &cx));
+        let g = run(serde_json::json!({"text": "Rule: my .bashrc is at ~/dotfiles/bashrc", "scope": "global"}));
+        let p = run(serde_json::json!({"text": "Rule: the dev server runs on port 4100", "scope": "project"}));
+        let after = system_prompt(cwd.path(), &cfg, &tools);
+        std::env::remove_var("NEXO_CONFIG_DIR");
+        assert!(!g.is_error && !p.is_error, "{} / {}", g.content, p.content);
+        assert!(!before.contains("dotfiles") && !before.contains("4100"));
+        assert!(after.contains("The person's preferences:\n## Remembered by nexo\n- "), "{after}");
+        assert!(after.contains("my .bashrc is at ~/dotfiles/bashrc"), "{after}");
+        assert!(after.contains("the dev server runs on port 4100"), "{after}");
+        assert!(after.contains(&format!("Instructions from {}", cwd.path().join("AGENTS.md").display())), "{after}");
+    }
+
+    #[test]
     fn the_web_tools_get_their_guidance_only_when_present() {
         let with = tool_guidance(&nexo_tools::builtin());
         assert!(with.contains("`web_search`: check anything current") && with.contains("cite their URLs"), "{with}");
@@ -554,13 +595,14 @@ mod size_budget {
         specs + tool_guidance(&set).len()
     }
 
-    /// 10565 characters (about 2600 tokens) when this budget was set; it may grow 10% and no more.
+    /// 10565 characters (about 2600 tokens) when this budget was set; it may grow 10% and no more
+    /// (11620), and 380 more went to the one line that tells the model what to save with `note` and where.
     /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
     /// model already knows about shells and search tools.
     #[test]
     fn the_tool_text_stays_within_its_budget() {
         let n = tool_text_chars();
-        assert!(n <= 11_620, "tool descriptions and guidance take {n} characters; the budget is 11620");
+        assert!(n <= 12_000, "tool descriptions and guidance take {n} characters; the budget is 12000");
     }
 
     #[test]

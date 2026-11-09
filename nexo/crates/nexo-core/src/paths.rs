@@ -100,6 +100,12 @@ pub fn prompt_file() -> PathBuf {
     config_dir().join("prompt.md")
 }
 
+/// What a new `~/.nexo/prompt.md` holds: the file adds the person's own preferences after the built-in text.
+pub const PREFS_TEMPLATE: &str = "<!-- Your preferences: added after nexo's built-in prompt, which stays first (tools, subagents, how to work).
+     Write who you are, your machine and stack, how you like answers. Comments like this one are not sent.
+     A file that starts with \"You are nexo,\" replaces the built-in prompt instead (README: Your own system prompt). -->
+";
+
 /// The part of a prompt file nexo does not add itself: what comes before a
 /// `Working directory:` line (files saved from the whole prompt carried the directory,
 /// date and tool list, which go stale; nexo appends the current ones).

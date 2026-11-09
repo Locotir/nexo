@@ -324,6 +324,12 @@ impl Block {
                 close_guide(&mut lines);
                 lines
             }
+            // what nexo saved for later sessions: a card of its own, not a tool's output
+            Block::Tool {
+                status: ToolStatus::Done,
+                output: Some(ToolOutput { display: ToolDisplay::Remembered { scope, items, path }, .. }),
+                ..
+            } => remembered_card(scope, items, path, theme, w),
             Block::Tool { name, summary, status, progress, output, started, elapsed_ms, folded, args, .. } => {
                 let running = matches!(status, ToolStatus::Running | ToolStatus::Pending);
                 let (icon, istyle) = match status {
@@ -956,7 +962,7 @@ fn render_output(
             boxed(meta, Kind::Output, first, lines.len(), 2);
             keep_source(meta, first, lines.len(), text.trim_end_matches('\n'));
         }
-        ToolDisplay::List { items } => {
+        ToolDisplay::List { items } | ToolDisplay::Remembered { items, .. } => {
             for it in items {
                 push_plain(&mut lines, meta, it, w, Style::default(), pad);
             }
@@ -1176,6 +1182,51 @@ fn job_card(text: &str, w: usize, theme: &Theme) -> Vec<Line<'static>> {
 /// A notice as the user reads it: the curator's name stays inside, the screen says what happened.
 /// The card for a newer nexo: a framed box in the accent colour, so it is not read past like a
 /// grey notice. Too narrow for a frame, it falls back to two bold lines.
+/// A `file://` address for a path, the form a Ctrl+click opens: forward slashes, spaces and other
+/// characters a link cannot hold written as `%XX`.
+pub fn file_url(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let mut url = String::from("file://");
+    if !path.starts_with('/') {
+        url.push('/');
+    }
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' | b'@' | b'+' | b',' => {
+                url.push(b as char)
+            }
+            _ => url.push_str(&format!("%{b:02X}")),
+        }
+    }
+    url
+}
+
+/// What nexo saved for later sessions: `✦ remembered · this project`, the lines, and the file as a link.
+fn remembered_card(scope: &str, items: &[String], path: &str, theme: &Theme, w: usize) -> Vec<Line<'static>> {
+    let edge = theme.style(theme.accent2);
+    let rail = || Span::styled("│ ", edge);
+    let place = if scope == "project" { "this project" } else { "global" };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("✦ ", edge),
+        Span::styled("remembered", edge.add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" · {place}"), theme.dim()),
+    ])];
+    for it in items {
+        lines.extend(crate::render::wrap::wrap_runs(
+            &[(it.clone(), Style::default().fg(theme.fg))],
+            w,
+            &[rail(), Span::styled("• ", edge)],
+            &[rail(), Span::raw("  ")],
+        ));
+    }
+    // the address on one row, whole, so a Ctrl+click finds all of it
+    lines.push(Line::from(vec![
+        Span::styled("└ ", edge),
+        Span::styled(file_url(path), Style::default().fg(theme.accent).add_modifier(Modifier::UNDERLINED)),
+    ]));
+    lines
+}
+
 fn update_card(behind: u32, theme: &Theme, w: usize) -> Vec<Line<'static>> {
     let edge = Style::default().fg(theme.accent2).add_modifier(Modifier::BOLD);
     let text = Style::default().fg(theme.fg);
@@ -1618,6 +1669,65 @@ mod tests {
         assert_eq!(t, vec!["▸ thinking · 3 lines · 2.1s"]);
         let hidden = b.render(40, &Theme::dark(), RenderOpts { show_reasoning: false, ..opts() });
         assert!(hidden.is_empty());
+    }
+
+    fn remembered(scope: &str, items: &[&str], path: &str) -> Block {
+        let display = ToolDisplay::Remembered {
+            scope: scope.into(),
+            items: items.iter().map(|s| s.to_string()).collect(),
+            path: path.into(),
+        };
+        Block::Tool {
+            id: "n".into(),
+            name: "note".into(),
+            summary: "note: Rule: x".into(),
+            args: Value::Null,
+            status: ToolStatus::Done,
+            progress: vec![],
+            output: Some(ToolOutput::ok("noted 1 line; 1 new rule saved").with_display(display)),
+            started: None,
+            elapsed_ms: Some(1),
+            folded: true,
+        }
+    }
+
+    #[test]
+    fn what_nexo_remembers_is_a_card_with_its_scope_the_line_and_a_link_to_the_file() {
+        let b = remembered("project", &["the API runs on port 4100"], "/home/me/my app/AGENTS.md");
+        for theme in [Theme::dark(), Theme::light()] {
+            let t = texts(&b.render(60, &theme, opts()));
+            assert_eq!(
+                t,
+                vec![
+                    "✦ remembered · this project",
+                    "│ • the API runs on port 4100",
+                    "└ file:///home/me/my%20app/AGENTS.md"
+                ]
+            );
+            // the glyphs and the address are in colours of the theme, not the default
+            let lines = b.render(60, &theme, opts());
+            assert_eq!(lines[0].spans[0].style.fg, Some(theme.accent2));
+            assert_eq!(lines[2].spans[1].style.fg, Some(theme.accent));
+        }
+        // folded or not, a finished save is not a tool card with a chevron
+        let g = texts(&remembered("global", &["a", "b"], "C:\\Users\\me\\.nexo\\prompt.md").render(
+            40,
+            &Theme::dark(),
+            opts(),
+        ));
+        assert_eq!(g[0], "✦ remembered · global");
+        assert_eq!(&g[1..3], ["│ • a", "│ • b"]);
+        assert_eq!(g[3], "└ file:///C:/Users/me/.nexo/prompt.md");
+        // a long line wraps under its text; the address stays whole on its own row
+        let long =
+            texts(&remembered("global", &["one two three four five six seven eight nine ten"], "/h/prompt.md").render(
+                20,
+                &Theme::dark(),
+                opts(),
+            ));
+        assert!(long.len() > 3 && long[1..long.len() - 1].iter().all(|l| width(l) <= 20), "{long:?}");
+        assert!(long[2].starts_with("│   "), "{long:?}");
+        assert_eq!(long.last().unwrap(), "└ file:///h/prompt.md");
     }
 
     #[test]

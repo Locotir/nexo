@@ -363,7 +363,13 @@ For work with several steps the model keeps a task list with the `todo`
 tool (`[ ]`, `[>]`, `[x]`); the interface shows it in the panel (`Ctrl+B`)
 and it comes back on resume. With the `note` tool it keeps what it learnt
 (`Finding:`, `Plan:`, `Rule:` lines): the call changes nothing, the context
-policy keeps the lines with the first message once their message leaves. `/goal <text>` pins a goal and starts working on
+policy keeps the lines with the first message once their message leaves. With `scope` `global` or `project`, its `Rule:` lines are
+also saved for later sessions: the model does it when you state something lasting ("always...", "in this repo we...") or finds
+a fact that will matter again (a non-default path or port). `global` goes to `~/.nexo/prompt.md`, `project` to the
+project's `AGENTS.md` (the instructions file nexo already reads there, else a new one at the repository root), one dated line
+under `## Remembered by nexo`; a line already there is skipped, a key or password is refused, and your own text is never
+touched. The transcript shows a `✦ remembered` card (scope, the line, the file as a link you can Ctrl+click) and the status
+bar flashes it. The running session keeps its prompt (the cached prefix does not change); the next session reads the file. `/goal <text>` pins a goal and starts working on
 it; while a turn runs it is pinned and checked when the turn ends. The model first
 restates it as you mean it (what, why, how, when it is done) and works from that,
 so a goal typed in a hurry still gets a clear finish line. When a reply ends

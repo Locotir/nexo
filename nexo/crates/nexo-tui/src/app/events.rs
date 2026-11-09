@@ -583,6 +583,14 @@ impl App {
                         self.dirty = true;
                     }
                 }
+                if let ToolDisplay::Remembered { scope, items, .. } = &output.display {
+                    let place = if scope == "project" { "this project" } else { "global" };
+                    let what = match items.as_slice() {
+                        [one] => crate::render::wrap::truncate(one, 48),
+                        more => nexo_core::count(more.len(), "rule"),
+                    };
+                    self.flash(&format!("✦ remembered ({place}): {what}"));
+                }
                 if let Some(i) = self.tool_index(&id) {
                     if let Block::Tool { status, output: o, elapsed_ms: e, .. } = &mut self.blocks[i] {
                         *status = status_of(&output);

@@ -526,7 +526,9 @@ fn claude_hooks_in(
 }
 
 /// The file a lasting rule is saved to and the text to start it with when it is new: the project's
-/// instructions file (`project`) or the user's (`user`); `None` for any other scope.
+/// instructions file (`project`: the nearest one nexo reads, else `AGENTS.md` at the repository root),
+/// nexo's own prompt file (`global`: `prompt.md` in `config_dir`) or the user's instructions file
+/// (`user`, the older name for the same wish); `None` for any other scope.
 pub fn rules_file(
     scope: &str,
     cwd: &Path,
@@ -534,7 +536,12 @@ pub fn rules_file(
     home: Option<&Path>,
 ) -> Option<(PathBuf, Option<String>)> {
     match scope {
-        "project" => Some((project_file(cwd), None)),
+        "project" => {
+            let file = project_file(cwd);
+            let file = if file.is_file() { file } else { project_root(cwd).join("AGENTS.md") };
+            Some((file, None))
+        }
+        "global" => Some((config_dir.join("prompt.md"), Some(crate::paths::PREFS_TEMPLATE.to_string()))),
         "user" => Some(user_file(config_dir, home)),
         _ => None,
     }
@@ -546,48 +553,72 @@ pub fn rules_path(scope: &str, cwd: &Path) -> Option<PathBuf> {
     rules_file(scope, cwd, &crate::paths::config_dir(), home.as_deref()).map(|(p, _)| p)
 }
 
+/// The heading the rules nexo saves go under.
+pub const REMEMBERED: &str = "## Remembered by nexo";
+
+/// The words of a line, lower case, without the list marker, a leading `YYYY-MM-DD:` date and the
+/// punctuation: two lines with the same key say the same thing.
 fn rule_key(line: &str) -> String {
     let l = line.trim().trim_start_matches(['-', '*']).trim();
-    l.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    let b = l.as_bytes();
+    let dated = b.len() > 11
+        && b[..10].iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+        && b[10] == b':';
+    let l = if dated { &l[11..] } else { l };
+    l.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
-/// Adds `rule` as one list line under a `## Rules` heading of `text` (the heading is created at the
-/// end when missing). `None` when a line with the same words is already in the file.
-pub fn with_rule(text: &str, rule: &str) -> Option<String> {
+/// `text` with `rule` added as a dated list line (`- 2026-11-09: the rule`) at the end of its
+/// `## Remembered by nexo` section; the section is created at the end when missing. Nothing already
+/// in `text` changes, byte for byte. `None` when a line with the same words is already there.
+pub fn with_rule(text: &str, rule: &str, date: &str) -> Option<String> {
     let rule = rule.split_whitespace().collect::<Vec<_>>().join(" ");
     let key = rule_key(&rule);
-    if rule.is_empty() || text.lines().any(|l| rule_key(l) == key) {
+    if key.is_empty() || text.lines().any(|l| rule_key(l) == key) {
         return None;
     }
-    let mut lines: Vec<&str> = text.lines().collect();
-    let item = format!("- {rule}");
-    match lines.iter().position(|l| l.trim().eq_ignore_ascii_case("## rules")) {
-        Some(h) => {
-            let end = lines[h + 1..].iter().position(|l| l.starts_with('#')).map_or(lines.len(), |i| h + 1 + i);
-            let mut at = end;
-            while at > h + 1 && lines[at - 1].trim().is_empty() {
-                at -= 1;
-            }
-            lines.insert(at, &item);
-            Some(lines.join("\n") + "\n")
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let item = format!("- {date}: {rule}{nl}");
+    // the section: from the end of its heading line to the next heading (or the end of the text)
+    let (mut at, mut start, mut end) = (0, None, text.len());
+    for line in text.split_inclusive('\n') {
+        if start.is_none() && line.trim().eq_ignore_ascii_case(REMEMBERED) {
+            start = Some(at + line.len());
+        } else if start.is_some() && line.starts_with('#') {
+            end = at;
+            break;
         }
-        None => {
-            let body = text.trim_end();
-            let sep = if body.is_empty() { "" } else { "\n\n" };
-            Some(format!("{body}{sep}## Rules\n{item}\n"))
-        }
+        at += line.len();
     }
+    let Some(start) = start else {
+        let gap = match text {
+            "" => "",
+            t if t.ends_with('\n') => nl,
+            _ => &format!("{nl}{nl}"),
+        };
+        return Some(format!("{text}{gap}{REMEMBERED}{nl}{item}"));
+    };
+    // after the last line of the section that has words, so blank lines before the next heading stay
+    let body = &text[start..end];
+    let used = body.trim_end().len();
+    let (cut, lead) = match body[used..].find('\n') {
+        _ if used == 0 => (start, if text[..start].ends_with('\n') { "" } else { nl }),
+        Some(q) => (start + used + q + 1, ""),
+        None => (end, nl),
+    };
+    Some(format!("{}{lead}{item}{}", &text[..cut], &text[cut..]))
 }
 
-/// Saves `rule` into `file` (see `with_rule`), starting from `seed` when the file is new. `Ok(false)`
-/// when it was there already.
+/// Saves `rule` into `file` (see `with_rule`, dated today), starting from `seed` when the file is
+/// new. `Ok(false)` when it was there already.
 pub fn save_rule(file: &Path, seed: Option<&str>, rule: &str) -> std::io::Result<bool> {
     let old = match std::fs::read_to_string(file) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => seed.unwrap_or("").to_string(),
         Err(e) => return Err(e),
     };
-    let Some(new) = with_rule(&old, rule) else { return Ok(false) };
+    let today = time::OffsetDateTime::now_utc().date();
+    let Some(new) = with_rule(&old, rule, &today.to_string()) else { return Ok(false) };
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -812,36 +843,75 @@ mod tests {
 mod rule_tests {
     use super::*;
 
+    const D: &str = "2026-11-09";
+
     #[test]
-    fn a_rule_goes_under_the_rules_heading_once() {
-        let d = tempfile::tempdir().unwrap();
-        let f = d.path().join("AGENTS.md");
-        std::fs::write(&f, "# Project\n\nBuild with make.\n\n## Rules\n- Use tabs.\n\n## Other\ntext\n").unwrap();
-        assert!(save_rule(&f, None, "Run `make fmt` first.").unwrap());
-        assert!(!save_rule(&f, None, "run `make fmt`  first.").unwrap());
-        assert!(!save_rule(&f, None, "Use tabs.").unwrap());
-        let t = std::fs::read_to_string(&f).unwrap();
+    fn a_rule_goes_under_the_remembered_heading_and_nothing_else_moves() {
+        let before = "# Project\n\nBuild with make.\n\n## Rules\n- Use tabs.\n\n## Remembered by nexo\n- 2026-11-01: Old one.\n\n## Other\ntext\n";
+        let t = with_rule(before, "Run `make fmt` first.", D).unwrap();
         assert_eq!(
             t,
-            "# Project\n\nBuild with make.\n\n## Rules\n- Use tabs.\n- Run `make fmt` first.\n\n## Other\ntext\n"
+            "# Project\n\nBuild with make.\n\n## Rules\n- Use tabs.\n\n## Remembered by nexo\n- 2026-11-01: Old one.\n- 2026-11-09: Run `make fmt` first.\n\n## Other\ntext\n"
+        );
+        // near-exact copies (case, spacing, punctuation, the date) and lines of the person's own are skipped
+        assert!(with_rule(&t, "run `make fmt`  first", "2030-01-01").is_none());
+        assert!(with_rule(&t, "old one", D).is_none());
+        assert!(with_rule(&t, "Use tabs!", D).is_none());
+        // a file without the heading gets it at the end, with a blank line before it
+        assert_eq!(with_rule("Mine.", "A.", D).unwrap(), "Mine.\n\n## Remembered by nexo\n- 2026-11-09: A.\n");
+        assert_eq!(with_rule("Mine.\n", "A.", D).unwrap(), "Mine.\n\n## Remembered by nexo\n- 2026-11-09: A.\n");
+        assert_eq!(with_rule("", "A.", D).unwrap(), "## Remembered by nexo\n- 2026-11-09: A.\n");
+        // an empty section, at the very end or without a final newline
+        assert_eq!(with_rule("## Remembered by nexo\n", "A.", D).unwrap(), "## Remembered by nexo\n- 2026-11-09: A.\n");
+        assert_eq!(
+            with_rule("## Remembered by nexo\n- 2026-11-01: B.", "A.", D).unwrap(),
+            "## Remembered by nexo\n- 2026-11-01: B.\n- 2026-11-09: A.\n"
+        );
+        // Windows line endings stay Windows line endings
+        assert_eq!(
+            with_rule("Mine.\r\nMore.\r\n", "A.", D).unwrap(),
+            "Mine.\r\nMore.\r\n\r\n## Remembered by nexo\r\n- 2026-11-09: A.\r\n"
         );
     }
 
     #[test]
-    fn a_new_file_gets_the_heading_and_the_seed_and_the_next_session_reads_it() {
+    fn save_rule_appends_dated_and_dedupes() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("AGENTS.md");
+        std::fs::write(&f, "# Project\n\nBuild with make.\n").unwrap();
+        assert!(save_rule(&f, None, "Run `make fmt` first.").unwrap());
+        assert!(!save_rule(&f, None, "run `make fmt`  first.").unwrap());
+        let t = std::fs::read_to_string(&f).unwrap();
+        let today = time::OffsetDateTime::now_utc().date();
+        assert_eq!(
+            t,
+            format!("# Project\n\nBuild with make.\n\n## Remembered by nexo\n- {today}: Run `make fmt` first.\n")
+        );
+    }
+
+    #[test]
+    fn each_scope_has_its_file_and_the_next_session_reads_it() {
         let d = tempfile::tempdir().unwrap();
         let (cfg, proj) = (d.path().join("cfg"), d.path().join("proj"));
         std::fs::create_dir_all(proj.join(".git")).unwrap();
-        let (f, seed) = rules_file("user", &proj, &cfg, None).unwrap();
-        assert_eq!(f, cfg.join("AGENTS.md"));
+        std::fs::create_dir_all(proj.join("src/deep")).unwrap();
+        let (f, seed) = rules_file("global", &proj, &cfg, None).unwrap();
+        assert_eq!(f, cfg.join("prompt.md"));
         assert!(save_rule(&f, seed.as_deref(), "Answer in English.").unwrap());
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "## Rules\n- Answer in English.\n");
-        let (p, _) = rules_file("project", &proj, &cfg, None).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.starts_with(crate::paths::PREFS_TEMPLATE), "{text}");
+        assert!(text.contains("## Remembered by nexo\n- "), "{text}");
+        // from a sub-folder the project file is at the repository root, created when missing
+        let (p, _) = rules_file("project", &proj.join("src/deep"), &cfg, None).unwrap();
         assert_eq!(p, proj.join("AGENTS.md"));
         assert!(save_rule(&p, None, "Never edit vendor/.").unwrap());
         let all = instructions(&proj, &cfg, None);
-        assert!(all.iter().any(|i| i.text.contains("Answer in English.")), "{all:?}");
         assert!(all.iter().any(|i| i.text.contains("Never edit vendor/.")), "{all:?}");
+        // an instructions file nexo already reads is the one that grows
+        std::fs::remove_file(&p).unwrap();
+        std::fs::write(proj.join("CLAUDE.md"), "Mine.\n").unwrap();
+        assert_eq!(rules_file("project", &proj, &cfg, None).unwrap().0, proj.join("CLAUDE.md"));
+        assert_eq!(rules_file("user", &proj, &cfg, None).unwrap().0, cfg.join("AGENTS.md"));
         assert!(rules_file("session", &proj, &cfg, None).is_none());
     }
 }

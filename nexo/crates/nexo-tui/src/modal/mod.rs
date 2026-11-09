@@ -851,7 +851,7 @@ impl Modal {
                     lines.extend(wrap_plain(text, w, Style::default(), &[]));
                 }
             }
-            ToolDisplay::List { items } => {
+            ToolDisplay::List { items } | ToolDisplay::Remembered { items, .. } => {
                 for it in items {
                     lines.extend(wrap_plain(it, w, Style::default(), &[]));
                 }

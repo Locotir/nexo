@@ -2,14 +2,18 @@
 //! beginning with `Finding:` (a fact a result settled), `Plan:` (what is left) or `Rule:` (an
 //! instruction the user gave that holds for the session). The tool changes nothing: the context
 //! policy that keeps notes (the curator) reads the call itself, so the lines outlive their message.
-//! With `scope` `project` or `user`, its `Rule:` lines are also saved to that level's instructions file.
+//! With `scope` `global` or `project`, its `Rule:` lines are also saved for later sessions: to the
+//! person's `~/.nexo/prompt.md` or to the project's instructions file, dated, under `## Remembered by nexo`.
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 /// Characters of one call at most.
 pub const MAX_CHARS: usize = 4000;
+
+/// Characters of one saved rule at most: a line, not a paragraph.
+pub const MAX_RULE: usize = 400;
 
 pub struct Note;
 
@@ -48,12 +52,13 @@ impl Tool for Note {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "note".into(),
-            description: "Keep what you learnt before older messages leave this context. Write one line per item: \
-                          `Finding: ...` for a fact a result settled, `Plan: ...` for what is left (it replaces the previous plan), \
-                          `Rule: ...` for an instruction the user gave that holds for the whole session. The lines \
-                          are kept with the first message, in your words, for as long as the session lasts. Send it in the same response as your next tool call after a \
-                          result settles something, and when the context asks for it; never as a response of \
-                          its own, and never after your final result."
+            description: "Keep what you learnt before older messages leave this context, one line per item: \
+                          `Finding: ...` a fact a result settled, `Plan: ...` what is left (replaces the previous plan), \
+                          `Rule: ...` an instruction the user gave. Kept with the first message, in your words, for the \
+                          session. Send it in the same response as your next tool call after a result settles something, \
+                          or when the context asks; never as a response of its own, never after your final result. \
+                          With `scope` `global` or `project`, `Rule:` lines are also saved for later sessions (dated, \
+                          duplicates skipped, secrets refused)."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -64,8 +69,8 @@ impl Tool for Note {
                     },
                     "scope": {
                         "type": "string",
-                        "enum": ["session", "project", "user"],
-                        "description": "Where `Rule:` lines last: this session (default), the project or the user."
+                        "enum": ["session", "project", "global"],
+                        "description": "Where `Rule:` lines last: this session (default), this project (AGENTS.md) or all projects (~/.nexo/prompt.md)."
                     }
                 },
                 "required": ["text"]
@@ -112,27 +117,59 @@ impl Tool for Note {
             let Some((file, seed)) =
                 nexo_core::compat::rules_file(scope, &ctx.cwd, &nexo_core::paths::config_dir(), home.as_deref())
             else {
-                return ToolOutput::error("`scope` is session, project or user");
+                return ToolOutput::error("`scope` is session, project or global");
             };
-            let mut new = 0;
+            let mut fresh = Vec::new();
+            let mut refused = Vec::new();
             for r in text.lines().filter_map(rule_text) {
+                if let Some(why) = unfit(&r) {
+                    refused.push(why);
+                    continue;
+                }
                 match nexo_core::compat::save_rule(&file, seed.as_deref(), &r) {
-                    Ok(true) => new += 1,
+                    Ok(true) => fresh.push(r.split_whitespace().collect::<Vec<_>>().join(" ")),
                     Ok(false) => {}
                     Err(e) => return ToolOutput::error(format!("cannot save to {}: {e}", file.display())),
                 }
             }
-            saved = Some((new, file));
+            if !refused.is_empty() && fresh.is_empty() {
+                return ToolOutput::error(format!("not saved: {}", refused.join("; ")));
+            }
+            saved = Some((fresh, refused, file, if scope == "project" { "project" } else { "global" }));
         }
         let mut out = format!("noted {n} line{}", if n == 1 { "" } else { "s" });
         if other > 0 {
             out += &format!(" ({other} without a Finding:/Plan:/Rule: prefix left out)");
         }
-        if let Some((new, file)) = saved {
-            out += &format!("; {new} new rule{} saved to {}", if new == 1 { "" } else { "s" }, file.display());
+        let mut display = ToolDisplay::Plain;
+        if let Some((fresh, refused, file, scope)) = saved {
+            let n = fresh.len();
+            out += &format!("; {n} new rule{} saved to {}", if n == 1 { "" } else { "s" }, file.display());
+            if !refused.is_empty() {
+                out += &format!(" (not saved: {})", refused.join("; "));
+            }
+            if n > 0 {
+                display = ToolDisplay::Remembered {
+                    scope: scope.to_string(),
+                    items: fresh,
+                    path: file.display().to_string(),
+                };
+            }
         }
-        ToolOutput::ok(out)
+        ToolOutput::ok(out).with_display(display)
     }
+}
+
+/// Why `rule` must not be saved to a file every later session reads (and a project shares), if so.
+fn unfit(rule: &str) -> Option<String> {
+    if nexo_core::redact::redact(rule) != rule {
+        return Some(
+            "the rule looks like it holds a secret (a key, token or password); instruction files are read by every \
+             session and may be shared, so say where the secret lives, not what it is"
+                .to_string(),
+        );
+    }
+    (rule.chars().count() > MAX_RULE).then(|| format!("a rule is one line of at most {MAX_RULE} characters"))
 }
 
 #[cfg(test)]
@@ -150,21 +187,121 @@ mod tests {
         assert!(!is_note_line("finding: lower case is a word, not a mark"));
     }
 
-    #[tokio::test]
-    async fn a_project_rule_is_saved_once_and_a_session_rule_writes_nothing() {
+    /// `NEXO_CONFIG_DIR` is one variable for the whole process: the tests that point it somewhere take turns.
+    static CONFIG_DIR: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn repo() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join(".git")).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn a_project_rule_is_saved_once_dated_under_its_heading_and_a_session_rule_writes_nothing() {
+        let d = repo();
+        let f = d.path().join("AGENTS.md");
+        let mine = "# Mine\n\nNever edit vendor/ by hand.\n";
+        std::fs::write(&f, mine).unwrap();
         let cx = ToolContext::new(d.path().to_path_buf());
-        let call = json!({"text": "Finding: a = 1\n- Rule: never edit vendor/.", "scope": "project"});
+        let call = json!({"text": "Finding: a = 1\n- Rule: deploys go through `make ship`.", "scope": "project"});
         let first = Note.run(call.clone(), &cx).await;
         assert!(!first.is_error && first.content.contains("1 new rule saved"), "{}", first.content);
-        assert!(Note.run(call, &cx).await.content.contains("0 new rules saved"));
-        let f = d.path().join("AGENTS.md");
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "## Rules\n- never edit vendor/.\n");
+        let again = Note.run(call, &cx).await;
+        assert!(
+            again.content.contains("0 new rules saved") && again.display == ToolDisplay::Plain,
+            "{}",
+            again.content
+        );
+        let text = std::fs::read_to_string(&f).unwrap();
+        let (old, new) = text.split_at(mine.len());
+        assert_eq!(old, mine, "the person's text is untouched");
+        let date =
+            regex::Regex::new(r"^\n## Remembered by nexo\n- \d{4}-\d\d-\d\d: deploys go through `make ship`\.\n$")
+                .unwrap();
+        assert!(date.is_match(new), "{new:?}");
+        // a rule the file already says in other words is skipped
+        let same = Note.run(json!({"text": "Rule: Never edit vendor/ by hand", "scope": "project"}), &cx).await;
+        assert!(same.content.contains("0 new rules"), "{}", same.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), text);
         let local = Note.run(json!({"text": "Rule: answer briefly"}), &cx).await;
         assert_eq!(local.content, "noted 1 line");
-        assert_eq!(std::fs::read_to_string(&f).unwrap().matches("briefly").count(), 0);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), text);
         assert!(Note.run(json!({"text": "Rule: x", "scope": "galaxy"}), &cx).await.is_error);
+    }
+
+    #[tokio::test]
+    async fn a_project_without_instructions_gets_an_agents_file_at_its_root_and_says_what_was_saved() {
+        let d = repo();
+        std::fs::create_dir_all(d.path().join("src/deep")).unwrap();
+        let cx = ToolContext::new(d.path().join("src/deep"));
+        let out = Note.run(json!({"text": "Rule: the API is on port 4100", "scope": "project"}), &cx).await;
+        let f = d.path().join("AGENTS.md");
+        assert!(std::fs::read_to_string(&f).unwrap().starts_with("## Remembered by nexo\n- "));
+        assert!(!d.path().join("src/deep/AGENTS.md").exists());
+        assert_eq!(
+            out.display,
+            ToolDisplay::Remembered {
+                scope: "project".into(),
+                items: vec!["the API is on port 4100".into()],
+                path: f.display().to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_global_rule_goes_to_the_prompt_file_made_from_the_template_and_never_to_the_real_home() {
+        let _turn = CONFIG_DIR.lock().await;
+        let (cfg, d) = (tempfile::tempdir().unwrap(), repo());
+        std::env::set_var("NEXO_CONFIG_DIR", cfg.path());
+        let cx = ToolContext::new(d.path().to_path_buf());
+        let call = json!({"text": "Rule: my .bashrc is at ~/dotfiles/bashrc", "scope": "global"});
+        let out = Note.run(call.clone(), &cx).await;
+        // a second one lands under the same heading, after the first
+        let two = Note.run(json!({"text": "Rule: answer in English", "scope": "global"}), &cx).await;
+        let dup = Note.run(call, &cx).await;
+        std::env::remove_var("NEXO_CONFIG_DIR");
+        let f = cfg.path().join("prompt.md");
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(!out.is_error && !two.is_error && dup.content.contains("0 new rules"), "{}", dup.content);
+        assert!(text.starts_with(nexo_core::paths::PREFS_TEMPLATE), "{text}");
+        assert_eq!(text.matches("## Remembered by nexo").count(), 1, "{text}");
+        let (a, b) = (text.find("my .bashrc").unwrap(), text.find("answer in English").unwrap());
+        assert!(a < b, "{text}");
+        assert!(!d.path().join("AGENTS.md").exists());
+        assert!(matches!(&out.display, ToolDisplay::Remembered { scope, path, .. }
+            if scope == "global" && path == &f.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_secret_is_refused_with_the_reason_and_nothing_is_written() {
+        let d = repo();
+        let cx = ToolContext::new(d.path().to_path_buf());
+        // fake values, built at run time so no file holds one that looks like a key
+        let key = ["s", "k-", &"a1B2".repeat(8)].concat();
+        for rule in [
+            format!("Rule: my OpenAI key is {key}"),
+            "Rule: the db password: hunter2hunter2".to_string(),
+            format!("Rule: use {}", ["gh", "p_", &"A1b2".repeat(6)].concat()),
+        ] {
+            let out = Note.run(json!({"text": rule, "scope": "project"}), &cx).await;
+            assert!(out.is_error && out.content.contains("secret"), "{rule}: {}", out.content);
+            assert!(!out.content.contains(&key));
+        }
+        assert!(!d.path().join("AGENTS.md").exists());
+        // the others of the same call are still saved, and the refusal is said
+        let mixed = Note
+            .run(json!({"text": format!("Rule: tabs, not spaces\nRule: token = {key}"), "scope": "project"}), &cx)
+            .await;
+        assert!(
+            !mixed.is_error && mixed.content.contains("1 new rule saved") && mixed.content.contains("not saved"),
+            "{}",
+            mixed.content
+        );
+        let text = std::fs::read_to_string(d.path().join("AGENTS.md")).unwrap();
+        assert!(text.contains("tabs, not spaces") && !text.contains(&key), "{text}");
+        // a rule is a line
+        let long = Note.run(json!({"text": format!("Rule: {}", "x ".repeat(300)), "scope": "project"}), &cx).await;
+        assert!(long.is_error && long.content.contains("one line"), "{}", long.content);
     }
 
     #[tokio::test]

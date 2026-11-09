@@ -83,6 +83,13 @@ pub enum ToolDisplay {
     Todo {
         items: Vec<TodoItem>,
     },
+    /// Instructions the agent saved for later sessions (the `note` tool): `scope` is `global` or
+    /// `project`, `items` the lines that were new and `path` the file they went to.
+    Remembered {
+        scope: String,
+        items: Vec<String>,
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

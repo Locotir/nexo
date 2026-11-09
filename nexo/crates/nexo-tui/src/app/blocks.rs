@@ -90,7 +90,11 @@ impl App {
             Some(m) => {
                 let kept = match &self.blocks[i] {
                     // the agreed plan and thinking the user opened stay in sight
-                    Block::Tool { name, .. } => name == "exit_plan",
+                    Block::Tool { name, output, .. } => {
+                        // what nexo saved for later sessions is said in sight, not folded away
+                        name == "exit_plan"
+                            || matches!(output, Some(o) if matches!(o.display, ToolDisplay::Remembered { .. }))
+                    }
                     Block::Reasoning { folded, text, .. } => !*folded && !text.trim().is_empty(),
                     _ => false,
                 };
