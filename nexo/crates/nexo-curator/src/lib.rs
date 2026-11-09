@@ -8,11 +8,13 @@ pub mod sim;
 
 mod engine;
 mod evidence;
+mod facts;
 mod flat;
 mod goal;
 mod hindsight;
 #[cfg(test)]
 mod hindsight_labels;
+mod index;
 mod json;
 mod learn;
 mod ledger;
@@ -924,6 +926,24 @@ mod tests {
     /// whole as the latest one goes as a pointer from the next request on (`miss_fresh`).
     #[test]
     fn every_rewrite_of_a_sent_message_counts_its_miss() {
+        // the tail (standing facts, lines the request names) is not history: it is built again on each call, goes
+        // after the history that is cached and costs only itself
+        let without_tail = |m: &Value| -> Value {
+            let mut m = m.clone();
+            if let Some(Value::Array(bs)) = m.get_mut("content") {
+                bs.retain(|b| {
+                    let t = b.get("text").and_then(Value::as_str).unwrap_or("");
+                    !(t.starts_with("Standing: ") || t.starts_with("Recall (lines of earlier"))
+                });
+                // a text that was a plain string became a list of blocks to carry the tail: the same text again
+                if let [b] = bs.as_slice() {
+                    if let Some(t) = b.get("text").filter(|_| b.as_object().is_some_and(|o| o.len() == 2)) {
+                        m["content"] = t.clone();
+                    }
+                }
+            }
+            m
+        };
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
         let mut names: Vec<_> =
             std::fs::read_dir(dir).unwrap().filter_map(|e| Some(e.ok()?.path())).filter(|p| p.is_file()).collect();
@@ -949,6 +969,7 @@ mod tests {
                 let send = json!({"op": "view", "system_tokens": req.get("system_tokens").cloned().unwrap_or(Value::Null), "messages": msgs});
                 let got = cur.answer(&send, 0.0);
                 let Some(Value::Array(view)) = got.get("view") else { continue };
+                let view: Vec<Value> = view.iter().map(&without_tail).collect();
                 let now = got["stats"].get("miss").and_then(Value::as_i64).unwrap_or(0);
                 if !edited {
                     if let Some(p) = (0..prev.len()).find(|&p| view.get(p) != Some(&prev[p])) {

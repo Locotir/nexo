@@ -159,6 +159,9 @@ impl Engine {
         self.sizes.push(it);
         self.raw_tokens += it;
         let new = self.fz.extend(&self.tr, &mut self.int);
+        if self.p.rules != 0 {
+            self.take_index(new.clone());
+        }
         self.track_edits(new.clone());
         self.asked_back(new.clone());
         if self.p.pin != 0 {

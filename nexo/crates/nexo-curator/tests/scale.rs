@@ -289,3 +289,25 @@ fn window_applies_to_the_curator_arm_too() {
     // hops 0: the recall column shows one hop and two or three hops apart
     assert!(row.line().split(" | ").nth(2).is_some_and(|c| c.contains('/')), "{}", row.line());
 }
+
+// Recall by hops: a number is a key like any word ("topic 412"), and each fact of a question is found on its own, so
+// that three facts from three topics are as likely as one.
+
+#[test]
+fn recall_holds_across_hops_at_200_topics() {
+    for hops in 1..=3 {
+        let mut p = ColdParams::new(200, hops, 1);
+        p.questions = 40;
+        p.standing = 8;
+        let row = run_cold(&p);
+        let floor = if hops == 1 { 95.0 } else { 90.0 };
+        assert!(
+            row.recall() >= floor,
+            "{hops} hops: {:.1} % of {} questions, floor {floor}: {}",
+            row.recall(),
+            row.questions,
+            row.line()
+        );
+        assert_eq!(row.stand[0], row.stand[1], "standing facts stay: {}", row.line());
+    }
+}

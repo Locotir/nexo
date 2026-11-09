@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::goal::Threads;
 use crate::hindsight::{Interner, Set, Sym, Tracer};
+use crate::index::Index;
 use crate::learn::Featurizer;
 use crate::ledger::Names;
 use crate::rules::Rules;
@@ -123,6 +124,8 @@ pub struct Engine {
     /// The facts that override a default, kept by target (`standing.rs`), and the tokens of the tail that carries
     /// the due ones in the last view.
     standing: Standing,
+    /// Where every line of the history is, by the keys it holds (`index.rs`): what the tail brings back.
+    index: Index,
     tail_tokens: i64,
     /// The anchor without the rules block (the map, the findings, the pinned files and the ledger).
     base_map: String,
@@ -283,6 +286,7 @@ impl Engine {
             plan: None,
             rules: Rules::default(),
             standing: Standing::default(),
+            index: Index::default(),
             tail_tokens: 0,
             base_map: String::new(),
             rules_shown: String::new(),
