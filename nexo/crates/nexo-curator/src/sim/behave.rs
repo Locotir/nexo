@@ -218,7 +218,8 @@ type Tally = (usize, (i64, i64), usize);
 /// session and spec: the footprints do not depend on the parameters or the prices.
 pub fn probe(run: &mut Run, requests: &[Request], spec: &str, life: f64, slots: usize) -> Result<(), String> {
     let sites = run.events.iter().filter(|e| branches(e)).count();
-    let tasks = 2 * sites;
+    // the last task fetches every event it meets: what the closed loop meets beyond the open loop's events
+    let tasks = if sites == 0 { 0 } else { 2 * sites + 1 };
     let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(tasks).max(1);
     let base = &*run;
     let found: Vec<Result<Vec<Tally>, String>> = std::thread::scope(|sc| {
@@ -229,7 +230,7 @@ pub fn probe(run: &mut Run, requests: &[Request], spec: &str, life: f64, slots: 
                         .step_by(threads)
                         .map(|t| {
                             let k = t / 2;
-                            let pick = move |j: usize| if t % 2 == 0 { j == k } else { j <= k };
+                            let pick = move |j: usize| t == 2 * sites || if t % 2 == 0 { j == k } else { j <= k };
                             replay(requests, spec, life, slots, pick)
                                 .map(|(m, h, met)| (t, (m - base.miss, h - base.hit), met))
                         })
@@ -257,6 +258,13 @@ pub fn probe(run: &mut Run, requests: &[Request], spec: &str, life: f64, slots: 
             }
         })
         .collect();
+    // the events the fetches of all the others bring: what the replay that fetches every event meets, less the open
+    // loop's that are still there, and the input it sends beyond the replay that fetched the open loop's
+    if sites > 0 {
+        let (all, last) = (total[2 * sites], total[2 * sites - 1].0);
+        let left = sites - run.feet.iter().filter(|f| f.gone).count();
+        run.appear = (all.1.saturating_sub(left), (all.0 .0 - last.0, all.0 .1 - last.1));
+    }
     Ok(())
 }
 
@@ -336,6 +344,18 @@ pub fn analytic(run: &Run, p: Params, r_den: f64, cx: &Context) -> Expect {
         var += here * (r * (1.0 - r) + (1.0 - r) * beta * (1.0 + mu));
         ok *= 1.0 - here * (1.0 - r) * p.phi;
         count += 1;
+    }
+    // events that only the closed loop meets (`probe`): they need every event above fetched (the chance `all_fetched`
+    // holds, one at `r = 1`) and each is fetched as often as the others
+    if run.appear.0 > 0 {
+        let (n, here) = (run.appear.0 as f64, all_fetched);
+        let tokens = cx.prices.miss * run.appear.1 .0 as f64 + cx.prices.hit * run.appear.1 .1 as f64;
+        let fetch = tokens + n * cx.prices.out * cx.c_out;
+        steps += here * n * (w + (1.0 - w) * beta);
+        cost += here * (w * fetch + (1.0 - w) * n * beta * step);
+        fetch_cost += here * w * fetch;
+        var += here * n * (w * (1.0 - w) + (1.0 - w) * beta * (1.0 + mu));
+        ok *= (1.0 - here * (1.0 - w) * p.phi).powf(n);
     }
     let room = cx.max_steps as f64 - run.requests as f64;
     let p_cap = if run.requests > cx.max_steps {

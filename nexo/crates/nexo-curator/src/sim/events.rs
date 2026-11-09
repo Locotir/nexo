@@ -337,6 +337,9 @@ pub struct Run {
     /// Per `cited` or `denied` event, in order: what fetching it costs in input tokens, the re-cuts after it
     /// included (`behave::probe`). Empty until probed.
     pub feet: Vec<Foot>,
+    /// Events the closed loop meets that the open loop does not (a fetch makes the curator cut elsewhere later), with the
+    /// extra input tokens (miss, hit) fetching all of them adds on top of the fetches of the events above (`behave::probe`).
+    pub appear: (usize, (i64, i64)),
     pub blind: (i64, i64),
     pub denied: (i64, i64),
     pub input_cost: f64,

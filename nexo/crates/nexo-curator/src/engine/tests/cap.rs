@@ -46,7 +46,9 @@ fn past_the_cap_an_old_copy_leaves_before_the_first_file_read() {
 
 #[test]
 fn what_leaves_for_the_window_counts_the_miss_from_the_anchor() {
-    let mut e = Engine::new(params("nudge=0;eoq=0;close=0;live=0;check=100000000;every=100000").unwrap());
+    // no working window: with one, the ceiling cut (95 % of the budget) comes before `fit` and leaves it nothing
+    let mut e =
+        Engine::new(params("nudge=0;eoq=0;close=0;live=0;check=100000000;every=100000;target=0;cap=0").unwrap());
     // the request holds a long paste: the anchor is a large part of the view
     let ask = format!("Say what slot 50 holds in this listing:\n{}", listing(1000, 1150));
     let mut msgs = vec![json!({"role": "user", "content": ask})];

@@ -1,6 +1,8 @@
-//! The working window: a view aims at `target` tokens (the priced cap), is cut to `cap` whatever the
-//! cache costs, and never passes `hard`. What the agent is working from (the sticky set) stays below
-//! `hard`; no model and no directive decide it, only rules over the history.
+//! The working window: a view aims at `target` tokens (the priced cap) and is rewritten down to it when keeping
+//! the larger view costs more than the rewrite (`fire_point`; a fixed `cap` is only for a spec that sets one),
+//! and never passes the ceiling: 95 % of the model's own window, or the spec's `hard` when the window is not
+//! known. What the agent is working from (the sticky set) stays below the ceiling; no model and no directive
+//! decide it, only rules over the history.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -17,6 +19,14 @@ const LEAVE_LEAST: i64 = 40;
 /// The tokens of failing runs (a command whose output shows a failure) held below `cap`, newest first: what the
 /// agent fixed is what it reports, and the lines of the failure are what it quotes.
 const FAILURE_BUDGET: i64 = 2000;
+/// The share of the model's window a view may take before the sticky results leave too.
+const CEILING: f64 = 0.95;
+/// A ceiling cut lands on this share of the ceiling, so one rewrite buys a stretch of requests.
+const CEILING_LAND: f64 = 0.9;
+/// Context length past which a longer view is worse for the model, not only dearer: the quality loss of each
+/// token past it is counted per call as this share of an uncached token (a heuristic, not a measured price).
+const LONG_KNEE: i64 = 100_000;
+const LONG_LOSS: f64 = 0.05;
 
 /// The sticky set as of the last request, by unit.
 #[derive(Default)]
@@ -119,33 +129,84 @@ impl Engine {
         self.stk = Sticky { keep, reads, tokens, cut, failing };
     }
 
+    /// The tokens a view may take, head included: 95 % of what the model's window leaves for the request (the host
+    /// gives it, `set_budget`), or the spec's `hard` while the window is not known (0: no ceiling).
+    pub(super) fn ceiling(&self) -> i64 {
+        if self.budget > 0 {
+            ((self.budget + self.head.max(0)) as f64 * CEILING) as i64
+        } else {
+            self.p.hard
+        }
+    }
+
+    /// The size past which a rewrite down to `land` tokens pays, head included: keeping the extra tokens costs
+    /// `ratio` of an uncached token each (the provider's cache price when the host gave it, `Curator::prices`) on
+    /// every call still to come, plus the quality a view past `LONG_KNEE` loses; the rewrite sends its new
+    /// prefix (nearly the whole view it lands on: the oldest results go first) without the cache. It pays once the
+    /// first is `margin` times the second, the margin the priced cut (`rent`) asks too. The calls to come are
+    /// `ahead` of the calls so far (at least 4), as for `horizon`. `i64::MAX` when it never pays (a free cache). With no
+    /// estimate of the calls to come (`ahead=0`) it is twice the target, the fixed rule the cost replaces.
+    pub(super) fn fire_point(&self, land: i64) -> i64 {
+        if self.p.ahead <= 0.0 {
+            return 2 * land;
+        }
+        let (r, l, k) = (self.p.ratio, land as f64, self.tr.steps.len() as f64);
+        let calls = (self.p.ahead * k).max(4.0);
+        if r <= 0.0 {
+            return i64::MAX;
+        }
+        let rewrite = self.p.margin * l * (1.0 - r).max(0.01);
+        let (knee, loss) = (LONG_KNEE as f64, LONG_LOSS);
+        let at = l + rewrite / (r * calls);
+        let fire = if at <= knee.max(l) {
+            at
+        } else if l >= knee {
+            l + rewrite / ((r + loss) * calls)
+        } else {
+            (rewrite / calls + r * l + loss * knee) / (r + loss)
+        };
+        fire.min(i64::MAX as f64 / 2.0) as i64
+    }
+
+    /// Where the working window's rewrite starts (head included) and where it lands: the cost of keeping against
+    /// rewriting (`fire_point`), or the fixed `cap` a spec sets (with a `target`, the cap or twice the target,
+    /// whichever comes first); never past the ceiling.
+    pub(super) fn window_span(&self) -> (i64, i64) {
+        let (start, land) = match (self.p.target, self.p.cap) {
+            (t, c) if t > 0 && c > 0 => (c.min(2 * t), t),
+            (t, _) if t > 0 => (self.fire_point(t), t),
+            (_, c) => (c, c),
+        };
+        match self.ceiling() {
+            0 => (start, land),
+            c => (start.min(c), land),
+        }
+    }
+
     /// The tokens of the latest outputs the agent has not written about that no cut may take (`still`): what the
     /// agent is working from is held whatever the system prompt, the request and the sticky set take, so a big
-    /// head does not leave it the outputs of the newest step alone. Past `hard` they leave all the same.
+    /// head does not leave it the outputs of the newest step alone. Past the ceiling they leave all the same.
     pub(super) fn still_now(&self) -> i64 {
         self.p.still.max(0)
     }
 
-    /// Whether the sticky set holds result `i` at the given tier: 0 below `cap`, 1 below `hard`.
+    /// Whether the sticky set holds result `i` at the given tier: 0 below the target, 1 below the ceiling.
     fn holds(&self, i: usize, tier: usize, unwritten: usize) -> bool {
         self.stk.keep.contains(&i) || (tier == 0 && (self.stk.reads.contains(&i) || self.tr.units[i].msg >= unwritten))
     }
 
-    /// Past `cap` (or twice the `target`) the oldest results the sticky set does not hold leave, oldest first,
-    /// until the view is down to the target, whatever the cache costs; past `hard` the oldest the sticky set holds besides the latest `file now` of each path and
+    /// Once rewriting pays (`fire_point`) the oldest results the sticky set does not hold leave, oldest first,
+    /// until the view is down to the target, whatever the cache costs; past the ceiling the oldest the sticky set holds besides the latest `file now` of each path and
     /// the last check leave too (their note says how to bring them back). The first message changed.
     pub(super) fn window_cut(&mut self) -> Option<usize> {
-        if self.p.cap <= 0 {
+        if self.p.cap <= 0 && self.p.target <= 0 {
             return None;
         }
         let sizes = self.sizes_now();
         let mut total: i64 = sizes.iter().sum::<i64>() + self.head;
-        // the cut starts at `cap`, or at twice the target when that comes first, and lands on the target: one
-        // rewrite buys a stretch of requests with a view that stays small, not a trim at every request
-        let (start, land) = match self.p.target {
-            t if t > 0 => (self.p.cap.min(2 * t), t),
-            _ => (self.p.cap, self.p.cap),
-        };
+        // the cut starts where rewriting pays and lands on the target: one rewrite buys a stretch of requests with
+        // a view that stays small, not a trim at every request
+        let (start, land) = self.window_span();
         if total <= start {
             return None;
         }
@@ -155,7 +216,7 @@ impl Engine {
         let mut first: Option<usize> = None;
         let mut cut = 0;
         for tier in 0..2 {
-            let limit = if tier == 0 { land } else { self.p.hard };
+            let limit = if tier == 0 { land } else { (self.ceiling() as f64 * CEILING_LAND) as i64 };
             if limit <= 0 {
                 continue;
             }
@@ -195,7 +256,7 @@ impl Engine {
                     first = Some(first.map_or(mi, |f| f.min(mi)));
                 }
             }
-            if tier == 1 && total > limit {
+            if tier == 1 && total > self.ceiling() {
                 self.bump("window_over_hard", 1);
             }
         }

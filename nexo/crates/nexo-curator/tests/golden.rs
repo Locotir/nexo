@@ -329,7 +329,7 @@ fn the_long_session_ends_with_the_reference_stats() {
     // A file read under another topic comes back when the request names it, and only that read: it closes 50 steps,
     // recalls 4. With the ledger keeping the rows of a table of values (117 lines, not 58; the anchor 1840, was 1364)
     // the cache misses 59524 (miss_close 17895).
-    // The working window (`target=10000`, `cap=40000`, `hard=80000`; `cut=age`): the view is let grow to 20k tokens
+    // The working window (`target=10000`, then `cap=40000`, `hard=80000`; `cut=age`): the view is let grow to 20k tokens
     // and cut to 10k in one rewrite, and the latest unread results (`still`) are bounded by the target too, so
     // 13 rewrites and the cache misses 136746 (miss_cap 107970), 372 chunks leave by the window. Priced decisions
     // measure their room to where the cut fires (twice the target), not to the target it lands on, and the output
@@ -338,10 +338,14 @@ fn the_long_session_ends_with_the_reference_stats() {
     // The newest unwritten reads are held up to `still` whatever the first message takes, and a `recall` result
     // stays through the step after it: 6 rewrites and the cache misses 104955 (miss_cap 72618), 201 chunks leave by
     // the window.
-    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 16031,
-        "miss": 104955, "dedup_asked": 24, "window_cuts": 201, "rewrites": 6, "miss_cap": 72618,
-        "dropped_chunks": 14, "left_messages": 102, "ledger_lines": 358, "cap_rewrites": 2, "recalled_steps": 3,
-        "closed_steps": 22, "miss_close": 8121, "cards": 1, "switches": 1, "miss_switch": 8185, "sup_chunks": 1});
+    // The cost rule in place of the fixed 20k trigger (`cap=0`, `hard=0`): the cut waits for the point where keeping the
+    // extra tokens costs more than sending the new prefix, so it fires later and takes more at once: 3 rewrites, 36
+    // chunks by the window, and the cache misses 77829 (miss_cap 43449), down from 104955 (miss_cap 72618).
+    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 17298,
+        "miss": 77829, "dedup_asked": 24, "dropped_chunks": 139, "sup_chunks": 34, "rewrites": 3, "left_messages": 106,
+        "ledger_lines": 322, "cap_rewrites": 2, "miss_cap": 43449, "closed_steps": 23, "miss_close": 7799,
+        "recalled_steps": 3, "window_cuts": 36, "live_dropped": 1, "miss_live": 1022, "cards": 1, "switches": 1,
+        "miss_switch": 8261});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }
@@ -365,11 +369,7 @@ fn the_real_audit_ends_with_the_reference_stats() {
         last = cur
             .answer(&serde_json::json!({"op": "view", "system_tokens": req["system_tokens"], "messages": msgs}), 0.0);
     }
-    // the 10k target cuts once, when the view passes 20k (it was 3 idle drops and 708 missed tokens before); the
-    // newest reads are held up to `still` whatever the first message takes (89 chunks left before, 159 now, and
-    // no live drop)
-    assert_eq!(
-        last["stats"],
-        serde_json::json!({"birth_saved": 0, "window_cuts": 159, "rewrites": 1, "miss_cap": 8497, "miss": 8497})
-    );
+    // the 10k target cuts where rewriting pays, not at a fixed 20k: this view never gets there (it was one cut at 20k,
+    // 159 chunks and 8497 missed tokens), so the 3 idle drops (708 missed tokens) are all that is left
+    assert_eq!(last["stats"], serde_json::json!({"birth_saved": 0, "live_dropped": 3, "miss_live": 708, "miss": 708}));
 }

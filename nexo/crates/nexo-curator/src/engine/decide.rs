@@ -168,8 +168,9 @@ impl Engine {
                 // below the cap the budget set, only what the history shows dead leaves (copies, out of date
                 // reads); what the model only guesses unlikely to be needed again stays
                 self.guess = total - held > self.cap;
-                // it fires at twice the target (or the priced cap if lower) and lands on the target: one batch
-                fire = fire.min(2 * self.p.target);
+                // it fires where rewriting pays (`fire_point`; with a fixed `cap`, at twice the target or the priced
+                // cap if lower) and lands on the target: one batch
+                fire = if self.p.cap > 0 { fire.min(2 * self.p.target) } else { self.window_span().0 };
                 self.fire = fire;
                 self.cap = self.p.target;
                 self.floor = (cut_to / self.cap as f64).min(0.8);

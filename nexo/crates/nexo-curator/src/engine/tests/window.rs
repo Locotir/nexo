@@ -223,3 +223,120 @@ fn a_recall_result_is_not_cut_on_the_request_after_it_came() {
     assert!(!view.contains(&mark(&big(1, 3000))), "the older read left");
     assert!(view.contains(&mark(&back)), "the recall result survived the cut on the next request");
 }
+
+/// A session of `n` files the agent edits and reads whole (each read about `tokens` tokens): the work set, which
+/// only the ceiling may cut. Returns the engine after each step's request with the view's tokens (head included).
+fn work_set(e: &mut Engine, n: usize, tokens: usize) -> Vec<i64> {
+    let mut msgs = vec![json!({"role": "user", "content": "Fix every module under src until the tests pass."})];
+    let mut seen = Vec::new();
+    for k in 1..=n {
+        let path = format!("src/f{k}.rs");
+        msgs.extend(tool(
+            2 * k,
+            "edit",
+            json!({"path": path, "old": "a", "new": "b"}),
+            "applied and verified on disk",
+            false,
+        ));
+        msgs.extend(tool(2 * k + 1, "read", json!({"path": path}), &big(k, tokens), false));
+        e.sync(&msgs);
+        let _ = e.view();
+        seen.push(e.tokens() + e.head);
+    }
+    seen
+}
+
+#[test]
+fn a_big_window_never_cuts_the_work_set_at_a_fixed_ceiling() {
+    // the agent works from 50 files of 5k tokens (250k): with a 1M window nothing cuts them, where a ceiling of
+    // 80k (the old `hard`) would have
+    let mut e = Engine::new(params("eoq=100000000;still=0;target=10000").unwrap());
+    e.head = 3_000;
+    e.set_budget(1_000_000 - 3_000);
+    let seen = work_set(&mut e, 50, 5_000);
+    assert!(seen.last().copied().unwrap() > 200_000, "{seen:?}");
+    assert!(seen.windows(2).all(|w| w[1] > w[0]), "the view only grew: {seen:?}");
+    assert!(e.stats.get("window_cuts").is_none() && e.stats.get("window_over_hard").is_none(), "{:?}", e.stats);
+    // the same session in a 128k window is held under 95 % of it, and only past it
+    let mut small = Engine::new(params("eoq=100000000;still=0;target=10000").unwrap());
+    small.head = 3_000;
+    small.set_budget(128_000 - 3_000);
+    let seen = work_set(&mut small, 50, 5_000);
+    assert!(seen.iter().all(|&t| t <= 128_000 * 95 / 100), "{seen:?}");
+    assert!(seen.iter().copied().max().unwrap() > 100_000, "the view used the window: {seen:?}");
+    assert!(small.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", small.stats);
+}
+
+#[test]
+fn an_unknown_window_falls_back_to_the_spec_hard_or_to_none() {
+    // no window given: the spec's `hard` is the ceiling when it has one
+    let mut fixed = Engine::new(params("eoq=100000000;still=0;target=10000;hard=80000").unwrap());
+    fixed.head = 3_000;
+    let seen = work_set(&mut fixed, 50, 5_000);
+    assert!(seen.iter().all(|&t| t <= 80_000), "{seen:?}");
+    assert!(fixed.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", fixed.stats);
+    // and none when it has none: the default spec has no number of its own
+    let mut open = Engine::new(params("eoq=100000000;still=0;target=10000").unwrap());
+    open.head = 3_000;
+    let seen = work_set(&mut open, 50, 5_000);
+    assert!(seen.last().copied().unwrap() > 200_000, "{seen:?}");
+    assert!(open.stats.get("window_cuts").is_none(), "{:?}", open.stats);
+    // the default spec is that one
+    assert_eq!(crate::params("").unwrap().hard, 0);
+    assert_eq!(crate::params("").unwrap().cap, 0);
+}
+
+/// The rewrites a run made: window cuts and cuts of the priced cap.
+fn cuts(stats: &IndexMap<&'static str, i64>) -> i64 {
+    (stats.get("window_cuts").copied().unwrap_or(0) > 0) as i64 + stats.get("cap_rewrites").copied().unwrap_or(0)
+}
+
+/// Reads of 1500 tokens none of which the agent works from, `n` of them; `ratio`, `ahead` and `steps_before`
+/// (steps of the session before them, a stand-in for what the session has still to run) set the price of keeping
+/// them against rewriting. Returns the stats and the largest view.
+fn stale_body(ratio: f64, ahead: f64, steps_before: usize, n: usize) -> (IndexMap<&'static str, i64>, i64) {
+    let mut e = Engine::new(params(&format!("eoq=100000000;still=0;target=10000;ahead={ahead};margin=1")).unwrap());
+    e.set_ratio(ratio);
+    let mut msgs = vec![json!({"role": "user", "content": "Read the parts and say what slot 50 holds."})];
+    for k in 1..=steps_before {
+        msgs.extend(step(k, "true", "ok"));
+    }
+    let mut most = 0;
+    for k in 1..=n {
+        msgs.extend(step(1000 + k, &format!("cat part{k}.txt"), &big(k, 1_500)));
+        e.sync(&msgs);
+        let _ = e.view();
+        most = most.max(e.tokens());
+    }
+    (e.stats.clone(), most)
+}
+
+#[test]
+fn a_rewrite_waits_when_the_cache_is_cheap_and_few_calls_remain() {
+    // 30 reads of 1.5k (45k) on a cache that costs 2 %, a session at its fourth call: keeping 35k extra tokens
+    // for the 4 calls ahead costs less than reading the new 10k prefix without the cache
+    let (stats, most) = stale_body(0.02, 0.25, 0, 30);
+    assert_eq!(cuts(&stats), 0, "{stats:?}");
+    assert!(most > 35_000, "the view grew past twice the target: {most}");
+}
+
+#[test]
+fn a_rewrite_comes_when_many_calls_remain_and_the_body_is_stale() {
+    // the same reads at the 120th call of a long session (30 calls ahead): the stale body costs more to keep than
+    // the 10k prefix costs to send again, so it is cut, and cut once for a stretch of requests, not at every call
+    let (stats, most) = stale_body(0.02, 0.25, 120, 30);
+    assert!(cuts(&stats) > 0, "{stats:?}");
+    assert!(most < 30_000, "the view stayed small: {most}");
+    assert!(cuts(&stats) < 10, "{stats:?}");
+    // the dearer the cache, the dearer keeping the extra tokens, and the sooner it pays to rewrite
+    let (dear, most_dear) = stale_body(0.5, 0.25, 120, 30);
+    assert!(most_dear < most, "{most_dear} against {most}: {dear:?}");
+}
+
+#[test]
+fn a_very_long_view_pays_for_its_quality_even_with_few_calls_left() {
+    // 100 reads of 1.5k, 4 calls ahead on a cheap cache: past the long-context knee the view is cut
+    let (stats, most) = stale_body(0.02, 0.25, 0, 100);
+    assert!(cuts(&stats) > 0, "{stats:?}");
+    assert!(most < 130_000, "{most}");
+}

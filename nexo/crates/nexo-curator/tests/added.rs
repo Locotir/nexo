@@ -23,7 +23,9 @@ fn a_short_conversation_adds_nothing() {
 
 #[test]
 fn a_long_one_names_the_map_the_rule_and_what_it_held_back() {
-    let mut cur = Curator::new("").unwrap();
+    // no working window (`target=0`): with one, the ceiling cut stubs the outputs in place before any message has to
+    // leave, and the map is written only when messages leave
+    let mut cur = Curator::new("target=0;cap=0").unwrap();
     cur.window(12_000);
     let mut msgs = vec![json!({"role": "user", "content": "Sum the amounts of every part."})];
     let mut last = Vec::new();
