@@ -42,7 +42,7 @@ fn row(theme: &Theme, i: &CuratedItem, w: usize) -> Line<'static> {
     let size = format!("{}{}", if i.state == CuratedState::Trimmed { "~" } else { "" }, fmt_k(i.tokens));
     let name_w = w.saturating_sub(KIND + 2 + 7 + 2).max(4);
     let name = truncate(&i.label, name_w);
-    let pad = " ".repeat(name_w.saturating_sub(name.chars().count()));
+    let pad = " ".repeat(name_w.saturating_sub(crate::render::wrap::width(&name)));
     Line::from(vec![
         Span::styled(format!("{:<KIND$}", kind_name(i.kind)), theme.dim()),
         Span::raw(format!("  {name}{pad}  ")),
@@ -111,6 +111,28 @@ mod tests {
         let k = t.iter().position(|l| l == "Left out").expect("left out header");
         assert!(t[k + 1].starts_with("memory") && t[k + 1].contains("2.0k"), "{t:?}");
         assert_eq!(total(&items), 13_600);
+    }
+
+    #[test]
+    fn wide_labels_keep_the_size_column_aligned() {
+        use crate::render::wrap::width;
+        let items = vec![
+            it(CuratedKind::Recalled, "src/ascii.rs", 900, CuratedState::In),
+            it(CuratedKind::Thread, "リファクタリング計画メモ", 800, CuratedState::In),
+            it(CuratedKind::Memory, "📝📝📝📝📝📝📝📝📝📝", 700, CuratedState::Out),
+        ];
+        for w in [24, 40] {
+            let t: Vec<String> = lines(&Theme::dark(), &items, w, "Added").iter().map(text).collect();
+            let rows: Vec<&String> = t
+                .iter()
+                .filter(|l| l.starts_with(|c: char| c.is_ascii_lowercase()) && !l.starts_with("total"))
+                .collect();
+            assert!(rows.len() >= 3, "{t:?}");
+            let first = width(rows[0]);
+            for r in rows {
+                assert_eq!(width(r), first, "w={w} {t:?}");
+            }
+        }
     }
 
     #[test]
