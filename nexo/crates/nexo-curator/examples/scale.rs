@@ -11,6 +11,9 @@
 //! (many topics, big pastes, questions that correlate facts across topics; see `scale_gen::Cold`) and prints one
 //! line per (N, hops): N | hops | recall % | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB,
 //! then the plain arm (the whole history every request) for reference.
+//! `--tokens 1M,10M,100M,1B [--max-secs 600] [--max-rss-mb 8192] [--stride K]` is the ladder: sessions of that many
+//! tokens (hops 1, 2, 3 in turn), generated on the fly from the seed and never written to disk; a step over the
+//! limits stops the ladder and says where the time and the memory went.
 
 #[path = "../tests/support/scale_gen.rs"]
 mod scale_gen;
@@ -31,6 +34,34 @@ fn main() {
         return;
     }
     let nums = |s: String| s.split(',').filter_map(|x| x.parse::<usize>().ok()).collect::<Vec<_>>();
+    if let Some(list) = get("--tokens") {
+        // the ladder: sizes in tokens (1M, 10M, 100M, 1B), mixed questions of 1, 2 and 3 facts; a step over the
+        // time or memory limit is reported with where it went, and the ladder stops there
+        let size = |s: &str| {
+            let (num, mult) = match s.chars().last() {
+                Some('K') => (&s[..s.len() - 1], 1e3),
+                Some('M') => (&s[..s.len() - 1], 1e6),
+                Some('B') => (&s[..s.len() - 1], 1e9),
+                _ => (s, 1.0),
+            };
+            (num.parse::<f64>().expect("tokens") * mult) as u64
+        };
+        let seed = get("--seed").and_then(|s| s.parse().ok()).unwrap_or(1);
+        println!("tokens totales | topics | % marcas en 1 salto | % en 2-3 saltos | vista máx | enviados | DeepSeek $ | ms/petición p50/p99 | RSS máx MB | plain");
+        for s in list.split(',') {
+            let mut p = ColdParams::for_tokens(size(s), 0, seed);
+            p.questions = get("--questions").and_then(|s| s.parse().ok()).unwrap_or(60);
+            p.stride = get("--stride").and_then(|s| s.parse().ok()).unwrap_or((p.topics / 200).max(1));
+            p.max_secs = get("--max-secs").and_then(|s| s.parse().ok()).unwrap_or(600.0);
+            p.max_rss_mb = get("--max-rss-mb").and_then(|s| s.parse().ok()).unwrap_or(8192.0);
+            let row = run_cold(&p);
+            println!("{}", row.line_tokens());
+            if row.stopped.is_some() {
+                break;
+            }
+        }
+        return;
+    }
     if let Some(t) = get("--topics") {
         let hops = get("--hops").unwrap_or_else(|| "1".into());
         let seed = get("--seed").and_then(|s| s.parse().ok()).unwrap_or(1);

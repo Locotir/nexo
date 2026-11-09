@@ -257,7 +257,7 @@ pub fn run(kind: &str, plan: &Plan) -> Vec<Row> {
 pub struct ColdParams {
     /// Distinct topics the session works through before the questions (each holds three facts).
     pub topics: usize,
-    /// Facts a question correlates, each from another topic (1, 2 or 3).
+    /// Facts a question correlates, each from another topic (1, 2 or 3; 0: questions take 1, 2, 3 in turn).
     pub hops: usize,
     pub seed: u64,
     /// Questions asked after the topics, each after a few switches to fresh topics.
@@ -267,11 +267,35 @@ pub struct ColdParams {
     pub paste_lines: usize,
     /// The curator is called on every `stride`-th request (1: every request, as the host does) and always on questions.
     pub stride: usize,
+    /// Stop the session when it has run this long (seconds) or its process holds this much memory (MB); 0: no limit.
+    pub max_secs: f64,
+    pub max_rss_mb: f64,
 }
 
 impl ColdParams {
     pub fn new(topics: usize, hops: usize, seed: u64) -> ColdParams {
-        ColdParams { topics, hops, seed, questions: 30, paste_every: 10, paste_lines: 80, stride: 1 }
+        ColdParams {
+            topics,
+            hops,
+            seed,
+            questions: 30,
+            paste_every: 10,
+            paste_lines: 80,
+            stride: 1,
+            max_secs: 0.0,
+            max_rss_mb: 0.0,
+        }
+    }
+
+    /// A session of about `tokens` tokens: as many topics as that takes, measured on the first 200 (the text of
+    /// a topic depends on the seed and its position only).
+    pub fn for_tokens(tokens: u64, hops: usize, seed: u64) -> ColdParams {
+        use nexo_curator::sim::price::tokens_of;
+        let mut p = ColdParams::new(200, hops, seed);
+        let g = Cold::new(p.clone());
+        let per: u64 = (0..200).flat_map(|t| g.topic(t)).map(|m| tokens_of(&m) as u64).sum::<u64>() / 200;
+        p.topics = (tokens / per.max(1)).max(200) as usize;
+        p
     }
 }
 
@@ -336,9 +360,14 @@ const SWITCHES: usize = 3;
 
 impl Cold {
     pub fn new(p: ColdParams) -> Cold {
-        assert!(p.hops >= 1 && p.hops <= 3 && p.hops <= p.topics, "hops must be 1 to 3 and at most the topics");
+        assert!(p.hops <= 3 && p.topics >= 3, "hops must be 0 to 3, and there are at least 3 topics");
         let rng = splitmix(p.seed ^ 0x5CA1_E5CA) | 1;
         Cold { p, next: 0, rng }
+    }
+
+    /// Blocks handed out so far.
+    pub fn position(&self) -> usize {
+        self.next
     }
 
     pub fn total_blocks(&self) -> usize {
@@ -459,8 +488,9 @@ impl Cold {
             let q = (i - self.p.topics) / (SWITCHES + 1);
             return Some(Block { msgs: self.topic(self.p.topics + q * SWITCHES + j), ask: None });
         }
+        let hops = if self.p.hops == 0 { 1 + (i - self.p.topics) / (SWITCHES + 1) % 3 } else { self.p.hops };
         let mut picked: Vec<(usize, usize)> = Vec::new();
-        while picked.len() < self.p.hops {
+        while picked.len() < hops {
             let t = self.rand(self.p.topics);
             if picked.iter().all(|(x, _)| *x != t) {
                 let k = self.rand(3);
@@ -532,6 +562,8 @@ pub struct ColdRow {
     pub hops: usize,
     pub questions: usize,
     pub answered: usize,
+    /// Questions of one fact and answered ones, and of two or three facts and answered ones.
+    pub by_hops: [usize; 4],
     pub calls: usize,
     pub view_max: i64,
     /// Input tokens sent (missed plus cached), with the system prompt.
@@ -546,11 +578,52 @@ pub struct ColdRow {
     pub plain_usd: f64,
     /// The curator was called on every this-many-th request (1: all; more: the totals above count the calls made).
     pub stride: usize,
+    /// Tokens of the history when the session ended (the whole session unless it was stopped).
+    pub tokens: i64,
+    /// Why the session was stopped early (time or memory), with where the time and the memory went.
+    pub stopped: Option<String>,
+    /// Seconds in `Curator::view`, in the generator and oracle, in the pricing, and in all.
+    pub secs: [f64; 4],
 }
 
 impl ColdRow {
     pub fn recall(&self) -> f64 {
         100.0 * self.answered as f64 / self.questions.max(1) as f64
+    }
+
+    /// The ladder line (`--tokens`): tokens totales | N | % marcas en 1 salto | % en 2-3 saltos | vista máx | enviados |
+    /// DeepSeek $ | ms/petición p50/p99 | RSS máx MB | plain, and, for a stopped session, why and where it went.
+    pub fn line_tokens(&self) -> String {
+        let r = |hit: usize, n: usize| {
+            if n == 0 {
+                "-".to_string()
+            } else {
+                format!("{:.1}", 100.0 * hit as f64 / n as f64)
+            }
+        };
+        let mut s = format!(
+            "{:.2}M tokens | {} topics | {} | {} | {} | {:.2}M | {:.4} | {:.2}/{:.2} | {:.0} | plain máx {} {:.2}M ${}",
+            self.tokens as f64 / 1e6,
+            self.topics,
+            r(self.by_hops[0], self.by_hops[1]),
+            r(self.by_hops[2], self.by_hops[3]),
+            self.view_max,
+            self.sent as f64 / 1e6,
+            self.usd,
+            self.p50_ms,
+            self.p99_ms,
+            self.rss_mb,
+            self.plain_max,
+            self.plain_sent as f64 / 1e6,
+            if self.stride > 1 { format!(" | stride {}", self.stride) } else { String::new() },
+        );
+        if let Some(why) = &self.stopped {
+            s += &format!(
+                " | PARADO: {why}; s: curator {:.0}, generador y oráculo {:.0}, precio {:.0}, total {:.0}",
+                self.secs[0], self.secs[1], self.secs[2], self.secs[3]
+            );
+        }
+        s
     }
 
     /// The one-line report: N | hops | recall % | view máx | enviados | DeepSeek $ | ms/request p50/p99 | RSS máx MB,
@@ -605,10 +678,18 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
         plain_sent: 0,
         plain_usd: 0.0,
         stride: p.stride.max(1),
+        by_hops: [0; 4],
+        tokens: 0,
+        stopped: None,
+        secs: [0.0; 4],
     };
     let (mut miss, mut hit, mut plain_total, mut plain_before) = (0i64, 0i64, 0i64, 0i64);
     let mut times = Vec::new();
-    while let Some(b) = g.next_block() {
+    // the peak memory counted below is this session's alone
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+    let start = Instant::now();
+    let (mut view_s, mut price_s) = (0.0, 0.0);
+    'session: while let Some(b) = g.next_block() {
         let mut ask = b.ask;
         for m in b.msgs {
             let user = m["role"] == "user";
@@ -618,6 +699,22 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
                 continue;
             }
             requests += 1;
+            if requests.is_multiple_of(512) {
+                let secs = start.elapsed().as_secs_f64();
+                let rss = rss_mb();
+                if (p.max_secs > 0.0 && secs > p.max_secs) || (p.max_rss_mb > 0.0 && rss > p.max_rss_mb) {
+                    let what = if rss > p.max_rss_mb && p.max_rss_mb > 0.0 { "RSS" } else { "tiempo" };
+                    row.stopped = Some(format!(
+                        "{what} sobre el tope en el {:.1} % de la sesión ({} peticiones, {} llamadas), RSS {:.0} MB, historia ≈ {:.0} MB de texto",
+                        100.0 * g.position() as f64 / g.total_blocks() as f64,
+                        requests,
+                        row.calls,
+                        rss,
+                        plain_total as f64 * 4.0 / 1e6
+                    ));
+                    break 'session;
+                }
+            }
             let question = ask.take();
             if question.is_none() && !requests.is_multiple_of(p.stride.max(1)) {
                 continue;
@@ -626,11 +723,17 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
             let t = Instant::now();
             let reply = cur.view(SYSTEM as u64, &msgs, now).expect("view");
             times.push(t.elapsed().as_secs_f64() * 1000.0);
+            view_s += t.elapsed().as_secs_f64();
+            let priced = Instant::now();
             row.calls += 1;
             row.view_max = row.view_max.max(reply.tokens);
             if let Some(lines) = question {
                 row.questions += 1;
-                row.answered += usize::from(holds(&reply.view, &lines));
+                let ok = usize::from(holds(&reply.view, &lines));
+                row.answered += ok;
+                let k = if lines.len() == 1 { 0 } else { 2 };
+                row.by_hops[k] += ok;
+                row.by_hops[k + 1] += 1;
             }
             let (all, cached) = sent.send(reply.view);
             let (all, cached) = (all + SYSTEM, if row.calls == 1 { 0 } else { cached + SYSTEM });
@@ -641,6 +744,7 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
             row.plain_sent += plain_all;
             row.plain_usd += prices.dollars(plain_all - plain_before.min(plain_all), plain_before.min(plain_all));
             plain_before = plain_all;
+            price_s += priced.elapsed().as_secs_f64();
         }
     }
     row.sent = miss + hit;
@@ -648,5 +752,8 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
     row.p50_ms = pct(&times, 0.5);
     row.p99_ms = pct(&times, 0.99);
     row.rss_mb = peak_rss_mb();
+    row.tokens = plain_total;
+    let total = start.elapsed().as_secs_f64();
+    row.secs = [view_s, (total - view_s - price_s).max(0.0), price_s, total];
     row
 }

@@ -121,3 +121,24 @@ fn cold_scale_runs_at_200_topics() {
         assert_eq!(line.matches(" | ").count(), 8, "{line}");
     }
 }
+
+#[test]
+fn cold_tokens_sizes_the_session_and_reports_hops_apart() {
+    let p = ColdParams::for_tokens(2_000_000, 0, 1);
+    let mut small = ColdParams::new(300, 0, 1);
+    small.questions = 9;
+    small.stride = 3;
+    let row = run_cold(&small);
+    // questions take 1, 2, 3 facts in turn: three of one fact, six of two or three
+    assert_eq!((row.by_hops[1], row.by_hops[3]), (3, 6));
+    assert!(row.tokens > 50_000 && row.stopped.is_none());
+    assert!(p.topics > 200 && ColdParams::for_tokens(4_000_000, 0, 1).topics > p.topics);
+    let line = row.line_tokens();
+    assert!(line.contains(" tokens | 300 topics | "), "{line}");
+    // a limit stops the session and says why
+    let mut cut = ColdParams::new(3000, 0, 1);
+    cut.max_secs = 0.001;
+    let row = run_cold(&cut);
+    assert!(row.stopped.as_deref().is_some_and(|s| s.starts_with("tiempo")), "{:?}", row.stopped);
+    assert!(row.line_tokens().contains("PARADO"));
+}
