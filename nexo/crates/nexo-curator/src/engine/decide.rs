@@ -7,6 +7,9 @@ use super::Engine;
 impl Engine {
     pub fn decide(&mut self) {
         self.own.clock += 1;
+        if self.t0.is_none() {
+            self.t0 = Some((self.now, self.tr.steps.len()));
+        }
         self.index_calls();
         if self.dump.is_some() {
             self.dump_rows();
@@ -24,8 +27,18 @@ impl Engine {
         if fresh {
             self.split = self.split_now();
             self.split_turn = nt - 1;
-        } else if switch && !self.split {
+            self.hidden_recalls = 0;
+        } else if switch && !self.split && self.unsplit_turn != nt - 1 {
             self.split = self.split_now();
+        }
+        // the agent asked twice for what the split left out: it needs the other topics, the view is whole again
+        // until the next change of topic
+        if self.split && self.hidden_recalls >= 2 {
+            self.split = false;
+            self.hidden_recalls = 0;
+            self.unsplit_turn = nt - 1;
+            self.bump("unsplit", 1);
+            self.frozen.clear();
         }
         if let Some(mi) = self.unnudged.take().filter(|&mi| was_sent(mi)) {
             quiet.push(("miss_note", mi));
@@ -76,7 +89,7 @@ impl Engine {
         let mut switched = false;
         if nt > 1 && self.goal.turns[nt - 1].thread != self.goal.turns[nt - 2].thread {
             let start = self.goal.turns[nt - 1].start;
-            if !self.frozen.contains_key(&start) {
+            if !self.frozen.contains_key(&start) && self.unsplit_turn != nt - 1 {
                 let text = self.cards_text();
                 if !text.is_empty() {
                     self.frozen.insert(start, text);
@@ -85,6 +98,9 @@ impl Engine {
                     self.bump("split_kept", 1);
                 }
                 self.bump("switches", 1);
+                if fresh && self.goal.turns[..nt - 1].iter().any(|t| t.thread == self.goal.turns[nt - 1].thread) {
+                    self.bump("returns", 1);
+                }
                 switched = true;
                 // the view sends the messages of another topic: the cache misses from the first that differs
                 // from what it holds (with pockets, the last view of that topic, if it lives)

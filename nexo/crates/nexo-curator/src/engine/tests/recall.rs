@@ -4,7 +4,7 @@ use super::*;
 
 /// The agent's `recall` of message `mi` (lines `from`-`to` of it, when given) and the answer the host
 /// gives it, `text`.
-fn recall_step(k: usize, mi: usize, part: Option<(usize, usize)>, text: &str) -> [Value; 2] {
+pub(super) fn recall_step(k: usize, mi: usize, part: Option<(usize, usize)>, text: &str) -> [Value; 2] {
     let id = format!("recall_{k}");
     let mut input = json!({"message": format!("m{:05}", mi + 1)});
     let lines = match part {
@@ -28,7 +28,7 @@ fn recall_step(k: usize, mi: usize, part: Option<(usize, usize)>, text: &str) ->
 
 /// Feeds `msgs` to `e` as a host does: a view before each call of the model (after each message of the
 /// person, a request or the results of a step).
-fn feed(e: &mut Engine, msgs: &[Value]) {
+pub(super) fn feed(e: &mut Engine, msgs: &[Value]) {
     for t in 1..=msgs.len() {
         if msgs[t - 1]["role"] == "user" && t > e.tr.msgs.len() {
             e.sync(&msgs[..t]);

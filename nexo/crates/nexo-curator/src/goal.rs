@@ -201,6 +201,24 @@ impl Threads {
         self.turns.iter().map(|t| (t.start, t.thread)).collect()
     }
 
+    /// The thread of the turn that holds message `mi`.
+    pub fn thread_at(&self, mi: usize) -> usize {
+        let i = self.turns.partition_point(|t| t.start <= mi);
+        i.checked_sub(1).map_or(0, |i| self.turns[i].thread)
+    }
+
+    /// How many times the person changed topic so far, and how many of those went back to a topic seen before.
+    pub fn switches(&self) -> (usize, usize) {
+        let (mut sw, mut back) = (0, 0);
+        for j in 1..self.turns.len() {
+            if self.turns[j].thread != self.turns[j - 1].thread {
+                sw += 1;
+                back += self.turns[..j].iter().any(|t| t.thread == self.turns[j].thread) as usize;
+            }
+        }
+        (sw, back)
+    }
+
     pub fn active(&self) -> usize {
         self.turns.last().map_or(0, |t| t.thread)
     }

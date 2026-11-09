@@ -8,6 +8,8 @@ use super::Engine;
 pub(super) struct Pocket {
     sent: Vec<(usize, u64)>,
     at: f64,
+    /// How many messages the conversation had then.
+    end: usize,
 }
 
 /// The view just decided, weighed against the pockets: the tokens the cache gives it if it keeps the views
@@ -78,6 +80,27 @@ impl Engine {
         }
     }
 
+    /// Seconds a step takes on average, from the `now` the host gave (0 until two views were seen).
+    fn secs_per_step(&self) -> f64 {
+        match self.t0 {
+            Some((t, k)) if self.tr.steps.len() > k => ((self.now - t) / (self.tr.steps.len() - k) as f64).max(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// Whether the pocket of topic `k` (`Params.pockets`) will still live when the person is back on it, in
+    /// `hz` steps: the lifetime learned (or set) covers the time left, and the topic has had no message
+    /// since the pocket was kept, so a return finds the view it left.
+    pub(super) fn pocket_lives(&self, k: usize, hz: f64) -> bool {
+        if self.p.pockets < 1 {
+            return false;
+        }
+        let Some(p) = self.pockets.get(&k) else { return false };
+        let life = self.p.life.min(self.life_hi);
+        let last = self.goal.members[k].last().map_or(0, |&j| self.goal.span(j, self.tr.msgs.len()).1);
+        life > 0.0 && (self.now - p.at) + hz * self.secs_per_step() <= life && p.end + 1 >= last
+    }
+
     /// Where the provider's cache stops in the view as it stands, by the pockets (`Params.pockets`): the first
     /// message no pocket that lives holds, the same by every pocket however old, and whether nothing past the
     /// anchor is held (`usize::MAX`: all of it is held, or the cache has seen none of it yet). Counts what a
@@ -142,7 +165,7 @@ impl Engine {
         }
         self.probe = Some(Probe { steps, total: tokens.iter().sum() });
         let key = self.pocket_key();
-        self.pockets.insert(key, Pocket { sent: fin, at: now });
+        self.pockets.insert(key, Pocket { sent: fin, at: now, end: self.tr.msgs.len() });
         if self.pockets.len() > POCKETS_KEPT {
             let oldest = self.pockets.iter().min_by(|a, b| a.1.at.total_cmp(&b.1.at)).map(|(k, _)| *k);
             if let Some(k) = oldest {

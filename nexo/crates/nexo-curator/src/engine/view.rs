@@ -78,8 +78,11 @@ impl Engine {
     pub(super) fn message(&mut self, mi: usize) -> (Option<&Value>, i64) {
         let key = self.key(mi);
         let on = self.dups_on(mi);
-        let map_ver = if mi == 0 { self.map_ver } else { 0 };
+        // (the first message that leaves as a card is told apart from the one that stays by the version)
+        let hide = mi == 0 && self.m0_card(self.apart());
+        let map_ver = if mi == 0 { 2 * self.map_ver + hide as u64 } else { 0 };
         let plain = key.is_empty()
+            && !hide
             && (mi != 0 || self.map_text.is_empty())
             && !self.frozen.contains_key(&mi)
             && !self.shut.contains_key(&mi)
@@ -90,7 +93,7 @@ impl Engine {
         }
         let fresh = self.built.get(&mi).is_some_and(|b| b.key == key && b.map_ver == map_ver && b.on == on);
         if !fresh {
-            let (msg, size) = self.build(mi, !key.is_empty(), &on);
+            let (msg, size) = self.build(mi, !key.is_empty(), &on, hide);
             let fp = fingerprint(&msg);
             self.built.insert(mi, Built { key, map_ver, on, msg: Some(msg), size, fp });
         }
@@ -99,9 +102,13 @@ impl Engine {
     }
 
     /// Message `mi` as sent now: its cut parts left out, and its runs that `on` marks as pointers.
-    fn build(&self, mi: usize, cut: bool, on: &[Option<(usize, usize)>]) -> (Value, i64) {
+    fn build(&self, mi: usize, cut: bool, on: &[Option<(usize, usize)>], hide: bool) -> (Value, i64) {
         let m = &self.tr.msgs[mi];
         let mut m2 = m.clone();
+        if hide {
+            // its line is in the cards, with the way to bring it back
+            m2["content"] = Value::Array(Vec::new());
+        }
         let runs: Vec<Dup> = match self.dups.get(&mi) {
             Some(ds) => ds
                 .iter()
@@ -110,7 +117,7 @@ impl Engine {
                 .collect(),
             None => Vec::new(),
         };
-        if let (true, Some(Value::Array(content))) = (cut || !runs.is_empty(), m.get("content")) {
+        if let (true, Some(Value::Array(content))) = (!hide && (cut || !runs.is_empty()), m.get("content")) {
             let mut new = Vec::new();
             for (bi, b) in content.iter().enumerate() {
                 let Some(&i) = self.tr.at.get(&(mi, bi)) else {
@@ -387,7 +394,7 @@ impl Engine {
 
     /// The tokens each topic other than the active one holds (apart from the first message), and the tokens the
     /// active one holds from the first message that leaves on: what a cut there reads again.
-    fn topic_tokens(&self) -> (Vec<(usize, i64)>, i64) {
+    pub(super) fn topic_tokens(&self) -> (Vec<(usize, i64)>, i64) {
         let g = &self.goal;
         let n = self.tr.msgs.len();
         let spans = |k: usize| g.members[k].iter().map(move |&j| g.span(j, n));
@@ -427,7 +434,12 @@ impl Engine {
         let held = std::mem::replace(&mut self.split, false);
         let v = self.sizes_now().iter().sum::<i64>() as f64;
         self.split = held;
-        let hz = self.horizon(self.tr.steps.len(), v as i64);
+        let k = self.tr.steps.len();
+        // how long a topic lasts: the mean steps of the ones already closed, else the share of the session so far
+        let hz = match self.topic_steps() {
+            Some(m) if self.p.ahead > 0.0 => m.max(4.0).min(self.room(k, v as i64)),
+            _ => self.horizon(k, v as i64),
+        };
         let rewrite = {
             let cards = self.cards_body();
             let anchor = crate::json::est_str(&self.map_text) + crate::json::est_str(&cards);
@@ -438,7 +450,21 @@ impl Engine {
                 (anchor + on) as f64
             }
         };
-        let mut gain = r * hz * x as f64 - self.p.margin * (1.0 - r) * rewrite;
+        // the first message goes too when its topic is not the one the person is on: a card instead (F2)
+        let card0 =
+            if self.m0_card(true) { (self.sizes[0] - crate::json::est_str(&self.cards_line(0))).max(0) } else { 0 };
+        let mut gain = r * hz * (x + card0) as f64 - self.p.margin * (1.0 - r) * rewrite;
+        // the topic the person was on a moment ago may be asked for again: with its pocket gone from the cache
+        // (or none kept) coming back reads it without the cache, and the whole view would have kept it
+        if let Some(&(back, xb)) = others.first() {
+            let (switches, returns) = self.goal.switches();
+            let p_back = (returns as f64 + 1.0) / (switches as f64 + 2.0);
+            // and the return has to come while the horizon lasts: one return per so many steps so far
+            let within = (hz * (returns as f64 + 1.0) / k.max(1) as f64).min(1.0);
+            if !self.pocket_lives(back, hz) {
+                gain -= within * p_back * (1.0 - r) * xb as f64;
+            }
+        }
         if gain <= 0.0 {
             return false;
         }
@@ -461,6 +487,47 @@ impl Engine {
             }
         }
         true
+    }
+
+    /// The mean length in steps of the topics already closed (every topic but the active one, `goal.turns`).
+    fn topic_steps(&self) -> Option<f64> {
+        let g = &self.goal;
+        let nt = g.turns.len();
+        let a = g.active();
+        let mut count = vec![0usize; g.members.len()];
+        for &mi in &self.tr.steps {
+            let j = g.turns.partition_point(|t| t.start <= mi).saturating_sub(1);
+            if let Some(t) = g.turns.get(j) {
+                count[t.thread] += 1;
+            }
+        }
+        let closed: Vec<usize> = (0..count.len()).filter(|&k| k != a).collect();
+        (nt >= 2 && !closed.is_empty())
+            .then(|| closed.iter().map(|&k| count[k]).sum::<usize>() as f64 / closed.len() as f64)
+    }
+
+    /// Whether the first message leaves the view as a line of the cards, when the other topics are `apart`:
+    /// its topic is not the active one, its card is shown, and the host offers `recall` to bring it back. With
+    /// a map (a cut view) the first message is the anchor and stays.
+    pub(super) fn m0_card(&self, apart: bool) -> bool {
+        let g = &self.goal;
+        if !apart || !self.recall_tool || !self.map_text.is_empty() || g.turns.is_empty() {
+            return false;
+        }
+        let k0 = g.thread_at(0);
+        let others = g.others();
+        k0 != g.active() && others[..head_slice(others.len(), self.p.cards)].contains(&k0)
+    }
+
+    /// The line a card of the cards gives topic `k` (for the size of the first message's).
+    fn cards_line(&self, k: usize) -> String {
+        let n = self.tr.msgs.len();
+        let g = &self.goal;
+        let mut fixes = |j: usize| {
+            let (a, b) = g.span(j, n);
+            self.fixes(a, b, Some(n))
+        };
+        g.card(&self.tr, &self.fz, k, &mut fixes)
     }
 
     pub(super) fn cards_text(&self) -> String {

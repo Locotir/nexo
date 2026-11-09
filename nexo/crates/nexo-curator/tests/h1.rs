@@ -59,7 +59,7 @@ fn h1_code_session_is_not_split_at_deepseek_prices() {
 // At 0.1 the rent alone pays for the split there; a need above ~0.4 would block it. The learned DeepSeek ratio
 // (0.02) is the test above.
 #[test]
-#[ignore = "needs a need signal above 0.4 on the hidden steps at ratio 0.1; see the measurements above"]
+#[ignore = "with hz_t (7 steps) the split on the revert request keeps a gain of ~3.4k after the need terms at ratio 0.1; see the measurements above"]
 fn h1_code_session_is_not_split_at_the_default_ratio() {
     for f in FILES {
         assert_whole(f, "");

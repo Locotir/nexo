@@ -102,12 +102,20 @@ impl Engine {
     /// The requests a cut still saves rent for: `ahead` of the session so far (at least 4; none with `ahead=0`), and no more
     /// than until the cap would take what it cut for free.
     pub(super) fn horizon(&self, k: usize, view: i64) -> f64 {
-        let g = self.raw_tokens as f64 / k.max(1) as f64;
-        let free = if self.cap > 0 && g > 0.0 { (self.cap - view).max(0) as f64 / g } else { f64::INFINITY };
         if self.p.ahead <= 0.0 {
             0.0
         } else {
-            (self.p.ahead * k as f64).max(4.0).min(free)
+            (self.p.ahead * k as f64).max(4.0).min(self.room(k, view))
+        }
+    }
+
+    /// The steps the view has room to grow by before the cap cuts it (all of them without a cap).
+    pub(super) fn room(&self, k: usize, view: i64) -> f64 {
+        let g = self.raw_tokens as f64 / k.max(1) as f64;
+        if self.cap > 0 && g > 0.0 {
+            (self.cap - view).max(0) as f64 / g
+        } else {
+            f64::INFINITY
         }
     }
 

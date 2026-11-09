@@ -176,3 +176,141 @@ fn cards_negative_limit_counts_hidden() {
     assert!(text.ends_with("• … and 2 older topics."), "{text}");
     assert_eq!(text.lines().count(), 1 + 3 + 1, "{text}");
 }
+
+/// A stretch of the conversation on topic `t`: the request, `steps` reads of `lines` lines each, the reply.
+/// Topic `t` always asks and reads in its own words, so a later stretch of the same `t` is a return to it.
+fn stretch(t: usize, steps: usize, lines: usize, k0: usize) -> Vec<Value> {
+    let w = |i: usize| word(t * 1000 + i);
+    let mut msgs = vec![json!({"role": "user", "content": format!(
+        "{} {} {} {} {} {} {} {} {} {} {} {}", w(1), w(2), w(3), w(4), w(5), w(6), w(21), w(22), w(23), w(24), w(25), w(26))})];
+    for s in 0..steps {
+        msgs.extend(step(k0 + s, &format!("cat {}.src", w(10 + s)), &source(t * 1000 + 10 * s, lines)));
+    }
+    msgs.push(
+        json!({"role": "assistant", "content": [{"type": "text", "text": format!("{} {} {}", w(7), w(8), w(1))}]}),
+    );
+    msgs
+}
+
+/// The stretches of `plan` (topic, steps) one after the other, and the engine that took them in request by request.
+fn conversation(spec: &str, plan: &[(usize, usize)], lines: usize) -> (Engine, Vec<Value>) {
+    let mut e = Engine::new(params(spec).unwrap());
+    e.tools(&["recall".to_string()]);
+    let mut msgs = Vec::new();
+    for &(t, steps) in plan {
+        let k0 = msgs.len();
+        msgs.extend(stretch(t, steps, lines, k0));
+    }
+    // the last stretch is open: no reply yet
+    msgs.pop();
+    super::recall::feed(&mut e, &msgs);
+    (e, msgs)
+}
+
+const TOPICS: &str = "nudge=0;eoq=0;link=1;ahead=0.25;margin=20;ratio=0.115;cards=2";
+
+/// The tokens the topics other than the active one hold.
+fn others_hold(e: &Engine) -> i64 {
+    e.topic_tokens().0.iter().map(|o| o.1).sum()
+}
+
+#[test]
+fn split_horizon_follows_the_topic_length() {
+    // the same tokens in the topics left behind: twelve short topics say the next one is short too, two long
+    // ones say it lasts
+    let short: Vec<(usize, usize)> = (0..12).map(|t| (t, 2)).chain([(50, 1)]).collect();
+    let long = [(0, 12), (1, 12), (50, 1)];
+    let (a, _) = conversation(&format!("{TOPICS};apart=100000000"), &short, 40);
+    let (b, _) = conversation(&format!("{TOPICS};apart=100000000"), &long, 40);
+    let apart = (others_hold(&a).min(others_hold(&b)) as f64 * 0.96) as i64;
+    let (a, _) = conversation(&format!("{TOPICS};apart={apart}"), &short, 40);
+    let (b, _) = conversation(&format!("{TOPICS};apart={apart}"), &long, 40);
+    assert!(!a.split, "{:?} {:?}", a.stats, a.goal.others());
+    assert!(b.split, "{:?} {:?}", b.stats, b.goal.others());
+}
+
+/// `msgs` fed to `e` request by request, `secs` seconds apart (the conversation of the stretches before the last
+/// one is in `e` already).
+fn feed_timed(e: &mut Engine, msgs: &[Value], secs: f64) {
+    for t in 1..=msgs.len() {
+        if msgs[t - 1]["role"] == "user" && t > e.tr.msgs.len() {
+            e.now = secs * t as f64;
+            e.sync(&msgs[..t]);
+            e.view();
+        }
+    }
+}
+
+#[test]
+fn a_likely_return_charges_the_cold_pocket() {
+    // two topics the person goes back and forth between, then a third: the one just left is likely to be asked
+    // for again. Split, coming back reads it without the cache unless the provider keeps its view that long
+    let plan = [(0, 3), (1, 20), (2, 1)];
+    let decide = |pockets: &str| {
+        let mut msgs = Vec::new();
+        for &(t, steps) in &plan {
+            let k0 = msgs.len();
+            msgs.extend(stretch(t, steps, 40, k0));
+        }
+        msgs.pop();
+        let mut e = Engine::new(params(&format!("{TOPICS};apart=0;{pockets}")).unwrap());
+        e.tools(&["recall".to_string()]);
+        // the topics before the last are split (each is kept in a pocket of its own), then the split is priced
+        let last = msgs.iter().rposition(|m| m["role"] == "user" && m["content"].is_string()).unwrap();
+        feed_timed(&mut e, &msgs[..last], 3.0);
+        // (the view the person was sent last was the whole one)
+        e.p.apart = 1000;
+        e.split = false;
+        feed_timed(&mut e, &msgs, 3.0);
+        e
+    };
+    let cold = decide("pockets=0");
+    let warm = decide("pockets=1;life=3600");
+    assert!(!cold.split, "{:?} {:?}", cold.stats, cold.goal.switches());
+    assert!(warm.split, "{:?} {:?}", warm.stats, warm.goal.switches());
+}
+
+#[test]
+fn message_zero_becomes_a_card_when_its_thread_leaves() {
+    let plan = [(0, 3), (1, 3)];
+    let (mut e, msgs) = conversation(&format!("{TOPICS};apart=0"), &plan, 40);
+    assert!(e.split && e.goal.thread_at(0) != e.goal.active(), "{:?}", e.stats);
+    let ask = msgs[0]["content"].as_str().unwrap().to_string();
+    let view = e.view();
+    let text = sent(&view);
+    // the request of message 0 is said once, in the cards, with the way to bring the message back
+    assert_eq!(text.matches(&ask).count(), 1, "{text}");
+    assert!(text.contains("recall brings any of m00001"), "{text}");
+    // and the view has shrunk by what the message held, were it sent as a message
+    let (whole, now) = (e.sizes[0], e.sizes_now()[0]);
+    assert!(whole > 20 && now < 10, "{whole} {now}");
+    assert_eq!(view[0]["role"], "user");
+}
+
+#[test]
+fn two_recalls_into_hidden_threads_unsplit_until_the_next_switch() {
+    let plan = [(0, 3), (1, 3)];
+    let (mut e, mut msgs) = conversation(&format!("{TOPICS};apart=0"), &plan, 40);
+    assert!(e.split);
+    // one lookup into the topic left out is only a lookup
+    msgs.extend(super::recall::recall_step(1, 2, None, "the output"));
+    super::recall::feed(&mut e, &msgs);
+    assert!(e.split && e.stats.get("unsplit").is_none(), "{:?}", e.stats);
+    // the second is a storm: the whole conversation is back
+    msgs.extend(super::recall::recall_step(2, 4, None, "the output"));
+    super::recall::feed(&mut e, &msgs);
+    assert!(!e.split && e.stats.get("unsplit") == Some(&1), "{:?}", e.stats);
+    let text = sent(&e.view());
+    assert!(!text.contains("This conversation has other topics"), "{text}");
+    assert!(text.contains(msgs[0]["content"].as_str().unwrap()));
+    // it stays whole through the rest of the stretch
+    msgs.extend(step(99, "ls", "a b c"));
+    super::recall::feed(&mut e, &msgs);
+    assert!(!e.split);
+    // and the next change of topic decides again
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "ok"}]}));
+    msgs.extend(stretch(7, 1, 40, 200).into_iter().take(2));
+    super::recall::feed(&mut e, &msgs);
+    assert!(e.split, "{:?}", e.stats);
+    assert_eq!(e.stats.get("unsplit"), Some(&1));
+}

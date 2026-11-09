@@ -132,8 +132,13 @@ impl Engine {
             let (msg, tool, b) = (u.msg, u.tool.clone(), self.tr.block(i));
             if tool == RECALL_TOOL {
                 let name = b.get("input").and_then(|x| x.get("message")).and_then(Value::as_str).unwrap_or("");
-                if message_named(name).is_some_and(|mi| judged && mi < msg && self.left_out(mi, None)) {
+                let named = message_named(name);
+                if let Some(mi) = named.filter(|&mi| judged && mi < msg && self.left_out(mi, None)) {
                     self.wanted_back();
+                    // into a topic the split left out: two of them are a storm, not a lookup
+                    if self.split && self.goal.thread_at(mi) != self.goal.active() {
+                        self.hidden_recalls += 1;
+                    }
                 }
                 continue;
             }

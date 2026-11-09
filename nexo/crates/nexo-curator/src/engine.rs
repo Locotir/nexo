@@ -149,6 +149,12 @@ pub struct Engine {
     split: bool,
     /// The turn the decision was made for.
     split_turn: usize,
+    /// Recalls of messages of the topics left out since the split was decided (`asked_back`).
+    hidden_recalls: u32,
+    /// The turn whose split two such recalls undid: no new decision until the next change of topic.
+    unsplit_turn: usize,
+    /// The first `now` the host gave and the steps there were then: how long a step takes.
+    t0: Option<(f64, usize)>,
     last_raw: Value,
     /// Whether the host offers a `note` tool: the request for notes names it, or asks for the lines in the reply.
     note_tool: bool,
@@ -284,6 +290,9 @@ impl Engine {
             vis: None,
             split: false,
             split_turn: usize::MAX,
+            hidden_recalls: 0,
+            unsplit_turn: usize::MAX,
+            t0: None,
             last_raw: Value::Null,
             note_tool: true,
             recall_tool: false,
