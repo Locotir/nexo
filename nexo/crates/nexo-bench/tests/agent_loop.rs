@@ -95,7 +95,7 @@ async fn a_two_session_task_runs_through_the_agent_and_resumes_its_history() {
 
     // each session: a request that lists the files, then one that ends the turn
     assert_eq!((rec.requests, rec.steps, rec.tool_calls, rec.tool_errors), (4, 4, 2, 0));
-    assert!(rec.finished && rec.stop.is_none(), "{rec:?}");
+    assert!(rec.finished && rec.stop == Some(nexo_bench::client::Stop::Done), "{rec:?}");
     assert_eq!((rec.compactions, rec.rewrites), (0, 0), "plain never summarises or rewrites its history");
     assert_eq!((rec.input, rec.cache_read, rec.output), (4000, 16000, 400));
     assert!((rec.cost - 4.0 * (1000.0 * 0.28 + 4000.0 * 0.028 + 100.0 * 0.42) / 1e6).abs() < 1e-12);

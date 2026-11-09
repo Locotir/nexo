@@ -27,6 +27,12 @@ pub struct LoopStats {
     pub hit_max_steps: bool,
     /// A turn ended on an error (the provider failed, or the bench refused the request).
     pub errors: Vec<String>,
+    /// How the last turn ended.
+    pub last_end: Option<TurnEnd>,
+    /// The agent shut down.
+    pub shut_down: bool,
+    /// The last reply of the loop asked for tools (a turn that ends on such a reply was closed by a check).
+    last_reply_called: bool,
     pending: HashMap<String, String>,
     seen: HashMap<String, u64>,
     /// When the first event arrived, and the span of each tool call in ms from it.
@@ -57,12 +63,48 @@ impl LoopStats {
         (serial, overlap, saved)
     }
 
+    /// Why the run ended. `forced` is what the bench did (its budget, the step limit); else the way the agent's
+    /// last turn ended. Never empty: an exit it cannot name is `Other` with a short detail.
+    pub fn stop(&self, forced: Option<&Stop>, close_on_verified: bool) -> Stop {
+        if let Some(s) = forced {
+            return s.clone();
+        }
+        if self.hit_max_steps {
+            return Stop::MaxSteps;
+        }
+        match self.last_end {
+            Some(TurnEnd::Done) if close_on_verified && self.last_reply_called => Stop::Verified,
+            Some(TurnEnd::Done) => Stop::Done,
+            Some(TurnEnd::Interrupted) => Stop::Cancelled,
+            Some(TurnEnd::MaxTurns) => Stop::MaxSteps,
+            Some(TurnEnd::Error) => {
+                let said = self.errors.last().map_or_else(String::new, |e| e.to_lowercase());
+                if said.contains("timed out") || said.contains("timeout") {
+                    Stop::Timeout
+                } else if said.contains("panicked") {
+                    Stop::Other("panic".into())
+                } else if said.contains("spend limit") {
+                    Stop::Other("spend limit".into())
+                } else if said.contains("aborted") {
+                    Stop::Other("turn aborted".into())
+                } else {
+                    Stop::Error
+                }
+            }
+            None if self.shut_down => Stop::Other("agent shut down".into()),
+            None => Stop::Other("no turn ended".into()),
+        }
+    }
+
     pub fn observe(&mut self, ev: &AgentEvent) {
         let now = self.origin.get_or_insert_with(Instant::now).elapsed().as_millis() as u64;
         match ev {
+            AgentEvent::AssistantStart => self.last_reply_called = false,
             AgentEvent::AssistantDone { .. } => self.steps += 1,
+            AgentEvent::Shutdown => self.shut_down = true,
             AgentEvent::ToolCall { id, name, args, .. } => {
                 self.tool_calls += 1;
+                self.last_reply_called = true;
                 self.pending.insert(id.clone(), format!("{name}|{}", canonical(args)));
             }
             AgentEvent::ToolDone { id, output, elapsed_ms } => {
@@ -79,6 +121,7 @@ impl LoopStats {
             }
             AgentEvent::TurnEnd { reason } => {
                 self.turns += 1;
+                self.last_end = Some(*reason);
                 if matches!(reason, TurnEnd::MaxTurns) {
                     self.hit_max_steps = true;
                 }

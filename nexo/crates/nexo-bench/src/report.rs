@@ -515,8 +515,8 @@ fn steps_table(records: &[Record], arms: &[&str]) -> String {
         let whole: Vec<&Record> = mine.iter().copied().filter(|r| r.stop != Some(Stop::Budget)).collect();
         let steps: Vec<f64> = whole.iter().map(|r| r.steps as f64).collect();
         let d = Delta { mean: spread(&steps).0, ci: bootstrap(&steps, RESAMPLES, 0x6e65_786f) };
-        let count = |stop: Stop| mine.iter().filter(|r| r.stop == Some(stop)).count();
-        let finished = mine.iter().filter(|r| r.finished && r.stop.is_none()).count();
+        let count = |stop: Stop| mine.iter().filter(|r| r.stop == Some(stop.clone())).count();
+        let finished = mine.iter().filter(|r| r.finished).count();
         s.push_str(&format!(
             "| {arm} | {} | {finished} | {} | {} | {} |\n",
             mine.len(),

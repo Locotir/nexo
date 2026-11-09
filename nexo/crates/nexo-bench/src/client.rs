@@ -19,14 +19,69 @@ use nexo_core::{
 use serde::Serialize;
 use serde_json::{json, Value};
 
-/// Why the bench stopped a run before the agent did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Why a run ended. The bench itself cuts a run for `Budget` or `MaxSteps`; the rest is how the agent's
+/// last turn ended. Written to the record as one string (`other:<detail>` for the exits not named here);
+/// records of older benchmarks that hold null or only `budget` / `max_steps` still read.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stop {
     /// The whole benchmark reached its budget.
     Budget,
     /// The task used all its steps.
     MaxSteps,
+    /// The agent answered and stopped by itself.
+    Done,
+    /// `agent.close_on_verified` ended the turn on a passing check.
+    Verified,
+    /// The provider failed, or the turn broke.
+    Error,
+    /// The provider timed out.
+    Timeout,
+    /// The turn was interrupted.
+    Cancelled,
+    /// Any other exit, with a short detail.
+    Other(String),
+}
+
+impl Stop {
+    /// The value written to the record.
+    pub fn as_str(&self) -> String {
+        match self {
+            Stop::Budget => "budget".into(),
+            Stop::MaxSteps => "max_steps".into(),
+            Stop::Done => "done".into(),
+            Stop::Verified => "verified".into(),
+            Stop::Error => "error".into(),
+            Stop::Timeout => "timeout".into(),
+            Stop::Cancelled => "cancelled".into(),
+            Stop::Other(d) => format!("other:{d}"),
+        }
+    }
+
+    /// The reverse of `as_str`; an unknown value is `Other` and keeps its text.
+    pub fn parse(s: &str) -> Stop {
+        match s {
+            "budget" => Stop::Budget,
+            "max_steps" => Stop::MaxSteps,
+            "done" => Stop::Done,
+            "verified" => Stop::Verified,
+            "error" => Stop::Error,
+            "timeout" => Stop::Timeout,
+            "cancelled" => Stop::Cancelled,
+            _ => Stop::Other(s.strip_prefix("other:").unwrap_or(s).to_string()),
+        }
+    }
+}
+
+impl Serialize for Stop {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Stop {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Stop::parse(&String::deserialize(d)?))
+    }
 }
 
 /// What a run has spent so far.
@@ -37,6 +92,7 @@ pub struct Tally {
     pub steps: u32,
     pub usage: Usage,
     pub cost: f64,
+    /// Set when the bench cut the run: `Budget` or `MaxSteps`. The record's own reason is `LoopStats::stop`.
     pub stop: Option<Stop>,
     /// Requests that summarised the history (the `compact` policy), counted in `requests`.
     pub compactions: u32,
@@ -91,11 +147,11 @@ impl Recorder {
         } else {
             None
         };
-        let stop = stop.or(t.stop)?;
-        t.stop.get_or_insert(stop);
+        let stop = stop.or(t.stop.clone())?;
+        t.stop.get_or_insert(stop.clone());
         let why = match stop {
-            Stop::Budget => "the benchmark's budget is spent",
             Stop::MaxSteps => "the task has used all its steps",
+            _ => "the benchmark's budget is spent",
         };
         Some(ProviderError::new(ErrorKind::Other, format!("bench: {why}")))
     }

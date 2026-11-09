@@ -905,7 +905,11 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             }
             res = async { turn.as_mut().expect("a turn is running").await }, if turn.is_some() => {
                 turn = None;
-                let reason = res.unwrap_or(TurnEnd::Error);
+                let reason = res.unwrap_or_else(|e| {
+                    let how = if e.is_panic() { "panicked" } else { "was aborted" };
+                    notice(&events, Level::Error, format!("the turn {how}"));
+                    TurnEnd::Error
+                });
                 emit(&events, AgentEvent::TurnEnd { reason });
                 let (hooks, hook_cwd, sid) = {
                     let st = state.lock().await;

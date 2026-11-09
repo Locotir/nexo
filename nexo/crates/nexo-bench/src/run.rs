@@ -78,6 +78,7 @@ pub struct Record {
     pub detail: String,
     /// The agent stopped by itself, not at the step limit or the budget.
     pub finished: bool,
+    /// Why the run ended (`Stop::as_str`); null only in records of older benchmarks.
     pub stop: Option<Stop>,
     /// Requests that offered tools (one per step of the loop).
     pub steps: u32,
@@ -306,7 +307,7 @@ pub fn record(
         ok,
         detail,
         finished: t.stop.is_none() && !d.stats.hit_max_steps,
-        stop: t.stop.or(d.stats.hit_max_steps.then_some(Stop::MaxSteps)),
+        stop: Some(d.stats.stop(t.stop.as_ref(), bench.close_on_verified)),
         steps: t.steps,
         requests: t.requests,
         input: t.usage.input,
