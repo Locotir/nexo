@@ -117,6 +117,9 @@ async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Result<Done, Str
     if is_binary(&bytes) {
         return Err(format!("edit: {shown} is a binary file"));
     }
+    if ctx.seen.changed(&path) {
+        return Err(format!("edit: {shown} changed since you last read it; `read` it again, then edit"));
+    }
     // rewriting a file in another encoding as UTF-8 would mangle every byte it does not share
     let text = String::from_utf8(bytes).map_err(|e| {
         format!(
@@ -132,6 +135,9 @@ async fn edit_file(p: &str, args: &Value, ctx: &ToolContext) -> Result<Done, Str
         }
         Err(e) => return Err(e),
     };
+    if edited == text {
+        return Err(format!("edit: {shown} would not change; the new text is already there"));
+    }
     write_atomic(&path, edited.as_bytes()).await.map_err(|e| format!("edit: cannot write {shown}: {e}"))?;
     if tokio::fs::read(&path).await.ok().as_deref() != Some(edited.as_bytes()) {
         return Err(format!("edit: {shown} is not as intended after the write; read it before going on"));
@@ -803,5 +809,33 @@ mod elsewhere_tests {
         std::fs::write(d.path().join("src/other.rs"), "pub fn margin(cost: f64) -> f64 {\n").unwrap();
         let out = Edit.run(json!({"path": "src/report.rs", "edits": edits}), &c).await;
         assert!(out.is_error && !out.content.contains("it is in"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_changes_nothing_or_follows_an_outside_change_is_refused() {
+        use crate::read::Read;
+        let d = tempfile::tempdir().unwrap();
+        let c = ToolContext::new(d.path().to_path_buf());
+        let f = d.path().join("g.txt");
+        std::fs::write(&f, "one\ntwo\n").unwrap();
+        // same old and new: refused, file untouched
+        let same = Edit.run(json!({"path": "g.txt", "old_string": "one", "new_string": "one"}), &c).await;
+        assert!(same.is_error && same.content.contains("are the same"), "{}", same.content);
+        // changes that cancel out leave the content as it was
+        let edits = json!([{"old_string": "one", "new_string": "uno"}, {"old_string": "uno", "new_string": "one"}]);
+        let none = Edit.run(json!({"path": "g.txt", "edits": edits}), &c).await;
+        assert!(none.is_error && none.content.contains("would not change"), "{}", none.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "one\ntwo\n");
+        // read, then two edits in a row by the model: fine
+        assert!(!Read.run(json!({"path": "g.txt"}), &c).await.is_error);
+        assert!(!Edit.run(json!({"path": "g.txt", "old_string": "one", "new_string": "1"}), &c).await.is_error);
+        assert!(!Edit.run(json!({"path": "g.txt", "old_string": "two", "new_string": "2"}), &c).await.is_error);
+        // changed behind its back: refused, nothing written; read again and it goes through
+        std::fs::write(&f, "1\n2\nand a line the person added\n").unwrap();
+        let stale = Edit.run(json!({"path": "g.txt", "old_string": "1", "new_string": "uno"}), &c).await;
+        assert!(stale.is_error && stale.content.contains("`read` it again"), "{}", stale.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "1\n2\nand a line the person added\n");
+        assert!(!Read.run(json!({"path": "g.txt"}), &c).await.is_error);
+        assert!(!Edit.run(json!({"path": "g.txt", "old_string": "1", "new_string": "uno"}), &c).await.is_error);
     }
 }

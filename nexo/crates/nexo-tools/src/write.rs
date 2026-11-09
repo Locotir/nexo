@@ -77,6 +77,9 @@ impl Tool for Write {
             Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
             Err(_) => None,
         };
+        if !huge && old.as_deref() == Some(content) {
+            return ToolOutput::error(format!("write: {shown} already has this content; nothing to write"));
+        }
         if let Some(why) = ctx.seen.unseen(&path) {
             return ToolOutput::error(format!(
                 "write: {shown} already exists and {why}; replacing it would lose what is there. \
@@ -148,6 +151,12 @@ mod tests {
         assert!(out.is_error && out.content.contains("changed since"), "{}", out.content);
         // a new file, and one the model edited, need no read
         assert!(!Write.run(json!({"path": "new/a.txt", "content": "a\n"}), &c).await.is_error);
+        // the same content again: nothing to write, the file is left as it is
+        let same = Write.run(json!({"path": "new/a.txt", "content": "a\n"}), &c).await;
+        assert!(same.is_error && same.content.contains("already has this content"), "{}", same.content);
+        // read again after the outside change: the write goes through
+        assert!(!crate::read::Read.run(json!({"path": "notes.md"}), &c).await.is_error);
+        assert!(!Write.run(json!({"path": "notes.md", "content": "z\n"}), &c).await.is_error);
         std::fs::write(d.path().join("e.txt"), "one\n").unwrap();
         let e = Edit.run(json!({"path": "e.txt", "old_string": "one", "new_string": "two"}), &c).await;
         assert!(!e.is_error, "{}", e.content);

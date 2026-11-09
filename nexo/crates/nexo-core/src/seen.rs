@@ -31,6 +31,12 @@ impl Seen {
         }
     }
 
+    /// Whether the model saw `path` and it is not as it was then; false for a file it never saw.
+    pub fn changed(&self, path: &Path) -> bool {
+        let Some(now) = stamp(path) else { return false };
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).get(&key(path)).is_some_and(|s| *s != now)
+    }
+
     /// Why replacing `path` would lose content the model has not seen; None when nothing would be
     /// lost (no such file, an empty one, or one unchanged since the model saw it).
     pub fn unseen(&self, path: &Path) -> Option<&'static str> {
@@ -60,10 +66,12 @@ mod tests {
         assert_eq!(seen.unseen(&f), None, "an empty file loses nothing");
         std::fs::write(&f, "kept").unwrap();
         assert!(seen.unseen(&f).unwrap().contains("not read"));
+        assert!(!seen.changed(&f), "a file never seen is not a changed one");
         seen.clone().mark(&f);
         assert_eq!(seen.unseen(&f), None);
         std::fs::write(&f, "kept, and more").unwrap();
         assert!(seen.unseen(&f).unwrap().contains("changed"));
+        assert!(seen.changed(&f));
         // the same file by another spelling
         seen.mark(&f);
         assert_eq!(seen.unseen(&d.path().join(".").join("a.txt")), None);
