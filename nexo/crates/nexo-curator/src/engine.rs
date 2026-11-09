@@ -19,6 +19,7 @@ use self::files::Wrote;
 use self::recall::ReadMade;
 use self::steps::Step;
 use self::view::{Built, Visible};
+use self::window::Sticky;
 
 mod added;
 mod anchor;
@@ -39,6 +40,7 @@ mod recall;
 mod stale;
 mod steps;
 mod view;
+mod window;
 
 pub use added::{keywords, label, Added, AddedKind, AddedState};
 pub use params::Params;
@@ -95,6 +97,12 @@ pub struct Engine {
     checked_at: usize,
     cap: i64,
     floor: f64,
+    /// The sticky set of the working window, as of the last cut (`window.rs`).
+    stk: Sticky,
+    /// The tokens of the system prompt and tools the host sends with the view: the working window counts them.
+    pub(crate) head: i64,
+    /// Whether a part the model only guesses unlikely to be needed may leave in this decision.
+    guess: bool,
     built: FxHashMap<usize, Built>,
     born: Vec<usize>,
     held: FxHashMap<(usize, usize), f64>,
@@ -219,8 +227,11 @@ impl Engine {
         let mut goal = Threads::default();
         goal.link = p.link;
         Engine {
-            cap: p.cap,
+            cap: p.target,
             floor: p.floor,
+            stk: Sticky::default(),
+            head: 0,
+            guess: true,
             p,
             int: Interner::default(),
             tr: Tracer::default(),

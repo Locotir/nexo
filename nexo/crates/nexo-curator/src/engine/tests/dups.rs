@@ -26,7 +26,7 @@ fn the_output_that_sends_the_lines_of_a_copy_left_out_stays_in_that_pass_and_the
     let cap = total - 1;
     let floor = (total - est_str(&log) / 2) as f64 / cap as f64;
     for cut in ["age", "need", "copies", "cover"] {
-        let given = format!("threshold=1;still=0;protect=2;nudge=0;sup=1;cap={cap};floor={floor};cut={cut}");
+        let given = format!("threshold=1;still=0;protect=2;nudge=0;sup=1;eoq=0;target={cap};floor={floor};cut={cut}");
         let mut e = Engine::new(params(&given).unwrap());
         e.sync(&msgs);
         let (lines, stub) = seen(&e.view());

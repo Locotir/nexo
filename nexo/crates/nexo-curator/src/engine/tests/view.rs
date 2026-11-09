@@ -49,7 +49,8 @@ fn the_reasoning_of_the_latest_reply_stays_with_its_calls_whatever_the_tail() {
     whole.sync(&msgs);
     let cap = whole.tokens() - 1;
     // no tail kept whole and every part a guess: the reasoning of the reply the request goes back to stays
-    let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;protect=0;cap={cap};floor=0.5")).unwrap());
+    let mut e =
+        Engine::new(params(&format!("threshold=1;still=0;nudge=0;protect=0;eoq=0;target={cap};floor=0.5")).unwrap());
     e.sync(&msgs);
     let view = e.view();
     let kept = blocks(view[1].get("content")).iter().any(|b| get_str(b, "thinking") == thought);
@@ -70,7 +71,7 @@ fn a_long_argument_left_out_says_the_file_on_disk_is_current_only_for_a_write() 
     // a floor that leaving most of the script is enough for: no message has to leave
     let cap = total - 1;
     let floor = (total - est_str(&script) / 2) as f64 / cap as f64;
-    let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;cap={cap};floor={floor}")).unwrap());
+    let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;eoq=0;target={cap};floor={floor}")).unwrap());
     e.sync(&msgs);
     let call = e.view()[1].to_string();
     assert!(call.contains("lines of this argument here are omitted"), "{call} {:?}", e.stats);
@@ -95,7 +96,7 @@ fn a_list_of_changes_folds_each_long_text_like_one_edit_does() {
     let total = whole.tokens();
     let cap = total - 1;
     let floor = (total - est_str(&old)) as f64 / cap as f64;
-    let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;cap={cap};floor={floor}")).unwrap());
+    let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;eoq=0;target={cap};floor={floor}")).unwrap());
     e.sync(&msgs);
     let call = e.view()[1].to_string();
     assert!(call.contains("lines this edit replaced here are omitted; they are no longer in the file"), "{call}");
@@ -122,7 +123,7 @@ fn the_text_an_edit_replaced_is_not_said_to_be_in_the_file() {
     let total = whole.tokens();
     let cap = total - 1;
     let floor = (total - est_str(&old)) as f64 / cap as f64;
-    let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;cap={cap};floor={floor}")).unwrap());
+    let mut e = Engine::new(params(&format!("threshold=1;still=0;nudge=0;eoq=0;target={cap};floor={floor}")).unwrap());
     e.sync(&msgs);
     let call = e.view()[1].to_string();
     assert!(call.contains("lines this edit replaced here are omitted; they are no longer in the file"), "{call}");

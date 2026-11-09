@@ -46,7 +46,7 @@ fn live_drop_keeps_part_carrying_a_copy() {
     let cap = total - 1;
     let floor = (total - est_str(&log) / 2) as f64 / cap as f64;
     let given = format!(
-        "threshold=1;still=0;protect=2;nudge=0;sup=1;cut=copies;cap={cap};floor={floor};live=1;close=2;margin=0"
+        "threshold=1;still=0;protect=2;nudge=0;sup=1;cut=copies;eoq=0;target={cap};floor={floor};live=1;close=2;margin=0"
     );
     let mut e = Engine::new(params(&given).unwrap());
     e.sync(&msgs);

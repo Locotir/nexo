@@ -46,7 +46,7 @@ fn past_the_cap_a_read_out_of_date_leaves_before_one_of_the_same_size_and_its_no
     let floor = (total - est_str(&source(0, 120)) / 2) as f64 / cap as f64;
     for cut in ["age", "need"] {
         for recall in [false, true] {
-            let given = format!("stale=1;threshold=0;nudge=0;brief=1;cap={cap};floor={floor};cut={cut}");
+            let given = format!("stale=1;threshold=0;nudge=0;brief=1;eoq=0;target={cap};floor={floor};cut={cut}");
             let mut e = Engine::new(params(&given).unwrap());
             if recall {
                 e.tools(&[RECALL_TOOL.to_string()]);
@@ -69,7 +69,8 @@ fn past_the_cap_a_read_out_of_date_leaves_before_one_of_the_same_size_and_its_no
         }
     }
     // with the setting off, the cut by age takes the oldest messages, the other file's read with them
-    let mut off = Engine::new(params(&format!("stale=0;threshold=0;nudge=0;cap={cap};floor={floor}")).unwrap());
+    let mut off =
+        Engine::new(params(&format!("stale=0;threshold=0;nudge=0;eoq=0;target={cap};floor={floor}")).unwrap());
     off.sync(&msgs);
     assert!(!sent(&off.view()).contains(&source(5000, 120)));
 }

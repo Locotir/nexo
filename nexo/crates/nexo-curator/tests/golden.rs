@@ -276,10 +276,13 @@ fn the_long_session_ends_with_the_reference_stats() {
     // A file read under another topic comes back when the request names it, and only that read: it closes 50 steps,
     // recalls 4. With the ledger keeping the rows of a table of values (117 lines, not 58; the anchor 1840, was 1364)
     // the cache misses 59524 (miss_close 17895).
-    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "dedup_asked": 24,
-        "dropped_chunks": 127, "sup_chunks": 31, "rewrites": 1, "left_messages": 22, "ledger_lines": 117,
-        "cap_rewrites": 1, "miss_cap": 22073, "miss": 59524, "miss_fresh": 17298, "closed_steps": 50, "miss_close": 17895, "recalled_steps": 4,
-        "live_dropped": 1, "miss_live": 584, "cards": 1, "switches": 1, "miss_anchor": 1840, "miss_switch": 1840});
+    // The working window (`target=20000`, `cap=40000`, `hard=80000`; `cut=cover`): the view is held near 20k tokens,
+    // so the priced cap runs 29 times, not once, and the cache misses 333778 (miss_cap 317228); 9 cuts at the
+    // deterministic cap took the oldest results that are not sticky.
+    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 16031,
+        "miss": 333778, "dedup_asked": 24, "dropped_chunks": 106, "sup_chunks": 93, "rewrites": 29,
+        "cover_chunks": 326, "cap_rewrites": 16, "miss_cap": 317228, "left_messages": 124, "ledger_lines": 938,
+        "recalled_steps": 2, "closed_steps": 0, "miss_close": 2967, "split_kept": 1, "switches": 40, "window_cuts": 9});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }
@@ -303,5 +306,9 @@ fn the_real_audit_ends_with_the_reference_stats() {
         last = cur
             .answer(&serde_json::json!({"op": "view", "system_tokens": req["system_tokens"], "messages": msgs}), 0.0);
     }
-    assert_eq!(last["stats"], serde_json::json!({"birth_saved": 0, "live_dropped": 3, "miss_live": 708, "miss": 708}));
+    // the 20k target cuts the two requests that pass it (it was 3 idle drops and 708 missed tokens before)
+    assert_eq!(
+        last["stats"],
+        serde_json::json!({"birth_saved": 0, "cover_chunks": 160, "rewrites": 2, "cap_rewrites": 2, "miss_cap": 32564, "miss": 32564})
+    );
 }

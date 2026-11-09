@@ -53,8 +53,9 @@ impl Engine {
 
     /// The first message whose outputs `Params.still` keeps from a guess: the latest outputs since the agent
     /// last wrote, newest first, while they fit the budget. `usize::MAX` keeps none.
-    fn still_from(&self, sizes: &[i64]) -> usize {
-        if self.p.still <= 0 {
+    pub(super) fn still_from(&self, sizes: &[i64]) -> usize {
+        let still = self.still_now();
+        if still <= 0 {
             return usize::MAX;
         }
         let first = self.last_written().map_or(0, |m| m + 1);
@@ -62,7 +63,7 @@ impl Engine {
         for mi in (first..sizes.len()).rev() {
             if self.fz.by_msg(mi).iter().any(|&i| self.tr.units[i].kind == UKind::Result) {
                 kept += sizes[mi];
-                if kept > self.p.still {
+                if kept > still {
                     break;
                 }
             }
@@ -227,7 +228,8 @@ impl Engine {
                             && (copies.contains_key(&(i, *j))
                                 || (!carried.contains(&(i, *j))
                                     && (stale.contains(&i)
-                                        || (!still.contains(&mi)
+                                        || (self.guess
+                                            && !still.contains(&mi)
                                             && self.prob(&self.fz.vector(&self.tr, i, *j)) < self.p.threshold))))
                     })
                     .collect();

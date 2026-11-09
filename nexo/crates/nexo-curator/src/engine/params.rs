@@ -11,7 +11,13 @@ pub struct Params {
     pub floor: f64,
     pub every: i64,
     pub least: f64,
+    /// The working window (`target`, `cap`, `hard`, in tokens of the view without the system prompt; 0: off).
+    /// `target`: the priced cap of `engine/cap.rs` runs with this budget (dead results leave when that is
+    /// cheaper than keeping them, the cache included). `cap`: past it the oldest results the sticky set
+    /// does not hold leave, price ignored. `hard`: past it the oldest sticky results leave too (as pointers).
+    pub target: i64,
     pub cap: i64,
+    pub hard: i64,
     pub turn_head: bool,
     pub eoq: i64,
     pub ledger: i64,

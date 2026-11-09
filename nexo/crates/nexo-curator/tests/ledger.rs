@@ -4,7 +4,7 @@
 use nexo_curator::Curator;
 use serde_json::{json, Value};
 
-const BASE: &str = "directives=1;nudge=8;close=0;ahead=0;dedup=0;live=0;lead=0;aim=0;follow=0;brief=0;digest=0;hold=0;asked=0;sup=0;named=0;margin=1;mission=0";
+const BASE: &str = "directives=1;nudge=8;close=0;ahead=0;dedup=0;live=0;lead=0;aim=0;follow=0;brief=0;digest=0;hold=0;asked=0;sup=0;named=0;margin=1;mission=0;target=0;cap=0;hard=0;cut=age";
 
 fn user(text: &str) -> Value {
     json!({"role": "user", "content": text})

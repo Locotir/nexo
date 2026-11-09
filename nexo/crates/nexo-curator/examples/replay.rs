@@ -1476,6 +1476,9 @@ fn main() {
     let mut copied_words = 0;
     let (mut blind_tokens, mut open_tokens) = (0i64, 0i64);
     let (mut denied_tokens, mut asked_tokens) = (0i64, 0i64);
+    // the working window: the largest view, the largest sticky set, and where each cut block was first cut
+    let (mut max_view, mut max_sticky) = (0i64, 0i64);
+    let mut first_cut = std::collections::BTreeMap::<(usize, usize), usize>::new();
     let (mut rep_view, mut rep_raw) = (0i64, 0i64);
     // the shapes of the views sent so far: a view the model was already sent comes back the same way
     let (mut shapes, mut revisits, mut first_revisits) = (HashSet::<String>::new(), 0usize, Vec::<String>::new());
@@ -1525,6 +1528,11 @@ fn main() {
         }
         blind_tokens += missing;
         open_tokens += open;
+        max_view = max_view.max(reply.tokens + cur.head_tokens() as i64);
+        max_sticky = max_sticky.max(cur.sticky_tokens());
+        for b in cur.cut_blocks() {
+            first_cut.entry(b).or_insert(i);
+        }
         let (missing, open) = denied(&r.messages, &reply.view);
         denied_tokens += missing;
         asked_tokens += open;
@@ -1719,6 +1727,25 @@ fn main() {
     println!(
         "blind: {blind_tokens} of {open_tokens} tokens of results not yet written about or acted on were left out ({:.1}%)",
         share(blind_tokens, open_tokens)
+    );
+    // lines of a block a window cut took out that a reply written after the cut cites word for word
+    let mut cited = 0usize;
+    for (&(mi, bi), &at) in &first_cut {
+        let Some(block) = last_msgs.get(mi).map(blocks_of).and_then(|b| b.get(bi).cloned()) else { continue };
+        let text = text_of(&json!({"content": [block]}));
+        let from = requests[at].messages.len();
+        let replies: Vec<String> = last_msgs
+            .iter()
+            .skip(from)
+            .filter(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
+            .map(text_of)
+            .collect();
+        let lines: HashSet<&str> = text.lines().map(str::trim).filter(|l| l.chars().count() >= 16).collect();
+        cited += lines.iter().filter(|l| replies.iter().any(|r| r.contains(**l))).count();
+    }
+    println!(
+        "window: max view {max_view} tokens, sticky set at most {max_sticky} tokens, {} blocks cut, sticky lines dropped (lines of a cut block cited by a later reply): {cited}",
+        first_cut.len()
     );
     println!(
         "denied: {denied_tokens} of {asked_tokens} tokens of the results just asked for were not sent in their place ({:.1}%)",

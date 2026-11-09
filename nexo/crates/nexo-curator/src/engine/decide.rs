@@ -128,7 +128,11 @@ impl Engine {
         let due = warm != usize::MAX
             || total - self.checked >= self.p.check
             || k as i64 - self.checked_at as i64 >= self.p.every;
+        if self.p.target > 0 {
+            self.refresh_sticky();
+        }
         let held = if self.p.hold != 0 && self.p.eoq != 0 { self.held(&sizes) } else { 0 };
+        self.guess = true;
         if self.p.eoq != 0 {
             // what no cut takes: the first message and the protected tail
             let tail = (t as i64 - self.p.protect).clamp(1, t as i64) as usize;
@@ -137,6 +141,16 @@ impl Engine {
             (self.cap, self.floor, stuck) = self.eoq_cap(k, base);
             if stuck {
                 self.bump("cap_stuck", 1);
+            }
+            // the priced cap runs with the working window's target: it aims at the same cut, lower
+            let g = self.raw_tokens / k.max(1) as i64;
+            if self.p.target > 0 && !stuck && self.cap > self.p.target && base + g <= self.p.target {
+                let cut_to = self.floor * self.cap as f64;
+                // below the cap the budget set, only what the history shows dead leaves (copies, out of date
+                // reads); what the model only guesses unlikely to be needed again stays
+                self.guess = total - held > self.cap;
+                self.cap = self.p.target;
+                self.floor = (cut_to / self.cap as f64).min(0.8);
             }
         }
         let mut first: Option<usize> = None;
@@ -185,6 +199,8 @@ impl Engine {
             {
                 first = Some(0);
             }
+            // (what `leave` wrote is counted as it is now, the anchor it writes again included)
+            sizes = self.sizes_now();
             if squeeze {
                 self.bump("pocket_squeeze", first.is_some() as i64);
                 self.miss("miss_squeeze", first, &sizes, t);
@@ -197,6 +213,12 @@ impl Engine {
                 self.miss("miss_due", Some(e), &sizes, t);
                 first = Some(first.map_or(e, |f| f.min(e)));
             }
+        }
+        // the working window: past `cap` the oldest results the agent is not working from leave, price ignored
+        if let Some(mi) = self.window_cut() {
+            first = Some(first.map_or(mi, |f| f.min(mi)));
+            sizes = self.sizes_now();
+            self.miss("miss_cap", Some(mi), &sizes, t);
         }
         // what settles and what fits is weighed as a view rewritten from message 1 on (`first`); the cache
         // misses from the oldest result settled, and from the anchor that `leave` writes again

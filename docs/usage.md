@@ -19,6 +19,7 @@ The context policy is set in `~/.nexo/config.toml` (`%USERPROFILE%\.nexo\config.
 [context]
 policy = "curator"                           # auto | plain | compact | curator
 # curator_spec = "eoq=15000;ledger=10000"    # override the engine's settings
+# working_set = "20000/40000/80000"          # target/cap/hard tokens of the view (the default)
 ```
 
 `auto`, the default, is the curator. `plain` sends the whole history; `compact` summarises once a request

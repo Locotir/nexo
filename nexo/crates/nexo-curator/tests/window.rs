@@ -238,7 +238,7 @@ fn a_small_topic_stays_in_the_view() {
 fn a_request_naming_a_file_read_under_another_topic_gets_that_read_back() {
     // the second topic read `sulvulko_bordekul.py`; the request that names it comes while the first topic
     // is the one the view holds: its read comes back, though no other step of that topic does
-    let mut cur = Curator::new("").unwrap();
+    let mut cur = Curator::new("target=0;cap=0;hard=0;cut=age").unwrap();
     let mut msgs: Vec<Value> = Vec::new();
     let mut text = String::new();
     for line in include_str!("fixtures/synthetic-g2-t40-s3.jsonl").lines() {

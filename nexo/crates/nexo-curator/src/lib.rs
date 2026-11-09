@@ -58,13 +58,21 @@ pub use learn::{K_OLD, NAMES as NEED_FEATURES};
 /// what it was reading. Without it, the golden session lost the reads of a request left unanswered as the
 /// next one came in, and the agent read the same file again for 180 steps. Past the budget a guess may take
 /// the oldest, so a session where the agent never writes still has a bounded view.
+/// The working window: the view aims at `target=20000` tokens (the priced cap above runs with that budget), is
+/// cut at `cap=40000` whatever the cache costs (the oldest results that are not sticky leave first) and never
+/// passes `hard=80000` (then the oldest sticky results leave too, as pointers). Sticky, by rule and with no
+/// model: the request, the agent's own text and calls, the latest `file now` of each path, the last `check:`,
+/// the latest whole read of each path and what the agent has read and not yet written about. `still` is
+/// bounded by `target` minus the sticky tokens (at least 4000).
 pub const D_SPEC: &str =
-    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;cut=age;cards=8;stale=1;pockets=0;life=3600";
+    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=40000;target=20000;hard=80000;cut=cover;cards=8;stale=1;pockets=0;life=3600";
 
 const INTS: &[&str] = &[
     "protect",
     "check",
     "cap",
+    "target",
+    "hard",
     "every",
     "cards",
     "eoq",
@@ -174,10 +182,6 @@ fn params(spec: &str) -> Result<Params, String> {
         return Err("model is not supported by the built-in curator".into());
     }
     let mut kv = parse_params(D_SPEC)?;
-    // a cap given without a view after the rewrite leaves no view: the cap alone decides
-    if given.contains_key("cap") && !given.contains_key("eoq") {
-        kv.insert("eoq".into(), "0".into());
-    }
     kv.extend(given);
     let mut vals: IndexMap<String, Val> = IndexMap::new();
     for (k, v) in &kv {
@@ -220,8 +224,15 @@ fn params(spec: &str) -> Result<Params, String> {
         return unsupported("head");
     }
     let (floor, eoq) = (f("floor")?, i("eoq")?);
-    if i("cap")? > 0 && floor == 0.0 && eoq == 0 {
-        return Err("cap needs a floor above 0".into());
+    if i("target")? > 0 && floor == 0.0 && eoq == 0 {
+        return Err("target needs a floor above 0".into());
+    }
+    let (target, cap, hard) = (i("target")?, i("cap")?, i("hard")?);
+    if cap > 0 && target > cap {
+        return Err("target is above cap".into());
+    }
+    if hard > 0 && cap > hard {
+        return Err("cap is above hard".into());
     }
     let birth: Vec<String> = {
         let mut v: Vec<String> = Vec::new();
@@ -245,7 +256,9 @@ fn params(spec: &str) -> Result<Params, String> {
         floor,
         every: i("every")?,
         least: f("least")?,
-        cap: i("cap")?,
+        target,
+        cap,
+        hard,
         turn_head: head == "turn",
         eoq,
         ledger: i("ledger")?,
@@ -476,6 +489,7 @@ impl Curator {
     /// The view for the model call that follows ``messages`` (the whole conversation so far).
     pub fn view(&mut self, system_tokens: u64, messages: &[Value], now: f64) -> Result<Reply, String> {
         self.head_tokens = system_tokens;
+        self.eng.head = system_tokens as i64;
         self.eng.now = now;
         // the view takes what the window leaves after the system prompt and tools: a floor above that would
         // only move the overflow to the provider (a small local window under many tools); 0 means no limit,
@@ -560,6 +574,16 @@ impl Curator {
     /// Ends the dump of `dump_to`.
     pub fn dump_end(&mut self) {
         self.eng.dump_end();
+    }
+
+    /// For measurement: the tokens of the sticky set (`engine/window.rs`) at the last request.
+    pub fn sticky_tokens(&self) -> i64 {
+        self.eng.sticky_tokens()
+    }
+
+    /// For measurement: the (message, block) of each tool result a window cut took parts of.
+    pub fn cut_blocks(&self) -> Vec<(usize, usize)> {
+        self.eng.cut_blocks()
     }
 
     /// G0: token-requests each rule saved so far.
@@ -882,13 +906,15 @@ mod tests {
             assert_eq!(refused(&format!("{k}=1")), format!("unknown setting {k:?}"));
         }
         assert_eq!(refused("rule=lru"), "rule is not supported by the built-in curator");
-        assert_eq!(refused("cap=9000;floor=0"), "cap needs a floor above 0");
+        assert_eq!(refused("target=9000;eoq=0;floor=0"), "target needs a floor above 0");
+        assert_eq!(refused("target=9000;cap=5000"), "target is above cap");
+        assert_eq!(refused("cap=90000;hard=80000"), "cap is above hard");
         assert_eq!(refused("birth=squeez"), "birth has no stage \"squeez\"");
         assert_eq!(refused("birth=squeeze+telegraf"), "birth has no stage \"telegraf\"");
         assert!(params("birth=").is_ok_and(|p| p.birth.is_empty()), "an empty birth runs no stage");
         // the values these settings take still run, written as they were
         assert!(params(" rule=rent ; recall=0;trust=1.0;margin=1_000;; ").is_ok());
-        assert!(params("cap=0;floor=0;eoq=0").is_ok(), "no cap needs no floor");
+        assert!(params("target=0;cap=0;floor=0;eoq=0").is_ok(), "no target needs no floor");
     }
 
     /// Replays every fixture: a view that sends a message of the previous view otherwise (or no longer)
@@ -979,7 +1005,7 @@ mod tests {
         assert_eq!(refused("birth=squeeze,telegraph"), "birth has no stage \"telegraph\"");
         assert_eq!(refused("eoq=1,ledger=2"), "eoq takes a whole number of 0 or more, not \"1,ledger=2\"");
         // a cap without a view after the rewrite takes none
-        assert_eq!(params("cap=9000").unwrap().eoq, 0);
+        assert_eq!(params("target=9000;cap=9000").unwrap().cap, 9000);
     }
 
     /// A text the window pages, sent paged otherwise in the next request, is a miss from where it is.

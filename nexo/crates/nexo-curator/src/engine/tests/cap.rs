@@ -28,7 +28,7 @@ fn past_the_cap_an_old_copy_leaves_before_the_first_file_read() {
     // a cap one token short, and a floor that dropping one copy of the log is enough for
     let cap = total - 1;
     let floor = (total - est_str(&log) / 2) as f64 / cap as f64;
-    let given = format!("threshold=0;nudge=0;cap={cap};floor={floor}");
+    let given = format!("threshold=0;nudge=0;eoq=0;target={cap};floor={floor};cut=age");
     let mut age = Engine::new(params(&given).unwrap());
     age.sync(&msgs);
     assert!(!results(&age.view()).contains(&spec), "the oldest messages leave first");
@@ -90,7 +90,7 @@ fn past_the_cap_only_copies_leave_until_twice_the_cap() {
     whole.sync(&msgs);
     let total = whole.tokens();
     // a target far below the view: the copy goes, and nothing else while the view is under twice the cap
-    let given = format!("threshold=0;nudge=0;cap={};floor=0.2;cut=copies", total - 1);
+    let given = format!("threshold=0;nudge=0;eoq=0;target={};floor=0.2;cut=copies", total - 1);
     let mut e = Engine::new(params(&given).unwrap());
     e.sync(&msgs);
     let kept = results(&e.view());
@@ -98,7 +98,7 @@ fn past_the_cap_only_copies_leave_until_twice_the_cap() {
     assert_eq!(kept.iter().filter(|r| **r == log).count(), 1, "{kept:?}");
     assert!(!e.stats.contains_key("left_messages") && !e.stats.contains_key("need_chunks"), "{:?}", e.stats);
     // past twice the cap, the cut that loses material runs as before
-    let given = format!("threshold=0;nudge=0;cap={};floor=0.6;cut=copies", total / 4);
+    let given = format!("threshold=0;nudge=0;eoq=0;target={};floor=0.6;cut=copies", total / 4);
     let mut e = Engine::new(params(&given).unwrap());
     e.sync(&msgs);
     assert!(!results(&e.view()).contains(&spec));
@@ -136,7 +136,8 @@ fn past_the_cap_what_tells_the_most_stays_whatever_its_age() {
     // room for all but about one table and a half
     let cap = total - 1;
     let floor = (total - 3 * est_str(&log) / 2) as f64 / cap as f64;
-    let mut e = Engine::new(params(&format!("threshold=0;nudge=0;cap={cap};floor={floor};cut=cover")).unwrap());
+    let mut e =
+        Engine::new(params(&format!("threshold=0;nudge=0;eoq=0;target={cap};floor={floor};cut=cover")).unwrap());
     e.sync(&msgs);
     let kept = results(&e.view());
     let all = kept.join("\n");

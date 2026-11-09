@@ -389,6 +389,11 @@ pub struct ContextConfig {
     pub compact_at: u64,
     /// Settings passed to the curator (`threshold=0.02;head=turn;...`); empty: its default D.
     pub curator_spec: String,
+    /// The curator's working window as `target/cap/hard` in tokens of the view, e.g. `"20000/40000/80000"`
+    /// (empty: its default). The view aims at `target`, is cut at `cap` whatever the cache costs, and
+    /// never passes `hard`; what the agent is working from is never cut before `hard`. It overrides the
+    /// same settings in `curator_spec`; `compact_at` is not changed by it.
+    pub working_set: String,
     /// A tool output of more than this many tokens is read by a separate request, and the session gets
     /// its notes in place of the output (0: off).
     pub reader_at: u64,
@@ -396,7 +401,13 @@ pub struct ContextConfig {
 
 impl Default for ContextConfig {
     fn default() -> ContextConfig {
-        ContextConfig { policy: "auto".into(), compact_at: 100_000, curator_spec: String::new(), reader_at: 0 }
+        ContextConfig {
+            policy: "auto".into(),
+            compact_at: 100_000,
+            curator_spec: String::new(),
+            working_set: String::new(),
+            reader_at: 0,
+        }
     }
 }
 

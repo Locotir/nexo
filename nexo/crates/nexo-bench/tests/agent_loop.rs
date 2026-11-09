@@ -319,3 +319,51 @@ async fn a_read_of_an_unchanged_file_already_shown_is_answered_in_one_line() {
     let last = transcript.lines().last().unwrap();
     assert_eq!(last.matches("3│ gamma").count(), 1, "the file is in the conversation once: {last}");
 }
+
+/// Reads the next 500 lines of `big.txt` each time a result comes back, six times, then says it is done.
+struct SixReads;
+
+#[async_trait]
+impl ModelClient for SixReads {
+    async fn stream(&self, _: &ProviderConfig, req: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        let done =
+            req.messages.iter().flat_map(|m| m.content.iter()).filter(|p| matches!(p, Part::ToolResult { .. })).count();
+        let evs = if done < 6 {
+            let id = format!("r{done}");
+            let args = json!({"path": "big.txt", "offset": 1 + 500 * done, "limit": 500});
+            vec![
+                StreamEvent::ToolCallStart { id: id.clone(), name: "read".into() },
+                StreamEvent::ToolCallEnd { id, name: "read".into(), args },
+                StreamEvent::Finish(FinishReason::ToolUse),
+                StreamEvent::Done,
+            ]
+        } else {
+            vec![StreamEvent::TextDelta("done".into()), StreamEvent::Finish(FinishReason::Stop), StreamEvent::Done]
+        };
+        Ok(Box::pin(futures::stream::iter(evs)))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn six_reads_of_a_big_file_keep_the_last_request_under_the_window() {
+    let body: String = (0..3000)
+        .map(|i| format!("line {i:05} {:x} the quick brown fox jumps over the lazy dog again\n", i * 7919 + 13))
+        .collect();
+    let mut last = Vec::new();
+    for arm in ["plain", "curator:cap=0;target=0;hard=0", "curator"] {
+        let out = tempfile::tempdir().unwrap();
+        let bench = bench(Arc::new(SixReads), 100, out.path());
+        let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
+        task.files = vec![("big.txt".into(), body.clone())];
+        task.turns = vec![(0, "read it".into())];
+        task.setup = None;
+        task.sealed = false;
+        task.mask = &[];
+        task.check = |_| nexo_bench::check::Outcome { ok: false, score: 0.0, detail: String::new() };
+        let rec = run::run(&bench, &task, &Arm::parse(arm).unwrap(), 0, 5.0).await.unwrap();
+        assert_eq!((rec.tool_calls, rec.tool_errors), (6, 0), "{arm}: {rec:?}");
+        last.push(rec.final_view_tokens.max(rec.max_view_tokens));
+    }
+    assert!(last[0] > 40_000 && last[1] > 40_000, "without a window the six reads pile up: {last:?}");
+    assert!(last[2] <= 40_000, "the default window holds the request under 40k tokens: {last:?}");
+}

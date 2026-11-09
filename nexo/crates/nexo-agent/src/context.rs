@@ -496,6 +496,23 @@ fn curated_items(items: &[nexo_curator::Added]) -> Vec<nexo_core::CuratedItem> {
         .collect()
 }
 
+/// `spec` with the working window of `[context] working_set` (`target/cap/hard`, in tokens) over its
+/// `target`, `cap` and `hard`; `spec` as it is when `working_set` is empty.
+pub fn working_set_spec(spec: &str, working_set: &str) -> Result<String, String> {
+    let ws = working_set.trim();
+    if ws.is_empty() {
+        return Ok(spec.to_string());
+    }
+    let nums: Vec<u64> = ws.split('/').filter_map(|n| n.trim().replace('_', "").parse().ok()).collect();
+    if nums.len() != 3 || ws.split('/').count() != 3 {
+        return Err(format!(
+            "context: [context] working_set {ws:?} is not target/cap/hard in tokens, e.g. 20000/40000/80000"
+        ));
+    }
+    let given = format!("target={};cap={};hard={}", nums[0], nums[1], nums[2]);
+    Ok(if spec.trim().is_empty() { given } else { format!("{};{given}", spec.trim()) })
+}
+
 /// The policy `cfg.policy` names (`auto`, `plain`, `compact`, `curator`;
 /// anything else: plain). `auto` and `curator` are the curator.
 pub fn from_config(cfg: &ContextConfig) -> Box<dyn ContextPolicy> {
@@ -503,7 +520,17 @@ pub fn from_config(cfg: &ContextConfig) -> Box<dyn ContextPolicy> {
         "compact" => Box::new(Compact { compact_at: cfg.compact_at }),
         "plain" => Box::new(Plain::default()),
         // a setting the curator cannot run leaves out that setting, never the curator
-        "curator" | "auto" | "" => Box::new(BuiltIn::lenient(&cfg.curator_spec)),
+        "curator" | "auto" | "" => match working_set_spec(&cfg.curator_spec, &cfg.working_set) {
+            Ok(spec) => Box::new(BuiltIn::lenient(&spec)),
+            Err(why) => {
+                let mut b = BuiltIn::lenient(&cfg.curator_spec);
+                b.caveat = Some(match b.caveat.take() {
+                    Some(c) => format!("{c}; {why}"),
+                    None => why,
+                });
+                Box::new(b)
+            }
+        },
         other => Box::new(Plain::because(format!(
             "context: plain, since [context] policy = {other:?} is not one of auto, plain, curator, compact"
         ))),
@@ -552,6 +579,25 @@ mod tests {
         assert!(BuiltIn::new("").unwrap().recall());
         assert!(BuiltIn::new("directives=0").unwrap().recall());
         assert!(!BuiltIn::new("recall=0").unwrap().recall());
+    }
+
+    #[test]
+    fn working_set_overrides_the_window_of_the_spec() {
+        assert_eq!(working_set_spec("eoq=1", "").unwrap(), "eoq=1");
+        assert_eq!(working_set_spec("", "10000/20000/30000").unwrap(), "target=10000;cap=20000;hard=30000");
+        assert_eq!(
+            working_set_spec("eoq=0;cap=5", "10_000/20000/30000").unwrap(),
+            "eoq=0;cap=5;target=10000;cap=20000;hard=30000"
+        );
+        for bad in ["20000", "1/2", "a/b/c", "1/2/3/4"] {
+            assert!(working_set_spec("", bad).is_err(), "{bad}");
+        }
+        let mut cfg = ContextConfig { working_set: "10000/20000/30000".into(), ..Default::default() };
+        assert!(BuiltIn::new(&working_set_spec(&cfg.curator_spec, &cfg.working_set).unwrap()).is_ok());
+        // a window that cannot run is said, never silent
+        cfg.working_set = "30000/20000/10000".into();
+        let spec = working_set_spec(&cfg.curator_spec, &cfg.working_set).unwrap();
+        assert!(BuiltIn::new(&spec).is_err());
     }
 
     #[test]
