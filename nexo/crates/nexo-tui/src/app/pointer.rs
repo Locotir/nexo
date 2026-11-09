@@ -300,6 +300,17 @@ impl App {
         self.dirty = true;
     }
 
+    /// The link under screen `(x, y)` in the transcript, if the cell is part of one.
+    pub fn link_at(&mut self, x: u16, y: u16) -> Option<String> {
+        let a = self.transcript_area;
+        if !crate::modal::contains(a, x, y) {
+            return None;
+        }
+        let line = self.view_top() + (y - a.y) as usize;
+        let text = self.line_text(line)?;
+        crate::links::url_at(&text, (x - a.x) as usize)
+    }
+
     /// The button came up: a drag copies its selection, a click selects or toggles a block.
     pub fn release_at(&mut self, x: u16, y: u16) {
         let press = self.press.take();

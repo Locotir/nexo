@@ -411,6 +411,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Drag", "select a code block, output or diff alone; start in prose to cross blocks (copied on release)"),
             ("Double / triple click", "word / whole block or line"),
             ("Alt+Drag / Ctrl+Drag", "select freely, with no box limits"),
+            ("Ctrl+Click", "open the link under the pointer in the browser"),
             ("Shift+Drag", "select with the terminal · /settings mouse turns the mouse off"),
             ("Scrollbar", "drag it, or click to jump"),
             ("Ctrl+L", "redraw the screen"),

@@ -479,6 +479,13 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                 app.editor_press(m.column, m.row);
                 return;
             }
+            // Ctrl+click on a link opens it; elsewhere Ctrl+click is a free selection as before
+            if m.modifiers.contains(KeyModifiers::CONTROL) && app.modal.is_none() && app.palette.is_none() {
+                if let Some(url) = app.link_at(m.column, m.row) {
+                    crate::links::open(&url);
+                    return;
+                }
+            }
             // a fold toggles when the button comes up without a drag (`release_at`)
             app.press_free = m.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
             app.press_at(m.column, m.row);

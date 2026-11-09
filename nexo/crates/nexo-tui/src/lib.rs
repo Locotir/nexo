@@ -31,6 +31,7 @@ pub mod input;
 pub mod insights;
 pub mod jobs_view;
 pub mod keymap;
+pub mod links;
 pub mod mcp_view;
 pub mod modal;
 pub mod motion;

@@ -1019,3 +1019,29 @@ fn recalling_slash_commands_with_up_keeps_browsing_history() {
     press(&mut a, KeyCode::Char('/'));
     assert!(a.palette.is_some());
 }
+
+#[test]
+fn ctrl_click_on_a_link_opens_it_and_a_plain_click_does_not() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let click = |a: &mut App, x: u16, y: u16, modifiers: KeyModifiers| {
+        for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+            crate::event::mouse(a, MouseEvent { kind, column: x, row: y, modifiers });
+        }
+    };
+    let (mut a, _rx) = bare();
+    a.push(Block::User { text: "see https://example.com/a. ok".into(), at: None });
+    a.transcript_area = Rect::new(0, 1, 80, 20);
+    a.layout(80);
+    a.settle(20);
+    let text = a.line_text(0).unwrap();
+    let col = crate::select::width_of(&text[..text.find("https").unwrap()]) as u16;
+    crate::links::take_opened();
+    // a plain click on the link opens nothing; so does Ctrl+click beside it
+    click(&mut a, col + 3, 1, KeyModifiers::NONE);
+    click(&mut a, col - 2, 1, KeyModifiers::CONTROL);
+    assert!(crate::links::take_opened().is_empty());
+    assert_eq!(a.link_at(col + 3, 1).as_deref(), Some("https://example.com/a"));
+    // Ctrl+click on it opens it
+    click(&mut a, col + 3, 1, KeyModifiers::CONTROL);
+    assert_eq!(crate::links::take_opened(), vec!["https://example.com/a".to_string()]);
+}
