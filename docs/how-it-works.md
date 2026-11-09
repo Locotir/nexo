@@ -95,7 +95,7 @@ The default spec (`D_SPEC` in the crate), with a default for every value; a test
 to it:
 
 ```
-threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=40000;target=20000;hard=80000;cut=cover;cards=8;stale=1;pockets=0;life=3600
+threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=40000;target=20000;hard=80000;cut=age;cards=8;stale=1;pockets=0;life=3600
 ```
 
 | setting | default | what it sets |
@@ -116,10 +116,10 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `fresh=1` | `1` | the output just asked for goes whole; its repeated runs go as pointers from the next request on (a pointer in a fresh output sends the agent looking for the lines) |
 | `still=32000` | `32000` | the latest outputs the agent has not written about yet (no text, no note since), up to this many tokens, leave only as an exact copy of a later output, never on a guess, cap or not; older ones past the budget may go on a guess, so the view stays bounded when the agent never writes |
 | `stale=1` | on | past the cap, a read of a file that a later edit or write of it (one that did not fail) changed leaves with the exact copies, before any guess; its note names the file and the message of the edit, and says to read the file again (or `recall`, when the host offers it); decided only at a cut, so the view between cuts stays as sent |
-| `target=20000` | `20000` | the working window: the priced cap runs with this budget, so what the history shows dead (exact copies, reads out of date) leaves when that is cheaper than keeping it; `still` is bounded by `cap` minus the sticky set (at least 4000) |
-| `cap=40000` | `40000` | past it the oldest results the agent is not working from leave, oldest first, whatever the cache costs (0: off) |
+| `target=20000` | `20000` | the working window: the priced cap runs with this budget, so what the history shows dead (exact copies, reads out of date) leaves when that is cheaper than keeping it; `still` is bounded by `cap` minus the system prompt and the sticky set (at least 4000; with no `cap`, `still` stays flat) |
+| `cap=40000` | `40000` | past it the oldest results the agent is not working from leave, oldest first, whatever the cache costs, down to `target` in one batch (0: off). The view stays at or under `cap` unless the sticky set alone is larger (the request, the agent's own text, the latest `file now`, the last check, the latest step); a request-named file's read is held until `hard` |
 | `hard=80000` | `80000` | past it the oldest sticky results leave too, as pointers; never the request, the agent's own messages, the latest `file now` of each path or the last `check:` |
-| `cut=cover` | `cover` | what leaves first when the priced cap cuts: what tells the least stays out (`age`, `need`, `copies` are the others) |
+| `cut=age` | `age` | what leaves first when the priced cap cuts: the oldest (`cover`, `need`, `copies` are the others; `cover` leaves what tells the least, and forgot more on the fixtures) |
 | `pockets=0` | off | 1: the last view sent on each topic stays in the provider's cache for `life` seconds; 2: also cut a view whose pocket is gone (see Pockets above) |
 | `life=S` | `3600` | the most seconds a pocket is taken to live; 0: only the last view, as a local server with one slot |
 | `directives=N` | `0` | 1 appends the efficiency directives to the system prompt |

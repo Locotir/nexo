@@ -133,12 +133,14 @@ impl Engine {
         }
         let held = if self.p.hold != 0 && self.p.eoq != 0 { self.held(&sizes) } else { 0 };
         self.guess = true;
+        let mut fire = 0;
         if self.p.eoq != 0 {
             // what no cut takes: the first message and the protected tail
             let tail = (t as i64 - self.p.protect).clamp(1, t as i64) as usize;
             let base = (sizes[0] + sizes[tail..].iter().sum::<i64>() - held).max(0);
             let stuck;
             (self.cap, self.floor, stuck) = self.eoq_cap(k, base);
+            fire = self.cap;
             if stuck {
                 self.bump("cap_stuck", 1);
             }
@@ -149,12 +151,14 @@ impl Engine {
                 // below the cap the budget set, only what the history shows dead leaves (copies, out of date
                 // reads); what the model only guesses unlikely to be needed again stays
                 self.guess = total - held > self.cap;
+                // it fires at twice the target (or the priced cap if lower) and lands on the target: one batch
+                fire = fire.min(2 * self.p.target);
                 self.cap = self.p.target;
                 self.floor = (cut_to / self.cap as f64).min(0.8);
             }
         }
         let mut first: Option<usize> = None;
-        let capped = self.cap != 0 && total - held > self.cap;
+        let capped = self.cap != 0 && total - held > fire.max(self.cap);
         // a view the cache holds no more of than its anchor is read again whole: it is cut down to what the
         // cap leaves now, for free, rather than later at the price of breaking the cache (`Params.pockets` 2)
         let squeeze = self.p.pockets >= 2

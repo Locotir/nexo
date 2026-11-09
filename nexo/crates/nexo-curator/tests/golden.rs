@@ -276,13 +276,13 @@ fn the_long_session_ends_with_the_reference_stats() {
     // A file read under another topic comes back when the request names it, and only that read: it closes 50 steps,
     // recalls 4. With the ledger keeping the rows of a table of values (117 lines, not 58; the anchor 1840, was 1364)
     // the cache misses 59524 (miss_close 17895).
-    // The working window (`target=20000`, `cap=40000`, `hard=80000`; `cut=cover`): the view is held near 20k tokens,
-    // so the priced cap runs 29 times, not once, and the cache misses 333778 (miss_cap 317228); 9 cuts at the
-    // deterministic cap took the oldest results that are not sticky.
-    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 16031,
-        "miss": 333778, "dedup_asked": 24, "dropped_chunks": 106, "sup_chunks": 93, "rewrites": 29,
-        "cover_chunks": 326, "cap_rewrites": 16, "miss_cap": 317228, "left_messages": 124, "ledger_lines": 938,
-        "recalled_steps": 2, "closed_steps": 0, "miss_close": 2967, "split_kept": 1, "switches": 40, "window_cuts": 9});
+    // The working window (`target=20000`, `cap=40000`, `hard=80000`; `cut=age`): the priced cap fires at twice the
+    // target and lands on the target, the cut at `cap` lands on the target too (one batch): 5 rewrites, and the cache
+    // misses 129898 (miss_cap 109633); 37 chunks leave by the deterministic cap, the oldest results that are not sticky.
+    let want = serde_json::json!({"birth_saved": 1799, "dedup_runs": 6, "dedup_saved": 3117, "miss_fresh": 17298,
+        "miss": 129898, "dedup_asked": 24, "dropped_chunks": 189, "sup_chunks": 44, "rewrites": 5,
+        "left_messages": 90, "ledger_lines": 431, "cap_rewrites": 3, "miss_cap": 109633, "recalled_steps": 2,
+        "closed_steps": 0, "miss_close": 2967, "split_kept": 1, "switches": 40, "window_cuts": 37});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }
@@ -306,9 +306,7 @@ fn the_real_audit_ends_with_the_reference_stats() {
         last = cur
             .answer(&serde_json::json!({"op": "view", "system_tokens": req["system_tokens"], "messages": msgs}), 0.0);
     }
-    // the 20k target cuts the two requests that pass it (it was 3 idle drops and 708 missed tokens before)
-    assert_eq!(
-        last["stats"],
-        serde_json::json!({"birth_saved": 0, "cover_chunks": 160, "rewrites": 2, "cap_rewrites": 2, "miss_cap": 32564, "miss": 32564})
-    );
+    // the 20k target fires at 40k (twice the target) and this session stays under it: nothing is cut (it was 3
+    // idle drops and 708 missed tokens before the window)
+    assert_eq!(last["stats"], serde_json::json!({"birth_saved": 0}));
 }

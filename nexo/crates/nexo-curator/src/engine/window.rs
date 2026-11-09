@@ -89,6 +89,12 @@ impl Engine {
                 }
             }
         }
+        // the reads a request names are what it asks about
+        for u in self.named_results() {
+            if !keep.contains(&u) && shown.contains(&self.tr.units[u].msg) {
+                reads.insert(u);
+            }
+        }
         let cut = std::mem::take(&mut self.stk.cut);
         self.stk = Sticky { keep, reads, tokens, cut };
     }
@@ -98,7 +104,7 @@ impl Engine {
     pub(super) fn still_now(&self) -> i64 {
         if self.p.still <= 0 {
             0
-        } else if self.p.target > 0 {
+        } else if self.p.target > 0 && self.p.cap > 0 {
             self.p.still.min((self.p.cap - self.head - self.stk.tokens).max(STILL_FLOOR))
         } else {
             self.p.still
@@ -122,13 +128,15 @@ impl Engine {
         if total <= self.p.cap {
             return None;
         }
+        // a cut lands on the target, not on the cap, so the next requests do not cut again
+        let land = if self.p.target > 0 { self.p.target } else { self.p.cap };
         self.refresh_sticky();
         let unwritten = self.still_from(&sizes);
         let vis = self.visible();
         let mut first: Option<usize> = None;
         let mut cut = 0;
         for tier in 0..2 {
-            let limit = if tier == 0 { self.p.cap } else { self.p.hard };
+            let limit = if tier == 0 { land } else { self.p.hard };
             if limit <= 0 {
                 continue;
             }

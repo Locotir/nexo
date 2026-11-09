@@ -53,7 +53,7 @@ fn sticky_blocks_survive_the_cut() {
 }
 
 #[test]
-fn still_is_bounded_by_the_target() {
+fn still_is_bounded_by_the_cap_less_head_and_sticky() {
     let build = |spec: &str, ask: &str| {
         let mut e = Engine::new(params(spec).unwrap());
         let mut msgs = vec![json!({"role": "user", "content": ask})];
