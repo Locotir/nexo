@@ -329,13 +329,16 @@ pub struct AgentConfig {
     pub worktree_setup: Vec<String>,
 }
 
+/// The reply size `agent.max_tokens` asks for when the configuration does not say.
+pub const DEFAULT_MAX_TOKENS: u32 = 16_384;
+
 impl Default for AgentConfig {
     fn default() -> AgentConfig {
         AgentConfig {
             max_turns: 200,
             on_limit: OnLimit::Checkpoint,
             max_checkpoints: None,
-            max_tokens: 16_384,
+            max_tokens: DEFAULT_MAX_TOKENS,
             temperature: None,
             reasoning: None,
             system_prompt_file: None,

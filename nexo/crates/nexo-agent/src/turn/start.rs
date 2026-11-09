@@ -170,7 +170,7 @@ pub(super) async fn start_turn(
 /// The largest reply the next request asks for: `agent.max_tokens`, times the boost after a reply cut
 /// while thinking, within what the model and its window allow.
 pub(super) fn reply_tokens(st: &State) -> u32 {
-    st.limits.max_tokens(st.config.agent.max_tokens.saturating_mul(st.reply_boost.max(1)))
+    st.limits.reply_room(st.config.agent.max_tokens, st.reply_boost)
 }
 
 /// Adds a request of the person to the conversation, its attachments expanded. `added` is what nexo put in

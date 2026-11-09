@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use nexo_core::agent::AgentEvent;
-use nexo_core::config::ProviderConfig;
+use nexo_core::config::{ProviderConfig, DEFAULT_MAX_TOKENS};
 use nexo_core::pricing::Pricing;
 use nexo_core::provider::ModelInfo;
 
@@ -39,6 +39,22 @@ impl Limits {
     pub fn max_tokens(&self, wanted: u32) -> u32 {
         let wanted = self.max_output.map(|m| wanted.min(m)).unwrap_or(wanted);
         self.context_window.map(|w| wanted.min((w / 4).max(256))).unwrap_or(wanted)
+    }
+
+    /// The reply size to ask for. A thinking model's reasoning counts inside the reply, and a reply cut while
+    /// it is still thinking is thrown away and paid twice, so when the window is 16 times the largest reply
+    /// (room costs nothing) and `configured` is the default or more, ask for the largest reply from the first
+    /// request. Under the default `configured` is the person's own cap and is kept. `boost` doubles what is
+    /// asked after a cut reply, as before.
+    pub fn reply_room(&self, configured: u32, boost: u32) -> u32 {
+        if configured >= DEFAULT_MAX_TOKENS {
+            if let (Some(w), Some(m)) = (self.context_window, self.max_output) {
+                if m > 0 && u64::from(w) >= 16 * u64::from(m) {
+                    return self.max_tokens(m);
+                }
+            }
+        }
+        self.max_tokens(configured.saturating_mul(boost.max(1)))
     }
 
     /// Whether the vendor's list could still add something.
@@ -151,5 +167,17 @@ mod tests {
         let l = Limits { context_window: Some(1_000_000), max_output: Some(8_192), ..Default::default() };
         assert_eq!(l.max_tokens(16_384), 8_192);
         assert_eq!(Limits::default().max_tokens(16_384), 16_384);
+    }
+
+    #[test]
+    fn a_big_window_asks_for_the_largest_reply_at_once() {
+        let big = Limits { context_window: Some(1_048_576), max_output: Some(32_768), ..Default::default() };
+        assert_eq!(big.reply_room(16_384, 1), 32_768);
+        let mid = Limits { context_window: Some(128_000), max_output: Some(32_768), ..Default::default() };
+        assert_eq!(mid.reply_room(16_384, 1), 16_384);
+        assert_eq!(mid.reply_room(16_384, 2), 32_000);
+        assert_eq!(big.reply_room(4_096, 1), 4_096);
+        assert_eq!(big.reply_room(4_096, 2), 8_192);
+        assert_eq!(Limits::default().reply_room(16_384, 2), 32_768);
     }
 }

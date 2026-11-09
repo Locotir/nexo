@@ -5191,3 +5191,21 @@ async fn a_named_key_file_is_not_attached() {
     );
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_large_window_gets_the_largest_reply_from_the_first_request() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = config(PermissionMode::Ask);
+    let p = cfg.providers.get_mut("mock").unwrap();
+    p.context_window.insert("m1".into(), 1_048_576);
+    p.max_output.insert("m1".into(), 32_768);
+    let client = Scripted::new(vec![Reply::Events(text("hi"))]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests()[0].max_tokens, 32_768);
+    r.stop().await;
+}
