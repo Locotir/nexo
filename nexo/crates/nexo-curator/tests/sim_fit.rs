@@ -86,3 +86,46 @@ fn holdout_splits_by_rep_parity() {
     assert!(even.obs.iter().all(|o| o.eff_rep % 2 == 1));
     assert_eq!(even.held_out, 20);
 }
+
+/// A bench transcript with no cut in it, shaped like the `selective-revert` task: a long system prompt and
+/// `n` steps, each adding a reply the model wrote and a tool result.
+fn uncut_session(n: usize) -> Vec<nexo_curator::sim::input::Request> {
+    use nexo_curator::sim::input::Request;
+    let mut msgs = vec![json!({"role": "user", "content": "Change shipping() in src/lib.rs."})];
+    let mut out = Vec::new();
+    for i in 0..n {
+        out.push(Request {
+            now: 1_750_000_000.0 + 2.0 * i as f64,
+            system_tokens: 1600,
+            system: String::new(),
+            messages: msgs.clone(),
+            tools: None,
+            out_tokens: Some(150),
+        });
+        let id = format!("t{i}");
+        msgs.push(json!({"role": "assistant", "content": [
+            {"type": "text", "text": format!("Reading part {i}. {}", "plain words ".repeat(40))},
+            {"type": "tool_use", "id": id, "name": "read", "input": {"path": format!("src/part{i}.rs")}}]}));
+        msgs.push(json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": id, "content": format!("part{i} {}", "fn body() {} ".repeat(60))}]}));
+    }
+    out
+}
+
+/// A session the curator leaves alone (the `selective-revert` case: no events) costs what the plain arm
+/// costs, whatever the cache keeps: the price of a view must not depend on which arm it is asked for.
+#[test]
+fn an_uncut_curator_arm_costs_what_the_plain_arm_costs() {
+    use nexo_curator::sim::events::run;
+    use nexo_curator::sim::fit::plain_tokens;
+    use nexo_curator::sim::price::Prices;
+    let reqs = uncut_session(15);
+    for (life, slots) in [(0.0, 0), (1.0, 0), (3600.0, 0), (0.0, 3)] {
+        let (miss, hit, out) = plain_tokens(&reqs, life, slots);
+        let r = run(&reqs, "directives=0", Prices::LIVE, life, slots).unwrap();
+        assert_eq!((r.miss, r.hit, r.out), (miss, hit, out), "life {life} slots {slots}");
+        assert_eq!(r.events.len(), 0);
+        let plain = Prices::LIVE.dollars(miss, hit) + Prices::LIVE.output(out);
+        assert!((r.cost / plain - 1.0).abs() < 0.03, "dCost {:+.1} %", 100.0 * (r.cost / plain - 1.0));
+    }
+}

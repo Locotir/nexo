@@ -895,12 +895,13 @@ pub fn prices_for(r: &Row) -> Prices {
 pub fn plain_tokens(requests: &[Request], life: f64, slots: usize) -> (i64, i64, i64) {
     let mut cache = Cache::new(life, slots);
     let (mut miss, mut hit, mut out) = (0, 0, 0);
-    let mut prev_out = 0;
     for (i, q) in requests.iter().enumerate() {
         let all = q.messages.iter().map(tokens_of).sum::<i64>() + q.system_tokens as i64;
-        // the provider caches what the model wrote at the step before, so it is not billed as new input
-        let h = (cache.send(&q.messages, q.system_tokens as i64, q.now) + prev_out).min(all);
-        prev_out = reply_to(requests, i).map_or(0, tokens_of);
+        let h = cache.send(&q.messages, q.system_tokens as i64, q.now);
+        // the provider caches what the model wrote with the prompt, so it is not billed as new input
+        if let Some(said) = reply_to(requests, i) {
+            cache.extend_last(said);
+        }
         hit += h;
         miss += all - h;
         out += q.out_tokens.unwrap_or(0) as i64;
