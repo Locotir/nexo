@@ -97,9 +97,10 @@ pub struct Tally {
     /// Requests that summarised the history (the `compact` policy), counted in `requests`.
     pub compactions: u32,
     /// Steps whose messages do not extend the previous step's: the history was rewritten in between
-    /// (a summary, the curator). Always 0 for `plain`.
+    /// (a summary, the curator). Always 0 for `plain`. A chat (no tools) counts its requests like steps.
     pub rewrites: u32,
-    /// The size of each step's request in input tokens: the provider's count, else chars / 4.
+    /// The size of each step's request in input tokens: the provider's count, else chars / 4. A chat, which
+    /// offers no tools, has one per request; a compaction summary has none.
     pub views: Vec<u64>,
     /// The messages of the last step, each as JSON, to tell a rewrite from an append.
     #[serde(skip)]
@@ -176,6 +177,9 @@ impl ModelClient for Recorder {
             let compaction = req.system == nexo_agent::compact::SUMMARY_SYSTEM;
             if step {
                 t.steps += 1;
+            }
+            // a chat offers no tools: its requests are the agent's too, only a compaction summary is not
+            if !compaction {
                 let now: Vec<String> =
                     req.messages.iter().map(|m| serde_json::to_string(m).unwrap_or_default()).collect();
                 if !now.starts_with(&t.last) {
@@ -202,7 +206,7 @@ impl ModelClient for Recorder {
             e
         };
         let rec = Record {
-            step: !req.tools.is_empty(),
+            step: req.system != nexo_agent::compact::SUMMARY_SYSTEM,
             est: estimate(req),
             entry,
             tally: self.tally.clone(),
@@ -223,6 +227,7 @@ impl ModelClient for Recorder {
 
 /// What is written for one request once its reply is complete.
 struct Record {
+    /// A request of the agent's own (not a compaction summary): its view is counted.
     step: bool,
     /// The request's size by [`estimate`].
     est: u64,

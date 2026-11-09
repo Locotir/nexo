@@ -77,3 +77,10 @@ async fn a_mock_run_that_gives_another_topic_last_scores_low() {
     assert_eq!(r.stop, Some(Stop::Done), "{r:?}");
     assert!(!r.ok && r.score < 1.0, "{r:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_run_reports_the_size_of_each_request_it_sent() {
+    let r = run_chat((padded::chat_task().reference)()).await;
+    assert_eq!(r.view_tokens.len(), 5, "one view per question: {r:?}");
+    assert!(r.max_view_tokens > 0 && r.final_view_tokens > 0, "{r:?}");
+}

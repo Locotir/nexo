@@ -167,3 +167,18 @@ fn a_failing_run_past_the_budget_leaves_with_the_rest() {
     let failure = format!("---- remove_too_many stdout ----\nFAILED\n{}", big(77, 6000));
     assert!(!failure_survives(&failure, "remove_too_many stdout"));
 }
+
+#[test]
+fn a_chat_of_pasted_text_has_no_results_to_cut() {
+    // the window drops tool results only: what the person pasted is theirs and stays, however far past `cap`
+    let mut e = Engine::new(params("nudge=0;fresh=0;eoq=0;target=10000;cap=20000;hard=80000").unwrap());
+    let mut msgs = vec![];
+    for k in 1..=6 {
+        msgs.push(json!({"role": "user", "content": format!("Topic {k}.\n{}\nWhat is the total?", big(k, 6000))}));
+        msgs.push(json!({"role": "assistant", "content": "42.00"}));
+        e.sync(&msgs);
+        let _ = e.view();
+    }
+    assert!(e.tokens() > 25_000, "the view is far past the cap: {}", e.tokens());
+    assert!(e.stats.get("window_cuts").is_none(), "{:?}", e.stats);
+}
