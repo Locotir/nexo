@@ -12,6 +12,8 @@ use crate::checkers::{program_ok, run};
 pub const LIMIT: Duration = Duration::from_secs(20);
 /// Most lines reported.
 const MAX_LINES: usize = 10;
+/// Most characters of those lines.
+const MAX_CHARS: usize = 600;
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -26,6 +28,7 @@ pub async fn report(file: &Path) -> String {
     if !ENABLED.load(Ordering::Relaxed) {
         return String::new();
     }
+    crate::lsp::warm(file);
     report_within(file, LIMIT).await
 }
 
@@ -33,17 +36,30 @@ pub(crate) async fn report_within(file: &Path, limit: Duration) -> String {
     if crate::data_check::is_data(file) {
         return crate::data_check::report(file);
     }
-    let lines = match found(file, limit).await {
-        Some(l) if !l.is_empty() => l,
-        _ => return String::new(),
-    };
+    // the compiler check and a language server already running answer together; the server adds what
+    // the compiler does not say (types in Python, C/C++, warnings) and waits no longer than QUICK
+    let (server, compiler) = tokio::join!(crate::lsp::quick(file, crate::lsp::QUICK), found(file, limit));
+    let mut lines = compiler.unwrap_or_default();
+    for (n, text) in server.unwrap_or_default() {
+        if !lines.iter().any(|l| l.contains(&format!(":{n}:")) || l.contains(&format!("({n},"))) {
+            lines.push(text);
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
     let mut out = String::from("\ndiagnostics:");
+    let mut shown = 0;
     for l in lines.iter().take(MAX_LINES) {
+        if shown > 0 && out.len() + l.len() > MAX_CHARS {
+            break;
+        }
         out.push('\n');
         out.push_str(l);
+        shown += 1;
     }
-    if lines.len() > MAX_LINES {
-        out.push_str(&format!("\n(+{} more)", lines.len() - MAX_LINES));
+    if lines.len() > shown {
+        out.push_str(&format!("\n(+{} more)", lines.len() - shown));
     }
     out
 }

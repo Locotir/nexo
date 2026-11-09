@@ -28,6 +28,11 @@ const INIT: Duration = Duration::from_secs(20);
 /// After diagnostics arrive, how long to wait for more (servers publish in waves).
 const SETTLE: Duration = Duration::from_millis(1500);
 
+/// The most an `edit`/`write` waits for an already running server before it reports nothing.
+pub const QUICK: Duration = Duration::from_millis(1500);
+/// After the first diagnostics of a quick check, how long to wait for more.
+const QUICK_SETTLE: Duration = Duration::from_millis(100);
+
 /// The servers for a file, by extension: `(language id, candidate commands)`.
 pub fn servers_for(path: &Path) -> Option<(&'static str, &'static [&'static [&'static str]])> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -44,22 +49,29 @@ pub fn servers_for(path: &Path) -> Option<(&'static str, &'static [&'static [&'s
     })
 }
 
+/// Files that mark the root of a project.
+const MARKERS: [&str; 8] = [
+    "Cargo.toml",
+    "pyproject.toml",
+    "setup.py",
+    "package.json",
+    "tsconfig.json",
+    "go.mod",
+    "compile_commands.json",
+    ".git",
+];
+
+/// The nearest ancestor of `file` with a project marker.
+fn marker_root(file: &Path) -> Option<PathBuf> {
+    file.ancestors().skip(1).find(|d| MARKERS.iter().any(|m| d.join(m).exists())).map(Path::to_path_buf)
+}
+
 /// The project root a server is started in: the nearest ancestor with a marker of the
 /// language's projects, else the working directory.
 fn root_for(file: &Path, cwd: &Path) -> PathBuf {
-    let markers = [
-        "Cargo.toml",
-        "pyproject.toml",
-        "setup.py",
-        "package.json",
-        "tsconfig.json",
-        "go.mod",
-        "compile_commands.json",
-        ".git",
-    ];
     let mut d = file.parent();
     while let Some(dir) = d {
-        if markers.iter().any(|m| dir.join(m).exists()) {
+        if MARKERS.iter().any(|m| dir.join(m).exists()) {
             return dir.to_path_buf();
         }
         if dir == cwd {
@@ -284,6 +296,17 @@ impl Server {
 
     /// Sends the file as it is on disk and waits for its diagnostics.
     async fn check(&self, file: &Path, language: &str) -> Result<Vec<Value>, String> {
+        self.check_with(file, language, FIRST, SETTLE).await
+    }
+
+    /// [`Server::check`] with its own limit for the first answer and for the quiet after it.
+    async fn check_with(
+        &self,
+        file: &Path,
+        language: &str,
+        first: Duration,
+        settle: Duration,
+    ) -> Result<Vec<Value>, String> {
         let text = std::fs::read_to_string(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
         let u = uri(file);
         let version = {
@@ -308,7 +331,7 @@ impl Server {
             self.notify("textDocument/didSave", json!({"textDocument": {"uri": u}})).await?;
         }
         // the first publication for this version, then whatever follows soon after
-        let deadline = tokio::time::Instant::now() + FIRST;
+        let deadline = tokio::time::Instant::now() + first;
         loop {
             let notified = self.published.notified();
             if let Some((v, _)) = self.diags.lock().await.get(&u) {
@@ -320,14 +343,14 @@ impl Server {
                 return Err("the language server went away".into());
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                return Err(format!("the language server said nothing of the file in {} s", FIRST.as_secs()));
+                return Err(format!("the language server said nothing of the file in {} s", first.as_secs()));
             }
         }
         // then until the server is quiet: nothing new for a moment and no work in progress
         // (rust-analyzer publishes an empty list while it still indexes, then the real one)
         loop {
             let notified = self.published.notified();
-            let quiet = tokio::time::timeout(SETTLE, notified).await.is_err();
+            let quiet = tokio::time::timeout(settle, notified).await.is_err();
             let busy = self.busy.lock().map(|b| !b.is_empty()).unwrap_or(false);
             if quiet && !busy {
                 break;
@@ -346,6 +369,91 @@ type Running = Mutex<HashMap<(String, PathBuf), Arc<Server>>>;
 fn servers() -> &'static Running {
     static S: OnceLock<Running> = OnceLock::new();
     S.get_or_init(Default::default)
+}
+
+/// The server already running for `file`: same language, a root above the file (the deepest wins).
+async fn running_for(file: &Path, candidates: &[&[&str]]) -> Option<(Arc<Server>, PathBuf)> {
+    let table = servers().lock().await;
+    table
+        .iter()
+        .filter(|((cmd, root), s)| {
+            file.starts_with(root)
+                && !s.dead.load(Ordering::SeqCst)
+                && candidates.iter().any(|c| cmd.starts_with(&c.join(" ")))
+        })
+        .max_by_key(|((_, root), _)| root.components().count())
+        .map(|((_, root), s)| (s.clone(), root.clone()))
+}
+
+/// Errors and warnings of `file` from a server that is already running, as `(line, text)` with errors
+/// first. `None` when there is no such server or it does not answer within `bound`: an edit never waits
+/// longer, and never starts a server.
+pub async fn quick(file: &Path, bound: Duration) -> Option<Vec<(u64, String)>> {
+    let (language, candidates) = servers_for(file)?;
+    let work = async {
+        let (server, root) = running_for(file, candidates).await?;
+        let list = server.check_with(file, language, bound, QUICK_SETTLE).await.ok()?;
+        Some((list, root))
+    };
+    let (list, root) = tokio::time::timeout(bound, work).await.ok()??;
+    let shown = file.strip_prefix(&root).unwrap_or(file).to_string_lossy().replace('\\', "/");
+    let mut rows: Vec<(u64, u64, String)> = list
+        .iter()
+        .filter_map(|d| {
+            let sev = d["severity"].as_u64().unwrap_or(1);
+            if sev > 2 {
+                return None;
+            }
+            let line = d.pointer("/range/start/line").and_then(Value::as_u64).unwrap_or(0) + 1;
+            let col = d.pointer("/range/start/character").and_then(Value::as_u64).unwrap_or(0) + 1;
+            let msg = d["message"].as_str().unwrap_or("").lines().next().unwrap_or("");
+            let word = if sev == 1 { "error" } else { "warning" };
+            let src = d["source"].as_str().map(|s| format!(" ({s})")).unwrap_or_default();
+            Some((sev, line, format!("{shown}:{line}:{col} {word}: {msg}{src}")))
+        })
+        .collect();
+    rows.sort();
+    Some(rows.into_iter().map(|(_, line, text)| (line, text)).collect())
+}
+
+/// Servers being started for an edit, so one start per language and root.
+fn starting() -> &'static std::sync::Mutex<std::collections::HashSet<(String, PathBuf)>> {
+    static S: OnceLock<std::sync::Mutex<std::collections::HashSet<(String, PathBuf)>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Starts, in the background, the server `file` would use if none runs yet, and gives it the file, so
+/// the next edits find it warm. Never for Rust and Go (their compiler check answers) and never outside
+/// a project; it does not wait and it fails silently.
+pub fn warm(file: &Path) {
+    let Some((language, candidates)) = servers_for(file) else { return };
+    if matches!(language, "rust" | "go") {
+        return;
+    }
+    let Some(cmd) = candidates.iter().find(|c| usable(c)) else { return };
+    let Some(root) = marker_root(file) else { return };
+    let env = crate::child_env().map(|e| format!(" {e:?}")).unwrap_or_default();
+    let key = (format!("{}{env}", cmd.join(" ")), root.clone());
+    let file = file.to_path_buf();
+    tokio::spawn(async move {
+        if servers().lock().await.contains_key(&key) {
+            return;
+        }
+        let fresh = starting().lock().map(|mut s| s.insert(key.clone())).unwrap_or(false);
+        if !fresh {
+            return;
+        }
+        let started = Server::start(cmd, &root).await;
+        if let Ok(server) = started {
+            let server = Arc::new(server);
+            servers().lock().await.entry(key.clone()).or_insert_with(|| server.clone());
+            // opens the file, so the server begins to index and check it
+            let _ = server.check_with(&file, language, FIRST, SETTLE).await;
+        }
+        if let Ok(mut s) = starting().lock() {
+            s.remove(&key);
+        }
+    });
 }
 
 /// The diagnostics as lines a person (and a model) reads: `path:line:col severity message (source)`.
@@ -659,5 +767,111 @@ mod tests {
         let out = Diagnostics.run(json!({"path": "src/main.rs"}), &ctx).await;
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("src/main.rs:2:") && out.content.contains("error"), "{}", out.content);
+    }
+
+    /// A language server written in Python: `BAD` in the text gives an error, a warning and a hint;
+    /// `SLOW` makes it answer after five seconds; anything else is clean.
+    const FAKE: &str = r#"
+import sys, json, time
+def read():
+    n = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.strip()
+        if not line:
+            break
+        if line.lower().startswith(b"content-length:"):
+            n = int(line.split(b":")[1])
+    return json.loads(sys.stdin.buffer.read(n))
+def send(m):
+    b = json.dumps(m).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
+    sys.stdout.buffer.flush()
+def publish(doc, text):
+    if "SLOW" in text:
+        time.sleep(5)
+    d = []
+    if "BAD" in text:
+        r = {"start": {"line": 0, "character": 0}}
+        d = [{"range": r, "severity": 3, "message": "hint only"},
+             {"range": {"start": {"line": 2, "character": 4}}, "severity": 2, "message": "unused thing", "source": "fake"},
+             {"range": r, "severity": 1, "message": "fake error\nsecond line", "source": "fake"}]
+    send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+          "params": {"uri": doc["uri"], "version": doc.get("version"), "diagnostics": d}})
+while True:
+    m = read()
+    if m is None:
+        break
+    meth = m.get("method")
+    if meth == "initialize":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"capabilities": {}}})
+    elif meth == "textDocument/didOpen":
+        publish(m["params"]["textDocument"], m["params"]["textDocument"]["text"])
+    elif meth == "textDocument/didChange":
+        publish(m["params"]["textDocument"], m["params"]["contentChanges"][0]["text"])
+"#;
+
+    /// A project with a Python file and the fake server registered as the running `pylsp` there.
+    async fn project_with_fake(text: &str) -> Option<(tempfile::TempDir, PathBuf)> {
+        if !which("python3") {
+            eprintln!("python3 is not installed: skipped");
+            return None;
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
+        let script = d.path().join("fake_lsp.py");
+        std::fs::write(&script, FAKE).unwrap();
+        let file = d.path().join("m.py");
+        std::fs::write(&file, text).unwrap();
+        let script = script.to_string_lossy().into_owned();
+        let server = Server::start(&["python3", &script], d.path()).await.unwrap();
+        servers().lock().await.insert(("pylsp".into(), d.path().to_path_buf()), Arc::new(server));
+        Some((d, file))
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_breaks_the_file_carries_the_server_errors() {
+        let Some((d, file)) = project_with_fake("x = 1\n").await else { return };
+        let ctx = ToolContext::new(d.path().to_path_buf());
+        ctx.seen.mark(&file);
+        let out =
+            crate::edit::Edit.run(json!({"path": "m.py", "old_string": "x = 1", "new_string": "BAD = 1"}), &ctx).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("\ndiagnostics:\nm.py:1:1 error: fake error (fake)\nm.py:3:5 warning: unused thing (fake)"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("hint only") && !out.content.contains("second line"), "{}", out.content);
+        // fixed: nothing is appended
+        let out =
+            crate::edit::Edit.run(json!({"path": "m.py", "old_string": "BAD = 1", "new_string": "y = 1"}), &ctx).await;
+        assert!(!out.is_error && !out.content.contains("diagnostics:"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_slow_server_is_waited_for_only_a_moment_and_nothing_is_added() {
+        let Some((_d, file)) = project_with_fake("SLOW\n").await else { return };
+        let t = std::time::Instant::now();
+        assert!(quick(&file, Duration::from_millis(300)).await.is_none());
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        assert_eq!(crate::edit_check::report_within(&file, Duration::from_secs(20)).await, "");
+        assert!(t.elapsed() < QUICK + Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    async fn no_running_server_means_no_wait_and_no_start() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("pyproject.toml"), "").unwrap();
+        let file = d.path().join("m.py");
+        std::fs::write(&file, "BAD\n").unwrap();
+        let t = std::time::Instant::now();
+        assert!(quick(&file, QUICK).await.is_none());
+        assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
+        assert!(servers().lock().await.keys().all(|(_, root)| root != d.path()));
     }
 }
