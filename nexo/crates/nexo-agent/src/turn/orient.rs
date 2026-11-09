@@ -39,6 +39,12 @@ fn dull(name: &str) -> bool {
         || n.starts_with("copying")
 }
 
+/// Whether `root` is no project folder: the person's home folder or a filesystem root.
+fn outside_project(root: &Path, home: Option<&Path>) -> bool {
+    let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    real.parent().is_none() || home.is_some_and(|h| h.canonicalize().is_ok_and(|h| h == real))
+}
+
 /// The text files under `root` to attach: smallest first, until `budget` tokens are spent (at most
 /// [`MAX_FILES`]). `skip` holds the real paths already attached; `allowed` is asked about each candidate.
 /// Returns each file's path relative to `root` (forward slashes) with its tokens.
@@ -48,7 +54,21 @@ pub(super) fn pick(
     skip: &[PathBuf],
     allowed: &dyn Fn(&str, &Path) -> bool,
 ) -> Vec<(String, u64)> {
-    if budget == 0 {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    pick_in(root, budget, skip, allowed, home.as_deref())
+}
+
+/// [`pick`] with the home folder given. Nothing is picked when `root` is that home folder or a filesystem root,
+/// or when the walk reaches [`WALK_CAP`] entries: neither is one small project, and the smallest files of a
+/// capped, arbitrary walk are noise.
+fn pick_in(
+    root: &Path,
+    budget: u64,
+    skip: &[PathBuf],
+    allowed: &dyn Fn(&str, &Path) -> bool,
+    home: Option<&Path>,
+) -> Vec<(String, u64)> {
+    if budget == 0 || outside_project(root, home) {
         return Vec::new();
     }
     let real_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -60,7 +80,9 @@ pub(super) fn pick(
         })
         .build();
     let mut found: Vec<(usize, String)> = Vec::new();
+    let mut seen = 0usize;
     for e in walk.flatten().take(WALK_CAP) {
+        seen += 1;
         if !e.file_type().is_some_and(|t| t.is_file()) || dull(&e.file_name().to_string_lossy()) {
             continue;
         }
@@ -72,6 +94,9 @@ pub(super) fn pick(
             continue;
         }
         found.push((len, rel.to_string_lossy().replace('\\', "/")));
+    }
+    if seen >= WALK_CAP {
+        return Vec::new();
     }
     found.sort();
     let mut out = Vec::new();
@@ -237,5 +262,29 @@ mod tests {
         // the policy is asked about each file
         let got = pick(d.path(), 6000, &[], &|rel, _| rel != "notes.txt");
         assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn nothing_is_attached_outside_a_project() {
+        let files: Vec<(String, String)> = (0..10).map(|i| (format!("f{i}.txt"), "x\n".to_string())).collect();
+        let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+        let d = tree(&refs);
+        // the same folder is a project until it is the home folder
+        assert_eq!(pick_in(d.path(), 6000, &[], &|_, _| true, None).len(), 10);
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(pick_in(d.path(), 6000, &[], &|_, _| true, Some(other.path())).len(), 10);
+        assert!(pick_in(d.path(), 6000, &[], &|_, _| true, Some(d.path())).is_empty());
+        // a filesystem root is no project either
+        let root = std::path::Path::new(std::path::MAIN_SEPARATOR_STR);
+        assert!(pick_in(root, 6000, &[], &|_, _| true, None).is_empty());
+    }
+
+    #[test]
+    fn a_tree_past_the_walk_cap_attaches_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..WALK_CAP + 100 {
+            std::fs::write(d.path().join(format!("f{i}.txt")), "x\n").unwrap();
+        }
+        assert!(pick_in(d.path(), 6000, &[], &|_, _| true, None).is_empty());
     }
 }
