@@ -95,14 +95,19 @@ pub fn names(v: &Value) -> Option<Vec<String>> {
 /// The requests of a `nexo bench` transcript: the `messages` of each step, as the model was sent them.
 pub fn transcript_requests(text: &str) -> Vec<Request> {
     let mut out = Vec::new();
+    // a transcript records the system prompt on its first step only; the model gets it at every one
+    let mut system = String::new();
     for (i, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
         let rec: Value = serde_json::from_str(line).expect("a JSON line");
         let Some(msgs) = rec["messages"].as_array() else { continue };
-        let head = rec["system"].as_str().map_or(0, str::len) + rec["tools"].to_string().len();
+        if let Some(s) = rec["system"].as_str() {
+            system = s.to_string();
+        }
+        let head = system.len() + rec["tools"].to_string().len();
         out.push(Request {
             now: 1_750_000_000.0 + 2.0 * i as f64,
             system_tokens: (head as u64).div_ceil(4),
-            system: rec["system"].as_str().unwrap_or("").to_string(),
+            system: system.clone(),
             messages: msgs.clone(),
             tools: names(&rec["tools"]),
             out_tokens: rec["usage"]["output"].as_u64(),

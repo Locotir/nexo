@@ -74,10 +74,23 @@ fn the_reply_the_model_wrote_is_read_from_the_cache_next_step() {
     use nexo_curator::sim::price::tokens_of;
     let reqs = uncut_session(6);
     let r = run(&reqs, "directives=0", Prices::LIVE, 0.0, 0).unwrap();
-    let size = |q: &nexo_curator::sim::input::Request| q.messages.iter().map(tokens_of).sum::<i64>() + q.system_tokens as i64;
+    let size =
+        |q: &nexo_curator::sim::input::Request| q.messages.iter().map(tokens_of).sum::<i64>() + q.system_tokens as i64;
     // nothing is cut, so every view is the request as sent
     assert_eq!(r.miss + r.hit, reqs.iter().map(size).sum::<i64>());
     // a provider caches the reply with the prompt: all that each next request adds is the tool result
     let new: i64 = reqs[1..].iter().map(|q| tokens_of(q.messages.last().unwrap())).sum();
     assert_eq!(r.miss, size(&reqs[0]) + new);
+}
+
+#[test]
+fn a_transcript_sends_its_system_prompt_at_every_step() {
+    use nexo_curator::sim::input::transcript_requests;
+    // a bench transcript records the system prompt on its first step only
+    let first = r#"{"system":"You are a coding agent. Work in the repo.","tools":["bash","read"],"messages":[{"role":"user","content":"hi"}],"usage":{"output":3}}"#;
+    let second = r#"{"tools":["bash","read"],"messages":[{"role":"user","content":"hi"}],"usage":{"output":3}}"#;
+    let reqs = transcript_requests(&format!("{first}\n{second}\n"));
+    assert!(reqs[0].system_tokens > 10);
+    assert_eq!(reqs[1].system_tokens, reqs[0].system_tokens);
+    assert_eq!(reqs[1].system, reqs[0].system);
 }
