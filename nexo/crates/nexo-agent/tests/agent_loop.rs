@@ -244,6 +244,8 @@ async fn a_file_the_model_wrote_is_not_attached_again_at_the_next_request() {
     r.send(AgentCommand::Submit { text: "make it".into(), attachments: vec![] });
     r.turn().await;
     assert_eq!(std::fs::read_to_string(d.path().join("made.rs")).unwrap(), "fn made() {}\n");
+    // the end of the request is noted just after its last event
+    tokio::time::sleep(Duration::from_millis(200)).await;
     std::fs::write(d.path().join("fresh.rs"), "fn fresh() {}\n").unwrap();
     r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
     r.turn().await;
@@ -251,6 +253,37 @@ async fn a_file_the_model_wrote_is_not_attached_again_at_the_next_request() {
     let sent = reqs.last().unwrap().messages.last().unwrap().text();
     assert!(sent.contains("@fresh.rs "), "a file the model never met is attached: {sent}");
     assert!(!sent.contains("@made.rs "), "the file the model wrote is not attached again: {sent}");
+    r.stop().await;
+}
+
+/// A file the model's own command made during a request (generated data) is not attached again by the token
+/// budget at the next request; a file the person made between requests is.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_a_command_of_the_model_made_is_not_attached_at_the_next_request() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "seq 1 40 > gen.json"}))),
+        Reply::Events(text("made")),
+        Reply::Events(text("ok")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.attach_budget = 4000;
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "make data".into(), attachments: vec![] });
+    r.turn().await;
+    assert!(std::fs::read_to_string(d.path().join("gen.json")).unwrap().starts_with("1\n2\n"));
+    // the end of the request is noted just after its last event
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    std::fs::write(d.path().join("fresh.rs"), "fn fresh() {}\n").unwrap();
+    r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let sent = reqs.last().unwrap().messages.last().unwrap().text();
+    assert!(sent.contains("@fresh.rs "), "a file the person made is attached: {sent}");
+    assert!(!sent.contains("@gen.json "), "the data the model's command made is not attached: {sent}");
     r.stop().await;
 }
 

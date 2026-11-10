@@ -22,6 +22,24 @@ const CHECK_CHARS: usize = 1500;
 /// system prompt, the tool list, the conversation so far, the request and the files together.
 const FIRST_CALL: u64 = 19_000;
 
+/// The most request spans kept to tell files the model's work changed.
+const WORKED_SPANS: usize = 64;
+
+/// Notes that a request ran from `from` to `to`.
+pub(super) fn worked(spans: &mut VecDeque<(SystemTime, SystemTime)>, from: SystemTime, to: SystemTime) {
+    if spans.len() >= WORKED_SPANS {
+        spans.pop_front();
+    }
+    spans.push_back((from, to));
+}
+
+/// Whether `path` was last changed while a request ran: the model's own commands made or changed it
+/// (generated data, a build or test output), so it knows of it and can read it when it needs it.
+pub(super) fn made_in_work(spans: &VecDeque<(SystemTime, SystemTime)>, path: &Path) -> bool {
+    let Ok(t) = std::fs::metadata(path).and_then(|m| m.modified()) else { return false };
+    spans.iter().any(|&(a, b)| a <= t && t <= b)
+}
+
 /// The tokens a file of `len` bytes takes attached whole (four bytes a token, plus its header and fence).
 pub(super) fn attached_tokens(len: usize) -> u64 {
     len as u64 / 4 + 12
@@ -148,6 +166,7 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -
         !said.contains(&attached_header(rel))
             && !st.reads.met_unchanged(&st.cwd.join(rel))
             && !st.reads.met_unchanged(real)
+            && !made_in_work(&st.worked, real)
             && st.perm.decide("read", ToolKind::Read, &serde_json::json!({ "path": rel }), &st.cwd) == Decision::Allow
     };
     pick(&st.cwd, budget.saturating_sub(used), &skip, &allowed)

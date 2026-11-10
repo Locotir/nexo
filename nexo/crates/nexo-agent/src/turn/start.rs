@@ -166,7 +166,12 @@ pub(super) async fn start_turn(
         push_user(&mut st, text, &attachments, added);
     }
     let state = state.clone();
-    tokio::spawn(async move { run_turn(state, cancel).await })
+    tokio::spawn(async move {
+        let from = SystemTime::now();
+        let end = run_turn(state.clone(), cancel).await;
+        orient::worked(&mut state.lock().await.worked, from, SystemTime::now());
+        end
+    })
 }
 
 /// The largest reply the next request asks for: `agent.max_tokens`, times the boost after a reply cut

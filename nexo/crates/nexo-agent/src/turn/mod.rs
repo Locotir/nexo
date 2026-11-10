@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
 use nexo_core::agent::{
@@ -155,6 +155,8 @@ struct State {
     shared: Vec<(String, String, String)>,
     /// Files the model has seen, so an unchanged one is not sent again.
     reads: Reads,
+    /// When the last requests ran (start, end): a file changed inside one was made by the model's own work.
+    worked: VecDeque<(SystemTime, SystemTime)>,
     /// The notes of the reader passes so far, by material and request.
     digests: HashMap<u64, String>,
     /// Commands and sub-agents running in the background.
@@ -415,6 +417,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         inbox: VecDeque::new(),
         shared: Vec::new(),
         reads: Reads::default(),
+        worked: VecDeque::new(),
         digests: HashMap::new(),
         jobs: jobs.clone(),
         seen: Default::default(),
