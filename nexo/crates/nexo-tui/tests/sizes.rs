@@ -440,7 +440,7 @@ fn a_narrow_activity_line_drops_whole_segments() {
         let words = line.trim_end_matches(['─', ' ']);
         assert!(!words.ends_with('·'), "{w}: a separator is left alone: {line:?}");
         if line.contains("Esc") {
-            assert!(line.contains("Esc interrupts"), "{w}: the hint is cut: {line:?}");
+            assert!(line.contains("Esc interrupt"), "{w}: the hint is cut: {line:?}");
         }
         if line.contains("↓") {
             assert!(line.contains("tok"), "{w}: the count is cut: {line:?}");
@@ -450,7 +450,7 @@ fn a_narrow_activity_line_drops_whole_segments() {
     a.handle_agent(AgentEvent::TurnStart { turn: 1 });
     a.streamed_chars = 480;
     let wide = capture(&mut a, 80, 24).into_iter().find(|r| r.contains("Thinking…")).unwrap();
-    assert!(wide.contains("tok · Esc interrupts"), "{wide:?}");
+    assert!(wide.contains("tok · Esc interrupt"), "{wide:?}");
 }
 
 fn press(a: &mut App, code: crossterm::event::KeyCode) {

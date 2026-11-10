@@ -21,4 +21,4 @@
 32 33   }
 
 
- ↑↓ pick  Tab / [ ] file  Enter pane  n/p hunk  z fold  f all  Esc close
+ ↑↓ pick · Tab/[/] file · Enter pane · n/p hunk · z fold · f all · Esc close

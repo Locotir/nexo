@@ -179,7 +179,7 @@ fn a_permission_window_at_60x16_leaves_the_turn_line_alone() {
     a.handle_agent(shell_ask("cargo test --workspace --all-features"));
     let rows = draw(&mut a, 60, 16);
     let dump = rows.join("\n");
-    let turn = rows.iter().position(|r| r.contains("Esc interrupts")).unwrap_or_else(|| panic!("no turn line\n{dump}"));
+    let turn = rows.iter().position(|r| r.contains("Esc interrupt")).unwrap_or_else(|| panic!("no turn line\n{dump}"));
     assert!(rows[turn].starts_with("─ "), "turn line: {:?}\n{dump}", rows[turn]);
     assert!(!rows[turn].contains('╯') && !rows[turn].contains('╰'), "window edge on the turn line\n{dump}");
     let input = rows.iter().find(|r| r.starts_with('›')).unwrap_or_else(|| panic!("no input\n{dump}"));

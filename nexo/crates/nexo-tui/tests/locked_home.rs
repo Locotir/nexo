@@ -206,7 +206,7 @@ fn type_line(a: &mut App, line: &str) {
 fn the_first_screen_answers_help_and_esc_comes_back() {
     let mut a = app("codex", codex());
     let s = screen(&mut a);
-    assert!(s.contains("/help lists the commands") && s.contains("Ctrl+D"), "{s}");
+    assert!(s.contains("/help commands") && s.contains("Ctrl+D"), "{s}");
     type_line(&mut a, "/help");
     assert!(a.modal.is_none(), "typing a command opens nothing yet");
     assert!(screen(&mut a).contains("/help"), "the draft is shown");
@@ -251,7 +251,7 @@ fn a_chosen_provider_that_did_not_answer_is_named_with_its_address() {
     a.handle_agent(AgentEvent::LocalServers { found: vec![] });
     let s = screen(&mut a);
     assert!(s.contains("ollama did not answer at http://localhost:11434/v1"), "{s}");
-    assert!(s.contains("ollama serve") && s.contains("Enter opens the setup"), "{s}");
+    assert!(s.contains("ollama serve") && s.contains("Enter setup"), "{s}");
     press(&mut a, KeyCode::Enter);
     assert!(matches!(a.modal, Some(Modal::Setup(_))), "the setup is one key away");
 }

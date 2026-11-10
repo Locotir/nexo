@@ -252,7 +252,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                 .then(|| Seg { text: mem_waiting(app.spinner), style: base.fg(theme.dim) })
         });
     // a glyph every common font has, not an icon font's
-    let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: base.fg(theme.hunk) });
+    let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: base });
     let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: base.fg(theme.dim) };
     // what the curator just let go is in its label: green for a moment, then its own colour
     let policy_seg = policy.map(|p| {
@@ -319,7 +319,8 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                     }
                     model_done = true;
                     let mut g = Vec::new();
-                    if order.contains(&"model") {
+                    // no model yet (the first screen, before the setup): no `/` for a name
+                    if order.contains(&"model") && !app.model.is_empty() {
                         g.push(model(k.short_model));
                         if app.fast {
                             g.push(Seg { text: FAST_MARK.to_string(), style: base.fg(theme.warn) });
@@ -382,7 +383,9 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                 }
                 "cache" if k.extra && !extra.is_empty() => {
                     let g: Vec<Seg> = extra.iter().map(|e| Seg { text: e.text.clone(), style: e.style }).collect();
-                    out.push(g);
+                    if !g.is_empty() {
+                        out.push(g);
+                    }
                 }
                 _ => {}
             }
@@ -536,7 +539,7 @@ fn draw_lock(f: &mut Frame, app: &App, area: Rect, away: f64) {
         lines.extend(why.into_iter().map(|l| (l, Style::default().fg(theme.fg))));
     }
     lines.push((String::new(), Style::default()));
-    lines.push(("Enter opens the setup · /help lists the commands · /quit or Ctrl+D leaves".to_string(), theme.dim()));
+    lines.push(("Enter setup · /help commands · Ctrl+D quit".to_string(), theme.dim()));
     let h = lines.len() as u16;
     let slide = (away * 4.0).round() as u16;
     let top = area.y + area.height.saturating_sub(h) / 2;
@@ -687,7 +690,7 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let mut used = brand_width(app);
     let mut hits = Vec::new();
-    'outer: for g in groups.iter() {
+    'outer: for (gi, g) in groups.iter().enumerate() {
         let sep = " │ ";
         if used + width(sep) > avail {
             break;
@@ -695,6 +698,17 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
         spans.push(Span::styled(sep.to_string(), base.fg(theme.border)));
         used += width(sep);
         let gw: usize = g.iter().map(|s| width(&s.text)).sum();
+        // the model is the one piece worth cutting short: a long name on a narrow bar ends in `…`
+        // instead of leaving the bar without it
+        let model_cut = (gi == 0 && used + gw > avail)
+            .then(|| {
+                let first = g.first()?;
+                let room = (avail.saturating_sub(used)).checked_sub(gw - width(&first.text))?;
+                (room >= 8 && [&app.model, &format!("{}/{}", app.provider, app.model)].contains(&&first.text))
+                    .then(|| truncate(&first.text, room))
+            })
+            .flatten();
+        let gw = if model_cut.is_some() { avail - used } else { gw };
         if used + gw > avail {
             // a piece is shown whole or not at all: drop the separator just pushed
             spans.pop();
@@ -724,7 +738,11 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let mut run: Option<(StatusHit, usize, usize)> = None;
         for (i, s) in g.iter().enumerate() {
-            let sw = width(&s.text);
+            let shown = match (&model_cut, i) {
+                (Some(t), 0) => t.clone(),
+                _ => s.text.clone(),
+            };
+            let sw = width(&shown);
             let h = hit_of(i, s);
             match (run, h) {
                 (Some((rh, st, rw)), Some(h)) if rh == h => run = Some((rh, st, rw + sw)),
@@ -737,7 +755,7 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             }
             used += sw;
             let m = h.map(lit).unwrap_or_else(Modifier::empty);
-            spans.push(Span::styled(s.text.clone(), s.style.add_modifier(m)));
+            spans.push(Span::styled(shown, s.style.add_modifier(m)));
         }
         if let Some((rh, st, rw)) = run.take() {
             hits.push((Rect::new(area.x + st as u16, area.y, rw as u16, 1), rh));
@@ -1228,7 +1246,7 @@ fn rise_from_rule(line: Line<'static>, theme: &Theme, k: f32) -> Line<'static> {
     Line::from(spans).style(line.style)
 }
 
-/// `─ ⠴ Thinking… 3.7s · ↓ 120 tok · Esc interrupts ───`: what the agent is doing, with a
+/// `─ ⠴ Thinking… 3.7s · ↓ 120 tok · Esc interrupt ───`: what the agent is doing, with a
 /// light sweeping across the verb.
 pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let theme = &app.theme;
@@ -1254,7 +1272,7 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     // (the token count first, then the hint) instead of cutting a word or leaving a lone `·`
     let time = fmt_ms(secs);
     let toks = (app.streamed_chars > 0).then(|| format!("↓ {} tok", fmt_k((app.streamed_chars / 4) as u64)));
-    let mut parts: Vec<String> = vec![time, "Esc interrupts".to_string()];
+    let mut parts: Vec<String> = vec![time, "Esc interrupt".to_string()];
     parts.extend(toks);
     let head: usize = spans.iter().map(|s| width(&s.content)).sum();
     let fits = |p: &[String]| head + 2 + p.iter().map(|s| width(s)).sum::<usize>() + 3 * (p.len() - 1) <= w;
@@ -1451,7 +1469,7 @@ fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
             4,
             Some(HintHit::Queued),
             vec![Span::styled(
-                format!(" ◷ {} queued · Enter sends now", app.queued),
+                format!(" ◷ {} queued · Enter send now", app.queued),
                 base.fg(theme.warn).add_modifier(lit(HintHit::Queued)),
             )],
         ));
@@ -2988,7 +3006,7 @@ fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
         // the longest wording that fits: closing the window is the last thing to lose
         let hint = [
             format!("Tab switch · ↑↓ scroll{days} · Esc close{more}"),
-            format!("Tab · ↑↓{} · Esc close{more}", if tab == 1 { " · d w m" } else { "" }),
+            format!("Tab · ↑↓{} · Esc close{more}", if tab == 1 { " · d/w/m period" } else { "" }),
             format!("Esc close{more}"),
         ]
         .into_iter()

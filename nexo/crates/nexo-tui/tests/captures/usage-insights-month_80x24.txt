@@ -9,13 +9,13 @@
               │ ──────────────────────────────────────────────── ┃
               │ What's contributing to your usage?               ┃
               │ Approximate · sessions on this machine only      ┃
-              │  today  7 days  [30 days]                  d w m ┃
+              │  today  7 days  [30 days]           d/w/m period ┃
               │                                                  ┃
               │ 2 sessions · 4 calls                             ┃
               │                                                  ┃
               │ Nothing stands out: no single thing is over 10%  ┃
               │ of your usage.                                   ┃
-              │ Tab · ↑↓ · d w m · Esc close                     │
+              │ Tab · ↑↓ · d/w/m period · Esc close              │
               ╰──────────────────────────────────────────────────╯
 
 ─ ask ──────────────────────────────────────────────────────────────────────────

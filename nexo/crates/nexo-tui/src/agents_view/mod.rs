@@ -1037,15 +1037,12 @@ impl AgentsView {
         let more = self.more_marks();
         let more = more.as_str();
         let line = if self.policy_page {
-            Line::from(Span::styled(
-                truncate("↑↓ scroll · o or Esc back to the sessions", foot.width as usize),
-                theme.dim2(),
-            ))
+            Line::from(Span::styled(truncate("↑↓ scroll · o/Esc back", foot.width as usize), theme.dim2()))
         } else if let Some(t) = &self.edit {
             // the end of the text is what is being typed: it is the part kept when the line is long
             let gone = self.edit_for.as_ref().is_some_and(|(k, _)| !self.rows.iter().any(|r| &r.key == k));
             let tails: [&str; 3] = if gone {
-                ["  session gone · Esc keeps it", "  gone · Esc", ""]
+                ["  session gone · Esc keep", "  gone · Esc", ""]
             } else {
                 ["  Enter send · Esc cancel", "  Enter · Esc", ""]
             };

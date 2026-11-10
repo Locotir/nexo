@@ -6,7 +6,7 @@
 │ /model sets up a mo│ ────────────────────────────────────────────────────────────────────────── │
 ╰────────────────────│ What's contributing to your usage?                                         │
                      │ Approximate · sessions on this machine only                                │
-                     │  today  [7 days]  30 days                                            d w m │
+                     │  today  [7 days]  30 days                                     d/w/m period │
                      │                                                                            │
                      │ 9 sessions · 120 calls · $5.12                                             │
                      │                                                                            │

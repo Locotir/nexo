@@ -10,11 +10,15 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 
 fn bar(width: u16) -> String {
+    bar_of(width, "m")
+}
+
+fn bar_of(width: u16, model: &str) -> String {
     let (tx, _rx) = mpsc::unbounded_channel();
     let opts = TuiOptions {
         cwd: PathBuf::from("/tmp/project"),
         provider: "p".into(),
-        model: "m".into(),
+        model: model.into(),
         theme: "dark".into(),
         animations: false,
         ..TuiOptions::default()
@@ -50,4 +54,22 @@ fn the_label_outlives_the_counts_as_the_bar_narrows() {
             assert!(b.contains("curator -12k tok") || !b.contains("curator"), "{w}: {b}");
         }
     }
+}
+
+#[test]
+fn a_long_model_name_ends_in_an_ellipsis_on_a_narrow_bar_instead_of_vanishing() {
+    let long = "model-beta-with-a-really-long-name-for-the-bar";
+    for w in [40u16, 50, 60] {
+        let b = bar_of(w, long);
+        assert!(b.contains("model-beta") && b.contains('…'), "{w}: {b}");
+        assert!(b.contains("billed") || b.chars().count() <= w as usize, "{w}: {b}");
+    }
+    let b = bar_of(200, long);
+    assert!(b.contains(long) && !b.contains('…'), "{b}");
+}
+
+#[test]
+fn with_no_model_yet_the_bar_shows_no_bare_slash() {
+    let b = bar_of(80, "");
+    assert!(!b.contains("│ / │") && !b.contains(" / "), "{b}");
 }

@@ -283,7 +283,7 @@ fn selector(theme: &Theme, period: Period, w: usize) -> Line<'static> {
         spans.push(Span::styled(label, style));
         spans.push(Span::raw("  "));
     }
-    let keys = "d w m";
+    let keys = "d/w/m period";
     if used + keys.len() < w {
         spans.push(Span::raw(" ".repeat(w - used - keys.len())));
         spans.push(Span::styled(keys, theme.dim2()));
@@ -552,7 +552,7 @@ mod tests {
     fn the_section_has_a_selector_a_table_and_notes() {
         let r = sample();
         let l = render(&View::Ready(&r), Period::Week, 48, 1.0);
-        assert!(l.iter().any(|l| l.contains("today  [7 days]  30 days") && l.ends_with("d w m")), "{l:#?}");
+        assert!(l.iter().any(|l| l.contains("today  [7 days]  30 days") && l.ends_with("d/w/m period")), "{l:#?}");
         assert!(l.iter().any(|l| l.starts_with("Biggest sessions") && l.ends_with("cost cache")), "{l:#?}");
         assert!(l.iter().any(|l| l.starts_with("login · today") && l.ends_with("$1.82   71%")), "{l:#?}");
         assert!(l

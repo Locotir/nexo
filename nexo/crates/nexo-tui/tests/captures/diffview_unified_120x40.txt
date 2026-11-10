@@ -37,4 +37,4 @@
                               │
                               │
                               │
- ↑↓ pick  Tab / [ ] file  Enter pane  n/p hunk  z fold  f all  s split  y copy  PgUp/PgDn scroll  Esc close
+ ↑↓ pick · Tab/[/] file · Enter pane · n/p hunk · z fold · f all · s split · y copy · PgUp/PgDn scroll · Esc close

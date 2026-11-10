@@ -478,7 +478,7 @@ fn the_files_panel_and_a_diff_card() {
     assert!(rows[rows.len() - 2].contains("2 queued"), "{}", rows[0]);
     // while busy, the line above the editor says what the agent does
     assert!(
-        rows[26].starts_with("─ ") && rows[26].contains("Thinking…") && rows[26].contains("Esc interrupts"),
+        rows[26].starts_with("─ ") && rows[26].contains("Thinking…") && rows[26].contains("Esc interrupt"),
         "{}",
         rows[26]
     );

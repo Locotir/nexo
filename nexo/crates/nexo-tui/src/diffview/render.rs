@@ -20,24 +20,24 @@ const HIGHLIGHT_MAX_LINES: usize = 4000;
 /// The list is a side column from this width, a strip on top below it.
 const LIST_SIDE_MIN_W: u16 = 100;
 const KEYS: &str =
-    "↑↓ pick  Tab / [ ] file  Enter pane  n/p hunk  z fold  f all  s split  y copy  PgUp/PgDn scroll  Esc close";
+    "↑↓ pick · Tab/[/] file · Enter pane · n/p hunk · z fold · f all · s split · y copy · PgUp/PgDn scroll · Esc close";
 
 /// The key hints in `w` columns: whole items from the left, and the last one (the way out) always kept.
 fn fit_keys(keys: &str, w: usize) -> String {
     if width(keys) <= w {
         return keys.to_string();
     }
-    let mut items: Vec<&str> = keys.split("  ").collect();
+    let mut items: Vec<&str> = keys.split(" · ").collect();
     let last = items.pop().unwrap_or_default();
     let mut out = String::new();
     for it in items {
-        let next = if out.is_empty() { it.to_string() } else { format!("{out}  {it}") };
-        if width(&next) + 2 + width(last) > w {
+        let next = if out.is_empty() { it.to_string() } else { format!("{out} · {it}") };
+        if width(&next) + 3 + width(last) > w {
             break;
         }
         out = next;
     }
-    let s = if out.is_empty() { last.to_string() } else { format!("{out}  {last}") };
+    let s = if out.is_empty() { last.to_string() } else { format!("{out} · {last}") };
     truncate(&s, w)
 }
 

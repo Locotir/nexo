@@ -158,7 +158,7 @@ impl SentView {
                     Span::styled("/ ", theme.style(theme.accent)),
                     Span::raw(truncate(t, w.saturating_sub(30))),
                     Span::styled("▏", theme.dim()),
-                    Span::styled("  Enter searches · Esc cancels", theme.dim()),
+                    Span::styled("  Enter search · Esc cancel", theme.dim()),
                 ]),
             ];
         }
@@ -186,7 +186,7 @@ impl SentView {
             sets.push(vec![kv("", &state), kv("n N", "next, previous"), kv("y", &copy), kv("Esc", "clear")]);
             sets.push(vec![kv("", &state), kv("n N", "move"), kv("Esc", "clear")]);
         }
-        sets.push(vec![kv("Esc", "closes")]);
+        sets.push(vec![kv("Esc", "close")]);
         for set in &sets {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (k, what) in set {

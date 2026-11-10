@@ -11,11 +11,11 @@
               │ ──────────────────────────────────────────────── ┃
               │ What's contributing to your usage?               ┃
               │ Approximate · sessions on this machine only      ┃
-              │  [today]  7 days  30 days                  d w m ┃
+              │  [today]  7 days  30 days           d/w/m period ┃
               │                                                  ┃
               │ No sessions today on this machine.               ┃
               │ Try 7 days (w).                                  ┃
-              │ Tab · ↑↓ · d w m · Esc close                     │
+              │ Tab · ↑↓ · d/w/m period · Esc close              │
               ╰──────────────────────────────────────────────────╯
 
 ─ ask ──────────────────────────────────────────────────────────────────────────

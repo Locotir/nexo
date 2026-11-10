@@ -15,7 +15,7 @@
               │ a-folder-name-far-too-l… · Oct 23    $0.10   n/a ┃
               │                                                  ┃
               │ Shares overlap; they do not add up to 100%.      ┃
-              │ Tab · ↑↓ · d w m · Esc close                     │
+              │ Tab · ↑↓ · d/w/m period · Esc close              │
               ╰──────────────────────────────────────────────────╯
 
 ─ ask ──────────────────────────────────────────────────────────────────────────
