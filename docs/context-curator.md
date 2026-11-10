@@ -47,7 +47,7 @@ sequenceDiagram
     alt epoch
         Cur->>Cur: close answered requests, drop dead outputs, cut to target
     else between epochs
-        Cur->>Cur: append only; bring back steps the request names
+        Cur->>Cur: append only, bring back steps the request names
     end
     Cur->>Cur: tail: standing facts, lines the request names
     Cur-->>Host: view, tokens, what moved
