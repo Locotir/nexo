@@ -21,9 +21,10 @@ It runs as a full-screen TUI, headless for scripts and CI, or inside editors ove
 
 [Install](#install) · [Proof](#proof) · [How it works](#how-it-works) · [Providers](#providers) · [Full guide](nexo/README.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
-<p align="center"><img src="docs/demo.gif" width="880" alt="nexo in the terminal: the task, the permission prompt for a command, the edit as a diff, the tests run again, and the status bar with model, mode, context and cost"></p>
+<p align="center"><img src="docs/img/demo.svg" width="880" alt="nexo fixing a failing test in the terminal"></p>
 
-<sub>A replay of a recorded session on a throwaway project. A scripted provider plays back the model's replies; the tools run for real. No network, no model call.</sub>
+<sub>Recorded from the real TUI. The model replies are scripted, and the curator limits are lowered so it acts in a session this short.</sub>
+
 
 ## Install
 
