@@ -377,6 +377,10 @@ pub struct App {
 pub enum StatusHit {
     /// The model: `/model`.
     Model,
+    /// The reasoning level: `/effort`.
+    Effort,
+    /// The permission mode: Shift+Tab.
+    Mode,
     /// The context gauge: `/context`.
     Gauge,
     /// The tokens billed and the cost: `/usage`.

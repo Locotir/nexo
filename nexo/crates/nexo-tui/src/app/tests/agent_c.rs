@@ -327,6 +327,49 @@ fn the_status_bar_opens_the_model_the_context_and_the_usage() {
 }
 
 #[test]
+fn the_status_bar_effort_and_mode_answer_a_click_and_follow_the_width() {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    let (mut a, mut rx) = app();
+    a.effort = Some("high".into());
+    frame(&mut a, 120, 12);
+    let find = |a: &App, h: StatusHit| a.status_hits.iter().find(|(_, x)| *x == h).map(|(r, _)| *r);
+    let model = find(&a, StatusHit::Model).expect("model");
+    let eff = find(&a, StatusHit::Effort).expect("effort is its own piece");
+    assert!(model.x + model.width <= eff.x, "the effort does not overlap the model");
+    // one cell left of it is the model, one cell right of it is not the effort
+    pointer(&mut a, K::Moved, eff.x, eff.y);
+    assert_eq!(a.hover, Hover::Status(StatusHit::Effort));
+    pointer(&mut a, K::Down(MouseButton::Left), eff.x + 1, eff.y);
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the effort opens its picker") };
+    assert_eq!(p.kind, crate::modal::PickKind::Effort);
+    // with the picker open, a click on the bar does not reach it
+    let before = a.modal.is_some();
+    pointer(&mut a, K::Down(MouseButton::Left), eff.x + 1, eff.y);
+    assert!(before);
+    a.modal = None;
+    frame(&mut a, 120, 12);
+    pointer(&mut a, K::Down(MouseButton::Left), eff.x + eff.width, eff.y);
+    assert!(!matches!(&a.modal, Some(Modal::Picker(_))), "one cell outside is not the effort");
+    a.modal = None;
+    // the mode cycles as Shift+Tab does
+    let mode = find(&a, StatusHit::Mode).expect("mode piece");
+    pointer(&mut a, K::Down(MouseButton::Left), mode.x, mode.y);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(_))));
+    assert!(rx.try_recv().is_err());
+    // a narrower bar: the regions are where the text was drawn, or gone
+    for w in [100u16, 70, 50, 30] {
+        frame(&mut a, w, 12);
+        for (r, h) in a.status_hits.clone() {
+            assert!(r.x + r.width <= w, "{h:?} stays on the {w} wide bar");
+            assert_eq!(a.status_hit(r.x), Some(h));
+            assert_eq!(a.status_hit(r.x + r.width.saturating_sub(1)), Some(h));
+        }
+    }
+    frame(&mut a, 30, 12);
+    assert!(a.status_hits.iter().all(|(_, h)| *h != StatusHit::Effort) || a.status_hits.iter().any(|(r, _)| r.x < 30));
+}
+
+#[test]
 fn up_on_an_empty_draft_takes_the_last_queued_message_back_to_edit_it() {
     let (mut a, mut rx) = app();
     queue_two(&mut a, &mut rx);

@@ -464,6 +464,11 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                 use crate::commands::Command;
                 let cmd = match app.status_hit(m.column) {
                     Some(StatusHit::Model) => Command::Model(None),
+                    Some(StatusHit::Effort) => Command::Effort(None),
+                    Some(StatusHit::Mode) => {
+                        app.cycle_mode();
+                        return;
+                    }
                     Some(StatusHit::Cost) => Command::Cost,
                     // the goal opens its own window
                     Some(StatusHit::Goal) => {

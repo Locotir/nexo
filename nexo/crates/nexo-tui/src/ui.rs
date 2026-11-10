@@ -201,10 +201,8 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         style: base.fg(theme.accent).add_modifier(Modifier::BOLD),
     };
     // the same glyph, words and colour as the rule over the draft (mode_tint), minus its explanation
-    let (mode_color, mode_name) = match mode_tint(theme, app.permission_mode) {
-        Some((c, label)) => (c, label.split(" · ").next().unwrap_or(label).to_string()),
-        None => (theme.bar_fg, app.permission_mode.as_str().to_string()),
-    };
+    let mode_color = mode_tint(theme, app.permission_mode).map_or(theme.bar_fg, |(c, _)| c);
+    let mode_name = mode_name(app);
     let mode = match app.permission_mode {
         // never asking is said plainly, and loud
         PermissionMode::Auto => Seg { text: mode_name, style: base.fg(mode_color).add_modifier(Modifier::BOLD) },
@@ -667,25 +665,41 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             used -= width(sep);
             break 'outer;
         }
-        let hit = if gi == 0 && matches!(order0, Some("model" | "effort")) {
-            Some(StatusHit::Model)
-        } else {
-            g.iter().any(is_gauge_pct).then_some(StatusHit::Gauge)
+        let model_group = gi == 0 && matches!(order0, Some("model" | "effort"));
+        let gauge_group = g.iter().any(is_gauge_pct);
+        let mode_label = mode_name(app);
+        let mode_group = !model_group && !gauge_group && g.first().is_some_and(|s| s.text == mode_label);
+        // each piece answers for itself: the model, its effort, the mode, the goal, the gauge
+        let hit_of = |i: usize, s: &Seg| -> Option<StatusHit> {
+            if is_goal_seg(s) {
+                Some(StatusHit::Goal)
+            } else if model_group {
+                Some(if is_effort_seg(s) { StatusHit::Effort } else { StatusHit::Model })
+            } else if mode_group {
+                (i == 0).then_some(StatusHit::Mode)
+            } else {
+                gauge_group.then_some(StatusHit::Gauge)
+            }
         };
-        if let Some(h) = hit {
-            hits.push((Rect::new(area.x + used as u16, area.y, gw as u16, 1), h));
-        }
-        let m = hit.map(lit).unwrap_or_else(Modifier::empty);
-        // the goal piece answers a click of its own, inside the group of the mode
-        if let Some(at) = g.iter().position(is_goal_seg) {
-            let before: usize = g[..at].iter().map(|s| width(&s.text)).sum();
-            let gw = width(&g[at].text);
-            hits.push((Rect::new(area.x + (used + before) as u16, area.y, gw as u16, 1), StatusHit::Goal));
-        }
-        for s in g {
-            used += width(&s.text);
-            let m = if is_goal_seg(s) { lit(StatusHit::Goal) } else { m };
+        let mut run: Option<(StatusHit, usize, usize)> = None;
+        for (i, s) in g.iter().enumerate() {
+            let sw = width(&s.text);
+            let h = hit_of(i, s);
+            match (run, h) {
+                (Some((rh, st, rw)), Some(h)) if rh == h => run = Some((rh, st, rw + sw)),
+                _ => {
+                    if let Some((rh, st, rw)) = run.take() {
+                        hits.push((Rect::new(area.x + st as u16, area.y, rw as u16, 1), rh));
+                    }
+                    run = h.map(|h| (h, used, sw));
+                }
+            }
+            used += sw;
+            let m = h.map(lit).unwrap_or_else(Modifier::empty);
             spans.push(Span::styled(s.text.clone(), s.style.add_modifier(m)));
+        }
+        if let Some((rh, st, rw)) = run.take() {
+            hits.push((Rect::new(area.x + st as u16, area.y, rw as u16, 1), rh));
         }
     }
     let pad = w.saturating_sub(used + right_w);
@@ -707,6 +721,19 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     }
     app.status_hits = hits;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The reasoning level's piece of the bar: ` ◆ high`.
+fn is_effort_seg(s: &Seg) -> bool {
+    s.text.starts_with(" ◆ ")
+}
+
+/// The words the bar shows for the permission mode.
+fn mode_name(app: &App) -> String {
+    match mode_tint(&app.theme, app.permission_mode) {
+        Some((_, label)) => label.split(" · ").next().unwrap_or(label).to_string(),
+        None => app.permission_mode.as_str().to_string(),
+    }
 }
 
 /// The goal's piece of the bar: `◎ goal`, `◎ goal: your turn`, `◎ goal paused`, `✓ goal`.
