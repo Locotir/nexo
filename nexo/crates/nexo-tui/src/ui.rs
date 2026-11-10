@@ -296,6 +296,8 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         goal: bool,
         gauge: bool,
         mode: bool,
+        // the `◆ default` hint (no level set): the first piece to go
+        hint: bool,
     }
     let order = status_pieces(&app.opts.status_line);
     let build = |k: &Keep| {
@@ -319,6 +321,9 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                     if order.contains(&"effort") {
                         if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {
                             g.push(Seg { text: format!(" ◆ {e}"), style: base.fg(theme.accent2) });
+                        } else if k.hint && !app.effort_levels.is_empty() {
+                            // no level set, on a model that takes one: the word the picker's first entry uses
+                            g.push(Seg { text: " ◆ default".to_string(), style: base.fg(theme.dim) });
                         }
                     }
                     if !g.is_empty() {
@@ -387,17 +392,28 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         goal: true,
         gauge: true,
         mode: true,
+        hint: true,
     };
     let steps = [
         Keep { ..all },
-        Keep { dir: false, ..all },
-        Keep { dir: false, branch: false, ..all },
-        Keep { dir: false, branch: false, extra: false, ..all },
-        Keep { dir: false, branch: false, mem: false, extra: false, ..all },
-        Keep { dir: false, branch: false, mem: false, extra: false, counts: false, ..all },
-        Keep { dir: false, branch: false, mem: false, extra: false, counts: false, short_model: true, ..all },
+        Keep { dir: false, hint: false, ..all },
+        Keep { dir: false, hint: false, branch: false, ..all },
+        Keep { dir: false, hint: false, branch: false, extra: false, ..all },
+        Keep { dir: false, hint: false, branch: false, mem: false, extra: false, ..all },
+        Keep { dir: false, hint: false, branch: false, mem: false, extra: false, counts: false, ..all },
         Keep {
             dir: false,
+            hint: false,
+            branch: false,
+            mem: false,
+            extra: false,
+            counts: false,
+            short_model: true,
+            ..all
+        },
+        Keep {
+            dir: false,
+            hint: false,
             branch: false,
             mem: false,
             extra: false,
@@ -408,6 +424,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         },
         Keep {
             dir: false,
+            hint: false,
             branch: false,
             mem: false,
             extra: false,
@@ -419,6 +436,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         },
         Keep {
             dir: false,
+            hint: false,
             branch: false,
             mem: false,
             extra: false,

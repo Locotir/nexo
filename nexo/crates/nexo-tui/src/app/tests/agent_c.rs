@@ -381,6 +381,42 @@ fn the_status_bar_effort_and_mode_answer_a_click_and_follow_the_width() {
 }
 
 #[test]
+fn the_status_bar_shows_the_default_effort_on_a_model_with_levels_and_drops_it_first() {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    let (mut a, _rx) = app();
+    let find = |a: &App, h: StatusHit| a.status_hits.iter().find(|(_, x)| *x == h).map(|(r, _)| *r);
+    // a model without levels: nothing is drawn
+    frame(&mut a, 140, 12);
+    assert!(find(&a, StatusHit::Effort).is_none());
+    // a model with levels and no level set: `◆ default`, and it opens the picker
+    a.effort_levels = vec!["low".into(), "medium".into(), "high".into()];
+    let text = frame(&mut a, 140, 12).join("\n");
+    assert!(text.contains("◆ default"), "{text}");
+    let eff = find(&a, StatusHit::Effort).expect("the default is clickable");
+    pointer(&mut a, K::Moved, eff.x, eff.y);
+    assert_eq!(a.hover, Hover::Status(StatusHit::Effort));
+    pointer(&mut a, K::Down(MouseButton::Left), eff.x, eff.y);
+    assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == crate::modal::PickKind::Effort));
+    a.modal = None;
+    // a narrow bar drops it before the directory, the branch and the gauge
+    let mut gone_at = None;
+    for w in (20..140u16).rev() {
+        let t = frame(&mut a, w, 12).join("\n");
+        if !t.contains("◆ default") {
+            gone_at = Some(w);
+            break;
+        }
+    }
+    let w = gone_at.expect("a narrow bar hides it");
+    assert!(w > 40, "it goes while the bar still has room for the model and the gauge: {w}");
+    assert!(find(&a, StatusHit::Effort).is_none() && find(&a, StatusHit::Model).is_some());
+    // a set level stays on the narrow bar
+    a.effort = Some("high".into());
+    let t = frame(&mut a, w, 12).join("\n");
+    assert!(t.contains("◆ high"), "{t}");
+}
+
+#[test]
 fn the_status_bar_pieces_follow_the_configured_order_and_the_fast_marker_has_its_own_click() {
     use crossterm::event::{MouseButton, MouseEventKind as K};
     let (mut a, mut rx) = app();
