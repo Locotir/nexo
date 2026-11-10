@@ -179,6 +179,8 @@ struct State {
     /// 4 characters each, so the view is fitted to the window in the provider's own count.
     est_sent: u64,
     tok_ratio: Option<f64>,
+    /// The last call the provider billed in this session: a call cut before its usage event is estimated from it.
+    last_call: Option<Usage>,
     /// The mailbox other sessions write to, and the mails that reached the model: those waiting for the turn
     /// in progress to end, and those the turn in progress carries (told "read" when the model starts answering).
     mail: Option<Arc<Mailbox>>,
@@ -428,6 +430,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         last_prompt: None,
         est_sent: 0,
         tok_ratio: None,
+        last_call: None,
         mcp_gen: mcp.as_ref().map_or(0, |h| h.generation()),
         mcp: mcp.clone(),
         mail,

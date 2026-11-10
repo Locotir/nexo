@@ -48,6 +48,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.cost = st.session.cost();
     st.policy.reset();
     st.last_prompt = None;
+    st.last_call = None;
     st.last_request = None;
     st.repeats = Default::default();
     st.hidden.clear();
@@ -216,6 +217,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     let restored = restore_files(&mut st, keep);
     st.policy.reset();
     st.last_prompt = None;
+    st.last_call = None;
     st.last_request = None;
     st.repeats = Default::default();
     st.hidden.clear();
@@ -332,6 +334,7 @@ pub(super) async fn clear(state: &Shared) {
     st.checkpoints.clear();
     st.policy.reset();
     st.last_prompt = None;
+    st.last_call = None;
     st.last_request = None;
     st.repeats = Default::default();
     st.hidden.clear();

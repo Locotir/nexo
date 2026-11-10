@@ -205,9 +205,23 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         }
         let estimated = over_budget && c.usage.is_empty();
         if estimated {
-            // the stream was dropped before the provider's usage event: the output is what was streamed
-            c.usage.output = thought / 4;
-            c.call.output = thought / 4;
+            // the stream was dropped before the provider's usage event: the output is what was streamed, and
+            // the input is what was sent (estimated, in the provider's count), split between cached and not
+            // like the last billed call; with none before, all of it is uncached
+            let st = state.lock().await;
+            let sent = (st.est_sent as f64 * st.tok_ratio.unwrap_or(1.0)).round() as u64;
+            let cached = match st.last_call {
+                Some(l) if l.total_input() > 0 => {
+                    (sent as f64 * l.cache_read as f64 / l.total_input() as f64).round() as u64
+                }
+                _ => 0,
+            };
+            drop(st);
+            for u in [&mut c.usage, &mut c.call] {
+                u.output = thought / 4;
+                u.cache_read = cached;
+                u.input = sent - cached;
+            }
         }
         let (usage, call) = (c.usage, c.call);
         let cut = c.finish == Some(FinishReason::Length);
@@ -255,6 +269,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 if !estimated {
                     st.policy.usage(call.cache_read, call.total_input());
                     st.tok_ratio = learn_ratio(st.tok_ratio, st.est_sent, call.total_input());
+                    st.last_call = Some(call);
                 }
             }
             if !msg.content.is_empty() && call.total_input() > 0 {
