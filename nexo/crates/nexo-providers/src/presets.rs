@@ -38,9 +38,15 @@ const PRESETS: &[Preset] = &[
         base_url: "https://api.anthropic.com",
         key: Some("ANTHROPIC_API_KEY"),
         models: &[
-            ("claude-sonnet-5-5", Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }, 200_000),
-            ("claude-opus-5-5", Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }, 200_000),
-            ("claude-haiku-5-5", Pricing { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }, 200_000),
+            // 5.5 line: 1M window, 128K reply; cache write is the 5-minute rate (the 1-hour one is not kept);
+            // Haiku 5.5 is the rate for prompts up to 100K tokens (above it: 0.50 / 2.50 / 0.05 / 0.625)
+            ("claude-sonnet-5-5", Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50 }, 1_000_000),
+            ("claude-opus-5-5", Pricing { input: 4.0, output: 20.0, cache_read: 0.20, cache_write: 5.0 }, 1_000_000),
+            (
+                "claude-haiku-5-5",
+                Pricing { input: 0.10, output: 0.50, cache_read: 0.01, cache_write: 0.125 },
+                1_000_000,
+            ),
             ("claude-sonnet-4-5", Pricing { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 }, 200_000),
             ("claude-haiku-4-5", Pricing { input: 1.0, output: 5.0, cache_read: 0.1, cache_write: 1.25 }, 200_000),
         ],
@@ -346,6 +352,9 @@ fn written() -> BTreeMap<String, ProviderConfig> {
                 if *ctx > 0 {
                     cfg.context_window.insert(m.to_string(), *ctx);
                 }
+                if pr.name == "anthropic" && anthropic::modern(m) {
+                    cfg.max_output.insert(m.to_string(), anthropic::MODERN_MAX_OUTPUT);
+                }
             }
             cfg.default_model = pr.models.first().map(|m| m.0.to_string());
             for (k, v) in pr.headers {
@@ -422,7 +431,26 @@ mod tests {
 
     #[test]
     fn a_model_without_known_prices_has_no_pricing_entry() {
-        assert!(presets()["anthropic"].pricing_for("claude-sonnet-5-5").is_none());
+        assert!(presets()["deepseek"].pricing_for("no-such-model").is_none());
         assert!(!presets()["anthropic"].context_window.is_empty());
+    }
+
+    #[test]
+    fn the_claude_5_5_models_have_real_prices_a_big_window_and_a_reply_size() {
+        use nexo_core::Usage;
+        let a = &presets()["anthropic"];
+        for m in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"] {
+            assert!(a.pricing_for(m).is_some_and(|p| p.is_known() && p.cache_write > p.input), "{m}");
+            assert_eq!(a.context_window[m], 1_000_000, "{m}");
+            assert_eq!(a.max_output[m], 128_000, "{m}");
+        }
+        assert!(!a.max_output.contains_key("claude-sonnet-4-5"), "older models keep what they had");
+        // 1M fresh input, 1M output, 1M read, 1M written to the cache
+        let u =
+            Usage { input: 1_000_000, output: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000, reasoning: 0 };
+        let cost = |m: &str| a.pricing_for(m).unwrap().cost(&u);
+        assert!((cost("claude-sonnet-5-5") - (2.0 + 10.0 + 0.10 + 2.50)).abs() < 1e-9);
+        assert!((cost("claude-opus-5-5") - (4.0 + 20.0 + 0.20 + 5.0)).abs() < 1e-9);
+        assert!((cost("claude-haiku-5-5") - (0.10 + 0.50 + 0.01 + 0.125)).abs() < 1e-9);
     }
 }

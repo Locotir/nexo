@@ -20,6 +20,40 @@ pub struct Anthropic;
 pub const ID: &str = "anthropic";
 pub const VERSION: &str = "2023-06-01";
 
+/// The beta that lets the API drop a thinking block whose history was edited, instead of a 400.
+pub const BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+/// The reply size asked of a Claude 5.5 model when the person set no smaller cap.
+const MODERN_MAX_TOKENS: u32 = 64_000;
+/// The largest reply of a Claude 5.5 model.
+pub const MODERN_MAX_OUTPUT: u32 = 128_000;
+
+/// The family (`sonnet`, `opus`, `haiku`) and version of a name like `claude-sonnet-5-5`, also as a
+/// cloud id (`anthropic.claude-sonnet-5-5-v1:0`, `claude-sonnet-5-5@20260101`).
+fn family_version(model: &str) -> Option<(&'static str, u32, u32)> {
+    let m = model.to_ascii_lowercase();
+    let rest = &m[m.find("claude-")? + "claude-".len()..];
+    let mut t = rest.split(['-', '.', '@', ':']);
+    let fam = match t.next()? {
+        "sonnet" => "sonnet",
+        "opus" => "opus",
+        "haiku" => "haiku",
+        _ => return None,
+    };
+    let major: u32 = t.next()?.parse().ok()?;
+    // a date after the major (`claude-sonnet-5-20260101`) is not a minor version
+    let minor: u32 = t.next().filter(|s| s.len() <= 2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    Some((fam, major, minor))
+}
+
+fn family(model: &str) -> Option<&'static str> {
+    family_version(model).map(|f| f.0)
+}
+
+/// Claude 5.5 and later: adaptive thinking, effort, no sampling parameters.
+pub fn modern(model: &str) -> bool {
+    family_version(model).is_some_and(|(_, major, minor)| (major, minor) >= (5, 5))
+}
+
 impl Anthropic {
     pub fn url(cfg: &ProviderConfig) -> String {
         http::join_versioned(&cfg.base_url, "v1", "messages")
@@ -97,36 +131,94 @@ impl Anthropic {
             }
         }
         body["messages"] = Value::Array(messages);
-        if let Some(t) = req.temperature {
-            body["temperature"] = temp(t);
-        }
-        if !req.stop.is_empty() {
-            body["stop_sequences"] = json!(req.stop);
-        }
-        let budget = match req.reasoning {
-            Some(ReasoningConfig::Budget(b)) => Some(b.max(1024)),
-            Some(ReasoningConfig::Effort(Effort::Minimal)) => Some(1024),
-            Some(ReasoningConfig::Effort(Effort::Low)) => Some(2048),
-            Some(ReasoningConfig::Effort(Effort::Medium)) => Some(8192),
-            Some(ReasoningConfig::Effort(Effort::High)) => Some(16384),
-            _ => None,
-        };
-        // SetModel can land between the rounds of one turn (the command loop in
-        // `nexo-agent/src/turn.rs` keeps serving while the turn task runs). The protocol
-        // wants the thinking block of a tool round back, so when the model that made it is
-        // gone, this request goes without thinking rather than invalid.
-        // the budget must stay below max_tokens and at least 1024: a reply too small for that goes without
-        if let Some(b) = budget.filter(|_| !broken_round && req.max_tokens > 1024) {
-            let b = b.min(req.max_tokens - 1);
-            body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
-            if body["temperature"].is_number() {
-                body.as_object_mut().map(|o| o.remove("temperature")); // not allowed with thinking
+        if modern(&req.model) {
+            Self::modern_fields(cfg, req, &mut body);
+        } else {
+            if let Some(t) = req.temperature {
+                body["temperature"] = temp(t);
+            }
+            if !req.stop.is_empty() {
+                body["stop_sequences"] = json!(req.stop);
+            }
+            let budget = match req.reasoning {
+                Some(ReasoningConfig::Budget(b)) => Some(b.max(1024)),
+                Some(ReasoningConfig::Effort(Effort::Minimal)) => Some(1024),
+                Some(ReasoningConfig::Effort(Effort::Low)) => Some(2048),
+                Some(ReasoningConfig::Effort(Effort::Medium)) => Some(8192),
+                Some(ReasoningConfig::Effort(Effort::High)) => Some(16384),
+                _ => None,
+            };
+            // SetModel can land between the rounds of one turn (the command loop in
+            // `nexo-agent/src/turn.rs` keeps serving while the turn task runs). The protocol
+            // wants the thinking block of a tool round back, so when the model that made it is
+            // gone, this request goes without thinking rather than invalid.
+            // the budget must stay below max_tokens and at least 1024: a reply too small for that goes without
+            if let Some(b) = budget.filter(|_| !broken_round && req.max_tokens > 1024) {
+                let b = b.min(req.max_tokens - 1);
+                body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
+                if body["temperature"].is_number() {
+                    body.as_object_mut().map(|o| o.remove("temperature")); // not allowed with thinking
+                }
             }
         }
         for (k, v) in &req.extra {
+            // the models of the 5.5 line reject sampling parameters whatever their value
+            if modern(&req.model) && matches!(k.as_str(), "temperature" | "top_p" | "top_k") {
+                continue;
+            }
             body[k] = v.clone();
         }
         body
+    }
+
+    /// The fields of the Claude 5.5 line: `thinking` is adaptive (a manual budget, `enabled` and sampling
+    /// parameters are all a 400), the depth is `output_config.effort`, and the reply gets room for the
+    /// reasoning, which counts inside `max_tokens`.
+    fn modern_fields(cfg: &ProviderConfig, req: &ModelRequest, body: &mut Value) {
+        let effort = match req.reasoning {
+            None => Some("medium"),
+            Some(ReasoningConfig::Off) => None,
+            Some(ReasoningConfig::Effort(Effort::Minimal | Effort::Low)) => Some("low"),
+            Some(ReasoningConfig::Effort(Effort::Medium)) => Some("medium"),
+            Some(ReasoningConfig::Effort(Effort::High)) => Some("high"),
+            Some(ReasoningConfig::Budget(b)) => Some(match b {
+                0..=2048 => "low",
+                2049..=12_000 => "medium",
+                _ => "high",
+            }),
+        };
+        match effort {
+            Some(e) => {
+                body["output_config"] = json!({"effort": e});
+                let mut thinking = json!({"type": "adaptive"});
+                // thinking blocks are valid only for the history they were made in; the curator rewrites
+                // history, so a block whose prefix changed is dropped by the API instead of failing the call
+                if cfg.extra.get("block_binding").and_then(|v| v.as_bool()).unwrap_or(true) {
+                    thinking["block_binding"] = json!({"prefix_mismatch_behavior": "drop_block"});
+                }
+                body["thinking"] = thinking;
+            }
+            None => {
+                // reasoning off: Sonnet has a lowest setting; the others always think and take nothing
+                if family(&req.model) == Some("sonnet") {
+                    body["thinking"] = json!({"type": "between_tools"});
+                }
+                // `between_tools` takes no `block_binding`: the blocks of earlier turns stay out
+                if let Some(ms) = body["messages"].as_array_mut() {
+                    for m in ms {
+                        if let Some(c) = m["content"].as_array_mut() {
+                            c.retain(|b| !matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking")));
+                            if c.is_empty() {
+                                c.push(json!({"type": "text", "text": "(empty)"}));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // a large file written in one call must not be cut, and thinking shares the room
+        let floor = if req.max_tokens >= nexo_core::config::DEFAULT_MAX_TOKENS { MODERN_MAX_TOKENS } else { 4096 };
+        body["max_tokens"] = json!(req.max_tokens.max(floor).min(MODERN_MAX_OUTPUT));
     }
 
     pub fn parse(events: impl futures::Stream<Item = Result<SseEvent, String>> + Send + 'static) -> EventStream {
@@ -417,7 +509,18 @@ impl Protocol for Anthropic {
         key: Option<&str>,
         req: &ModelRequest,
     ) -> Result<EventStream, ProviderError> {
-        let body = http::post_stream(&Self::url(cfg), Self::headers(cfg, key), &Self::body(cfg, req)).await?;
+        let json = Self::body(cfg, req);
+        let mut headers = Self::headers(cfg, key);
+        if json["thinking"]["block_binding"].is_object() {
+            let have = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            if !have.split(',').any(|b| b.trim() == BINDING_BETA) {
+                let v = if have.is_empty() { BINDING_BETA.to_string() } else { format!("{have},{BINDING_BETA}") };
+                if let Ok(v) = reqwest::header::HeaderValue::from_str(&v) {
+                    headers.insert("anthropic-beta", v);
+                }
+            }
+        }
+        let body = http::post_stream(&Self::url(cfg), headers, &json).await?;
         Ok(Self::parse(http::sse(body)))
     }
 
@@ -663,5 +766,163 @@ mod tests {
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
             ])
         );
+    }
+
+    fn modern_req(model: &str) -> ModelRequest {
+        let mut req = ModelRequest::new(model, "sys", vec![Message::user("hi")]);
+        req.tools =
+            vec![ToolSpec { name: "read".into(), description: "d".into(), parameters: json!({"type": "object"}) }];
+        req.max_tokens = 16_384;
+        req.temperature = Some(0.0);
+        req.extra.insert("top_p".into(), json!(0.9));
+        req
+    }
+
+    #[test]
+    fn the_5_5_models_are_told_apart_from_the_older_ones() {
+        for m in [
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-haiku-5-5",
+            "anthropic.claude-sonnet-5-5-v1:0",
+            "claude-haiku-5-5@20260101",
+            "claude-sonnet-5.5",
+            "claude-opus-6",
+        ] {
+            assert!(modern(m), "{m}");
+        }
+        for m in [
+            "claude-sonnet-5",
+            "claude-sonnet-5-20260101",
+            "claude-opus-4-8",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+            "claude-3-5-sonnet-latest",
+            "gpt-5-5",
+            "claude-x",
+        ] {
+            assert!(!modern(m), "{m}");
+        }
+    }
+
+    #[test]
+    fn sonnet_5_5_gets_adaptive_thinking_effort_and_no_rejected_field() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        for model in ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"] {
+            let mut req = modern_req(model);
+            let b = Anthropic::body(&cfg, &req);
+            assert_eq!(b["thinking"]["type"], "adaptive", "{model}");
+            assert_eq!(b["thinking"]["block_binding"]["prefix_mismatch_behavior"], "drop_block");
+            assert_eq!(b["output_config"], json!({"effort": "medium"}), "default is medium");
+            for k in ["temperature", "top_p", "top_k"] {
+                assert!(b.get(k).is_none(), "{model} sends {k}");
+            }
+            assert!(!b.to_string().contains("budget_tokens") && !b.to_string().contains("\"enabled\""));
+            assert_eq!(b["max_tokens"], 64_000, "a default-sized cap is raised so a big file write is not cut");
+            assert_eq!(b["system"][0]["cache_control"]["type"], "ephemeral");
+            assert_eq!(b["tools"][0]["cache_control"]["type"], "ephemeral");
+            assert_eq!(b["messages"][0]["content"][0]["cache_control"]["type"], "ephemeral");
+            for (e, want) in
+                [(Effort::Minimal, "low"), (Effort::Low, "low"), (Effort::Medium, "medium"), (Effort::High, "high")]
+            {
+                req.reasoning = Some(ReasoningConfig::Effort(e));
+                assert_eq!(Anthropic::body(&cfg, &req)["output_config"]["effort"], want);
+            }
+            req.reasoning = Some(ReasoningConfig::Budget(30_000));
+            assert_eq!(Anthropic::body(&cfg, &req)["output_config"]["effort"], "high");
+        }
+    }
+
+    #[test]
+    fn a_5_5_reply_cap_is_raised_only_when_the_person_left_it_at_the_default_and_never_past_the_largest() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        let mut req = modern_req("claude-sonnet-5-5");
+        req.max_tokens = 8192;
+        assert_eq!(Anthropic::body(&cfg, &req)["max_tokens"], 8192);
+        req.max_tokens = 1024;
+        assert_eq!(Anthropic::body(&cfg, &req)["max_tokens"], 4096, "thinking needs room");
+        req.max_tokens = 500_000;
+        assert_eq!(Anthropic::body(&cfg, &req)["max_tokens"], 128_000);
+    }
+
+    #[test]
+    fn turning_reasoning_off_on_a_5_5_model_uses_what_it_accepts() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        let mut req = modern_req("claude-sonnet-5-5");
+        req.reasoning = Some(ReasoningConfig::Off);
+        req.messages = vec![
+            Message::user("hi"),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    Part::Reasoning { text: "t".into(), signature: Some("sig".into()), encrypted: None, model: None },
+                    Part::text("ok"),
+                ],
+            ),
+            Message::user("again"),
+        ];
+        let b = Anthropic::body(&cfg, &req);
+        assert_eq!(b["thinking"], json!({"type": "between_tools"}), "no other field is allowed with it");
+        assert!(b.get("output_config").is_none());
+        assert!(!b["messages"].to_string().contains("signature"), "no block replayed after an edit risk");
+        req.model = "claude-opus-5-5".into();
+        let b = Anthropic::body(&cfg, &req);
+        assert!(b.get("thinking").is_none(), "Opus 5.5 always thinks and takes neither disabled nor between_tools");
+    }
+
+    #[test]
+    fn thinking_blocks_of_a_5_5_conversation_go_back_with_their_signature() {
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        let mut req = modern_req("claude-sonnet-5-5");
+        req.messages = vec![
+            Message::user("hi"),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    Part::Reasoning {
+                        text: String::new(),
+                        signature: Some("sig".into()),
+                        encrypted: None,
+                        model: None,
+                    },
+                    Part::text("ok"),
+                ],
+            ),
+            Message::user("again"),
+        ];
+        let b = Anthropic::body(&cfg, &req);
+        assert_eq!(b["messages"][1]["content"][0], json!({"type": "thinking", "thinking": "", "signature": "sig"}));
+    }
+
+    #[test]
+    fn the_binding_control_can_be_turned_off_and_older_models_keep_their_fields() {
+        let mut cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        cfg.extra.insert("block_binding".into(), toml::Value::Boolean(false));
+        let b = Anthropic::body(&cfg, &modern_req("claude-sonnet-5-5"));
+        assert_eq!(b["thinking"], json!({"type": "adaptive"}));
+        let cfg = ProviderConfig::new(ID, "https://api.anthropic.com", None);
+        let mut req = modern_req("claude-sonnet-4-5");
+        let b = Anthropic::body(&cfg, &req);
+        assert_eq!(b["temperature"], 0.0);
+        assert_eq!(b["max_tokens"], 16_384);
+        assert!(b.get("thinking").is_none() && b.get("output_config").is_none());
+        req.reasoning = Some(ReasoningConfig::Effort(Effort::Medium));
+        let b = Anthropic::body(&cfg, &req);
+        assert_eq!(b["thinking"], json!({"type": "enabled", "budget_tokens": 8192}));
+        assert!(b.get("temperature").is_none());
+    }
+
+    #[test]
+    fn usage_counts_cache_writes_and_reads_and_prices_them() {
+        let mut p = MessagesParser::default();
+        let mut evs = p.feed(r#"{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10,"cache_creation_input_tokens":2000,"cache_read_input_tokens":500}}}"#);
+        evs.extend(
+            p.feed(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":40}}"#),
+        );
+        let u = evs.iter().find_map(|e| if let StreamEvent::Usage(u) = e { Some(*u) } else { None }).unwrap();
+        assert_eq!((u.input, u.output, u.cache_read, u.cache_write), (10, 40, 500, 2000));
+        let price = nexo_core::Pricing { input: 2.0, output: 10.0, cache_read: 0.10, cache_write: 2.50 };
+        let want = (10.0 * 2.0 + 40.0 * 10.0 + 500.0 * 0.10 + 2000.0 * 2.50) / 1e6;
+        assert!((price.cost(&u) - want).abs() < 1e-12);
     }
 }
