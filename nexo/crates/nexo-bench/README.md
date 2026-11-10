@@ -17,7 +17,7 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--model NAME` | the model | required |
 | `--key KEY` | the API key (leave out for a local server; `-` reads it from stdin, out of the process list) | none |
 | `--protocol P` | `anthropic`, `openai-chat`, `openai-responses`, `gemini` | guessed from the address |
-| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `long2`, `closed`, `more`, `hard`, `padded`), or the external benchmark's `repoqa` and `canonstep` (with `--llmb`), comma separated or repeated | `all` |
+| `--tasks LIST` | task ids or groups (`all`, `core`, `long`, `long2`, `closed`, `heavy`, `heavy2`, `more`, `hard`, `padded`, `session`), `padded-revert-chat` (by name only), the external benchmark's `repoqa` and `canonstep` (with `--llmb`), or `polyglot` (Aider's exercises, with `--polyglot`, `--langs`), comma separated or repeated | `all` |
 | `--arms LIST` | arms, comma separated or repeated (see below) | `plain,compact,curator` |
 | `--repeats N` | times each task runs with each arm | 1 |
 | `--max-steps N` | most steps (model requests that offer tools) per task | 100 |
@@ -31,6 +31,11 @@ printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/a
 | `--instances IDS` | instance ids of `repoqa` and `canonstep`, comma separated | all of them |
 | `--limit N` | at most this many instances per task, in id order | none |
 | `--cache DIR` | where `repoqa`'s repositories are cloned once | `<out>/.cache/repos` |
+| `--polyglot DIR` | the Polyglot checkout (default: the pinned commit is cloned into the cache) | cloned |
+| `--langs LIST` | languages of `polyglot`, comma separated | `python,rust,go,cpp,javascript,java` |
+| `--run-timeout SECS` | seconds one run may take before it is interrupted and recorded as `timeout` (0: no limit) | 1200 |
+| `--window TOKENS` | the model's context window, the same for every arm: `32k`, `32000`, `1m` | what nexo knows of the model |
+| `--close-on-verified` | end a turn on the reply that holds the answer and a passing check after a change | off |
 
 `nexo bench report [RESULTS...] [--out DIR] [--summary FILE]` writes `report.html` in `--out` (default
 `./bench-out`) from one or more `results.jsonl` (files or folders holding one; default: `--out`).

@@ -9,7 +9,7 @@ Written in Rust, like Grok Build and Codex; the TUI is ratatui + crossterm.
 ```
 nexo-core        contracts only: Message/Part, StreamEvent, Protocol, Tool, AgentEvent/Command, Config, paths
 nexo-providers   protocol adapters (openai-chat, openai-responses, anthropic, gemini, mock), presets, retry, SSE
-nexo-tools       built-in tools (read, write, edit, bash, glob, grep, ls, todo, note, web_search, web_fetch) and the MCP stdio client
+nexo-tools       built-in tools (read, write, edit, bash, jobs, glob, grep, ls, todo, note, recall, diagnostics, web_search, web_fetch) and the MCP stdio client
 nexo-agent       the loop: turns, tool execution, permissions, sessions (JSONL), cost, context policies, the curator policy
 nexo-curator     the context curator: the goal engine (ledger, rules/notes/pin blocks, rent-or-buy cuts), no I/O
 nexo-tui         the interface: consumes AgentEvent, produces AgentCommand; never touches providers or tools

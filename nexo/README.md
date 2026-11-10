@@ -117,6 +117,10 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/settings mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
+| `F3` | list what the curator added to a model call (again: the call before) |
+| `F4`, `/diff` | the side diff panel (selected edit, else the latest); `/diff` opens the diff viewer |
+| `Ctrl+L` | redraw the screen |
+| `F1`, `?` (empty draft) | the key help; `[ui.keys]` remaps `search`, `help`, `files` and the other actions (`search = "ctrl+s"`) |
 | `/`, `Ctrl+Space`, `Alt+P` | command palette; every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`). The list: `/help` |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
@@ -261,7 +265,7 @@ read-only sub-agents do not get it.
 **Hooks.** Shell commands at points of the loop, each given the event as JSON on stdin and `NEXO_EVENT`,
 `NEXO_TOOL`, `NEXO_CWD` in its environment. A `pre_tool` hook that exits with 2 blocks the call, and what
 it printed is the reason the model reads; `post_tool` and `turn_end` hooks are told what happened.
-Eleven events in all (session, prompt, tool, stop, sub-agent, compaction, notification, permission), JSON
+Twelve events in all (session, prompt, tool, stop, sub-agent, compaction, notification, permission, turn end), JSON
 decisions, `matcher` regexes, `timeout`, and a trusted project's `.claude/settings.json` hooks: see
 [docs/HOOKS.md](docs/HOOKS.md). `/hooks` lists what is loaded.
 

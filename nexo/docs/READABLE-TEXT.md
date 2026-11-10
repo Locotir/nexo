@@ -24,7 +24,7 @@ An error says three things, each on its own line when there is room:
 
 - **What failed.** "Could not read config.toml"
 - **Why**, when known. "Line 4: unknown key `them`"
-- **What to do.** "Fix the line, or run `nexo config --init`"
+- **What to do.** "Fix the line, or run `nexo config init`"
 
 ## One word per thing
 
