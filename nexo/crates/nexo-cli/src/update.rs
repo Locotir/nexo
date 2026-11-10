@@ -1,5 +1,5 @@
 //! Updates: when the interface starts and every [`EVERY`] after, nexo asks GitHub (in the background) how many commits
-//! `main` has past the one it was built from, and says so; `nexo update` builds the latest with cargo.
+//! `main` has past the one it was built from, and says so; `nexo update` downloads the latest release (cargo only as a fallback).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

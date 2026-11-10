@@ -233,7 +233,7 @@ pub enum Cmd {
         #[command(subcommand)]
         what: crate::plugin_cmd::PluginCmd,
     },
-    /// Install the latest nexo from GitHub with cargo (`--check`: only say whether there is one).
+    /// Download the latest release binary from GitHub, building with cargo only if none fits this system (`--check`: only say whether there is one).
     Update {
         /// Only say whether a newer version exists; install nothing.
         #[arg(long)]
