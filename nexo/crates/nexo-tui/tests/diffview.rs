@@ -197,6 +197,17 @@ fn tab_and_brackets_jump_between_files() {
 }
 
 #[test]
+fn toggling_side_by_side_resets_the_hunk_with_the_scroll() {
+    let mut dv = view();
+    capture(&mut dv, 200, 60);
+    press(&mut dv, KeyCode::Char('n'));
+    assert!(capture(&mut dv, 200, 60).contains("hunk 2/2"));
+    press(&mut dv, KeyCode::Char('s'));
+    let t = capture(&mut dv, 200, 60);
+    assert!(t.contains("hunk 1/2"), "{t}");
+}
+
+#[test]
 fn scrolling_the_body_and_a_missing_file_list() {
     let mut dv = view();
     capture(&mut dv, 80, 10);

@@ -258,7 +258,9 @@ impl DiffView {
                 if self.side && self.body_area.width + self.list_area.width < SIDE_MIN_W {
                     self.hint = Some(format!("side by side needs {SIDE_MIN_W} columns"));
                 }
+                // back to the top: the header's hunk number goes with it
                 self.scroll = 0;
+                self.hunk = 0;
             }
             KeyCode::PageDown => self.scroll_by(page),
             KeyCode::PageUp => self.scroll_by(-page),

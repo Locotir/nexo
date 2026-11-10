@@ -374,6 +374,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
             }
         }
         if let Some(path) = app.edit_request.take() {
+            let before = std::fs::read(&path).ok();
             events.pause(true);
             term.suspend();
             let outcome = edit_file(&path);
@@ -384,7 +385,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
             match outcome {
                 Ok(()) => app.notice(
                     nexo_core::agent::Level::Info,
-                    format!("{} saved; it applies from the next request", path.display()),
+                    edit_notice(&path.display().to_string(), before, std::fs::read(&path).ok()),
                 ),
                 Err(e) => app.notice(nexo_core::agent::Level::Error, format!("editor: {e}")),
             }
@@ -496,6 +497,15 @@ pub fn notification(text: &str) -> String {
     format!("\x07\x1b]9;{clean}\x07\x1b]777;notify;nexo;{clean}\x07")
 }
 
+/// What to say once the editor closed: a file left as it was is not "saved".
+fn edit_notice(path: &str, before: Option<Vec<u8>>, after: Option<Vec<u8>>) -> String {
+    if before == after {
+        format!("{path} not changed")
+    } else {
+        format!("{path} saved; it applies from the next request")
+    }
+}
+
 /// Opens `path` in `$VISUAL`, else `$EDITOR`, else Notepad on Windows and `nano`, else `vi`,
 /// elsewhere, and waits.
 fn edit_file(path: &std::path::Path) -> anyhow::Result<()> {
@@ -549,6 +559,15 @@ mod tests {
             let ended = tokio::time::timeout(std::time::Duration::from_secs(10), h.wait()).await;
             assert!(ended.is_ok(), "{sig} did not end the wait");
         }
+    }
+
+    #[test]
+    fn an_editor_closed_without_a_change_does_not_say_saved() {
+        let (a, b) = (Some(b"x".to_vec()), Some(b"y".to_vec()));
+        assert_eq!(super::edit_notice("f", a.clone(), a.clone()), "f not changed");
+        assert_eq!(super::edit_notice("f", None, None), "f not changed");
+        assert!(super::edit_notice("f", a, b.clone()).contains("saved"));
+        assert!(super::edit_notice("f", None, b).contains("saved"));
     }
 
     #[test]
