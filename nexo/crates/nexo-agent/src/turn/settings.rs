@@ -34,6 +34,35 @@ pub(super) async fn set_model(state: &Shared, provider: Option<String>, model: S
     }
 }
 
+/// A session opened again goes back to the provider and model it last used, by the same path as `/model`,
+/// when that provider is usable now and lists the model (what the model picker offers). Otherwise the
+/// model in use stays and one line says so. With `pinned` (the launch named a provider or model) the
+/// launch wins and the session records what it runs on now.
+pub(super) async fn restore_model(state: &Shared, pinned: bool) {
+    let (provider, model) = {
+        let mut st = state.lock().await;
+        let (p, m) = (st.session.meta().provider.clone(), st.session.meta().model.clone());
+        let now = (st.target.provider(), st.target.model());
+        if (p.as_str(), m.as_str()) == (now.0.as_str(), now.1.as_str()) {
+            return;
+        }
+        if pinned {
+            let _ = st.session.record_model(&now.0, &now.1);
+            return;
+        }
+        let usable = st.config.model_choices().iter().any(|(cp, cm)| *cp == p && *cm == m)
+            && st.config.check_model(&p, &m).is_ok();
+        if !usable {
+            let line =
+                format!("this session last used {p}/{m}, which is not available now; staying on {}/{}", now.0, now.1);
+            notice(&st.events, Level::Info, line);
+            return;
+        }
+        (p, m)
+    };
+    set_model(state, Some(provider), model).await;
+}
+
 pub(super) fn budget_event(st: &State, day: f64) -> AgentEvent {
     AgentEvent::Budget {
         session_cost: st.cost,

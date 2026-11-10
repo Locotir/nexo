@@ -323,6 +323,7 @@ session knows with this one: pick it (or `/shared-memory <id> [focus]`) and its 
 `Decision:` lines), its constraints, files and failing commands, and the excerpts that bear on the focus (its
 goal or title by default), about 4k tokens at most, go with your next message, once. Nothing earlier is
 rewritten, so the cached prefix holds. `/shared-memory off` drops what waits.
+Each session remembers the provider and model it last used and goes back to them when it is opened again (`--resume`, `--continue`, `/resume`), if that provider is usable and still lists the model; otherwise one line says so and the current model stays. `--model` / `--provider` given for the launch win, and neither your default nor your config file changes.
 
 Before a write or a command the permission dialog shows the diff or the
 command: `y` once, `a` always (a rule is remembered), `n` deny. Rules look

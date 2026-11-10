@@ -162,6 +162,7 @@ async fn an_interrupted_turn_ends_as_cancelled() {
         gate: Some(Arc::new(nexo_bench::tools::AllowAll)),
         mail: None,
         mcp: None,
+        model_pinned: false,
     };
     let (mut handle, ends) = channels();
     let agent = tokio::spawn(nexo_agent::run(ends, setup));

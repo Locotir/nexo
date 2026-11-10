@@ -13,6 +13,8 @@ use nexo_core::ToolSet;
 pub struct Picked {
     pub provider: String,
     pub model: String,
+    /// Named on the command line (or in `NEXO_PROVIDER` / `NEXO_MODEL`) for this launch.
+    pub named: bool,
 }
 
 /// Presets are defaults: a configured provider with the same name keeps the
@@ -74,9 +76,9 @@ pub fn nothing_chosen(cfg: &Config) -> bool {
 /// What the agent starts on while the person has not chosen: the fallback `pick` makes, never shown.
 pub fn placeholder(cfg: &Config) -> Picked {
     if let Some((provider, model)) = cfg.pick() {
-        return Picked { provider, model };
+        return Picked { provider, model, named: false };
     }
-    Picked { provider: cfg.providers.keys().next().cloned().unwrap_or_default(), model: String::new() }
+    Picked { provider: cfg.providers.keys().next().cloned().unwrap_or_default(), model: String::new(), named: false }
 }
 
 pub fn nothing_chosen_message() -> String {
@@ -92,6 +94,7 @@ pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow
 
 /// `pick`, with `need_key` false for what only reads the catalogue (`nexo pricing`): the key is not asked for.
 fn pick_with(cfg: &Config, provider: Option<&str>, model: Option<&str>, need_key: bool) -> anyhow::Result<Picked> {
+    let (provider_given, model_given) = (provider.is_some(), model.is_some());
     let mut c = cfg.clone();
     if let Some(p) = provider {
         c.provider = Some(p.to_string());
@@ -126,7 +129,7 @@ fn pick_with(cfg: &Config, provider: Option<&str>, model: Option<&str>, need_key
             crate::account::how_to_unlock(&provider, pc)
         );
     }
-    Ok(Picked { provider, model })
+    Ok(Picked { provider, model, named: provider_given || model_given })
 }
 
 /// Whether the provider that would run holds a model whose id is `m` itself, slash and all.
@@ -138,21 +141,7 @@ fn on_gateway(c: &Config, m: &str) -> bool {
 }
 
 pub fn model_choices(cfg: &Config) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for (name, p) in &cfg.providers {
-        if !p.ready(name) {
-            continue;
-        }
-        for m in &p.models {
-            out.push((name.clone(), m.clone()));
-        }
-        if let Some(d) = &p.default_model {
-            if !p.models.contains(d) {
-                out.push((name.clone(), d.clone()));
-            }
-        }
-    }
-    out
+    cfg.model_choices()
 }
 
 /// The tools a session starts with from `cwd` (what `nexo prompt` describes): the built-in ones, the skill
@@ -253,6 +242,7 @@ pub async fn agent_setup(
         gate,
         mail,
         mcp,
+        model_pinned: picked.named,
     })
 }
 

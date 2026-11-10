@@ -96,6 +96,7 @@ async fn delegate(repo: &Path, replies: Vec<Vec<StreamEvent>>) -> String {
         gate: None,
         mail: None,
         mcp: None,
+        model_pinned: false,
     };
     let task = tokio::spawn(nexo_agent::run(ends, setup));
     handle.commands.send(AgentCommand::Submit { text: "delegate".into(), attachments: vec![] }).unwrap();

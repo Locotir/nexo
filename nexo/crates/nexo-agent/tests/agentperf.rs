@@ -88,6 +88,7 @@ async fn per_request(n: usize, policy: &str, requests: usize) -> Vec<f64> {
         gate: None,
         mail: None,
         mcp: None,
+        model_pinned: false,
     };
     let task = tokio::spawn(nexo_agent::run(ends, setup));
     let mut handle = handle;

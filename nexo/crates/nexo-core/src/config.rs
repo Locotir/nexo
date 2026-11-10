@@ -572,6 +572,26 @@ impl Default for WebConfig {
 }
 
 impl Config {
+    /// What the model picker offers: each provider that is usable now, with its listed models (and its
+    /// default one). A session's remembered model comes back only when it is still in this list.
+    pub fn model_choices(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (name, p) in &self.providers {
+            if !p.ready(name) {
+                continue;
+            }
+            for m in &p.models {
+                out.push((name.clone(), m.clone()));
+            }
+            if let Some(d) = &p.default_model {
+                if !p.models.contains(d) {
+                    out.push((name.clone(), d.clone()));
+                }
+            }
+        }
+        out
+    }
+
     pub fn parse(text: &str) -> Result<Config, toml::de::Error> {
         toml::from_str(text)
     }

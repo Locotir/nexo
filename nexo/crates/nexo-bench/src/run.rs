@@ -270,6 +270,7 @@ pub async fn drive(bench: &Bench, plan: &Plan, arm: &Arm, rep: u32, budget_left:
             gate: Some(Arc::new(crate::tools::AllowAll)),
             mail: None,
             mcp: None,
+            model_pinned: false,
         };
         let id = converse(
             setup,

@@ -115,6 +115,8 @@ pub(super) async fn resume_session(state: &Shared, id: &str) {
                 // a view shown, not sent: the next request finds no cache of it
                 st.last_sent.clear();
             }
+            drop(st);
+            restore_model(state, false).await;
         }
         Err(e) => notice(&st.events, Level::Error, format!("cannot resume session {id}: {e}")),
     }

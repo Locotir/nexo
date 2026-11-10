@@ -74,6 +74,9 @@ pub struct AgentSetup {
     pub mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
     /// The MCP servers of the session, for resources, prompts, /mcp and list changes; None: no servers.
     pub mcp: Option<Arc<nexo_tools::mcp_hub::McpHub>>,
+    /// The provider or model was named for this launch (`--model`, `--provider`): a resumed session does
+    /// not replace them with the ones it last used.
+    pub model_pinned: bool,
 }
 
 /// Runs the agent until `Shutdown` (or the command channel closes).

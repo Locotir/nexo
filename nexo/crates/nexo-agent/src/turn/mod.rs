@@ -264,7 +264,8 @@ const STOP_HOOK_CAP: u32 = 3;
 
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
-    let AgentSetup { mut config, cwd, provider, model, mut tools, client, resume, gate, mail, mcp } = setup;
+    let AgentSetup { mut config, cwd, provider, model, mut tools, client, resume, gate, mail, mcp, model_pinned } =
+        setup;
     // whoever built the setup (the interface, a script, ACP), the managed policy is applied once more here
     config.enforce_managed();
     let headless = gate.is_some();
@@ -465,6 +466,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             // a view shown, not sent: the next request finds no cache of it
             st.last_sent.clear();
         }
+    }
+    if replay {
+        restore_model(&state, model_pinned).await;
     }
     spawn_catalogue_fill(&state);
     spawn_vendor_fill(&state);
