@@ -729,6 +729,13 @@ mod size_budget {
     }
 
     #[test]
+    fn both_prompts_say_to_answer_at_once_when_the_proving_check_passes() {
+        for text in [BUILT_IN, BUILT_IN_COMPACT] {
+            assert!(text.contains("run the one check that proves it; when it passes, answer at once"), "{text}");
+        }
+    }
+
+    #[test]
     fn the_guidance_names_what_saves_steps() {
         let g = tool_guidance(&nexo_tools::builtin());
         assert!(g.contains("run at the same time") && g.contains("many files"), "{g}");
