@@ -62,6 +62,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use nexo_curator::optimum::{optimum, Cost, Piece};
 use nexo_curator::sim::events::{denied, forgotten, latest_request, segments, wrote};
 use nexo_curator::sim::input::{fixture_requests, names, reply_to, said_of, text_of, transcript_requests, Request};
 use nexo_curator::sim::price::{blocks_of, cached, grown, tokens_of, Cache};
@@ -350,7 +351,7 @@ fn oracle(requests: &[Request], batched: bool, chunk: usize, digest: Digest) -> 
             let s: i64 = (first..keys.len())
                 .map(|j| cut.get(&keys[j]).map_or_else(|| tokens_of(&r.messages[j]), tokens_of))
                 .sum();
-            if !batched || x * (requests.len() - i) as i64 > 9 * s {
+            if !batched || (x * (requests.len() - i) as i64) as f64 > cache_ratio() * s as f64 {
                 cut.extend(stubs.into_iter().map(|(j, v)| (keys[j].clone(), v)));
             }
         }
@@ -497,9 +498,263 @@ fn chunk_rows(requests: &[Request]) -> (Vec<String>, Vec<(u64, String)>) {
     (rows, texts.into_iter().collect())
 }
 
-/// The input cost of a view sequence at 0.28 $ per million missed tokens and 0.028 $ per million hits.
+/// The price sheet in $ per million tokens, (missed, cached): `REPLAY_PRICE="miss,hit"`, by default 0.28,0.028.
+fn prices() -> (f64, f64) {
+    static SHEET: std::sync::OnceLock<(f64, f64)> = std::sync::OnceLock::new();
+    *SHEET.get_or_init(|| match std::env::var("REPLAY_PRICE") {
+        Err(_) => (0.28, 0.028),
+        Ok(v) => v
+            .split_once(',')
+            .and_then(|(m, h)| Some((m.trim().parse::<f64>().ok()?, h.trim().parse::<f64>().ok()?)))
+            .filter(|(m, h)| m.is_finite() && h.is_finite() && *m >= *h && *h >= 0.0)
+            .unwrap_or_else(|| {
+                eprintln!("REPLAY_PRICE wants \"miss,hit\" in $ per million tokens, with miss >= hit >= 0");
+                std::process::exit(2);
+            }),
+    })
+}
+
+/// The input cost of a view sequence at the price sheet (see `prices`).
 fn dollars(miss: i64, hit: i64) -> f64 {
-    (miss as f64 * 0.28 + hit as f64 * 0.028) / 1e6
+    let (m, h) = prices();
+    (miss as f64 * m + hit as f64 * h) / 1e6
+}
+
+/// How many cached tokens one rewritten token costs: `(miss - hit) / hit`, 9 at the default price sheet.
+fn cache_ratio() -> f64 {
+    let (m, h) = prices();
+    if h <= 0.0 {
+        return f64::INFINITY;
+    }
+    let r = (m - h) / h;
+    if (r - r.round()).abs() < 1e-9 {
+        r.round()
+    } else {
+        r
+    }
+}
+
+/// The text of a tool result block, as the oracle reads it.
+fn result_text(b: &Value) -> String {
+    match &b["content"] {
+        Value::String(s) => s.clone(),
+        Value::Array(inner) => inner.iter().filter_map(|x| x["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// A result message: its first request, its framing tokens and its runs (tokens, dead).
+type Resultant = (usize, i64, Vec<(i64, usize)>);
+
+/// What the clairvoyant optimum prices of a transcript: the pieces, the tokens of the oracle's `[out]`
+/// marker, and whether a result message is one piece (`coarse`) because one piece per run made the table too big.
+struct Pieces {
+    pieces: Vec<Piece>,
+    stub: i64,
+    coarse: bool,
+}
+
+/// The history of `requests` as pieces for `optimum` (none when the history is rewritten between requests), cut as `oracle(requests, _, chunk, digest)` decides what
+/// may go. A result message is a framing piece that stays and one piece per run of `chunk` lines (the whole
+/// result for chunk 0), dead at the first request at which the oracle lets it go: the message was seen before,
+/// the agent has digested it, and no word of the run is said by a reply from then on (a message whose lines
+/// an earlier result holds goes whole). Anything else stays for good. The oracle freezes what it keeps of a
+/// message when it first cuts it; this lets each run go on its own, which can only lower the optimum.
+/// Messages are taken to be the same at every request that holds them, and the digest tests to hold from the
+/// first request that meets them on.
+fn optimum_pieces(requests: &[Request], chunk: usize, digest: Digest) -> Option<Pieces> {
+    let n = requests.len();
+    // the model needs a history that only grows: each request starts with the messages of the one before
+    let grows = |w: &[Request]| {
+        w[1].messages.len() >= w[0].messages.len() && w[1].messages[..w[0].messages.len()] == w[0].messages[..]
+    };
+    if !requests.windows(2).all(grows) {
+        return None;
+    }
+    let said: Vec<HashSet<String>> = (0..n)
+        .map(|i| {
+            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
+        })
+        .collect();
+    // ahead[i] holds w exactly while i <= last_say[w]
+    let mut last_say: HashMap<&str, usize> = HashMap::new();
+    for (i, s) in said.iter().enumerate() {
+        for w in s {
+            last_say.insert(w, i);
+        }
+    }
+    let free_from = |words: &mut dyn Iterator<Item = String>| {
+        words.filter_map(|w| last_say.get(w.as_str()).map(|i| i + 1)).max().unwrap_or(0)
+    };
+    let starts: Vec<usize> = requests.iter().map(|r| latest_request(&r.messages)).collect();
+    let mut born: Vec<usize> = Vec::new();
+    for (i, r) in requests.iter().enumerate() {
+        born.resize(born.len().max(r.messages.len()), i);
+    }
+    let mut pieces = vec![Piece { tokens: requests[0].system_tokens as i64, born: 0, dead: n }];
+    // per result message: framing tokens and the runs (tokens, dead), in order
+    let mut results: Vec<Resultant> = Vec::new();
+    let mut order: Vec<Result<Piece, usize>> = Vec::new();
+    for (j, &b) in born.iter().enumerate() {
+        let m = &requests[b].messages[j];
+        if !has_result(m) {
+            order.push(Ok(Piece { tokens: tokens_of(m), born: b, dead: n }));
+            continue;
+        }
+        let blank = {
+            let mut m = m.clone();
+            if let Some(Value::Array(blocks)) = m.get_mut("content") {
+                for x in blocks.iter_mut().filter(|x| x["type"] == "tool_result") {
+                    x["content"] = Value::String(String::new());
+                }
+            }
+            m
+        };
+        let total = tokens_of(m);
+        let framing = tokens_of(&blank).min(total);
+        // the runs as lists of lines
+        let mut runs: Vec<Vec<String>> = Vec::new();
+        let blocks = m["content"].as_array().cloned().unwrap_or_default();
+        let texts: Vec<String> = blocks.iter().filter(|x| x["type"] == "tool_result").map(result_text).collect();
+        if chunk == 0 {
+            runs.push(texts.iter().flat_map(|t| t.lines().map(str::to_string)).collect());
+        } else {
+            for t in &texts {
+                let lines: Vec<&str> = t.lines().collect();
+                runs.extend(lines.chunks(chunk).map(|c| c.iter().map(|l| l.to_string()).collect()));
+            }
+        }
+        let weight = |run: &Vec<String>| run.iter().map(|l| l.len() as i64 + 2).sum::<i64>();
+        let all: i64 = runs.iter().map(weight).sum();
+        let text_tokens = total - framing;
+        // the lines' tokens are shared out by size, so that the message sums to `tokens_of`
+        let (mut cum, mut given) = (0i64, 0i64);
+        let tokens: Vec<i64> = runs
+            .iter()
+            .map(|r| {
+                cum += weight(r);
+                let upto = if all > 0 { text_tokens * cum / all } else { 0 };
+                let t = upto - given;
+                given = upto;
+                t
+            })
+            .collect();
+        let rest = text_tokens - given;
+        let words_of = |run: &Vec<String>| -> Vec<String> {
+            if chunk == 0 {
+                distinctive_words(&text_of(m))
+            } else {
+                run.iter().flat_map(|l| distinctive_words(l)).collect()
+            }
+        };
+        let cands: Vec<usize> = runs.iter().map(|r| (b + 1).max(free_from(&mut words_of(r).into_iter()))).collect();
+        let again = chunk > 0 && digest != Digest::No && repeats(&requests[b].messages[..j], m);
+        let mut ok_from = None;
+        if !again && cands.iter().any(|&c| c < n) {
+            let ws: HashSet<String> = distinctive_words(&text_of(m)).into_iter().collect();
+            let mut rep = None;
+            let first = cands.iter().copied().min().unwrap_or(n);
+            ok_from = (first..n).find(|&i| {
+                let msgs = &requests[i].messages;
+                digest == Digest::No
+                    || j < starts[i]
+                    || match digest {
+                        Digest::Evidence => wrote_about(&msgs[j + 1..], &ws),
+                        _ => msgs[j + 1..].iter().any(wrote),
+                    }
+                    || *rep.get_or_insert_with(|| repeats(&msgs[..j], m))
+            });
+        }
+        let dead: Vec<usize> = cands
+            .iter()
+            .map(|&c| match (again, ok_from) {
+                (true, _) => b + 1,
+                (_, Some(f)) if c < n => c.max(f),
+                _ => n,
+            })
+            .map(|d| if d >= n { n } else { d })
+            .collect();
+        let mut run_list: Vec<(i64, usize)> = tokens.into_iter().zip(dead).collect();
+        if rest > 0 {
+            run_list.push((rest, n));
+        }
+        results.push((b, framing, run_list));
+        order.push(Err(results.len() - 1));
+    }
+    let removable: usize = results.iter().flat_map(|r| &r.2).filter(|r| r.1 < n).count();
+    let coarse = (n as f64).powi(3) * removable as f64 / 6.0 > 2e10;
+    for o in order {
+        match o {
+            Ok(p) => pieces.push(p),
+            Err(k) => {
+                let (b, framing, runs) = &results[k];
+                pieces.push(Piece { tokens: *framing, born: *b, dead: n });
+                if coarse {
+                    let stays: i64 = runs.iter().filter(|r| r.1 >= n).map(|r| r.0).sum();
+                    let goes: i64 = runs.iter().filter(|r| r.1 < n).map(|r| r.0).sum();
+                    let dead = runs.iter().filter(|r| r.1 < n).map(|r| r.1).max();
+                    pieces.push(Piece { tokens: stays, born: *b, dead: n });
+                    if let Some(dead) = dead {
+                        pieces.push(Piece { tokens: goes, born: *b, dead });
+                    }
+                } else {
+                    pieces.extend(runs.iter().map(|&(tokens, dead)| Piece { tokens, born: *b, dead }));
+                }
+            }
+        }
+    }
+    pieces.retain(|p| p.tokens > 0);
+    Some(Pieces { pieces, stub: ("[out]".len() as i64 + 3) / 4, coarse })
+}
+
+/// The optimum of `pieces` at the price sheet, in $: without stubs (the least) and with them (an upper bound).
+fn priced_optimum(p: &Pieces, n: usize) -> (Cost, Cost) {
+    let (m, h) = prices();
+    let started = std::time::Instant::now();
+    let both = (optimum(&p.pieces, n, h, m, 0), optimum(&p.pieces, n, h, m, p.stub));
+    if std::env::var("REPLAY_TIME").is_ok_and(|v| v == "1") {
+        eprintln!(
+            "optimum: {} pieces, {n} requests, {:.2} s{}",
+            p.pieces.len(),
+            started.elapsed().as_secs_f64(),
+            if p.coarse { " coarse" } else { "" }
+        );
+    }
+    both
+}
+
+/// The tokens plain mode sends over all requests, by kind: system and tools, user, assistant text,
+/// assistant tool arguments, tool results. A message's tokens are shared among its blocks by size.
+fn plain_kinds(requests: &[Request]) -> [f64; 5] {
+    let mut kinds = [0f64; 5];
+    for r in requests {
+        kinds[0] += r.system_tokens as f64;
+        for m in &r.messages {
+            let user = m["role"] == "user";
+            let mut bytes = [0f64; 5];
+            match &m["content"] {
+                Value::Array(blocks) => {
+                    for b in blocks {
+                        let k = match b["type"].as_str() {
+                            Some("tool_use") => 3,
+                            Some("tool_result") => 4,
+                            _ if user => 1,
+                            _ => 2,
+                        };
+                        bytes[k] += b.to_string().len() as f64;
+                    }
+                }
+                c => bytes[if user { 1 } else { 2 }] += c.to_string().len() as f64,
+            }
+            let all: f64 = bytes.iter().sum();
+            if all > 0.0 {
+                for (k, b) in bytes.iter().enumerate() {
+                    kinds[k] += tokens_of(m) as f64 * b / all;
+                }
+            }
+        }
+    }
+    kinds
 }
 
 /// The tokens of result lines in `msgs` that an earlier result in `msgs` already holds (lines of 8
@@ -1619,8 +1874,10 @@ fn main() {
         if sum_raw > 0 { 100.0 * sum_view as f64 / sum_raw as f64 } else { 100.0 }
     );
     println!(
-        "prefix cache: miss {sum_miss} tokens, hit {sum_hit} tokens, input cost {:.4} $ at 0.28/0.028 $ per M, {rewrites} rewrites",
-        dollars(sum_miss, sum_hit)
+        "prefix cache: miss {sum_miss} tokens, hit {sum_hit} tokens, input cost {:.4} $ at {}/{} $ per M, {rewrites} rewrites",
+        dollars(sum_miss, sum_hit),
+        prices().0,
+        prices().1
     );
     let (low_miss, low_hit) = bound(&requests, false);
     let (once_miss, once_hit) = bound(&requests, true);
@@ -1637,6 +1894,7 @@ fn main() {
     let share = |part: i64, whole: i64| if whole > 0 { 100.0 * part as f64 / whole as f64 } else { 0.0 };
     let mut fair = None;
     let mut fair_sent = 0;
+    let mut fair_optimum = None;
     for (chunk, digest, what) in [
         (0, Digest::No, "whole results"),
         (1, Digest::No, "results down to the lines used later"),
@@ -1677,12 +1935,54 @@ fn main() {
             loss.forgotten,
             loss.sent
         );
+        let Some(pieces) = optimum_pieces(&requests, chunk, digest) else {
+            println!("  optimum, same rules: not defined, the history is rewritten between requests");
+            continue;
+        };
+        let (lo, hi) = priced_optimum(&pieces, requests.len());
+        let usd = |x: f64| x / 1e6;
+        println!(
+            "  optimum, same rules: {:.4} $ to {:.4} $ (rent {:.4} + rewrites {:.4}, {} cuts{}); the oracle above is {:.1} % over it",
+            usd(lo.total),
+            usd(hi.total),
+            usd(lo.rent),
+            usd(lo.rewrite),
+            lo.cuts,
+            if pieces.coarse { ", coarse" } else { "" },
+            if lo.total > 0.0 { 100.0 * (or - usd(lo.total)) / usd(lo.total) } else { 0.0 }
+        );
+        if digest == Digest::Text {
+            fair_optimum = Some((lo, hi, pieces.coarse));
+        }
     }
     if let Some(fair) = fair {
         println!(
             "fair oracle (reference: digested, lines used later): {fair:.4} $; this view {now:.4} $ is {:+.4} $ ({:+.1}%) from it; sends {fair_sent} tokens",
             now - fair,
             if fair > 0.0 { 100.0 * (now - fair) / fair } else { 0.0 }
+        );
+        if let Some((lo, hi, coarse)) = fair_optimum {
+            let (m, h) = prices();
+            let (rent, rewrite) = (h * (sum_miss + sum_hit) as f64 / 1e6, (m - h) * sum_miss as f64 / 1e6);
+            let low = lo.total / 1e6;
+            println!(
+                "exact optimum (reference): {low:.4} $ to {:.4} $; this view ({now:.4} $ = rent {rent:.4} + rewrites {rewrite:.4}) is {:+.1} % from it{}",
+                hi.total / 1e6,
+                if low > 0.0 { 100.0 * (now - low) / low } else { 0.0 },
+                if coarse { " (coarse)" } else { "" }
+            );
+        }
+        let kinds = plain_kinds(&requests);
+        let sum: f64 = kinds.iter().sum();
+        let pct = |k: usize| if sum > 0.0 { 100.0 * kinds[k] / sum } else { 0.0 };
+        println!(
+            "plain mode sends {:.0} tokens: system and tools {:.1} %, user {:.1} %, assistant text {:.1} %, assistant tool arguments {:.1} %, tool results {:.1} %",
+            sum,
+            pct(0),
+            pct(1),
+            pct(2),
+            pct(3),
+            pct(4)
         );
     }
     if std::env::var("REPLAY_CHUNKS").is_ok_and(|v| v == "1") {

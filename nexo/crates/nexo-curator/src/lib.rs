@@ -20,6 +20,7 @@ mod learn;
 mod ledger;
 mod mechanical;
 mod msg;
+pub mod optimum;
 mod rules;
 mod standing;
 mod textops;
