@@ -115,7 +115,7 @@ The default spec (`D_SPEC` in the crate), with a default for every value; a test
 to it:
 
 ```
-threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;epoch=1;life=3600
+threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;epoch=1;life=3600;kept=0;lcalls=12;lahead=0.2;lmargin=1
 ```
 
 | setting | default | what it sets |
@@ -143,6 +143,7 @@ threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;led
 | `pockets=0` | off | 1: the last view sent on each topic stays in the provider's cache for `life` seconds; 2: also cut a view whose pocket is gone (see Pockets above) |
 | `epoch=1` | on | with a `target`, the view is rewritten only at an epoch: once keeping its growth costs more than a new prefix (the cost rule above) or it reaches the ceiling. Between epochs it only grows at the end and the cache holds all of it but the last request; the closing of answered requests, the dead outputs, the topic split and the window cut all wait for the epoch. 0: each happens when it pays by itself |
 | `life=S` | `3600` | the most seconds a pocket is taken to live; 0: only the last view, as a local server with one slot |
+| `kept=N` | `0` | off. `1`: at an epoch the window cut and the closes land only when what leaves pays for the view it sends again: the tokens that leave, times the cache price, times the calls taken to be left (`lcalls=12` plus `lahead=0.2` per call made), against the uncached price of what stays behind the first change (`lmargin=1` times). `2`: the closes are also priced together with a cut that does not pay alone. Off by default: on the recorded sessions it saves under 1 % of the input cost and lets a session that only reads grow past the working window before it is cut |
 | `directives=N` | `0` | 1 appends the efficiency directives to the system prompt |
 | `protect=M` | `12` | the last `M` messages never leave the view |
 

@@ -337,6 +337,11 @@ impl Engine {
         // (and by epochs the window cut that comes after reads the view again from the oldest result it takes: what
         // closes behind that message costs the cache nothing more)
         let warm = if self.p.pockets >= 2 { self.warm } else { self.cut_start().unwrap_or(usize::MAX) };
+        // with `Params.kept` at 2 a window cut that does not pay by itself may pay together with the closes: one
+        // landing reads the view again once for both
+        let joint = if self.p.kept >= 2 && warm == usize::MAX { self.cut_plan() } else { None };
+        let (total, land) = (sizes.iter().sum::<i64>() + self.head, self.window_span().1);
+        let mut from = sizes.len();
         let (mut best, mut cut, mut paid, mut saved, mut first) = (0.0f64, None, 0.0f64, 0i64, sizes.len());
         for n in (0..cands.len()).rev() {
             paid += cands[n].1;
@@ -346,12 +351,25 @@ impl Engine {
             }
             first = first.min(s.place()).min(s.a);
             let rest = (after[first] - after[first.max(warm).min(sizes.len())] - saved).max(0);
-            let gain = paid - self.p.margin * (1.0 - r) * rest as f64;
+            let mut gain = paid - self.p.margin * (1.0 - r) * rest as f64;
+            let mut at = first;
+            if let Some((cut_at, cut_takes)) = joint {
+                let takes = cut_takes.min((total - saved - land).max(0));
+                let start = first.min(cut_at);
+                let both = paid + r * takes as f64 * self.calls_left()
+                    - self.p.lmargin * (1.0 - r) * (after[start] - saved - takes).max(0) as f64;
+                if both > gain {
+                    (gain, at) = (both, start);
+                }
+            }
             if gain > best {
-                (best, cut) = (gain, Some(n));
+                (best, cut, from) = (gain, Some(n), at);
             }
         }
         let Some(cut) = cut else { return false };
+        if self.p.kept != 0 {
+            self.resent_from = self.resent_from.min(from);
+        }
         for &(i, _, _) in &cands[cut..] {
             (self.steps[i].out, self.steps[i].at, self.steps[i].idle) = (true, None, None);
         }

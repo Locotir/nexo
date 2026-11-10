@@ -142,6 +142,18 @@ pub struct Params {
     /// Seconds a pocket is taken to live at most (`pockets`); 0: only the last view sent, as a local server
     /// with one slot.
     pub life: f64,
+    /// Not 0: at an epoch the window cut and the closes land only when they pay for what they send again.
+    /// What leaves saves `ratio` of its tokens on each call still to come (`lcalls` and `lahead`); what stays
+    /// behind the first message changed is read once more without the cache. 0: the window cut runs at
+    /// every epoch whatever it sends again, and a close behind it is taken as free.
+    /// 2: the closes are also priced together with a cut that does not pay alone.
+    pub kept: i64,
+    /// With `kept`: the calls a session still has, whatever its length (the recorded sessions have about 12).
+    pub lcalls: f64,
+    /// With `kept`: the calls still to come that each call already made adds (about 0.2 on the recorded sessions).
+    pub lahead: f64,
+    /// With `kept`: how many times its price a landing has to save before it is made.
+    pub lmargin: f64,
 }
 
 impl Params {

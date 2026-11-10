@@ -199,6 +199,7 @@ impl Engine {
     /// that growth costs for the calls still to come is more than sending the new prefix once. With a fixed `cap`, as soon as
     /// the view is past it.
     pub(super) fn epoch_due(&mut self) -> bool {
+        self.resent_from = usize::MAX;
         if !self.epochs() {
             return true;
         }
@@ -228,11 +229,88 @@ impl Engine {
         self.stk.keep.contains(&i) || (tier == 0 && (self.stk.reads.contains(&i) || self.tr.units[i].msg >= unwritten))
     }
 
+    /// Whether the view is past the ceiling: there a cut is made whatever it costs.
+    fn over_ceiling(&self, total: i64) -> bool {
+        self.ceiling() > 0 && total > self.ceiling()
+    }
+
+    /// Whether a landing is weighed before it is made (`Params.kept`): only the priced window (`target`) is; a
+    /// `cap` set by hand is a limit the view never passes, whatever the cut sends again.
+    pub(super) fn weighs_landings(&self) -> bool {
+        self.p.kept != 0 && self.p.target > 0
+    }
+
+    /// The calls a landing is paid back over (`Params.kept`): `lcalls`, and `lahead` for each step so far.
+    pub(super) fn calls_left(&self) -> f64 {
+        (self.p.lcalls + self.p.lahead * self.tr.steps.len() as f64).max(0.0)
+    }
+
+    /// Whether a landing pays (`Params.kept`): `drop` tokens leave the view for the calls still to come, each
+    /// saving `ratio` of itself per call, and `resent` tokens that stay are read once without the cache.
+    pub(super) fn lands(&self, drop: i64, resent: i64) -> bool {
+        let r = self.p.ratio;
+        r * drop.max(0) as f64 * self.calls_left() > self.p.lmargin * (1.0 - r) * resent.max(0) as f64
+    }
+
+    /// The window cut of this epoch before it is made (`Params.kept`): the first message it would change and
+    /// the tokens it would take, by what each result saves when it leaves, oldest first down to where the cut
+    /// lands. `None` when the view is not past where the cut starts or nothing can leave.
+    pub(super) fn cut_plan(&mut self) -> Option<(usize, i64)> {
+        let sizes = self.sizes_now();
+        let total = sizes.iter().sum::<i64>() + self.head;
+        let (start, land) = self.window_span();
+        if total <= start {
+            return None;
+        }
+        self.refresh_sticky();
+        let unwritten = self.still_from(&sizes);
+        let vis = self.visible();
+        let (mut first, mut cut) = (None, 0i64);
+        for &mi in vis.iter() {
+            if total - cut <= land {
+                break;
+            }
+            let pictured = has_picture(&self.tr.msgs[mi]);
+            let take: i64 = self
+                .fz
+                .by_msg(mi)
+                .iter()
+                .filter(|&&i| {
+                    let u = &self.tr.units[i];
+                    u.kind == UKind::Result
+                        && (u.saving >= LEAVE_LEAST || pictured)
+                        && !self.holds(i, 0, unwritten)
+                        && (0..self.fz.chunks[i].len()).any(|j| {
+                            !self.dropped.get(&i).is_some_and(|d| d.contains(&j)) && !self.carrying.contains(&(i, j))
+                        })
+                })
+                .map(|&i| self.tr.units[i].saving.max(0))
+                .sum();
+            let take = if pictured && take > 0 { sizes[mi] } else { take.min(sizes[mi]) };
+            if take > 0 {
+                first.get_or_insert(mi);
+                cut += take;
+            }
+        }
+        first.map(|f| (f, cut))
+    }
+
     /// The first message the window cut of this epoch changes: the oldest result the sticky set does not hold that has a
     /// part to drop. `None` when the view does not run by epochs or is not past where the cut starts.
     pub(super) fn cut_start(&mut self) -> Option<usize> {
         if !self.epochs() {
             return None;
+        }
+        if self.weighs_landings() {
+            // the cut is made only when it pays for the view it sends again: until then nothing behind it is free
+            let (first, cut) = self.cut_plan()?;
+            let sizes = self.sizes_now();
+            let behind: i64 = sizes[first..].iter().sum();
+            if !self.over_ceiling(sizes.iter().sum::<i64>() + self.head) && !self.lands(cut, behind - cut) {
+                return None;
+            }
+            self.resent_from = self.resent_from.min(first);
+            return Some(first);
         }
         let sizes = self.sizes_now();
         if sizes.iter().sum::<i64>() + self.head <= self.window_span().0 {
@@ -268,6 +346,16 @@ impl Engine {
         let (start, land) = self.window_span();
         if total <= start {
             return None;
+        }
+        if self.weighs_landings() && !self.over_ceiling(total) {
+            // the cut waits until it pays for what it sends again; what a landing of this request already
+            // sends again (`resent_from`) costs it nothing more
+            let (at, cut) = self.cut_plan()?;
+            let resent: i64 = sizes[at..at.max(self.resent_from).min(sizes.len())].iter().sum();
+            if !self.lands(cut, resent - cut) {
+                self.bump("window_waits", 1);
+                return None;
+            }
         }
         self.refresh_sticky();
         let unwritten = self.still_from(&sizes);

@@ -75,7 +75,7 @@ pub use learn::{K_OLD, NAMES as NEED_FEATURES};
 /// the latest whole read of each path, what a `recall` brought back until the step after it, and what the agent
 /// has read and not yet written about (the latest `still` tokens of it, whatever the first message takes).
 pub const D_SPEC: &str =
-    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;epoch=1;life=3600";
+    "threshold=0.02;head=turn;recall=1;link=0.5;rule=rent;birth=squeeze;eoq=16000;ledger=6000;notes=3000;rules=2000;pin=4000;protect=12;directives=0;nudge=0;close=2;ahead=0.25;margin=2.25;dedup=3;live=1;lead=1;aim=1;follow=1;brief=1;digest=1;hold=1;asked=3;fresh=1;still=32000;sup=1;named=16000;mission=1;apart=8000;check=4000;every=4;ratio=0.1;least=0.0005;floor=0.6;cap=0;target=10000;hard=0;cut=age;cards=8;stale=1;pockets=0;epoch=1;life=3600;kept=0;lcalls=12;lahead=0.2;lmargin=1";
 
 const INTS: &[&str] = &[
     "protect",
@@ -123,10 +123,26 @@ const INTS: &[&str] = &[
     "stale",
     "pockets",
     "epoch",
+    "kept",
 ];
 const STRS: &[&str] = &["rule", "birth", "stub", "head", "leave", "spill", "outcome", "cut"];
-const FLOATS: &[&str] =
-    &["threshold", "ratio", "margin", "floor", "least", "link", "early", "trust", "ttl", "lerr", "ahead", "life"];
+const FLOATS: &[&str] = &[
+    "threshold",
+    "ratio",
+    "margin",
+    "floor",
+    "least",
+    "link",
+    "early",
+    "trust",
+    "ttl",
+    "lerr",
+    "ahead",
+    "life",
+    "lcalls",
+    "lahead",
+    "lmargin",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 enum Val {
@@ -306,6 +322,10 @@ fn params(spec: &str) -> Result<Params, String> {
         pockets: i("pockets")?,
         epoch: i("epoch")?,
         life: f("life")?,
+        kept: i("kept")?,
+        lcalls: f("lcalls")?,
+        lahead: f("lahead")?,
+        lmargin: f("lmargin")?,
     })
 }
 

@@ -104,6 +104,9 @@ pub struct Engine {
     /// The tokens of the view (head included) at the last epoch, whether or not it changed anything: the next
     /// look also waits for `Params.check` tokens of growth past it.
     looked: i64,
+    /// With `Params.kept`: the first message this request already reads again without the cache, by a landing
+    /// that paid (`usize::MAX`: none yet).
+    resent_from: usize,
     /// The messages whose repeated runs would go as pointers but do not pay for the cache that change breaks yet:
     /// they keep going as they were sent until a request rewrites the view from one of them or earlier.
     fresh_wait: FxHashSet<usize>,
@@ -297,6 +300,7 @@ impl Engine {
             checked_at: 0,
             landed: 0,
             looked: 0,
+            resent_from: usize::MAX,
             fresh_wait: FxHashSet::default(),
             built: FxHashMap::default(),
             born: Vec::new(),

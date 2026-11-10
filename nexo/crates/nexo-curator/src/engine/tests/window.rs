@@ -372,3 +372,36 @@ fn an_epoch_that_changed_nothing_does_not_put_the_next_look_off_by_the_whole_spa
     }
     assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{start} {land} {:?}", e.stats);
 }
+
+/// Reads of 1500 tokens nobody holds, `n` of them, on a cache at 10 %, by the price of a rewrite and `spec`:
+/// the stats and the largest view.
+fn landing(spec: &str, n: usize) -> (IndexMap<&'static str, i64>, i64) {
+    let spec = format!("eoq=100000000;still=0;target=10000;ahead=0.25;margin=1;{spec}");
+    let mut e = Engine::new(params(&spec).unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Read the parts and say what slot 50 holds."})];
+    let mut most = 0;
+    for k in 1..=n {
+        msgs.extend(step(1000 + k, &format!("cat part{k}.txt"), &big(k, 1_500)));
+        e.sync(&msgs);
+        let _ = e.view();
+        most = most.max(e.tokens());
+    }
+    (e.stats.clone(), most)
+}
+
+#[test]
+fn a_landing_waits_until_what_leaves_pays_for_what_is_sent_again() {
+    // 40 reads of 1.5k (60k): the cut takes all but the 10k it lands on
+    let (off, _) = landing("kept=0", 40);
+    assert!(off.get("window_cuts").is_some_and(|n| *n > 0), "{off:?}");
+    assert!(off.get("window_waits").is_none(), "{off:?}");
+    // over the calls a session still has, what leaves pays for the 10k read again: it lands as before
+    let (pays, most) = landing("kept=1", 40);
+    assert!(pays.get("window_cuts").is_some_and(|n| *n > 0), "{pays:?}");
+    assert!(most < 40_000, "{most}");
+    // with a fraction of a call left the cut never pays for the view it sends again: it waits (what the
+    // priced rules take by themselves still leaves)
+    let (waits, _) = landing("kept=1;lcalls=0;lahead=0.001", 40);
+    assert!(waits.get("window_cuts").is_none(), "{waits:?}");
+    assert!(waits.get("window_waits").is_some_and(|n| *n > 0), "{waits:?}");
+}
