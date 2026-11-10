@@ -11,7 +11,7 @@
 //! Markdown, JSON and XML come back as they are; anything else is refused. Long
 //! pages come in pieces: the output ends with the `start` of the next one.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -34,6 +34,69 @@ const MAX_CHARS: u64 = 100_000;
 
 /// Where keys are read from: the process environment, or a fixed map in tests.
 type Env = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// Why a search backend failed. `refused` is set when the backend itself said no (a block, a rate
+/// limit, a bad key, a server error, no connection, a timeout): asking again will not help, and the
+/// query is not at fault.
+struct Fail {
+    text: String,
+    refused: bool,
+}
+
+impl Fail {
+    fn refused(text: String) -> Fail {
+        Fail { text, refused: true }
+    }
+}
+
+impl From<String> for Fail {
+    fn from(text: String) -> Fail {
+        Fail { text, refused: false }
+    }
+}
+
+/// Refusals in a row that open the breaker, and how long it stays open after the last one.
+const BREAKER_AFTER: u32 = 2;
+const BREAKER_OPEN: Duration = Duration::from_secs(120);
+const NO_RETRY: &str = "Web search is not available right now: do not retry it; go on with what you have, or open a URL you already know with web_fetch.";
+const BREAKER_SAID: &str = "web_search: not available in this session (the search backend refused 2 requests in a row). Do not call it again; go on with what you have, or open a URL you already know with web_fetch.";
+
+/// Counts refused searches in a row. Open while `BREAKER_AFTER` refusals have come in a row and the
+/// last one is younger than `open_for`. The first call after it closes is a probe: one more refusal
+/// opens it again.
+struct Breaker {
+    /// (refusals in a row, clock reading at the last one)
+    state: Mutex<(u32, Duration)>,
+    /// Time since an arbitrary start; a test replaces it.
+    now: Arc<dyn Fn() -> Duration + Send + Sync>,
+    open_for: Duration,
+}
+
+impl Breaker {
+    fn new() -> Breaker {
+        let start = std::time::Instant::now();
+        Breaker {
+            state: Mutex::new((0, Duration::ZERO)),
+            now: Arc::new(move || start.elapsed()),
+            open_for: BREAKER_OPEN,
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        let (n, at) = *self.state.lock().unwrap_or_else(|e| e.into_inner());
+        n >= BREAKER_AFTER && (self.now)().saturating_sub(at) < self.open_for
+    }
+
+    fn refused(&self) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.0 = s.0.saturating_add(1);
+        s.1 = (self.now)();
+    }
+
+    fn reset(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).0 = 0;
+    }
+}
 
 fn process_env() -> Env {
     Arc::new(|k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
@@ -253,6 +316,7 @@ pub struct WebSearch {
     http: Result<reqwest::Client, String>,
     env: Env,
     ddg_base: String,
+    breaker: Breaker,
 }
 
 impl WebSearch {
@@ -261,7 +325,13 @@ impl WebSearch {
     }
 
     fn with_env(cfg: &WebConfig, env: Env) -> WebSearch {
-        WebSearch { cfg: cfg.clone(), http: client(cfg, 5), env, ddg_base: DDG_BASE.to_string() }
+        WebSearch {
+            cfg: cfg.clone(),
+            http: client(cfg, 5),
+            env,
+            ddg_base: DDG_BASE.to_string(),
+            breaker: Breaker::new(),
+        }
     }
 
     fn http(&self) -> Result<&reqwest::Client, String> {
@@ -312,7 +382,7 @@ impl WebSearch {
         base.trim_end_matches('/').to_string()
     }
 
-    async fn ask(&self, b: Backend, query: &str, n: u64, domains: &[String]) -> Result<Vec<Hit>, String> {
+    async fn ask(&self, b: Backend, query: &str, n: u64, domains: &[String]) -> Result<Vec<Hit>, Fail> {
         let base = self.base(b);
         let key = || self.key(b).ok_or_else(|| format!("{} needs a key in {}", b.name(), self.key_hint(b)));
         let site_query = with_sites(query, domains);
@@ -349,7 +419,9 @@ impl WebSearch {
             }
             Backend::Searxng => {
                 if base.is_empty() {
-                    return Err("searxng needs its address: [web] url = \"https://searx.example.org\"".into());
+                    return Err("searxng needs its address: [web] url = \"https://searx.example.org\""
+                        .to_string()
+                        .into());
                 }
                 let req =
                     self.http()?.get(with_query(&format!("{base}/search"), &[("q", &site_query), ("format", "json")])?);
@@ -364,15 +436,15 @@ impl WebSearch {
                     .body(form_encode(&[("q", &site_query), ("kl", "wt-wt")]))
                     .send()
                     .await
-                    .map_err(|e| format!("duckduckgo: {}", net_error(&e)))?;
+                    .map_err(|e| Fail::refused(format!("duckduckgo: {}", net_error(&e))))?;
                 let status = resp.status();
-                let text = resp.text().await.map_err(|e| format!("duckduckgo: {}", net_error(&e)))?;
+                let text = resp.text().await.map_err(|e| Fail::refused(format!("duckduckgo: {}", net_error(&e))))?;
                 if !status.is_success() || text.contains("anomaly-modal") || text.contains("challenge-form") {
-                    return Err(format!(
+                    return Err(Fail::refused(format!(
                         "duckduckgo refused the search (HTTP {}; usually a rate limit or a bot check); \
                          a key for Tavily or Brave, or a SearXNG instance, avoids it",
                         status.as_u16()
-                    ));
+                    )));
                 }
                 let mut out = parse_ddg(&text);
                 out.truncate(n as usize);
@@ -388,14 +460,16 @@ impl WebSearch {
         }
     }
 
-    async fn json(&self, req: reqwest::RequestBuilder, b: Backend) -> Result<Value, String> {
-        let resp = req.send().await.map_err(|e| format!("{}: {}", b.name(), net_error(&e)))?;
+    async fn json(&self, req: reqwest::RequestBuilder, b: Backend) -> Result<Value, Fail> {
+        let resp = req.send().await.map_err(|e| Fail::refused(format!("{}: {}", b.name(), net_error(&e))))?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| format!("{}: {}", b.name(), net_error(&e)))?;
+        let text = resp.text().await.map_err(|e| Fail::refused(format!("{}: {}", b.name(), net_error(&e))))?;
         if !status.is_success() {
-            return Err(format!("{}: HTTP {} {}", b.name(), status.as_u16(), crate::util::one_line(&text, 200)));
+            let text = format!("{}: HTTP {} {}", b.name(), status.as_u16(), crate::util::one_line(&text, 200));
+            // 400, 404 and 422 blame the request; any other refusal is the backend's
+            return Err(Fail { text, refused: !matches!(status.as_u16(), 400 | 404 | 422) });
         }
-        serde_json::from_str(&text).map_err(|e| format!("{}: the answer is not JSON ({e})", b.name()))
+        Ok(serde_json::from_str(&text).map_err(|e| format!("{}: the answer is not JSON ({e})", b.name()))?)
     }
 }
 
@@ -639,24 +713,44 @@ impl Tool for WebSearch {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("web_search: {e}")),
         };
+        if self.breaker.is_open() {
+            return ToolOutput::error(BREAKER_SAID);
+        }
+        // Err carries the text and whether every backend tried for this call refused
         let work = async {
             match self.ask(backend, query, n, &domains).await {
                 Ok(h) => Ok(render_hits(query, backend.name(), &h, None)),
                 Err(e) if fallback && backend != Backend::DuckDuckGo => {
                     match self.ask(Backend::DuckDuckGo, query, n, &domains).await {
-                        Ok(h) => {
-                            Ok(render_hits(query, "duckduckgo", &h, Some(&format!("({e}; fell back to duckduckgo)"))))
+                        Ok(h) => Ok(render_hits(
+                            query,
+                            "duckduckgo",
+                            &h,
+                            Some(&format!("({}; fell back to duckduckgo)", e.text)),
+                        )),
+                        Err(e2) => {
+                            Err((format!("{}; the fallback failed too: {}", e.text, e2.text), e.refused && e2.refused))
                         }
-                        Err(e2) => Err(format!("{e}; the fallback failed too: {e2}")),
                     }
                 }
-                Err(e) => Err(e),
+                Err(e) => Err((e.text, e.refused)),
             }
         };
         tokio::select! {
             r = work => match r {
-                Ok(text) => ToolOutput::ok(text),
-                Err(e) => ToolOutput::error(format!("web_search: {e}")),
+                Ok(text) => {
+                    self.breaker.reset();
+                    ToolOutput::ok(text)
+                }
+                Err((e, true)) => {
+                    self.breaker.refused();
+                    ToolOutput::error(format!("web_search: {}. {NO_RETRY}", e.trim_end_matches('.')))
+                }
+                Err((e, false)) => {
+                    // the query's own trouble: not a refusal, and it ends the run of them
+                    self.breaker.reset();
+                    ToolOutput::error(format!("web_search: {e}"))
+                }
             },
             _ = ctx.cancel.cancelled() => ToolOutput::error("web_search: cancelled"),
         }
@@ -864,11 +958,14 @@ impl Tool for WebFetch {
             let status = resp.status();
             let final_url = resp.url().clone();
             if !status.is_success() {
-                return Err(format!(
-                    "HTTP {} {} for {final_url}",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("")
-                ));
+                let mut say =
+                    format!("HTTP {} {} for {final_url}", status.as_u16(), status.canonical_reason().unwrap_or(""));
+                if matches!(status.as_u16(), 404 | 410) {
+                    say.push_str(
+                        " The page does not exist: do not guess URLs; use one that a search result or a page gave you.",
+                    );
+                }
+                return Err(say);
             }
             let ct = resp
                 .headers()
@@ -942,6 +1039,7 @@ fn env_of(pairs: &[(&str, &str)]) -> Env {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn ctx() -> ToolContext {
         ToolContext::new(std::env::temp_dir())
@@ -1029,6 +1127,160 @@ mod tests {
         assert!(out.content.contains("rate limit or a bot check"), "{}", out.content);
     }
 
+    const SEARCH_DOWN: &str = "Web search is not available right now: do not retry it; go on with what you have, or open a URL you already know with web_fetch.";
+
+    /// A search tool whose clock is a number of seconds the test moves.
+    fn timed(t: &mut WebSearch) -> Arc<AtomicU64> {
+        let secs = Arc::new(AtomicU64::new(0));
+        let c = secs.clone();
+        t.breaker.now = Arc::new(move || Duration::from_secs(c.load(Ordering::SeqCst)));
+        secs
+    }
+
+    #[tokio::test]
+    async fn a_refused_search_says_not_to_retry() {
+        let s = MockServer::start_async().await;
+        s.mock_async(|when, then| {
+            when.method(POST).path("/html/");
+            then.status(429).body("");
+        })
+        .await;
+        let t = WebSearch::with_env(&cfg("duckduckgo", Some(s.base_url())), env_of(&[]));
+        let out = t.run(json!({"query": "x"}), &ctx()).await;
+        assert!(out.is_error);
+        assert!(out.content.contains("duckduckgo refused the search (HTTP 429"), "{}", out.content);
+        assert!(out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+        // an unreachable backend counts too
+        let t = WebSearch::with_env(&cfg("searxng", Some("http://127.0.0.1:1".into())), env_of(&[]));
+        let out = t.run(json!({"query": "x"}), &ctx()).await;
+        assert!(out.is_error && out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+        // a bad request is the query's trouble, not a refusal
+        let s = MockServer::start_async().await;
+        s.mock_async(|when, then| {
+            when.method(GET).path("/search");
+            then.status(400).body("bad query");
+        })
+        .await;
+        let t = WebSearch::with_env(&cfg("searxng", Some(s.base_url())), env_of(&[]));
+        let out = t.run(json!({"query": "x"}), &ctx()).await;
+        assert!(out.is_error && !out.content.contains(SEARCH_DOWN), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn two_refusals_in_a_row_open_the_breaker_and_time_closes_it() {
+        let s = MockServer::start_async().await;
+        let m = s
+            .mock_async(|when, then| {
+                when.method(POST).path("/html/");
+                then.status(429).body("");
+            })
+            .await;
+        let mut t = WebSearch::with_env(&cfg("duckduckgo", Some(s.base_url())), env_of(&[]));
+        let secs = timed(&mut t);
+        for _ in 0..2 {
+            let out = t.run(json!({"query": "x"}), &ctx()).await;
+            assert!(out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+        }
+        assert_eq!(m.calls_async().await, 2);
+        let out = t.run(json!({"query": "x"}), &ctx()).await;
+        assert!(out.is_error);
+        assert_eq!(out.content, BREAKER_SAID);
+        assert!(out.content.contains("refused 2 requests in a row"));
+        assert_eq!(m.calls_async().await, 2, "an open breaker makes no request");
+        secs.store(119, Ordering::SeqCst);
+        t.run(json!({"query": "x"}), &ctx()).await;
+        assert_eq!(m.calls_async().await, 2, "still open at 119 s");
+        secs.store(121, Ordering::SeqCst);
+        let out = t.run(json!({"query": "x"}), &ctx()).await;
+        assert_eq!(m.calls_async().await, 3, "closed after 120 s");
+        assert!(out.content.ends_with(SEARCH_DOWN), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_good_search_resets_the_count() {
+        let s = MockServer::start_async().await;
+        let t = WebSearch::with_env(&cfg("duckduckgo", Some(s.base_url())), env_of(&[]));
+        for (code, body) in [(429, ""), (200, DDG_PAGE), (429, ""), (200, DDG_PAGE)] {
+            let m = s
+                .mock_async(move |when, then| {
+                    when.method(POST).path("/html/");
+                    then.status(code).body(body);
+                })
+                .await;
+            let out = t.run(json!({"query": "x"}), &ctx()).await;
+            // a refusal, a success, a refusal, a success: never two refusals in a row
+            assert_eq!(out.is_error, code == 429, "{}", out.content);
+            assert_ne!(out.content, BREAKER_SAID);
+            m.delete_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn with_two_backends_the_breaker_counts_only_when_both_refused() {
+        let s = MockServer::start_async().await;
+        s.mock_async(|when, then| {
+            when.method(POST).path("/search");
+            then.status(401).body("no");
+        })
+        .await;
+        let ok = s
+            .mock_async(|when, then| {
+                when.method(POST).path("/html/");
+                then.status(200).body(DDG_PAGE);
+            })
+            .await;
+        let mut t = WebSearch::with_env(&cfg("auto", Some(s.base_url())), env_of(&[("TAVILY_API_KEY", "bad")]));
+        t.ddg_base = s.base_url();
+        // the keyed backend refuses, DuckDuckGo answers: three calls, no breaker
+        for _ in 0..3 {
+            assert!(!t.run(json!({"query": "x"}), &ctx()).await.is_error);
+        }
+        assert_eq!(ok.calls_async().await, 3);
+        ok.delete_async().await;
+        let both = s
+            .mock_async(|when, then| {
+                when.method(POST).path("/html/");
+                then.status(429).body("");
+            })
+            .await;
+        for _ in 0..2 {
+            let out = t.run(json!({"query": "x"}), &ctx()).await;
+            assert!(
+                out.content.contains("the fallback failed too") && out.content.ends_with(SEARCH_DOWN),
+                "{}",
+                out.content
+            );
+        }
+        let out = t.run(json!({"query": "x"}), &ctx()).await;
+        assert_eq!(out.content, BREAKER_SAID);
+        assert_eq!(both.calls_async().await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_404_fetch_says_not_to_guess_urls_and_other_errors_stay_as_they_were() {
+        let s = MockServer::start_async().await;
+        for (path, code) in [("/gone", 410), ("/missing", 404), ("/boom", 500), ("/nope", 403)] {
+            s.mock_async(move |when, then| {
+                when.method(GET).path(path);
+                then.status(code).body("x");
+            })
+            .await;
+        }
+        let t = WebFetch::new(&WebConfig::default());
+        let sentence = " The page does not exist: do not guess URLs; use one that a search result or a page gave you.";
+        let out = t.run(json!({"url": s.url("/missing")}), &ctx()).await;
+        assert!(
+            out.is_error && out.content.ends_with(&format!("HTTP 404 Not Found for {}{sentence}", s.url("/missing"))),
+            "{}",
+            out.content
+        );
+        let out = t.run(json!({"url": s.url("/gone")}), &ctx()).await;
+        assert!(out.is_error && out.content.ends_with(sentence), "{}", out.content);
+        let out = t.run(json!({"url": s.url("/boom")}), &ctx()).await;
+        assert_eq!(out.content, format!("web_fetch: HTTP 500 Internal Server Error for {}", s.url("/boom")));
+        let out = t.run(json!({"url": s.url("/nope")}), &ctx()).await;
+        assert_eq!(out.content, format!("web_fetch: HTTP 403 Forbidden for {}", s.url("/nope")));
+    }
     #[tokio::test]
     async fn tavily_backend() {
         let s = MockServer::start_async().await;
