@@ -405,3 +405,74 @@ fn a_landing_waits_until_what_leaves_pays_for_what_is_sent_again() {
     assert!(waits.get("window_cuts").is_none(), "{waits:?}");
     assert!(waits.get("window_waits").is_some_and(|n| *n > 0), "{waits:?}");
 }
+
+/// The session of `landing`, request by request: the view of each as it goes out (the tail aside), and the
+/// engine at the end.
+fn landing_views(spec: &str, n: usize) -> (Vec<Vec<Value>>, Engine) {
+    let spec = format!("nudge=0;fresh=0;epoch=1;eoq=100000000;still=0;target=10000;ahead=0.25;margin=1;{spec}");
+    let mut e = Engine::new(params(&spec).unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Read the parts and say what slot 50 holds."})];
+    let mut views = Vec::new();
+    for k in 1..=n {
+        msgs.extend(step(1000 + k, &format!("cat part{k}.txt"), &big(k, 1_500)));
+        e.sync(&msgs);
+        let _ = e.view();
+        views.push(e.render());
+    }
+    (views, e)
+}
+
+#[test]
+fn a_landing_that_does_not_pay_is_refused_and_the_view_only_grows_at_the_end() {
+    // with a fraction of a call left no rewrite pays for the view it sends again: each epoch is tried on a copy
+    // and refused
+    let (views, e) = landing_views("kept=3;lcalls=0;lahead=0.001", 40);
+    assert!(e.stats.get("landings_refused").is_some_and(|n| *n > 1), "{:?}", e.stats);
+    assert!(e.stats.get("window_cuts").is_none() && e.stats.get("epochs") == Some(&1), "{:?}", e.stats);
+    // every view is the one before it, byte for byte, with the new messages at the end
+    for w in views.windows(2) {
+        assert!(w[1].len() > w[0].len());
+        assert_eq!(serde_json::to_string(&w[1][..w[0].len()]).unwrap(), serde_json::to_string(&w[0]).unwrap());
+    }
+    // and nothing of the tries stays: the views are those of a session where no epoch ever came due
+    let (never, quiet) = landing_views("kept=0;margin=1000000000", 40);
+    assert_eq!(quiet.stats.get("epochs"), Some(&1), "{:?}", quiet.stats);
+    assert_eq!(serde_json::to_string(&views).unwrap(), serde_json::to_string(&never).unwrap());
+    // a try waits for `check` tokens of growth after the one before it
+    let tries = e.stats["landings_refused"];
+    assert!(tries < 20, "{tries} tries in 40 requests of 1.5k tokens");
+}
+
+#[test]
+fn a_landing_that_pays_lands() {
+    // 40 reads of 1.5k nobody holds: over the calls a session still has, what leaves pays for the view read again
+    let (views, e) = landing_views("kept=3", 40);
+    assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", e.stats);
+    assert!(e.stats.get("epochs").is_some_and(|n| *n > 1), "{:?}", e.stats);
+    let most = views.iter().map(|v| v.iter().map(crate::json::est).sum::<i64>()).max().unwrap();
+    assert!(most < 40_000, "{most}");
+    // between two landings the view only grows at the end
+    let grows = views
+        .windows(2)
+        .filter(|w| {
+            serde_json::to_string(&w[1][..w[0].len().min(w[1].len())]).unwrap() == serde_json::to_string(&w[0]).unwrap()
+        })
+        .count();
+    assert!(grows >= 34, "{grows} of 39 views only grew at the end: {:?}", e.stats);
+}
+
+#[test]
+fn past_the_ceiling_a_landing_is_made_whatever_it_sends_again() {
+    // the same session where no rewrite pays, with a ceiling: the view never passes it
+    let spec = "nudge=0;fresh=0;epoch=1;eoq=100000000;still=0;target=10000;ahead=0.25;margin=1;kept=3;lcalls=0;lahead=0.001;hard=30000";
+    let mut e = Engine::new(params(spec).unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Read the parts and say what slot 50 holds."})];
+    for k in 1..=40 {
+        msgs.extend(step(1000 + k, &format!("cat part{k}.txt"), &big(k, 1_500)));
+        e.sync(&msgs);
+        let _ = e.view();
+        assert!(e.tokens() + e.head <= 30_000, "request {k}: {} tokens", e.tokens());
+    }
+    assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", e.stats);
+    assert!(e.stats.get("landings_refused").is_some_and(|n| *n > 0), "{:?}", e.stats);
+}

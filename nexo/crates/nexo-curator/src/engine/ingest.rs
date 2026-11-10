@@ -155,10 +155,10 @@ impl Engine {
             self.since_nudge = self.since_nudge.saturating_add(1);
         }
         self.last_raw = raw;
-        self.tr.add(msg, &mut self.int);
+        self.tr.mt().add(msg, &mut self.int);
         self.sizes.push(it);
         self.raw_tokens += it;
-        let new = self.fz.extend(&self.tr, &mut self.int);
+        let new = self.fz.mt().extend(&self.tr, &mut self.int);
         if self.p.rules != 0 {
             self.take_index(new.clone());
         }
@@ -261,7 +261,7 @@ impl Engine {
         while self.born.len() < new.end {
             self.born.push(k);
         }
-        self.goal.update(&self.tr, &self.fz, MODEL.link.as_ref(), MODEL.link_share);
+        self.goal.mt().update(&self.tr, &self.fz, MODEL.link.as_ref(), MODEL.link_share);
         self.vis = None;
         if self.p.dedup > 0 {
             self.find_dups(new);

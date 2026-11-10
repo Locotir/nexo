@@ -11,7 +11,7 @@ use crate::memory::{Cell, Memory, State, Zone};
 use super::Engine;
 
 /// The map as last given, and what the last request changed in it.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Cells {
     zones: Arc<Vec<Zone>>,
     cells: Arc<Vec<Cell>>,

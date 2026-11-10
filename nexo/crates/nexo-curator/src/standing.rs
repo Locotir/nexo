@@ -189,7 +189,7 @@ struct Fact {
 }
 
 /// The table of standing facts, and what the trigger reads.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Standing {
     facts: Vec<Fact>,
     /// Text turns of the person so far, and in how many of them each stem appears.

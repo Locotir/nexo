@@ -193,7 +193,7 @@ impl Engine {
     }
 
     pub(super) fn evict(&mut self, t: usize, k: usize, sizes: &[i64], free: bool) -> Option<usize> {
-        self.fz.context(&self.tr, t);
+        self.context_at(t);
         let vis = self.visible();
         let copies = if self.p.sup > 0 { self.copies(&vis) } else { FxHashMap::default() };
         // a part that sends the lines of a copy left out (now or before) stays: they would be gone
@@ -243,7 +243,8 @@ impl Engine {
                                     && (stale.contains(&i)
                                         || (self.guess
                                             && !still.contains(&mi)
-                                            && self.prob(&self.fz.vector(&self.tr, i, *j)) < self.p.threshold))))
+                                            && self.prob(&self.fz.vector(&self.tr, i, *j, &self.active))
+                                                < self.p.threshold))))
                     })
                     .collect();
                 let free = |j: usize| -> i64 {
@@ -312,7 +313,7 @@ impl Engine {
     /// likely to be needed. What the oldest messages hold is no less needed for being old: the file read
     /// first is often the one the work is about.
     pub(super) fn need(&mut self, t: usize, sizes: &[i64], target: f64, only_copies: bool) -> Option<usize> {
-        self.fz.context(&self.tr, t);
+        self.context_at(t);
         let vis = self.visible();
         let stale = self.stale_reads(&vis);
         // with the need heads, a result is priced by the chance a reply to the horizon draws on it, per token
@@ -324,7 +325,7 @@ impl Engine {
             self.need_context();
             for &i in vis.iter().flat_map(|&mi| self.fz.by_msg(mi)) {
                 if self.tr.units[i].kind == UKind::Result {
-                    if let Some(p) = MODEL.need_prob(&self.fz.unit_vector(&self.tr, i), hz) {
+                    if let Some(p) = MODEL.need_prob(&self.fz.unit_vector(&self.tr, i, &self.active), hz) {
                         unit_need.insert(i, p / self.tr.units[i].tokens.max(1) as f64);
                     }
                 }
@@ -370,7 +371,7 @@ impl Engine {
                         } else if let Some(&p) = unit_need.get(&i) {
                             p
                         } else {
-                            self.prob(&self.fz.vector(&self.tr, i, j))
+                            self.prob(&self.fz.vector(&self.tr, i, j, &self.active))
                         };
                         parts.push((score, mi, i, j, c.tokens, copy));
                     }
@@ -422,7 +423,7 @@ impl Engine {
     /// more again), so a second copy of something kept is worth nothing, whatever its age. Greedy by worth
     /// per token: the parts kept tell at least 1 − 1/e of what the best choice of the same size tells.
     pub(super) fn cover(&mut self, t: usize, sizes: &[i64], target: f64) -> Option<usize> {
-        self.fz.context(&self.tr, t);
+        self.context_at(t);
         let vis = self.visible();
         let mut known: FxHashSet<Sym> = FxHashSet::default();
         let mut parts: Vec<(usize, usize, usize, i64)> = Vec::new();

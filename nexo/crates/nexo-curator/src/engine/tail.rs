@@ -67,9 +67,9 @@ impl Engine {
                 continue;
             }
             let text = self.tr.unit_text(i);
-            self.index.add(i, &text);
+            self.index.mt().add(i, &text);
             if kind == UKind::User && !text.trim().is_empty() {
-                self.index.want(i, &text);
+                self.index.mt().want(i, &text);
             }
         }
     }

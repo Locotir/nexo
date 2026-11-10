@@ -197,7 +197,7 @@ impl Engine {
             for k in 0..(shown.len() + 1).saturating_sub(w) {
                 let win: Option<Vec<u32>> = shown[k..k + w].iter().copied().collect();
                 if let Some(win) = win {
-                    let at = self.runs_at.entry(window(&win)).or_default();
+                    let at = self.runs_at.mt().entry(window(&win)).or_default();
                     if at.len() == RUN_SOURCES {
                         at.remove(0);
                     }
@@ -220,7 +220,7 @@ impl Engine {
             return id;
         }
         let id = self.line_ids.len() as u32;
-        self.line_ids.insert(line.to_string(), id);
+        self.line_ids.mt().insert(line.to_string(), id);
         id
     }
 

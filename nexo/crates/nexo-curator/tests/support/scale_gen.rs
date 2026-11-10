@@ -8,6 +8,11 @@ use std::time::Instant;
 use nexo_curator::Curator;
 use serde_json::{json, Value};
 
+/// The spec the runs measure: the default one, or the settings `NEXO_SCALE_SPEC` gives over it.
+fn spec() -> String {
+    std::env::var("NEXO_SCALE_SPEC").unwrap_or_default()
+}
+
 /// The four shapes: `e8` (the shape of examples/bench.rs, one topic per 25 steps), `a` (a text-only assistant
 /// reply before each request), `b` (topics that return every 6 steps), `c` (a chat without tools).
 pub const KINDS: [&str; 4] = ["e8", "a", "b", "c"];
@@ -191,7 +196,7 @@ pub struct Plan {
 /// serialization of the memory reply.
 pub fn run(kind: &str, plan: &Plan) -> Vec<Row> {
     let mut g = Gen::new(kind);
-    let mut cur = Curator::new("").expect("default spec");
+    let mut cur = Curator::new(&spec()).expect("spec");
     let mut rows = Vec::new();
     for &cp in &plan.checkpoints {
         let mut curate = Vec::new();
@@ -223,7 +228,7 @@ pub fn run(kind: &str, plan: &Plan) -> Vec<Row> {
         let cpu_ms = cpu0.map_or(0.0, |c| (thread_cpu_s() - c) * 1000.0 / curate.len().max(1) as f64);
         let rss = rss_mb();
         let ingest = if plan.ingest {
-            let mut fresh = Curator::new("").expect("default spec");
+            let mut fresh = Curator::new(&spec()).expect("spec");
             let t = Instant::now();
             fresh.view(9000, &g.msgs, 0.0).expect("view");
             t.elapsed().as_secs_f64() * 1000.0 / (g.msgs.len() as f64 / 1000.0)
@@ -939,7 +944,7 @@ pub fn run_cold(p: &ColdParams) -> ColdRow {
     let system = system_tokens(p.window);
     let prices = Prices::LIVE;
     let mut g = Cold::new(p.clone());
-    let mut cur = Curator::new("").expect("default spec");
+    let mut cur = Curator::new(&spec()).expect("spec");
     if p.window > 0 {
         cur.window(p.window);
     }

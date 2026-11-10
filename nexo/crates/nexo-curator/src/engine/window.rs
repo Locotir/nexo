@@ -29,7 +29,7 @@ const LONG_KNEE: i64 = 100_000;
 const LONG_LOSS: f64 = 0.05;
 
 /// The sticky set as of the last request, by unit.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Sticky {
     /// Results that never leave by the window: the latest `file now` of each path, the last `check:`, and
     /// what the latest step returned.
@@ -214,7 +214,10 @@ impl Engine {
         // a fixed `cap` is the person's own trigger: past it the cut runs at every request, as it did before epochs
         // (an epoch that changed nothing sent leaves `landed` where it was: the next look waits for the view to
         // have grown by `check` since that one, not for the whole span again)
-        total > start && (self.p.cap > 0 || (total - self.landed > start - land && total - self.looked >= self.p.check))
+        // (with `kept` at 4 the room past the last landing is not asked: the epoch is tried each `check` tokens of
+        // growth and lands by what it really does, `landing_pays`)
+        let grown = (self.p.kept >= 4 && self.tries_landings()) || total - self.landed > start - land;
+        total > start && (self.p.cap > 0 || (grown && total - self.looked >= self.p.check))
     }
 
     /// The tokens of the latest outputs the agent has not written about that no cut may take (`still`): what the
@@ -234,10 +237,56 @@ impl Engine {
         self.ceiling() > 0 && total > self.ceiling()
     }
 
-    /// Whether a landing is weighed before it is made (`Params.kept`): only the priced window (`target`) is; a
-    /// `cap` set by hand is a limit the view never passes, whatever the cut sends again.
+    /// Whether a landing is weighed from a plan before it is made (`Params.kept` 1 and 2): only the priced window
+    /// (`target`) is; a `cap` set by hand is a limit the view never passes, whatever the cut sends again.
     pub(super) fn weighs_landings(&self) -> bool {
-        self.p.kept != 0 && self.p.target > 0
+        matches!(self.p.kept, 1 | 2) && self.p.target > 0
+    }
+
+    /// Whether an epoch is tried on a copy of the engine and lands only when the view it really makes pays
+    /// (`Params.kept` 3 and 4, `landing_pays`).
+    pub(super) fn tries_landings(&self) -> bool {
+        self.p.kept >= 3 && self.epochs()
+    }
+
+    /// Whether the epoch of this request lands whatever it sends again: the first view of an engine (also after
+    /// the host rewrote the history), a view past the ceiling or the model's window, and a `cap` set by hand.
+    pub(super) fn must_land(&mut self) -> bool {
+        let view = self.sizes_now().iter().sum::<i64>();
+        self.p.cap > 0
+            || self.landed == 0
+            || self.over_ceiling(view + self.head)
+            || (self.budget > 0 && view > self.budget)
+    }
+
+    /// Whether the epoch made on `tried`, a copy of this engine as it was before the request was decided, lands
+    /// (`Params.kept` 3 and 4). This engine decided the same request with no epoch: its view is the one sent last with
+    /// the new messages at the end. Both views are measured as they go out, message by message, against the
+    /// view sent last (`sent_fp`): the provider reads a view again without its cache from the first message that
+    /// differs. The epoch lands when what it saves on the calls still to come (`calls_left`) is more than
+    /// `lmargin` times what it sends again now: each token the view loses saves `ratio` of itself on every call,
+    /// and each token less past `LONG_KNEE` the quality a long view loses (`LONG_LOSS`, as `fire_point` counts
+    /// it); what it sends again is its view from the first message it changed, less what the view with no epoch
+    /// reads without the cache anyway (the new messages, and what a recall brought back). An epoch that changes
+    /// no message before that point costs the cache nothing and lands; so does any epoch when the view with no
+    /// epoch is past the ceiling.
+    pub(super) fn landing_pays(&mut self, tried: &mut Engine) -> bool {
+        let (v0, v1) = (self.visible(), tried.visible());
+        let (p0, p1) = (self.prints(&v0), tried.prints(&v1));
+        let (s0, s1) = (self.sizes_now(), tried.sizes_now());
+        let sent = self.sent_fp.clone();
+        let same = |p: &[(usize, u64)]| p.iter().zip(sent.iter()).take_while(|(a, b)| a == b).count();
+        let (a0, a1) = (same(&p0), same(&p1));
+        let tokens = |p: &[(usize, u64)], s: &[i64]| p.iter().map(|&(mi, _)| s[mi]).sum::<i64>();
+        let (t0, t1) = (tokens(&p0, &s0) + self.head, tokens(&p1, &s1) + self.head);
+        if a1 >= a0 || self.over_ceiling(t0) {
+            return true;
+        }
+        let resent = (tokens(&p1[a1..], &s1) - tokens(&p0[a0..], &s0)).max(0) as f64;
+        let long = ((t0 - LONG_KNEE).max(0) - (t1 - LONG_KNEE).max(0)) as f64;
+        let r = self.p.ratio;
+        let saved = (r * (t0 - t1) as f64 + LONG_LOSS * long) * self.calls_left();
+        saved > self.p.lmargin * (1.0 - r).max(0.01) * resent
     }
 
     /// The calls a landing is paid back over (`Params.kept`): `lcalls`, and `lahead` for each step so far.

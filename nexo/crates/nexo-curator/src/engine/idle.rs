@@ -245,7 +245,7 @@ impl Engine {
                     {
                         continue;
                     }
-                    let x = self.fz.unit_vector(&self.tr, u);
+                    let x = self.fz.unit_vector(&self.tr, u, &self.active);
                     p = p.max(MODEL.need_prob(&x, hz).unwrap_or(0.0));
                     continue;
                 }
@@ -254,7 +254,7 @@ impl Engine {
                 }
                 for j in 0..self.fz.chunks[u].len() {
                     if !gone.is_some_and(|g| g.contains(&j)) {
-                        p = p.max(self.prob(&self.fz.vector(&self.tr, u, j)));
+                        p = p.max(self.prob(&self.fz.vector(&self.tr, u, j, &self.active)));
                     }
                 }
             }
@@ -275,9 +275,15 @@ impl Engine {
     /// Sets the featurizer's context to the step after the history so far (`Featurizer::context`).
     pub(super) fn need_context(&mut self) {
         let t = self.tr.msgs.len();
-        let active = self.active_ranges();
-        self.fz.set_active(active);
-        self.fz.context(&self.tr, t);
+        self.active = self.active_ranges();
+        self.context_at(t);
+    }
+
+    /// Sets the featurizer's context to step `t`, when it is not there already.
+    pub(super) fn context_at(&mut self, t: usize) {
+        if self.fz.ctx.as_ref().is_none_or(|c| c.t != t) {
+            self.fz.mt().context(&self.tr, t);
+        }
     }
 
     /// The tokens step `i` takes in the view now (`sizes`: those of each message).
@@ -339,7 +345,7 @@ impl Engine {
         let warm = if self.p.pockets >= 2 { self.warm } else { self.cut_start().unwrap_or(usize::MAX) };
         // with `Params.kept` at 2 a window cut that does not pay by itself may pay together with the closes: one
         // landing reads the view again once for both
-        let joint = if self.p.kept >= 2 && warm == usize::MAX { self.cut_plan() } else { None };
+        let joint = if self.p.kept == 2 && warm == usize::MAX { self.cut_plan() } else { None };
         let (total, land) = (sizes.iter().sum::<i64>() + self.head, self.window_span().1);
         let mut from = sizes.len();
         let (mut best, mut cut, mut paid, mut saved, mut first) = (0.0f64, None, 0.0f64, 0i64, sizes.len());
@@ -367,7 +373,7 @@ impl Engine {
             }
         }
         let Some(cut) = cut else { return false };
-        if self.p.kept != 0 {
+        if self.weighs_landings() {
             self.resent_from = self.resent_from.min(from);
         }
         for &(i, _, _) in &cands[cut..] {

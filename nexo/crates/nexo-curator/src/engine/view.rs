@@ -20,6 +20,7 @@ use super::Engine;
 /// The arguments of an edit that hold the text it replaced, in the shapes editor tools name them.
 const REPLACED_ARGS: &[&str] = &["old_string", "old_str", "old_text"];
 
+#[derive(Clone)]
 pub(super) struct Built {
     key: Vec<(usize, usize)>,
     map_ver: u64,

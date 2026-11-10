@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use super::Engine;
 use crate::hindsight::UKind;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Own {
     /// Requests decided so far.
     pub clock: u64,

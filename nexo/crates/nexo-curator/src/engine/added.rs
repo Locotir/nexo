@@ -180,7 +180,7 @@ pub fn label(thread: Option<&str>, path: Option<&str>, call: Option<&str>, text:
 
 /// The labels of texts alone (`label(None, None, None, text)`), kept while they stay under a size: the same
 /// findings, requests and facts are named at every request, and naming one reads all of its words.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct LabelMemo {
     map: rustc_hash::FxHashMap<String, String>,
     bytes: usize,
@@ -221,7 +221,7 @@ fn smaller(n: usize, tokens: i64) -> Added {
 
 /// What the outputs of messages `1..upto` hold when none of them is sent, kept between requests: it is
 /// read from the messages alone, so it grows as `upto` does and is made again only if `upto` goes back.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Below {
     upto: usize,
     names: Outputs,

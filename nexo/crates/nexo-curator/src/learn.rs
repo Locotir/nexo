@@ -6,8 +6,7 @@
 //! corpus 0.9259 $ (+2.2 %, marathon4 0.061 to 0.081). Blind and denied are equal in all three arms; the
 //! no-heads arm forgets fewer words (g5 21 to 0, marathon-D 9 to 1) but costs more. The heads stay as shipped.
 
-use std::cell::RefCell;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
@@ -247,6 +246,7 @@ fn program_of(command: &str) -> Option<String> {
     None
 }
 
+#[derive(Clone)]
 pub struct Ctx {
     pub t: usize,
     /// Steps (replies) so far.
@@ -258,6 +258,7 @@ pub struct Ctx {
     novelty: f64,
 }
 
+#[derive(Clone)]
 struct Act {
     t: usize,
     k: usize,
@@ -270,7 +271,7 @@ type CoWrite = (usize, std::sync::Arc<Vec<Sym>>);
 
 /// The results on one thing in the order they came: the message of each, and how many of the first `k` went
 /// well (`good[k]`, one more entry than there are results), so a stretch of them is counted without a walk.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Outcomes {
     at: Vec<usize>,
     good: Vec<usize>,
@@ -287,7 +288,7 @@ impl Outcomes {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Featurizer {
     pub info: FxHashMap<usize, Info>,
     calls: FxHashMap<String, Info>,
@@ -309,13 +310,22 @@ pub struct Featurizer {
     outcomes: FxHashMap<(u8, String), Outcomes>,
     /// Per request (as `requests` lists them), the last message with an output of its work.
     req_last_result: Vec<usize>,
-    /// The messages of the thread the latest request is on, as ranges (set by the engine).
-    active: Vec<(usize, usize)>,
     seen: FxHashSet<Sym>,
     df: FxHashMap<Sym, u32>,
     df_pos: usize,
     pub ctx: Option<Ctx>,
-    act: RefCell<Option<Act>>,
+    act: Memo<Option<Act>>,
+}
+
+/// What a reader fills in as it goes (the activation of one step): behind a lock, so the featurizer can be
+/// shared between the engine and the copy a landing is tried on.
+#[derive(Default)]
+struct Memo<T>(Mutex<T>);
+
+impl<T: Clone> Clone for Memo<T> {
+    fn clone(&self) -> Self {
+        Memo(Mutex::new(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()))
+    }
 }
 
 pub static NO_UNITS: Vec<usize> = Vec::new();
@@ -475,11 +485,6 @@ impl Featurizer {
         self.ctx = Some(Ctx { t, k, recent, request, answer, n: self.df_pos.max(1) as f64, novelty });
     }
 
-    /// The messages of the thread the latest request is on, as ranges `a..b`.
-    pub fn set_active(&mut self, ranges: Vec<(usize, usize)>) {
-        self.active = ranges;
-    }
-
     /// The results on the same thing as unit `i` (its path or program) after it and before `t`: how many,
     /// whether one of them went well, and the message of the last one.
     fn same_key_after(&self, i: usize, msg: usize, t: usize) -> (usize, bool, Option<usize>) {
@@ -530,17 +535,18 @@ impl Featurizer {
         (strength, last)
     }
 
-    /// The feature vector of chunk ``j`` of unit ``i`` in the current context.
-    pub fn vector(&self, tr: &Tracer, i: usize, j: usize) -> Vec<f64> {
-        self.vector_of(tr, i, &self.chunks[i][j])
+    /// The feature vector of chunk ``j`` of unit ``i`` in the current context. `active` is the messages of the
+    /// thread the latest request is on, as ranges `a..b` (the engine keeps them).
+    pub fn vector(&self, tr: &Tracer, i: usize, j: usize, active: &[(usize, usize)]) -> Vec<f64> {
+        self.vector_of(tr, i, &self.chunks[i][j], active)
     }
 
     /// The feature vector of unit ``i`` as a whole in the current context.
-    pub fn unit_vector(&self, tr: &Tracer, i: usize) -> Vec<f64> {
-        self.vector_of(tr, i, &self.whole[i])
+    pub fn unit_vector(&self, tr: &Tracer, i: usize, active: &[(usize, usize)]) -> Vec<f64> {
+        self.vector_of(tr, i, &self.whole[i], active)
     }
 
-    fn vector_of(&self, tr: &Tracer, i: usize, c: &Chunk) -> Vec<f64> {
+    fn vector_of(&self, tr: &Tracer, i: usize, c: &Chunk, ranges: &[(usize, usize)]) -> Vec<f64> {
         let ctx = self.ctx.as_ref().expect("context before vector");
         let t = ctx.t;
         let u = &tr.units[i];
@@ -590,7 +596,7 @@ impl Featurizer {
         let keys: &[Sym] = info.map_or(&[], |x| &x.keys[..]);
         let key_in_request = keys.iter().any(|k| ctx.request.contains(k));
         let key_in_talk = keys.iter().any(|k| ctx.recent.contains(k) || ctx.answer.contains(k));
-        let active = self.active.is_empty() || self.active.iter().any(|&(a, b)| a <= u.msg && u.msg < b);
+        let active = ranges.is_empty() || ranges.iter().any(|&(a, b)| a <= u.msg && u.msg < b);
         let kreq = bisect_right(&self.requests, &u.msg);
         let last_result = u.kind == UKind::Result && kreq > 0 && self.req_last_result[kreq - 1] == u.msg;
         vec![
@@ -642,7 +648,7 @@ impl Featurizer {
     }
 
     fn memory(&self, tr: &Tracer, c: &Chunk, t: usize) -> (f64, f64) {
-        let mut act = self.act.borrow_mut();
+        let mut act = self.act.0.lock().unwrap_or_else(|e| e.into_inner());
         if act.as_ref().is_none_or(|a| a.t != t) {
             *act = Some(self.activation(tr, t));
         }

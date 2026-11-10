@@ -1,7 +1,7 @@
 //! The trace of a conversation: its units (blocks), the distinctive words in them, and which of those
 //! words the agent copied later (a use of the unit).
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
@@ -17,8 +17,10 @@ pub type Sym = u32;
 /// Strings seen by one engine, each stored once.
 #[derive(Default, Clone)]
 pub struct Interner {
-    map: FxHashMap<Box<str>, Sym>,
-    strs: Vec<Box<str>>,
+    // (both behind `Arc`: a copy of the engine shares them, and one is copied only when a new string comes
+    // while the other copy still lives)
+    map: Arc<FxHashMap<Box<str>, Sym>>,
+    strs: Arc<Vec<Box<str>>>,
 }
 
 impl Interner {
@@ -27,8 +29,8 @@ impl Interner {
             return k;
         }
         let k = self.strs.len() as Sym;
-        self.strs.push(s.into());
-        self.map.insert(s.into(), k);
+        Arc::make_mut(&mut self.strs).push(s.into());
+        Arc::make_mut(&mut self.map).insert(s.into(), k);
         k
     }
 

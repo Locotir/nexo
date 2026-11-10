@@ -8,7 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 /// The files each step read, each by the parts of its name the other files read do not share (see
 /// `Engine::step_files`). A step is added once; a part that becomes shared (two files hold it) redoes
 /// only the steps that hold that part.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StepFiles {
     known: FxHashSet<Vec<String>>,
     parts: FxHashMap<String, usize>,
@@ -96,7 +96,7 @@ impl StepFiles {
 
 /// What `Engine::leads` needs of the whole session, kept as units arrive: the forms of the names the
 /// agent wrote in its text and calls, and in how many outputs each name appears.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct LeadIndex {
     pub seen: usize,
     pub forms: FxHashSet<String>,

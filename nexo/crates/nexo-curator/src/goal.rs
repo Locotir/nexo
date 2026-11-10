@@ -14,6 +14,7 @@ const CARD_ASK: usize = 160;
 const CARD_ANSWER: usize = 200;
 const CARD_ACTIONS: usize = 6;
 
+#[derive(Clone)]
 pub struct Turn {
     pub start: usize,
     request: FxHashSet<Sym>,
@@ -53,7 +54,7 @@ pub fn line(text: &str, n: usize) -> String {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Threads {
     pub link: f64,
     pub turns: Vec<Turn>,

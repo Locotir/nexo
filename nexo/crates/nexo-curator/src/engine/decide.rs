@@ -1,5 +1,7 @@
 //! One decision for each request: what stays in the view and what leaves.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 
 use super::Engine;
@@ -14,9 +16,36 @@ impl Engine {
         if self.dump.is_some() {
             self.dump_rows();
         }
+        let epoch = self.epoch_due();
+        if epoch && self.tries_landings() && !self.must_land() {
+            // the epoch is made on a copy and this engine goes on with no epoch: the copy takes its place only
+            // when the view it really made pays for the cache it breaks (`landing_pays`); else nothing of the try
+            // stays, and the next one waits for `check` tokens of growth
+            // (the context of this step is set before the copy, so neither of the two has to copy the featurizer
+            // to set it)
+            self.context_at(self.tr.msgs.len());
+            let mut tried = self.clone();
+            tried.decide_as(true);
+            self.decide_as(false);
+            if self.landing_pays(&mut tried) {
+                *self = tried;
+            } else {
+                self.looked = self.sizes_now().iter().sum::<i64>() + self.head;
+                self.bump("landings_refused", 1);
+            }
+        } else {
+            self.decide_as(epoch);
+        }
+        if self.tries_landings() {
+            let vis = self.visible();
+            self.sent_fp = Arc::new(self.prints(&vis));
+        }
+    }
+
+    /// The decision of one request, as an epoch (the view is rewritten now) or not.
+    fn decide_as(&mut self, epoch: bool) {
         // by epochs (`Params.epoch`) the view is rewritten only at an epoch: between two, it only grows at the end
         let by_epoch = self.epochs();
-        let epoch = self.epoch_due();
         // what the view sent before: a message of it that a step below changes without weighing the cache
         // (it changes what the view sends, not what is weighed) still counts in `miss`
         let sent = self.sent_vis.clone();

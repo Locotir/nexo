@@ -64,15 +64,38 @@ pub const NUDGE: &str = "[curator] Before the next step, keep what these results
 /// the curator reads them as well.
 pub const NUDGE_SAID: &str = "[curator] Before the next step, keep what these results settled: start your next reply with one line beginning with \"Finding:\" for each fact (values, formulas, formats, causes) and one line beginning with \"Plan:\" with what is left; then go on with what you were doing (a note records what you read, it does not stand in for reading the rest). The older results will leave this context; the lines stay.";
 
+/// Where each window of three lines starts in the tool results (`Engine::runs_at`).
+type RunsAt = FxHashMap<[u32; 3], Vec<(usize, usize)>>;
+
+/// A part of the engine that the copy a landing is tried on shares with it (`Engine::decide`): read in place, and
+/// copied only when one of the two changes it while the other still lives.
+#[derive(Clone, Default)]
+pub(crate) struct Shared<T>(Arc<T>);
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> Shared<T> {
+    /// The part, to change it.
+    pub(crate) fn mt(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+#[derive(Clone)]
 pub struct Engine {
     p: Params,
     /// Tokens the view may take in the model's window, after the system prompt, the tools and the reply
     /// (0: no limit). The host gives it with each call ([`Engine::set_budget`]).
     budget: i64,
     int: Interner,
-    tr: Tracer,
-    fz: Featurizer,
-    goal: Threads,
+    tr: Shared<Tracer>,
+    fz: Shared<Featurizer>,
+    goal: Shared<Threads>,
     sizes: Vec<i64>,
     raw_tokens: i64,
     dropped: FxHashMap<usize, FxHashSet<usize>>,
@@ -139,7 +162,7 @@ pub struct Engine {
     /// the due ones in the last view.
     standing: Standing,
     /// Where every line of the history is, by the keys it holds (`index.rs`): what the tail brings back.
-    index: Index,
+    index: Shared<Index>,
     tail_tokens: i64,
     /// The anchor without the rules block (the map, the findings, the pinned files and the ledger).
     base_map: String,
@@ -164,8 +187,14 @@ pub struct Engine {
     /// The oldest message a note put back to how it was sent before the request was nudged: the view changed
     /// from there, outside `decide`, which counts it.
     unnudged: Option<usize>,
+    /// The messages of the thread the latest request is on, as ranges, as `need_context` set them last: what the
+    /// feature vectors ask (`Featurizer::vector`).
+    active: Vec<(usize, usize)>,
     /// The messages of the view last decided, in order: what the provider cached.
     sent_vis: Arc<Vec<usize>>,
+    /// The same view as it went out, message by message (`prints`): what a landing tried on a copy is measured
+    /// against (`Params.kept` 3 and 4).
+    sent_fp: Arc<Vec<(usize, u64)>>,
     asked: FxHashSet<Sym>,
     /// The words of the person's own messages that opened the requests so far (and the first message), and
     /// how many requests they cover: kept as the requests come, not read again from the history at each one.
@@ -202,11 +231,11 @@ pub struct Engine {
     files_known: FxHashSet<Vec<String>>,
     part_files: FxHashMap<String, usize>,
     /// Every distinct line of the tool outputs, as a number (`Params.dedup`).
-    line_ids: FxHashMap<String, u32>,
+    line_ids: Shared<FxHashMap<String, u32>>,
     /// The lines of each tool result as sent: `None` for the ones the result itself sends as a pointer.
     shown: FxHashMap<usize, Vec<Option<u32>>>,
     /// Where each window of lines starts in the tool results (result, line), latest last.
-    runs_at: FxHashMap<[u32; 3], Vec<(usize, usize)>>,
+    runs_at: Shared<RunsAt>,
     /// The lines already sent as a pointer to an earlier output (`asked=2`).
     pointed_lines: FxHashSet<u32>,
     /// The runs of each message's tool results that an earlier output holds too.
@@ -282,9 +311,9 @@ impl Engine {
             guess: true,
             p,
             int: Interner::default(),
-            tr: Tracer::default(),
-            fz: Featurizer::default(),
-            goal,
+            tr: Shared::default(),
+            fz: Shared::default(),
+            goal: Shared(Arc::new(goal)),
             sizes: Vec::new(),
             raw_tokens: 0,
             dropped: FxHashMap::default(),
@@ -319,7 +348,7 @@ impl Engine {
             plan: None,
             rules: Rules::default(),
             standing: Standing::default(),
-            index: Index::default(),
+            index: Shared::default(),
             tail_tokens: 0,
             base_map: String::new(),
             rules_shown: String::new(),
@@ -333,6 +362,8 @@ impl Engine {
             nudged: FxHashSet::default(),
             unnudged: None,
             sent_vis: Arc::default(),
+            active: Vec::new(),
+            sent_fp: Arc::default(),
             asked: FxHashSet::default(),
             user_words: Arc::default(),
             user_turns: 0,
@@ -359,9 +390,9 @@ impl Engine {
             below: added::Below::default(),
             files_known: FxHashSet::default(),
             part_files: FxHashMap::default(),
-            line_ids: FxHashMap::default(),
+            line_ids: Shared::default(),
             shown: FxHashMap::default(),
-            runs_at: FxHashMap::default(),
+            runs_at: Shared::default(),
             pointed_lines: FxHashSet::default(),
             dups: FxHashMap::default(),
             copies: FxHashMap::default(),

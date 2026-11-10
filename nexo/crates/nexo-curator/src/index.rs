@@ -24,7 +24,7 @@ const NEED_KEYS: usize = 24;
 /// Characters at each end of the request that are read.
 const NEED_CHARS: usize = 400;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Index {
     posts: FxHashMap<u64, Vec<Post>>,
     lines: usize,
