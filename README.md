@@ -53,10 +53,11 @@ curator for the next step only.
 Every figure names its date and the nexo commit it was measured at. The curator is held to not forgetting a fact the
 next call needs; cost comes second.
 
-**What the model is sent, request by request**, replaying a recorded 81-request session through the curator
-(2026-11-09, nexo `cdeb98a`): 1.87M tokens against 2.97M (63% kept). Ticks are epochs.
+**What the model is sent, call by call**, replaying a recorded 119-call session offline (2026-11-10, nexo `f1b104b`):
+the plain history reaches 122k tokens and nexo stays near 32k. The compacting line is simulated from the same session
+(a 4k summary when the next call would pass 40k). Ticks are epochs.
 
-![Tokens per request: the whole history grows to 60k, the curated view is 28k at request 81, with epochs at requests 35, 56 and 76](docs/img/tokens-per-step.svg)
+![Tokens sent on each call of one 119-call session: plain history grows to 122k, a simulated compacting harness drops to a summary three times and grows again, nexo stays near 32k and rewrites its prefix at 8 epochs](docs/img/tokens-per-step.svg)
 
 **Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task). Five harnesses on the
 same 16 Terminal-Bench tasks. The winner is the one that, on the tasks every harness solved, uses the fewest steps,
@@ -72,6 +73,15 @@ Every harness solved 11 to 14 of the 16 tasks, a tie within noise, so this compa
 In round B the curator never acted: that lead comes from short prompts and a stable prefix. Method, all tables and caveats:
 [`docs/results.md`](docs/results.md#harness-race-2026-11-09). Older runs (compaction against the curator, 2026-11-04) are
 there too, marked with their date. Measure it on your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
+
+**Against Claude Code on the same model** (2026-11-10, `claude-sonnet-5-5`, nexo `bf57ed4`, 5 tasks, 3 runs each, plan published before the run).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-claude-code-dark.svg">
+  <img alt="Index of calls, tokens and cost, 1.00 is best: nexo 1.00, Claude Code 1.47. Calls 126 against 164, tokens 3.65M against 6.04M, cost 2.48 dollars against 3.97 dollars" src="docs/img/bench-claude-code.svg" width="760">
+</picture>
+
+By the plan's rule nexo is clearly better here: nexo was cheaper in 15 of 15 pairs and solved 15 of 15 runs against 14 of 15. The sessions were short, so this does not measure the curator's eviction against compaction; we read the gap as fewer calls, less output and a smaller fixed prompt. Blind vote on page quality: not open yet. Plan: [`docs/bench/PLAN.md`](docs/bench/PLAN.md). Results and limits: [`docs/bench/RESULTS.md`](docs/bench/RESULTS.md).
 
 ## How the curator works
 

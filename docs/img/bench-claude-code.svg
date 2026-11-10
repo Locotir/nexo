@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="470" viewBox="0 0 1000 470" font-family="DejaVu Sans, Arial, sans-serif">
+  <rect width="1000" height="470" fill="#ffffff"/>
+  <text x="500" y="32" text-anchor="middle" font-size="18" font-weight="bold" fill="#222222">Same model, two harnesses: nexo against Claude Code</text>
+  <text x="500" y="54" text-anchor="middle" font-size="13" fill="#555555">Index of calls, tokens and dollars over the best arm's. 1.00 is best. Lower is better.</text>
+  <text x="400" y="132" text-anchor="end" font-size="64" font-weight="bold" fill="#4c78a8">1.00</text>
+  <text x="500" y="128" text-anchor="middle" font-size="22" fill="#555555">vs</text>
+  <text x="600" y="132" text-anchor="start" font-size="64" font-weight="bold" fill="#222222">1.47</text>
+  <text x="400" y="156" text-anchor="end" font-size="14" fill="#555555">nexo</text>
+  <text x="600" y="156" text-anchor="start" font-size="14" fill="#555555">Claude Code</text>
+  <line x1="190" y1="180" x2="190" y2="410" stroke="#555555" stroke-width="1.5"/>
+  <text x="180" y="212" text-anchor="end" font-size="14" font-weight="bold" fill="#222222">Model calls</text>
+  <rect x="190" y="194" width="430" height="24" fill="#4c78a8"/>
+  <text x="628" y="212" font-size="14" font-weight="bold" fill="#222222">126</text>
+  <rect x="190" y="222" width="560" height="24" fill="#b4b9c0"/>
+  <text x="758" y="240" font-size="14" fill="#222222">164</text>
+  <text x="180" y="304" text-anchor="end" font-size="14" font-weight="bold" fill="#222222">Tokens</text>
+  <rect x="190" y="276" width="337" height="24" fill="#4c78a8"/>
+  <text x="535" y="294" font-size="14" font-weight="bold" fill="#222222">3.65M</text>
+  <rect x="190" y="304" width="560" height="24" fill="#b4b9c0"/>
+  <text x="758" y="322" font-size="14" fill="#222222">6.04M</text>
+  <text x="180" y="386" text-anchor="end" font-size="14" font-weight="bold" fill="#222222">Cost</text>
+  <rect x="190" y="358" width="350" height="24" fill="#4c78a8"/>
+  <text x="548" y="376" font-size="14" font-weight="bold" fill="#222222">$2.48</text>
+  <rect x="190" y="386" width="560" height="24" fill="#b4b9c0"/>
+  <text x="758" y="404" font-size="14" fill="#222222">$3.97</text>
+  <text x="500" y="444" text-anchor="middle" font-size="12" fill="#555555">same model (claude-sonnet-5-5), 5 tasks x 3 runs, plan published before the run. Cost is list price of the token counts.</text>
+</svg>

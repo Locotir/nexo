@@ -206,6 +206,12 @@ attempt: nothing here ranks the harnesses. To repeat it, run Harbor 0.25.0 with 
 count-dataset-tokens, circuit-fibsqrt, extract-elf, fix-git, git-multibranch, configure-git-webserver,
 log-summary-date-ranges, db-wal-recovery, build-pmars, adaptive-rejection-sampler, largest-eigenval.
 
+## Against Claude Code on the same model (2026-11-10)
+
+`claude-sonnet-5-5` on both sides, nexo `bf57ed4`, 5 tasks, 3 runs each. Index of calls, tokens and dollars, 1.00 is best:
+nexo 1.00, Claude Code 1.47; nexo cheaper in 15 of 15 pairs. Short sessions: the curator's eviction is not measured there.
+Plan, tables, checks and limits: [`bench/RESULTS.md`](bench/RESULTS.md).
+
 ## Live paired runs
 
 The last paid paired run of the curator against plain: `deepseek-flash`, nexo `575380d` (before the epoch
