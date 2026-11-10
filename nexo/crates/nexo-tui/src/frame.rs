@@ -12,8 +12,8 @@ use ratatui::Terminal;
 
 /// The shortest time between two frames (~60 fps).
 pub const FRAME: Duration = Duration::from_millis(16);
-/// The spinner beat: one step of `App::spinner`.
-pub const BEAT: Duration = Duration::from_millis(50);
+/// The spinner beat: one step of `App::spinner`, about 12 a second (the one rate every looping mark moves at).
+pub const BEAT: Duration = Duration::from_millis(83);
 /// What an idle screen still checks now and then (the git branch, a status command).
 pub const SLOW: Duration = Duration::from_secs(5);
 /// Busy with `[ui] animations=false`: nothing moves, only the elapsed clock needs a redraw.
@@ -208,7 +208,7 @@ mod tests {
         let t0 = Instant::now();
         let mut p = Pacer::new(t0, true);
         assert_eq!(p.sleep(t0, Load::Beat, false, None), Some(BEAT));
-        assert!(p.tick(t0 + ms(50), Load::Beat).beat);
+        assert!(p.tick(t0 + ms(90), Load::Beat).beat);
     }
 
     #[test]
@@ -216,7 +216,7 @@ mod tests {
         let t0 = Instant::now();
         let mut p = Pacer::new(t0, true);
         let beats = (1..=200).filter(|i| p.tick(t0 + ms(*i), Load::Motion).beat).count();
-        assert!((3..=4).contains(&beats), "{beats}");
+        assert!((2..=3).contains(&beats), "{beats}");
     }
 
     #[test]

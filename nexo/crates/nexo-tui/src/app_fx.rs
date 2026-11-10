@@ -44,6 +44,10 @@ pub struct Fx {
     /// closing draws the reverse of the pop.
     pub ghost: Option<(ratatui::layout::Rect, Vec<ratatui::buffer::Cell>)>,
     pub ghost_at: Option<Instant>,
+    /// The model, the reasoning level and the permission mode in the status bar: what each was at the last
+    /// tick (hashed) and when it last changed, so a new one shows in the curator label's highlight.
+    pub chg_key: [Option<u64>; 3],
+    pub chg_at: [Option<Instant>; 3],
     /// When the locked home opened: the welcome card slides away.
     pub unlock_at: Option<Instant>,
 }
@@ -86,6 +90,7 @@ impl App {
         let cmd = on && motion::within(self.fx.cmd_lit.as_ref().map(|c| c.1), now, motion::LIT_MS);
         // the cut figure goes away by itself, animations or not
         let cut = motion::within(self.fx.cut.map(|c| c.1), now, motion::CUT_MS + 100);
+        let changed = self.note_bar_changes(now);
         let fx = &self.fx;
         let still = on
             && !self.theme.mono
@@ -98,7 +103,30 @@ impl App {
                 || motion::within(fx.ghost_at, now, crate::anim::POP_MS)
                 || motion::within(fx.unlock_at, now, crate::ui::UNLOCK_MS)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
-        t_moving || c_moving || glow || mode || cmd || cut || still || self.toasts.alive(now)
+        t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)
+    }
+
+    /// Notices a new model, reasoning level or permission mode (the first look is not a change); true while
+    /// the highlight of one that just changed is still showing.
+    fn note_bar_changes(&mut self, now: Instant) -> bool {
+        use std::hash::{Hash, Hasher};
+        let hash = |s: &str| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut h);
+            h.finish()
+        };
+        let keys = [
+            hash(&format!("{}/{}{}", self.provider, self.model, self.fast)),
+            hash(self.effort.as_deref().unwrap_or("")),
+            hash(self.permission_mode.as_str()),
+        ];
+        for (i, k) in keys.into_iter().enumerate() {
+            if self.fx.chg_key[i].is_some_and(|old| old != k) && self.fx_on() {
+                self.fx.chg_at[i] = Some(now);
+            }
+            self.fx.chg_key[i] = Some(k);
+        }
+        self.fx.chg_at.iter().any(|t| motion::within(*t, now, motion::CUT_MS + 100))
     }
 
     /// Called when a turn ends.

@@ -9,6 +9,16 @@ pub const EVERY: Duration = Duration::from_secs(60 * 60);
 
 pub const REPO: &str = "https://github.com/Locotir/nexo";
 const API: &str = "https://api.github.com/repos/Locotir/nexo";
+
+/// The release API address. Only a debug build lets `NEXO_UPDATE_API` replace it (tests against a local
+/// server): a released nexo updates from the project's own releases and nowhere else.
+fn api() -> String {
+    #[cfg(debug_assertions)]
+    if let Some(v) = std::env::var("NEXO_UPDATE_API").ok().filter(|v| !v.is_empty()) {
+        return v;
+    }
+    API.to_string()
+}
 /// The installers: they install what is missing (Rust, a C compiler or the C++ build tools), then build nexo.
 const INSTALLER_PS: &str = "https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1";
 const INSTALLER_SH: &str = "https://raw.githubusercontent.com/Locotir/nexo/main/install.sh";
@@ -69,7 +79,7 @@ fn parse_release(v: &serde_json::Value) -> Option<Release> {
 
 async fn latest_release(client: &reqwest::Client) -> Option<Release> {
     let r = client
-        .get(format!("{API}/releases/latest"))
+        .get(format!("{}/releases/latest", api()))
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -87,7 +97,7 @@ async fn ask(commit: &str) -> Option<u32> {
     let client = client(8)?;
     let target = latest_release(&client).await.map_or_else(|| "main".to_string(), |r| r.tag);
     let get = |url: String| client.get(url).header("Accept", "application/vnd.github+json").send();
-    let r = get(format!("{API}/compare/{commit}...{target}")).await.ok()?;
+    let r = get(format!("{}/compare/{commit}...{target}", api())).await.ok()?;
     if r.status().is_success() {
         let v: serde_json::Value = r.json().await.ok()?;
         return v.get("ahead_by")?.as_u64().map(|n| n as u32);
@@ -96,7 +106,7 @@ async fn ask(commit: &str) -> Option<u32> {
     if r.status() != reqwest::StatusCode::NOT_FOUND || when == "unknown" {
         return None;
     }
-    let r = get(format!("{API}/commits?sha=main&per_page=100&since={when}")).await.ok()?;
+    let r = get(format!("{}/commits?sha=main&per_page=100&since={when}", api())).await.ok()?;
     if !r.status().is_success() {
         return None;
     }
@@ -134,12 +144,14 @@ pub async fn behind() -> Result<Option<u32>, String> {
 
 /// `nexo update`: `--check` only says; otherwise builds the latest `main` and puts it where this nexo is.
 pub async fn run(check_only: bool) -> anyhow::Result<i32> {
+    let ui = Ui::detect();
     if check_only {
+        ui.begin("checking for a new release", false);
         match check().await {
-            Ok(Some(n)) => println!("{n}"),
-            Ok(None) => println!("nexo is up to date ({}).", short(commit())),
+            Ok(Some(n)) => ui.end(Kind::Notice, &n),
+            Ok(None) => ui.end(Kind::Final, &format!("nexo is up to date ({}).", short(commit()))),
             Err(e) => {
-                eprintln!("nexo: {e}");
+                ui.end(Kind::Fail, &e);
                 return Ok(1);
             }
         }
@@ -148,40 +160,65 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
     let exe = std::env::current_exe().ok().filter(|e| !needs_installer(e));
     // From cargo's folder or a build folder, the installer moves nexo to its own place and fixes PATH.
     let Some(exe) = exe else { return installer(None) };
-    if commit() != "unknown" && ask(commit()).await == Some(0) {
-        println!("nexo is up to date ({}).", short(commit()));
-        return Ok(0);
-    }
-    let ui = Ui::detect();
-    let started = Instant::now();
-    // the ready-built release first: seconds, and no compiler needed
-    let stage = std::env::temp_dir().join(format!("nexo-build-{}", std::process::id()));
-    match download(&ui, &stage).await {
-        Ok((file, tag)) => {
-            let placed = place(&file, &exe);
-            let _ = std::fs::remove_dir_all(&stage);
-            placed.map_err(|e| anyhow::anyhow!("downloaded, but cannot replace {} ({e})", exe.display()))?;
-            ui.ok(&done_text(tag.strip_prefix("build-"), commit(), started.elapsed()));
+    if commit() != "unknown" {
+        ui.begin("checking for a new release", false);
+        if ask(commit()).await == Some(0) {
+            ui.end(Kind::Final, &format!("nexo already up to date ({})", short(commit())));
             return Ok(0);
         }
-        Err(e) => ui.warn(&format!("no ready-built release to use ({e}); building from source instead")),
+        ui.end(Kind::Ok, "a newer release is out");
     }
-    ui.step(&format!("building the latest nexo from {REPO}"));
+    // the ready-built release first: seconds, and no compiler needed
+    let stage = std::env::temp_dir().join(format!("nexo-build-{}", std::process::id()));
+    ui.on_interrupt(&stage);
+    match download(&ui, &stage).await {
+        Ok((file, tag)) => {
+            ui.begin("installing", false);
+            let placed = place(&file, &exe);
+            let _ = std::fs::remove_dir_all(&stage);
+            if let Err(e) = placed {
+                ui.abort();
+                anyhow::bail!("downloaded, but cannot replace {} ({e})", exe.display());
+            }
+            ui.end(Kind::Ok, &format!("installed {}", exe.display()));
+            ui.end(Kind::Final, &update_text(tag.strip_prefix("build-"), commit()));
+            return Ok(0);
+        }
+        Err(e) => {
+            let t = format!("ready-built release not used: {e}");
+            ui.end(Kind::Warn, &t);
+        }
+    }
+    ui.begin("building nexo from source", true);
     let built = build(&ui, &stage);
     let ok = matches!(built, Ok((ref s, _)) if s.success());
     let placed = ok.then(|| place(&stage.join("bin").join(exe.file_name().unwrap_or_default()), &exe));
     let _ = std::fs::remove_dir_all(&stage);
     match (built, placed) {
         (Ok((_, rev)), Some(Ok(()))) => {
-            ui.ok(&done_text(rev.as_deref(), commit(), started.elapsed()));
+            ui.end(Kind::Ok, "built the latest nexo");
+            ui.end(Kind::Final, &update_text(rev.as_deref(), commit()));
             Ok(0)
         }
-        (_, Some(Err(e))) => anyhow::bail!("built, but cannot replace {} ({e})", exe.display()),
+        (_, Some(Err(e))) => {
+            ui.abort();
+            anyhow::bail!("built, but cannot replace {} ({e})", exe.display())
+        }
         // On Windows a missing Rust or missing C++ build tools is the usual reason a build cannot start
         // or link: the installer installs what is missing and builds, so nobody has to look it up.
-        _ if cfg!(windows) => installer(exe.parent()),
-        (Err(e), _) => anyhow::bail!("cannot run cargo ({e}); install Rust from https://rustup.rs"),
-        (Ok((s, _)), _) => Ok(s.code().unwrap_or(1)),
+        _ if cfg!(windows) => {
+            ui.abort();
+            installer(exe.parent())
+        }
+        (Err(e), _) => {
+            ui.abort();
+            anyhow::bail!("cannot run cargo ({e}); install Rust from https://rustup.rs")
+        }
+        (Ok((s, _)), _) => {
+            let code = s.code().unwrap_or(1);
+            ui.end(Kind::Fail, &format!("the build failed (cargo exited with {code})"));
+            Ok(code)
+        }
     }
 }
 
@@ -194,12 +231,15 @@ async fn download(ui: &Ui, stage: &Path) -> Result<(PathBuf, String), String> {
     let url = |n: &str| rel.files.iter().find(|(f, _)| f == n).map(|(_, u)| u.clone());
     let (bin_url, sums_url) =
         (url(name).ok_or(format!("{} has no {name}", rel.tag))?, url(SUMS).ok_or("no SHA256SUMS")?);
-    ui.step(&format!("downloading {name} from release {}", rel.tag));
+    ui.begin(&format!("downloading {name}"), false);
     let sums = with_retry(ui, || fetch(&client, &sums_url, None)).await?;
     let sums = String::from_utf8_lossy(&sums).into_owned();
     let t = Instant::now();
     let bytes = with_retry(ui, || fetch(&client, &bin_url, Some(ui))).await?;
-    ui.ok(&format!("downloaded {name} ({}) in {}", megabytes(bytes.len() as u64), secs_text(t.elapsed())));
+    let t =
+        format!("downloaded {name} ({}) from {} in {}", megabytes(bytes.len() as u64), rel.tag, secs_text(t.elapsed()));
+    ui.end(Kind::Ok, &t);
+    ui.begin("verifying SHA-256", false);
     let want = expected_sum(&sums, name).ok_or(format!("{SUMS} does not list {name}"))?;
     if sha256_hex(&bytes) != want {
         return Err(format!("{name} does not match its SHA-256: not used"));
@@ -212,6 +252,7 @@ async fn download(ui: &Ui, stage: &Path) -> Result<(PathBuf, String), String> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     }
+    ui.end(Kind::Ok, "verified SHA-256");
     Ok((file, rel.tag))
 }
 
@@ -260,8 +301,7 @@ where
         match op().await {
             Ok(v) => return Ok(v),
             Err(e) if e.retry && attempt < BACKOFF.len() => {
-                ui.clear();
-                ui.dim(&format!("retrying ({}/{TRIES}): {}", attempt + 2, e.text));
+                ui.note(Kind::Dim, &format!("retrying ({}/{TRIES}): {}", attempt + 2, e.text));
                 tokio::time::sleep(BACKOFF[attempt]).await;
                 attempt += 1;
             }
@@ -275,18 +315,14 @@ async fn fetch(client: &reqwest::Client, url: &str, ui: Option<&Ui>) -> Result<V
     let mut r = client.get(url).send().await.and_then(|r| r.error_for_status())?;
     let total = r.content_length();
     let mut body = Vec::with_capacity(total.unwrap_or(0).min(256 << 20) as usize);
-    let (start, mut last) = (Instant::now(), None::<Instant>);
+    if let Some(ui) = ui {
+        ui.progress(0, total);
+    }
     while let Some(chunk) = r.chunk().await? {
         body.extend_from_slice(&chunk);
         if let Some(ui) = ui {
-            if last.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
-                ui.draw(&progress_line(body.len() as u64, total, start.elapsed().as_secs_f64()));
-                last = Some(Instant::now());
-            }
+            ui.progress(body.len() as u64, total);
         }
-    }
-    if let Some(ui) = ui {
-        ui.clear();
     }
     Ok(body)
 }
@@ -316,22 +352,19 @@ fn build(ui: &Ui, stage: &Path) -> std::io::Result<(std::process::ExitStatus, Op
             }
         })
     });
-    let (start, mut frame) = (Instant::now(), 0);
     let status = loop {
         if let Some(s) = child.try_wait()? {
             break s;
         }
-        let name = seen.lock().unwrap_or_else(|e| e.into_inner()).krate.clone();
-        ui.draw(&build_line(frame, start.elapsed().as_secs(), &name));
-        frame += 1;
+        ui.detail(&seen.lock().unwrap_or_else(|e| e.into_inner()).krate);
         std::thread::sleep(Duration::from_millis(100));
     };
     if let Some(r) = reader {
         let _ = r.join();
     }
-    ui.clear();
     let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
     if !status.success() {
+        ui.abort();
         for l in &seen.tail {
             eprintln!("{l}");
         }
@@ -378,97 +411,213 @@ fn git_rev(line: &str) -> Option<&str> {
     (end >= 7).then(|| &hex[..7])
 }
 
-/// Where the output goes and how it looks: colors, a redrawn line and a spinner only on a terminal.
+/// Where the output goes and how it looks. On a terminal each step is a spinner line that a background
+/// ticker redraws about 12 times a second (and only while a step runs) and that turns into a `✓` line when
+/// the step ends; anywhere else (a pipe, `NO_COLOR`, `TERM=dumb`) it is plain lines with no control codes.
 struct Ui {
     fancy: bool,
+    shared: std::sync::Arc<Shared>,
+    ticker: Option<std::thread::JoinHandle<()>>,
 }
 
+struct Shared {
+    live: std::sync::Mutex<Option<Live>>,
+    stop: std::sync::atomic::AtomicBool,
+}
+
+/// The step on screen: its label, when it began, an optional detail (the crate cargo is on) and download progress.
+struct Live {
+    label: String,
+    since: Instant,
+    detail: String,
+    bytes: Option<(u64, Option<u64>)>,
+}
+
+/// One frame of the ticker: about 12 per second, the one rate nexo moves at.
+const FRAME: Duration = Duration::from_millis(83);
+
 impl Ui {
-    /// Fancy when stderr is a terminal that takes escape codes and `NO_COLOR` is not set.
+    /// Fancy when stdout and stderr are terminals that take escape codes, `NO_COLOR` is not set and `TERM` is not `dumb`.
     fn detect() -> Self {
         use std::io::IsTerminal;
-        let tty = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        let dumb = std::env::var("TERM").is_ok_and(|t| t == "dumb");
+        let tty = std::io::stderr().is_terminal()
+            && std::io::stdout().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none()
+            && !dumb;
         #[cfg(windows)]
         let tty = tty && crossterm::ansi_support::supports_ansi();
-        Ui { fancy: tty }
+        Self::new(tty)
     }
 
-    /// A finished line. Fancy ones go to stderr, with the redrawn line; plain ones to stdout, as before.
-    fn line(&self, kind: Kind, msg: &str) {
-        let text = styled(self.fancy, kind, msg);
+    fn new(fancy: bool) -> Self {
+        let shared = std::sync::Arc::new(Shared { live: std::sync::Mutex::new(None), stop: false.into() });
+        let ticker = fancy.then(|| {
+            eprint!("{HIDE_CURSOR}");
+            let shared = std::sync::Arc::clone(&shared);
+            std::thread::spawn(move || {
+                while !shared.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(FRAME);
+                    shared.draw();
+                }
+            })
+        });
+        Ui { fancy, shared, ticker }
+    }
+
+    /// Starts a step. Plain mode says nothing unless `announce` (a step that takes minutes).
+    fn begin(&self, label: &str, announce: bool) {
         if self.fancy {
-            eprintln!("{text}");
-        } else {
-            println!("{text}");
+            let live = Live { label: label.into(), since: Instant::now(), detail: String::new(), bytes: None };
+            *self.shared.lock() = Some(live);
+            self.shared.draw();
+        } else if announce {
+            println!("{}", styled(false, Kind::Step, label));
         }
     }
 
-    fn step(&self, msg: &str) {
-        self.line(Kind::Step, msg);
+    /// Ends the step: the spinner line becomes `msg` as a finished line of `kind`.
+    fn end(&self, kind: Kind, msg: &str) {
+        self.note(kind, msg);
+        *self.shared.lock() = None;
     }
 
-    fn ok(&self, msg: &str) {
-        self.line(Kind::Ok, msg);
-    }
-
-    fn warn(&self, msg: &str) {
-        self.line(Kind::Warn, msg);
-    }
-
-    fn dim(&self, msg: &str) {
-        self.line(Kind::Dim, msg);
-    }
-
-    /// Redraws the one live line (nothing in plain mode).
-    fn draw(&self, text: &str) {
+    /// Prints a line above the running step.
+    fn note(&self, kind: Kind, msg: &str) {
         if self.fancy {
-            use std::io::Write;
+            let live = self.shared.lock();
+            let text = styled(true, kind, msg);
             let mut e = std::io::stderr();
-            let _ = write!(e, "\r\x1b[2K{CYAN}{text}{RESET}").and_then(|()| e.flush());
+            use std::io::Write;
+            let _ = write!(e, "\r{text}{CLEAR_REST}\n").and_then(|()| e.flush());
+            drop(live);
+            self.shared.draw();
+        } else if matches!(kind, Kind::Fail) {
+            eprintln!("{}", styled(false, kind, msg));
+        } else {
+            println!("{}", styled(false, kind, msg));
         }
     }
 
-    /// Wipes the live line.
-    fn clear(&self) {
+    /// Wipes the live line without a result (the caller is about to fail or hand over the terminal).
+    fn abort(&self) {
+        *self.shared.lock() = None;
         if self.fancy {
-            eprint!("\r\x1b[2K");
+            eprint!("\r{CLEAR_LINE}");
         }
+    }
+
+    fn progress(&self, done: u64, total: Option<u64>) {
+        if let Some(l) = self.shared.lock().as_mut() {
+            l.bytes = Some((done, total));
+        }
+    }
+
+    fn detail(&self, text: &str) {
+        if let Some(l) = self.shared.lock().as_mut() {
+            if l.detail != text {
+                l.detail = text.into();
+            }
+        }
+    }
+
+    /// On Ctrl+C: wipes the live line, brings the cursor back, removes `stage` and leaves with 130.
+    fn on_interrupt(&self, stage: &Path) {
+        if !self.fancy {
+            return;
+        }
+        let stage = stage.to_path_buf();
+        std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+            if rt.block_on(tokio::signal::ctrl_c()).is_ok() {
+                eprint!("\r{CLEAR_LINE}{SHOW_CURSOR}");
+                eprintln!("{}", styled(true, Kind::Warn, "update cancelled"));
+                let _ = std::fs::remove_dir_all(stage);
+                std::process::exit(130);
+            }
+        });
+    }
+}
+
+impl Drop for Ui {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.ticker.take() {
+            let _ = t.join();
+            eprint!("\r{CLEAR_LINE}{SHOW_CURSOR}");
+        }
+    }
+}
+
+impl Shared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Live>> {
+        self.live.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Redraws the live line if a step is running (one write, so a frame never shows half drawn).
+    fn draw(&self) {
+        let live = self.lock();
+        let Some(l) = live.as_ref() else { return };
+        let cols = crossterm::terminal::size().map_or(80, |(c, _)| c as usize);
+        let frame = (l.since.elapsed().as_millis() / FRAME.as_millis()) as usize;
+        let text = live_line(frame, &l.label, &l.detail, l.since.elapsed().as_secs_f64(), l.bytes, cols);
+        use std::io::Write;
+        let mut e = std::io::stderr();
+        let _ = write!(e, "\r{CYAN}{text}{RESET}{CLEAR_REST}").and_then(|()| e.flush());
     }
 }
 
 const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
+const RED: &str = "\x1b[31m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
+const CLEAR_REST: &str = "\x1b[K";
+const CLEAR_LINE: &str = "\x1b[2K";
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
 
 /// The kinds of line `nexo update` prints.
 #[derive(Clone, Copy)]
 enum Kind {
+    /// A step that begins (plain mode only).
     Step,
+    /// A step that ended well.
     Ok,
+    /// Something to know, not an error.
     Warn,
+    /// A side remark.
     Dim,
+    /// A step that failed.
+    Fail,
+    /// An update is waiting (`--check`): a warning with a symbol, a bare line in plain mode.
+    Notice,
+    /// The one closing line: where nexo is now.
+    Final,
 }
 
-/// A line as shown: with colors and symbols when `fancy`, else plain `nexo: <message>` with no escape codes.
+/// A line as shown: with colors and symbols when `fancy`, else plain `nexo: <message>` with no escape codes
+/// (the closing line has no prefix).
 fn styled(fancy: bool, kind: Kind, msg: &str) -> String {
     if !fancy {
-        return format!("nexo: {msg}");
+        return if matches!(kind, Kind::Final | Kind::Notice) { msg.to_string() } else { format!("nexo: {msg}") };
     }
     match kind {
         Kind::Step => format!("nexo {CYAN}▸{RESET} {msg}"),
-        Kind::Ok => format!("{GREEN}✓{RESET} nexo {msg}"),
-        Kind::Warn => format!("{YELLOW}⚠{RESET} {msg}"),
+        Kind::Ok => format!("{GREEN}✓{RESET} {msg}"),
+        Kind::Final => format!("{GREEN}✓{RESET} {msg}"),
+        Kind::Warn | Kind::Notice => format!("{YELLOW}⚠{RESET} {msg}"),
+        Kind::Fail => format!("{RED}✗{RESET} {msg}"),
         Kind::Dim => format!("{DIM}  {msg}{RESET}"),
     }
 }
 
-/// The last line: where nexo is now, where it was (each left out when unknown), and how long it took.
-fn done_text(new: Option<&str>, old: &str, took: Duration) -> String {
-    let new = new.map(|n| format!(" to {}", short(n))).unwrap_or_default();
-    let old = if old == "unknown" { String::new() } else { format!(" (was {})", short(old)) };
-    format!("updated{new}{old} in {}. Restart nexo.", secs_text(took))
+/// The last line: where nexo was and where it is now (each left out when unknown).
+fn update_text(new: Option<&str>, old: &str) -> String {
+    let old = if old == "unknown" { String::new() } else { format!(" ({})", short(old)) };
+    let new = new.map_or("the latest build".to_string(), |n| short(n).to_string());
+    format!("nexo {}{old} → {new}. Restart nexo.", env!("CARGO_PKG_VERSION"))
 }
 
 fn secs_text(d: Duration) -> String {
@@ -479,26 +628,47 @@ fn megabytes(n: u64) -> String {
     format!("{:.1} MB", n as f64 / 1e6)
 }
 
-/// The download line: a bar, percent, MB done of total and speed; without a known length, MB and speed.
-fn progress_line(done: u64, total: Option<u64>, secs: f64) -> String {
-    let speed = format!("{}/s", megabytes((done as f64 / secs.max(0.001)) as u64));
-    match total.filter(|t| *t > 0) {
-        Some(t) => {
-            const WIDTH: usize = 24;
-            let frac = (done as f64 / t as f64).clamp(0.0, 1.0);
-            let full = (frac * WIDTH as f64) as usize;
-            let bar = format!("{}{}", "█".repeat(full), "░".repeat(WIDTH - full));
-            format!("{bar} {:>3}%  {} / {}  {speed}", (frac * 100.0) as u32, megabytes(done), megabytes(t))
-        }
-        None => format!("{}  {speed}", megabytes(done)),
-    }
-}
-
-/// The build line: a spinner frame, seconds so far and the crate cargo is on.
-fn build_line(frame: usize, secs: u64, krate: &str) -> String {
+/// The live line: a spinner frame, the step, then the elapsed seconds (fixed width, so the line never shifts);
+/// for a download a bar, percent, done of total and speed, which drops its bar and then its tail as the
+/// terminal narrows; without a known length, bytes and speed. Never longer than `cols - 1`.
+fn live_line(
+    frame: usize,
+    label: &str,
+    detail: &str,
+    secs: f64,
+    bytes: Option<(u64, Option<u64>)>,
+    cols: usize,
+) -> String {
     const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let on = if krate.is_empty() { String::new() } else { format!("  {krate}") };
-    format!("{} building  {secs} s{on}", FRAMES[frame % FRAMES.len()])
+    let spin = FRAMES[frame % FRAMES.len()];
+    let tail = match bytes {
+        None => {
+            let d = if detail.is_empty() { String::new() } else { format!("  {detail}") };
+            format!("{:>3} s{d}", secs as u64)
+        }
+        Some((done, total)) => {
+            let speed = format!("{:>8}/s", megabytes((done as f64 / secs.max(0.001)) as u64));
+            match total.filter(|t| *t > 0) {
+                Some(t) => {
+                    let frac = (done as f64 / t as f64).clamp(0.0, 1.0);
+                    let w = megabytes(t).len();
+                    let stats =
+                        format!("{:>3}%  {:>w$} / {}  {speed}", (frac * 100.0) as u32, megabytes(done), megabytes(t));
+                    let room = cols.saturating_sub(1 + 2 + label.chars().count() + 2 + stats.chars().count() + 2);
+                    let width = room.min(24);
+                    if width >= 8 {
+                        let full = (frac * width as f64) as usize;
+                        format!("{}{}  {stats}", "█".repeat(full), "░".repeat(width - full))
+                    } else {
+                        stats
+                    }
+                }
+                None => format!("{:>8}  {speed}", megabytes(done)),
+            }
+        }
+    };
+    let line = format!("{spin} {label}  {tail}");
+    line.chars().take(cols.saturating_sub(1).max(1)).collect()
 }
 
 /// A reqwest error without the long address: `... for url (https://host/a/b/FILE)` becomes `... (FILE)`, and
@@ -709,24 +879,35 @@ mod tests {
     }
 
     #[test]
-    fn the_progress_line_shows_a_bar_with_a_known_length_and_megabytes_without() {
-        let l = progress_line(12_500_000, Some(25_000_000), 2.5);
-        assert!(l.contains(" 50%"), "{l}");
-        assert!(l.contains("12.5 MB / 25.0 MB"), "{l}");
-        assert!(l.contains("5.0 MB/s"), "{l}");
+    fn the_live_line_fits_the_terminal_and_never_shifts() {
+        let bar = |cols| live_line(0, "downloading x", "", 2.5, Some((12_500_000, Some(25_000_000))), cols);
+        let l = bar(100);
+        assert!(l.contains(" 50%") && l.contains("12.5 MB / 25.0 MB") && l.contains("5.0 MB/s"), "{l}");
         assert_eq!(l.matches('█').count(), 12);
         assert_eq!(l.matches('░').count(), 12);
-        let l = progress_line(3_000_000, None, 1.0);
-        assert_eq!(l, "3.0 MB  3.0 MB/s");
-        // a zero length or an instant start must not divide by zero
-        assert!(progress_line(10, Some(0), 0.0).contains("MB/s"));
-        assert!(progress_line(60, Some(50), 0.0).contains("100%"));
+        // narrower terminals lose the bar first, then are cut, and never reach the last column
+        assert!(!bar(50).contains('░'));
+        for cols in [10, 30, 50, 80, 120] {
+            assert!(bar(cols).chars().count() < cols, "{cols}");
+        }
+        // unknown length: bytes and speed
+        let l = live_line(0, "downloading x", "", 1.0, Some((3_000_000, None)), 80);
+        assert!(l.contains("3.0 MB") && l.contains("3.0 MB/s") && !l.contains('%'), "{l}");
+        // zero length or an instant start must not divide by zero
+        assert!(live_line(0, "x", "", 0.0, Some((10, Some(0))), 80).contains("MB/s"));
+        assert!(live_line(0, "x", "", 0.0, Some((60, Some(50))), 80).contains("100%"));
+        // every spinner frame has the same width and the seconds field has a fixed width
+        let widths: Vec<_> = (0..10).map(|f| live_line(f, "x", "", 9.0, None, 80).chars().count()).collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]));
+        assert_eq!(
+            live_line(0, "x", "", 9.0, None, 80).chars().count(),
+            live_line(0, "x", "", 10.0, None, 80).chars().count()
+        );
+        assert_eq!(live_line(0, "building", "tokio", 7.0, None, 80), "⠋ building    7 s  tokio");
     }
 
     #[test]
-    fn the_build_line_names_the_crate_cargo_is_on() {
-        assert_eq!(build_line(0, 7, "tokio"), "⠋ building  7 s  tokio");
-        assert_eq!(build_line(10, 0, ""), "⠋ building  0 s");
+    fn cargo_lines_name_the_crate_and_the_commit() {
         assert_eq!(compiling("   Compiling tokio v1.54.0"), Some("tokio"));
         assert_eq!(compiling("Compiling nexo-cli v0.1.0 (https://github.com/Locotir/nexo#4b4f255a)"), Some("nexo-cli"));
         assert_eq!(compiling("Downloaded tokio v1.54.0"), None);
@@ -739,7 +920,7 @@ mod tests {
 
     #[test]
     fn plain_lines_carry_no_escape_codes_and_fancy_ones_do() {
-        for kind in [Kind::Step, Kind::Ok, Kind::Warn, Kind::Dim] {
+        for kind in [Kind::Step, Kind::Ok, Kind::Warn, Kind::Dim, Kind::Fail] {
             let plain = styled(false, kind, "downloading x");
             assert_eq!(plain, "nexo: downloading x");
             assert!(!plain.contains('\x1b') && !plain.contains('\r'));
@@ -747,22 +928,19 @@ mod tests {
         }
         assert!(styled(true, Kind::Step, "a").contains("\x1b[36m▸"));
         assert!(styled(true, Kind::Ok, "a").starts_with("\x1b[32m✓"));
+        assert!(styled(true, Kind::Fail, "a").starts_with("\x1b[31m✗"));
         assert!(styled(true, Kind::Warn, "a").starts_with("\x1b[33m⚠"));
     }
 
     #[test]
-    fn the_last_line_says_where_nexo_is_and_was_and_leaves_out_what_is_unknown() {
-        let t = Duration::from_secs(41);
+    fn the_last_line_says_where_nexo_was_and_is_and_leaves_out_what_is_unknown() {
+        let v = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            done_text(Some("4b4f255a"), "153ab70ffff", t),
-            "updated to 4b4f255 (was 153ab70) in 41 s. Restart nexo."
+            update_text(Some("4b4f255a"), "153ab70ffff"),
+            format!("nexo {v} (153ab70) → 4b4f255. Restart nexo.")
         );
-        assert_eq!(done_text(None, "153ab70", t), "updated (was 153ab70) in 41 s. Restart nexo.");
-        assert_eq!(done_text(Some("4b4f255"), "unknown", t), "updated to 4b4f255 in 41 s. Restart nexo.");
-        assert_eq!(
-            styled(true, Kind::Ok, &done_text(None, "unknown", t)),
-            "\x1b[32m✓\x1b[0m nexo updated in 41 s. Restart nexo."
-        );
+        assert_eq!(update_text(None, "unknown"), format!("nexo {v} → the latest build. Restart nexo."));
+        assert_eq!(styled(false, Kind::Final, "x"), "x");
     }
 
     #[test]

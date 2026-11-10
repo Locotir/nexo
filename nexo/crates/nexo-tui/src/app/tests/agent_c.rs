@@ -1328,3 +1328,28 @@ fn a_double_click_on_the_message_opens_what_was_added_and_another_folds_it() {
     a.release_at(4, r);
     assert!(!open(&a));
 }
+
+#[test]
+fn a_new_model_or_mode_in_the_status_bar_lights_up_once_and_the_first_look_does_not() {
+    let (mut a, _rx) = app();
+    let t0 = std::time::Instant::now();
+    a.fx.clock = Some(t0);
+    assert!(!a.tick_fx(), "the first look at the bar is not a change");
+    let model_fg = |a: &App| {
+        let segs = crate::ui::title_segments(a, 200);
+        segs.iter().flatten().find(|s| s.text.contains("mock")).and_then(|s| s.style.fg).unwrap()
+    };
+    let own = model_fg(&a);
+    a.model = "n".into();
+    a.fx.clock = Some(t0 + std::time::Duration::from_millis(10));
+    assert!(a.tick_fx(), "a change asks for frames while it fades");
+    assert_ne!(model_fg(&a), own, "the new model is lit");
+    a.fx.clock = Some(t0 + std::time::Duration::from_millis(crate::motion::CUT_MS + 300));
+    assert!(!a.tick_fx(), "and the frames stop when it has settled");
+    assert_eq!(model_fg(&a), own);
+    // with the motion off nothing lights
+    a.opts.animations = false;
+    a.permission_mode = nexo_core::permission::PermissionMode::Plan;
+    a.fx.clock = Some(t0 + std::time::Duration::from_millis(crate::motion::CUT_MS + 400));
+    assert!(!a.tick_fx());
+}

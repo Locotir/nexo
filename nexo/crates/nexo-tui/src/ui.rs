@@ -13,7 +13,7 @@ use crate::app::{
 use crate::modal::{Modal, PickKind};
 use crate::overlay;
 use crate::palette::{PaletteKind, MAX_ROWS};
-use crate::render::blocks::{fmt_k, fmt_ms, todo_counts, SPINNER};
+use crate::render::blocks::{fmt_k, todo_counts, SPINNER};
 use crate::render::markdown::{inline_md, text_of, tint_plain};
 use crate::render::wrap::{truncate, width, wrap_plain};
 use crate::scrollbar::{self, Bar, Target};
@@ -197,17 +197,30 @@ pub struct Seg {
 pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     let theme = &app.theme;
     let base = theme.bar();
+    // a piece that just changed is green for a moment, then its own colour (the curator label's highlight)
+    let lit = |i: usize, own: Color| {
+        let now = app.now();
+        match app.fx.chg_at[i].filter(|t| crate::motion::within(Some(*t), now, crate::motion::CUT_MS)) {
+            Some(at) => {
+                let t = now.saturating_duration_since(at).as_millis() as f32 / crate::motion::CUT_MS as f32;
+                crate::motion::fade(theme, theme.success, own, t)
+            }
+            None => own,
+        }
+    };
     let model = |short: bool| Seg {
         text: if short { app.model.clone() } else { format!("{}/{}", app.provider, app.model) },
-        style: base.fg(theme.accent).add_modifier(Modifier::BOLD),
+        style: base.fg(lit(0, theme.accent)).add_modifier(Modifier::BOLD),
     };
     // the same glyph, words and colour as the rule over the draft (mode_tint), minus its explanation
     let mode_color = mode_tint(theme, app.permission_mode).map_or(theme.bar_fg, |(c, _)| c);
     let mode_name = mode_name(app);
     let mode = match app.permission_mode {
         // never asking is said plainly, and loud
-        PermissionMode::Auto => Seg { text: mode_name, style: base.fg(mode_color).add_modifier(Modifier::BOLD) },
-        _ => Seg { text: mode_name, style: base.fg(mode_color) },
+        PermissionMode::Auto => {
+            Seg { text: mode_name, style: base.fg(lit(2, mode_color)).add_modifier(Modifier::BOLD) }
+        }
+        _ => Seg { text: mode_name, style: base.fg(lit(2, mode_color)) },
     };
     // the goal and, when it does not run, why: waiting for an answer, paused, met
     let goal = app.goal.as_ref().map(|g| match &g.state {
@@ -225,7 +238,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         let mut cells = if let Some(split) = app.gauge_split().filter(|_| !guessed) {
             crate::render::gauge::stacked(theme, split, den, GAUGE_CELLS, colour)
         } else {
-            gauge_segs(theme, shown, GAUGE_CELLS, colour, pct >= 90 && (app.spinner / 5).is_multiple_of(2))
+            gauge_segs(theme, shown, GAUGE_CELLS, colour, pct >= 90 && (app.spinner / 3).is_multiple_of(2))
         };
         cells.push(Seg {
             text: if guessed { format!(" ~{pct}%") } else { format!(" {pct}%") },
@@ -328,7 +341,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                     }
                     if order.contains(&"effort") {
                         if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {
-                            g.push(Seg { text: format!(" ◆ {e}"), style: base.fg(theme.accent2) });
+                            g.push(Seg { text: format!(" ◆ {e}"), style: base.fg(lit(1, theme.accent2)) });
                         } else if k.hint && !app.effort_levels.is_empty() {
                             // no level set, on a model that takes one: the word the picker's first entry uses
                             g.push(Seg { text: " ◆ default".to_string(), style: base.fg(theme.dim) });
@@ -1261,7 +1274,7 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let word = format!("{verb}…");
     let n = word.chars().count() as f32;
     // the light runs left to right, rests a moment, and starts again
-    let pos = (frame as f32 * 0.7) % (n + 10.0) - 3.0;
+    let pos = (frame as f32 * 0.42) % (n + 10.0) - 3.0;
     for (i, c) in word.chars().enumerate() {
         let near = (1.0 - ((i as f32 - pos).abs() / 3.0)).max(0.0);
         let colour = mix(theme.accent, theme.fg, near);
@@ -1270,7 +1283,7 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let secs = app.turn_started.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
     // segments in order of worth: a narrow line drops whole ones from the end of this list
     // (the token count first, then the hint) instead of cutting a word or leaving a lone `·`
-    let time = fmt_ms(secs);
+    let time = crate::render::blocks::fmt_secs(secs / 1000);
     let toks = (app.streamed_chars > 0).then(|| format!("↓ {} tok", fmt_k((app.streamed_chars / 4) as u64)));
     let mut parts: Vec<String> = vec![time, "Esc interrupt".to_string()];
     parts.extend(toks);
@@ -1303,7 +1316,7 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
 /// working agent. Cells of the same colour share a span.
 pub fn comet(theme: &Theme, n: usize, frame: usize) -> Vec<Span<'static>> {
     const TAIL: f32 = 8.0;
-    let head = (frame as f32 * 1.6) % (n as f32 + 2.0 * TAIL) - TAIL;
+    let head = (frame as f32 * 1.0) % (n as f32 + 2.0 * TAIL) - TAIL;
     let mut out: Vec<Span<'static>> = Vec::new();
     for i in 0..n {
         let d = head - i as f32;
@@ -1537,7 +1550,7 @@ pub fn hints_shown(app: &App) -> bool {
 
 /// What the memory figure says while the curator is still counting a loaded conversation.
 fn mem_waiting(spinner: usize) -> String {
-    format!("session {} counting…", SPINNER[(spinner / 2) % SPINNER.len()])
+    format!("session {} counting…", SPINNER[spinner % SPINNER.len()])
 }
 
 /// The right part of the hint bar with everything on it.
@@ -2390,7 +2403,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 let pad = inner_w.saturating_sub(width(&label) + width(&hint) + 2);
                 let style = if armed {
                     // the row about to go: it turns to the error colour and breathes
-                    let on = !app.opts.animations || (app.spinner / 4).is_multiple_of(2);
+                    let on = !app.opts.animations || (app.spinner / 3).is_multiple_of(2);
                     Style::default().fg(theme.bg).bg(theme.error).add_modifier(if on {
                         Modifier::BOLD
                     } else {
@@ -2436,7 +2449,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Modal::Todo(v) => {
             let spinner = app.opts.animations.then_some(app.spinner);
-            let pulse = if spinner.is_some() { ((app.spinner as f32 * 0.35).sin() + 1.0) / 2.0 } else { 0.0 };
+            let pulse = if spinner.is_some() { ((app.spinner as f32 * 0.21).sin() + 1.0) / 2.0 } else { 0.0 };
             let b = v.body(inner_w, &theme, spinner, pulse, now);
             pinned = vec![Line::default(), v.keys(inner_w, &theme)];
             todo_sel = b.starts.get(v.selected).copied().unwrap_or((0, 1));

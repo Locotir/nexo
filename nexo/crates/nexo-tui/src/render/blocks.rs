@@ -266,7 +266,7 @@ impl Block {
                 }
                 // a blinking caret where the next words will land
                 if *streaming {
-                    let on = (o.spinner / 6).is_multiple_of(2);
+                    let on = (o.spinner / 4).is_multiple_of(2);
                     let caret = if on { theme.style(theme.accent) } else { theme.style(theme.dim2) };
                     if let Some(last) = lines.last_mut() {
                         last.spans.push(Span::styled("▍", caret));
@@ -307,7 +307,7 @@ impl Block {
                 let n = text.lines().count();
                 let elapsed = match (elapsed_ms, started) {
                     (Some(ms), _) => format!(" · {}", fmt_ms(*ms)),
-                    (None, Some(s)) if *streaming => format!(" · {}", fmt_ms(s.elapsed().as_millis() as u64)),
+                    (None, Some(s)) if *streaming => format!(" · {}", fmt_secs(s.elapsed().as_secs())),
                     _ => String::new(),
                 };
                 let style = theme.dim();
@@ -354,7 +354,7 @@ impl Block {
                 };
                 let elapsed = match (elapsed_ms, started, status) {
                     (Some(ms), _, _) => fmt_ms(*ms),
-                    (None, Some(s), ToolStatus::Running) => fmt_ms(s.elapsed().as_millis() as u64),
+                    (None, Some(s), ToolStatus::Running) => fmt_secs(s.elapsed().as_secs()),
                     _ => String::new(),
                 };
                 let rail_color = match status {
@@ -1062,7 +1062,7 @@ fn command_lines(command: &str, w: usize, theme: &Theme, pad: &[Span<'static>]) 
 
 /// The sub-agent's face: eyes open, shut for a moment every two seconds while it works.
 fn robot(running: bool, beat: usize) -> &'static str {
-    if running && beat % 40 >= 37 {
+    if running && beat % 24 >= 22 {
         "[-_-]"
     } else {
         "[o_o]"
@@ -1072,7 +1072,7 @@ fn robot(running: bool, beat: usize) -> &'static str {
 /// `word` with a light running across it, frame by frame.
 fn shimmer(word: &str, frame: usize, theme: &Theme) -> Vec<Span<'static>> {
     let n = word.chars().count() as f32;
-    let pos = (frame as f32 * 0.6) % (n + 8.0) - 3.0;
+    let pos = (frame as f32 * 0.36) % (n + 8.0) - 3.0;
     word.chars()
         .enumerate()
         .map(|(i, c)| {
@@ -1439,8 +1439,8 @@ mod tests {
         };
         let done = card(ToolStatus::Done, 0);
         assert!(done.starts_with("✓ [o_o] agent [explore]: map the parser"), "{done}");
-        assert!(card(ToolStatus::Running, 38).contains("[-_-] agent"), "it blinks while it works");
-        assert!(card(ToolStatus::Done, 38).contains("[o_o] agent"), "and rests with open eyes");
+        assert!(card(ToolStatus::Running, 22).contains("[-_-] agent"), "it blinks while it works");
+        assert!(card(ToolStatus::Done, 22).contains("[o_o] agent"), "and rests with open eyes");
     }
 
     #[test]

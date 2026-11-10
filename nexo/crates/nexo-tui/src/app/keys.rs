@@ -180,7 +180,7 @@ impl App {
         };
         if self.busy {
             let frames = crate::render::blocks::SPINNER;
-            format!("{} {name}", frames[(self.spinner / 2) % frames.len()])
+            format!("{} {name}", frames[self.spinner % frames.len()])
         } else {
             name
         }
