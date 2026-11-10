@@ -333,6 +333,13 @@ pub async fn doctor(cwd: &std::path::Path, cfg: &Config, offline: bool) -> anyho
     for n in &cfg.notices {
         println!("{} {n}", mark(false));
     }
+    if let Some(why) = crate::first_use::unknown_provider(cwd, cfg) {
+        println!("{} {why}", mark(false));
+        return Ok(1);
+    }
+    for w in crate::first_use::setting_warnings(cwd, cfg) {
+        println!("{} {w}", mark(false));
+    }
     // everything the administrator forces, each with its source
     if let Some(p) = &cfg.managed {
         println!("{} managed policy   {}", mark(true), p.file.display());

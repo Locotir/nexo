@@ -87,6 +87,11 @@ pub fn nothing_chosen_message() -> String {
 }
 
 pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow::Result<Picked> {
+    pick_with(cfg, provider, model, true)
+}
+
+/// `pick`, with `need_key` false for what only reads the catalogue (`nexo pricing`): the key is not asked for.
+fn pick_with(cfg: &Config, provider: Option<&str>, model: Option<&str>, need_key: bool) -> anyhow::Result<Picked> {
     let mut c = cfg.clone();
     if let Some(p) = provider {
         c.provider = Some(p.to_string());
@@ -115,7 +120,7 @@ pub fn pick(cfg: &Config, provider: Option<&str>, model: Option<&str>) -> anyhow
     // the managed policy has the last word on which provider and model run
     cfg.check_model(&provider, &model).map_err(|e| anyhow::anyhow!(e))?;
     let pc = &c.providers[&provider];
-    if !pc.ready(&provider) {
+    if need_key && !pc.ready(&provider) {
         anyhow::bail!(
             "provider {provider:?} needs a key: {} (`nexo doctor` checks the setup)",
             crate::account::how_to_unlock(&provider, pc)
@@ -477,12 +482,12 @@ pub async fn pricing_cmd(
         Some(w) => match w.split_once('/') {
             Some((p, m)) => (p.to_string(), m.to_string()),
             None => {
-                let (p, _) = pick(cfg, provider, None).map(|p| (p.provider, p.model))?;
+                let (p, _) = pick_with(cfg, provider, None, false).map(|p| (p.provider, p.model))?;
                 (p, w.to_string())
             }
         },
         None => {
-            let picked = pick(cfg, provider, model)?;
+            let picked = pick_with(cfg, provider, model, false)?;
             (picked.provider, picked.model)
         }
     };

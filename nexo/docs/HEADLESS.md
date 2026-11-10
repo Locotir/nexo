@@ -69,6 +69,7 @@ One object at the end, on one line:
 - `structured_output`: the parsed answer, when `--json-schema` is given and it validated.
 - `error`: the reason, when `is_error` is true and a reason is known.
 - `plan_usage`: when the request ran on a subscription login and the backend reported the plan, an array of `{"plan": "codex", "tier": "plus", "meters": [{"label": "wk", "used_percent": 1.0, "resets_in_seconds": 569444}]}` (`used` and `limit` too for a plan that counts requests). Absent for a provider on a key. See [PLAN-USAGE.md](PLAN-USAGE.md).
+- A run that cannot start (no provider, an unknown provider or a configuration that does not parse) prints the same object with `subtype` `error`, `exit_code` 1, empty `result`, `error` set and no session, on stdout with `json` and `stream-json` (with `--json`: one `{"event":"error","message":...}` line). The one-line message goes to stderr too, and the exit code is 1.
 
 ## stream-json
 

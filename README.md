@@ -221,7 +221,7 @@ rejects a request as too long. With the curator, the view stays far below the wi
 `~/.nexo/sessions/` and hold whatever passed through the conversation, so treat them like credentials.
 
 **Is the saving real on my model?** It depends on the price of a cached token and on how long your
-sessions are. `nexo bench` runs the same tasks with and without the curator and prints the difference.
+sessions are. `nexo bench` (a developer command, left out of `--help`; it spends real tokens on your key, see [`crates/nexo-bench/README.md`](nexo/crates/nexo-bench/README.md)) runs the same tasks with and without the curator and prints the difference.
 
 ## Support
 

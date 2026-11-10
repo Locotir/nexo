@@ -121,12 +121,47 @@ impl Flags {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Fmt {
+pub enum Fmt {
     Text,
     Json,
     StreamJson,
     /// `--json`: every internal agent event as it is, kept for the scripts that read it.
     Legacy,
+}
+
+/// The output format the flags ask for.
+pub fn format_asked(flags: &Flags, legacy_json: bool) -> Fmt {
+    match (flags.output_format, legacy_json) {
+        (Some(OutputFormat::Json), _) => Fmt::Json,
+        (Some(OutputFormat::StreamJson), _) => Fmt::StreamJson,
+        (Some(OutputFormat::Text), _) => Fmt::Text,
+        (None, true) => Fmt::Legacy,
+        (None, false) => Fmt::Text,
+    }
+}
+
+/// A run that could not start (no provider, a bad configuration) says so on stdout in the format asked
+/// for, as the result object of docs/HEADLESS.md (the `--json` events: an `error` event).
+pub fn print_startup_error(fmt: Fmt, msg: &str) {
+    use std::io::Write as _;
+    let line = match fmt {
+        Fmt::Text => return,
+        Fmt::Legacy => json!({"event": "error", "message": msg}),
+        Fmt::Json | Fmt::StreamJson => Run::new(fmt, Vec::new(), None).result(EXIT_FAILED, "", None, Some(msg.into())),
+    };
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
+/// What a failed connection adds: the address tried, and for Ollama the likely cause.
+fn unreachable_note(provider: &str, base_url: &str) -> String {
+    let ollama = provider == "ollama" || base_url.contains(":11434");
+    if ollama {
+        format!(" at {base_url}. Ollama does not seem to be running; start it with `ollama serve`")
+    } else {
+        format!(" at {base_url}")
+    }
 }
 
 /// The stdin of a run: what was piped in.
@@ -217,6 +252,8 @@ struct Run {
     printed: bool,
     /// Text mode with a schema prints the validated answer at the end, not the stream.
     quiet_text: bool,
+    /// What to add when the provider cannot be reached (see `unreachable_note`).
+    reach: Option<String>,
 }
 
 fn line(v: &Value) {
@@ -226,6 +263,19 @@ fn line(v: &Value) {
 }
 
 impl Run {
+    fn new(fmt: Fmt, tools: Vec<String>, reach: Option<String>) -> Run {
+        Run {
+            fmt,
+            tools,
+            started: Instant::now(),
+            t: Totals::default(),
+            r: Req::default(),
+            printed: false,
+            quiet_text: false,
+            reach,
+        }
+    }
+
     /// Handles one agent event; true when the request is over.
     fn on_event(&mut self, ev: &AgentEvent) -> bool {
         if self.fmt == Fmt::Legacy {
@@ -292,6 +342,19 @@ impl Run {
                 self.t.cost = *cost_usd;
             }
             AgentEvent::Notice { level, text } => {
+                let hinted;
+                let text = match (&self.reach, text.strip_prefix("Could not reach the provider")) {
+                    (Some(note), Some(rest)) if *level == Level::Error => {
+                        // the note names the address; for Ollama it replaces the raw transport detail
+                        hinted = if note.contains("Ollama") {
+                            format!("Could not reach the provider{note}")
+                        } else {
+                            format!("Could not reach the provider{note}{rest}")
+                        };
+                        &hinted
+                    }
+                    _ => text,
+                };
                 if *level == Level::Error {
                     self.r.error = Some(text.clone());
                 }
@@ -392,13 +455,7 @@ pub async fn run(
     flags: Flags,
 ) -> anyhow::Result<i32> {
     use std::io::Write as _;
-    let fmt = match (flags.output_format, legacy_json) {
-        (Some(OutputFormat::Json), _) => Fmt::Json,
-        (Some(OutputFormat::StreamJson), _) => Fmt::StreamJson,
-        (Some(OutputFormat::Text), _) => Fmt::Text,
-        (None, true) => Fmt::Legacy,
-        (None, false) => Fmt::Text,
-    };
+    let fmt = format_asked(&flags, legacy_json);
     let stream_in = flags.input_format == Some(InputFormat::StreamJson);
     let schema = match flags.json_schema.as_deref().map(crate::schema::load).transpose() {
         Ok(s) => s,
@@ -495,15 +552,9 @@ pub async fn run(
     let tools: Vec<String> = agent_setup.tools.names().map(String::from).collect();
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
 
-    let mut run = Run {
-        fmt,
-        tools,
-        started: Instant::now(),
-        t: Totals::default(),
-        r: Req::default(),
-        printed: false,
-        quiet_text: schema.is_some(),
-    };
+    let reach = config.providers.get(&picked.provider).map(|p| unreachable_note(&picked.provider, &p.base_url));
+    let mut run = Run::new(fmt, tools, reach);
+    run.quiet_text = schema.is_some();
     let mut stdin_rx = stream_in.then(stdin_lines);
     let mut busy = false;
     let mut sent_any = true;

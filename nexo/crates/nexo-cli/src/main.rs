@@ -9,6 +9,7 @@ mod audit_cmd;
 mod bench_cmd;
 mod cli;
 mod export_cmd;
+mod first_use;
 mod headless;
 mod mcp_cmd;
 mod plugin_cmd;

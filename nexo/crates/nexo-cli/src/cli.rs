@@ -349,10 +349,14 @@ pub async fn main() -> i32 {
             },
         };
     }
+    let print_fmt = args.prompt.is_some().then(|| crate::headless::format_asked(&args.headless, args.json));
     match run(args).await {
         Ok(code) => code,
         Err(e) => {
             eprintln!("nexo: {e:#}");
+            if let Some(fmt) = print_fmt {
+                crate::headless::print_startup_error(fmt, &format!("{e:#}"));
+            }
             1
         }
     }
@@ -574,6 +578,11 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         eprintln!("nexo: --output-format, --input-format, --max-turns, --allowed-tools, --disallowed-tools, --append-system-prompt and --json-schema need --print (-p)");
         return Ok(crate::headless::EXIT_USAGE);
     }
+    if args.provider.is_none() {
+        if let Some(why) = crate::first_use::unknown_provider(&cwd, &config) {
+            anyhow::bail!(why);
+        }
+    }
     // plain `nexo` with nothing set up opens on the locked home; a run that cannot ask says what to do
     let unset = args.provider.is_none() && setup::nothing_chosen(&config);
     if unset && args.prompt.is_some() {
@@ -601,7 +610,8 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("nexo review: {e}");
-                return Ok(2);
+                // a clean tree is a result, not a misuse
+                return Ok(if e.starts_with("nothing to review") { 0 } else { 2 });
             }
         };
         // a review reads and never writes
@@ -654,6 +664,13 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
             return Ok(crate::headless::EXIT_USAGE);
         }
     };
+    {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!("nexo: the interactive interface needs a terminal; for scripts use `nexo -p \"<prompt>\"`");
+            return Ok(crate::headless::EXIT_USAGE);
+        }
+    }
     interactive(config, cwd, picked, resume, unset, first).await
 }
 

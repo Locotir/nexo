@@ -279,7 +279,8 @@ fn review_says_when_there_is_nothing_to_review() {
     // config.toml lives in the directory too: keep it out of the way
     std::fs::write(d.path().join(".gitignore"), "config.toml\ndata/\ncache/\n.gitignore\n").unwrap();
     let out = nexo(d.path(), &["review"]);
-    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    // a clean tree is a result, not a usage error
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing to review"));
 }
 
