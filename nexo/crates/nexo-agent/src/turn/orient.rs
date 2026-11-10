@@ -143,8 +143,11 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -
         skip.push(p.canonicalize().unwrap_or(p));
     }
     let said: String = st.history.iter().filter(|m| m.role == Role::User).map(|m| m.text()).collect();
-    let allowed = |rel: &str, _real: &Path| {
+    // a file the model wrote or read in this session, unchanged since, is already known: it can ask for it
+    let allowed = |rel: &str, real: &Path| {
         !said.contains(&attached_header(rel))
+            && !st.reads.met_unchanged(&st.cwd.join(rel))
+            && !st.reads.met_unchanged(real)
             && st.perm.decide("read", ToolKind::Read, &serde_json::json!({ "path": rel }), &st.cwd) == Decision::Allow
     };
     pick(&st.cwd, budget.saturating_sub(used), &skip, &allowed)

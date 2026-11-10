@@ -85,6 +85,13 @@ impl Reads {
         }
     }
 
+    /// Whether the model already met `path` as it is now: it read, wrote or was given it in this session
+    /// and the file has not changed since. Such a file is not attached again by the token budget.
+    pub fn met_unchanged(&self, path: &Path) -> bool {
+        let Some(s) = self.seen.get(path) else { return false };
+        std::fs::read(path).is_ok_and(|b| digest(&b) == s.hash)
+    }
+
     /// A file attached whole to a request, under `header`.
     pub fn attached(&mut self, path: PathBuf, bytes: &[u8], header: String) {
         let end = String::from_utf8_lossy(bytes).lines().count();

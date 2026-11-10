@@ -226,6 +226,34 @@ async fn what_nexo_adds_to_a_message_is_told_apart_and_the_request_is_unchanged(
     r.stop().await;
 }
 
+/// A file the model wrote in this session, unchanged since, is not attached again by the token budget at
+/// the next request: the model has it. A file changed outside the model since is attached.
+#[tokio::test]
+async fn a_file_the_model_wrote_is_not_attached_again_at_the_next_request() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("w1", "write", json!({"path": "made.rs", "content": "fn made() {}\n"}))),
+        Reply::Events(text("written")),
+        Reply::Events(text("ok")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.agent.attach_budget = 4000;
+    let set = tools().with(Arc::new(nexo_tools::write::Write));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "make it".into(), attachments: vec![] });
+    r.turn().await;
+    assert_eq!(std::fs::read_to_string(d.path().join("made.rs")).unwrap(), "fn made() {}\n");
+    std::fs::write(d.path().join("fresh.rs"), "fn fresh() {}\n").unwrap();
+    r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
+    r.turn().await;
+    let reqs = client.requests();
+    let sent = reqs.last().unwrap().messages.last().unwrap().text();
+    assert!(sent.contains("@fresh.rs "), "a file the model never met is attached: {sent}");
+    assert!(!sent.contains("@made.rs "), "the file the model wrote is not attached again: {sent}");
+    r.stop().await;
+}
+
 #[tokio::test]
 async fn a_plain_message_is_told_as_nothing_added_and_sent_asks_before_any_request() {
     let d = tempfile::tempdir().unwrap();
