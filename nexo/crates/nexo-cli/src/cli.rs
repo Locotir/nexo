@@ -737,12 +737,23 @@ async fn interactive(
     };
     if !crate::update::off(&config) {
         let events = ends.events.clone();
-        // at start, then every hour while nexo runs (two GitHub requests a check, well under its limit
-        // of 60 an hour without a key); the interface says each time more commits are out
+        // at start, then every hour while nexo runs (a web redirect, and the API only for the commit
+        // count); the interface says each time more commits are out
         tokio::spawn(async move {
+            let mut told = None;
             loop {
-                if let Ok(Some(behind)) = crate::update::behind().await {
-                    if events.send(AgentEvent::UpdateAvailable { behind }).is_err() {
+                if let Ok(Some(n)) = crate::update::newer_release().await {
+                    let sent = match n.count {
+                        Some(behind) => events.send(AgentEvent::UpdateAvailable { behind }),
+                        // no count to show (GitHub's API did not answer): say it once per release
+                        None if told.as_ref() != Some(&n.tag) => {
+                            told = Some(n.tag);
+                            let text = "A newer nexo release is out. Run `nexo update`, then restart nexo.".to_string();
+                            events.send(AgentEvent::Notice { level: nexo_core::agent::Level::Info, text })
+                        }
+                        None => Ok(()),
+                    };
+                    if sent.is_err() {
                         return;
                     }
                 }

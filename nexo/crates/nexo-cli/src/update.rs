@@ -10,15 +10,32 @@ pub const EVERY: Duration = Duration::from_secs(60 * 60);
 pub const REPO: &str = "https://github.com/Locotir/nexo";
 const API: &str = "https://api.github.com/repos/Locotir/nexo";
 
-/// The release API address. Only a debug build lets `NEXO_UPDATE_API` replace it (tests against a local
-/// server): a released nexo updates from the project's own releases and nowhere else.
-fn api() -> String {
-    #[cfg(debug_assertions)]
-    if let Some(v) = std::env::var("NEXO_UPDATE_API").ok().filter(|v| !v.is_empty()) {
-        return v;
-    }
-    API.to_string()
+/// Where releases are asked for: the web address (a plain redirect and downloads, no request quota) and the
+/// API address (the second try, and the commit count). Only a debug build lets `NEXO_UPDATE_WEB` and
+/// `NEXO_UPDATE_API` replace them (tests against a local server): a released nexo updates from the
+/// project's own releases and nowhere else.
+struct Sources {
+    web: String,
+    api: String,
 }
+
+impl Sources {
+    fn live() -> Self {
+        #[allow(unused_mut)]
+        let mut s = Sources { web: REPO.to_string(), api: API.to_string() };
+        #[cfg(debug_assertions)]
+        {
+            if let Some(v) = std::env::var("NEXO_UPDATE_API").ok().filter(|v| !v.is_empty()) {
+                s.api = v;
+            }
+            if let Some(v) = std::env::var("NEXO_UPDATE_WEB").ok().filter(|v| !v.is_empty()) {
+                s.web = v;
+            }
+        }
+        s
+    }
+}
+
 /// The installers: they install what is missing (Rust, a C compiler or the C++ build tools), then build nexo.
 const INSTALLER_PS: &str = "https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1";
 const INSTALLER_SH: &str = "https://raw.githubusercontent.com/Locotir/nexo/main/install.sh";
@@ -35,6 +52,9 @@ fn notice(behind: u32) -> Option<String> {
         format!("New nexo release: {behind} new commit{s}, ready-built. Run `nexo update`, then restart nexo.")
     })
 }
+
+/// The `--check` line when a newer release is out but its commit count is not known.
+const NEWER_NO_COUNT: &str = "A newer nexo release is out. Run `nexo update`, then restart nexo.";
 
 /// The ready-built file for this machine, as the release workflow names it; `None` where none is published.
 const ASSET: Option<&str> = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -60,6 +80,18 @@ fn client(timeout: u64) -> Option<reqwest::Client> {
     .ok()
 }
 
+/// A client that does not follow redirects: `releases/latest` on the web answers with one, and where it
+/// points is the answer.
+fn probe(timeout: u64) -> Option<reqwest::Client> {
+    nexo_providers::build_client(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
+    })
+    .ok()
+}
+
 /// The latest release: its tag and its files (name, download address).
 struct Release {
     tag: String,
@@ -77,27 +109,118 @@ fn parse_release(v: &serde_json::Value) -> Option<Release> {
     Some(Release { tag, files })
 }
 
-async fn latest_release(client: &reqwest::Client) -> Option<Release> {
+/// The release tag in the address `releases/latest` redirects to (`.../releases/tag/<tag>`). Only plain
+/// tag characters pass, so the address built from it stays inside the release downloads.
+fn tag_of(location: &str) -> Option<String> {
+    let t = location.split("/releases/tag/").nth(1)?.split(['?', '#', '/']).next()?;
+    let plain = t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    (!t.is_empty() && plain).then(|| t.to_string())
+}
+
+/// The latest release's tag from the web, with no API request: `releases/latest` is a redirect.
+async fn tag_via_web(probe: &reqwest::Client, src: &Sources) -> Option<String> {
+    let r = probe.get(format!("{}/releases/latest", src.web)).send().await.ok()?;
+    if !r.status().is_redirection() {
+        return None;
+    }
+    tag_of(r.headers().get(reqwest::header::LOCATION)?.to_str().ok()?)
+}
+
+/// The release `tag` with the files named, at their download addresses.
+fn release_from_tag(src: &Sources, tag: &str, names: &[&str]) -> Release {
+    let files = names.iter().map(|n| (n.to_string(), format!("{}/releases/download/{tag}/{n}", src.web)));
+    Release { tag: tag.to_string(), files: files.collect() }
+}
+
+const NO_RELEASE: &str = "GitHub did not answer with a release";
+
+/// The reason in words when GitHub refused for its hourly limit (403 or 429 with no requests left), with
+/// the minutes until `reset` (an epoch second) counted from `now`.
+fn limit_text(status: u16, remaining: Option<&str>, reset: Option<&str>, now: u64) -> Option<String> {
+    if !matches!(status, 403 | 429) || remaining.map(str::trim) != Some("0") {
+        return None;
+    }
+    let when = match reset.and_then(|r| r.trim().parse::<u64>().ok()) {
+        Some(r) => format!("it resets in {} min", r.saturating_sub(now).div_ceil(60).max(1)),
+        None => "try again later".to_string(),
+    };
+    Some(format!("GitHub's hourly limit for this network is used up; {when}"))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// The latest release from the API (the second try): why not when it cannot be had.
+async fn api_release(client: &reqwest::Client, src: &Sources) -> Result<Release, String> {
     let r = client
-        .get(format!("{}/releases/latest", api()))
+        .get(format!("{}/releases/latest", src.api))
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .ok()?;
+        .map_err(|_| NO_RELEASE.to_string())?;
     if !r.status().is_success() {
-        return None;
+        let h = |k: &str| r.headers().get(k).and_then(|v| v.to_str().ok());
+        let why = limit_text(r.status().as_u16(), h("x-ratelimit-remaining"), h("x-ratelimit-reset"), now_secs());
+        return Err(why.unwrap_or_else(|| NO_RELEASE.to_string()));
     }
-    parse_release(&r.json().await.ok()?)
+    parse_release(&r.json().await.map_err(|_| NO_RELEASE.to_string())?).ok_or_else(|| NO_RELEASE.to_string())
 }
 
-/// How many commits the latest release (or `main`, before the first release) is ahead of `commit`.
+/// The latest release: from the web redirect first (no API quota), then from the API.
+async fn latest_release(
+    client: &reqwest::Client,
+    probe: &reqwest::Client,
+    src: &Sources,
+    names: &[&str],
+) -> Result<Release, String> {
+    match tag_via_web(probe, src).await {
+        Some(tag) => Ok(release_from_tag(src, &tag, names)),
+        None => api_release(client, src).await,
+    }
+}
+
+/// Whether a release tag (`build-<short commit>`) is the commit this build was made from.
+fn tag_is_commit(tag: &str, commit: &str) -> bool {
+    let Some(sha) = tag.strip_prefix("build-") else { return false };
+    sha.len() >= 7 && commit.len() >= 7 && (commit.starts_with(sha) || sha.starts_with(commit))
+}
+
+/// What a check found: a newer release, its tag and how many commits ahead when the API could say.
+#[derive(Debug, PartialEq)]
+pub struct Newer {
+    pub tag: String,
+    pub count: Option<u32>,
+}
+
+/// Up to date (`Some(None)`), a newer release (`Some(Some(..))`), or `None` when nothing could be asked.
+/// The release tag comes from the web redirect; when it is the running commit nothing else is asked. The
+/// API only adds the count of commits (never guessed: without it, none is shown).
+async fn status(commit: &str, src: &Sources) -> Option<Option<Newer>> {
+    let (client, probe) = (client(8)?, probe(8)?);
+    let web_tag = tag_via_web(&probe, src).await;
+    if web_tag.as_deref().is_some_and(|t| tag_is_commit(t, commit)) {
+        return Some(None);
+    }
+    let target = match &web_tag {
+        Some(t) => t.clone(),
+        None => api_release(&client, src).await.map_or_else(|_| "main".to_string(), |r| r.tag),
+    };
+    let count = ahead(&client, src, commit, &target).await;
+    match (web_tag, count) {
+        (_, Some(0)) => Some(None),
+        (Some(tag), count) => Some(Some(Newer { tag, count })),
+        (None, Some(n)) => Some(Some(Newer { tag: target, count: Some(n) })),
+        (None, None) => None,
+    }
+}
+
+/// How many commits `target` (a release tag, or `main`) is ahead of `commit`.
 /// When GitHub does not know the commit (a build of changes pushed elsewhere, or not yet), the commits
-/// on `main` made after it count instead. `None` when GitHub cannot be reached.
-async fn ask(commit: &str) -> Option<u32> {
-    let client = client(8)?;
-    let target = latest_release(&client).await.map_or_else(|| "main".to_string(), |r| r.tag);
+/// on `main` made after it count instead. `None` when the API cannot say.
+async fn ahead(client: &reqwest::Client, src: &Sources, commit: &str, target: &str) -> Option<u32> {
     let get = |url: String| client.get(url).header("Accept", "application/vnd.github+json").send();
-    let r = get(format!("{}/compare/{commit}...{target}", api())).await.ok()?;
+    let r = get(format!("{}/compare/{commit}...{target}", src.api)).await.ok()?;
     if r.status().is_success() {
         let v: serde_json::Value = r.json().await.ok()?;
         return v.get("ahead_by")?.as_u64().map(|n| n as u32);
@@ -106,7 +229,7 @@ async fn ask(commit: &str) -> Option<u32> {
     if r.status() != reqwest::StatusCode::NOT_FOUND || when == "unknown" {
         return None;
     }
-    let r = get(format!("{}/commits?sha=main&per_page=100&since={when}", api())).await.ok()?;
+    let r = get(format!("{}/commits?sha=main&per_page=100&since={when}", src.api)).await.ok()?;
     if !r.status().is_success() {
         return None;
     }
@@ -129,17 +252,16 @@ pub fn off(config: &nexo_core::Config) -> bool {
 
 /// The notice for the interface: none when up to date.
 pub async fn check() -> Result<Option<String>, String> {
-    Ok(behind().await?.and_then(notice))
+    Ok(newer_release().await?.map(|n| n.count.and_then(notice).unwrap_or_else(|| NEWER_NO_COUNT.to_string())))
 }
 
-/// How many commits behind `main` this build is: none when up to date.
-pub async fn behind() -> Result<Option<u32>, String> {
+/// The newer release this build lacks: none when up to date.
+pub async fn newer_release() -> Result<Option<Newer>, String> {
     let c = commit();
     if c == "unknown" {
         return Err("this build does not know its commit: run `nexo update` to rebuild from GitHub".into());
     }
-    let behind = ask(c).await.ok_or_else(|| format!("cannot ask GitHub about commit {c}"))?;
-    Ok((behind > 0).then_some(behind))
+    status(c, &Sources::live()).await.ok_or_else(|| format!("cannot ask GitHub about commit {c}"))
 }
 
 /// `nexo update`: `--check` only says; otherwise builds the latest `main` and puts it where this nexo is.
@@ -162,7 +284,7 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
     let Some(exe) = exe else { return installer(None) };
     if commit() != "unknown" {
         ui.begin("checking for a new release", false);
-        if ask(commit()).await == Some(0) {
+        if status(commit(), &Sources::live()).await == Some(None) {
             ui.end(Kind::Final, &format!("nexo already up to date ({})", short(commit())));
             return Ok(0);
         }
@@ -227,7 +349,8 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
 async fn download(ui: &Ui, stage: &Path) -> Result<(PathBuf, String), String> {
     let name = ASSET.ok_or("none is published for this system")?;
     let client = client(300).ok_or("no HTTP client")?;
-    let rel = latest_release(&client).await.ok_or("GitHub did not answer with a release")?;
+    let probe = probe(30).ok_or("no HTTP client")?;
+    let rel = latest_release(&client, &probe, &Sources::live(), &[name, SUMS]).await?;
     let url = |n: &str| rel.files.iter().find(|(f, _)| f == n).map(|(_, u)| u.clone());
     let (bin_url, sums_url) =
         (url(name).ok_or(format!("{} has no {name}", rel.tag))?, url(SUMS).ok_or("no SHA256SUMS")?);
@@ -954,5 +1077,146 @@ mod tests {
             short_error("nexo-linux-x86_64 does not match its SHA-256"),
             "nexo-linux-x86_64 does not match its SHA-256"
         );
+    }
+
+    /// A local web server: each request path gets the raw response registered for it (404 otherwise); every
+    /// requested path is recorded. `routes` is given the server's own address, for redirects.
+    struct Mock {
+        base: String,
+        hits: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Mock {
+        async fn start(routes: impl FnOnce(&str) -> Vec<(String, String)>) -> Mock {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let routes = routes(&base);
+            let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = hits.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else { return };
+                    let (routes, seen) = (routes.clone(), seen.clone());
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 4096];
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                        let reply = routes.iter().find(|(p, _)| *p == path).map(|(_, r)| r.clone());
+                        seen.lock().unwrap().push(path);
+                        let reply = reply.unwrap_or_else(|| reply_with("404 Not Found", &[], ""));
+                        let _ = sock.write_all(reply.as_bytes()).await;
+                        let _ = sock.shutdown().await;
+                    });
+                }
+            });
+            Mock { base, hits }
+        }
+
+        fn sources(&self) -> Sources {
+            Sources { web: self.base.clone(), api: format!("{}/api", self.base) }
+        }
+
+        fn api_calls(&self) -> usize {
+            self.hits.lock().unwrap().iter().filter(|p| p.starts_with("/api")).count()
+        }
+    }
+
+    fn reply_with(status: &str, headers: &[(&str, String)], body: &str) -> String {
+        let h: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        format!("HTTP/1.1 {status}\r\n{h}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    }
+
+    fn redirect(base: &str, tag: &str) -> (String, String) {
+        let loc = format!("{base}/releases/tag/{tag}");
+        ("/releases/latest".to_string(), reply_with("302 Found", &[("Location", loc)], ""))
+    }
+
+    fn rate_limited(reset: u64) -> String {
+        let h = [("x-ratelimit-remaining", "0".to_string()), ("x-ratelimit-reset", reset.to_string())];
+        reply_with("403 Forbidden", &h, "{\"message\":\"API rate limit exceeded\"}")
+    }
+
+    #[tokio::test]
+    async fn the_release_is_found_from_the_web_redirect_with_no_api_call() {
+        let m = Mock::start(|b| vec![redirect(b, "build-abc1234")]).await;
+        let (c, p) = (client(5).unwrap(), probe(5).unwrap());
+        let rel = latest_release(&c, &p, &m.sources(), &["nexo-linux-x86_64", SUMS]).await.unwrap();
+        assert_eq!(rel.tag, "build-abc1234");
+        let want = format!("{}/releases/download/build-abc1234/SHA256SUMS", m.base);
+        assert!(rel.files.contains(&(SUMS.to_string(), want)), "{:?}", rel.files);
+        assert_eq!(rel.files.len(), 2);
+        assert_eq!(m.api_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn when_the_redirect_gives_nothing_the_api_is_the_second_try() {
+        let body = r#"{"tag_name":"build-def5678","assets":[{"name":"SHA256SUMS","browser_download_url":"https://x/SHA256SUMS"}]}"#;
+        let ok = reply_with("200 OK", &[("Content-Type", "application/json".into())], body);
+        let m = Mock::start(|_| vec![("/api/releases/latest".to_string(), ok)]).await;
+        let (c, p) = (client(5).unwrap(), probe(5).unwrap());
+        let rel = latest_release(&c, &p, &m.sources(), &["nexo-linux-x86_64", SUMS]).await.unwrap();
+        assert_eq!(rel.tag, "build-def5678");
+        assert_eq!(rel.files, vec![(SUMS.to_string(), "https://x/SHA256SUMS".to_string())]);
+        assert_eq!(m.api_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_used_up_hourly_limit_is_named_with_the_minutes_left() {
+        let reset = now_secs() + 590;
+        let m = Mock::start(|_| vec![("/api/releases/latest".to_string(), rate_limited(reset))]).await;
+        let (c, p) = (client(5).unwrap(), probe(5).unwrap());
+        let e = latest_release(&c, &p, &m.sources(), &[SUMS]).await.err().unwrap();
+        assert_eq!(e, "GitHub's hourly limit for this network is used up; it resets in 10 min");
+        // a 403 that is not the limit keeps the plain reason
+        let plain =
+            Mock::start(|_| vec![("/api/releases/latest".to_string(), reply_with("403 Forbidden", &[], ""))]).await;
+        let e = latest_release(&c, &p, &plain.sources(), &[SUMS]).await.err().unwrap();
+        assert_eq!(e, NO_RELEASE);
+    }
+
+    #[tokio::test]
+    async fn a_release_tag_equal_to_the_running_commit_is_up_to_date_without_the_api() {
+        let m = Mock::start(|b| vec![redirect(b, "build-abc1234")]).await;
+        assert_eq!(status("abc1234deadbeefabc1234deadbeefabc1234dea", &m.sources()).await, Some(None));
+        assert_eq!(m.api_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_newer_release_is_told_without_a_count_when_the_api_cannot_give_one() {
+        let m = Mock::start(|b| {
+            vec![redirect(b, "build-def5678"), ("/api/compare/abc1234...build-def5678".into(), rate_limited(0))]
+        })
+        .await;
+        let got = status("abc1234", &m.sources()).await;
+        assert_eq!(got, Some(Some(Newer { tag: "build-def5678".into(), count: None })));
+        // and with the count when the API answers
+        let ok = reply_with("200 OK", &[], r#"{"ahead_by":3}"#);
+        let m =
+            Mock::start(|b| vec![redirect(b, "build-def5678"), ("/api/compare/abc1234...build-def5678".into(), ok)])
+                .await;
+        let got = status("abc1234", &m.sources()).await;
+        assert_eq!(got, Some(Some(Newer { tag: "build-def5678".into(), count: Some(3) })));
+    }
+
+    #[test]
+    fn tags_and_limits_are_read_strictly() {
+        assert_eq!(tag_of("https://github.com/Locotir/nexo/releases/tag/build-abc1234"), Some("build-abc1234".into()));
+        assert_eq!(tag_of("/Locotir/nexo/releases/tag/v1.2?x=1"), Some("v1.2".into()));
+        assert_eq!(tag_of("https://github.com/Locotir/nexo/releases"), None);
+        assert_eq!(tag_of("https://github.com/x/releases/tag/a%2F..%2Fb"), None);
+        assert!(tag_is_commit("build-abc1234", "abc1234ffff") && !tag_is_commit("build-abc1234", "abc1235ffff"));
+        assert!(!tag_is_commit("v1", "v1") && !tag_is_commit("build-abc", "abc"));
+        assert_eq!(
+            limit_text(429, Some("0"), Some("1060"), 1000).unwrap(),
+            "GitHub's hourly limit for this network is used up; it resets in 1 min"
+        );
+        assert_eq!(
+            limit_text(403, Some("0"), Some("1000"), 1000).unwrap(),
+            "GitHub's hourly limit for this network is used up; it resets in 1 min"
+        );
+        assert!(limit_text(403, Some("12"), Some("1"), 0).is_none() && limit_text(404, Some("0"), None, 0).is_none());
+        assert!(limit_text(403, Some("0"), None, 0).unwrap().ends_with("try again later"));
     }
 }
