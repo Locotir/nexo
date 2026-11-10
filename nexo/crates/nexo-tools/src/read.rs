@@ -18,6 +18,11 @@ pub const LINE_CHARS: usize = 2000;
 pub const MAX_PATHS: usize = 20;
 /// Characters of file text one call of several files returns in all; what does not fit is cut at a line.
 pub const MULTI_CAP: usize = 100_000;
+/// Characters of file text one single-file `read` call returns at most. Without it one call could put a
+/// whole 150 000-character file (about 50 000 tokens) into the model's context; other agents cap one
+/// read at 10 000 to 25 000 tokens, and 64 000 characters is about 16 000 tokens. What does not fit is
+/// cut at a line and the trailer says which `offset` reads on.
+pub const FILE_CAP: usize = 64_000;
 /// Room left below which a file of a multi-file call is not started.
 const MIN_ROOM: usize = 1_000;
 
@@ -34,7 +39,7 @@ impl Tool for Read {
             name: "read".into(),
             description: "Read text files: numbered lines (`   12│ text`), at most `limit` \
                           from line `offset` (1-based), default the first 2000; a \
-                          line over 2000 characters is cut. Several files at once: `paths` (each \
+                          line over 2000 characters is cut; a call is cut at 64000 characters. Several files at once: `paths` (each \
                           under a `=== path ===` header; one that fails is reported in place). A PNG, JPEG, GIF, WebP, PPM, PGM \
                           or BMP file is shown as an image (at most 5 MB and 2000 px); a Jupyter notebook as its cells and outputs. Directories and other \
                           binary files are refused (use `ls` for a directory)."
@@ -57,7 +62,7 @@ impl Tool for Read {
             params: &[
                 ("paths", "Several files, at most 20"),
                 ("offset", "First line (1-based)"),
-                ("limit", "Lines, default 2000"),
+                ("limit", "Lines, default 2000; a call returns at most 64000 characters"),
             ],
         })
     }
@@ -219,22 +224,31 @@ async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Option<usize>)
     let mut raw = String::new();
     let mut n = 0usize;
     let mut capped = false;
+    let mut chars = out.chars().count();
     for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
         let shown_line = cut_line(line, LINE_CHARS);
         let numbered = format!("{:>6}│ {}\n", i + 1, shown_line);
         // always one line, so that a file that gets any room shows something
-        if n >= offset && room.is_some_and(|r| out.len() + numbered.len() > r) {
+        let here = numbered.chars().count();
+        let over_room = room.is_some_and(|r| out.len() + numbered.len() > r);
+        if n >= offset && (over_room || chars + here > FILE_CAP) {
             capped = true;
             break;
         }
         out.push_str(&numbered);
+        chars += here;
         raw.push_str(&shown_line);
         raw.push('\n');
         n = i + 1;
     }
-    if n < total {
-        let why = if capped { "; the call hit its size cap, so" } else { ";" };
-        out.push_str(&format!("… {} more lines (of {total}){why} read with offset {} to continue\n", total - n, n + 1));
+    if capped {
+        out.push_str(&format!(
+            "… lines {offset}-{n} of {total} returned, {} more; the call hit its size cap, so read with offset {} to continue\n",
+            total - n,
+            n + 1
+        ));
+    } else if n < total {
+        out.push_str(&format!("… {} more lines (of {total}); read with offset {} to continue\n", total - n, n + 1));
     }
     ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown, text: raw, start_line: offset })
 }
@@ -634,5 +648,68 @@ mod tests {
         let many: Vec<String> = (0..=MAX_PATHS).map(|i| format!("f{i}")).collect();
         let out = Read.run(json!({"paths": many}), &c).await;
         assert!(out.is_error && out.content.contains("at most"), "{}", out.content);
+    }
+
+    /// Rebuilds a file from the successive reads that the trailers lead, and checks the cap each time.
+    async fn read_all(c: &ToolContext, name: &str) -> (String, usize) {
+        let (mut got, mut offset, mut calls) = (String::new(), 1usize, 0usize);
+        loop {
+            let out = Read.run(json!({"path": name, "offset": offset}), c).await;
+            assert!(!out.is_error, "{}", out.content);
+            assert!(out.content.chars().count() <= FILE_CAP + 200, "over the cap: {}", out.content.len());
+            calls += 1;
+            match out.content.rsplit_once("… lines ") {
+                Some((body, trailer)) => {
+                    got.push_str(body);
+                    let next: usize =
+                        trailer.rsplit("read with offset ").next().unwrap().split(' ').next().unwrap().parse().unwrap();
+                    assert!(next > offset, "no progress: {trailer}");
+                    offset = next;
+                }
+                None => {
+                    got.push_str(&out.content);
+                    return (got, calls);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_under_the_cap_comes_back_unchanged_and_over_it_is_cut_at_a_line() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ctx(d.path());
+        std::fs::write(d.path().join("s.txt"), "one\ntwo\n").unwrap();
+        let out = Read.run(json!({"path": "s.txt"}), &c).await;
+        assert_eq!(out.content, "     1│ one\n     2│ two\n");
+        let text: String = (1..=401).map(|i| format!("{i} {}\n", "x".repeat(380))).collect();
+        std::fs::write(d.path().join("b.txt"), &text).unwrap();
+        let out = Read.run(json!({"path": "b.txt"}), &c).await;
+        assert!(out.content.chars().count() <= FILE_CAP + 200, "{}", out.content.len());
+        let (body, trailer) = out.content.rsplit_once("… lines ").unwrap();
+        assert!(body.ends_with('\n') && trailer.starts_with("1-"), "{trailer}");
+        assert!(trailer.contains("of 401 returned") && trailer.contains("read with offset"), "{trailer}");
+        // reading on with the offsets the trailers give: no gap, no overlap, to the end
+        let (all, calls) = read_all(&c, "b.txt").await;
+        assert!(calls >= 2);
+        let want: String = text.lines().enumerate().map(|(i, l)| format!("{:>6}│ {l}\n", i + 1)).collect();
+        assert_eq!(all, want);
+        // an explicit window is capped the same way
+        let out = Read.run(json!({"path": "b.txt", "offset": 10, "limit": 300}), &c).await;
+        assert!(out.content.contains("… lines 10-") && out.content.contains("of 401 returned"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_giant_first_line_and_multibyte_text_at_the_cut_do_not_panic() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ctx(d.path());
+        std::fs::write(d.path().join("g.txt"), format!("{}\nnext\n", "é".repeat(200_000))).unwrap();
+        let out = Read.run(json!({"path": "g.txt"}), &c).await;
+        assert!(!out.is_error && out.content.chars().count() < FILE_CAP, "{}", out.content.len());
+        let text: String = (1..=300).map(|i| format!("{i} {}\n", "日".repeat(1990))).collect();
+        std::fs::write(d.path().join("m.txt"), &text).unwrap();
+        let (all, calls) = read_all(&c, "m.txt").await;
+        assert!(calls >= 2 && all.contains("   300│ 300 日"), "{calls}");
+        let out = Read.run(json!({"paths": ["m.txt", "g.txt"]}), &c).await;
+        assert!(out.content.contains("=== g.txt"), "{}", out.content.len());
     }
 }
