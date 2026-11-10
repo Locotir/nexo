@@ -350,7 +350,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             }
         }
         if calls.is_empty() {
-            if msg.text().trim().is_empty() && ck.stopping.is_none() {
+            if msg.text().trim().is_empty() && !msg.reasoning().trim().is_empty() && ck.stopping.is_none() {
                 notice(
                     &events,
                     Level::Warn,
