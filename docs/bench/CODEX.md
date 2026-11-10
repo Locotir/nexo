@@ -2,6 +2,8 @@
 
 Run on 2026-11-10. This is a smaller test than the one against Claude Code ([`RESULTS.md`](RESULTS.md)): one run per tool on the long tasks, and no plan published before the run. Read it as a demonstration, not as a statistic. See [Limits](#limits).
 
+**In short:** on a long session with the same model, Codex CLI compacted its context twice, lost five values the user had given in the first two turns, and did not solve the task. nexo did not compact, still had them, and solved it.
+
 ## Setup
 
 | | nexo | Codex CLI |
@@ -15,7 +17,7 @@ The subscription does not bill per token. The dollar columns use third-party lis
 
 ## A. Long session (the headline)
 
-Task `marathon-pasted` from nexo's own bench: 10 user turns on a small Rust crate, about 865,000 characters of pasted material across the requests. It is graded by hidden Rust tests and by a final `RELEASE.json` that must repeat values given in the first message. One run per tool.
+Task `marathon-pasted` from nexo's own bench: 10 user turns on a small Rust crate, about 865,000 characters of pasted material across the requests. It is graded by hidden Rust tests and by a final `RELEASE.json` that must repeat values given in the first message and in a CI log pasted in the second turn. One run per tool.
 
 | | nexo | Codex CLI |
 | --- | --- | --- |
@@ -27,7 +29,7 @@ Task `marathon-pasted` from nexo's own bench: 10 user turns on a small Rust crat
 | Wall time | 215 s | 350 s |
 | Compactions | 0 | 2 |
 
-Why Codex CLI failed: after its two compactions it no longer had the values from the first message. In the last turn it answered "the conversation contains no values for `codename`, `build`, `maintainer`, `ci_run`, or `ci_job`" and asked for them instead of writing the file.
+Why Codex CLI failed: after its two compactions it no longer had five values it needed at the end: the codename, build number and maintainer from the first message, and the failed CI run and its job id from a log pasted in the second turn. In the last turn it answered "the conversation contains no values for `codename`, `build`, `maintainer`, `ci_run`, or `ci_job`" and asked for them instead of writing the file.
 
 ## B. An earlier long run, same day
 

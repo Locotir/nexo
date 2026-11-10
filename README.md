@@ -84,7 +84,7 @@ By the plan's rule nexo is clearly better here: nexo was cheaper in 15 of 15 pai
   <img alt="Long session, nexo against Codex CLI: nexo solved it, Codex CLI did not. Calls 27 against 42, input tokens 3.86M against 6.53M, list price 0.204 dollars against 0.272 dollars" src="docs/img/bench-codex.svg" width="760">
 </picture>
 
-nexo solved the long session and Codex CLI did not: after two compactions it had lost the values from the first message. It is one run per tool, so a demonstration and not a statistic; on short tasks the two tie. Results and limits: [`docs/bench/CODEX.md`](docs/bench/CODEX.md).
+Codex CLI compacted its context twice, lost five values the user had given in the first two turns (three in the first message, two in a CI log pasted in the second), and did not solve the task. In the last turn it answered: "the conversation contains no values for `codename`, `build`, `maintainer`, `ci_run`, or `ci_job`". nexo did not compact, still had them, and solved the task with 27 model calls against 42. It is one run per tool, so a demonstration and not a statistic; on short tasks the two tie. Results and limits: [`docs/bench/CODEX.md`](docs/bench/CODEX.md).
 
 ## How the curator works
 
