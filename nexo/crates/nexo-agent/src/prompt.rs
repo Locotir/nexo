@@ -787,7 +787,9 @@ mod size_budget {
     #[test]
     fn the_tool_text_stays_within_its_budget() {
         let n = tool_text_chars();
-        assert!(n <= 12_100, "tool descriptions and guidance take {n} characters; the budget is 12100");
+        // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
+        let budget = if cfg!(windows) { 12_150 } else { 12_100 };
+        assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
     }
 
     #[test]
