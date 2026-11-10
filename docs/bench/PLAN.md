@@ -46,7 +46,7 @@ Rules for every run:
 api.anthropic.com
 ```
 
-If the pilot proves another host is needed for Claude Code to start, it is added to this list before the plan is frozen, and the final list is the one in the frozen commit.
+The pilots showed that both tools start and finish with this list alone. The two start-up requests that the proxy blocks are handled by the network rule in section 9.
 
 - Caps per run (both arms): visual 25 model calls per turn, $0.60, 15 minutes. Long: 40 calls per turn, $3.00, 60 minutes. A run that hits a cap is "not solved".
 - The launcher refuses to start if any `ANTHROPIC_*` variable exists, and records the variable names (never values) that each container saw.
@@ -73,7 +73,7 @@ What cannot be equalized, and is said here: the subscription is not pay per toke
 
 ## 4. The five tasks
 
-Each task has seeded inputs and hidden checks. The nonce and the seeds are drawn at run time from a master seed. The SHA-256 of the master seed is `MASTER_SEED_SHA256` (TO FILL; the launcher prints it and it is published before the first counted run). The seed itself is published after the last run. Hidden tests and truth files are never mounted into the agent's container: they live on the host and run after the last turn.
+Each task has seeded inputs and hidden checks. The nonce and the seeds are drawn at run time from a master seed. The SHA-256 of the master seed is `f2db0c42819bd80c323ab7a00cc8fe2e1fdf0c5c0b22db649481eecefc4249b9`. The seed itself is published after the last run. Hidden tests and truth files are never mounted into the agent's container: they live on the host and run after the last turn.
 
 Placeholders in the prompts: `{NONCE}` is a random code, one per pair, written by the agent into the page. `{N}`, `{R}`, `{W}` are values from the seed. All prompts are in English and are sent verbatim.
 
@@ -135,7 +135,7 @@ Check every command built in this session against the four rules from my first m
 
 ### L2: bug hunt in a seeded repo (6 turns, one session)
 
-The repo (`shopflow/`, `docs/RULES.md`, about 40 files, with four seeded bugs) is generated from the seed. `{N}`, `{R}`, `{W}` come from the same seed.
+The repo (`shopflow/`, `docs/RULES.md`, about 44 files, with four seeded bugs) is generated from the seed. `{N}`, `{R}`, `{W}` come from the same seed.
 
 ```
 This repository is a small order system. Read docs/RULES.md and the code under shopflow/, run "python3 -m unittest", and tell me in at most 10 lines how an order goes from cart to invoice. Change nothing yet.
@@ -212,11 +212,15 @@ It measures quality of the pages, not cost.
 
 A run is dropped from scoring, and listed with the reason, only if:
 
-- the proxy log shows a connection to a host outside the allow list (denied attempts are logged);
+- the model itself tried to reach a host outside the allow list through a tool call (curl, wget, pip, npm, git clone, a web tool, or a fetch inside code it runs). See the network rule below;
 - the transcript shows the agent reading benchmark files (rig, checks, other runs, the hidden tests or truth);
 - the run failed from infrastructure: server error 5xx or a usage limit after retries, or the container died.
 
-An excluded run is repeated once, and both runs are published. No run is removed because its result is bad. A run that fails by its own fault (wrong output, cap reached, crash of the tool) counts as not solved.
+Network rule, the same for both arms. Each harness makes one automatic request at start-up that the proxy blocks. nexo asks `models.dev` (a model price list). Claude Code asks `http-intake.logs.us5.datadoghq.com` (its telemetry). The model does not make either request and neither returns data to the run. A blocked request that the harness makes by itself, not through a model tool call, is listed per run in the published records and does not exclude the run. Any further host of this kind seen in a counted run will be listed in the results in the same way. These two hosts are not added to the allow list.
+
+How the two cases are told apart: the proxy log shows the host but not who asked. The check script (`post/contamination.py`) reads every tool call in the transcripts and flags commands and arguments that look like network use (curl, wget, pip, npm, git clone and fetch, ssh, nc, a URL in a command, or Python network code). It also flags any denied host in the proxy log. It is run with the two hosts above set aside, so a denied host that is not one of them is flagged. A flagged run is then read by hand against its transcript: a matching tool call excludes the run, no matching tool call means a harness request that is listed. The script matches text patterns in commands. It does not trace what a program the model wrote does when it runs, so those cases are read by hand.
+
+An excluded run is repeated once. The launcher has no automatic repeat: the repeat is started by hand with the same seed and inputs. Both the excluded run and its repeat are published. No run is removed because its result is bad. A run that fails by its own fault (wrong output, cap reached, crash of the tool) counts as not solved.
 
 ## 10. Budget
 
@@ -224,6 +228,12 @@ An excluded run is repeated once, and both runs are published. No run is removed
 - A hard spending limit on the API workspace is set in the console by the owner.
 - Claude Code uses subscription quota, not API money.
 - A short pilot (under $1) is run first: one V1 and the first turns of L1. It is not counted and its records are published too. It decides only whether the rig works (no request errors, session resume works in both tools, cache reads appear from the second call).
+
+### Pilot
+
+Two pilots were run on 2026-11-10 with `claude-haiku-5-5`, one run per arm on V1 and on the first 2 turns of L1. They are not part of the result. They exist to prove sign-in, session resume, caching and the judge. The nexo arm spent $0.027 in each pilot. In the first pilot the Claude Code arm did not start (its token was rejected) and it was repeated.
+
+The pilot found a bug in nexo: the first call after each new user message re-wrote the whole prompt cache. It is fixed before the counted run, in commit `NEXO_COMMIT`. No comparison between the arms is printed from the pilots, because pilots are not results.
 - Extra arm, labeled and outside the headline: Claude Code with auto-compact forced to 100k tokens (`CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`), on L1 and L2, 3 repetitions each, 6 runs, no API cost. It exists to answer "what if the rival were tuned"; it never enters the index or the decision.
 
 ## 11. What will be published
@@ -239,4 +249,5 @@ After a secrets scan: all transcripts, token logs, proxy logs, the produced file
 - Claude Code compacts only near the model's limit by default, which these tasks probably never reach. A low-threshold compaction setting is not tested, except as the labeled extra arm above.
 - The model is not deterministic and the sampling settings cannot be fixed. Alternating order, medians and the 12-of-15 rule are the guard.
 - The two access routes differ (subscription against API key): dollars are list-price value, not what anyone pays.
+- The Claude Code arm runs on a paid subscription through `claude -p` with a token from `claude setup-token`, and a human starts each launch. The cost shown for it is computed from its token counts at API list prices, not what the subscription charges.
 - Hidden tests do not cover everything the prompts allow. A solved run is not a perfect run.
