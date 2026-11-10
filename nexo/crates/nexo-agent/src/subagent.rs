@@ -27,7 +27,7 @@ use nexo_core::message::{Message, Part, Role};
 use nexo_core::pricing::Pricing;
 use nexo_core::provider::{ModelRequest, ToolSpec};
 use nexo_core::stream::{FinishReason, StreamEvent, Usage};
-use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
+use nexo_core::tool::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
@@ -977,6 +977,18 @@ impl Tool for SubAgent {
             ),
             parameters: params,
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` can edit.",
+            params: &[
+                ("prompt", "The whole task, naming files and symbols"),
+                ("background", "Run as a job"),
+                ("model", "Only if the person asks"),
+                ("provider", "Only if the person asks"),
+            ],
+        })
     }
 
     fn kind(&self) -> ToolKind {

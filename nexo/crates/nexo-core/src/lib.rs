@@ -63,7 +63,9 @@ pub use provider::{
     Effort, EventStream, ModelCheck, ModelInfo, ModelRequest, Protocol, ReasoningConfig, ServerProbe, ToolSpec,
 };
 pub use stream::{Collector, FinishReason, StreamEvent, Usage};
-pub use tool::{TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolProgress, ToolSet};
+pub use tool::{
+    Compact, TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolProgress, ToolSet,
+};
 
 #[cfg(test)]
 mod count_tests {

@@ -5,7 +5,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -72,6 +72,18 @@ impl Tool for Bash {
                 "required": ["command"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Run a shell command in the working directory; returns output and exit code. `background: true` makes it a job (see `jobs`).",
+            params: &[
+                ("timeout", "Seconds, default 120, max 600"),
+                                ("wait_until", "Shell condition polled before running"),
+                ("detach", "With `background`: outlives nexo"),
+                ("unsandboxed", "Rerun outside the sandbox"),
+            ],
+        })
     }
 
     fn kind(&self) -> ToolKind {

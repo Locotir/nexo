@@ -163,6 +163,9 @@ pub enum Cmd {
         /// Print only nexo's own part of the prompt: the built-in text and tool guidance, no instruction files or preferences.
         #[arg(long, conflicts_with_all = ["edit", "tools"])]
         builtin: bool,
+        /// Print what a model with this context window (tokens) would get: the compact text at 32000 or less.
+        #[arg(long, value_name = "TOKENS", conflicts_with = "edit")]
+        window: Option<u64>,
     },
     /// Show or set the prices of a model (per million tokens).
     Pricing {
@@ -511,10 +514,10 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Sessions { what: Some(SessionsCmd::Restore { ids }) }) => {
             return Ok(setup::trash_sessions(ids, true))
         }
-        Some(Cmd::Prompt { edit: false, tools: show_tools, builtin }) => {
+        Some(Cmd::Prompt { edit: false, tools: show_tools, builtin, window }) => {
             let tools = setup::prompt_tools(&config, &cwd);
             // what the session would get: `auto` is the built-in curator, told which tools there are
-            let specs = tools.specs();
+            let specs = if nexo_agent::prompt::is_compact(*window) { tools.compact_specs() } else { tools.specs() };
             let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
             let policy = nexo_agent::context::from_config(&config.context);
             let directives = policy.directives(&names);
@@ -528,11 +531,11 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
                             && (policy.recall() || s.name != "recall")
                     })
                     .collect();
-                println!("{}", nexo_agent::prompt::tool_definitions(&specs));
+                println!("{}", nexo_agent::prompt::tool_definitions_for(&specs, *window));
             } else if *builtin {
-                println!("{}", nexo_agent::prompt::builtin_part(&tools, directives));
+                println!("{}", nexo_agent::prompt::builtin_part_for(&tools, directives, *window));
             } else {
-                let base = nexo_agent::prompt::system_prompt(&cwd, &config.agent, &tools);
+                let base = nexo_agent::prompt::system_prompt_for(&cwd, &config.agent, &tools, *window);
                 println!("{}", nexo_agent::prompt::with_directives(base, &config.agent, directives));
             }
             return Ok(0);

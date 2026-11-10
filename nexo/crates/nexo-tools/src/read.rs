@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use nexo_core::message::ImageSource;
 use nexo_core::tool::{call_paths, paths_label};
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 use crate::picture;
@@ -49,6 +49,17 @@ impl Tool for Read {
                 }
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Read text files as numbered lines; shows images. Not for directories: use `ls`.",
+            params: &[
+                ("paths", "Several files, at most 20"),
+                ("offset", "First line (1-based)"),
+                ("limit", "Lines, default 2000"),
+            ],
+        })
     }
 
     fn kind(&self) -> ToolKind {

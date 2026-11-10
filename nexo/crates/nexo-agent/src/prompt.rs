@@ -11,6 +11,17 @@ use nexo_core::tool::ToolSet;
 /// The built-in prompt, kept as plain text in `prompt.md` next to this file so it can be edited as such.
 const BUILT_IN: &str = include_str!("prompt.md");
 
+/// The short built-in text, for a model with a small window.
+const BUILT_IN_COMPACT: &str = include_str!("prompt_compact.md");
+
+/// A model whose context window is at most this many tokens gets the compact prompt and compact tool text.
+pub const COMPACT_WINDOW: u64 = 32_000;
+
+/// Whether a model with context window `window` (tokens; `None` when unknown) gets the compact text.
+pub fn is_compact(window: Option<u64>) -> bool {
+    window.is_some_and(|w| w <= COMPACT_WINDOW)
+}
+
 /// A prompt file whose first line is this is sent as it is: no tool guidance,
 /// directory, date, project instructions or extra text appended.
 pub const RAW_MARK: &str = "<!-- nexo: raw -->";
@@ -18,6 +29,15 @@ pub const RAW_MARK: &str = "<!-- nexo: raw -->";
 /// The built-in text: what every request starts with.
 pub fn built_in() -> &'static str {
     BUILT_IN.trim()
+}
+
+/// The built-in text for a model with context window `window`.
+fn built_in_for(window: Option<u64>) -> &'static str {
+    if is_compact(window) {
+        BUILT_IN_COMPACT.trim()
+    } else {
+        built_in()
+    }
 }
 
 pub use nexo_core::paths::PREFS_TEMPLATE;
@@ -70,7 +90,12 @@ pub fn with_directives(system: String, cfg: &AgentConfig, directives: Option<&st
 /// Only what nexo itself writes of the prompt (`nexo prompt --builtin`): the built-in text, the guidance for
 /// `tools` and the context policy's directives. No directory, date, project, instruction file or preference.
 pub fn builtin_part(tools: &ToolSet, directives: Option<&str>) -> String {
-    let mut out = format!("{}{}", built_in(), tool_guidance(tools));
+    builtin_part_for(tools, directives, None)
+}
+
+/// [`builtin_part`] for a model with context window `window`.
+pub fn builtin_part_for(tools: &ToolSet, directives: Option<&str>, window: Option<u64>) -> String {
+    let mut out = format!("{}{}", built_in_for(window), guidance_for(tools, window));
     if let Some(d) = directives {
         out.push_str(&format!("\n\n{d}"));
     }
@@ -80,12 +105,52 @@ pub fn builtin_part(tools: &ToolSet, directives: Option<&str>) -> String {
 /// The tools as the model gets them (`nexo prompt --tools`): per tool a `=== name ===` line, its description
 /// as it is, and its parameters as the JSON schema it is sent with.
 pub fn tool_definitions(specs: &[nexo_core::provider::ToolSpec]) -> String {
+    tool_definitions_for(specs, None)
+}
+
+/// [`tool_definitions`] for a model with context window `window`: the compact specs (`ToolSet::compact_specs`)
+/// have their parameters on one line and no labels.
+pub fn tool_definitions_for(specs: &[nexo_core::provider::ToolSpec], window: Option<u64>) -> String {
     let mut out = String::new();
     for s in specs {
-        let params = serde_json::to_string_pretty(&s.parameters).unwrap_or_default();
-        out.push_str(&format!("=== {} ===\ndescription:\n{}\nparameters:\n{params}\n\n", s.name, s.description));
+        let params = if is_compact(window) {
+            serde_json::to_string(&s.parameters)
+        } else {
+            serde_json::to_string_pretty(&s.parameters)
+        }
+        .unwrap_or_default();
+        if is_compact(window) {
+            out.push_str(&format!("=== {} ===\n{}\n{params}\n", s.name, s.description));
+        } else {
+            out.push_str(&format!("=== {} ===\ndescription:\n{}\nparameters:\n{params}\n\n", s.name, s.description));
+        }
     }
     out.trim_end().to_string()
+}
+
+/// The guidance for the tools present, as the model with context window `window` gets it.
+fn guidance_for(tools: &ToolSet, window: Option<u64>) -> String {
+    if is_compact(window) {
+        compact_guidance(tools)
+    } else {
+        tool_guidance(tools)
+    }
+}
+
+/// Two short lines at most, for the tools present.
+fn compact_guidance(tools: &ToolSet) -> String {
+    let has = |n: &str| tools.get(n).is_some();
+    let mut lines = Vec::new();
+    if has("ls") || has("bash") {
+        lines.push("- The Project block is current: do not `ls`. A file the request names is attached.");
+    }
+    if has("bash") {
+        lines.push("- Slow jobs: `background: true`.");
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("\n\nTools:\n{}", lines.join("\n"))
 }
 
 /// The guidance for the tools present, by name.
@@ -291,6 +356,11 @@ fn git_line(cwd: &Path) -> String {
 /// The whole system prompt for a session in `cwd`: the built-in text first, then the directory,
 /// date, tools and project instructions, then the person's preferences (`~/.nexo/prompt.md`).
 pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
+    system_prompt_for(cwd, cfg, tools, None)
+}
+
+/// [`system_prompt`] for a model with context window `window`.
+pub fn system_prompt_for(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet, window: Option<u64>) -> String {
     let file = source_file(cfg)
         .and_then(|f| std::fs::read_to_string(f).ok())
         .map(|s| s.trim().to_string())
@@ -300,13 +370,13 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
     }
     let (base, prefs) = match &file {
         Some(t) if replaces(cfg, t) => (paths::prompt_base(t), String::new()),
-        Some(t) => (built_in(), without_comments(t)),
-        None => (built_in(), String::new()),
+        Some(t) => (built_in_for(window), without_comments(t)),
+        None => (built_in_for(window), String::new()),
     };
     let date = time::OffsetDateTime::now_utc().date();
     let mut out = format!("{base}\n\nWorking directory: {}\nDate: {date}", cwd.display());
     out.push_str(&environment(cwd));
-    out.push_str(&tool_guidance(tools));
+    out.push_str(&guidance_for(tools, window));
     if !cfg.hermetic {
         let home = compat::foreign_home();
         for i in compat::instructions(cwd, &paths::config_dir(), home.as_deref()) {
@@ -659,5 +729,81 @@ mod size_budget {
         }
         assert!(text.contains("\"type\": \"object\""), "{text}");
         assert_eq!(tool_definitions(&[]), "");
+    }
+
+    /// The compact specs of the built-in tools, as `nexo prompt --tools --window N` prints them.
+    fn compact_tools_text() -> String {
+        tool_definitions_for(&nexo_tools::builtin().compact_specs(), Some(8_000))
+    }
+
+    #[test]
+    fn a_large_window_gets_the_full_text_unchanged() {
+        let tools = nexo_tools::builtin();
+        for w in [None, Some(200_000), Some(COMPACT_WINDOW + 1)] {
+            assert_eq!(builtin_part_for(&tools, Some("D."), w), builtin_part(&tools, Some("D.")), "{w:?}");
+            assert_eq!(tool_definitions_for(&tools.specs(), w), tool_definitions(&tools.specs()), "{w:?}");
+        }
+        assert!(!is_compact(None) && !is_compact(Some(COMPACT_WINDOW + 1)) && is_compact(Some(COMPACT_WINDOW)));
+        let d = tempfile::tempdir().unwrap();
+        let cfg = AgentConfig { hermetic: true, ..Default::default() };
+        let full = system_prompt(d.path(), &cfg, &tools);
+        assert_eq!(system_prompt_for(d.path(), &cfg, &tools, Some(200_000)), full);
+        assert!(full.contains("How to write code:"));
+    }
+
+    #[test]
+    fn a_small_window_gets_the_compact_text_within_its_caps() {
+        let tools = nexo_tools::builtin();
+        for w in [8_000, COMPACT_WINDOW] {
+            let b = builtin_part_for(&tools, None, Some(w));
+            assert!(b.len() <= 2_600, "{w}: the compact built-in part takes {} characters", b.len());
+            assert!(!b.contains("How to write code:") && !b.contains("You can do:"), "{b}");
+            let t = tool_definitions_for(&tools.compact_specs(), Some(w));
+            assert!(t.len() <= 6_000, "{w}: the compact tools take {} characters", t.len());
+            let json = serde_json::to_string(&tools.compact_specs()).unwrap();
+            assert!(json.len() <= 6_000, "{w}: the compact tool JSON takes {} characters", json.len());
+        }
+        assert!(BUILT_IN_COMPACT.len() <= 2_400, "{}", BUILT_IN_COMPACT.len());
+        assert!(compact_guidance(&tools).lines().filter(|l| l.starts_with("- ")).count() <= 2);
+    }
+
+    #[test]
+    fn the_compact_prompt_keeps_the_safety_rules() {
+        let b = builtin_part_for(&nexo_tools::builtin(), None, Some(8_000)).to_lowercase();
+        for want in ["secrets", "destructive", "only the person", "explicit request", "information"] {
+            assert!(b.contains(want), "missing {want}: {b}");
+        }
+        assert!(b.starts_with("you are nexo,"), "{b}");
+    }
+
+    #[test]
+    fn a_compact_tool_keeps_its_parameter_names_types_and_required_list() {
+        let tools = nexo_tools::builtin();
+        let (full, compact) = (tools.specs(), tools.compact_specs());
+        assert_eq!(full.len(), compact.len());
+        fn shape(v: &serde_json::Value, out: &mut Vec<String>, at: &str) {
+            let Some(o) = v.as_object() else { return };
+            if let Some(t) = o.get("type").and_then(|t| t.as_str()) {
+                out.push(format!("{at}:{t}"));
+            }
+            out.push(format!("{at}:required={}", o.get("required").map_or("-".into(), |r| r.to_string())));
+            if let Some(p) = o.get("properties").and_then(|p| p.as_object()) {
+                for (k, v) in p {
+                    shape(v, out, &format!("{at}.{k}"));
+                }
+            }
+            if let Some(i) = o.get("items") {
+                shape(i, out, &format!("{at}[]"));
+            }
+        }
+        for (f, c) in full.iter().zip(&compact) {
+            assert_eq!(f.name, c.name);
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            shape(&f.parameters, &mut a, "");
+            shape(&c.parameters, &mut b, "");
+            assert_eq!(a, b, "{}", f.name);
+            assert!(c.description.len() < f.description.len() && c.description.len() <= 200, "{}", f.name);
+        }
+        assert!(compact_tools_text().contains("=== bash ==="));
     }
 }

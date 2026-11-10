@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use globset::GlobBuilder;
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use regex::RegexBuilder;
 use serde_json::{json, Value};
 
@@ -54,6 +54,19 @@ impl Tool for Grep {
                 "required": ["pattern"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Regex search (Rust syntax) of file contents under `path` (default: working directory); returns `path:line: text`.",
+            params: &[
+                ("glob", "File name filter, e.g. `*.rs`"),
+                ("context", "Lines around a match"),
+                ("files_only", "List files only"),
+                ("max_results", "Default 200"),
+                ("multiline", "Match across lines"),
+            ],
+        })
     }
 
     fn kind(&self) -> ToolKind {

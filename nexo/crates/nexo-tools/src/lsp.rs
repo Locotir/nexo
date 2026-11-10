@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
@@ -605,6 +605,10 @@ impl Tool for Diagnostics {
                 "required": ["path"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact { description: "Language-server errors and warnings of a file; call after editing.", params: &[] })
     }
 
     fn kind(&self) -> ToolKind {

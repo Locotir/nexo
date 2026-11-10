@@ -13,7 +13,7 @@ pub(super) fn parse_rounds(v: Option<String>) -> u32 {
 /// The whole system prompt of a request: the prompt, the policy's directives
 /// (stable, so cached) and the goal. A raw prompt file is sent as written.
 pub(super) fn full_system(st: &State) -> String {
-    let base = prompt::system_prompt(&st.cwd, &st.config.agent, &st.tools);
+    let base = prompt::system_prompt_for(&st.cwd, &st.config.agent, &st.tools, window_of(&st.limits));
     let specs = offered(st);
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
     let mut base = prompt::with_directives(base, &st.config.agent, st.policy.directives(&names));

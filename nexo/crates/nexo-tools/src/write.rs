@@ -1,7 +1,7 @@
 //! `write`: a whole file.
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 use crate::util::{display_path, is_binary, outside_note, resolve, str_arg, write_atomic, MAX_FILE_BYTES};
@@ -38,6 +38,13 @@ impl Tool for Write {
                 "required": ["path", "content"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Write a whole file, creating its directories; use `edit` for part of a file.",
+            params: &[("check", "Command to run after")],
+        })
     }
 
     fn kind(&self) -> ToolKind {

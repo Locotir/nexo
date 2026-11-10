@@ -72,3 +72,22 @@ fn tools_and_builtin_do_not_go_together() {
     let o = nexo(cfg.path(), home.path(), proj.path(), &["prompt", "--tools", "--builtin"]);
     assert!(!o.status.success());
 }
+
+#[test]
+fn window_selects_the_compact_text_for_a_small_model() {
+    let (cfg, home, proj) = setup("");
+    let run = |args: &[&str]| out(&nexo(cfg.path(), home.path(), proj.path(), args));
+    let small = run(&["prompt", "--builtin", "--window", "8000"]);
+    assert!(
+        small.starts_with("You are nexo,") && !small.contains("How to write code") && small.len() <= 2_600,
+        "{small}"
+    );
+    let tools = run(&["prompt", "--tools", "--window", "8000"]);
+    // tools that bring their own text (skills, servers) keep it, so the size is checked on the built-in ones
+    assert!(tools.contains("=== bash ===\nRun a shell command") && !tools.contains("description:\n"), "{tools}");
+    assert!(tools.len() < run(&["prompt", "--tools"]).len() / 2, "{tools}");
+    // above 32k, or without the flag: today's text
+    assert_eq!(run(&["prompt", "--builtin", "--window", "200000"]), run(&["prompt", "--builtin"]));
+    assert_eq!(run(&["prompt", "--tools", "--window", "32001"]), run(&["prompt", "--tools"]));
+    assert!(run(&["prompt", "--builtin"]).contains("How to write code"));
+}

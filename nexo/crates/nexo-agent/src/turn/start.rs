@@ -319,6 +319,11 @@ pub(super) fn reasoning_of(s: &Option<String>) -> Option<ReasoningConfig> {
     }
 }
 
+/// The context window of the model in use, in tokens, when known.
+pub(super) fn window_of(limits: &crate::limits::Limits) -> Option<u64> {
+    limits.context_window.map(u64::from)
+}
+
 /// The tools the model is offered: `exit_plan` only in plan mode, `recall` only when the policy asks for it.
 pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     let plan = st.perm.mode == PermissionMode::Plan;
@@ -326,8 +331,8 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     // out, and it offers the tool unless `recall=0` (which keeps the tool list the same as without the
     // curator, so that a comparison measures the view alone)
     let curator = st.policy.recall();
-    st.tools
-        .specs()
+    let specs = if prompt::is_compact(window_of(&st.limits)) { st.tools.compact_specs() } else { st.tools.specs() };
+    specs
         .into_iter()
         .filter(|s| {
             (plan || s.name != "exit_plan")

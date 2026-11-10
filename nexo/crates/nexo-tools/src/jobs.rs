@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nexo_core::jobs::{duration, JobInfo, JobKind};
-use nexo_core::{Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 use crate::util::{int_arg, one_line, str_arg};
@@ -56,6 +56,13 @@ impl Tool for Jobs {
                 }
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "List background jobs, read a job's new output, or kill one.",
+            params: &[("wait", "Seconds to wait (output)")],
+        })
     }
 
     fn kind(&self) -> ToolKind {

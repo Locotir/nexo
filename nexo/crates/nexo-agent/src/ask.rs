@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use nexo_core::agent::{AgentEvent, EventTx};
-use nexo_core::{PermissionMode, Question, QuestionOption, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, PermissionMode, Question, QuestionOption, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
@@ -139,6 +139,13 @@ impl Tool for AskUser {
                 "required": ["question", "options"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Ask the person to pick from options. Only for a choice that is theirs.",
+            params: &[("options", "2 to 6, your pick first"), ("multi", "Several may be picked")],
+        })
     }
 
     fn kind(&self) -> ToolKind {

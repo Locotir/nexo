@@ -1,7 +1,7 @@
 //! `edit`: replace one exact occurrence of a text in a file.
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 use similar::{ChangeTag, TextDiff};
 
@@ -47,6 +47,17 @@ impl Tool for Edit {
                 "required": []
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Replace `old_string` with `new_string` in a file; it must match exactly and occur once, or set `replace_all`. `edits` or `files` for several.",
+            params: &[
+                ("edits", "List of changes"),
+                ("files", "Instead of `path`: [{path, edits}]"),
+                ("check", "Command to run after"),
+            ],
+        })
     }
 
     fn kind(&self) -> ToolKind {

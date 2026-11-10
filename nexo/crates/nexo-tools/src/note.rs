@@ -6,7 +6,7 @@
 //! person's `~/.nexo/prompt.md` or to the project's instructions file, dated, under `## Remembered by nexo`.
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 /// Characters of one call at most.
@@ -76,6 +76,13 @@ impl Tool for Note {
                 "required": ["text"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Keep lines for the session; send with your next tool call, never alone.",
+            params: &[("text", "Lines starting `Finding:`, `Plan:` or `Rule:`"), ("scope", "Where `Rule:` lines last")],
+        })
     }
 
     fn kind(&self) -> ToolKind {

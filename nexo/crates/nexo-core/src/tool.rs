@@ -203,10 +203,55 @@ impl ToolContext {
     }
 }
 
+/// The text of a tool for a model with a small window: one or two sentences, and a short phrase for the
+/// parameters worth one (`(name, phrase)`; a parameter left out keeps its name and type only).
+#[derive(Debug, Clone, Copy)]
+pub struct Compact {
+    pub description: &'static str,
+    pub params: &'static [(&'static str, &'static str)],
+}
+
+impl Compact {
+    /// `spec` with this description, and the parameter schema cut down to names, types, `required` and short
+    /// enums: the phrases of `params` for descriptions, no bounds.
+    pub fn apply(&self, mut spec: ToolSpec) -> ToolSpec {
+        spec.description = self.description.to_string();
+        self.shrink(&mut spec.parameters);
+        spec
+    }
+
+    fn shrink(&self, node: &mut Value) {
+        let Some(o) = node.as_object_mut() else { return };
+        o.remove("minimum");
+        o.remove("maximum");
+        if o.get("enum").and_then(Value::as_array).is_some_and(|e| e.len() > 6) {
+            o.remove("enum");
+        }
+        if let Some(props) = o.get_mut("properties").and_then(Value::as_object_mut) {
+            for (name, prop) in props.iter_mut() {
+                if let Some(p) = prop.as_object_mut() {
+                    match self.params.iter().find(|(n, _)| n == name) {
+                        Some((_, phrase)) => p.insert("description".into(), Value::from(*phrase)),
+                        None => p.remove("description"),
+                    };
+                }
+                self.shrink(prop);
+            }
+        }
+        if let Some(items) = o.get_mut("items") {
+            self.shrink(items);
+        }
+    }
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn spec(&self) -> ToolSpec;
+    /// The short text for a window of 32k tokens or less; `None` keeps the full one.
+    fn compact(&self) -> Option<Compact> {
+        None
+    }
     fn kind(&self) -> ToolKind;
     /// The kind of this call, where `args` change it (a sub-agent that may write is a write);
     /// it decides which calls of one round may run at the same time.
@@ -253,6 +298,11 @@ impl ToolSet {
 
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.values().map(|t| t.spec()).collect()
+    }
+
+    /// The specs with each tool's [`Compact`] text where it has one.
+    pub fn compact_specs(&self) -> Vec<ToolSpec> {
+        self.tools.values().map(|t| t.compact().map_or_else(|| t.spec(), |c| c.apply(t.spec()))).collect()
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {

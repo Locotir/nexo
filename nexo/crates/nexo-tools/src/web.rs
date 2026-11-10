@@ -17,7 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nexo_core::config::WebConfig;
 use nexo_core::tool::Check;
-use nexo_core::{Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use regex::Regex;
 use reqwest::Url;
 use serde_json::{json, Value};
@@ -605,6 +605,16 @@ impl Tool for WebSearch {
         }
     }
 
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Search the web for anything current or outside the repository; returns titles, URLs, snippets. Read pages with `web_fetch`.",
+            params: &[
+                ("max_results", "Default 8"),
+                ("domains", "Only these sites"),
+            ],
+        })
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Search
     }
@@ -792,6 +802,13 @@ impl Tool for WebFetch {
                 "required": ["url"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Read a web page as Markdown; a long page ends with the next `start`.",
+            params: &[("start", "Character to start from"), ("max_chars", "Default 20000")],
+        })
     }
 
     fn kind(&self) -> ToolKind {

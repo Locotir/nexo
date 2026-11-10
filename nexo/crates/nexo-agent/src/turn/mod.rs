@@ -309,7 +309,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             }
         },
     };
-    let system = prompt::system_prompt(&cwd, &config.agent, &tools);
+    let system = prompt::system_prompt_for(&cwd, &config.agent, &tools, window_of(&limits));
     let policy = context::from_config(&config.context);
     let perm = Policy::from_config(&config.permissions);
     let config_sandbox =

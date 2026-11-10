@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use nexo_core::{paths, TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{paths, Compact, TodoItem, TodoStatus, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 /// Items at most.
@@ -158,6 +158,14 @@ impl Tool for Todo {
                 }
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description:
+                "Task list for long work; each call replaces the whole list. Send it with real work, never alone.",
+            params: &[("items", "The whole list, in order")],
+        })
     }
 
     fn kind(&self) -> ToolKind {

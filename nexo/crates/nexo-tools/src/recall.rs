@@ -4,7 +4,7 @@
 //! the agent loop answers it (`nexo_agent::recall`).
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 pub struct Recall;
@@ -31,6 +31,13 @@ impl Tool for Recall {
                 "required": ["message"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Bring back a message the context left out, by name (`m00042`); `from` and `to` pick lines.",
+            params: &[],
+        })
     }
 
     fn kind(&self) -> ToolKind {

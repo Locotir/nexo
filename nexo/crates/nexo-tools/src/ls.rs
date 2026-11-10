@@ -1,7 +1,7 @@
 //! `ls`: one directory.
 
 use async_trait::async_trait;
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 use crate::util::{display_path, outside_note, resolve, str_arg};
@@ -30,6 +30,13 @@ impl Tool for Ls {
                 }
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "List a directory (default: working directory); subdirectories first, then files with sizes.",
+            params: &[],
+        })
     }
 
     fn kind(&self) -> ToolKind {

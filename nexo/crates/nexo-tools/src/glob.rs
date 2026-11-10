@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use async_trait::async_trait;
 use globset::GlobBuilder;
 use ignore::WalkBuilder;
-use nexo_core::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
+use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
 use crate::util::{display_path, outside_note, resolve, str_arg};
@@ -42,6 +42,13 @@ impl Tool for Glob {
                 "required": ["pattern"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<Compact> {
+        Some(Compact {
+            description: "Find files by name under `path` (default: working directory), newest first. `*.rs` matches names anywhere; with `/` or `**`, the path.",
+            params: &[],
+        })
     }
 
     fn kind(&self) -> ToolKind {
