@@ -5333,3 +5333,88 @@ async fn a_large_window_gets_the_largest_reply_from_the_first_request() {
     assert_eq!(client.requests()[0].max_tokens, 32_768);
     r.stop().await;
 }
+
+/// A tool that writes, edits or runs at once; a path starting with `missing` makes it fail.
+fn quick_tools() -> ToolSet {
+    ToolSet::new()
+        .with(Arc::new(Fake { name: "read", kind: ToolKind::Read, slow: false }))
+        .with(Arc::new(Fake { name: "write", kind: ToolKind::Write, slow: false }))
+        .with(Arc::new(Fake { name: "edit", kind: ToolKind::Write, slow: false }))
+        .with(Arc::new(Fake { name: "bash", kind: ToolKind::Exec, slow: false }))
+}
+
+/// Runs one message of calls (id, tool, args); the results the model gets back, as (id, is_error, text).
+async fn one_message(calls: &[(&str, &str, Value)]) -> (Vec<(String, bool, String)>, Vec<String>) {
+    let d = tempfile::tempdir().unwrap();
+    let mut evs = Vec::new();
+    for (id, name, args) in calls {
+        evs.push(StreamEvent::ToolCallStart { id: (*id).into(), name: (*name).into() });
+        evs.push(StreamEvent::ToolCallEnd { id: (*id).into(), name: (*name).into(), args: args.clone() });
+    }
+    evs.extend([StreamEvent::Finish(FinishReason::ToolUse), StreamEvent::Done]);
+    let client = Scripted::new(vec![Reply::Events(evs), Reply::Events(text("ok"))]);
+    let mut r = start_with(client.clone(), config(PermissionMode::Auto), None, d.path(), quick_tools()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let closed = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::ToolDone { id, .. } = e { Some(id.clone()) } else { None })
+        .collect();
+    let reqs = client.requests();
+    let outs = reqs[1]
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .filter_map(|p| match p {
+            Part::ToolResult { call_id, content, is_error, .. } => {
+                Some((call_id.clone(), *is_error, text_of_parts(content)))
+            }
+            _ => None,
+        })
+        .collect();
+    r.stop().await;
+    (outs, closed)
+}
+
+#[tokio::test]
+async fn a_write_then_a_command_in_one_message_both_run_in_order() {
+    let (outs, closed) = one_message(&[
+        ("w1", "write", json!({"path": "run.sh", "content": "echo hi"})),
+        ("b1", "bash", json!({"command": "sh run.sh"})),
+    ])
+    .await;
+    assert_eq!(outs.len(), 2);
+    assert_eq!((outs[0].0.as_str(), outs[0].1), ("w1", false));
+    assert_eq!((outs[1].0.as_str(), outs[1].1), ("b1", false));
+    assert_eq!(outs[1].2, "bash:sh run.sh");
+    assert_eq!(closed, ["w1", "b1"]);
+}
+
+#[tokio::test]
+async fn a_failed_change_stops_the_calls_after_it_in_the_message() {
+    let (outs, closed) = one_message(&[
+        ("e1", "edit", json!({"path": "missing.rs"})),
+        ("b1", "bash", json!({"command": "sh run.sh"})),
+        ("r1", "read", json!({"path": "a"})),
+    ])
+    .await;
+    assert_eq!(outs.len(), 3);
+    assert_eq!((outs[0].0.as_str(), outs[0].1), ("e1", true));
+    let want = "not run: the call before it in this message failed. Read its result, then send this call again if it is still wanted.";
+    for (i, id) in [(1, "b1"), (2, "r1")] {
+        assert_eq!((outs[i].0.as_str(), outs[i].1, outs[i].2.as_str()), (id, true, want));
+    }
+    assert_eq!(closed, ["e1", "b1", "r1"], "the skipped calls are closed for the screen");
+}
+
+#[tokio::test]
+async fn a_failed_read_does_not_stop_the_reads_beside_it() {
+    let (outs, _) =
+        one_message(&[("r1", "read", json!({"path": "missing.txt"})), ("r2", "read", json!({"path": "a.txt"}))]).await;
+    assert_eq!(outs.len(), 2);
+    assert_eq!((outs[0].0.as_str(), outs[0].1), ("r1", true));
+    assert_eq!((outs[1].0.as_str(), outs[1].1, outs[1].2.as_str()), ("r2", false, "read:a.txt"));
+}

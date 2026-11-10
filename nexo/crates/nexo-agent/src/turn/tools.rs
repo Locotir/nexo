@@ -27,6 +27,10 @@ pub(super) async fn push_results(state: &Shared, results: Vec<Part>) {
     }
 }
 
+/// The result of a call that was skipped because the call before it in its message failed.
+const NOT_RUN: &str =
+    "not run: the call before it in this message failed. Read its result, then send this call again if it is still wanted.";
+
 /// Runs the calls of one assistant message; (results in order, interrupted).
 pub(super) async fn run_tools(
     state: &Shared,
@@ -92,6 +96,8 @@ pub(super) async fn run_tools(
         .collect();
     let mut results: Vec<Option<Part>> = (0..calls.len()).map(|_| None).collect();
     let mut cancelled = false;
+    // a call that ran alone and failed: the calls after it in this message are not run
+    let mut stopped = false;
     let step = step_before(state, &tools, &cwd, &calls).await;
     // in the order asked: each run of calls that can overlap goes at once, any other call alone, so one
     // command among three sub-agents does not make the sub-agents wait for each other
@@ -110,6 +116,19 @@ pub(super) async fn run_tools(
                     AgentEvent::ToolDone { id: id.clone(), output: ToolOutput::error("interrupted"), elapsed_ms: 0 },
                 );
             }
+        } else if stopped {
+            for (j, (id, name, _)) in calls.iter().enumerate().take(end).skip(i) {
+                let out = ToolOutput::error(NOT_RUN);
+                results[j] = Some(Part::ToolResult {
+                    call_id: id.clone(),
+                    name: Some(name.clone()),
+                    content: vec![Part::text(NOT_RUN)],
+                    is_error: true,
+                });
+                // it wrote nothing: the step check must not count it as a call that ran
+                verdicts[j] = (Verdict::Denied(NOT_RUN.into()), Why::denied("rule"));
+                emit(events, AgentEvent::ToolDone { id: id.clone(), output: out, elapsed_ms: 0 });
+            }
         } else {
             let futs = calls[i..end].iter().zip(verdicts[i..end].iter()).map(|((id, name, args), (v, why))| {
                 run_one(state, events, &tools, &cwd, &session_id, id, name, args, v, *why, cancel)
@@ -117,6 +136,10 @@ pub(super) async fn run_tools(
             for (k, (part, c)) in futures::future::join_all(futs).await.into_iter().enumerate() {
                 results[i + k] = Some(part);
                 cancelled |= c;
+            }
+            // only a call that ran alone stops the rest: reads, searches and pure checks are independent
+            if !overlaps[i] && !cancelled {
+                stopped = matches!(&results[i], Some(Part::ToolResult { is_error: true, .. }));
             }
         }
         i = end;

@@ -11,7 +11,7 @@ Rules, most important first:
 - Prove done with output a command printed and you read (a test, an exit code). Verify once, with the narrowest check. If nothing can show it, say it is not verified.
 - Finish the job and end on a result, never on an offer. After the last change run the one check that proves it; when it passes, answer at once: no re-reading, no repeat check, no exploring.
 - Do not reread what you already have: a file attached or read earlier is current until it is edited, and an edit shows its diff.
-- Put independent calls in one message. Chain dependent shell steps with `&&`.
+- Put independent calls in one message. Steps that follow each other go in one message too: they run in order and a failure stops the rest. Chain dependent shell steps with `&&`.
 - Do not invent files, APIs or results. If you do not know, look; if you cannot look, say so.
 - Ask only when a decision changes the outcome: give the options, your pick first.
 - First line of the answer: the outcome. Then short detail with absolute paths and commands.

@@ -192,7 +192,7 @@ fn abilities(tools: &ToolSet) -> String {
     let looks = ["read", "grep", "glob", "ls", "bash", "web_search", "web_fetch"].iter().any(|n| has(n));
     let mut lines = Vec::new();
     if looks {
-        lines.push("- Think in independent strands: independent calls go in ONE message and run at the same time (reads, searches, web, read-only and check commands); a change runs alone, in order. Never run in parallel what touches the same state.");
+        lines.push("- Think in independent strands: independent calls go in ONE message and run at the same time (reads, searches, web, read-only and check commands). Steps that follow each other also go in ONE message when you do not need to see one result to write the next call (write a script and run it; edit, then run the check): they run one at a time in the order given, and when one fails the ones after it are not run. Never run in parallel what touches the same state.");
     }
     if has("bash") {
         lines.push("- Slow jobs (builds, tests, servers, downloads) use `background: true`; keep working, then `wait_until` a condition, not a fixed sleep.");
@@ -478,6 +478,20 @@ mod tests {
     }
 
     #[test]
+    fn the_strands_line_says_steps_in_order_go_in_one_message_and_a_failure_stops_the_rest() {
+        let all = tool_guidance(&nexo_tools::builtin());
+        for want in [
+            "Steps that follow each other also go in ONE message",
+            "write a script and run it; edit, then run the check",
+            "they run one at a time in the order given, and when one fails the ones after it are not run",
+        ] {
+            assert!(all.contains(want), "missing {want}: {all}");
+        }
+        assert!(!all.contains("a change runs alone"), "{all}");
+        assert!(BUILT_IN_COMPACT.contains("a failure stops the rest"));
+    }
+
+    #[test]
     fn the_you_can_do_section_lists_only_enabled_abilities() {
         let all = tool_guidance(&nexo_tools::builtin());
         for want in [
@@ -719,13 +733,13 @@ mod size_budget {
     }
 
     /// 10565 characters (about 2600 tokens) when this budget was set; it may grow 10% and no more
-    /// (11620), and 380 more went to the one line that tells the model what to save with `note` and where.
+    /// (11620), 100 more went to the sequence sentence of the strands line, and 380 more went to the one line that tells the model what to save with `note` and where.
     /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
     /// model already knows about shells and search tools.
     #[test]
     fn the_tool_text_stays_within_its_budget() {
         let n = tool_text_chars();
-        assert!(n <= 12_000, "tool descriptions and guidance take {n} characters; the budget is 12000");
+        assert!(n <= 12_100, "tool descriptions and guidance take {n} characters; the budget is 12100");
     }
 
     #[test]
