@@ -154,7 +154,9 @@ pub(super) async fn start_turn(
         };
         // the typed words sit between what comes before them (shared memory, hooks, jobs) and what follows
         added.append(&mut after);
-        let note = orient::start_note(&small, &st.cwd, check.as_deref());
+        // the supervisor's resume mark is read back as it is, so it carries no note; the next request does
+        let tree = if text.trim() == SUPERVISOR_RESUME_MARK { None } else { prefix::tree_note(&mut st) };
+        let note = orient::start_note(&small, &st.cwd, check.as_deref(), tree.as_deref());
         let text = if note.is_empty() {
             text
         } else {

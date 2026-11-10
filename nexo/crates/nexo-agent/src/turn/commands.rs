@@ -41,6 +41,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.jobs.kill_all();
     st.jobs.take_ended();
     st.session = session;
+    prefix::adopt(st);
     st.checkpoints.clear();
     st.history.replace(st.session.messages().to_vec());
     st.usage = st.session.usage();
@@ -320,6 +321,11 @@ pub(super) async fn clear(state: &Shared) {
             Session::ephemeral(&st.cwd, &provider, &model)
         }
     };
+    {
+        let s = &mut *st;
+        s.prefix = prefix::fresh(&mut s.session, &s.cwd, &s.config.agent, &s.tools);
+    }
+    st.system = full_system(&st);
     st.history.clear();
     st.checkpoints.clear();
     st.policy.reset();

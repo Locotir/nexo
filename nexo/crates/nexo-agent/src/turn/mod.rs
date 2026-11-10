@@ -56,6 +56,7 @@ mod guards;
 mod host;
 mod lesson;
 mod orient;
+mod prefix;
 mod round;
 mod settings;
 mod start;
@@ -99,6 +100,8 @@ struct State {
     client: Arc<dyn ModelClient>,
     target: Target,
     session: Session,
+    /// What the session sends before its messages, fixed for its life (see `prefix.rs`).
+    prefix: crate::session::Prefix,
     history: crate::history::History,
     policy: Box<dyn ContextPolicy>,
     /// The tokens of the history and of the last view sent, for /status.
@@ -292,7 +295,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     }
     tools.add(Arc::new(crate::ask::ExitPlan::new((!headless).then(|| asker.clone()), plan.clone())));
     tools.add(Arc::new(crate::goal_brief::GoalBrief));
-    let (session, history, replay) = match &resume {
+    let (mut session, history, replay) = match &resume {
         Some(id) => {
             // taken before anything is spent: a session another nexo writes is not resumed here
             let s = Session::open(id)
@@ -309,7 +312,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             }
         },
     };
-    let system = prompt::system_prompt_for(&cwd, &config.agent, &tools, window_of(&limits));
+    let prefix = prefix::settle(&mut session, &cwd, &config.agent, &mut tools);
+    let system = prompt::system_prompt_with(&cwd, &config.agent, &tools, window_of(&limits), &prefix.volatile);
     let policy = context::from_config(&config.context);
     let perm = Policy::from_config(&config.permissions);
     let config_sandbox =
@@ -378,6 +382,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         client,
         target,
         session,
+        prefix,
         history: crate::history::History::new(history),
         policy,
         last_view: (0, 0),

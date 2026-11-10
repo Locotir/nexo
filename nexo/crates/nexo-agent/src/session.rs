@@ -41,6 +41,20 @@ pub struct SessionMeta {
     pub headless: bool,
 }
 
+/// What a session sent before its messages, fixed for as long as it lives (the provider caches a prefix only
+/// when it is byte-identical to an earlier one): the names of its tools, the parts of the system text that can
+/// change (see [`crate::prompt::Volatile`]) and the project map the model was last shown. Old session files have none.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Prefix {
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub volatile: crate::prompt::Volatile,
+    /// The project map as the model last saw it (in the system text or in a note of a request).
+    #[serde(default)]
+    pub shown: String,
+}
+
 /// Whose model call a `usage` line pays for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +127,8 @@ enum Line {
         #[serde(default, skip_serializing_if = "GoalState::is_active")]
         state: GoalState,
     },
+    /// The prefix in force from here on; the last such line wins.
+    Prefix(Prefix),
     Reset,
 }
 
@@ -126,6 +142,7 @@ pub struct Session {
     file: Option<File>,
     goal: Option<String>,
     goal_state: GoalState,
+    prefix: Option<Prefix>,
     /// Whether this session holds the lock next to its file (taken at the first write).
     locked: bool,
     /// When the lock was last touched by this session.
@@ -696,6 +713,7 @@ impl Session {
             file: Some(file),
             goal: None,
             goal_state: GoalState::Active,
+            prefix: None,
             locked: true,
             touched: std::time::Instant::now(),
             open_tail: false,
@@ -730,6 +748,7 @@ impl Session {
             file: None,
             goal: None,
             goal_state: GoalState::Active,
+            prefix: None,
             locked: false,
             touched: std::time::Instant::now(),
             open_tail: false,
@@ -761,6 +780,7 @@ impl Session {
         let mut cost = 0.0;
         let mut goal = None;
         let mut goal_state = GoalState::Active;
+        let mut prefix = None;
         for l in lines {
             match serde_json::from_str::<Line>(&l) {
                 Ok(Line::Message { message, .. }) => messages.push(message),
@@ -780,6 +800,7 @@ impl Session {
                     goal = text;
                     goal_state = state;
                 }
+                Ok(Line::Prefix(p)) => prefix = Some(p),
                 Ok(Line::Reset) => messages.clear(),
                 Ok(Line::Meta(_)) => {}
                 Err(_) => {} // a cut line: whatever was being written when the process died
@@ -797,6 +818,7 @@ impl Session {
             file: Some(file),
             goal,
             goal_state,
+            prefix,
             locked: false,
             touched: std::time::Instant::now(),
             // a process killed mid-write leaves a last line without its end
@@ -1006,6 +1028,17 @@ impl Session {
         self.write(&Line::Goal { text: self.goal.clone(), state: GoalState::Active })
     }
 
+    /// The prefix this session sends before its messages, when one was saved.
+    pub fn prefix(&self) -> Option<&Prefix> {
+        self.prefix.as_ref()
+    }
+
+    /// Saves the prefix (the last one saved is the one in force).
+    pub fn record_prefix(&mut self, prefix: &Prefix) -> anyhow::Result<()> {
+        self.prefix = Some(prefix.clone());
+        self.write(&Line::Prefix(prefix.clone()))
+    }
+
     /// The same goal, standing elsewhere (paused, waiting, met, active again).
     pub fn record_goal_state(&mut self, state: GoalState) -> anyhow::Result<()> {
         self.goal_state = state.clone();
@@ -1117,6 +1150,9 @@ impl Session {
                     serde_json::to_string(&Line::Goal { text: self.goal.clone(), state: self.goal_state.clone() })?
                 )?;
             }
+            if let Some(p) = &self.prefix {
+                writeln!(f, "{}", serde_json::to_string(&Line::Prefix(p.clone()))?)?;
+            }
             f.sync_all()?;
             Ok(())
         })();
@@ -1175,6 +1211,9 @@ impl Session {
             if !self.goal_state.is_active() {
                 f.record_goal_state(self.goal_state.clone())?;
             }
+        }
+        if let Some(p) = &self.prefix {
+            f.record_prefix(p)?; // the fork goes on with the same prefix, so the same cache
         }
         Ok(f)
     }
@@ -1379,6 +1418,23 @@ mod tests {
         assert_eq!(title_of("why is /usr/bin/env missing"), "why is /usr/bin/env missing");
         assert_eq!(title_of("rename 'old name' to new"), "rename 'old name' to new");
         assert_eq!(title_of("an 'unclosed /very/long/path/that/goes/on/and/on.rs"), "an 'unclosed on.rs");
+    }
+    #[test]
+    fn the_prefix_is_saved_kept_by_a_rewrite_and_a_fork_and_an_old_file_has_none() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+        s.append(&Message::user("one")).unwrap();
+        assert!(Session::open_path(s.path()).unwrap().prefix().is_none(), "an old file has none");
+        let mut p = Prefix { tools: vec!["bash".into(), "diagnostics".into()], ..Prefix::default() };
+        p.volatile.environment = "\nGit: x".into();
+        s.record_prefix(&p).unwrap();
+        p.shown = "tree".into();
+        s.record_prefix(&p).unwrap();
+        assert_eq!(Session::open_path(s.path()).unwrap().prefix(), Some(&p), "the last one wins");
+        s.reset_with(&[Message::user("one")]).unwrap();
+        assert_eq!(Session::open_path(s.path()).unwrap().prefix(), Some(&p), "a rewrite keeps it");
+        let f = s.fork(1).unwrap();
+        assert_eq!(Session::open_path(f.path()).unwrap().prefix(), Some(&p), "a fork goes on with it");
     }
     #[test]
     fn sessions_born_in_the_same_second_are_all_saved() {

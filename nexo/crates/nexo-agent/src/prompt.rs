@@ -142,7 +142,7 @@ fn compact_guidance(tools: &ToolSet) -> String {
     let has = |n: &str| tools.get(n).is_some();
     let mut lines = Vec::new();
     if has("ls") || has("bash") {
-        lines.push("- The Project block is current: do not `ls`. A file the request names is attached.");
+        lines.push("- The Project block, with the project note a request may start with, is current: do not `ls`. A file the request names is attached.");
     }
     if has("bash") {
         lines.push("- Slow jobs: `background: true`.");
@@ -158,7 +158,7 @@ fn tool_guidance(tools: &ToolSet) -> String {
     let mut lines = Vec::new();
     let has = |n: &str| tools.get(n).is_some();
     if has("ls") || has("bash") {
-        lines.push("- The Project block is current: use it, not `ls` or `find`. A file the request names is already attached, whole.");
+        lines.push("- The Project block, with the project note a request may start with, is current: use them, not `ls` or `find`. A file the request names is already attached, whole.");
     }
     if has("bash") && (has("edit") || has("write")) {
         lines.push("- Calls run in order; check once, after the last change.");
@@ -215,9 +215,9 @@ fn abilities(tools: &ToolSet) -> String {
     format!("\n\nYou can do:\n{}", lines.join("\n"))
 }
 
-/// The machine and the project in two lines: the system (with the Linux distribution, which says
-/// apt, apk or dnf) and whether `cwd` is in a git repository. Both stay the same for a session, so
-/// the cached prompt prefix does too.
+/// The machine and the project: the system (with the Linux distribution, which says apt, apk or
+/// dnf), whether `cwd` is in a git repository and the project map. A session builds this once (see
+/// [`Volatile`]) and sends it unchanged for as long as it lives, so the cached prompt prefix stays.
 fn environment(cwd: &Path) -> String {
     let distro = std::fs::read_to_string("/etc/os-release").ok().and_then(|t| os_name(&t));
     let system = match distro {
@@ -241,6 +241,20 @@ fn project_block(cwd: &Path) -> String {
 
 /// [`project_block`] with `missing` (the "Not installed here" line, or empty) given.
 fn project_block_with(cwd: &Path, missing: &str) -> String {
+    project_block_head(cwd, missing, PROJECT_HEAD)
+}
+
+/// The head of the Project block in the system text.
+const PROJECT_HEAD: &str = "Project (as when the session began; changes come in a note; use it, not ls or find)";
+
+/// The project map alone, as the note at the start of a request shows it when it changed.
+pub fn project_tree(cwd: &Path) -> String {
+    // the check command is a line of the request note already, so the tree note leaves it out
+    let block = project_block_head(cwd, "", "Project (changed since you last saw it)");
+    block.trim_start().lines().filter(|l| !l.starts_with("check: ")).collect::<Vec<_>>().join("\n")
+}
+
+fn project_block_head(cwd: &Path, missing: &str, head: &str) -> String {
     use std::collections::BTreeMap;
     let mut top: BTreeMap<String, (bool, usize)> = BTreeMap::new();
     let mut second: BTreeMap<String, (bool, usize)> = BTreeMap::new();
@@ -291,10 +305,7 @@ fn project_block_with(cwd: &Path, missing: &str) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    let mut out = format!(
-        "\nProject (current at the start of this request; use it instead of ls or find to orient):\n{}",
-        lines.join("\n")
-    );
+    let mut out = format!("\n{head}:\n{}", lines.join("\n"));
     manifests.sort();
     if !manifests.is_empty() {
         out.push_str(&format!("\nManifests: {}", manifests.join(", ")));
@@ -371,6 +382,59 @@ pub fn system_prompt(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet) -> String {
 
 /// [`system_prompt`] for a model with context window `window`.
 pub fn system_prompt_for(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet, window: Option<u64>) -> String {
+    system_prompt_with(cwd, cfg, tools, window, &Volatile::capture(cwd, cfg))
+}
+
+/// What the system text holds that can change while a session lives: the date, the machine and project
+/// map, the instruction files. It is built once when the session is created, saved with it and sent
+/// as it is on every later request and on resume, so the prompt prefix keeps its bytes (a provider
+/// caches a prefix only when it is identical to the one of an earlier request).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Volatile {
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub environment: String,
+    #[serde(default)]
+    pub instructions: String,
+}
+
+impl Volatile {
+    /// Reads the date, the project and the instruction files of `cwd` now.
+    pub fn capture(cwd: &Path, cfg: &AgentConfig) -> Volatile {
+        let mut instructions = String::new();
+        if !cfg.hermetic {
+            let home = compat::foreign_home();
+            for i in compat::instructions(cwd, &paths::config_dir(), home.as_deref()) {
+                instructions.push_str(&format!("\n\nInstructions from {}:\n{}", i.path.display(), i.text));
+            }
+            let nested = compat::nested_instructions(cwd);
+            if !nested.is_empty() {
+                // forward slashes on every system: the model reads one path style
+                let list: Vec<String> =
+                    nested.iter().map(|p| format!("- {}", p.display().to_string().replace('\\', "/"))).collect();
+                instructions.push_str(&format!(
+                    "\n\nMore instruction files, for folders you are not in (read one before you work there):\n{}",
+                    list.join("\n")
+                ));
+            }
+        }
+        Volatile {
+            date: time::OffsetDateTime::now_utc().date().to_string(),
+            environment: environment(cwd),
+            instructions,
+        }
+    }
+}
+
+/// [`system_prompt_for`] with the volatile parts given (see [`Volatile`]).
+pub fn system_prompt_with(
+    cwd: &Path,
+    cfg: &AgentConfig,
+    tools: &ToolSet,
+    window: Option<u64>,
+    vol: &Volatile,
+) -> String {
     let file = source_file(cfg)
         .and_then(|f| std::fs::read_to_string(f).ok())
         .map(|s| s.trim().to_string())
@@ -383,26 +447,10 @@ pub fn system_prompt_for(cwd: &Path, cfg: &AgentConfig, tools: &ToolSet, window:
         Some(t) => (built_in_for(window), without_comments(t)),
         None => (built_in_for(window), String::new()),
     };
-    let date = time::OffsetDateTime::now_utc().date();
-    let mut out = format!("{base}\n\nWorking directory: {}\nDate: {date}", cwd.display());
-    out.push_str(&environment(cwd));
+    let mut out = format!("{base}\n\nWorking directory: {}\nDate: {}", cwd.display(), vol.date);
+    out.push_str(&vol.environment);
     out.push_str(&guidance_for(tools, window));
-    if !cfg.hermetic {
-        let home = compat::foreign_home();
-        for i in compat::instructions(cwd, &paths::config_dir(), home.as_deref()) {
-            out.push_str(&format!("\n\nInstructions from {}:\n{}", i.path.display(), i.text));
-        }
-        let nested = compat::nested_instructions(cwd);
-        if !nested.is_empty() {
-            // forward slashes on every system: the model reads one path style
-            let list: Vec<String> =
-                nested.iter().map(|p| format!("- {}", p.display().to_string().replace('\\', "/"))).collect();
-            out.push_str(&format!(
-                "\n\nMore instruction files, for folders you are not in (read one before you work there):\n{}",
-                list.join("\n")
-            ));
-        }
-    }
+    out.push_str(&vol.instructions);
     if !prefs.is_empty() {
         out.push_str(&format!("\n\nThe person's preferences:\n{prefs}"));
     }

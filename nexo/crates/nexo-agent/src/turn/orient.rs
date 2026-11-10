@@ -154,7 +154,7 @@ pub(super) fn budget_files(st: &State, text: &str, attachments: &[Attachment]) -
 }
 
 /// The lines put at the head of a request: how many files came with it and what the project's check said.
-pub(super) fn start_note(attachments: &[Attachment], cwd: &Path, check: Option<&str>) -> String {
+pub(super) fn start_note(attachments: &[Attachment], cwd: &Path, check: Option<&str>, tree: Option<&str>) -> String {
     let mut files = 0;
     let mut tokens = 0u64;
     for a in attachments {
@@ -170,6 +170,9 @@ pub(super) fn start_note(attachments: &[Attachment], cwd: &Path, check: Option<&
     let mut lines = Vec::new();
     if files > 0 {
         lines.push(format!("attached: {files} files, {tokens} tokens"));
+    }
+    if let Some(t) = tree {
+        lines.push(t.trim().to_string());
     }
     if let Some(c) = check {
         lines.push(c.trim().to_string());
