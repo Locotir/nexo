@@ -117,7 +117,7 @@ through the context policy; call `client.stream`; forward deltas as events
 while collecting; append the assistant message; if no tool calls, end the
 turn; else run the calls **in order** (parallel when all are `Read`/`Search`),
 each through the permission policy (`deny` rules → denied without asking;
-mode `Auto` or an `allow` rule → allowed; else the gate), emitting
+mode `yolo` or an `allow` rule → allowed; else the gate), emitting
 `ToolCall/ToolStart/ToolProgress/ToolDone`; append one user message with the
 results; loop. `Interrupt` cancels the stream and the running tools; the
 partial assistant message is kept and the turn ends `Interrupted`. A
@@ -362,7 +362,7 @@ call; bracketed paste keeps newlines.
 Slash commands: `/help`, `/model [name]` (picker without a name),
 `/provider`, `/pricing [in=… out=… cache=… write=…]` (alone: `ShowModel`;
 with values: `SetPricing`, prices per million tokens), `/permissions [mode]`,
-`/yolo` (auto mode), `/prompt` (the system prompt as sent, shown as a card),
+`/yolo` (yolo mode), `/prompt` (the system prompt as sent, shown as a card),
 `/prompt edit` (the TUI steps aside, `$VISUAL`/`$EDITOR`/`nano`/`vi` opens
 `~/.nexo/prompt.md`, created from the current prompt when missing,
 and the TUI returns), `/goal <text>` (`SetGoal`; alone it shows the goal, `pause` and `resume` hold and restart it,

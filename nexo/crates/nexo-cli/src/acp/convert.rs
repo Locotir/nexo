@@ -19,7 +19,7 @@ pub fn modes() -> Vec<(PermissionMode, &'static str)> {
     vec![
         (PermissionMode::Ask, "Ask before edits and commands"),
         (PermissionMode::AcceptEdits, "Edits go through; ask before commands"),
-        (PermissionMode::Auto, "Never ask"),
+        (PermissionMode::Auto, "Never ask (yolo)"),
         (PermissionMode::ReadOnly, "Only read and search"),
         (PermissionMode::Plan, "Read and search, then propose a plan"),
     ]
@@ -35,7 +35,7 @@ fn mode_name(m: PermissionMode) -> &'static str {
     match m {
         PermissionMode::Ask => "Ask",
         PermissionMode::AcceptEdits => "Accept edits",
-        PermissionMode::Auto => "Auto",
+        PermissionMode::Auto => "Yolo",
         PermissionMode::ReadOnly => "Read-only",
         PermissionMode::Plan => "Plan",
     }
@@ -43,6 +43,7 @@ fn mode_name(m: PermissionMode) -> &'static str {
 
 /// A mode id the editor sent; only the ids `modes_state` offers.
 pub fn parse_mode(id: &str) -> Option<PermissionMode> {
+    let id = if id == "auto" { "yolo" } else { id };
     modes().into_iter().map(|(m, _)| m).find(|m| m.as_str() == id)
 }
 
@@ -361,7 +362,7 @@ mod tests {
         for (m, _) in modes() {
             assert_eq!(parse_mode(m.as_str()), Some(m));
         }
-        assert_eq!(parse_mode("yolo"), None);
+        assert_eq!(parse_mode("auto"), Some(PermissionMode::Auto), "the old name");
     }
 
     #[test]

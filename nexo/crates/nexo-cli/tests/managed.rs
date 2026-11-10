@@ -124,7 +124,7 @@ fn user_hooks_are_off_when_disallowed_and_forced_hooks_run() {
 fn bypass_mode_is_refused() {
     let d = tempfile::tempdir().unwrap();
     let managed = "disable_bypass_mode = true\n";
-    for flags in [&["--yolo"][..], &["--permission-mode", "auto"]] {
+    for flags in [&["--yolo"][..], &["--permission-mode", "yolo"]] {
         let mut args = vec!["-p", "hi"];
         args.extend_from_slice(flags);
         let o = nexo(d.path(), MOCK, Some(managed), &args);
@@ -157,7 +157,7 @@ fn add_dir_reaches_the_sandbox_write_dirs() {
     let target = other.path().join("b.txt");
     let cmd = format!("echo x > {}", target.display());
     let call = format!("tool:bash {}", serde_json::json!({"command": cmd}));
-    let base = ["-p", call.as_str(), "--permission-mode", "auto", "--sandbox", "workspace-write"];
+    let base = ["-p", call.as_str(), "--permission-mode", "yolo", "--sandbox", "workspace-write"];
     nexo(d.path(), MOCK, None, &base);
     if target.exists() {
         eprintln!("skipped: no OS sandbox here");

@@ -794,7 +794,7 @@ fn welcome(
     let text = inner - gutter;
     // the mode that never asks shows as YOLO, in red
     let (permissions, mode_style) = match permissions {
-        "auto" => ("YOLO", theme.bold(theme.error)),
+        "yolo" | "auto" => ("YOLO", theme.bold(theme.error)),
         p => (p, theme.dim()),
     };
     let info: [Vec<Span<'static>>; 3] = [

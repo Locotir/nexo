@@ -134,7 +134,7 @@ pub struct ManagedPolicy {
     pub disable_web: bool,
     /// The local audit log (docs/AUDIT.md): forced on, and where it is written.
     pub audit: ManagedAudit,
-    /// No `auto` permission mode (`--yolo`, `/mode auto`, `NEXO_PERMISSION_MODE=auto`).
+    /// No `yolo` permission mode (`--yolo`, `/mode yolo`, `NEXO_PERMISSION_MODE=yolo`).
     pub disable_bypass_mode: bool,
     /// The file this was read from; never part of the file.
     #[serde(skip)]
@@ -263,7 +263,7 @@ impl ManagedPolicy {
 
     pub fn check_mode(&self, mode: PermissionMode) -> Result<(), String> {
         if self.disable_bypass_mode && mode == PermissionMode::Auto {
-            Err(self.blocked("bypass mode (permission mode auto)"))
+            Err(self.blocked("bypass mode (permission mode yolo)"))
         } else {
             Ok(())
         }
@@ -386,7 +386,7 @@ impl ManagedPolicy {
         // permissions
         if self.disable_bypass_mode && cfg.permissions.mode == PermissionMode::Auto {
             cfg.permissions.mode = PermissionMode::Ask;
-            say("permission mode auto changed to ask".into());
+            say("permission mode yolo changed to ask".into());
         }
         for r in &self.permissions.deny {
             if !cfg.permissions.deny.contains(r) {

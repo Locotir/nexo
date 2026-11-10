@@ -13,7 +13,8 @@ pub enum PermissionMode {
     Ask,
     /// Writes go through; ask before commands.
     AcceptEdits,
-    /// Never ask (rules in `deny` still hold).
+    /// Never ask (rules in `deny` still hold). Called `yolo`; `auto` is an old name that still parses.
+    #[serde(rename = "yolo", alias = "auto")]
     Auto,
     /// Only reads and searches.
     ReadOnly,
@@ -32,7 +33,7 @@ impl PermissionMode {
         match self {
             PermissionMode::Ask => "ask",
             PermissionMode::AcceptEdits => "accept-edits",
-            PermissionMode::Auto => "auto",
+            PermissionMode::Auto => "yolo",
             PermissionMode::ReadOnly => "read-only",
             PermissionMode::Plan => "plan",
         }
@@ -106,4 +107,26 @@ pub struct QuestionOption {
     pub label: String,
     #[serde(default)]
     pub description: String,
+}
+
+#[cfg(test)]
+mod yolo_name_tests {
+    use super::*;
+
+    #[test]
+    fn auto_is_an_old_name_for_yolo() {
+        assert_eq!(PermissionMode::Auto.as_str(), "yolo");
+        for s in ["yolo", "auto", "Auto", "bypass"] {
+            assert_eq!(PermissionMode::parse(s), Some(PermissionMode::Auto), "{s}");
+        }
+        #[derive(Deserialize)]
+        struct T {
+            mode: PermissionMode,
+        }
+        for s in ["yolo", "auto"] {
+            let t: T = toml::from_str(&format!("mode = '{s}'")).unwrap();
+            assert_eq!(t.mode, PermissionMode::Auto, "{s}");
+        }
+        assert_eq!(serde_json::to_string(&PermissionMode::Auto).unwrap(), "\"yolo\"");
+    }
 }

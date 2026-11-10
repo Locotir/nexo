@@ -333,7 +333,7 @@ fn the_banner_stays_on_top_of_the_transcript_and_facts_follow_the_agent() {
     a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "hello".into() });
     assert!(a.has_welcome(), "a notice sits under the banner");
     a.handle_agent(AgentEvent::PermissionModeChanged { mode: PermissionMode::Auto });
-    assert!(matches!(&a.blocks[0], Block::Welcome { permission_mode, .. } if permission_mode == "auto"));
+    assert!(matches!(&a.blocks[0], Block::Welcome { permission_mode, .. } if permission_mode == "yolo"));
     let bar = crate::ui::title_segments(&a, 200);
     let yolo = bar.iter().flatten().find(|s| s.text == "▲ YOLO").expect("the mode that never asks reads YOLO");
     assert_eq!(yolo.style.fg, Some(a.theme.error), "and is red");

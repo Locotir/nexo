@@ -26,7 +26,7 @@ Headless runs are saved as sessions but marked, so they stay out of `/resume`.
 | `--json-schema FILE\|JSON` | The final answer must be JSON that validates against the schema. |
 | `--permission-mode`, `--yolo`, `--model`, `--provider`, `--cwd`, `--continue`, `--resume` | As in the interface. |
 
-Nobody can be asked in a headless run: a tool call that needs permission is refused (the model sees "Permission denied") unless the mode is `auto` or an allow rule covers it.
+Nobody can be asked in a headless run: a tool call that needs permission is refused (the model sees "Permission denied") unless the mode is `yolo` or an allow rule covers it.
 
 The flags above except `-p` are refused (exit 2) without `-p`.
 

@@ -197,11 +197,11 @@ fn initialize_and_new_session_speak_the_protocol() {
     assert_eq!(r["modes"]["currentModeId"], "ask");
     let ids: Vec<&str> =
         r["modes"]["availableModes"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
-    assert_eq!(ids, ["ask", "accept-edits", "auto", "read-only", "plan"]);
+    assert_eq!(ids, ["ask", "accept-edits", "yolo", "read-only", "plan"]);
     // a method nobody knows, and a mode nexo does not have
     let e = c.call("session/frobnicate", json!({})).unwrap_err();
     assert_eq!(e["code"], -32601);
-    let e = c.call("session/set_mode", json!({"sessionId": sid, "modeId": "yolo"})).unwrap_err();
+    let e = c.call("session/set_mode", json!({"sessionId": sid, "modeId": "bypass"})).unwrap_err();
     assert_eq!(e["code"], -32602);
     // a prompt of text the model echoes
     let r = c
@@ -333,8 +333,8 @@ fn file_reads_and_writes_go_through_the_client() {
     c.initialize(true);
     let sid = c.new_session(&d.work);
     // set_mode: the person lets edits and reads go without asking
-    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "auto"})).unwrap();
-    assert!(c.updates().iter().any(|(k, u)| k == "current_mode_update" && u["currentModeId"] == "auto"));
+    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "yolo"})).unwrap();
+    assert!(c.updates().iter().any(|(k, u)| k == "current_mode_update" && u["currentModeId"] == "yolo"));
 
     let buffer = d.work.join("buffer.txt");
     let out = d.work.join("out.txt");
@@ -474,7 +474,7 @@ fn bash_runs_in_the_client_terminal_when_it_has_one() {
     let init = c.initialize_with(false, true);
     assert_eq!(init["agentCapabilities"]["mcpCapabilities"], json!({"http": true, "sse": true}));
     let sid = c.new_session(&d.work);
-    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "auto"})).unwrap();
+    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "yolo"})).unwrap();
     let mut term = FakeTerminal::new();
     let r = c
         .call_with(
@@ -518,7 +518,7 @@ fn bash_runs_in_nexo_when_the_client_has_no_terminal() {
     let init = c.initialize_with(false, false);
     assert_eq!(init["agentCapabilities"]["mcpCapabilities"]["http"], true);
     let sid = c.new_session(&d.work);
-    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "auto"})).unwrap();
+    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "yolo"})).unwrap();
     let r =
         c.call("session/prompt", json!({"sessionId": sid, "prompt": [{"type": "text", "text": "run it"}]})).unwrap();
     assert_eq!(r["stopReason"], "end_turn");
@@ -534,7 +534,7 @@ fn cancelling_kills_and_releases_the_terminal() {
     let mut c = Client::start(&d);
     c.initialize_with(false, true);
     let sid = c.new_session(&d.work);
-    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "auto"})).unwrap();
+    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "yolo"})).unwrap();
     let mut term = FakeTerminal::new();
     term.cancel_on_wait = Some(sid.clone());
     let r = c
@@ -651,7 +651,7 @@ fn an_http_mcp_server_from_session_new_is_registered_and_called() {
         &d.work,
         json!([{"type": "http", "name": "mock", "url": mock.url, "headers": [{"name": "x-api-key", "value": "k-123"}]}]),
     );
-    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "auto"})).unwrap();
+    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "yolo"})).unwrap();
     let r = c.call("session/prompt", json!({"sessionId": sid, "prompt": [{"type": "text", "text": "go"}]})).unwrap();
     assert_eq!(r["stopReason"], "end_turn");
     let done = c
@@ -685,7 +685,7 @@ fn with_the_sandbox_on_bash_stays_in_nexo_even_if_the_client_has_a_terminal() {
     let mut c = Client::start(&d);
     c.initialize_with(false, true);
     let sid = c.new_session(&d.work);
-    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "auto"})).unwrap();
+    c.call("session/set_mode", json!({"sessionId": sid, "modeId": "yolo"})).unwrap();
     let mut term = FakeTerminal::new();
     let r = c
         .call_with(

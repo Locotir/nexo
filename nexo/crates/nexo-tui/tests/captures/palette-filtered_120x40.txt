@@ -32,7 +32,7 @@
 
 
  /model                [name]                        switch model, or set one up step by step (checked against the ser…
- /permissions  (mode)  [ask|accept-edits|plan|auto…  set the permission mode
+ /permissions  (mode)  [ask|accept-edits|plan|yolo…  set the permission mode
  /memory               [user|add <text>|share [id]]  edit the instructions the agent reads (the project's file, or wit…
 ─ ask ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › /mo

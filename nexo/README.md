@@ -56,7 +56,7 @@ nexo --provider openai --model gpt-5
 nexo "fix the failing test"     # opens the session and sends this first
 nexo -i shot.png "why is this red?"   # attaches an image to that first request (also with -p)
 nexo -p "what does this repository do?"            # headless: prints the reply
-nexo -p "run the tests and fix what fails" --permission-mode auto --json
+nexo -p "run the tests and fix what fails" --permission-mode yolo --json
 nexo --continue                 # resume the latest session of this directory
 nexo --yolo                     # never ask for permission (also /yolo inside)
 nexo --sandbox workspace-write   # bash runs in an OS sandbox: reads everywhere, writes the project only (also /sandbox)
@@ -86,7 +86,7 @@ More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo
 
 ## In the interface
 
-The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the effort, the permission mode (coloured: `auto` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for what the last call sent against the model's window (yellow, orange, red as it nears), and the whole history kept (`session 1.2M tok`), so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far (each call re-sends its context, so it grows much faster than the history, and the cost next to it is paid on it), `81% cached` is the share of input the cache served (green from 50%), `12 calls` the calls so far and `⏱ 14s` the running turn. `/context` prints all of them.
+The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the effort, the permission mode (coloured: `yolo` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for what the last call sent against the model's window (yellow, orange, red as it nears), and the whole history kept (`session 1.2M tok`), so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far (each call re-sends its context, so it grows much faster than the history, and the cost next to it is paid on it), `81% cached` is the share of input the cache served (green from 50%), `12 calls` the calls so far and `⏱ 14s` the running turn. `/context` prints all of them.
 
 
 | Keys | What |
@@ -331,7 +331,7 @@ backend. Details and limits: [docs/SANDBOX.md](docs/SANDBOX.md).
 `read` returns at most 64,000 characters per call (`offset` and `limit` page through a file). Reading and searching are not asked about, except for files that hold keys or credentials: `.env` and
 `.env.*`, anything under `.ssh`, `.gnupg`, `.aws`, `.kube` or `.docker`, private keys and certificates
 (`id_rsa*`, `*.pem`, `*.key`, ...), `.netrc` and its kind, and nexo's own credential store. Those are
-asked about in every mode but `auto`; only an allow rule that names their path (`read(.env)`, not `read`)
+asked about in every mode but `yolo`; only an allow rule that names their path (`read(.env)`, not `read`)
 skips the question. Sub-agents keep the same rules, deny rules included. A `grep` over a folder
 passes over those files and says how many it left out; naming one as its `path` searches it (and asks).
 `diagnostics` reads by starting the project's language server or compiler, which run its build
@@ -410,7 +410,7 @@ project, the settings that could run a command, send a key, a file or the conver
 a spend limit are ignored, and the session opens with a notice naming them: a provider's `base_url`,
 `api_key_*`, `auth`, `login`, `headers`, `protocol`, `extra` and `pricing` (your own for that provider
 stay), a `provider` your file does not define, `[mcp.*]`, `[[hooks]]`, `permissions.allow`,
-`permissions.mode` set to `auto` or `accept-edits`, `ui.status_command`, `agent.system_prompt_file`,
+`permissions.mode` set to `yolo` or `accept-edits`, `ui.status_command`, `agent.system_prompt_file`,
 `web.url` and `web.api_key_env`, and an `agent.max_cost` or `max_cost_day` above yours or not a positive
 number (0, a negative number or `nan` would mean no limit). Everything else in it applies, and its `deny`
 rules always do.
@@ -453,7 +453,7 @@ api_key_env = "MYSERVER_API_KEY"
 models = ["my-model"]
 
 [permissions]
-mode = "ask"                         # ask | accept-edits | plan | auto | read-only
+mode = "ask"                         # ask | accept-edits | plan | yolo | read-only
 allow = ["read", "grep", "glob", "bash(git status*)"]
 
 [context]

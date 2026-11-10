@@ -34,10 +34,10 @@ pub struct Args {
     /// Resume the latest session of this directory.
     #[arg(short = 'c', long = "continue")]
     pub continue_: bool,
-    /// ask | accept-edits | plan | auto | read-only
+    /// ask | accept-edits | plan | yolo | read-only
     #[arg(long, value_name = "MODE", env = "NEXO_PERMISSION_MODE", value_parser = permission_mode_arg)]
     pub permission_mode: Option<String>,
-    /// Never ask for permission (the same as --permission-mode auto).
+    /// Never ask for permission (the same as --permission-mode yolo).
     #[arg(long, conflicts_with = "permission_mode")]
     pub yolo: bool,
     /// OS sandbox for the bash tool: off | workspace-write | read-only
@@ -86,7 +86,7 @@ fn sandbox_mode_arg(s: &str) -> Result<String, String> {
 fn permission_mode_arg(s: &str) -> Result<String, String> {
     match PermissionMode::parse(s) {
         Some(_) => Ok(s.to_string()),
-        None => Err(format!("unknown permission mode {s:?}; use one of: ask, accept-edits, plan, auto, read-only")),
+        None => Err(format!("unknown permission mode {s:?}; use one of: ask, accept-edits, plan, yolo, read-only")),
     }
 }
 

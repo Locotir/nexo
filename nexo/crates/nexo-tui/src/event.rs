@@ -425,6 +425,9 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
             if app.modal.is_some() && app.bar_press(m.column, m.row) {
                 return;
             }
+            if app.modal_outside_click(m.column, m.row) {
+                return;
+            }
             if let Some(md) = &mut app.modal {
                 let rows = app.picker_rows.clone();
                 let out = md.click(m.column, m.row, &rows);

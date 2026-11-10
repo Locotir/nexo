@@ -679,7 +679,7 @@ impl Config {
     /// Takes out of a project's file what could run a command or send a key, a file or the
     /// conversation somewhere else, or lift a spend limit: a provider's address, key sources, headers,
     /// protocol, `extra` settings and prices (the user's own stay), a default provider the user's file
-    /// does not define, MCP servers, hooks, allow rules, the `auto` and `accept-edits` modes, the
+    /// does not define, MCP servers, hooks, allow rules, the `yolo` and `accept-edits` modes, the
     /// status command, the system prompt file, the web backend's address and key, and a `max_cost` or
     /// `max_cost_day` that is not a positive finite number at most the user's, and a `max_checkpoints` above the
     /// user's (5 if unset); a user's `on_limit = "ask"` stays. Returns their names.

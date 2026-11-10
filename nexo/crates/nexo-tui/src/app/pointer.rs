@@ -356,6 +356,24 @@ impl App {
     // ------------------------------------------------------------ pointer
 
     /// Notes a palette or a dialog that came up since the last frame: it pops in.
+    /// A left click outside the open window closes it as Esc would (nothing picked or saved).
+    /// A dialog whose closing is a decision stays. True when the click was used up.
+    pub fn modal_outside_click(&mut self, x: u16, y: u16) -> bool {
+        use crate::modal::Modal;
+        let drawn = self.dialog_size.modal.drawn;
+        let Some(md) = &mut self.modal else { return false };
+        if matches!(md, Modal::Permission(_) | Modal::Question(_) | Modal::Trust(_)) {
+            return false;
+        }
+        if drawn.width == 0 || drawn.height == 0 || crate::modal::contains(drawn, x, y) {
+            return false;
+        }
+        let out = md
+            .key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Esc, crossterm::event::KeyModifiers::NONE));
+        self.modal_out(out);
+        true
+    }
+
     pub fn note_popups(&mut self) {
         let now = self.now();
         let (p, m) = (self.palette.is_some(), self.modal.is_some());

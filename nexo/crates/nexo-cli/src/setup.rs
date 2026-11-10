@@ -254,7 +254,7 @@ impl PermissionGate for HeadlessGate {
     async fn ask(&self, req: PermissionRequest) -> PermissionDecision {
         PermissionDecision::Deny {
             reason: Some(format!(
-                "{} not allowed in a non-interactive run; use --permission-mode auto or an allow rule such as {}",
+                "{} not allowed in a non-interactive run; use --permission-mode yolo or an allow rule such as {}",
                 req.summary,
                 req.suggested_rules.first().cloned().unwrap_or_else(|| req.tool.clone())
             )),
@@ -731,7 +731,7 @@ max_tokens = 16384                 # reply size asked for; on a model whose wind
 # max_cost_day = 5.0                # and every session together at this many a day
 
 [permissions]
-mode = "ask"                        # ask | accept-edits | plan | auto | read-only
+mode = "ask"                        # ask | accept-edits | plan | yolo | read-only
 allow = ["read", "glob", "grep", "ls", "bash(git status*)", "bash(git diff*)"]
 deny = []
 

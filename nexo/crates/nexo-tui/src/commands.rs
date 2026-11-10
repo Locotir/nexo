@@ -29,7 +29,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("logout", &["signout"], "[provider]", "forget the key or sign-in stored for a provider (the current one)"),
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
     spec("fast", &[], "[on|off]", "switch to the model's fast version, and back"),
-    spec("permissions", &["permission", "mode"], "[ask|accept-edits|plan|auto|read-only]", "set the permission mode"),
+    spec("permissions", &["permission", "mode"], "[ask|accept-edits|plan|yolo|read-only]", "set the permission mode"),
     spec(
         "sandbox",
         &[],
@@ -244,7 +244,7 @@ const HIDDEN: &[(&str, &str, &str)] = &[
     ("keys", "help", ""),
     ("keybindings", "help", ""),
     ("config", "status", ""),
-    ("yolo", "permissions", "auto"),
+    ("yolo", "permissions", "yolo"),
     ("mouse", "settings", "mouse"),
     ("timestamps", "settings", "timestamps"),
     ("vim", "settings", "vim"),
@@ -513,7 +513,7 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
             ("ask", "ask before writes and commands"),
             ("accept-edits", "writes go through; ask before commands"),
             ("plan", "reads, then a plan to approve before any write"),
-            ("auto", "never ask"),
+            ("yolo", "never ask"),
             ("read-only", "only reads and searches"),
         ],
         "sandbox" => &[

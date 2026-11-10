@@ -764,8 +764,8 @@ mod tests {
     #[test]
     fn lists_the_values_of_an_argument() {
         let vals = arg_values("permissions", &[], "", &[]);
-        let p = Palette::args("permissions", "au", 13, vals);
-        assert_eq!(p.current(), Some("auto"));
+        let p = Palette::args("permissions", "yo", 13, vals);
+        assert_eq!(p.current(), Some("yolo"));
         assert!(p.runs_selection());
         assert_eq!(p.rows(3).0[0].hint, "never ask");
         let p = Palette::args("permissions", "ro", 13, arg_values("permissions", &[], "", &[]));
