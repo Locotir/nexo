@@ -2,6 +2,11 @@
 # in %LOCALAPPDATA%\Programs\nexo, on PATH. If that fails (or NEXO_BUILD=1), it installs what the build
 # needs (the Visual Studio C++ build tools, Rust; Windows asks once to allow them) and builds nexo.
 #   irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
+# Settings (environment): NEXO_INSTALL_DIR = the folder to install into (default %LOCALAPPDATA%\Programs\nexo);
+# NEXO_BUILD=1 = build from source even where a ready-built file exists.
+
+# Windows PowerShell 5.1 can default to TLS 1.0/1.1, which GitHub refuses
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
 
 $NexoVsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $NexoVsSetup = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\setup.exe'
@@ -63,9 +68,20 @@ function Install-NexoMsvc {
     return (Test-NexoMsvc)
 }
 
+# The processor of the machine (not of this PowerShell): an x64 PowerShell on Windows for ARM reports AMD64 in
+# PROCESSOR_ARCHITECTURE, but the native ARM64 file runs best there. OSArchitecture says what the OS is.
+function Get-NexoArch {
+    try {
+        $os = [string][System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+        if ($os) { if ($os -eq 'Arm64') { return 'aarch64' } else { return 'x86_64' } }
+    } catch { }
+    if (($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') -or ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64')) { return 'aarch64' }
+    return 'x86_64'
+}
+
 # the release file for this processor, checked against the release's SHA-256 list; $null when none fits
 function Get-NexoRelease($repo, $stage) {
-    $name = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'nexo-windows-aarch64.exe' } else { 'nexo-windows-x86_64.exe' }
+    $name = "nexo-windows-$(Get-NexoArch).exe"
     $base = "$repo/releases/latest/download"
     try {
         Write-Host "nexo: downloading $name from the latest release"
@@ -108,7 +124,7 @@ function Build-Nexo($repo, $stage, $cargoBin) {
     }
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Write-Host 'nexo: installing Rust (rustup, https://rustup.rs)'
-        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+        $arch = Get-NexoArch
         $init = Join-Path $env:TEMP 'rustup-init.exe'
         Invoke-WebRequest "https://win.rustup.rs/$arch" -OutFile $init -UseBasicParsing
         & $init -y --profile minimal
@@ -127,6 +143,8 @@ function Build-Nexo($repo, $stage, $cargoBin) {
 
 function Install-Nexo {
     $ErrorActionPreference = 'Stop'
+    # Windows PowerShell 5.1 downloads very slowly while it draws its progress bar
+    $ProgressPreference = 'SilentlyContinue'
     $repo = 'https://github.com/Locotir/nexo'
     $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
     # where nexo goes: the per-user program folder of Windows (%LOCALAPPDATA%\Programs), no admin needed
@@ -151,7 +169,9 @@ function Install-Nexo {
     # Windows cannot write over a running program, but it can rename one
     if (Test-Path $target) {
         Remove-Item "$target.old" -Force -ErrorAction SilentlyContinue
-        Rename-Item $target 'nexo.exe.old'
+        # a copy renamed by an earlier update may still be running and cannot be deleted: use another name
+        $oldName = if (Test-Path "$target.old") { "nexo.exe.old-$PID" } else { 'nexo.exe.old' }
+        Rename-Item $target $oldName
     }
     Copy-Item $built $target
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
@@ -168,12 +188,12 @@ function Install-Nexo {
 
     # put the folder on the user's PATH for new terminals, once (no admin needed)
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not (($userPath -split ';') -contains $dir)) {
+    if (-not (($userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }) -contains $dir.TrimEnd('\'))) {
         $joined = if ($userPath) { "$dir;$userPath" } else { $dir }
         [Environment]::SetEnvironmentVariable('Path', $joined, 'User')
         Write-Host "nexo: added $dir to your PATH for new terminals"
     }
-    if (-not (($env:Path -split ';') -contains $dir)) { $env:Path = "$dir;$env:Path" }
+    if (-not (($env:Path -split ';' | ForEach-Object { $_.TrimEnd('\') }) -contains $dir.TrimEnd('\'))) { $env:Path = "$dir;$env:Path" }
 
     $exe = Get-Command nexo -ErrorAction SilentlyContinue
     if ($exe -and ($exe.Source -eq $target)) {

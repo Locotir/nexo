@@ -3,12 +3,17 @@
 # in ~/.local/bin, on PATH. Where no build fits (another processor, or NEXO_BUILD=1), it installs what
 # is missing (a C compiler, Rust) and builds nexo instead.
 #   curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
+# Settings (environment): NEXO_INSTALL_DIR = the folder to install into (default ~/.local/bin);
+# NEXO_BUILD=1 = build from source even where a ready-built file exists.
+# There is no ready-built file for other systems (macOS included): there it tries to build from source.
 set -eu
 
 repo="https://github.com/Locotir/nexo"
 dir="${NEXO_INSTALL_DIR:-$HOME/.local/bin}"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
+
+os="$(uname -s)"
 
 say() { printf 'nexo: %s\n' "$*"; }
 
@@ -17,8 +22,10 @@ as_root() {
     if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi
 }
 
-# the release file for this processor, checked against the release's SHA-256 list
+# the release file for this system and processor, checked against the release's SHA-256 list;
+# the release has Linux files only, so any other system must not get one (it would not run)
 from_release() {
+    [ "$os" = Linux ] || return 1
     case "$(uname -m)" in
     x86_64 | amd64) name=nexo-linux-x86_64 ;;
     aarch64 | arm64) name=nexo-linux-aarch64 ;;
@@ -43,7 +50,10 @@ from_source() {
     fi
     if ! command -v cc >/dev/null 2>&1; then
         say "installing a C compiler (the build needs one)"
-        if command -v apt-get >/dev/null 2>&1; then
+        if [ "$os" = Darwin ]; then
+            say "no C compiler found: run xcode-select --install, then run this again."
+            exit 1
+        elif command -v apt-get >/dev/null 2>&1; then
             as_root apt-get update -qq && as_root apt-get install -y -qq build-essential
         elif command -v dnf >/dev/null 2>&1; then
             as_root dnf install -y -q gcc
@@ -69,7 +79,14 @@ from_source() {
 }
 
 if [ -n "${NEXO_BUILD:-}" ] || ! from_release; then
-    [ -n "${NEXO_BUILD:-}" ] || say "no ready-built release fits here: building from source"
+    if [ -z "${NEXO_BUILD:-}" ]; then
+        if [ "$os" != Linux ]; then
+            say "there is no ready-built nexo for $os. nexo is built and tested on Linux and Windows."
+            say "trying to build it from source here (not tested on $os)"
+        else
+            say "no ready-built release fits here: building from source"
+        fi
+    fi
     from_source
 fi
 
@@ -91,19 +108,27 @@ case ":$PATH:" in
 *":$dir:"*) ;;
 *)
     line="export PATH=\"$dir:\$PATH\"  # nexo"
+    changed=0
     for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
         case "$rc" in
         "$HOME/.profile") ;;
         *) [ -e "$rc" ] || continue ;;
         esac
-        grep -qsF "$line" "$rc" || printf '\n%s\n' "$line" >>"$rc"
+        grep -qsF "$line" "$rc" || { printf '\n%s\n' "$line" >>"$rc" && changed=1; }
     done
     if [ -d "$HOME/.config/fish" ]; then
         mkdir -p "$HOME/.config/fish/conf.d"
-        printf 'fish_add_path -g %s\n' "$dir" >"$HOME/.config/fish/conf.d/nexo.fish"
+        fish_line="fish_add_path -g $dir"
+        grep -qsxF "$fish_line" "$HOME/.config/fish/conf.d/nexo.fish" || {
+            printf '%s\n' "$fish_line" >"$HOME/.config/fish/conf.d/nexo.fish" && changed=1
+        }
     fi
     PATH="$dir:$PATH"
-    say "added $dir to PATH for new terminals"
+    if [ "$changed" = 1 ]; then
+        say "added $dir to PATH for new terminals"
+    else
+        say "$dir is already set on PATH for new terminals"
+    fi
     ;;
 esac
 

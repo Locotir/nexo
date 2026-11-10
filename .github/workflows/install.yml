@@ -1,0 +1,107 @@
+name: install
+
+# The install scripts, run for real against the latest release: the file they pick for each system
+# must run and match the release's SHA-256 list, and a second run must not repeat the PATH entry.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/install.yml
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  linux:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, asset: nexo-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, asset: nexo-linux-aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SHA }}
+      - name: install twice into a fresh home
+        run: |
+          set -eu
+          home="$RUNNER_TEMP/home"
+          mkdir -p "$home"
+          for run in 1 2; do
+            echo "--- run $run"
+            env -i HOME="$home" PATH=/usr/bin:/bin sh ./install.sh
+          done
+          echo "HOME_DIR=$home" >>"$GITHUB_ENV"
+      - name: the installed file runs, is the release file, and the PATH line is there once
+        run: |
+          set -eu
+          "$HOME_DIR/.local/bin/nexo" --version
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/latest/download/SHA256SUMS" -o "$RUNNER_TEMP/SHA256SUMS"
+          want="$(grep " \*\{0,1\}${{ matrix.asset }}\$" "$RUNNER_TEMP/SHA256SUMS" | cut -d' ' -f1)"
+          got="$(sha256sum "$HOME_DIR/.local/bin/nexo" | cut -d' ' -f1)"
+          echo "want $want"
+          echo "got  $got"
+          [ -n "$want" ] && [ "$want" = "$got" ]
+          n="$(grep -cF '# nexo' "$HOME_DIR/.profile")"
+          echo "rc lines: $n"
+          [ "$n" = 1 ]
+
+  windows:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+        shell: [pwsh, powershell]
+        include:
+          - { os: windows-latest, asset: nexo-windows-x86_64.exe }
+          - { os: windows-11-arm, asset: nexo-windows-aarch64.exe }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SHA }}
+      - name: install twice, as irm | iex runs it
+        env:
+          NEXO_INSTALL_DIR: ${{ runner.temp }}\nexo-${{ matrix.shell }}
+        run: |
+          foreach ($run in 1, 2) {
+            Write-Host "--- run $run"
+            Get-Content -Raw .\install.ps1 | Invoke-Expression
+          }
+      - name: the installed file runs, is the release file, and the user PATH has the folder once
+        env:
+          NEXO_INSTALL_DIR: ${{ runner.temp }}\nexo-${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:NEXO_INSTALL_DIR\nexo.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'nexo.exe --version failed' }
+          $sums = "$env:RUNNER_TEMP\SHA256SUMS"
+          Invoke-WebRequest "https://github.com/${{ github.repository }}/releases/latest/download/SHA256SUMS" -OutFile $sums -UseBasicParsing
+          $line = Get-Content $sums | Where-Object { ($_ -split '\s+', 2)[1] -replace '^\*', '' -eq '${{ matrix.asset }}' } | Select-Object -First 1
+          $want = ($line -split '\s+', 2)[0].ToLower()
+          $got = (Get-FileHash "$env:NEXO_INSTALL_DIR\nexo.exe" -Algorithm SHA256).Hash.ToLower()
+          Write-Host "want $want"
+          Write-Host "got  $got"
+          if (-not $want -or $want -ne $got) { throw 'SHA-256 differs from the release list' }
+          $n = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_.TrimEnd('\') -eq $env:NEXO_INSTALL_DIR }).Count
+          Write-Host "user PATH entries: $n"
+          if ($n -ne 1) { throw "expected the folder once on the user PATH, found $n" }

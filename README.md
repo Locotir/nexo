@@ -129,6 +129,8 @@ curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
 irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 ```
 
+There is no ready-built file for macOS yet: there the script builds from source, untested.
+
 Or directly: `cargo install --locked --git https://github.com/Locotir/nexo nexo-cli`.
 
 **Updates.** Each time it starts, nexo checks GitHub in the background and tells you when a newer release is out;
