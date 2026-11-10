@@ -49,7 +49,12 @@ impl Engine {
         // the output that went whole as the latest message (`Params.fresh`) points up from now on
         if let Some(&mi) = sent.last().filter(|&&mi| self.p.fresh != 0 && self.dups.contains_key(&mi)) {
             if mi + 1 < self.tr.msgs.len() && self.dups_on(mi).iter().any(Option::is_some) {
-                quiet.push(("miss_fresh", mi));
+                if self.swap_pays(mi) {
+                    quiet.push(("miss_fresh", mi));
+                } else {
+                    // it keeps going as it was sent until a request rewrites the view from it or earlier
+                    self.fresh_wait.insert(mi);
+                }
             }
         }
         // the provider's cache holds the last view of each topic for a while (`Params.pockets`): where it
@@ -281,9 +286,19 @@ impl Engine {
             self.miss(k, Some(mi), &sizes, t);
             missed = Some(missed.map_or(mi, |f| f.min(mi)));
         }
+        // a pointer swap held back goes out once the view is rewritten from its message or an earlier one
+        if let Some(m) = missed {
+            self.fresh_wait.retain(|&w| w < m);
+        }
         self.miss("miss", missed, &sizes, t);
         if by_epoch && epoch {
-            self.landed = self.sizes_now().iter().sum::<i64>() + self.head;
+            // the epoch lands the view only when it changed a message already sent; one that changed nothing
+            // leaves `landed`, and the next look waits for `check` tokens of growth (`epoch_due`)
+            let now = self.sizes_now().iter().sum::<i64>() + self.head;
+            self.looked = now;
+            if self.landed == 0 || missed.is_some_and(was_sent) {
+                self.landed = now;
+            }
             self.bump("epochs", 1);
         }
         self.sent_vis = self.visible();

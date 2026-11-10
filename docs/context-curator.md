@@ -90,8 +90,9 @@ measured price). With a free cache the rewrite never pays. With `ahead=0` it sta
 A fixed `cap` (off by default) replaces the cost rule with a trigger.
 
 An epoch also happens at once when the view passes the ceiling or the model's window, and for the first
-view of an engine. After an epoch the view's size is stored, and the next epoch waits for growth past it
-by the room the cost rule gives.
+view of an engine. After an epoch that rewrote a message already sent, the view's size is stored, and the next
+epoch waits for growth past it by the room the cost rule gives. An epoch that changed nothing sent does not
+move that mark: the next look waits only for `check=4000` more tokens of growth.
 
 ### What happens at an epoch
 
@@ -104,6 +105,9 @@ All the work that waited happens together, so the cache is broken once:
   runs of lines, and reads made out of date by a later edit (`stale=1`) leave first.
 - The window cut (`window_cut`) takes the oldest results the sticky set does not hold, down to
   `target`; past the ceiling the oldest sticky results leave too, as pointers, down to 90 % of it.
+- An output that went whole as the latest message (`fresh=1`) gets its pointers to repeated lines at the next
+  request when the rent they save over the calls ahead pays for sending that message again. Otherwise it keeps
+  going out as it was sent until a rewrite from it or from an earlier message happens anyway.
 
 What the agent is working from is the sticky set, decided by rules with no model: the request, the
 agent's own text and calls, the latest `file now` of each path, the last `check:`, the latest whole read

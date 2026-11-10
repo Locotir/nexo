@@ -198,3 +198,39 @@ fn a_pointer_points_to_lines_sent_whole_and_short_runs_stay() {
     assert_eq!(output(&view, 10), listing(58, 70));
     assert_eq!(output(&reads("nudge=0", &[(1, 40), (21, 60)]).view(), 4), listing(21, 60), "off by default");
 }
+
+#[test]
+fn a_second_read_that_repeats_little_stays_as_sent_and_one_that_repeats_all_points_at_once() {
+    let spec = "dedup=3;nudge=0;asked=3;fresh=1;ahead=0.25;margin=2.25;epoch=1;target=10000;eoq=100000000";
+    // 11 repeated lines in 400: the pointer saves a few hundred tokens of a message of ten thousand
+    let mut e = reads(spec, &[(1, 400), (390, 790)]);
+    let first = output(&e.view(), 4);
+    assert_eq!(first, listing(390, 790));
+    let mut msgs = e.tr.msgs.clone();
+    msgs.extend(step(9, "wc -l listing.txt", "800 listing.txt"));
+    e.sync(&msgs);
+    assert_eq!(output(&e.view(), 4), first, "the read that repeats little changed");
+    assert!(e.stats.get("miss_fresh").is_none(), "{:?}", e.stats);
+    // a read that is all repeat: the pointer saves it all and costs a line
+    let mut e = reads(spec, &[(1, 400), (1, 400)]);
+    let _ = e.view();
+    let mut msgs = e.tr.msgs.clone();
+    msgs.extend(step(9, "wc -l listing.txt", "800 listing.txt"));
+    e.sync(&msgs);
+    assert!(output(&e.view(), 4).starts_with("[curator] the same 400 lines as "), "{}", output(&e.view(), 4));
+    assert!(e.stats.get("miss_fresh").is_some_and(|n| *n > 0), "{:?}", e.stats);
+}
+
+#[test]
+fn a_second_read_that_repeats_all_of_an_earlier_one_becomes_pointers_with_no_room_left_before_the_cap() {
+    let spec = "dedup=3;nudge=0;asked=3;fresh=1;ahead=0.25;margin=2.25;epoch=1;target=10000;eoq=100000000";
+    let mut e = reads(spec, &[(1, 400), (1, 400)]);
+    let _ = e.view();
+    // the view is past the fire point the last epoch stored: no room left before the cap (`room` is 0)
+    (e.cap, e.fire) = (500, 500);
+    let mut msgs = e.tr.msgs.clone();
+    msgs.extend(step(9, "wc -l listing.txt", "800 listing.txt"));
+    e.sync(&msgs);
+    let view = sent(&e.view());
+    assert!(view.contains("the same 400 lines as"), "{:?}", e.stats);
+}

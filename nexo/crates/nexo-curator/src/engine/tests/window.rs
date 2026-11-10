@@ -3,7 +3,7 @@
 use super::*;
 
 /// A tool result of about `tokens` tokens, every line its own words.
-fn big(seed: usize, tokens: usize) -> String {
+pub(super) fn big(seed: usize, tokens: usize) -> String {
     listing(seed * 1000, seed * 1000 + tokens * 4 / 60)
 }
 
@@ -339,4 +339,36 @@ fn a_very_long_view_pays_for_its_quality_even_with_few_calls_left() {
     let (stats, most) = stale_body(0.02, 0.25, 0, 100);
     assert!(cuts(&stats) > 0, "{stats:?}");
     assert!(most < 130_000, "{most}");
+}
+
+/// The default price of a rewrite (`ahead`, `margin`), over the mechanism tests' base, by epochs.
+const PRICED: &str = "nudge=0;fresh=0;eoq=100000000;target=10000;ahead=0.25;margin=2.25;epoch=1;still=32000";
+
+#[test]
+fn a_long_history_of_old_results_nobody_holds_is_still_cut() {
+    let (stats, most) = stale_body(0.1, 0.25, 120, 40);
+    assert!(stats.get("window_cuts").is_some_and(|n| *n > 0), "{stats:?}");
+    assert!(most < 40_000, "{most}");
+}
+
+#[test]
+fn an_epoch_that_changed_nothing_does_not_put_the_next_look_off_by_the_whole_span() {
+    // everything is held (`still`), so the epochs along the way change nothing; then the old reads may go
+    let mut e = Engine::new(params(&PRICED.replace("still=32000", "still=100000000")).unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Read the parts and say what slot 50 holds."})];
+    for k in 1..=60 {
+        msgs.extend(step(k, &format!("cat part{k}.txt"), &big(k, 2000)));
+        e.sync(&msgs);
+        let _ = e.view();
+    }
+    assert!(e.stats.get("window_cuts").is_none(), "{:?}", e.stats);
+    e.p.still = 32000;
+    let (start, land) = e.window_span();
+    // the view is long past where a cut starts; it comes within a few requests, not after the whole span again
+    for k in 61..=64 {
+        msgs.extend(step(k, &format!("cat part{k}.txt"), &big(k, 2000)));
+        e.sync(&msgs);
+        let _ = e.view();
+    }
+    assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{start} {land} {:?}", e.stats);
 }

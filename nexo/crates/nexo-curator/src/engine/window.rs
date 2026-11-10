@@ -155,8 +155,8 @@ impl Engine {
         if self.p.ahead <= 0.0 {
             return 2 * land;
         }
-        let (r, l, k) = (self.p.ratio, land as f64, self.tr.steps.len() as f64);
-        let calls = (self.p.ahead * k).max(4.0);
+        let (r, l) = (self.p.ratio, land as f64);
+        let calls = self.calls_ahead(self.tr.steps.len());
         if r <= 0.0 {
             return i64::MAX;
         }
@@ -195,7 +195,7 @@ impl Engine {
 
     /// Whether this request is an epoch: the view is rewritten now. Always when the view does not run by epochs.
     /// Otherwise when it has passed the ceiling or the model's window, or when it has grown past where the last
-    /// epoch left it by the room the cost rule gives (`fire_point` less the size it lands on): what keeping
+    /// epoch that rewrote a message already sent left it by the room the cost rule gives (`fire_point` less the size it lands on): what keeping
     /// that growth costs for the calls still to come is more than sending the new prefix once. With a fixed `cap`, as soon as
     /// the view is past it.
     pub(super) fn epoch_due(&mut self) -> bool {
@@ -211,7 +211,9 @@ impl Engine {
             return true;
         }
         // a fixed `cap` is the person's own trigger: past it the cut runs at every request, as it did before epochs
-        total > start && (self.p.cap > 0 || total - self.landed > start - land)
+        // (an epoch that changed nothing sent leaves `landed` where it was: the next look waits for the view to
+        // have grown by `check` since that one, not for the whole span again)
+        total > start && (self.p.cap > 0 || (total - self.landed > start - land && total - self.looked >= self.p.check))
     }
 
     /// The tokens of the latest outputs the agent has not written about that no cut may take (`still`): what the

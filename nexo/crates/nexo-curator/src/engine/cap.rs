@@ -105,8 +105,13 @@ impl Engine {
         if self.p.ahead <= 0.0 {
             0.0
         } else {
-            (self.p.ahead * k as f64).max(4.0).min(self.room(k, view))
+            self.calls_ahead(k).min(self.room(k, view))
         }
+    }
+
+    /// The requests still to come that a rewrite is priced over: `ahead` of the session so far, at least 4.
+    pub(super) fn calls_ahead(&self, k: usize) -> f64 {
+        (self.p.ahead * k as f64).max(4.0)
     }
 
     /// The steps the view has room to grow by before the cap cuts it (all of them without a cap).

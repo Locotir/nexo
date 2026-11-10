@@ -268,12 +268,29 @@ impl Engine {
         (0..len_of(d)).all(|k| !mine[d.lines.0 + k] || theirs.get(x + k) == Some(&true))
     }
 
+    /// Whether the pointers of message `mi`, the output that went whole as the latest one (`Params.fresh`), pay for
+    /// the cache they break: keeping the tokens they save costs `ratio` of each on every call still to come
+    /// (`calls_ahead`, not `horizon`: the message a swap rewrites is the newest one, the last the window
+    /// takes, so the room left before the cap does not bound the calls it is sent for); sending the message again, as
+    /// it will be, without the cache costs the rest (the messages after it are new either way). Always with `ahead=0`, the fixed rule the price replaces.
+    pub(super) fn swap_pays(&mut self, mi: usize) -> bool {
+        if self.p.ahead <= 0.0 {
+            return true;
+        }
+        let after = self.message(mi).1;
+        self.fresh_wait.insert(mi);
+        let before = self.message(mi).1;
+        self.fresh_wait.remove(&mi);
+        let r = self.p.ratio;
+        r * self.calls_ahead(self.tr.steps.len()) * (before - after) as f64 > self.p.margin * (1.0 - r) * after as f64
+    }
+
     /// Where each run of message `mi` points now, as (tool result, line): to its earlier output while that
     /// output sends its lines, else to the first copy of them that does (`carrier`). `None`: the run is sent
     /// as it came.
     pub(super) fn dups_on(&mut self, mi: usize) -> Vec<Option<(usize, usize)>> {
         let Some(n) = self.dups.get(&mi).map(Vec::len) else { return Vec::new() };
-        if self.p.fresh != 0 && mi + 1 == self.tr.msgs.len() {
+        if self.p.fresh != 0 && (mi + 1 == self.tr.msgs.len() || self.fresh_wait.contains(&mi)) {
             return vec![None; n];
         }
         let vis = self.visible();

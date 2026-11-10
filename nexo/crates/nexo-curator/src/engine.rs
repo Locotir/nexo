@@ -101,6 +101,12 @@ pub struct Engine {
     /// The tokens of the view (head included) as the last epoch left it (`Params.epoch`): the next epoch waits
     /// for the view to grow past it by the room the cost rule gives.
     landed: i64,
+    /// The tokens of the view (head included) at the last epoch, whether or not it changed anything: the next
+    /// look also waits for `Params.check` tokens of growth past it.
+    looked: i64,
+    /// The messages whose repeated runs would go as pointers but do not pay for the cache that change breaks yet:
+    /// they keep going as they were sent until a request rewrites the view from one of them or earlier.
+    fresh_wait: FxHashSet<usize>,
     cap: i64,
     /// Where the cut the cap drives fires (`decide`): the room a view has to grow in is measured to here, not to
     /// the target the cut lands on.
@@ -290,6 +296,8 @@ impl Engine {
             checked: 0,
             checked_at: 0,
             landed: 0,
+            looked: 0,
+            fresh_wait: FxHashSet::default(),
             built: FxHashMap::default(),
             born: Vec::new(),
             held: FxHashMap::default(),
