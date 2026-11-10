@@ -10,143 +10,42 @@
 [![Rust 1.89+](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
 [![Linux | Windows](https://img.shields.io/badge/Linux%20%7C%20Windows-supported-52514e)](#install)
-[![Providers](https://img.shields.io/badge/providers-21%20built--in%20%2B%20200%2B-1baf7a)](#any-provider)
+[![Providers](https://img.shields.io/badge/providers-21%20built--in%20%2B%20200%2B-1baf7a)](#providers)
 [![PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
 </div>
 
-nexo is a terminal coding agent written in Rust. It runs as a full-screen TUI that reads your codebase, edits
-files, runs shell commands, searches the web and keeps long tasks on track: interactively, headless for scripts
-and CI, or inside editors through the Agent Client Protocol (ACP). It works with any model provider, and its
-context curator keeps long sessions small without summaries: the whole history stays on disk, and the model is
-sent only what the next step needs.
+nexo is a terminal coding agent written in Rust, for any model provider. Its context curator keeps long sessions
+small without summaries: the whole history stays on disk, and the model is sent only what the next step needs.
+It runs as a full-screen TUI, headless for scripts and CI, or inside editors over the Agent Client Protocol (ACP).
 
-[Install](#install) · [Why](#why) · [The numbers](#the-numbers) · [How the curator works](#how-the-curator-works) · [Any provider](#any-provider) · [Full documentation](nexo/README.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
+[Install](#install) · [Proof](#proof) · [How it works](#how-it-works) · [Providers](#providers) · [Full guide](nexo/README.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
 <p align="center"><img src="docs/demo.gif" width="880" alt="nexo in the terminal: the task, the permission prompt for a command, the edit as a diff, the tests run again, and the status bar with model, mode, context and cost"></p>
 
 <sub>A replay of a recorded session on a throwaway project. A scripted provider plays back the model's replies; the tools run for real. No network, no model call.</sub>
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
-```
-
-## Why
-
-Every coding agent re-sends its **whole history** on every call: step 80 pays again for the logs of step 3.
-When the window fills it **compacts**: a summary replaces the work, the exact error line the model needed
-is gone, and the prompt cache starts from zero.
-
-nexo keeps the whole history on disk and sends the model a **curated view** of it, built by its context
-curator for the next step only.
-
-| | Whole history | Compaction | **nexo curator** |
-|---|---|---|---|
-| Tokens per call | grow every step | reset, then grow again | **stay small** |
-| Prompt cache | hits, but you pay for everything | broken by each summary | **kept**: the view is rewritten only at an epoch, when keeping its growth costs more than a new prefix |
-| Old details | all there, buried | lost in a summary | **on disk**; the view says what left, and what a request names comes back by itself |
-| Your rules ("never touch prod") | drift out of attention | can be summarised away | **pinned** for the whole session |
-| A resumed session | same | starts from the summary | **same view as before**, cache still warm |
-
-## The numbers
-
-Every figure names its date and the nexo commit it was measured at. The curator is held to not forgetting a fact the
-next call needs; cost comes second.
-
-**Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task). Five harnesses on the
-same 16 Terminal-Bench tasks. The winner is the one that, on the tasks every harness solved, uses the fewest steps,
-tokens and dollars together. The index is the mean of each metric over the best harness's, so 1.00 is best. Tasks where
-an agent of any harness downloaded the benchmark's own solutions are left out for all (3 of 8 in round A, 2 of 8 in round B).
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/race-dark.svg">
-  <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.18, Hermes 1.27, Codex 1.29, dsh 1.42, Claude Code 2.08. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
-</picture>
-
-Names and logos belong to their owners and are used only to identify the tools.
-
-Every harness solved 11 to 14 of the 16 tasks, a tie within noise, so this compares what a solved task costs, not skill.
-In round B the curator never acted: that lead comes from short prompts and a stable prefix. Method, all tables and caveats:
-[`docs/results.md`](docs/results.md#harness-race-2026-11-09). Older runs (compaction against the curator, 2026-11-04) are
-there too, marked with their date. Measure it on your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
-
-**Against Claude Code on the same model** (2026-11-10, `claude-sonnet-5-5`, nexo `bf57ed4`, 5 tasks, 3 runs each, plan published before the run).
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-claude-code-dark.svg">
-  <img alt="Index of calls, tokens and cost, 1.00 is best: nexo 1.00, Claude Code 1.47. Calls 126 against 164, tokens 3.65M against 6.04M, cost 2.48 dollars against 3.97 dollars" src="docs/img/bench-claude-code.svg" width="760">
-</picture>
-
-By the plan's rule nexo is clearly better here: nexo was cheaper in 15 of 15 pairs and solved 15 of 15 runs against 14 of 15. The sessions were short, so this does not measure the curator's eviction against compaction; we read the gap as fewer calls, less output and a smaller fixed prompt. Blind vote on page quality: not open yet. Plan: [`docs/bench/PLAN.md`](docs/bench/PLAN.md). Results and limits: [`docs/bench/RESULTS.md`](docs/bench/RESULTS.md).
-
-**Against Codex CLI on the same model** (2026-11-10, `gpt-5.6-luna`, one long session of 10 turns).
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-codex-dark.svg">
-  <img alt="Long session, nexo against Codex CLI: nexo solved it, Codex CLI did not. Calls 27 against 42, input tokens 3.86M against 6.53M, list price 0.204 dollars against 0.272 dollars" src="docs/img/bench-codex.svg" width="760">
-</picture>
-
-Codex CLI compacted its context twice, lost five values the user had given in the first two turns (three in the first message, two in a CI log pasted in the second), and did not solve the task. In the last turn it answered: "the conversation contains no values for `codename`, `build`, `maintainer`, `ci_run`, or `ci_job`". nexo did not compact, still had them, and solved the task with 27 model calls against 42. It is one run per tool, so a demonstration and not a statistic; on short tasks the two tie. Results and limits: [`docs/bench/CODEX.md`](docs/bench/CODEX.md).
-
-## How the curator works
-
-![Where the curator sits](docs/img/flow.svg)
-
-- **Squeeze at birth.** Progress bars, repeated lines and noise never enter the history.
-- **One thread per goal.** A finished goal becomes a frozen card, so each goal keeps its cached prefix.
-- **Epochs.** The view is rewritten only at an epoch: once keeping its growth costs more than a new
-  prefix, or at 95% of the model's window. Between two epochs it only grows at its end, so the provider's
-  cache holds all of it but the newest request. After an epoch the step count starts again.
-- **Closing priced by need.** When a request is answered, each tool step it made is kept or set aside by
-  a learned guess of whether a later reply will draw on it (five horizons, 43 features, fit on 452
-  recorded sessions) against the rent it costs to keep. Measured before epochs; see
-  [`docs/results.md`](docs/results.md#the-need-predictor-and-the-hindsight-floor).
-- **What a request names comes back.** An index of the history's lines by their keys: a file, a number or an
-  id that your request names and the view no longer holds is brought back, or read back with `recall`.
-- **An anchor that never drops.** Your rules, the agent's notes, pinned files, a ledger of what left
-  and a map of the work.
-- **Stale reads go first.** A file read before the agent edited it leaves before anything else, with a
-  note to read it again.
-- **Cache pockets** (opt-in). Each topic keeps its own cached view, so coming back to a large piece of
-  work after a switch reads it from the cache; how long the provider keeps it is learned from its replies.
-- **Resume = same view.** Reopen or rewind a session and the curator replays its decisions, so the
-  provider's cache still hits.
-
-The engine, every setting and its default: [`docs/how-it-works.md`](docs/how-it-works.md). What the marks on each tool card mean (`● cached`, `● full price`, `◐ trimmed`, `○ set aside`, `↺ recalled`): [reading the screen](docs/how-it-works.md#reading-the-screen-the-mark-on-each-tool-card).
-Why the context falls at every new message and climbs while the agent works, in diagrams: [`docs/context-curator.md`](docs/context-curator.md).
-
 ## Install
 
-The scripts download the ready-built nexo from the [latest release](https://github.com/Locotir/nexo/releases/latest) (checked against its SHA-256) and put it on your PATH: `~/.local/bin` on Linux, `%LOCALAPPDATA%\Programs\nexo` on Windows. No Rust, no compiler, a few seconds. Where no ready-built file fits, they install what the build needs (Rust, a C compiler or the Visual Studio C++ build tools) and build it, no questions asked.
-
-**Linux** (terminal):
+**Linux** (downloads the ready-built file, checked against its SHA-256, to `~/.local/bin`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
 ```
 
-**Windows** (PowerShell):
+**Windows** (PowerShell, to `%LOCALAPPDATA%\Programs\nexo`):
 
 ```powershell
 irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 ```
 
-There is no ready-built file for macOS yet: there the script builds from source, untested.
+**macOS** has no ready-built file: the script builds from source, untested. From source on any system:
+`cargo install --locked --git https://github.com/Locotir/nexo nexo-cli`. CI tests both installers on Linux x64 and ARM and Windows x64 and ARM.
 
-Or directly: `cargo install --locked --git https://github.com/Locotir/nexo nexo-cli`.
+nexo checks for a newer release in the background; `nexo update` installs it. Turn the check off with
+`[ui] update_check = false` or `NEXO_NO_UPDATE_CHECK=1`.
 
-**Updates.** Each time it starts, nexo checks GitHub in the background and tells you when a newer release is out;
-`nexo update` downloads it. `[ui] update_check = false` or `NEXO_NO_UPDATE_CHECK=1` turns it off.
-
-Or from source:
-
-```sh
-git clone https://github.com/Locotir/nexo && cd nexo/nexo
-cargo build --release            # target/release/nexo (nexo.exe on Windows)
-install -m 755 target/release/nexo ~/.local/bin/   # or put target/release on your PATH
-```
-
-## Quick start
+## First run
 
 ```sh
 export DEEPSEEK_API_KEY=...      # or ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, ...
@@ -158,90 +57,80 @@ nexo doctor                      # checks files, provider, model and key with on
 nexo --provider ollama --model qwen3:8b       # no key: a local model
 ```
 
-The status bar shows how full the context window is and what the session has cost; each tool card is marked
-`● cached` or `● full price`, and `/context` says what the curator did. Pick a policy in `~/.nexo/config.toml`:
+The status bar shows context use and cost, and you can click it: model, effort, mode, `/context`, `/usage`.
+After the curator trims the window it shows `curator -12k tok`. Each session reopens on its own provider and model.
+Pick a policy in `~/.nexo/config.toml`: `[context] policy = "curator"` (`auto | plain | compact | curator`).
 
-```toml
-[context]
-policy = "curator"               # auto | plain | compact | curator
-```
+## Proof
 
-## Everything else a coding agent needs
+Each result keeps its date and its limit. The curator is held to not forgetting a fact the next call needs; cost comes second.
+
+**Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task, 16 Terminal-Bench tasks). On the tasks all five harnesses solved, nexo has the lowest combined index of steps, tokens and dollars: 1.18 and 1.04, where 1.00 would mean best on all three.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/race-dark.svg">
+  <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.18, Hermes 1.27, Codex 1.29, dsh 1.42, Claude Code 2.08. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
+</picture>
+
+Names and logos belong to their owners and are used only to identify the tools.
+
+Limits: every harness solved 11 to 14 of 16 tasks, a tie within noise, and in round B the curator never acted. Tasks where any agent downloaded the benchmark's own solutions are left out for all. Details: [`docs/results.md`](docs/results.md#harness-race-2026-11-09). Measure your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
+
+**Against Claude Code on the same model** (2026-11-10, `claude-sonnet-5-5`, nexo `bf57ed4`, 5 tasks, 3 runs each, plan published before the run).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-claude-code-dark.svg">
+  <img alt="Index of calls, tokens and cost, 1.00 is best: nexo 1.00, Claude Code 1.47. Calls 126 against 164, tokens 3.65M against 6.04M, cost 2.48 dollars against 3.97 dollars" src="docs/img/bench-claude-code.svg" width="760">
+</picture>
+
+nexo was cheaper in 15 of 15 pairs and solved 15 of 15 runs against 14 of 15. Limits: the sessions were short, so this does not measure eviction against compaction; the blind vote on page quality was not held. [Plan](docs/bench/PLAN.md), [results](docs/bench/RESULTS.md).
+
+**Against Codex CLI on the same model** (2026-11-10, `gpt-5.6-luna`, one long session of 10 turns).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-codex-dark.svg">
+  <img alt="Long session, nexo against Codex CLI: nexo solved it, Codex CLI did not. Calls 27 against 42, input tokens 3.86M against 6.53M, list price 0.204 dollars against 0.272 dollars" src="docs/img/bench-codex.svg" width="760">
+</picture>
+
+Codex CLI compacted twice, lost five values the user had given early on, and did not solve the task. nexo did not compact and solved it in 27 model calls against 42. Limits: one run per tool, a demonstration and not a statistic; on short tasks the two tie. [Results](docs/bench/CODEX.md).
+
+## How it works
+
+Every agent re-sends its whole history on each call, and when the window fills it compacts: a summary replaces the work,
+the exact error line is gone, and the prompt cache restarts. nexo keeps the whole history on disk and sends a curated view
+built for the next step. The view is rewritten only at an epoch, so the provider's cache keeps hitting; what a request names
+comes back by itself; your rules stay pinned; a resumed session gets the same view.
+
+![Where the curator sits](docs/img/flow.svg)
+
+Engine and every setting: [`docs/how-it-works.md`](docs/how-it-works.md). What the marks on each tool card mean: [reading the screen](docs/how-it-works.md#reading-the-screen-the-mark-on-each-tool-card). Diagrams: [`docs/context-curator.md`](docs/context-curator.md). Policy `compact` exists if you prefer it.
+
+## What else it does
 
 ![nexo in the terminal: the diff of the two edits, the reply with a table of the two bugs, and the steps, tokens, cache hit and cost line](docs/img/tui-session.png)
 
-<sub>A replay of a recorded deepseek-flash session on a throwaway project: two bugs found and fixed, 4 steps. A scripted provider plays back the replies; the tools run for real.</sub>
 
-- **Full-screen terminal UI**: mouse, folding transcript, search, command palette, diffs before every
-  write, 16/256-colour, mono and `NO_COLOR` themes.
-- **Headless mode** for scripts and CI: `nexo -p "..." --json`.
-- **Tools**: read, write, edit, bash, glob, grep, ls, web search and fetch, todo list, language-server
-  diagnostics after an edit.
-- **Sub-agents** (read-only explorers or full workers, custom ones from `.nexo/agents/*.md`) and
-  **background jobs**.
-- **[MCP servers](nexo/docs/MCP.md)** (`/mcp` shows them), **hooks** (`pre_tool` can block), **plan mode**, permission modes and remembered rules.
-- **Undo and rewind**: go back to any message, and the files the agent wrote go back too.
-- **Images**: attach them or paste a screenshot with `Ctrl+V`.
-- **Goal, to-do list and changed files** in a side panel (`Ctrl+B`); `/goal` keeps working on a goal until it is
-  done, and a click on the goal opens its window.
-- **Saves its own rules.** Tell nexo how you work ("money is always whole cents") and its `note` tool writes the
-  rule to your global or the project's instructions file. The transcript shows a `✦ remembered` card, and the
-  file is a link you can Ctrl+click.
-- **Queue and go**: type while it works; Enter on an empty draft sends the queued message now. One `read` call can
-  take several files.
+- Tools: read, write, edit, bash, glob, grep, ls, web search and fetch, to-do list, language-server diagnostics. `read` returns at most 64,000 characters per call.
+- Diffs before every write, permission rules, plan mode, undo and rewind, sub-agents, background jobs, hooks, [MCP servers](nexo/docs/MCP.md), images, `/goal`, a side panel (`Ctrl+B`).
+- Saves your rules: tell it how you work and its `note` tool writes them to your global or project instructions file.
 
-Before a command runs, nexo shows it and offers a rule to allow it from now on:
+Every feature with the test that checks it: [`nexo/FEATURES.md`](nexo/FEATURES.md). Full guide: [`nexo/README.md`](nexo/README.md).
 
-![The permission prompt: the command, three rules to allow it always, and allow, always or deny](docs/img/tui-permission.png)
+## Providers
 
-Say how you work once and nexo writes it down, so the next session starts with it:
-
-![The remembered card: two rules saved to the project's AGENTS.md, shown with the file as a link](docs/img/tui-remembered.png)
-
-105 features, each with the test that checks it: [`nexo/FEATURES.md`](nexo/FEATURES.md).
-Full guide: [`nexo/README.md`](nexo/README.md).
-
-## Any provider
-
-Bring your own API key. Built in: **Anthropic**, **OpenAI**, **Google Gemini**, **DeepSeek**, **xAI**,
-**Groq**, **Mistral**, **OpenRouter**, Together, Fireworks, Cerebras, Moonshot, Qwen, Zhipu, MiniMax,
-and local servers (**Ollama**, LM Studio, vLLM, llama.cpp). Over 200 more come from the
-[models.dev](https://models.dev) directory, and any OpenAI- or Anthropic-compatible endpoint works.
-
-## FAQ
-
-**Can I use it with Claude?** Yes, with an Anthropic API key (`ANTHROPIC_API_KEY`). nexo has no sign-in
-for a Claude.ai subscription.
-
-**Can I use a subscription instead of a key?** `nexo auth login copilot`, `codex` (ChatGPT) and `xai`
-(SuperGrok) run the vendor's own device sign-in: nexo shows a web address and a code, you approve on the
-vendor's site, and the tokens stay in nexo's credential store on your machine. Whether your plan allows
-use from a third-party tool is up to the vendor's terms: check them before you sign in.
-
-**Does it still compact?** Only if you choose the `compact` policy, or as a last resort when a provider
-rejects a request as too long. With the curator, the view stays far below the window.
-
-**Where does my data go?** Only to the provider you pick, and to the web search backend or MCP servers when the agent uses them. Sessions live on your machine in
-`~/.nexo/sessions/` and hold whatever passed through the conversation, so treat them like credentials.
-
-**Is the saving real on my model?** It depends on the price of a cached token and on how long your
-sessions are. `nexo bench` (a developer command, left out of `--help`; it spends real tokens on your key, see [`crates/nexo-bench/README.md`](nexo/crates/nexo-bench/README.md)) runs the same tasks with and without the curator and prints the difference.
+Bring your own key. Built in: Anthropic, OpenAI, Google Gemini, DeepSeek, xAI, Groq, Mistral, OpenRouter, Together,
+Fireworks, Cerebras, Moonshot, Qwen, Zhipu, MiniMax, and local servers (Ollama, LM Studio, vLLM, llama.cpp). Over 200 more
+come from [models.dev](https://models.dev), and any OpenAI- or Anthropic-compatible endpoint works. `nexo auth login copilot`,
+`codex` or `xai` sign in with a subscription; check the vendor's terms first. Data goes only to the provider you pick and to
+tools the agent uses; sessions in `~/.nexo/sessions/` hold what passed through, so treat them like credentials.
 
 ## Support
 
-nexo is free and MIT-licensed. If it saves you money, you can share a little of it:
+nexo is free and MIT-licensed. [![Support nexo on PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
-[![Support nexo on PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
-
-A star helps others find it. Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md),
-and report security problems privately as [SECURITY.md](SECURITY.md) explains.
+Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as [SECURITY.md](SECURITY.md) explains.
 
 ## License
 
 [MIT](LICENSE). nexo is an independent project, not affiliated with or endorsed by Anthropic, OpenAI,
 Google, DeepSeek or any other provider. Product names are trademarks of their owners.
-
-<sub>Keywords: AI coding agent, LLM agent harness, terminal coding assistant, Claude API, Anthropic API,
-OpenAI API, DeepSeek API, Gemini API, context engineering, context window management, context
-compression, prompt caching, token optimization, long-running agent sessions, Rust TUI, open-source
-alternative to closed coding agents.</sub>
