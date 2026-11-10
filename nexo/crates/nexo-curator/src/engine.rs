@@ -265,6 +265,8 @@ pub struct Engine {
     out_names: FxHashMap<usize, Arc<str>>,
     /// The labels of texts already named (`added`): the same findings and requests come back at every request.
     label_memo: added::LabelMemo,
+    /// What the outputs before the view hold, kept between requests (`added`).
+    below: added::Below,
 }
 
 impl Engine {
@@ -354,6 +356,7 @@ impl Engine {
             unit_seen: 0,
             out_names: FxHashMap::default(),
             label_memo: added::LabelMemo::default(),
+            below: added::Below::default(),
             files_known: FxHashSet::default(),
             part_files: FxHashMap::default(),
             line_ids: FxHashMap::default(),

@@ -332,3 +332,28 @@ fn topic_changes_are_counted_as_the_turns_give_them() {
     assert_eq!(e.goal.switches(), (sw, back), "{turns:?}");
     assert!(sw > 0, "{turns:?}");
 }
+
+#[test]
+fn what_the_outputs_before_the_view_hold_follows_the_view_forward_and_back() {
+    let mut msgs = vec![json!({"role": "user", "content": "What do the parts hold?"})];
+    for k in 1..60 {
+        let text = format!("part {k} holds {}\n", word(k + 100)).repeat(k % 7 + 1);
+        msgs.extend(step(k, &format!("{} part", word(k % 45)), &text));
+    }
+    let mut e = Engine::new(params("").unwrap());
+    e.sync(&msgs);
+    let n = e.tr.msgs.len();
+    // the view starts later and later, then goes back, then past the end
+    let mut lists = Vec::new();
+    for start in [1, 9, 31, 30, 5, n - 3, n + 4, 0] {
+        e.start = start;
+        assert!(e.kept_from().is_some());
+        let kept = e.added();
+        assert_eq!(kept, e.added_whole(), "from message {start}");
+        lists.push(kept);
+    }
+    // the lists differ, name outputs held back several times and fold the small ones in one item
+    assert!(lists[1] != lists[2] && lists[2] != lists[3] && lists[4] != lists[5]);
+    assert!(lists[5].iter().any(|a| a.label.contains('×')));
+    assert!(lists[5].iter().any(|a| a.label.ends_with("smaller items")));
+}

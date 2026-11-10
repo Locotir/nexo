@@ -60,6 +60,14 @@ impl Engine {
         out
     }
 
+    /// Whether result `i` holds a file as it was (`read_paths` gives any).
+    fn reads(&self, i: usize) -> bool {
+        match self.fz.info.get(&i) {
+            Some(x) if x.kind == Kind::Read => x.path.as_deref().is_some_and(|p| !p.is_empty()),
+            _ => self.shell_reads.get(&i).is_some_and(|ps| !ps.is_empty()),
+        }
+    }
+
     /// The files result `i` holds as they were: a read tool's file, or those a shell command that only
     /// printed files printed (`shell_reads`).
     fn read_paths(&self, i: usize) -> Vec<&str> {
@@ -176,7 +184,7 @@ impl Engine {
             let apart = self.steps[i].at.is_none() && self.steps[i].msgs.iter().all(|m| !sent.contains(m));
             // a step the view does not send (another topic's) comes back only as a read of the file: the greps,
             // edits and runs on it were not the read the request names, and bringing them all costs more than it saves
-            if apart && !res.iter().any(|&u| !self.read_paths(u).is_empty()) {
+            if apart && !res.iter().any(|&u| self.reads(u)) {
                 continue;
             }
             let in_view = !self.steps[i].out && !gone && !apart;

@@ -922,6 +922,9 @@ mod tests {
                 let was = cur.last.clone();
                 let r = cur.view(req["system_tokens"].as_u64().unwrap_or(0), &msgs, now).unwrap();
                 assert_eq!(r.memory, cur.eng.memory_whole(), "{spec} {name} line {n}");
+                assert_eq!(r.curated, cur.eng.added_whole(), "{spec} {name} line {n}: what `added` kept");
+                let walked: Vec<usize> = cur.eng.counted().into_iter().flat_map(|(a, b)| a..b).collect();
+                assert_eq!(walked, cur.eng.counted_whole(), "{spec} {name} line {n}: the messages `added` weighs");
                 // the counts, by the rule read over every cell
                 let cells = r.memory.cells.len();
                 let state = |i: usize| r.memory.cells[i].state;

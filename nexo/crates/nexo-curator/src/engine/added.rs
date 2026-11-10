@@ -204,6 +204,47 @@ impl LabelMemo {
     }
 }
 
+/// What the outputs held back add up to, by name in the order the names first came: (tokens, outputs).
+type Outputs = indexmap::IndexMap<std::sync::Arc<str>, (i64, usize)>;
+
+/// The item of the outputs held back under one name.
+fn out_item(name: &str, tokens: i64, times: usize) -> Added {
+    let label =
+        if times > 1 { format!("{} ×{times}", textops::head(name, LABEL_CHARS - 5)) } else { name.to_string() };
+    Added { kind: AddedKind::Recalled, label, tokens, state: AddedState::Out }
+}
+
+/// The item that stands for the `n` outputs too small to list.
+fn smaller(n: usize, tokens: i64) -> Added {
+    Added { kind: AddedKind::Recalled, label: format!("{n} smaller items"), tokens, state: AddedState::Out }
+}
+
+/// What the outputs of messages `1..upto` hold when none of them is sent, kept between requests: it is
+/// read from the messages alone, so it grows as `upto` does and is made again only if `upto` goes back.
+#[derive(Default)]
+pub(super) struct Below {
+    upto: usize,
+    names: Outputs,
+    /// The names by tokens, the most first, then by where they stand in `names`.
+    order: std::collections::BTreeSet<(std::cmp::Reverse<i64>, usize)>,
+    total: i64,
+}
+
+impl Below {
+    /// Takes in what the messages up to `upto` add (`fresh`, in the order they came).
+    fn take(&mut self, fresh: Outputs, upto: usize) {
+        for (name, (tokens, times)) in fresh {
+            let at = self.names.get_index_of(&name).unwrap_or(self.names.len());
+            let e = self.names.entry(name).or_insert((0, 0));
+            self.order.remove(&(std::cmp::Reverse(e.0), at));
+            *e = (e.0 + tokens, e.1 + times);
+            self.order.insert((std::cmp::Reverse(e.0), at));
+            self.total += tokens;
+        }
+        self.upto = upto;
+    }
+}
+
 /// The ask a card names its topic by: what follows `asked "` up to the closing quote.
 fn card_topic(card: &str) -> Option<&str> {
     let rest = card.split_once("asked \"")?.1;
@@ -212,11 +253,149 @@ fn card_topic(card: &str) -> Option<&str> {
 }
 
 impl Engine {
+    /// The messages whose outputs `added` weighs, as ranges in order: all of them, or, when the other topics
+    /// are apart, only the ones no other topic holds (the first message, what came before the first request,
+    /// and the active topic's own). A request is of one topic and they follow each other, so the rest is
+    /// exactly what the other topics hold, and nothing is read once for each message of the session.
+    pub(crate) fn counted(&self) -> Vec<(usize, usize)> {
+        let (g, n) = (&self.goal, self.tr.msgs.len());
+        let Some(first) = g.turns.first().filter(|_| self.apart()) else { return vec![(0, n)] };
+        let mut out = vec![(0, first.start.max(1).min(n))];
+        out.extend(g.members[g.active()].iter().map(|&j| g.span(j, n)).map(|(a, b)| (a.max(1).min(b), b)));
+        out
+    }
+
+    /// `counted` the long way: every message that is sent or that no other topic holds.
+    #[cfg(test)]
+    pub(crate) fn counted_whole(&mut self) -> Vec<usize> {
+        let (g, n) = (&self.goal, self.tr.msgs.len());
+        let mut apart: FxHashSet<usize> = FxHashSet::default();
+        if self.apart() {
+            for k in g.others() {
+                for (a, b) in g.members[k].iter().map(|&j| g.span(j, n)) {
+                    apart.extend(a.max(1)..b);
+                }
+            }
+        }
+        let seen: FxHashSet<usize> = self.visible().iter().copied().collect();
+        (0..n).filter(|mi| seen.contains(mi) || !apart.contains(mi)).collect()
+    }
+
     /// What the last view carries beyond the conversation, and what it holds back, one item each. The
     /// anchor's pieces (the map of what moved out, the files it pins and the ones the agent wrote, the
     /// agent's findings and plan, the ledger and the standing instructions), the cards of other topics, the
     /// steps brought back; and, held back, the other topics and the steps out of the view.
     pub fn added(&mut self) -> Vec<Added> {
+        self.added_by(true)
+    }
+
+    /// `added` with nothing kept from the requests before: every message is read again.
+    #[cfg(test)]
+    pub(crate) fn added_whole(&mut self) -> Vec<Added> {
+        self.added_by(false)
+    }
+
+    /// The first message the view may send when the topics are not apart: the outputs before it are all
+    /// held back whole, so what they add up to is kept between requests (`Below`). `None` when the view
+    /// sends every message or leaves other topics out.
+    pub(super) fn kept_from(&self) -> Option<usize> {
+        (!self.apart() && !self.goal.turns.is_empty()).then(|| self.start.max(1).min(self.tr.msgs.len()))
+    }
+
+    /// What the outputs of message `mi` hold back, added to `to` under the name of each: nothing of one
+    /// sent whole, the lines cut of one sent cut, all of one not sent.
+    fn held_of(&mut self, mi: usize, sent: bool, to: &mut Outputs) {
+        for &i in self.fz.by_msg(mi) {
+            let u = &self.tr.units[i];
+            if u.kind != UKind::Result {
+                continue;
+            }
+            let tokens = match (sent, self.dropped.get(&i)) {
+                (true, None) => 0,
+                (true, Some(cut)) => cut.iter().filter_map(|&j| self.fz.chunks[i].get(j)).map(|c| c.tokens).sum(),
+                (false, _) => u.tokens,
+            };
+            if tokens <= 0 {
+                continue;
+            }
+            // a result's name does not change: it is made once
+            let name = match self.out_names.get(&i) {
+                Some(n) => n.clone(),
+                None => {
+                    let info = self.fz.info.get(&i);
+                    let path = info.and_then(|x| x.path.as_deref()).filter(|p| !p.is_empty());
+                    let call =
+                        format!("{} {}", u.tool, info.and_then(|x| x.key.as_deref()).unwrap_or("")).trim().to_string();
+                    let n: std::sync::Arc<str> = label(None, path, Some(&call), "").into();
+                    self.out_names.insert(i, n.clone());
+                    n
+                }
+            };
+            let e = to.entry(name).or_insert((0, 0));
+            e.0 += tokens;
+            e.1 += 1;
+        }
+    }
+
+    /// The outputs held back when the topics are not apart, the largest first and the small ones as one
+    /// item, as `added` lists them. The messages before `from` are not sent, and what their outputs hold
+    /// does not change: it is kept (`Below`) and only the messages `from` moved past are read. The first
+    /// message and those from `from` on are read at each request, and the two are put together in the
+    /// order the names first came.
+    fn held_kept(&mut self, from: usize, seen: &FxHashSet<usize>) -> Vec<(Added, Option<usize>)> {
+        let mut below = std::mem::take(&mut self.below);
+        if from < below.upto {
+            below = Below::default();
+        }
+        let mut fresh = Outputs::new();
+        for mi in below.upto.max(1)..from {
+            self.held_of(mi, false, &mut fresh);
+        }
+        below.take(fresh, from);
+        let n = self.tr.msgs.len();
+        let mut over = Outputs::new();
+        if n > 0 {
+            self.held_of(0, seen.contains(&0), &mut over);
+        }
+        let first = over.len();
+        for mi in from..n {
+            self.held_of(mi, seen.contains(&mi), &mut over);
+        }
+        // (tokens, where its name first came, name, times): a name of the first message comes before the
+        // kept ones, a name only of the messages from `from` on after them
+        let mut all: Vec<(i64, (u8, usize), &str, usize)> = Vec::new();
+        let (mut count, mut total) = (below.names.len(), below.total);
+        for (k, (name, &(tokens, times))) in over.iter().enumerate() {
+            total += tokens;
+            match below.names.get_full(name) {
+                Some((at, _, &(t, c))) => {
+                    all.push((tokens + t, if k < first { (0, k) } else { (1, at) }, name, times + c))
+                }
+                None => {
+                    count += 1;
+                    all.push((tokens, if k < first { (0, k) } else { (2, k) }, name, times));
+                }
+            }
+        }
+        // of the kept ones no request touched, no more than the list shows can be in it
+        let untouched = below.order.iter().filter_map(|&(_, at)| {
+            let (name, &(tokens, times)) = below.names.get_index(at)?;
+            (!over.contains_key(name)).then_some((tokens, (1, at), &**name, times))
+        });
+        all.extend(untouched.take(OUT_NAMED));
+        all.sort_by_key(|&(tokens, at, ..)| (std::cmp::Reverse(tokens), at));
+        all.truncate(OUT_NAMED);
+        let shown: i64 = all.iter().map(|a| a.0).sum();
+        let mut held: Vec<(Added, Option<usize>)> =
+            all.into_iter().map(|(tokens, _, name, times)| (out_item(name, tokens, times), None)).collect();
+        if count > OUT_NAMED {
+            held.push((smaller(count - OUT_NAMED, total - shown), None));
+        }
+        self.below = below;
+        held
+    }
+
+    fn added_by(&mut self, kept: bool) -> Vec<Added> {
         let mut out: Vec<Added> = Vec::new();
         let n = self.tr.msgs.len();
         if n == 0 {
@@ -281,88 +460,41 @@ impl Engine {
         }
         // held back: the other topics when they are apart, and the outputs the view does not send whole
         // (the label of a topic is made for the ones that are shown: `Some(ask)`)
-        let mut held: Vec<(Added, Option<String>)> = Vec::new();
-        let mut apart: FxHashSet<usize> = FxHashSet::default();
+        let mut held: Vec<(Added, Option<usize>)> = Vec::new();
         if self.apart() {
             let g = &self.goal;
             for k in g.others() {
-                let spans: Vec<(usize, usize)> = g.members[k].iter().map(|&j| g.span(j, n)).collect();
-                let tokens: i64 = spans.iter().map(|&(a, b)| self.sizes[a.max(1).min(b)..b].iter().sum::<i64>()).sum();
-                for &(a, b) in &spans {
-                    apart.extend(a.max(1)..b);
-                }
+                let spans = g.members[k].iter().map(|&j| g.span(j, n));
+                let tokens: i64 = spans.map(|(a, b)| self.sizes[a.max(1).min(b)..b].iter().sum::<i64>()).sum();
                 if tokens > 0 {
-                    let ask = g.ask(&self.tr, &self.fz, g.members[k][0]);
                     held.push((
                         Added { kind: AddedKind::Thread, label: String::new(), tokens, state: AddedState::Out },
-                        Some(ask),
+                        Some(g.members[k][0]),
                     ));
                 }
             }
         }
-        // the same call or file left out several times is one item
-        let mut outputs: indexmap::IndexMap<std::sync::Arc<str>, (i64, usize)> = indexmap::IndexMap::new();
-        for mi in 0..n {
-            let sent = seen.contains(&mi);
-            if !sent && apart.contains(&mi) {
-                continue;
-            }
-            for &i in self.fz.by_msg(mi) {
-                let u = &self.tr.units[i];
-                if u.kind != UKind::Result {
-                    continue;
+        match self.kept_from() {
+            Some(from) if kept => held = self.held_kept(from, &seen),
+            _ => {
+                // the same call or file left out several times is one item
+                let mut outputs: Outputs = Outputs::new();
+                for mi in self.counted().into_iter().flat_map(|(a, b)| a..b) {
+                    self.held_of(mi, seen.contains(&mi), &mut outputs);
                 }
-                let tokens = match (sent, self.dropped.get(&i)) {
-                    (true, None) => 0,
-                    (true, Some(cut)) => cut.iter().filter_map(|&j| self.fz.chunks[i].get(j)).map(|c| c.tokens).sum(),
-                    (false, _) => u.tokens,
-                };
-                if tokens <= 0 {
-                    continue;
+                for (name, (tokens, times)) in outputs {
+                    held.push((out_item(&name, tokens, times), None));
                 }
-                // a result's name does not change: it is made once
-                let name = match self.out_names.get(&i) {
-                    Some(n) => n.clone(),
-                    None => {
-                        let info = self.fz.info.get(&i);
-                        let path = info.and_then(|x| x.path.as_deref()).filter(|p| !p.is_empty());
-                        let call = format!("{} {}", u.tool, info.and_then(|x| x.key.as_deref()).unwrap_or(""))
-                            .trim()
-                            .to_string();
-                        let n: std::sync::Arc<str> = label(None, path, Some(&call), "").into();
-                        self.out_names.insert(i, n.clone());
-                        n
-                    }
-                };
-                let e = outputs.entry(name).or_insert((0, 0));
-                e.0 += tokens;
-                e.1 += 1;
+                held.sort_by_key(|a| std::cmp::Reverse(a.0.tokens));
+                if held.len() > OUT_NAMED {
+                    let rest = held.split_off(OUT_NAMED);
+                    held.push((smaller(rest.len(), rest.iter().map(|a| a.0.tokens).sum()), None));
+                }
             }
-        }
-        for (name, (tokens, times)) in outputs {
-            let name = if times > 1 {
-                format!("{} ×{times}", textops::head(&name, LABEL_CHARS - 5))
-            } else {
-                name.to_string()
-            };
-            held.push((Added { kind: AddedKind::Recalled, label: name, tokens, state: AddedState::Out }, None));
-        }
-        held.sort_by_key(|a| std::cmp::Reverse(a.0.tokens));
-        if held.len() > OUT_NAMED {
-            let rest = held.split_off(OUT_NAMED);
-            held.push((
-                Added {
-                    kind: AddedKind::Recalled,
-                    label: format!("{} smaller items", rest.len()),
-                    tokens: rest.iter().map(|a| a.0.tokens).sum(),
-                    state: AddedState::Out,
-                },
-                None,
-            ));
         }
         out.extend(held.into_iter().map(|(mut a, ask)| {
-            if let Some(ask) = ask {
-                a.label = label(Some(&ask), None, None, "");
+            if let Some(j) = ask {
+                a.label = label(Some(&self.goal.ask(&self.tr, &self.fz, j)), None, None, "");
             }
             a
         }));
