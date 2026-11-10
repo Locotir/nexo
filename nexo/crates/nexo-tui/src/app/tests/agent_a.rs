@@ -1135,3 +1135,23 @@ fn a_resumed_session_gets_its_unfinished_list_back() {
     assert_eq!(a.todo.len(), 2);
     assert!(a.todo_strip_on());
 }
+
+#[test]
+fn the_interrupting_flash_goes_when_the_turn_has_stopped() {
+    let (mut a, _rx) = app();
+    a.busy = true;
+    a.ctrl_c();
+    assert!(a.status.as_ref().is_some_and(|(t, _)| t.starts_with("interrupting")));
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Interrupted });
+    assert!(a.status.is_none(), "{:?}", a.status);
+}
+
+#[test]
+fn a_window_that_opens_drops_the_esc_again_hint_meant_for_the_draft() {
+    let (mut a, _rx) = app();
+    a.flash("Esc again to rewind to an earlier message");
+    a.run_command(crate::commands::Command::Help);
+    assert!(a.modal.is_some());
+    a.note_popups();
+    assert!(a.status.is_none(), "{:?}", a.status);
+}

@@ -25,7 +25,7 @@ const fn spec(
 
 pub const COMMANDS: &[Spec] = &[
     spec("help", &["h", "?"], "", "keys and commands"),
-    spec("model", &["m"], "[name]", "switch model, or set one up step by step (checked against the server)"),
+    spec("model", &["m", "models"], "[name]", "switch model, or set one up step by step (checked against the server)"),
     spec("logout", &["signout"], "[provider]", "forget the key or sign-in stored for a provider (the current one)"),
     spec("effort", &["reasoning", "think"], "[level|default]", "how much the model reasons, among the levels it takes"),
     spec("fast", &[], "[on|off]", "switch to the model's fast version, and back"),
@@ -715,6 +715,7 @@ mod tests {
         assert_eq!(parse("/login"), Some(Command::Login));
         assert_eq!(parse("/settings"), Some(Command::Status));
         assert_eq!(parse("/doctor"), Some(Command::Doctor));
+        assert_eq!(parse("/models"), Some(Command::Model(None)));
         assert_eq!(parse("hello"), None);
         assert!(names().contains(&"compact".to_string()));
         assert!(names().contains(&"resume".to_string()) && !names().contains(&"sessions".to_string()));

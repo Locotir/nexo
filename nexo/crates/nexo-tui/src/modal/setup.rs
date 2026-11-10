@@ -121,6 +121,10 @@ pub fn provider_ready(name: &str, c: &ProviderConfig, local: &[(String, String)]
     if local.iter().any(|(p, _)| p == name) {
         return true;
     }
+    // the scripted test provider has no server and no key
+    if c.protocol == "mock" {
+        return true;
+    }
     // a key kept with `nexo auth login` counts too; a command is not run just to ask
     let stored = nexo_core::auth::get(c.auth.as_deref().unwrap_or(name)).is_some();
     if c.login.is_some() {
@@ -1252,6 +1256,12 @@ mod tests {
             s.paste("  key-abc\x1b[2J\r\ndef\x07\r\n");
             assert_eq!(s.field, "key-abcdef", "{step:?}");
         }
+    }
+
+    #[test]
+    fn the_scripted_mock_provider_needs_no_key_or_address() {
+        let m = ProviderConfig::new("mock", "", None);
+        assert!(provider_ready("mock", &m, &[]));
     }
 
     #[test]

@@ -392,6 +392,10 @@ impl App {
             self.dialog_size.palette.forget();
         }
         if m && !self.modal_was {
+            // "Esc again to ..." was about the draft and the transcript: in a window Esc only closes it
+            if self.status.as_ref().is_some_and(|(t, _)| t.starts_with("Esc again")) {
+                self.status = None;
+            }
             self.dialog_size.modal.forget();
         }
         if self.opts.animations {

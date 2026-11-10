@@ -882,7 +882,13 @@ impl App {
                 }
                 match reason {
                     TurnEnd::Done => {}
-                    TurnEnd::Interrupted => self.notice(Level::Warn, "interrupted"),
+                    TurnEnd::Interrupted => {
+                        // the stop is done: "interrupting…" would say it is still going on
+                        if self.status.as_ref().is_some_and(|(t, _)| t.starts_with("interrupting…")) {
+                            self.status = None;
+                        }
+                        self.notice(Level::Warn, "interrupted")
+                    }
                     TurnEnd::Error => {}
                     TurnEnd::MaxTurns => {
                         self.notice(Level::Warn, "stopped: the turn limit was reached; send a message to go on")
