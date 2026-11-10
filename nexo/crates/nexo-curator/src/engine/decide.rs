@@ -17,24 +17,35 @@ impl Engine {
             self.dump_rows();
         }
         let epoch = self.epoch_due();
-        if epoch && self.tries_landings() && !self.must_land() {
+        // while a refusal stands, the view is held to the working-set bound at every request, not only each
+        // `check` tokens: the bound comes down when a large output stops being the latest one, with no growth
+        let over = !epoch && self.refused && self.tries_landings() && self.past_working_set();
+        if (epoch || over) && self.tries_landings() && !self.must_land() {
             // the epoch is made on a copy and this engine goes on with no epoch: the copy takes its place only
-            // when the view it really made pays for the cache it breaks (`landing_pays`); else nothing of the try
-            // stays, and the next one waits for `check` tokens of growth
+            // when the view it really made pays for the cache it breaks (`landing_pays`), or when the view with
+            // no epoch goes out past the working-set bound (`past_working_set`); else nothing of the try stays,
+            // and the next one waits for `check` tokens of growth or for the bound
             // (the context of this step is set before the copy, so neither of the two has to copy the featurizer
             // to set it)
             self.context_at(self.tr.msgs.len());
             let mut tried = self.clone();
             tried.decide_as(true);
             self.decide_as(false);
-            if self.landing_pays(&mut tried) {
+            let pays = epoch && self.landing_pays(&mut tried);
+            if pays || self.past_working_set() {
                 *self = tried;
-            } else {
+                self.refused = false;
+                if !pays {
+                    self.bump("landings_bound", 1);
+                }
+            } else if epoch {
                 self.looked = self.sizes_now().iter().sum::<i64>() + self.head;
+                self.refused = true;
                 self.bump("landings_refused", 1);
             }
         } else {
             self.decide_as(epoch);
+            self.refused &= !epoch;
         }
         if self.tries_landings() {
             let vis = self.visible();

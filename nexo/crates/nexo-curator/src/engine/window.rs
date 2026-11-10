@@ -27,6 +27,9 @@ const CEILING_LAND: f64 = 0.9;
 /// token past it is counted per call as this share of an uncached token (a heuristic, not a measured price).
 const LONG_KNEE: i64 = 100_000;
 const LONG_LOSS: f64 = 0.05;
+/// The batch a view may pass what the agent works from by before a refused rewrite lands whatever it sends again
+/// (`Engine::past_working_set`): the 8k the window lets a session that only reads keep past its working set.
+const BATCH: i64 = 8_000;
 
 /// The sticky set as of the last request, by unit.
 #[derive(Clone, Default)]
@@ -249,8 +252,25 @@ impl Engine {
         self.p.kept >= 3 && self.epochs()
     }
 
+    /// Whether the view as it stands (head included) is past the working-set bound: the sticky set, the latest
+    /// `still` tokens of what the agent has not written about, `BATCH`, and the `target` the cost rule lets a view
+    /// keep before its next rewrite. A landing is refused only below it (`Params.kept` 3 and 4): past it the
+    /// view holds more than the agent works from, and the next rewrite only gets larger. The sticky set is
+    /// read again only when the view is past the rest of the bound.
+    pub(super) fn past_working_set(&mut self) -> bool {
+        let total = self.sizes_now().iter().sum::<i64>() + self.head;
+        let room = self.still_now() + BATCH + self.p.target;
+        if total <= room {
+            return false;
+        }
+        self.refresh_sticky();
+        total > self.stk.tokens + room
+    }
+
     /// Whether the epoch of this request lands whatever it sends again: the first view of an engine (also after
     /// the host rewrote the history), a view past the ceiling or the model's window, and a `cap` set by hand.
+    /// So does an epoch whose refusal would leave the view past the working-set bound (`past_working_set`,
+    /// asked in `decide` of the view as it goes out with no epoch).
     pub(super) fn must_land(&mut self) -> bool {
         let view = self.sizes_now().iter().sum::<i64>();
         self.p.cap > 0

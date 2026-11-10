@@ -150,17 +150,28 @@ pub struct Params {
     /// 3: nothing is priced ahead. An epoch that is due is made whole on a copy of the engine, and it lands only
     /// when the view it really makes pays for what it really sends again (`Engine::landing_pays`): else the view
     /// goes on growing at the end, as if the epoch had not been tried, and the next try waits for `check` tokens
-    /// of growth. The first view, a view past the ceiling and a fixed `cap` land whatever they cost.
+    /// of growth. The first view, a view past the ceiling and a fixed `cap` land whatever they cost, and so does
+    /// an epoch whose refusal would send the view out past what the agent works from: the sticky set, `still`,
+    /// 8k and the `target` (`Engine::past_working_set`). While a refusal stands that bound is asked at every
+    /// request, not each `check` tokens: it comes down, with no growth, when a large output stops being the
+    /// latest one.
     /// 4: also, an epoch is tried each `check` tokens of growth past the fire point, without waiting for the
     /// room past the last landing: a landing that ended large is followed by the next one that pays.
     /// Measured 2026-11-10 on the 484 recorded sessions, cold replay at a 10 % cache price, against 0. With 3:
     /// input cost 0.67 % lower (1.2 % in sessions of 26 to 100 requests, 3.1 % in longer ones), 216 forgotten
     /// words against 223 (fixtures 36 against 39), 6 sessions dearer than plain history against 11, views of the
     /// same mean size; the 33-request session that showed the defect costs 0.0844 $ against 0.0984 $ (plain
-    /// 0.0918 $). It is not the default because of one fixture: on realm100 it refuses four rewrites that take
-    /// 0.2k to 5.5k tokens out and send 35k to 42k again, and the view reaches 52455 tokens before the rewrite
-    /// that pays, past the 50000 `the_window_holds_on_every_fixture` allows. With 4: 0.99 % lower and that session
-    /// 0.0804 $, but 242 forgotten words (fixtures 47): the earlier landings cut more.
+    /// 0.0918 $). The bound moves none of the 484 sessions (no refusal of theirs leaves a view past it); on the
+    /// `edge` fixture it lands the rewrite one request after the 62k output stops being the latest one: 0.0252 $,
+    /// against 0.0520 $ without the bound and 0.0584 $ with 0, nothing forgotten, the largest view 70467 tokens.
+    /// It is not the default because of two fixtures. On realm100 it refuses four rewrites that take 0.2k to 5.5k
+    /// tokens out and send 35k to 42k again, and the view reaches 52455 tokens before the rewrite that pays: inside
+    /// the bound (the sticky set is counted), past the 50000 `the_window_holds_on_every_fixture` allows that
+    /// session (48684 with 0); it costs 0.1198 $ there against 0.1279 $. On marathon-D (118 requests) it costs
+    /// 0.1278 $ against 0.1263 $ and forgets one word against none: it is cheaper up to request 113, then a
+    /// rewrite that pays over the calls a session is taken to have left sends 25k again 4 requests before the
+    /// recording ends. With 4: 0.99 % lower and that session 0.0804 $, but 242 forgotten words (fixtures 47,
+    /// measured before the bound): the earlier landings cut more.
     pub kept: i64,
     /// With `kept`: the calls a session still has, whatever its length (the recorded sessions have about 12).
     pub lcalls: f64,

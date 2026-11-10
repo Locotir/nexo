@@ -425,8 +425,8 @@ fn landing_views(spec: &str, n: usize) -> (Vec<Vec<Value>>, Engine) {
 #[test]
 fn a_landing_that_does_not_pay_is_refused_and_the_view_only_grows_at_the_end() {
     // with a fraction of a call left no rewrite pays for the view it sends again: each epoch is tried on a copy
-    // and refused
-    let (views, e) = landing_views("kept=3;lcalls=0;lahead=0.001", 40);
+    // and refused (the 60k tokens of the 40 reads stay below the working-set bound with this `still`)
+    let (views, e) = landing_views("kept=3;lcalls=0;lahead=0.001;still=60000", 40);
     assert!(e.stats.get("landings_refused").is_some_and(|n| *n > 1), "{:?}", e.stats);
     assert!(e.stats.get("window_cuts").is_none() && e.stats.get("epochs") == Some(&1), "{:?}", e.stats);
     // every view is the one before it, byte for byte, with the new messages at the end
@@ -459,6 +459,27 @@ fn a_landing_that_pays_lands() {
         })
         .count();
     assert!(grows >= 34, "{grows} of 39 views only grew at the end: {:?}", e.stats);
+}
+
+#[test]
+fn a_refused_landing_never_leaves_the_view_past_the_working_set() {
+    // the same session where no rewrite pays: the first epochs that come due are refused, and once the view with
+    // no epoch would go out past the sticky set, `still`, the batch and the target, the rewrite lands all the same
+    let spec = "nudge=0;fresh=0;epoch=1;eoq=100000000;still=8000;target=10000;ahead=0.25;margin=1;kept=3;lcalls=0;lahead=0.001";
+    let mut e = Engine::new(params(spec).unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Read the parts and say what slot 50 holds."})];
+    let mut most = 0;
+    for k in 1..=60 {
+        msgs.extend(step(1000 + k, &format!("cat part{k}.txt"), &big(k, 1_500)));
+        e.sync(&msgs);
+        let _ = e.view();
+        assert!(!(e.refused && e.past_working_set()), "request {k}: {} tokens after a refusal", e.tokens());
+        most = most.max(e.tokens() + e.head);
+    }
+    assert!(e.stats.get("landings_refused").is_some_and(|n| *n > 0), "{:?}", e.stats);
+    assert!(e.stats.get("landings_bound").is_some_and(|n| *n > 0), "{:?}", e.stats);
+    assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", e.stats);
+    assert!(most < 40_000, "{most}");
 }
 
 #[test]
