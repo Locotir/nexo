@@ -45,6 +45,7 @@ async fn a_stored_codex_login_streams_text_and_a_tool_call_from_the_subscription
                         && b["instructions"] == "be brief"
                         && b["tools"][0]["name"] == "read"
                         && b["tools"][0]["type"] == "function"
+                        && b["tools"][0]["strict"] == false
                 });
             then.status(200).header("content-type", "text/event-stream").body(SSE);
         })

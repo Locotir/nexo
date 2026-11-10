@@ -32,8 +32,8 @@ impl Tool for Write {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "The file."},
-                    "content": {"type": "string", "description": "The complete new content of the file."},
-                    "check": {"type": "string", "description": "Command to run after; exit and tail come back."}
+                    "content": {"type": "string", "description": "The complete new content."},
+                    "check": {"type": "string", "description": "Short command to run after; exit and tail come back."}
                 },
                 "required": ["path", "content"]
             }),

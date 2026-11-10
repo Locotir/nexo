@@ -42,7 +42,7 @@ impl Tool for Edit {
                     "replace_all": {"type": "boolean", "description": "Replace every occurrence."},
                     "edits": {"type": "array", "description": "Several changes to this file: [{old_string, new_string, replace_all}].", "items": {"type": "object"}},
                     "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array"}}}},
-                    "check": {"type": "string", "description": "Command to run after; exit and tail come back."}
+                    "check": {"type": "string", "description": "Short command to run after; exit and tail come back."}
                 },
                 "required": []
             }),
@@ -272,6 +272,9 @@ pub fn changes(args: &Value) -> Result<Vec<Change>, String> {
                 return Err("edit: give either `old_string`/`new_string` or `edits`, not both".into());
             }
             list.iter().enumerate().map(|(i, v)| one(v, &format!("change {}: ", i + 1))).collect()
+        }
+        Some(Value::Array(_)) => {
+            Err("edit: `edits` is empty, so nothing changes. To only run a command, use `bash`.".into())
         }
         Some(_) => Err("edit: `edits` must be a list of {old_string, new_string} objects".into()),
         None => one(args, "").map(|c| vec![c]),
@@ -662,6 +665,7 @@ mod many_tests {
                 "edit: change 1: `old_string` is empty",
             ),
             (json!({"path": "a.rs", "edits": "x"}), "edit: `edits` must be a list"),
+            (json!({"path": "a.rs", "edits": [], "check": "true"}), "edit: `edits` is empty, so nothing changes"),
             (
                 json!({"path": "a.rs", "old_string": "a", "new_string": "b", "edits": [{"old_string": "a", "new_string": "b"}]}),
                 "edit: give either",

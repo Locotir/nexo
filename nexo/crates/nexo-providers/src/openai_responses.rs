@@ -48,7 +48,9 @@ impl OpenAiResponses {
             body["tools"] = Value::Array(
                 req.tools
                     .iter()
-                    .map(|t| json!({"type": "function", "name": t.name, "description": t.description, "parameters": t.parameters}))
+                    // `strict: false`: left out, the API takes the schema as strict where it can, and then the
+                    // model writes every optional argument on every call (`"wait_until": "", "detach": false`).
+                    .map(|t| json!({"type": "function", "name": t.name, "description": t.description, "strict": false, "parameters": t.parameters}))
                     .collect(),
             );
             if req.no_tool_call {
