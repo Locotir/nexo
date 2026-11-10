@@ -267,3 +267,10 @@ fn a_command_that_arrives_as_a_paste_stays_a_command_on_the_first_screen() {
     event::handle(&mut a, crossterm::event::Event::Paste("fix it".into()));
     assert!(matches!(a.modal, Some(Modal::Setup(_))), "a pasted prompt opens the setup");
 }
+
+#[test]
+fn the_first_ctrl_c_on_the_first_screen_says_to_press_it_again() {
+    let mut a = app("codex", codex());
+    event::key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(screen(&mut a).contains("Ctrl+C again to quit"), "{}", screen(&mut a));
+}

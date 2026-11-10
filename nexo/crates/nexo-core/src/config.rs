@@ -619,7 +619,7 @@ impl Config {
                 return Ok(None);
             }
             let text = std::fs::read_to_string(f).map_err(|e| ConfigError::Io(f.to_path_buf(), e.to_string()))?;
-            let parse = |e: toml::de::Error| ConfigError::Parse(f.to_path_buf(), e.to_string());
+            let parse = |e: toml::de::Error| ConfigError::Parse(f.to_path_buf(), one_line(&text, &e));
             let cfg = Config::parse(&text).map_err(parse)?;
             let said: toml::Table = toml::from_str(&text).map_err(parse)?;
             if let Some(n) = unread_keys(&text, &cfg) {
@@ -976,6 +976,20 @@ pub fn trust_project(root: &Path, trust_file: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// A parse error on one line: where (line and column) and what, without the quoted source the toml crate adds.
+fn one_line(text: &str, e: &toml::de::Error) -> String {
+    let Some(span) = e.span() else { return e.message().to_string() };
+    let before = &text[..span.start.min(text.len())];
+    let line = before.matches('\n').count() + 1;
+    let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+    // the line itself names the key
+    let said = text.lines().nth(line - 1).map(str::trim).filter(|l| !l.is_empty() && l.chars().count() <= 80);
+    match said {
+        Some(l) => format!("line {line}, column {col}: {} (`{l}`)", e.message()),
+        None => format!("line {line}, column {col}: {}", e.message()),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("cannot read {0}: {1}")]
@@ -1049,6 +1063,20 @@ mod tests {
         let want = format!("write({}/**)", rule_path(&d.path().join("lib")));
         assert!(rules.contains(&want), "{want} in {rules:?}");
         assert!(rules.iter().all(|r| !r.contains("..")), "{rules:?}");
+    }
+
+    #[test]
+    fn a_parse_error_is_one_line_naming_the_place_and_the_key() {
+        let d = std::env::temp_dir().join(format!("nexo-parse-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("config.toml");
+        for (text, want) in [("provider = \"deepseek\n", "line 1"), ("model = \"x\"\nprovider = 5\n", "`provider = 5`")]
+        {
+            std::fs::write(&f, text).unwrap();
+            let e = Config::load_files(&f, None, &d.join("trust")).unwrap_err().to_string();
+            assert!(!e.contains('\n') && e.contains("config.toml") && e.contains(want), "{e}");
+        }
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

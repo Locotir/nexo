@@ -139,3 +139,29 @@ fn an_unreachable_provider_names_the_address_and_ollama() {
     assert!(e.contains("http://127.0.0.1:9/v1") && e.contains("ollama serve"), "{e}");
     assert!(!e.contains("Could not reach the provider:"), "{e}");
 }
+
+#[test]
+fn a_one_word_typo_of_a_command_is_not_sent_to_the_model() {
+    let d = tempfile::tempdir().unwrap();
+    let o = nexo(d.path(), MOCK, &["sesions"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(err(&o).contains("did you mean `nexo sessions`"), "{}", err(&o));
+    // a phrase, a plain word and a short word stay requests: they reach the (missing) terminal check
+    for first in ["fix the bug", "refactor", "hi"] {
+        let o = nexo(d.path(), MOCK, &[first]);
+        assert!(err(&o).contains("needs a terminal"), "{first}: {}", err(&o));
+    }
+    // `-p` always sends
+    let o = nexo(d.path(), MOCK, &["-p", "sesions"]);
+    assert!(!err(&o).contains("did you mean"), "{}", err(&o));
+}
+
+#[test]
+fn a_config_that_does_not_parse_is_one_line_with_the_place_and_the_key() {
+    let d = tempfile::tempdir().unwrap();
+    let o = nexo(d.path(), "provider = 5\n", &["-p", "hi"]);
+    assert_eq!(o.status.code(), Some(1));
+    let e = err(&o);
+    assert_eq!(e.trim().lines().count(), 1, "{e}");
+    assert!(e.contains("config.toml") && e.contains("line 1") && e.contains("`provider = 5`"), "{e}");
+}

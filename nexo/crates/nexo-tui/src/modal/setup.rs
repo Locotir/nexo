@@ -224,10 +224,14 @@ impl Setup {
                 Some(v) if c.login.is_none() => format!("needs {v}"),
                 _ => String::new(),
             };
-            let mut hint = running.clone().map(|w| format!("● running · {w}")).unwrap_or_else(|| c.base_url.clone());
-            if !need.is_empty() {
-                hint.push_str(&format!(" · {need}"));
-            }
+            // what the person must do comes first: a narrow window cuts the end, and the address is the part to lose
+            let hint = match (&running, need.is_empty()) {
+                (Some(w), true) => format!("● running · {w}"),
+                (Some(w), false) => format!("● running · {w} · {need}"),
+                (None, true) => c.base_url.clone(),
+                (None, false) if need.starts_with("needs") => format!("{need} · {}", c.base_url),
+                (None, false) => format!("{} · {need}", c.base_url),
+            };
             let status = if running.is_some() {
                 "running"
             } else if c.login.is_some() && ok {
@@ -346,7 +350,7 @@ impl Setup {
         let own = PickItem {
             label: "set up your own server".into(),
             value: CUSTOM.into(),
-            hint: "Ollama, vLLM, llama.cpp, LM Studio, any OpenAI-compatible address".into(),
+            hint: "any OpenAI-compatible address (Ollama, vLLM, LM Studio)".into(),
         };
         if !filtering || !fuzzy::rank(&q, &[format!("{} {}", own.label, own.hint)]).is_empty() {
             items.push(own);

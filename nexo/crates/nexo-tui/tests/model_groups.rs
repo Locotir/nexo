@@ -142,3 +142,16 @@ fn a_model_in_an_open_group_switches_as_before() {
         SetupOut::SendAndClose(AgentCommand::SetModel { provider: Some("codex".into()), model: "gpt-3".into() })
     );
 }
+
+#[test]
+fn a_narrow_window_keeps_what_to_do_and_cuts_the_address() {
+    let mut s = setup();
+    select(&mut s, "group:@others");
+    press(&mut s, KeyCode::Enter);
+    let (lines, _) = s.lines(46, &Theme::nexo(), 0, false);
+    let t: String =
+        lines.iter().map(|l| l.spans.iter().map(|x| x.content.to_string()).collect::<String>() + "\n").collect();
+    assert!(t.contains("needs NEXO_T_NO_KEY_3"), "{t}");
+    let own = s.list.items.iter().find(|i| i.value == "new:").unwrap();
+    assert!(own.hint.starts_with("any OpenAI-compatible"), "{}", own.hint);
+}

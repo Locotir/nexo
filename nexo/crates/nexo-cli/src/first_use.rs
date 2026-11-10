@@ -43,6 +43,19 @@ fn did_you_mean(value: &str, known: &[String]) -> String {
     }
 }
 
+/// A one-word request that is a typo of a command (`nexo sesions`): the line to print instead of sending it
+/// to the model. Words under four letters and anything longer than one word stay a request.
+pub fn mistyped_command(word: &str, commands: &[String]) -> Option<String> {
+    let w = word.trim().to_lowercase();
+    if w.chars().count() < 4 || w.contains(char::is_whitespace) {
+        return None;
+    }
+    let best = commands.iter().filter(|c| c.as_str() != "help").min_by_key(|c| distance(&w, c))?;
+    (distance(&w, best) <= 2).then(|| {
+        format!("{word:?} is not a command; did you mean `nexo {best}`? (to send it as a request: `nexo -p {word}`)")
+    })
+}
+
 /// `provider = "x"` in the configuration when nothing by that name exists.
 pub fn unknown_provider(cwd: &Path, cfg: &Config) -> Option<String> {
     let name = cfg.provider.as_deref()?;
@@ -117,5 +130,15 @@ mod tests {
         let known = vec!["anthropic".to_string(), "ollama".to_string()];
         assert_eq!(did_you_mean("anthropc", &known), "did you mean \"anthropic\"?");
         assert!(did_you_mean("nosuch", &known).starts_with("known providers: anthropic, ollama"));
+    }
+
+    #[test]
+    fn one_word_near_a_command_is_a_typo_and_nothing_else_is() {
+        let cmds: Vec<String> = ["sessions", "doctor", "use", "review"].map(String::from).to_vec();
+        assert!(mistyped_command("sesions", &cmds).unwrap().contains("`nexo sessions`"));
+        assert!(mistyped_command("Docter", &cmds).is_some());
+        assert!(mistyped_command("ls", &cmds).is_none(), "too short to judge");
+        assert!(mistyped_command("refactor", &cmds).is_none());
+        assert!(mistyped_command("fix the bug", &cmds).is_none());
     }
 }

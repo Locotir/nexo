@@ -129,7 +129,8 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     } else {
         draw_input(f, app, input);
     }
-    if !app.locked && !matches!(app.modal, Some(Modal::Permission(_))) {
+    // the first screen has no key hints, but a message (Ctrl+C again to quit) still needs its row
+    if (!app.locked || app.status.is_some()) && !matches!(app.modal, Some(Modal::Permission(_))) {
         draw_hints(f, app, hints);
     }
     // toasts: one row each, top right of the transcript, under every dialog and off the scrollbar column

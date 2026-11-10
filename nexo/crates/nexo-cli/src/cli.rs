@@ -349,6 +349,15 @@ pub async fn main() -> i32 {
             },
         };
     }
+    if let (None, Some(word)) = (&args.cmd, &args.first) {
+        use clap::CommandFactory;
+        let names: Vec<String> =
+            Args::command().get_subcommands().filter(|c| !c.is_hide_set()).map(|c| c.get_name().to_string()).collect();
+        if let Some(why) = crate::first_use::mistyped_command(word, &names) {
+            eprintln!("nexo: {why}");
+            return crate::headless::EXIT_USAGE;
+        }
+    }
     let print_fmt = args.prompt.is_some().then(|| crate::headless::format_asked(&args.headless, args.json));
     match run(args).await {
         Ok(code) => code,
