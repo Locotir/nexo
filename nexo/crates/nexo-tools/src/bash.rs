@@ -99,7 +99,8 @@ impl Tool for Bash {
     }
 
     fn sandbox_holds(&self, args: &Value, sandbox: &nexo_core::sandbox::SandboxSettings) -> bool {
-        !bool_arg(args, "unsandboxed") && crate::sandbox::auto_allows(sandbox)
+        // a detached command outlives nexo even in the sandbox: it is asked about
+        !bool_arg(args, "unsandboxed") && !bool_arg(args, "detach") && crate::sandbox::auto_allows(sandbox)
     }
 
     fn sandbox_status(&self, sandbox: &nexo_core::sandbox::SandboxSettings) -> Option<(String, bool)> {

@@ -99,7 +99,7 @@ pub(super) async fn permit_why(
     let kind = tool.kind();
     let mut decision = {
         let st = state.lock().await;
-        let d = st.perm.decide(name, kind, args, cwd);
+        let d = st.perm.decide_boxed(name, kind, args, cwd, st.sandbox.mode.is_on());
         // a command the OS sandbox holds in needs no asking (a rule that denies still wins)
         let boxed = tool.sandbox_holds(args, &st.sandbox);
         if d == Decision::Ask && boxed {
@@ -124,7 +124,9 @@ pub(super) async fn permit_why(
         Decision::Deny(r) => (Verdict::Denied(r), Why::denied("rule")),
         Decision::Ask => {
             // PermissionRequest hooks answer before the person is asked: allow, deny, or leave it to them
-            let summary = tool.summary(args);
+            // what the call does beyond its command (outside the sandbox, detached) is said in the request
+            let words = permission::flag_words(kind, args, state.lock().await.sandbox.mode.is_on());
+            let summary = permission::with_flags(tool.summary(args), name, &words);
             let mut fields = crate::hooks::tool_fields(name, args);
             if let Some(a) = agent {
                 fields["agent"] = Value::from(a);
@@ -143,7 +145,12 @@ pub(super) async fn permit_why(
                 kind,
                 summary,
                 detail: detail_of(kind, args, cwd),
-                suggested_rules: permission::suggested_rules(name, kind, args, cwd),
+                // a flagged call asks every time: no rule is offered for it
+                suggested_rules: if words.is_empty() {
+                    permission::suggested_rules(name, kind, args, cwd)
+                } else {
+                    Vec::new()
+                },
             };
             let d = tokio::select! {
                 d = gate.ask(req) => d,
@@ -152,6 +159,8 @@ pub(super) async fn permit_why(
             emit(events, AgentEvent::PermissionResolved { id: id.to_string(), decision: d.clone() });
             match d {
                 PermissionDecision::Allow => (Verdict::Run, ASKED),
+                // a flagged call is allowed this once, whatever the answer says: nothing is remembered for it
+                PermissionDecision::AllowAlways { .. } if !words.is_empty() => (Verdict::Run, ASKED),
                 PermissionDecision::AllowAlways { rule, persist } => {
                     state.lock().await.perm.add_allow(&rule);
                     if persist {

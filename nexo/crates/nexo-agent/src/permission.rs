@@ -124,6 +124,11 @@ impl Policy {
                 return Decision::Ask;
             }
         }
+        // a command that outlives nexo is never covered by an allow rule or a mode: each one asks
+        // (yolo, which asks about nothing, keeps its meaning)
+        if kind == ToolKind::Exec && self.mode != PermissionMode::Auto && is_flag(args, "detach") {
+            return Decision::Ask;
+        }
         // keys and credentials are read only when asked, or by a rule that names their path
         if matches!(kind, ToolKind::Read | ToolKind::Search)
             && self.mode != PermissionMode::Auto
@@ -143,11 +148,55 @@ impl Policy {
         }
     }
 
+    /// `decide`, and with the OS sandbox on a command that asks to run outside it (`unsandboxed`)
+    /// is never allowed by a rule or a mode: it asks. A `deny` still denies; yolo still allows.
+    /// With the sandbox off the flag changes nothing, so it adds no question.
+    pub fn decide_boxed(&self, tool: &str, kind: ToolKind, args: &Value, cwd: &Path, sandbox_on: bool) -> Decision {
+        match self.decide(tool, kind, args, cwd) {
+            Decision::Allow if sandbox_on && self.leaves_the_sandbox(kind, args) => Decision::Ask,
+            d => d,
+        }
+    }
+
+    fn leaves_the_sandbox(&self, kind: ToolKind, args: &Value) -> bool {
+        kind == ToolKind::Exec && self.mode != PermissionMode::Auto && is_flag(args, "unsandboxed")
+    }
+
     pub fn add_allow(&mut self, rule: &str) {
         if !self.allow.iter().any(|r| r == rule) {
             self.allow.push(rule.to_string());
         }
     }
+}
+
+/// A flag of a call as the bash tool reads it (`true`, or the text `true`, `yes`, `1`).
+fn is_flag(args: &Value, key: &str) -> bool {
+    nexo_tools::util::bool_arg(args, key)
+}
+
+/// What a call does beyond what its command says, in words for the person: it runs outside the
+/// sandbox (only said while the sandbox is on) or keeps running after nexo exits. Empty for a plain call.
+pub fn flag_words(kind: ToolKind, args: &Value, sandbox_on: bool) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if kind == ToolKind::Exec {
+        if sandbox_on && is_flag(args, "unsandboxed") {
+            out.push("outside the sandbox");
+        }
+        if is_flag(args, "detach") {
+            out.push("detached: keeps running after nexo exits");
+        }
+    }
+    out
+}
+
+/// The summary of a request with the flag words after the tool name, where a narrow window still shows
+/// them: `bash (outside the sandbox): cargo x`. Unchanged when there are none.
+pub fn with_flags(summary: String, tool: &str, words: &[&str]) -> String {
+    if words.is_empty() {
+        return summary;
+    }
+    let rest = summary.strip_prefix(tool).map(|r| r.trim_start_matches(':').trim_start()).unwrap_or(&summary);
+    format!("{tool} ({}): {rest}", words.join(", "))
 }
 
 /// `name` and the pattern of `name(pattern)`.
@@ -1324,5 +1373,87 @@ mod note_scope_tests {
         ));
         let denied = Policy { deny: vec!["note".into()], ..policy(PermissionMode::Auto) };
         assert!(matches!(denied.decide("note", ToolKind::Other, &call("project"), c), Decision::Deny(_)));
+    }
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn policy(mode: PermissionMode, allow: &[&str], deny: &[&str]) -> Policy {
+        Policy {
+            mode,
+            allow: allow.iter().map(|s| s.to_string()).collect(),
+            deny: deny.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn at(p: &Policy, args: Value, sandbox_on: bool) -> Decision {
+        p.decide_boxed("bash", ToolKind::Exec, &args, Path::new("/work/proj"), sandbox_on)
+    }
+
+    #[test]
+    fn running_outside_the_sandbox_is_never_covered_by_a_rule_or_a_mode() {
+        let flagged = json!({"command": "cargo x", "unsandboxed": true});
+        let plain = json!({"command": "cargo x"});
+        let ruled = policy(PermissionMode::Ask, &["bash(cargo *)"], &[]);
+        assert_eq!(at(&ruled, plain.clone(), true), Decision::Allow);
+        assert_eq!(at(&ruled, flagged.clone(), true), Decision::Ask);
+        // the text forms the tool reads as true count too
+        assert_eq!(at(&ruled, json!({"command": "cargo x", "unsandboxed": "yes"}), true), Decision::Ask);
+        // an answer remembered this session is a rule like any other
+        let mut asked = policy(PermissionMode::Ask, &[], &[]);
+        asked.add_allow("bash(cargo *)");
+        assert_eq!(at(&asked, flagged.clone(), true), Decision::Ask);
+        // sandbox off: the flag changes nothing, so it adds no question
+        assert_eq!(at(&ruled, flagged.clone(), false), Decision::Allow);
+        // a deny rule and the never-run check hold as before
+        let denied = policy(PermissionMode::Ask, &["bash(cargo *)"], &["bash(cargo x*)"]);
+        assert!(matches!(at(&denied, flagged.clone(), true), Decision::Deny(_)));
+        let wipe = json!({"command": "rm -rf /", "unsandboxed": true});
+        assert!(matches!(at(&ruled, wipe, true), Decision::Deny(_)));
+        // read-only still denies; yolo keeps asking nothing
+        assert!(matches!(at(&policy(PermissionMode::ReadOnly, &[], &[]), flagged.clone(), true), Decision::Deny(_)));
+        assert_eq!(at(&policy(PermissionMode::Auto, &[], &[]), flagged, true), Decision::Allow);
+    }
+
+    #[test]
+    fn a_detached_command_is_never_covered_by_a_rule_or_a_remembered_answer() {
+        let detached = json!({"command": "cargo x", "background": true, "detach": true});
+        let ruled = policy(PermissionMode::Ask, &["bash(cargo *)", "bash"], &[]);
+        for sandbox_on in [true, false] {
+            assert_eq!(at(&ruled, detached.clone(), sandbox_on), Decision::Ask);
+            assert_eq!(at(&ruled, json!({"command": "cargo x", "background": true}), sandbox_on), Decision::Allow);
+        }
+        let mut asked = policy(PermissionMode::Ask, &[], &[]);
+        asked.add_allow("bash(cargo *)");
+        assert_eq!(at(&asked, detached.clone(), true), Decision::Ask);
+        let denied = policy(PermissionMode::Ask, &["bash(cargo *)"], &["bash(cargo *)"]);
+        assert!(matches!(at(&denied, detached.clone(), true), Decision::Deny(_)));
+        assert_eq!(at(&policy(PermissionMode::Auto, &[], &[]), detached, true), Decision::Allow);
+    }
+
+    #[test]
+    fn the_request_says_what_the_flags_do() {
+        let both = json!({"command": "cargo x", "unsandboxed": true, "background": true, "detach": true});
+        let words = flag_words(ToolKind::Exec, &both, true);
+        let text = with_flags("bash: cargo x".into(), "bash", &words);
+        assert_eq!(text, "bash (outside the sandbox, detached: keeps running after nexo exits): cargo x");
+        assert!(text.chars().count() < 80);
+        // sandbox off: nothing to say about it; a plain call is unchanged
+        assert_eq!(
+            flag_words(ToolKind::Exec, &json!({"command": "a", "unsandboxed": true}), false),
+            Vec::<&str>::new()
+        );
+        assert_eq!(with_flags("bash: ls".into(), "bash", &[]), "bash: ls");
+        assert_eq!(
+            with_flags(
+                "bash: ls".into(),
+                "bash",
+                &flag_words(ToolKind::Exec, &json!({"command": "ls", "unsandboxed": true}), true)
+            ),
+            "bash (outside the sandbox): ls"
+        );
     }
 }

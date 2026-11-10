@@ -253,11 +253,17 @@ pub struct HeadlessGate;
 impl PermissionGate for HeadlessGate {
     async fn ask(&self, req: PermissionRequest) -> PermissionDecision {
         PermissionDecision::Deny {
-            reason: Some(format!(
-                "{} not allowed in a non-interactive run; use --permission-mode yolo or an allow rule such as {}",
-                req.summary,
-                req.suggested_rules.first().cloned().unwrap_or_else(|| req.tool.clone())
-            )),
+            reason: Some(match req.suggested_rules.first() {
+                Some(rule) => format!(
+                    "{} not allowed in a non-interactive run; use --permission-mode yolo or an allow rule such as {rule}",
+                    req.summary
+                ),
+                // a call that is always asked about (outside the sandbox, detached): no rule covers it
+                None => format!(
+                    "{} not allowed in a non-interactive run; no allow rule covers it, use --permission-mode yolo",
+                    req.summary
+                ),
+            }),
         }
     }
 }
