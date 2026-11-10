@@ -116,6 +116,21 @@ pub fn resolve(provider: &str, cfg: &ProviderConfig, model: &str, vendor: Option
     l
 }
 
+/// `old` with its empty fields taken from `new`; None when that adds nothing.
+pub fn filled(old: &Limits, new: Limits) -> Option<Limits> {
+    let mut l = old.clone();
+    l.pricing = l.pricing.or(new.pricing);
+    l.context_window = l.context_window.or(new.context_window);
+    l.max_output = l.max_output.or(new.max_output);
+    if l == *old {
+        return None;
+    }
+    if l.source == "unknown" {
+        l.source = new.source;
+    }
+    Some(l)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +165,18 @@ mod tests {
         assert_eq!(l.max_tokens(16_384), 16_384);
         let l = resolve("deepseek", &cfg, "deepseek-chat", None);
         assert_eq!(l.max_tokens(16_384), 8_192);
+    }
+
+    #[test]
+    fn a_late_catalogue_fills_only_the_gaps() {
+        let old = Limits { context_window: Some(100), source: "vendor".into(), ..Default::default() };
+        let new =
+            Limits { context_window: Some(5), max_output: Some(7), source: "catalogue".into(), ..Default::default() };
+        let l = filled(&old, new.clone()).unwrap();
+        assert_eq!((l.context_window, l.max_output, l.source.as_str()), (Some(100), Some(7), "vendor"));
+        let cold = Limits { source: "unknown".into(), ..Default::default() };
+        assert_eq!(filled(&cold, new).unwrap().source, "catalogue");
+        assert!(filled(&old, Limits::default()).is_none());
     }
 
     #[test]

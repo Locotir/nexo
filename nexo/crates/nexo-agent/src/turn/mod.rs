@@ -466,7 +466,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             st.last_sent.clear();
         }
     }
-    catalogue::refresh_if_stale(None);
+    spawn_catalogue_fill(&state);
     spawn_vendor_fill(&state);
     spawn_job_review(&state, jobs.clone());
     {

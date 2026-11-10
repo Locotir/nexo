@@ -53,6 +53,9 @@ const ALIASES: &[(&str, &str)] = &[
     ("lmstudio", "lmstudio"),
 ];
 
+/// Subscription presets that serve the models of an API provider: nexo preset -> models.dev id.
+const PARENTS: &[(&str, &str)] = &[("codex", "openai")];
+
 /// The preset name a models.dev provider id maps to.
 pub fn preset_name(id: &str) -> &str {
     ALIASES.iter().find(|(from, _)| *from == id).map(|(_, to)| *to).unwrap_or(id)
@@ -111,8 +114,29 @@ impl Catalogue {
             }
         }
         // the same model under another vendor (an OpenAI-compatible server, a gateway)
+        self.elsewhere(preset, model)
+    }
+
+    /// The model under the other providers: the preset's parent API first
+    /// (`codex` -> `openai`), else the entry with the smallest window (the safe
+    /// one; an entry with a window beats one without), ties by provider id.
+    fn elsewhere(&self, preset: &str, model: &str) -> Option<&Entry> {
         let bare = model.rsplit('/').next().unwrap_or(model);
-        self.providers.values().find_map(|m| m.get(model).or_else(|| m.get(bare)))
+        fn pick<'a>(m: &'a BTreeMap<String, Entry>, model: &str, bare: &str) -> Option<&'a Entry> {
+            m.get(model).or_else(|| m.get(bare))
+        }
+        if let Some(parent) = PARENTS.iter().find(|(p, _)| *p == preset).map(|(_, a)| *a) {
+            if let Some(e) = self.providers.get(parent).and_then(|m| pick(m, model, bare)) {
+                return Some(e);
+            }
+        }
+        let smallest = |id: &str| {
+            self.providers
+                .values()
+                .filter_map(|m| m.get(id))
+                .min_by_key(|e| (e.context.is_none(), e.context.unwrap_or(u32::MAX)))
+        };
+        smallest(model).or_else(|| smallest(bare))
     }
 
     /// Every model known under a preset, with its entry.
@@ -317,5 +341,47 @@ mod tests {
         assert_eq!(preset_name("google"), "gemini");
         assert_eq!(preset_name("deepseek"), "deepseek");
         assert_eq!(catalogue_ids("qwen"), vec!["qwen", "alibaba", "alibaba-cn"]);
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    fn cat(rows: &[(&str, &str, Option<u32>)]) -> Catalogue {
+        let mut c = Catalogue::default();
+        for (p, m, w) in rows {
+            c.providers
+                .entry(p.to_string())
+                .or_default()
+                .insert(m.to_string(), Entry { context: *w, ..Default::default() });
+        }
+        c
+    }
+
+    #[test]
+    fn own_provider_wins() {
+        let c = cat(&[("deepseek", "m", Some(64_000)), ("openai", "m", Some(8_000))]);
+        assert_eq!(c.lookup("deepseek", "m").unwrap().context, Some(64_000));
+    }
+
+    #[test]
+    fn missing_under_own_is_found_under_the_parent_api() {
+        let c = cat(&[("abacus", "m", Some(1_000_000)), ("openai", "m", Some(1_050_000)), ("zed", "m", Some(5_000))]);
+        assert_eq!(c.lookup("codex", "m").unwrap().context, Some(1_050_000));
+    }
+
+    #[test]
+    fn several_others_give_the_smallest_window() {
+        let c =
+            cat(&[("a", "x/m", Some(900_000)), ("b", "m", Some(500_000)), ("c", "m", None), ("d", "m", Some(700_000))]);
+        assert_eq!(c.lookup("nobody", "m").unwrap().context, Some(500_000));
+        assert_eq!(c.lookup("nobody", "x/m").unwrap().context, Some(900_000));
+    }
+
+    #[test]
+    fn nowhere_is_none() {
+        let c = cat(&[("openai", "m", Some(1))]);
+        assert!(c.lookup("codex", "other").is_none());
     }
 }

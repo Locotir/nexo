@@ -276,6 +276,30 @@ pub(super) fn spawn_suggest(state: &Shared) {
     });
 }
 
+/// A cold or stale catalogue is fetched in the background; when it lands, what the start could not
+/// resolve (no cache on the first run) is filled from it and reported again.
+pub(super) fn spawn_catalogue_fill(state: &Shared) {
+    let state = state.clone();
+    let done: nexo_providers::catalogue::Done = Box::new(move |r| {
+        if r.is_err() {
+            return;
+        }
+        tokio::spawn(async move {
+            let mut st = state.lock().await;
+            if !st.limits.incomplete() {
+                return;
+            }
+            let (p, c, m) = st.target.get();
+            let new = limits::resolve(&p, &c, &m, None);
+            if let Some(l) = limits::filled(&st.limits, new) {
+                st.limits = l;
+                emit(&st.events, st.limits.event(&p, &m));
+            }
+        });
+    });
+    catalogue::refresh_if_stale(Some(done));
+}
+
 pub(super) fn spawn_vendor_fill(state: &Shared) {
     let state = state.clone();
     tokio::spawn(async move {
