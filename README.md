@@ -102,7 +102,10 @@ the exact error line is gone, and the prompt cache restarts. nexo keeps the whol
 built for the next step. The view is rewritten only at an epoch, so the provider's cache keeps hitting; what a request names
 comes back by itself; your rules stay pinned; a resumed session gets the same view.
 
-![Where the curator sits](docs/img/flow.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/flow-dark.svg">
+  <img alt="Where the curator sits: the whole history on disk, the curator, and the view the model gets: prompt, Project block, anchor, a view that only grows between epochs, and a tail built for each call" src="docs/img/flow.svg" width="760">
+</picture>
 
 Engine and every setting: [`docs/how-it-works.md`](docs/how-it-works.md). What the marks on each tool card mean: [reading the screen](docs/how-it-works.md#reading-the-screen-the-mark-on-each-tool-card). Diagrams: [`docs/context-curator.md`](docs/context-curator.md). Policy `compact` exists if you prefer it.
 

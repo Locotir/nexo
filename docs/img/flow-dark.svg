@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="466" viewBox="0 0 760 466" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" role="img" aria-labelledby="t d">
+<title id="t">Where the curator sits</title>
+<desc id="d">The whole history stays on disk and each message is indexed once. For each call the nexo curator builds the view. Process output is squeezed when it arrives. Between epochs the view only grows at its end, so the cached prefix holds. At an epoch, when keeping the growth costs more than a new prefix or the view reaches 95% of the window, answered steps leave by need, stale reads go first and the view is cut to the target. The anchor of rules, notes, pins, ledger and map never drops. The tail, built for each call, holds standing facts and the lines the request names, and the recall tool brings a message back by name. The model gets the system prompt (the compact one for windows of 32k or less), the Project block, the anchor, the view and the tail. Around each call: a reply that only reasons is cut and the model asked to go on, steps in one reply run in order and a failed one stops the rest, and web_search stops after two refusals in a row.</desc>
+<rect fill="#1a1a19" width="760" height="466" rx="8"/>
+<text x="24" y="36" fill="#f0efec" font-size="18" font-weight="600">Where the curator sits</text>
+<text x="24" y="57" fill="#c3c2b7">The whole history stays on disk. Every call, the model gets a view built for its next step.</text>
+<rect fill="#242422" x="24" y="80" width="190" height="278" rx="6"/>
+<text x="40" y="104" fill="#f0efec" font-weight="600">Whole history</text>
+<text x="40" y="121" fill="#9c9b93" font-size="11">on disk, indexed once</text>
+<rect fill="#55544f" x="40" y="136" width="150" height="8" rx="2"/>
+<rect fill="#363633" x="40" y="148" width="96" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="160" width="132" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="172" width="60" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="184" width="158" height="8" rx="2"/>
+<rect fill="#363633" x="40" y="196" width="110" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="208" width="150" height="8" rx="2"/>
+<rect fill="#363633" x="40" y="220" width="80" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="232" width="124" height="8" rx="2"/>
+<rect fill="#363633" x="40" y="244" width="158" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="256" width="70" height="8" rx="2"/>
+<rect fill="#363633" x="40" y="268" width="136" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="280" width="104" height="8" rx="2"/>
+<rect fill="#363633" x="40" y="292" width="146" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="304" width="120" height="8" rx="2"/>
+<rect fill="#363633" x="40" y="316" width="150" height="8" rx="2"/>
+<rect fill="#55544f" x="40" y="328" width="110" height="8" rx="2"/>
+<path fill="none" stroke="#9c9b93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M218 219h16m-5-5l5 5-5 5"/>
+<rect fill="#1d2733" stroke="#4f93e6" stroke-width="1.5" x="238" y="80" width="270" height="278" rx="6"/>
+<text x="254" y="104" fill="#f0efec" font-weight="600">nexo curator</text>
+<rect fill="#4f93e6" x="254" y="121" width="6" height="6" rx="1"/><text x="268" y="128" fill="#f0efec" font-weight="600">Squeeze at birth</text><text x="268" y="141" fill="#9c9b93" font-size="11">progress bars and repeats never enter</text>
+<rect fill="#4f93e6" x="254" y="150" width="6" height="6" rx="1"/><text x="268" y="157" fill="#f0efec" font-weight="600">Between epochs, it only grows</text><text x="268" y="170" fill="#9c9b93" font-size="11">nothing before the tail changes, the cache hits</text>
+<rect fill="#4f93e6" x="254" y="179" width="6" height="6" rx="1"/><text x="268" y="186" fill="#f0efec" font-weight="600">Epoch, when it pays or at 95%</text><text x="268" y="199" fill="#9c9b93" font-size="11">growth costs more than a new prefix</text>
+<rect fill="#4f93e6" x="254" y="208" width="6" height="6" rx="1"/><text x="268" y="215" fill="#f0efec" font-weight="600">At an epoch, one batch</text><text x="268" y="228" fill="#9c9b93" font-size="11">answered steps leave by need, stale reads first</text>
+<rect fill="#4f93e6" x="254" y="237" width="6" height="6" rx="1"/><text x="268" y="244" fill="#f0efec" font-weight="600">An anchor that never drops</text><text x="268" y="257" fill="#9c9b93" font-size="11">rules, notes, pins, ledger, map</text>
+<rect fill="#4f93e6" x="254" y="266" width="6" height="6" rx="1"/><text x="268" y="273" fill="#f0efec" font-weight="600">A tail for each call</text><text x="268" y="286" fill="#9c9b93" font-size="11">standing facts, lines the request names</text>
+<rect fill="#4f93e6" x="254" y="295" width="6" height="6" rx="1"/><text x="268" y="302" fill="#f0efec" font-weight="600">recall m00042</text><text x="268" y="315" fill="#9c9b93" font-size="11">brings back a message as it was</text>
+<rect fill="#4f93e6" x="254" y="324" width="6" height="6" rx="1"/><text x="268" y="331" fill="#f0efec" font-weight="600">Cache pockets (opt-in)</text><text x="268" y="344" fill="#9c9b93" font-size="11">one cached view per topic</text>
+<path fill="none" stroke="#9c9b93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M512 219h16m-5-5l5 5-5 5"/>
+<rect fill="#242422" x="532" y="80" width="204" height="278" rx="6"/>
+<text x="548" y="104" fill="#f0efec" font-weight="600">The model gets</text><text x="548" y="121" fill="#9c9b93" font-size="11">the view for the next step</text>
+<rect fill="#363633"  x="548" y="132" width="172" height="18" rx="4"/>
+<text x="558" y="145.0" fill="#c3c2b7" font-size="11">prompt (compact if window 32k)</text>
+<rect fill="#363633"  x="548" y="154" width="172" height="18" rx="4"/>
+<text x="558" y="167.0" fill="#c3c2b7" font-size="11">Project block: tree, commands</text>
+<rect fill="#22364f"  x="548" y="178" width="172" height="24" rx="4"/>
+<text x="558" y="194.0" fill="#f0efec" font-size="11">anchor: rules, notes, pins</text>
+<rect fill="#55544f" x="548" y="212" width="160" height="8" rx="2"/>
+<rect fill="#55544f" x="548" y="224" width="118" height="8" rx="2"/>
+<rect fill="#55544f" x="548" y="236" width="172" height="8" rx="2"/>
+<rect fill="#55544f" x="548" y="248" width="140" height="8" rx="2"/>
+<rect fill="#55544f" x="548" y="260" width="168" height="8" rx="2"/>
+<text x="548" y="286" fill="#9c9b93" font-size="11">requests, replies, kept steps</text>
+<text x="548" y="299" fill="#9c9b93" font-size="11">grow at the end, cached</text>
+<rect fill="none" stroke="#4f93e6" stroke-dasharray="3 2" x="548" y="310" width="172" height="36" rx="4"/>
+<text x="558" y="326" fill="#f0efec" font-size="11">tail, new each call:</text><text x="558" y="339" fill="#c3c2b7" font-size="11">Standing: and Recall: lines</text>
+<text x="24" y="380" fill="#f0efec" font-weight="600">Around each call</text>
+<text x="24" y="398" fill="#c3c2b7" font-size="11.5">Reasoning only: a reply that reasons past its budget with no answer or call is cut, then asked to go on.</text>
+<text x="24" y="414" fill="#c3c2b7" font-size="11.5">Steps in one reply run in order, reads and searches together; a failed step stops the ones after it.</text>
+<text x="24" y="430" fill="#c3c2b7" font-size="11.5">web_search: two refusals in a row switch it off for two minutes, and the model is told not to retry.</text>
+<text x="24" y="454" fill="#c3c2b7">Cold test, 1,000 topics, 128k window (2026-11-09, nexo cdeb98a): recall 100%, prefix hit 99.4%, $0.59 against $2.41 whole history.</text>
+</svg>
