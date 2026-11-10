@@ -379,7 +379,9 @@ pub enum StatusHit {
     Model,
     /// The reasoning level: `/effort`.
     Effort,
-    /// The permission mode: Shift+Tab.
+    /// The fast-mode marker: `/fast`.
+    Fast,
+    /// The permission mode: its picker (`/permissions`).
     Mode,
     /// The context gauge: `/context`.
     Gauge,

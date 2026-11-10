@@ -458,24 +458,24 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                     return app.open_hint(h);
                 }
             }
-            // the status bar: the model opens its picker, the cost the usage, the rest the context window
+            // the status bar: each piece with an action runs it; a separator or empty space does nothing
             if m.row == app.status_row && app.palette.is_none() {
                 use crate::app::StatusHit;
                 use crate::commands::Command;
                 let cmd = match app.status_hit(m.column) {
                     Some(StatusHit::Model) => Command::Model(None),
                     Some(StatusHit::Effort) => Command::Effort(None),
-                    Some(StatusHit::Mode) => {
-                        app.cycle_mode();
-                        return;
-                    }
+                    Some(StatusHit::Fast) => Command::Fast(None),
+                    Some(StatusHit::Mode) => Command::Permissions(None),
                     Some(StatusHit::Cost) => Command::Cost,
                     // the goal opens its own window
                     Some(StatusHit::Goal) => {
                         app.open_goal();
                         return;
                     }
-                    Some(StatusHit::Gauge) | None => Command::Context,
+                    Some(StatusHit::Gauge) => Command::Context,
+                    // a separator or an empty part of the row: nothing to do
+                    None => return,
                 };
                 app.run_command(cmd);
                 return;

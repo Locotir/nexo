@@ -554,8 +554,10 @@ impl App {
         if self.unseen() > 0 && contains(self.pill, x, y) {
             return Hover::Pill;
         }
-        if let Some((_, h)) = self.status_hits.iter().find(|(r, _)| contains(*r, x, y)) {
-            return Hover::Status(*h);
+        if y == self.status_row {
+            if let Some((_, h)) = self.status_hits.iter().find(|(r, _)| contains(*r, x, y)) {
+                return Hover::Status(*h);
+            }
         }
         if let Some((_, h)) = self.hint_hits.iter().find(|(r, _)| contains(*r, x, y)) {
             return Hover::Hint(*h);

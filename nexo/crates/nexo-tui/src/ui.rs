@@ -313,7 +313,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                     if order.contains(&"model") {
                         g.push(model(k.short_model));
                         if app.fast {
-                            g.push(Seg { text: " ⚡".to_string(), style: base.fg(theme.warn) });
+                            g.push(Seg { text: FAST_MARK.to_string(), style: base.fg(theme.warn) });
                         }
                     }
                     if order.contains(&"effort") {
@@ -636,7 +636,6 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
     let avail = w.saturating_sub(right_w);
     let groups = title_segments(app, avail);
-    let order0 = status_pieces(&app.opts.status_line).first().copied();
     let mut spans = vec![Span::styled(" nexo", base.add_modifier(Modifier::BOLD))];
     if app.root {
         spans.push(Span::styled(ROOT_MARK, base.fg(theme.error).add_modifier(Modifier::BOLD)));
@@ -651,7 +650,7 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let mut used = brand_width(app);
     let mut hits = Vec::new();
-    'outer: for (gi, g) in groups.iter().enumerate() {
+    'outer: for g in groups.iter() {
         let sep = " │ ";
         if used + width(sep) > avail {
             break;
@@ -665,16 +664,21 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             used -= width(sep);
             break 'outer;
         }
-        let model_group = gi == 0 && matches!(order0, Some("model" | "effort"));
         let gauge_group = g.iter().any(is_gauge_pct);
         let mode_label = mode_name(app);
-        let mode_group = !model_group && !gauge_group && g.first().is_some_and(|s| s.text == mode_label);
-        // each piece answers for itself: the model, its effort, the mode, the goal, the gauge
+        let model_texts = [app.model.clone(), format!("{}/{}", app.provider, app.model)];
+        let mode_group = !gauge_group && g.first().is_some_and(|s| s.text == mode_label);
+        // each piece answers for itself, wherever the user's order drew it: the model, its fast
+        // marker, its effort, the mode, the goal, the gauge
         let hit_of = |i: usize, s: &Seg| -> Option<StatusHit> {
             if is_goal_seg(s) {
                 Some(StatusHit::Goal)
-            } else if model_group {
-                Some(if is_effort_seg(s) { StatusHit::Effort } else { StatusHit::Model })
+            } else if is_effort_seg(s) {
+                Some(StatusHit::Effort)
+            } else if s.text == FAST_MARK {
+                Some(StatusHit::Fast)
+            } else if model_texts.contains(&s.text) && !mode_group {
+                Some(StatusHit::Model)
             } else if mode_group {
                 (i == 0).then_some(StatusHit::Mode)
             } else {
@@ -722,6 +726,9 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     app.status_hits = hits;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
+
+/// The fast-mode marker after the model.
+const FAST_MARK: &str = " ⚡";
 
 /// The reasoning level's piece of the bar: ` ◆ high`.
 fn is_effort_seg(s: &Seg) -> bool {

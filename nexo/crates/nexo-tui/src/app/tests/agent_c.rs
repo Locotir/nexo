@@ -320,10 +320,19 @@ fn the_status_bar_opens_the_model_the_context_and_the_usage() {
     assert!(matches!(&a.modal, Some(Modal::Info(i)) if i.tab == 1), "the cost opens the usage");
     a.modal = None;
     frame(&mut a, 120, 12);
-    // anywhere else on it, the context window as before
-    let row = a.status_row;
-    pointer(&mut a, K::Down(MouseButton::Left), 1, row);
+    // the context gauge opens the context window
+    let gauge = at(&a, StatusHit::Gauge).expect("the gauge is on the bar");
+    pointer(&mut a, K::Down(MouseButton::Left), gauge.x, gauge.y);
     assert!(matches!(&a.modal, Some(Modal::Info(i)) if i.tab == 0));
+    a.modal = None;
+    frame(&mut a, 120, 12);
+    // empty space, the brand and a separator do nothing
+    let row = a.status_row;
+    let gap = (0..120u16).find(|x| a.status_hit(*x).is_none() && *x > model.x + model.width + 3).expect("a gap");
+    for x in [1, model.x + model.width, gap] {
+        pointer(&mut a, K::Down(MouseButton::Left), x, row);
+        assert!(a.modal.is_none(), "column {x} is not a piece");
+    }
 }
 
 #[test]
@@ -351,11 +360,13 @@ fn the_status_bar_effort_and_mode_answer_a_click_and_follow_the_width() {
     pointer(&mut a, K::Down(MouseButton::Left), eff.x + eff.width, eff.y);
     assert!(!matches!(&a.modal, Some(Modal::Picker(_))), "one cell outside is not the effort");
     a.modal = None;
-    // the mode cycles as Shift+Tab does
+    // the mode opens the permission picker (Shift+Tab keeps cycling ask, accept-edits, plan)
     let mode = find(&a, StatusHit::Mode).expect("mode piece");
     pointer(&mut a, K::Down(MouseButton::Left), mode.x, mode.y);
-    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(_))));
+    let Some(Modal::Picker(p)) = &a.modal else { panic!("the mode opens its picker") };
+    assert_eq!(p.kind, crate::modal::PickKind::PermissionMode);
     assert!(rx.try_recv().is_err());
+    a.modal = None;
     // a narrower bar: the regions are where the text was drawn, or gone
     for w in [100u16, 70, 50, 30] {
         frame(&mut a, w, 12);
@@ -367,6 +378,40 @@ fn the_status_bar_effort_and_mode_answer_a_click_and_follow_the_width() {
     }
     frame(&mut a, 30, 12);
     assert!(a.status_hits.iter().all(|(_, h)| *h != StatusHit::Effort) || a.status_hits.iter().any(|(r, _)| r.x < 30));
+}
+
+#[test]
+fn the_status_bar_pieces_follow_the_configured_order_and_the_fast_marker_has_its_own_click() {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    let (mut a, mut rx) = app();
+    a.effort = Some("high".into());
+    a.fast = true;
+    a.opts.status_line = vec!["context".into(), "mode".into(), "model".into(), "effort".into()];
+    frame(&mut a, 140, 12);
+    let find = |a: &App, h: StatusHit| a.status_hits.iter().find(|(_, x)| *x == h).map(|(r, _)| *r);
+    let gauge = find(&a, StatusHit::Gauge).expect("gauge");
+    let mode = find(&a, StatusHit::Mode).expect("mode");
+    let model = find(&a, StatusHit::Model).expect("model");
+    let fast = find(&a, StatusHit::Fast).expect("the fast marker is its own piece");
+    let eff = find(&a, StatusHit::Effort).expect("effort");
+    assert!(gauge.x < mode.x && mode.x < model.x, "the regions follow the drawn order");
+    assert!(model.x + model.width <= fast.x && fast.x + fast.width <= eff.x);
+    pointer(&mut a, K::Down(MouseButton::Left), model.x, model.y);
+    assert!(matches!(a.modal, Some(Modal::Setup(_))), "the model opens its picker");
+    a.modal = None;
+    frame(&mut a, 140, 12);
+    while rx.try_recv().is_ok() {}
+    pointer(&mut a, K::Down(MouseButton::Left), fast.x, fast.y);
+    assert!(a.modal.is_none(), "the marker does not open the model picker");
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetFast { on: None })), "the marker runs /fast");
+    pointer(&mut a, K::Down(MouseButton::Left), eff.x, eff.y);
+    assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == crate::modal::PickKind::Effort));
+    // the cursor off the status row lights nothing on the bar
+    a.modal = None;
+    pointer(&mut a, K::Moved, model.x, model.y);
+    assert_eq!(a.hover, Hover::Status(StatusHit::Model));
+    pointer(&mut a, K::Moved, model.x, 0);
+    assert_ne!(a.hover, Hover::Status(StatusHit::Model));
 }
 
 #[test]
