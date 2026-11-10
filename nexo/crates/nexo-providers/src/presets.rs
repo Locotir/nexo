@@ -327,9 +327,14 @@ fn copilot_preset() -> ProviderConfig {
     c
 }
 
+/// What the ChatGPT subscription backend allows in one request.
+pub const CODEX_WINDOW_CAP: u32 = 272_000;
+
 fn codex_preset() -> ProviderConfig {
     let mut c = ProviderConfig::new(openai_responses::ID, login::CODEX_BASE_URL, None);
     c.login = Some("codex".into());
+    // the ChatGPT backend takes 272000 per request (Codex CLI's own models.json: 272000 for most models)
+    c.window_cap = Some(CODEX_WINDOW_CAP);
     c.extra.insert("omit_max_tokens".into(), toml::Value::Boolean(true));
     for m in CODEX_MODELS {
         c.models.push(m.to_string());
@@ -413,6 +418,7 @@ mod tests {
         assert!(all["copilot"].needs_key() && all["copilot"].api_key_env.is_none());
         assert!(!all["copilot"].models.is_empty());
         assert_eq!(all["codex"].base_url, "https://chatgpt.com/backend-api/codex");
+        assert_eq!(all["codex"].window_cap, Some(272_000));
         assert!(all["codex"].models.contains(&"gpt-6.1-sol-fast".to_string()));
         assert_eq!(all["xai"].login.as_deref(), Some("xai"));
     }

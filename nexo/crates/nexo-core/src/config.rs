@@ -134,6 +134,9 @@ pub struct ProviderConfig {
     pub pricing: BTreeMap<String, Pricing>,
     /// Context windows per model, when known.
     pub context_window: BTreeMap<String, u32>,
+    /// The most the provider's backend takes in one request whatever the model's own window (a subscription
+    /// that serves less than the API: `codex` 272000). Applies to every model it serves; none: no cap.
+    pub window_cap: Option<u32>,
     /// Largest reply per model, when known (the agent caps `max_tokens` by it).
     pub max_output: BTreeMap<String, u32>,
     /// The reasoning levels each model takes, as `/model` found them (`/effort` offers these).

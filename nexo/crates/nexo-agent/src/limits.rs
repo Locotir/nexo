@@ -79,6 +79,7 @@ pub fn resolve(provider: &str, cfg: &ProviderConfig, model: &str, vendor: Option
     let mut l = Limits::default();
     let mut price_src: Option<&str> = None;
     let mut any_src: Option<&str> = None;
+    let mut capped = false;
     let mut fill = |l: &mut Limits, pricing: Option<Pricing>, ctx: Option<u32>, out: Option<u32>, src: &'static str| {
         if l.pricing.is_none() && pricing.is_some() {
             l.pricing = pricing;
@@ -112,7 +113,20 @@ pub fn resolve(provider: &str, cfg: &ProviderConfig, model: &str, vendor: Option
             fill(&mut l, m.pricing, m.context_window, m.max_output, "vendor");
         }
     }
+    if let Some(cap) = cfg.window_cap.or_else(|| preset.and_then(|p| p.window_cap)) {
+        if l.context_window.is_none_or(|w| w > cap) {
+            l.context_window = Some(cap);
+            capped = true;
+        }
+    }
     l.source = price_src.or(any_src).unwrap_or("unknown").to_string();
+    if capped {
+        l.source = if l.source == "unknown" {
+            "provider cap".into()
+        } else {
+            format!("{}, window capped by the provider", l.source)
+        };
+    }
     l
 }
 
@@ -165,6 +179,39 @@ mod tests {
         assert_eq!(l.max_tokens(16_384), 16_384);
         let l = resolve("deepseek", &cfg, "deepseek-chat", None);
         assert_eq!(l.max_tokens(16_384), 8_192);
+    }
+
+    #[test]
+    fn a_provider_cap_limits_the_window_its_backend_allows() {
+        nexo_providers::catalogue::install(
+            nexo_providers::catalogue::Catalogue::parse(include_str!(
+                "../../nexo-providers/tests/fixtures/models_dev_excerpt.json"
+            ))
+            .unwrap(),
+        );
+        let mut cfg = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("DEEPSEEK_API_KEY"));
+        // no cap: the catalogue's window (128000) stays
+        let l = resolve("deepseek", &cfg, "deepseek-chat", None);
+        assert_eq!(l.context_window, Some(128_000));
+        assert!(!l.source.contains("capped"), "{}", l.source);
+        // above the cap: capped, and the source says so; the prices are untouched
+        let price = l.pricing;
+        cfg.window_cap = Some(100_000);
+        let l = resolve("deepseek", &cfg, "deepseek-chat", None);
+        assert_eq!(l.context_window, Some(100_000));
+        assert!(l.source.ends_with("window capped by the provider"), "{}", l.source);
+        assert_eq!(l.pricing, price);
+        // below the cap: kept
+        cfg.window_cap = Some(200_000);
+        let l = resolve("deepseek", &cfg, "deepseek-chat", None);
+        assert_eq!(l.context_window, Some(128_000));
+        assert!(!l.source.contains("capped"), "{}", l.source);
+        // a window nobody knows becomes the cap (the backend refuses more)
+        let l = resolve("deepseek", &cfg, "deepseek-unlisted", None);
+        assert_eq!((l.context_window, l.source.as_str()), (Some(200_000), "provider cap"));
+        // a smaller window the person set stays
+        cfg.context_window.insert("deepseek-chat".into(), 50_000);
+        assert_eq!(resolve("deepseek", &cfg, "deepseek-chat", None).context_window, Some(50_000));
     }
 
     #[test]
