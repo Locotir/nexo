@@ -53,12 +53,6 @@ curator for the next step only.
 Every figure names its date and the nexo commit it was measured at. The curator is held to not forgetting a fact the
 next call needs; cost comes second.
 
-**What the model is sent, call by call**, replaying a recorded 119-call session offline (2026-11-10, nexo `f1b104b`):
-the plain history reaches 122k tokens and nexo stays near 32k. The compacting line is simulated from the same session
-(a 4k summary when the next call would pass 40k). Ticks are epochs.
-
-![Tokens sent on each call of one 119-call session: plain history grows to 122k, a simulated compacting harness drops to a summary three times and grows again, nexo stays near 32k and rewrites its prefix at 8 epochs](docs/img/tokens-per-step.svg)
-
 **Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task). Five harnesses on the
 same 16 Terminal-Bench tasks. The winner is the one that, on the tasks every harness solved, uses the fewest steps,
 tokens and dollars together. The index is the mean of each metric over the best harness's, so 1.00 is best. Tasks where
