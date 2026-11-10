@@ -236,6 +236,11 @@ const PROJECT_ENTRIES: usize = 60;
 /// counts, files in `.gitignore` left out), the manifests with their names, and the command that
 /// checks it. Empty when the folder holds nothing worth listing.
 fn project_block(cwd: &Path) -> String {
+    project_block_with(cwd, &crate::missing::session_line(cwd))
+}
+
+/// [`project_block`] with `missing` (the "Not installed here" line, or empty) given.
+fn project_block_with(cwd: &Path, missing: &str) -> String {
     use std::collections::BTreeMap;
     let mut top: BTreeMap<String, (bool, usize)> = BTreeMap::new();
     let mut second: BTreeMap<String, (bool, usize)> = BTreeMap::new();
@@ -297,12 +302,17 @@ fn project_block(cwd: &Path) -> String {
     if let Some(check) = nexo_tools::project::check_command(cwd) {
         out.push_str(&format!("\ncheck: {}", check.command));
     }
-    if out.len() > PROJECT_CAP {
-        let mut cut = PROJECT_CAP;
+    let room = PROJECT_CAP - if missing.is_empty() { 0 } else { missing.len() + 1 };
+    if out.len() > room {
+        let mut cut = room;
         while !out.is_char_boundary(cut) {
             cut -= 1;
         }
         out.truncate(cut);
+    }
+    if !missing.is_empty() {
+        out.push('\n');
+        out.push_str(missing);
     }
     out
 }
@@ -424,6 +434,27 @@ mod tests {
         assert!(e.contains("  - src/lib.rs"), "{e}");
         assert!(e.contains("Manifests: Cargo.toml (demo)"), "{e}");
         assert!(e.contains("\ncheck: cargo test -q"), "{e}");
+    }
+
+    #[test]
+    fn the_missing_commands_line_ends_the_block_and_nothing_missing_changes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "").unwrap();
+        let plain = project_block_with(d.path(), "");
+        assert!(!plain.contains("Not installed"), "{plain}");
+        let with = project_block_with(d.path(), "Not installed here: curl, file, xxd.");
+        assert_eq!(with, format!("{plain}\nNot installed here: curl, file, xxd."));
+        assert_eq!(project_block_with(d.path(), ""), plain);
+    }
+
+    #[test]
+    fn the_line_fits_inside_the_cap() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..500 {
+            std::fs::write(d.path().join(format!("file_with_a_long_name_{i}.txt")), "").unwrap();
+        }
+        let b = project_block_with(d.path(), "Not installed here: curl, file, xxd.");
+        assert!(b.len() <= PROJECT_CAP && b.ends_with("xxd."), "{}", b.len());
     }
 
     #[test]

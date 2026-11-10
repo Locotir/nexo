@@ -24,6 +24,7 @@ pub mod goal_brief;
 mod history;
 pub mod hooks;
 pub mod limits;
+mod missing;
 pub mod permission;
 pub mod prompt;
 pub mod providers;
