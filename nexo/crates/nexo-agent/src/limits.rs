@@ -11,6 +11,9 @@ use nexo_core::config::{ProviderConfig, DEFAULT_MAX_TOKENS};
 use nexo_core::pricing::Pricing;
 use nexo_core::provider::ModelInfo;
 
+const CAP_ONLY: &str = "provider cap";
+const CAP_ONLY_SUFFIX: &str = ", window from the provider cap";
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Limits {
     pub pricing: Option<Pricing>,
@@ -61,6 +64,12 @@ impl Limits {
     pub fn incomplete(&self) -> bool {
         self.pricing.is_none() || self.context_window.is_none() || self.max_output.is_none()
     }
+
+    /// Whether the window is only the provider's cap, because nothing else knew it at the time: a window
+    /// the catalogue brings later, when smaller, takes its place (`filled`).
+    pub fn window_is_cap_only(&self) -> bool {
+        self.context_window.is_some() && (self.source == CAP_ONLY || self.source.ends_with(CAP_ONLY_SUFFIX))
+    }
 }
 
 /// `map[model]`, or the entry whose key ends with `*` and is a prefix of the model.
@@ -80,6 +89,7 @@ pub fn resolve(provider: &str, cfg: &ProviderConfig, model: &str, vendor: Option
     let mut price_src: Option<&str> = None;
     let mut any_src: Option<&str> = None;
     let mut capped = false;
+    let mut from_cap = false;
     let mut fill = |l: &mut Limits, pricing: Option<Pricing>, ctx: Option<u32>, out: Option<u32>, src: &'static str| {
         if l.pricing.is_none() && pricing.is_some() {
             l.pricing = pricing;
@@ -115,6 +125,7 @@ pub fn resolve(provider: &str, cfg: &ProviderConfig, model: &str, vendor: Option
     }
     if let Some(cap) = cfg.window_cap.or_else(|| preset.and_then(|p| p.window_cap)) {
         if l.context_window.is_none_or(|w| w > cap) {
+            from_cap = l.context_window.is_none();
             l.context_window = Some(cap);
             capped = true;
         }
@@ -122,7 +133,9 @@ pub fn resolve(provider: &str, cfg: &ProviderConfig, model: &str, vendor: Option
     l.source = price_src.or(any_src).unwrap_or("unknown").to_string();
     if capped {
         l.source = if l.source == "unknown" {
-            "provider cap".into()
+            CAP_ONLY.into()
+        } else if from_cap {
+            format!("{}{CAP_ONLY_SUFFIX}", l.source)
         } else {
             format!("{}, window capped by the provider", l.source)
         };
@@ -130,17 +143,31 @@ pub fn resolve(provider: &str, cfg: &ProviderConfig, model: &str, vendor: Option
     l
 }
 
-/// `old` with its empty fields taken from `new`; None when that adds nothing.
+/// `old` with its empty fields taken from `new`; None when that adds nothing. A window that was only the
+/// provider's cap gives way to a smaller one in `new` (the catalogue arrived late): the session would
+/// otherwise fill a context the model does not have. A window from the config or a preset stays.
 pub fn filled(old: &Limits, new: Limits) -> Option<Limits> {
     let mut l = old.clone();
     l.pricing = l.pricing.or(new.pricing);
     l.context_window = l.context_window.or(new.context_window);
     l.max_output = l.max_output.or(new.max_output);
+    let mut shrunk = false;
+    if let (true, Some(cap), Some(w)) = (old.window_is_cap_only(), old.context_window, new.context_window) {
+        if w < cap {
+            l.context_window = Some(w);
+            shrunk = true;
+        }
+    }
     if l == *old {
         return None;
     }
     if l.source == "unknown" {
         l.source = new.source;
+    } else if shrunk {
+        l.source = match l.source.strip_suffix(CAP_ONLY_SUFFIX) {
+            Some(rest) => format!("{rest}, window from the catalogue"),
+            None => "catalogue".into(),
+        };
     }
     Some(l)
 }
@@ -253,5 +280,59 @@ mod tests {
         assert_eq!(big.reply_room(4_096, 1), 4_096);
         assert_eq!(big.reply_room(4_096, 2), 8_192);
         assert_eq!(Limits::default().reply_room(16_384, 2), 32_768);
+    }
+}
+
+#[cfg(test)]
+mod cap_late_tests {
+    use super::*;
+
+    #[test]
+    fn a_window_that_was_only_the_cap_gives_way_to_a_smaller_one_the_catalogue_brings() {
+        let old = Limits { context_window: Some(272_000), source: "provider cap".into(), ..Default::default() };
+        let new = Limits {
+            context_window: Some(128_000),
+            max_output: Some(8_000),
+            source: "catalogue".into(),
+            ..Default::default()
+        };
+        let l = filled(&old, new).unwrap();
+        assert_eq!(l.context_window, Some(128_000));
+        assert_eq!(l.source, "catalogue");
+        assert_eq!(l.max_output, Some(8_000));
+    }
+
+    #[test]
+    fn a_catalogue_window_above_the_cap_leaves_the_cap() {
+        let old = Limits { context_window: Some(272_000), source: "provider cap".into(), ..Default::default() };
+        let new = Limits { context_window: Some(500_000), source: "catalogue".into(), ..Default::default() };
+        assert!(filled(&old, new.clone()).is_none());
+        let new = Limits { max_output: Some(8_000), ..new };
+        let l = filled(&old, new).unwrap();
+        assert_eq!((l.context_window, l.max_output, l.source.as_str()), (Some(272_000), Some(8_000), "provider cap"));
+    }
+
+    #[test]
+    fn a_window_from_the_config_or_a_preset_is_never_replaced() {
+        let new = Limits { context_window: Some(128_000), source: "catalogue".into(), ..Default::default() };
+        for src in ["config", "preset", "vendor", "error", "preset, window capped by the provider"] {
+            let old = Limits { context_window: Some(272_000), source: src.into(), ..Default::default() };
+            assert!(filled(&old, new.clone()).is_none(), "{src}");
+        }
+    }
+
+    #[test]
+    fn a_priced_model_whose_window_was_only_the_cap_also_gives_way() {
+        let mut cfg = ProviderConfig::new("openai-chat", "https://x.invalid", None);
+        cfg.window_cap = Some(272_000);
+        cfg.pricing.insert("m".into(), Pricing { input: 1.0, output: 2.0, cache_read: 0.1, cache_write: 0.0 });
+        let old = resolve("nobody", &cfg, "m", None);
+        assert_eq!(old.context_window, Some(272_000));
+        assert!(old.window_is_cap_only(), "{}", old.source);
+        let new = Limits { context_window: Some(128_000), source: "catalogue".into(), ..Default::default() };
+        let l = filled(&old, new).unwrap();
+        assert_eq!(l.context_window, Some(128_000));
+        assert_eq!(l.source, "config, window from the catalogue");
+        assert!(!l.window_is_cap_only());
     }
 }

@@ -277,7 +277,8 @@ pub(super) fn spawn_suggest(state: &Shared) {
 }
 
 /// A cold or stale catalogue is fetched in the background; when it lands, what the start could not
-/// resolve (no cache on the first run) is filled from it and reported again.
+/// resolve (no cache on the first run) is filled from it and reported again; a window that was only the
+/// provider's cap gives way to a smaller catalogue one.
 pub(super) fn spawn_catalogue_fill(state: &Shared) {
     let state = state.clone();
     let done: nexo_providers::catalogue::Done = Box::new(move |r| {
@@ -286,7 +287,7 @@ pub(super) fn spawn_catalogue_fill(state: &Shared) {
         }
         tokio::spawn(async move {
             let mut st = state.lock().await;
-            if !st.limits.incomplete() {
+            if !st.limits.incomplete() && !st.limits.window_is_cap_only() {
                 return;
             }
             let (p, c, m) = st.target.get();
