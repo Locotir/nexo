@@ -73,10 +73,19 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SHA }}
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
           path: out
           merge-multiple: true
+      - name: licence files
+        # LICENSE and the third-party notices travel with every release (not part of SHA256SUMS: that list is for the nexo files)
+        run: |
+          cp LICENSE out/LICENSE
+          nexo/tools/notices.sh out/THIRD-PARTY-NOTICES.txt
       - name: publish
         working-directory: out
         run: |
@@ -96,10 +105,10 @@ jobs:
           echo "latest=$latest"
           publish() {
             if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release upload "$tag" nexo-* SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY" &&
+              gh release upload "$tag" nexo-* SHA256SUMS LICENSE THIRD-PARTY-NOTICES.txt --clobber --repo "$GITHUB_REPOSITORY" &&
                 gh release edit "$tag" --latest="$latest" --repo "$GITHUB_REPOSITORY"
             else
-              gh release create "$tag" nexo-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+              gh release create "$tag" nexo-* SHA256SUMS LICENSE THIRD-PARTY-NOTICES.txt --repo "$GITHUB_REPOSITORY" --target "$SHA" \
                 --title "nexo ${SHA::7}" --latest="$latest" \
                 --notes "Ready-built nexo for commit $SHA. Install or update: see the README (the install scripts and \`nexo update\` download these files and check them against SHA256SUMS)."
             fi

@@ -138,3 +138,5 @@ Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Re
 
 [MIT](LICENSE). nexo is an independent project, not affiliated with or endorsed by Anthropic, OpenAI,
 Google, DeepSeek or any other provider. Product names are trademarks of their owners.
+
+Each release carries `LICENSE` and `THIRD-PARTY-NOTICES.txt` (the licences of the packages nexo is built from).
