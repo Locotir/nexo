@@ -1,5 +1,7 @@
 # Benchmark results: nexo against Claude Code, same model
 
+Same test against another tool: [`CODEX.md`](CODEX.md) (nexo against Codex CLI).
+
 Run on 2026-11-10, 13:53 to 14:49 CET. Plan: [`PLAN.md`](PLAN.md), published before the run and unchanged since commit `79ad041`.
 
 ## Verdict

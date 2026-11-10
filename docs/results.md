@@ -212,6 +212,10 @@ log-summary-date-ranges, db-wal-recovery, build-pmars, adaptive-rejection-sample
 nexo 1.00, Claude Code 1.47; nexo cheaper in 15 of 15 pairs. Short sessions: the curator's eviction is not measured there.
 Plan, tables, checks and limits: [`bench/RESULTS.md`](bench/RESULTS.md).
 
+## Against Codex CLI on the same model (2026-11-10)
+
+`gpt-5.6-luna` on both sides. One long session (10 turns, about 865,000 characters pasted): nexo solved it in 27 calls, Codex CLI did not (42 calls, 2 compactions). One run per tool. Results and limits: [`bench/CODEX.md`](bench/CODEX.md).
+
 ## Live paired runs
 
 The last paid paired run of the curator against plain: `deepseek-flash`, nexo `575380d` (before the epoch
