@@ -333,6 +333,8 @@ pub struct App {
     pub todo_done_live: bool,
     /// Where the to-do strip was drawn last frame (a click on it opens the list).
     pub todo_area: Rect,
+    /// The to-do list is on screen this frame (the strip or the side panel): the status bar does not repeat its count.
+    pub todo_shown: bool,
     /// The goal in force: its text, rounds and state.
     pub goal: Option<Goal>,
     /// What the goal has done so far (both wordings, stops, steps, spend), for its window.
@@ -574,6 +576,7 @@ impl App {
             todo: Vec::new(),
             todo_done_live: false,
             todo_area: Rect::default(),
+            todo_shown: false,
             goal: None,
             goal_round_said: None,
             goal_log: Default::default(),

@@ -360,6 +360,16 @@ impl App {
     /// A dialog whose closing is a decision stays. True when the click was used up.
     pub fn modal_outside_click(&mut self, x: u16, y: u16) -> bool {
         use crate::modal::Modal;
+        // the diff view fills the screen: outside it means off both of its panes (header, footer, empty ground)
+        if self.modal.is_none() {
+            let Some(v) = &self.diffview else { return false };
+            if crate::modal::contains(v.list_area, x, y) || crate::modal::contains(v.body_area, x, y) {
+                return false;
+            }
+            self.diffview = None;
+            self.force_clear = true;
+            return true;
+        }
         let drawn = self.dialog_size.modal.drawn;
         let Some(md) = &mut self.modal else { return false };
         if matches!(md, Modal::Permission(_) | Modal::Question(_) | Modal::Trust(_)) {

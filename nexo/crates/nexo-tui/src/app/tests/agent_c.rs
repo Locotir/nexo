@@ -526,7 +526,9 @@ fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
     frame(&mut a, 200, 20);
     let hits: Vec<_> = a.hint_hits.clone();
     let find = |h: HintHit| hits.iter().find(|(_, x)| *x == h).map(|(r, _)| *r).unwrap_or_else(|| panic!("{h:?}"));
-    for h in [HintHit::Todo, HintHit::Jobs, HintHit::Mem, HintHit::Queued, HintHit::Session] {
+    assert!(!hits.iter().any(|(_, x)| *x == HintHit::Todo), "the strip shows the count, the bar does not repeat it");
+    assert!(a.todo_area.height > 0);
+    for h in [HintHit::Jobs, HintHit::Mem, HintHit::Queued, HintHit::Session] {
         let r = find(h);
         assert!(!lit_cells(&mut a, r), "{h:?} is plain until the pointer comes");
         pointer(&mut a, K::Moved, r.x + 1, r.y);
@@ -540,7 +542,9 @@ fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
         let r = a.hint_hits.iter().find(|(_, x)| *x == h).map(|(r, _)| *r).unwrap();
         pointer(a, K::Down(MouseButton::Left), r.x + 1, r.y);
     };
-    click(&mut a, HintHit::Todo);
+    frame(&mut a, 200, 20);
+    let strip = a.todo_area;
+    pointer(&mut a, K::Down(MouseButton::Left), strip.x + 1, strip.y);
     match &a.modal {
         Some(Modal::Todo(v)) => {
             assert_eq!(v.len(), 3);

@@ -372,7 +372,11 @@ fn the_panel_shows_the_goal_and_the_todo_list_above_the_files() {
     assert!(goal_row < todo_row && todo_row < files_row);
     // the panel lists the tasks already, so the strip above the draft stays out
     assert!(all.contains("✓ todo 3 items · 1/3 done") && !all.contains("to-do 1/3"), "the card, no strip: {all}");
-    assert!(rows[rows.len() - 2].contains("todo 1/3"), "the status area: {}", rows[rows.len() - 2]);
+    assert!(
+        !rows[rows.len() - 2].contains("todo 1/3"),
+        "the status bar does not repeat the count: {}",
+        rows[rows.len() - 2]
+    );
 }
 
 #[test]
@@ -904,5 +908,38 @@ fn the_jobs_window_lists_running_then_ended_jobs_with_their_output_and_opens_one
     // small screens do not panic
     for (w, h) in [(30, 8), (44, 12), (200, 60)] {
         draw(&mut a, w, h);
+    }
+}
+
+#[test]
+fn the_permission_dialog_at_80x24_is_drawn_over_clear_ground_not_over_the_welcome_box() {
+    let mut a = app();
+    a.handle_agent(AgentEvent::PermissionAsk {
+        request: PermissionRequest {
+            id: "p1".into(),
+            tool: "bash".into(),
+            kind: ToolKind::Exec,
+            summary: "cargo test".into(),
+            detail: ToolDisplay::Shell {
+                command: "cargo test".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: None,
+            },
+            suggested_rules: vec!["bash(cargo *)".into()],
+        },
+    });
+    let rows = draw(&mut a, 80, 24);
+    let all = rows.join("\n");
+    assert!(all.contains(" permission · bash ") && all.contains("[y] allow"), "{all}");
+    // nothing of the welcome box (its title and corner marks) shows around the dialog
+    assert!(!all.contains("nexo ╭") && !all.contains("/resume picks a session"), "{all}");
+    let top = rows.iter().position(|r| r.contains(" permission · bash ")).unwrap();
+    for r in &rows[..top] {
+        assert!(r.trim().is_empty(), "welcome box left above the dialog: {r:?}");
+    }
+    for r in &rows[top..top + 9] {
+        let inner: String = r.chars().skip(1).take(78).collect();
+        assert!(!inner.contains('●'), "welcome box cell beside the dialog: {r:?}");
     }
 }

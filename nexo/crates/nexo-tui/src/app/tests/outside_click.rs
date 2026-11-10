@@ -62,3 +62,18 @@ fn a_click_outside_every_window_closes_it_and_a_decision_dialog_stays() {
         assert_eq!(a.modal.is_none(), closes, "{name}: click outside");
     }
 }
+
+#[test]
+fn a_click_off_both_panes_of_the_diff_view_closes_it() {
+    let (mut a, _rx) = app();
+    let mut v = crate::diffview::DiffView::from_collected(Default::default());
+    v.list_area = Rect::new(0, 1, 20, 10);
+    v.body_area = Rect::new(20, 1, 40, 10);
+    a.diffview = Some(v);
+    click(&mut a, 5, 3);
+    assert!(a.diffview.is_some(), "a click on the list stays");
+    click(&mut a, 30, 3);
+    assert!(a.diffview.is_some(), "a click on the body stays");
+    click(&mut a, 70, 20);
+    assert!(a.diffview.is_none(), "a click outside both panes closes it");
+}

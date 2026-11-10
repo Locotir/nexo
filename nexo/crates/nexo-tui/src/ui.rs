@@ -46,6 +46,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     app.term_width = area.width;
     app.queue_rows.clear();
     app.todo_area = Rect::default();
+    app.todo_shown = false;
     app.hint_hits.clear();
     app.note_popups();
     // the theme's ground under everything: no cell is left to the terminal's own colours
@@ -128,6 +129,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     if files_w > 0 {
         draw_panel(f, app, files);
     }
+    app.todo_shown = todo_area.height > 0 || (files_w > 0 && !app.todo.is_empty());
     draw_todo_strip(f, app, todo_area);
     draw_queue(f, app, queue);
     draw_separator(f, app, sep);
@@ -157,13 +159,18 @@ fn draw_all(f: &mut Frame, app: &mut App) {
             _ if middle.height >= 5 => middle,
             _ => area,
         };
-        // the to-do and jobs windows get clear ground, so no piece of the welcome card shows beside them; the
+        // a permission dialog over the welcome card (the first screen) clears the rows of the card. The to-do and jobs windows get it, so no piece of the welcome card shows beside them; the
         // others keep the text in sight (a theme preview needs it) and clear only the cells beside the box
         if matches!(
             app.modal,
             Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_) | Modal::Goal(_) | Modal::Sent(_) | Modal::Trust(_))
         ) {
             clear_bg(f, area_for, &app.theme);
+        } else if app.has_welcome() && matches!(app.modal, Some(Modal::Permission(_))) {
+            // only the rows the card holds, so the text around a dialog stays in sight
+            let card_end = app.offsets.get(1).copied().unwrap_or(app.total_lines);
+            let rows = card_end.saturating_sub(app.view_top()).min(usize::from(area_for.height)) as u16;
+            clear_bg(f, Rect { height: rows, ..area_for }, &app.theme);
         }
         draw_modal(f, app, area_for);
         if matches!(app.modal, Some(Modal::Permission(_))) {
@@ -1469,7 +1476,7 @@ fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
     };
     let mut out: Vec<Piece> = Vec::new();
     let (done, total) = todo_counts(&app.todo);
-    if total > 0 && done < total {
+    if total > 0 && done < total && !app.todo_shown {
         out.push((
             2,
             Some(HintHit::Todo),

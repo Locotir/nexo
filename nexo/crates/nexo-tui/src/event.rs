@@ -368,6 +368,10 @@ fn search_key(app: &mut App, k: KeyEvent) {
 
 pub fn mouse(app: &mut App, m: MouseEvent) {
     if app.modal.is_none() && app.diffview.is_some() {
+        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) && app.modal_outside_click(m.column, m.row) {
+            app.dirty = true;
+            return;
+        }
         return app.diffview_mouse(m);
     }
     match m.kind {
