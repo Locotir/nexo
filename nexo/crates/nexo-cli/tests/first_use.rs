@@ -79,7 +79,9 @@ fn doctor_flags_a_model_a_hosted_provider_does_not_have() {
                base_url = \"http://127.0.0.1:9\"\napi_key_cmd = \"echo dummy\"\n";
     let o = nexo(d.path(), cfg, &["doctor", "--offline"]);
     let s = out(&o);
-    assert!(s.contains("model = \"nosuchmodel\"") && s.contains("a, b"), "{s}");
+    assert!(s.contains("warn model") && s.contains("\"nosuchmodel\" is not in the model list of mockhost"), "{s}");
+    assert!(s.contains("a, b") && s.contains("/model"), "{s}");
+    assert_ne!(o.status.code(), Some(1), "a warning, not an error: {s}");
 }
 
 #[test]

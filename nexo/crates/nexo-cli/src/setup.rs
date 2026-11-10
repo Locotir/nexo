@@ -692,14 +692,14 @@ pub fn config_cmd(cwd: &Path, what: Option<&crate::cli::ConfigCmd>) -> anyhow::R
 
 const STARTER: &str = r#"# nexo configuration. Keys never go in this file: name the variable that holds them.
 
-# The provider and model used when none is asked for.
-provider = "deepseek"
-model = "deepseek-flash"
+# The provider and model used when none is asked for. Left unset, `nexo` opens on "Set up a model".
+# provider = "your-provider"
+# model = "your-model"
 
 # Without editing this file:
-#   nexo auth login deepseek --key      keep a key (in the credential store, not here)
+#   nexo auth login <provider> --key    keep a key (in the credential store, not here)
 #   nexo auth login copilot             a subscription: copilot, codex (ChatGPT; reuses the Codex CLI login or opens the browser), xai
-#   nexo use deepseek deepseek-flash    make it the default
+#   nexo use <provider> <model>         make it the default
 #   nexo doctor                         check everything, with a live call
 #   nexo providers --all                the 200+ providers nexo knows by name
 #   nexo guide                          the whole setup guide
@@ -801,6 +801,14 @@ pub fn trash_sessions(ids: &[String], restore: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_starter_file_names_no_provider() {
+        assert!(!STARTER.lines().any(|l| l.starts_with("provider") || l.starts_with("model")));
+        let cfg = Config::parse(STARTER).unwrap();
+        assert!(cfg.provider.is_none() && cfg.model.is_none());
+        assert!(!STARTER.contains("deepseek-flash"));
+    }
 
     fn cfg() -> Config {
         let mut c = Config { provider: Some("refuseless".into()), ..Default::default() };

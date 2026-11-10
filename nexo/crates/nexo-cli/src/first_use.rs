@@ -73,8 +73,7 @@ pub fn unknown_provider(cwd: &Path, cfg: &Config) -> Option<String> {
     ))
 }
 
-/// One line for each setting that cannot work: an unknown theme, context policy or (when it can be
-/// known offline) model.
+/// One line for each setting that cannot work: an unknown theme or context policy.
 pub fn setting_warnings(cwd: &Path, cfg: &Config) -> Vec<String> {
     let mut out = Vec::new();
     let theme = cfg.ui.theme.trim();
@@ -91,16 +90,13 @@ pub fn setting_warnings(cwd: &Path, cfg: &Config) -> Vec<String> {
             source_of(cwd, Some("context"), "policy").display()
         ));
     }
-    if let Some(w) = unknown_model(cwd, cfg) {
-        out.push(w);
-    }
     out
 }
 
-/// The `model` setting, when the provider's own list and the price catalogue both lack it. Only a hosted
-/// provider with a list of models is judged: a local server holds whatever the person pulled, which only
-/// the live check can see.
-fn unknown_model(cwd: &Path, cfg: &Config) -> Option<String> {
+/// The `model` setting, when the provider's own list and the price catalogue both lack it: a warning,
+/// since a provider may take names it does not list. Only a hosted provider with a list of models is
+/// judged: a local server holds whatever the person pulled, which only the live check can see.
+pub fn unknown_model(cfg: &Config) -> Option<String> {
     let model = cfg.model.as_deref()?;
     let (name, _) = cfg.pick()?;
     let p = cfg.providers.get(&name)?;
@@ -115,8 +111,7 @@ fn unknown_model(cwd: &Path, cfg: &Config) -> Option<String> {
         return None;
     }
     Some(format!(
-        "{}: model = {model:?} is not one {name} lists here ({}); a newer id may still work, `nexo models {name}` asks the provider",
-        source_of(cwd, None, "model").display(),
+        "{model:?} is not in the model list of {name} ({}). Pick one with /model or `nexo models {name}`; if {name} takes names it does not list, this is fine",
         p.models.join(", ")
     ))
 }
@@ -130,6 +125,22 @@ mod tests {
         let known = vec!["anthropic".to_string(), "ollama".to_string()];
         assert_eq!(did_you_mean("anthropc", &known), "did you mean \"anthropic\"?");
         assert!(did_you_mean("nosuch", &known).starts_with("known providers: anthropic, ollama"));
+    }
+
+    #[test]
+    fn a_model_the_provider_does_not_list_is_a_warning_and_no_list_is_none() {
+        let mut p = nexo_core::config::ProviderConfig::new("openai-chat", "https://x", Some("X_KEY"));
+        p.models = vec!["listed".into()];
+        let mut cfg = Config::default();
+        cfg.providers.insert("x".into(), p);
+        cfg.provider = Some("x".into());
+        cfg.model = Some("listed".into());
+        assert!(unknown_model(&cfg).is_none());
+        cfg.model = Some("nosuchmodel".into());
+        let w = unknown_model(&cfg).unwrap();
+        assert!(w.contains("not in the model list of x") && w.contains("/model"), "{w}");
+        cfg.providers.get_mut("x").unwrap().models.clear();
+        assert!(unknown_model(&cfg).is_none(), "a provider with no list is not judged");
     }
 
     #[test]

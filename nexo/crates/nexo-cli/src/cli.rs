@@ -253,7 +253,7 @@ pub enum Cmd {
     Acp,
     #[cfg(feature = "bench")]
     #[command(hide = true)]
-    /// Measure the agent on the benchmark tasks with each context policy (see crates/nexo-bench/README.md).
+    /// Measure the agent on the benchmark tasks with each context policy (see https://github.com/Locotir/nexo/blob/main/nexo/crates/nexo-bench/README.md).
     Bench(Box<crate::bench_cmd::BenchArgs>),
 }
 

@@ -513,6 +513,10 @@ fn edit_file(path: &std::path::Path) -> anyhow::Result<()> {
     let mut last = None;
     for words in nexo_core::shell::editors() {
         let Some((bin, args)) = words.split_first() else { continue };
+        // the screen is the terminal's own while the editor runs: say where nexo went and how to return
+        let name =
+            std::path::Path::new(bin).file_name().map_or_else(|| bin.clone(), |n| n.to_string_lossy().into_owned());
+        println!("nexo: opening {} in {name}; save and quit {name} to come back", path.display());
         let status = std::process::Command::new(nexo_core::shell::program(bin)).args(args).arg(path).status();
         match status {
             Ok(s) if s.success() => return Ok(()),

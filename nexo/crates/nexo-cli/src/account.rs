@@ -384,7 +384,10 @@ pub async fn doctor(cwd: &std::path::Path, cfg: &Config, offline: bool) -> anyho
         println!("FIX  provider {a:?} is asked for but cannot be used: {}", unlock_or_unknown(cfg, a));
     }
     println!("{} provider         {name} ({}, {})", mark(true), p.protocol, p.base_url);
-    println!("{} model            {model}", mark(true));
+    match crate::first_use::unknown_model(cfg) {
+        Some(w) => println!("warn model            {w}"),
+        None => println!("{} model            {model}", mark(true)),
+    }
     let src = key_source(&name, p);
     println!("{} key              {src}", mark(src != "missing"));
     if src == "missing" {
