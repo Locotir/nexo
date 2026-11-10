@@ -3491,8 +3491,8 @@ async fn a_reply_of_only_reasoning_is_asked_to_go_on() {
     let sent = &reqs[1].messages;
     assert!(nexo_core::message::is_well_formed(sent), "{sent:?}");
     assert!(sent.last().unwrap().text().contains("only reasoning"), "{sent:?}");
-    // cut at max_tokens while thinking: the next reply gets twice the room
-    assert_eq!(reqs[1].max_tokens, 2 * reqs[0].max_tokens);
+    // cut at max_tokens while thinking: more room only bought more reasoning, so the limit stays
+    assert_eq!(reqs[1].max_tokens, reqs[0].max_tokens);
     r.stop().await;
 }
 
@@ -3508,9 +3508,9 @@ async fn replies_of_only_reasoning_stop_after_two_asks() {
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let reqs = client.requests();
     assert_eq!(reqs.len(), 3);
-    // the room doubles each time, up to four times agent.max_tokens; the second ask says to build first
+    // the room stays at agent.max_tokens; the second ask says to build first
     let base = reqs[0].max_tokens;
-    assert_eq!((reqs[1].max_tokens, reqs[2].max_tokens), (2 * base, 4 * base));
+    assert_eq!((reqs[1].max_tokens, reqs[2].max_tokens), (base, base));
     assert!(reqs[2].messages.last().unwrap().text().contains("Stop planning"));
     // the next request of the person starts from agent.max_tokens again
     r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
@@ -3533,6 +3533,129 @@ async fn the_ask_to_go_on_carries_the_end_of_the_reasoning_the_provider_does_not
     assert!(note.contains("PLAN: write ars.R with a log-concave hull, then test it"), "{note}");
     // only the end of it: a note as long as the thinking would cost what the cut already cost
     assert!(note.len() < 6_000, "{}", note.len());
+    r.stop().await;
+}
+
+/// A reply that thinks `chars` characters in pieces, then says `after`, as the provider would stream it.
+fn long_thought(chars: usize, after: Vec<StreamEvent>) -> Vec<StreamEvent> {
+    let mut ev = vec![StreamEvent::Start { response_id: None, model: None }];
+    for _ in 0..chars / 1000 {
+        ev.push(StreamEvent::ReasoningDelta("x".repeat(1000)));
+    }
+    ev.extend(after);
+    ev
+}
+
+fn then_text(s: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::TextDelta(s.into()),
+        StreamEvent::Usage(Usage { input: 1000, output: 100, ..Default::default() }),
+        StreamEvent::Finish(FinishReason::Stop),
+        StreamEvent::Done,
+    ]
+}
+
+#[tokio::test]
+async fn reasoning_past_the_budget_with_nothing_said_is_cut_and_asked_again() {
+    let d = tempfile::tempdir().unwrap();
+    // 40,000 characters are 10,000 tokens, past the 8,000 default; the text after them is never read
+    let client =
+        Scripted::new(vec![Reply::Events(long_thought(40_000, then_text("never read"))), Reply::Events(text("done"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(notices(&evs).iter().any(|n| n.contains("agent.reasoning_budget")), "{:?}", notices(&evs));
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let note = reqs[1].messages.last().unwrap().text();
+    assert!(note.contains("only reasoning") && note.contains("xxxx"), "{}", note.len());
+    assert!(!reqs[1].messages.iter().any(|m| m.text().contains("never read")));
+    // no more room: it would only buy more reasoning
+    assert_eq!(reqs[1].max_tokens, reqs[0].max_tokens);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_budget_of_zero_lets_the_reasoning_run() {
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.reasoning_budget = 0;
+    let client = Scripted::new(vec![Reply::Events(long_thought(40_000, then_text("answer")))]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests().len(), 1);
+    assert!(!notices(&evs).iter().any(|n| n.contains("agent.reasoning_budget")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn reasoning_after_text_is_not_cut_by_the_budget() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ev = vec![StreamEvent::Start { response_id: None, model: None }, StreamEvent::TextDelta("first ".into())];
+    ev.extend(long_thought(40_000, then_text("last")).into_iter().skip(1));
+    let client = Scripted::new(vec![Reply::Events(ev)]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests().len(), 1);
+    assert!(!notices(&evs).iter().any(|n| n.contains("agent.reasoning_budget")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn reasoning_after_a_call_started_is_not_cut_by_the_budget() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ev = vec![
+        StreamEvent::Start { response_id: None, model: None },
+        StreamEvent::ToolCallStart { id: "c1".into(), name: "read".into() },
+    ];
+    ev.extend(long_thought(40_000, then_text("last")).into_iter().skip(1));
+    let client = Scripted::new(vec![Reply::Events(ev), Reply::Events(text("ok"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert!(!notices(&evs).iter().any(|n| n.contains("agent.reasoning_budget")), "{:?}", notices(&evs));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_reasoning_level_set_by_the_person_skips_the_budget() {
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.reasoning = Some("high".into());
+    let client = Scripted::new(vec![Reply::Events(long_thought(40_000, then_text("answer")))]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests().len(), 1);
+    assert!(!notices(&evs).iter().any(|n| n.contains("agent.reasoning_budget")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_cut_stream_is_billed_from_what_was_streamed() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(long_thought(40_000, then_text("never read"))), Reply::Events(text("done"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let billed: Vec<u64> = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::Usage { call, .. } = e { Some(call.output) } else { None })
+        .collect();
+    assert!(billed.iter().any(|o| *o >= 8_000), "{billed:?}");
     r.stop().await;
 }
 

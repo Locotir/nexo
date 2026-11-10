@@ -133,6 +133,16 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 }
             },
         };
+        // reasoning tokens a reply may stream before any text or call; off when the person set a level
+        let budget = {
+            let st = state.lock().await;
+            let (_, pcfg, model) = st.target.get();
+            match setup::effort_of(&pcfg, &model, &st.config.agent.reasoning) {
+                Some(_) => 0,
+                None => u64::from(st.config.agent.reasoning_budget),
+            }
+        };
+        let (mut thought, mut spoke, mut over_budget) = (0u64, false, false);
         let mut c = Collector::for_model(req.model.clone());
         let mut interrupted = false;
         let mut marker = ck.pending.is_some().then(checkpoint::MarkerFilter::start);
@@ -143,6 +153,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     Some(ev) => {
                         match &ev {
                             StreamEvent::TextDelta(t) => {
+                                spoke |= !t.is_empty();
                                 let text = match &mut marker {
                                     Some(f) => f.push(t),
                                     None => t.clone(),
@@ -151,10 +162,21 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                                     emit(&events, AgentEvent::TextDelta { text });
                                 }
                             }
-                            StreamEvent::ReasoningDelta(t) => emit(&events, AgentEvent::ReasoningDelta { text: t.clone() }),
+                            StreamEvent::ReasoningDelta(t) => {
+                                emit(&events, AgentEvent::ReasoningDelta { text: t.clone() });
+                                thought += t.chars().count() as u64;
+                            }
+                            StreamEvent::ToolCallStart { .. }
+                            | StreamEvent::ToolCallDelta { .. }
+                            | StreamEvent::ToolCallEnd { .. } => spoke = true,
                             _ => {}
                         }
                         c.push(ev);
+                        // thinking past the budget with nothing said: stop reading, so the provider stops generating
+                        if budget > 0 && !spoke && thought / 4 > budget {
+                            over_budget = true;
+                            break;
+                        }
                     }
                 },
                 _ = cancel.cancelled() => { interrupted = true; break }
@@ -178,6 +200,11 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 notice(&events, Level::Info, format!("the model wrote {n} tool call(s) as text; they run as calls"));
                 msg = m;
             }
+        }
+        if over_budget && c.usage.is_empty() {
+            // the stream was dropped before the provider's usage event: the output is what was streamed
+            c.usage.output = thought / 4;
+            c.call.output = thought / 4;
         }
         let (usage, call) = (c.usage, c.call);
         let cut = c.finish == Some(FinishReason::Length);
@@ -264,18 +291,13 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             // the model thought and stopped before writing anything: ending here would leave the request
             // undone with nothing said, so it is asked to go on from its reasoning
             mute += 1;
-            let room = if cut {
-                let mut st = state.lock().await;
-                st.reply_boost = (st.reply_boost.max(1) * 2).min(4);
-                format!(" with room for {} tokens", reply_tokens(&st))
+            // more room only bought more reasoning, so the limit stays; a budget cut says so
+            let why = if over_budget {
+                format!("the reply reasoned past agent.reasoning_budget ({budget} tokens) with no answer and no call; cut and asked to go on")
             } else {
-                String::new()
+                "the reply held only reasoning, with no answer and no call; asked to go on".to_string()
             };
-            notice(
-                &events,
-                Level::Warn,
-                format!("the reply held only reasoning, with no answer and no call; asked to go on{room}"),
-            );
+            notice(&events, Level::Warn, why);
             let note = if mute == 1 { MUTE_NOTE } else { MUTE_NOTE_AGAIN };
             // most providers do not take reasoning back, so the next request would think from nothing
             // and be cut again: the end of it travels in the note

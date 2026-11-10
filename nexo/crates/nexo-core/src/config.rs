@@ -250,6 +250,8 @@ pub struct AgentConfig {
     /// is. 0: never checkpoint (as `on_limit = "ask"`).
     pub max_checkpoints: Option<u32>,
     pub max_tokens: u32,
+    /// Reasoning tokens a reply may stream before any text or call; past it the reply is cut and asked again (0: off, and skipped when a reasoning level is set).
+    pub reasoning_budget: u32,
     pub temperature: Option<f32>,
     /// `off`, `low`, `medium`, `high`, or a token budget as a number.
     pub reasoning: Option<String>,
@@ -329,6 +331,9 @@ pub struct AgentConfig {
     pub worktree_setup: Vec<String>,
 }
 
+/// The reasoning tokens `agent.reasoning_budget` allows a reply before it says anything.
+pub const DEFAULT_REASONING_BUDGET: u32 = 8_000;
+
 /// The reply size `agent.max_tokens` asks for when the configuration does not say.
 pub const DEFAULT_MAX_TOKENS: u32 = 16_384;
 
@@ -339,6 +344,7 @@ impl Default for AgentConfig {
             on_limit: OnLimit::Checkpoint,
             max_checkpoints: None,
             max_tokens: DEFAULT_MAX_TOKENS,
+            reasoning_budget: DEFAULT_REASONING_BUDGET,
             temperature: None,
             reasoning: None,
             system_prompt_file: None,
