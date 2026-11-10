@@ -15,6 +15,7 @@ use crate::rules::Rules;
 use crate::standing::Standing;
 
 use self::cache::{Pocket, Probe};
+use self::cells::Cells;
 use self::dump::Dump;
 use self::dups::Dup;
 use self::files::Wrote;
@@ -27,6 +28,7 @@ mod added;
 mod anchor;
 mod cache;
 mod cap;
+mod cells;
 mod decide;
 mod dump;
 mod dups;
@@ -172,6 +174,8 @@ pub struct Engine {
     kept_tokens: i64,
     frozen: FxHashMap<usize, String>,
     vis: Option<Visible>,
+    /// The memory map as last given, kept so that the next one costs what changed.
+    cells: Cells,
     /// Whether the other topics leave the view: decided once for each request (`split_now`), and kept until the
     /// next change of topic.
     split: bool,
@@ -333,6 +337,7 @@ impl Engine {
             kept_tokens: 0,
             frozen: FxHashMap::default(),
             vis: None,
+            cells: Cells::default(),
             split: false,
             split_turn: usize::MAX,
             hidden_recalls: 0,

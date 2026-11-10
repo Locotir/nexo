@@ -248,7 +248,7 @@ fn a_small_topic_stays_in_the_view() {
         let r = cur.view(0, &msgs, 0.0).unwrap();
         let text = serde_json::to_string(&r.view).unwrap();
         assert!(!text.contains("other topics"), "{text}");
-        seen = seen.max(r.memory["zones"].as_array().unwrap().len());
+        seen = seen.max(r.memory.zones.len());
     }
     // the topics are still told apart, only none is left out
     assert!(seen > 2, "{seen} zones");

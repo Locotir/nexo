@@ -19,6 +19,7 @@ mod json;
 mod learn;
 mod ledger;
 mod mechanical;
+mod memory;
 mod msg;
 pub mod optimum;
 mod rules;
@@ -32,6 +33,7 @@ use serde_json::{json, Map, Value};
 pub use engine::{keywords, label, Added, AddedKind, AddedState};
 use engine::{Engine, Params};
 use mechanical::MARK;
+pub use memory::{Cell, Memory, State, Zone};
 
 /// Names any model knows without reading them in the conversation, one per line.
 pub const GENERAL_WORDS: &str = include_str!("../data/general.txt");
@@ -437,7 +439,7 @@ pub struct Reply {
     /// What the curator did so far, by kind.
     pub stats: IndexMap<&'static str, i64>,
     /// Every message, by zone, and whether the view takes it.
-    pub memory: Value,
+    pub memory: Memory,
     /// Messages this call put in the view: new ones and ones brought back.
     pub added: usize,
     /// Of those, the ones that were in the conversation already and had been left out: what the curator
@@ -460,7 +462,7 @@ pub struct Curator {
     /// spec's `ratio`).
     price_ratio: Option<f64>,
     /// Each message's state in the last view (`whole`, `cut`, `out`).
-    last: Vec<u8>,
+    last: Vec<State>,
     /// The tools the host offers (their names), when it said.
     tools: Option<Vec<String>>,
     /// For each position of the last view, a hash of the text the window paged there (`None`: not paged).
@@ -639,28 +641,33 @@ impl Curator {
 
     /// How many messages this view put in (new or back), how many of those were back (they were in the
     /// last view's history and it left them out), and how many it took out (left out or cut).
-    fn activity(&mut self, memory: &Value) -> (usize, usize, usize) {
-        const OUT: u8 = 0;
-        const CUT: u8 = 1;
-        const WHOLE: u8 = 2;
-        let code = |x: &Value| match x["state"].as_str().unwrap_or("out") {
-            "out" => OUT,
-            "cut" => CUT,
-            "whole" => WHOLE,
-            _ => 3,
-        };
-        let now: Vec<u8> = memory["cells"].as_array().map(|c| c.iter().map(code).collect()).unwrap_or_default();
+    fn activity(&mut self, memory: &Memory) -> (usize, usize, usize) {
         let (mut added, mut back, mut removed) = (0, 0, 0);
-        for (i, &s) in now.iter().enumerate() {
-            let was = self.last.get(i).copied().unwrap_or(OUT);
-            if s != OUT && was == OUT {
+        let known = self.last.len();
+        let mut count = |i: usize, s: State, was: State| {
+            if s != State::Out && was == State::Out {
                 added += 1;
-                back += usize::from(i < self.last.len());
-            } else if s == OUT && was != OUT || s == CUT && was == WHOLE {
+                back += usize::from(i < known);
+            } else if s == State::Out && was != State::Out || s == State::Cut && was == State::Whole {
                 removed += 1;
             }
+        };
+        match self.eng.memory_changed() {
+            // the map went on from the one this last read: only the cells it changed can count
+            Some((before, changed)) if before == known => {
+                self.last.resize(memory.cells.len(), State::Out);
+                for &(i, s) in changed {
+                    count(i, s, self.last[i]);
+                    self.last[i] = s;
+                }
+            }
+            _ => {
+                for (i, c) in memory.cells.iter().enumerate() {
+                    count(i, c.state, self.last.get(i).copied().unwrap_or_default());
+                }
+                self.last = memory.cells.iter().map(|c| c.state).collect();
+            }
         }
-        self.last = now;
         (added, back, removed)
     }
 
@@ -710,7 +717,7 @@ impl Curator {
         match self.view(st, msgs, now) {
             Ok(r) => {
                 let stats: Map<String, Value> = r.stats.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
-                json!({"ok": true, "view": r.view, "tokens": r.tokens, "stats": stats, "memory": r.memory})
+                json!({"ok": true, "view": r.view, "tokens": r.tokens, "stats": stats, "memory": r.memory.to_value()})
             }
             Err(e) => json!({"ok": false, "error": e}),
         }
@@ -886,6 +893,65 @@ mod tests {
         assert_eq!(t.without_largest(), 2);
         assert!((t.share_of_largest() - 100.0 * 9.0 / 11.0).abs() < 1e-9);
         assert_eq!(LostTally::default().share_of_largest(), 0.0);
+    }
+
+    /// The map and the counts of a reply come from the map of the reply before and what changed since. Over
+    /// recorded sessions that leave messages out, cut them, bring them back, leave whole topics out, rewrite
+    /// the history and start over, they are the ones a map made from nothing gives, and a reply the host kept
+    /// is not written over.
+    #[test]
+    fn the_map_kept_between_requests_is_the_map_made_from_nothing() {
+        let (mut back, mut removed, mut cut, mut rewritten, mut apart) = (0, 0, 0, 0, 0);
+        let names = ["standing_rc", "topics", "synthetic-g2-t40-s3", "synthetic-g3-t8-s1", "bench-marathon-D"];
+        for (spec, name) in ["", "epoch=0", "apart=0;epoch=0"].iter().flat_map(|s| names.iter().map(move |n| (*s, *n)))
+        {
+            let path = format!("{}/tests/fixtures/{name}.jsonl", env!("CARGO_MANIFEST_DIR"));
+            let mut cur = Curator::new(spec).unwrap();
+            let mut msgs: Vec<Value> = Vec::new();
+            let mut kept: Option<(Memory, String)> = None;
+            for (n, line) in std::fs::read_to_string(path).unwrap().lines().enumerate() {
+                let rec: Value = serde_json::from_str(line).unwrap();
+                let (req, now) = (&rec["req"], rec["now"].as_f64().unwrap_or(0.0));
+                let base = req["base"].as_u64().unwrap() as usize;
+                rewritten += usize::from(base < msgs.len());
+                msgs.truncate(base);
+                msgs.extend(req["new"].as_array().unwrap().iter().cloned());
+                if n == 30 {
+                    cur.reset();
+                }
+                let was = cur.last.clone();
+                let r = cur.view(req["system_tokens"].as_u64().unwrap_or(0), &msgs, now).unwrap();
+                assert_eq!(r.memory, cur.eng.memory_whole(), "{spec} {name} line {n}");
+                // the counts, by the rule read over every cell
+                let cells = r.memory.cells.len();
+                let state = |i: usize| r.memory.cells[i].state;
+                let old = |i: usize| was.get(i).copied().unwrap_or_default();
+                let came = |i: &usize| state(*i) != State::Out && old(*i) == State::Out;
+                let left = |i: &usize| {
+                    state(*i) == State::Out && old(*i) != State::Out
+                        || state(*i) == State::Cut && old(*i) == State::Whole
+                };
+                let counts = ((0..cells).filter(came).count(), (0..was.len().min(cells)).filter(came).count());
+                assert_eq!(
+                    (r.added, r.back, r.removed),
+                    (counts.0, counts.1, (0..cells).filter(left).count()),
+                    "{name} {n}"
+                );
+                assert!(cur.last.iter().copied().eq((0..cells).map(state)), "{spec} {name} line {n}");
+                if let Some((map, text)) = &kept {
+                    assert_eq!(&map.to_string(), text, "{spec} {name} line {n}: the reply before was written over");
+                }
+                back += r.back;
+                removed += r.removed;
+                cut += (0..cells).filter(|&i| state(i) == State::Cut).count();
+                apart += usize::from(r.memory.zones.iter().any(|z| z.card));
+                kept = Some((r.memory.clone(), r.memory.to_string()));
+            }
+        }
+        assert!(
+            back > 0 && removed > 0 && cut > 0 && rewritten > 0 && apart > 0,
+            "{back} {removed} {cut} {rewritten} {apart}"
+        );
     }
 
     #[test]

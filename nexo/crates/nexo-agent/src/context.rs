@@ -445,10 +445,21 @@ impl ContextPolicy for BuiltIn {
         // what the curator moved: the messages the conversation appended are always "in", every call,
         // and would hide the rest
         self.moved = (r.back, r.removed);
-        let mut memory: Option<Memory> = serde_json::from_value(r.memory).ok();
-        if let Some(m) = &mut memory {
-            m.curated = curated_items(&r.curated);
-        }
+        let zone = |z: &nexo_curator::Zone| nexo_core::ContextZone {
+            label: z.label.to_string(),
+            active: z.active,
+            card: z.card,
+        };
+        let cell = |c: &nexo_curator::Cell| MemoryCell {
+            zone: u32::try_from(c.zone).unwrap_or(u32::MAX),
+            tokens: u64::try_from(c.tokens).unwrap_or(0),
+            state: c.state.as_str().to_string(),
+        };
+        let memory = Some(Memory {
+            zones: r.memory.zones.iter().map(zone).collect(),
+            cells: r.memory.cells.iter().map(cell).collect(),
+            curated: curated_items(&r.curated),
+        });
         let note = match &self.caveat {
             Some(c) if !self.told => {
                 self.told = true;

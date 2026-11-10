@@ -1618,9 +1618,7 @@ fn bank(path: &str, spec: &str, recall: bool, oracle: bool, dump: Option<&str>) 
         }
         let now = rec["now"].as_f64().unwrap_or(0.0);
         let reply = cur.view(system_tokens as u64, &whole.msgs, now).map_err(|e| format!("view: {e}"))?;
-        cells = reply.memory["cells"]
-            .as_array()
-            .map_or_else(Vec::new, |a| a.iter().map(|c| c["state"].as_str().unwrap_or("").to_string()).collect());
+        cells = reply.memory.cells.iter().map(|c| c.state.as_str().to_string()).collect();
         steps = reply.stats.iter().filter(|(k, _)| k.ends_with("_steps")).map(|(k, v)| (k.to_string(), *v)).collect();
         let (hit, rewrote) = view.send(reply.view);
         curated.rewrites += usize::from(rewrote);

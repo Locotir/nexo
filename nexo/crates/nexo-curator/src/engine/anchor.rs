@@ -1,9 +1,7 @@
 //! The anchor the model reads first: rules, notes, pinned files, ledger and map.
 
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde_json::{json, Value};
 
-use crate::goal::head_slice;
 use crate::hindsight::{Sym, UKind};
 use crate::json::est_str;
 use crate::ledger::{prior, select, PER_MESSAGE};
@@ -189,52 +187,5 @@ impl Engine {
             }
         }
         (text, kept)
-    }
-
-    /// Everything the engine holds, by zone, and what of it the next call takes.
-    pub fn memory(&mut self) -> Value {
-        let n = self.tr.msgs.len();
-        let mut zone = vec![1usize; n];
-        let mut zones = vec![json!({"label": "anchor", "active": true, "card": false})];
-        let g = &self.goal;
-        if !g.turns.is_empty() {
-            let a = g.active();
-            let others = g.others();
-            let shown = if self.apart() { head_slice(others.len(), self.p.cards) } else { 0 };
-            let carded: FxHashSet<usize> = others[..shown].iter().copied().collect();
-            for (k, members) in g.members.iter().enumerate() {
-                zones.push(json!({"label": g.ask(&self.tr, &self.fz, members[0]), "active": k == a || shown == 0 && !self.apart(), "card": carded.contains(&k)}));
-                for &j in members {
-                    let (x, y) = g.span(j, n);
-                    for z in &mut zone[x..y] {
-                        *z = k + 1;
-                    }
-                }
-            }
-        } else {
-            zones.push(json!({"label": "conversation", "active": true, "card": false}));
-        }
-        if n > 0 {
-            zone[0] = 0;
-        }
-        let seen: FxHashSet<usize> = self.visible().iter().copied().collect();
-        let cells: Vec<Value> = (0..n)
-            .map(|mi| {
-                let state = if seen.contains(&mi) {
-                    if self.fz.by_msg(mi).iter().any(|i| self.dropped.contains_key(i)) {
-                        "cut"
-                    } else {
-                        "whole"
-                    }
-                } else {
-                    "out"
-                };
-                json!({"zone": zone[mi], "tokens": self.sizes[mi].max(1), "state": state})
-            })
-            .collect();
-        let mut out = serde_json::Map::new();
-        out.insert("zones".into(), Value::Array(zones));
-        out.insert("cells".into(), Value::Array(cells));
-        Value::Object(out)
     }
 }
