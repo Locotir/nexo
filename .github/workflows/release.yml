@@ -84,16 +84,36 @@ jobs:
           sha256sum nexo-* > SHA256SUMS
           cat SHA256SUMS
           tag="build-${SHA::7}"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" nexo-* SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$tag" nexo-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$SHA" \
-              --title "nexo ${SHA::7}" --latest \
-              --notes "Ready-built nexo for commit $SHA. Install or update: see the README (the install scripts and \`nexo update\` download these files and check them against SHA256SUMS)."
-          fi
+          # only a build that no other build is newer than may become "latest": a run for an older commit
+          # that finishes last must not take the label from a newer one
+          latest=true
+          for t in $(gh release list --repo "$GITHUB_REPOSITORY" -L 50 --json tagName -q '.[].tagName | select(startswith("build-"))'); do
+            [ "$t" = "$tag" ] && continue
+            o=$(gh release view "$t" --repo "$GITHUB_REPOSITORY" --json targetCommitish -q .targetCommitish) || continue
+            st=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SHA...$o" -q .status) || continue
+            if [ "$st" = ahead ]; then latest=false; fi
+          done
+          echo "latest=$latest"
+          publish() {
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$tag" nexo-* SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY" &&
+                gh release edit "$tag" --latest="$latest" --repo "$GITHUB_REPOSITORY"
+            else
+              gh release create "$tag" nexo-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+                --title "nexo ${SHA::7}" --latest="$latest" \
+                --notes "Ready-built nexo for commit $SHA. Install or update: see the README (the install scripts and \`nexo update\` download these files and check them against SHA256SUMS)."
+            fi
+          }
+          # a failed call (403, 5xx, a release another run just made) is retried; a half-made release is completed
+          ok=false
+          for i in 1 2 3 4 5; do
+            if publish; then ok=true; break; fi
+            echo "publish attempt $i failed"; sleep $((i * 20))
+          done
+          $ok
       - name: keep the last 5 builds
         # install.sh and `nexo update` only read releases/latest; the last few stay for going back
         run: |
-          gh release list --repo "$GITHUB_REPOSITORY" -L 500 --json tagName,createdAt \
-            -q '[.[] | select(.tagName | startswith("build-"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+          gh release list --repo "$GITHUB_REPOSITORY" -L 500 --json tagName,createdAt,isLatest \
+            -q '[.[] | select((.tagName | startswith("build-")) and (.isLatest | not))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
             while read -r old; do gh release delete "$old" --cleanup-tag -y --repo "$GITHUB_REPOSITORY"; done
