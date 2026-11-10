@@ -45,6 +45,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.term_width = area.width;
     app.queue_rows.clear();
+    app.todo_area = Rect::default();
     app.hint_hits.clear();
     app.note_popups();
     // the theme's ground under everything: no cell is left to the terminal's own colours
@@ -76,9 +77,14 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     } else {
         app.queued_msgs.len().min(MAX_QUEUE_ROWS) as u16
     };
+    // the strip stays out where the list is on screen already: its own window, or the side panel
+    let listed = matches!(app.modal, Some(Modal::Todo(_))) || (app.show_files && area.width >= FILES_PANEL_MIN_W);
+    let todo_h =
+        if app.todo_strip_on() && !listed { crate::todo_strip::strip_height(&app.todo, area.height) } else { 0 };
     // the keys right under the draft, the state (model, context, spend) on the last row
-    let [middle, queue, sep, input, hints, title] = Layout::vertical([
+    let [middle, todo_area, queue, sep, input, hints, title] = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(todo_h),
         Constraint::Length(queue_h),
         Constraint::Length(1),
         Constraint::Length(input_h),
@@ -122,6 +128,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     if files_w > 0 {
         draw_panel(f, app, files);
     }
+    draw_todo_strip(f, app, todo_area);
     draw_queue(f, app, queue);
     draw_separator(f, app, sep);
     if app.locked && app.input.is_empty() {
@@ -1393,6 +1400,21 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// The newest queued requests as dim rows (`◷ first line`): a click takes one back into the draft.
+fn draw_todo_strip(f: &mut Frame, app: &mut App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let lines = crate::todo_strip::strip_lines(
+        &app.todo,
+        area.width as usize,
+        area.height as usize,
+        &app.theme,
+        app.todo_done_live,
+    );
+    f.render_widget(Paragraph::new(lines), area);
+    app.todo_area = area;
+}
+
 fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;

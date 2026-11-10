@@ -400,7 +400,8 @@ impl Block {
                     match (status, output.as_ref().map(|o| &o.display)) {
                         (ToolStatus::Failed | ToolStatus::Denied, _) => o.fold_after.clamp(1, FAILED_PREVIEW),
                         (_, Some(ToolDisplay::Diff { .. })) => o.fold_after.max(1),
-                        (_, Some(ToolDisplay::Todo { .. })) => usize::MAX,
+                        // an update says what changed in its head; the list is one click away
+                        (_, Some(ToolDisplay::Todo { .. })) => 0,
                         // the answer to a question is short and is the point of the card
                         _ if name == "ask_user" => usize::MAX,
                         _ => 0,

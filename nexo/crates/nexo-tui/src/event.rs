@@ -463,6 +463,9 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                     let i = *i;
                     return app.unqueue(i);
                 }
+                if contains(app.todo_area, m.column, m.row) {
+                    return app.open_todo();
+                }
                 if let Some((_, h)) = app.hint_hits.iter().find(|(r, _)| contains(*r, m.column, m.row)) {
                     let h = *h;
                     return app.open_hint(h);

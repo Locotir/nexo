@@ -370,7 +370,8 @@ fn the_panel_shows_the_goal_and_the_todo_list_above_the_files() {
     let todo_row = rows.iter().position(|r| r.contains("≡ todo")).unwrap();
     let files_row = rows.iter().position(|r| r.contains("│ changed files")).unwrap();
     assert!(goal_row < todo_row && todo_row < files_row);
-    assert!(all.contains("✓ todo 3 tasks · 1/3 done"), "the card in the transcript: {all}");
+    // the panel lists the tasks already, so the strip above the draft stays out
+    assert!(all.contains("✓ todo 3 items · 1/3 done") && !all.contains("to-do 1/3"), "the card, no strip: {all}");
     assert!(rows[rows.len() - 2].contains("todo 1/3"), "the status area: {}", rows[rows.len() - 2]);
 }
 

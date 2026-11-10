@@ -486,6 +486,7 @@ impl App {
                 self.modal = Some(Modal::Sent(Box::new(crate::sent_view::SentView::new(model, sections))));
             }
             AgentEvent::TurnStart { .. } => {
+                self.todo_done_live = false;
                 self.suggestion = None;
                 self.busy = true;
                 self.turn_started = Some(self.now());
@@ -580,7 +581,15 @@ impl App {
             }
             AgentEvent::ToolDone { id, output, elapsed_ms } => {
                 if let ToolDisplay::Todo { items } = &output.display {
+                    // the card says what changed; the whole list stays in the window and the strip
+                    let said = crate::todo_strip::change_line(&self.todo, items);
+                    if let Some(i) = self.tool_index(&id) {
+                        if let Block::Tool { summary, .. } = &mut self.blocks[i] {
+                            *summary = said;
+                        }
+                    }
                     self.todo = items.clone();
+                    self.todo_done_live = !items.is_empty() && crate::todo_strip::done_count(items) == items.len();
                     let at = self.now();
                     if let Some(Modal::Todo(v)) = &mut self.modal {
                         v.set_items(items.clone(), at);
@@ -846,6 +855,7 @@ impl App {
                 self.push(Block::Shell { command: "system prompt".to_string(), output: text, exit_code: None });
             }
             AgentEvent::TurnEnd { reason } => {
+                self.todo_done_live = false;
                 self.close_streaming();
                 self.busy = false;
                 if matches!(reason, TurnEnd::Done) {
@@ -1199,6 +1209,12 @@ impl App {
                             }
                         }
                         Part::ToolCall { id, name, args } => {
+                            // a resumed session has the list only in the call that last wrote it
+                            if name == "todo" {
+                                if let Some(items) = crate::todo_strip::items_from_args(&args) {
+                                    self.todo = items;
+                                }
+                            }
                             let summary = summarise(&name, &args);
                             self.push(Block::Tool {
                                 id,

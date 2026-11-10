@@ -1082,3 +1082,56 @@ fn a_saved_instruction_flashes_in_the_status_bar_and_its_card_stays_in_sight_in_
     call(&mut a, "n2", "note", ToolOutput::ok("noted 1 line"));
     assert!(a.status.is_none());
 }
+
+#[test]
+fn the_todo_strip_follows_the_list_and_the_turn() {
+    use nexo_core::tool::{TodoItem, TodoStatus, ToolDisplay};
+    let (mut a, _rx) = app();
+    let list = |s: [TodoStatus; 2]| ToolDisplay::Todo {
+        items: vec![TodoItem { text: "a".into(), status: s[0] }, TodoItem { text: "b".into(), status: s[1] }],
+    };
+    let send = |a: &mut App, id: &str, d: ToolDisplay| {
+        a.handle_agent(AgentEvent::ToolCall {
+            id: id.into(),
+            name: "todo".into(),
+            args: serde_json::json!({}),
+            summary: "todo".into(),
+        });
+        a.handle_agent(AgentEvent::ToolDone {
+            id: id.into(),
+            output: ToolOutput::ok("x").with_display(d),
+            elapsed_ms: 0,
+        });
+    };
+    send(&mut a, "1", list([TodoStatus::InProgress, TodoStatus::Pending]));
+    assert!(a.todo_strip_on());
+    send(&mut a, "2", list([TodoStatus::Done, TodoStatus::InProgress]));
+    assert!(
+        matches!(a.blocks.iter().rev().find(|b| matches!(b, Block::Tool { .. })),
+        Some(Block::Tool { summary, .. }) if summary == "todo ✓ a · ▸ b" || summary == "todo ✓ a"),
+        "{:?}",
+        a.blocks.last()
+    );
+    send(&mut a, "3", list([TodoStatus::Done, TodoStatus::Done]));
+    assert!(a.todo_strip_on(), "a finished list stays until the turn ends");
+    a.handle_agent(AgentEvent::TurnEnd { reason: nexo_core::agent::TurnEnd::Done });
+    assert!(!a.todo_strip_on());
+    a.handle_agent(AgentEvent::TurnStart { turn: 2 });
+    assert!(!a.todo_strip_on(), "a stale finished list is not shown in a new turn");
+}
+
+#[test]
+fn a_resumed_session_gets_its_unfinished_list_back() {
+    let (mut a, _rx) = app();
+    let m = Message::new(
+        Role::Assistant,
+        vec![Part::tool_call(
+            "t1",
+            "todo",
+            serde_json::json!({"items": [{"text": "a", "status": "done"}, {"text": "b"}]}),
+        )],
+    );
+    a.handle_agent(AgentEvent::History { index: 0, message: m });
+    assert_eq!(a.todo.len(), 2);
+    assert!(a.todo_strip_on());
+}

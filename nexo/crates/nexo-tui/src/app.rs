@@ -329,6 +329,10 @@ pub struct App {
     pending_stamps: VecDeque<String>,
     /// The task list the model keeps (the latest `todo` output).
     pub todo: Vec<TodoItem>,
+    /// A finished list stays in the strip as `✓` until its turn ends.
+    pub todo_done_live: bool,
+    /// Where the to-do strip was drawn last frame (a click on it opens the list).
+    pub todo_area: Rect,
     /// The goal in force: its text, rounds and state.
     pub goal: Option<Goal>,
     /// What the goal has done so far (both wordings, stops, steps, spend), for its window.
@@ -568,6 +572,8 @@ impl App {
             theme_before_preview: None,
             pending_stamps: VecDeque::new(),
             todo: Vec::new(),
+            todo_done_live: false,
+            todo_area: Rect::default(),
             goal: None,
             goal_round_said: None,
             goal_log: Default::default(),
@@ -750,6 +756,7 @@ impl App {
         self.user_messages.clear();
         self.changed.clear();
         self.todo.clear();
+        self.todo_done_live = false;
         self.session_usage = Usage::default();
         self.turn_usage = Usage::default();
         self.cost = 0.0;

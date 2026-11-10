@@ -50,6 +50,7 @@ pub mod status_cmd;
 pub mod terminal;
 pub mod theme;
 pub mod toast;
+pub mod todo_strip;
 pub mod todo_view;
 pub mod ui;
 

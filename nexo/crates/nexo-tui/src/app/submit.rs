@@ -259,6 +259,12 @@ impl App {
         self.flash("queued message back in the draft: edit it, Enter sends it again");
     }
 
+    /// The strip above the draft: a list that is not finished, or one that just finished in this turn.
+    pub fn todo_strip_on(&self) -> bool {
+        let all = crate::todo_strip::done_count(&self.todo) == self.todo.len();
+        !self.todo.is_empty() && (!all || self.todo_done_live)
+    }
+
     /// `/todo`: the task list in its own window, grouped by state.
     pub fn open_todo(&mut self) {
         self.modal = Some(Modal::Todo(Box::new(crate::todo_view::TodoView::new(self.todo.clone()))));
