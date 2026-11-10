@@ -89,7 +89,20 @@ impl Reads {
     /// and the file has not changed since. Such a file is not attached again by the token budget.
     pub fn met_unchanged(&self, path: &Path) -> bool {
         let Some(s) = self.seen.get(path) else { return false };
-        std::fs::read(path).is_ok_and(|b| digest(&b) == s.hash)
+        let Ok(b) = std::fs::read(path) else { return false };
+        if digest(&b) != s.hash {
+            return false;
+        }
+        // every line must lie in something the model was shown: a part of a file is not the file
+        let total = String::from_utf8_lossy(&b).lines().count();
+        let mut at = 1;
+        while at <= total {
+            match s.pieces.iter().filter(|p| p.start <= at && at <= p.end).map(|p| p.end).max() {
+                Some(e) => at = e + 1,
+                None => return false,
+            }
+        }
+        true
     }
 
     /// A file attached whole to a request, under `header`.
@@ -270,6 +283,16 @@ fn words(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_read_only_in_part_is_not_met_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.txt");
+        std::fs::write(&p, "one\ntwo\nthree\nfour\n").unwrap();
+        let mut r = Reads::default();
+        r.after_read(&p, "a.txt", Some(1), 1, "c1", usize::MAX);
+        assert!(!r.met_unchanged(&p), "the model saw 1 line of 4");
+    }
 
     fn result(id: &str, text: &str) -> Message {
         Message::tool_results(vec![Part::ToolResult {

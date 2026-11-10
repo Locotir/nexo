@@ -109,12 +109,18 @@ fn parse_release(v: &serde_json::Value) -> Option<Release> {
     Some(Release { tag, files })
 }
 
+/// Whether `t` is a tag that cannot change where an address built from it points: plain characters, and not a
+/// path step (`.` and `..`).
+fn plain_tag(t: &str) -> bool {
+    let plain = t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    !t.is_empty() && plain && t != "." && t != ".."
+}
+
 /// The release tag in the address `releases/latest` redirects to (`.../releases/tag/<tag>`). Only plain
 /// tag characters pass, so the address built from it stays inside the release downloads.
 fn tag_of(location: &str) -> Option<String> {
     let t = location.split("/releases/tag/").nth(1)?.split(['?', '#', '/']).next()?;
-    let plain = t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
-    (!t.is_empty() && plain).then(|| t.to_string())
+    plain_tag(t).then(|| t.to_string())
 }
 
 /// The latest release's tag from the web, with no API request: `releases/latest` is a redirect.
@@ -164,7 +170,14 @@ async fn api_release(client: &reqwest::Client, src: &Sources) -> Result<Release,
         let why = limit_text(r.status().as_u16(), h("x-ratelimit-remaining"), h("x-ratelimit-reset"), now_secs());
         return Err(why.unwrap_or_else(|| NO_RELEASE.to_string()));
     }
-    parse_release(&r.json().await.map_err(|_| NO_RELEASE.to_string())?).ok_or_else(|| NO_RELEASE.to_string())
+    let rel =
+        parse_release(&r.json().await.map_err(|_| NO_RELEASE.to_string())?).ok_or_else(|| NO_RELEASE.to_string())?;
+    // the response names the tag and the files, never where to download them from
+    if !plain_tag(&rel.tag) {
+        return Err(NO_RELEASE.to_string());
+    }
+    let files = rel.files.iter().map(|(n, _)| (n.clone(), format!("{}/releases/download/{}/{n}", src.web, rel.tag)));
+    Ok(Release { files: files.filter(|(n, _)| plain_tag(n)).collect(), tag: rel.tag })
 }
 
 /// The latest release: from the web redirect first (no API quota), then from the API.
@@ -1158,8 +1171,25 @@ mod tests {
         let (c, p) = (client(5).unwrap(), probe(5).unwrap());
         let rel = latest_release(&c, &p, &m.sources(), &["nexo-linux-x86_64", SUMS]).await.unwrap();
         assert_eq!(rel.tag, "build-def5678");
-        assert_eq!(rel.files, vec![(SUMS.to_string(), "https://x/SHA256SUMS".to_string())]);
+        assert_eq!(
+            rel.files,
+            vec![(SUMS.to_string(), format!("{}/releases/download/build-def5678/SHA256SUMS", m.base))]
+        );
         assert_eq!(m.api_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_api_never_chooses_the_download_host_or_path() {
+        let body = r#"{"tag_name":"build-def5678","assets":[{"name":"SHA256SUMS","browser_download_url":"https://evil.example/SHA256SUMS"}]}"#;
+        let ok = reply_with("200 OK", &[("Content-Type", "application/json".into())], body);
+        let bad = r#"{"tag_name":"..","assets":[{"name":"SHA256SUMS","browser_download_url":"https://x/a"}]}"#;
+        let bad = reply_with("200 OK", &[("Content-Type", "application/json".into())], bad);
+        let m = Mock::start(|_| vec![("/api/releases/latest".to_string(), ok)]).await;
+        let (c, p) = (client(5).unwrap(), probe(5).unwrap());
+        let rel = latest_release(&c, &p, &m.sources(), &[SUMS]).await.unwrap();
+        assert!(rel.files.iter().all(|(_, u)| u.starts_with(&m.base)), "{:?}", rel.files);
+        let m = Mock::start(|_| vec![("/api/releases/latest".to_string(), bad)]).await;
+        assert!(latest_release(&c, &p, &m.sources(), &[SUMS]).await.is_err());
     }
 
     #[tokio::test]
@@ -1205,6 +1235,8 @@ mod tests {
         assert_eq!(tag_of("https://github.com/Locotir/nexo/releases/tag/build-abc1234"), Some("build-abc1234".into()));
         assert_eq!(tag_of("/Locotir/nexo/releases/tag/v1.2?x=1"), Some("v1.2".into()));
         assert_eq!(tag_of("https://github.com/Locotir/nexo/releases"), None);
+        assert_eq!(tag_of("https://github.com/Locotir/nexo/releases/tag/.."), None);
+        assert_eq!(tag_of("/Locotir/nexo/releases/tag/."), None);
         assert_eq!(tag_of("https://github.com/x/releases/tag/a%2F..%2Fb"), None);
         assert!(tag_is_commit("build-abc1234", "abc1234ffff") && !tag_is_commit("build-abc1234", "abc1235ffff"));
         assert!(!tag_is_commit("v1", "v1") && !tag_is_commit("build-abc", "abc"));

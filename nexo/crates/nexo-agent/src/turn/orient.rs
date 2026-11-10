@@ -252,6 +252,18 @@ pub(super) async fn start_check(state: &Shared, cancel: &CancellationToken) -> O
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_file_the_person_changed_just_after_a_request_is_not_taken_for_the_models_work() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.txt");
+        std::fs::write(&p, "x").unwrap();
+        let t = std::fs::metadata(&p).unwrap().modified().unwrap();
+        let mut spans = VecDeque::new();
+        // the request ended 1 s before the file was written (a coarse file system rounds the time down)
+        worked(&mut spans, t - Duration::from_secs(5), t - Duration::from_secs(1));
+        assert!(!made_in_work(&spans, &p));
+    }
+
     fn tree(files: &[(&str, String)]) -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         for (n, t) in files {
