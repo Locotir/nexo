@@ -483,9 +483,9 @@ pub(super) async fn view_now(st: &mut State) -> View {
         ms.iter().map(|m| serde_json::to_string(m).map(|s| s.len() as u64).unwrap_or(0)).sum()
     };
     let history_tokens = st.history.tokens();
-    st.last_view = (history_tokens, view.tokens);
+    let last = std::mem::replace(&mut st.last_view, (history_tokens, view.tokens));
     st.est_sent = system_tokens + view.tokens;
-    let (label, detail) = crate::context::describe(st.policy.as_ref(), history_tokens, view.tokens);
+    let (label, detail) = crate::context::describe_since(st.policy.as_ref(), history_tokens, view.tokens, Some(last));
     emit(
         &st.events,
         AgentEvent::Context {

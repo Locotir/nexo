@@ -231,17 +231,10 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             text: if guessed { format!(" ~{pct}%") } else { format!(" {pct}%") },
             style: base.fg(colour).add_modifier(Modifier::BOLD),
         });
-        // what the curator just let go, fading from green to dim
-        let now = app.now();
-        if let Some((n, at)) = app.fx.cut.filter(|c| crate::motion::within(Some(c.1), now, crate::motion::CUT_MS)) {
-            let t = now.saturating_duration_since(at).as_millis() as f32 / crate::motion::CUT_MS as f32;
-            let fg = crate::motion::fade(theme, theme.success, theme.dim, t);
-            cells.push(Seg { text: format!(" −{} tok", fmt_k(n)), style: base.fg(fg).add_modifier(Modifier::BOLD) });
-        }
         let counts = if guessed { fmt_k(num) } else { format!("{}/{}", fmt_k(num), fmt_k(den)) };
         (cells, Seg { text: counts, style: base.fg(theme.dim) })
     };
-    // what the policy does ("curator", "curator +2 in -5 out", "curator idle"), not only its name
+    // what the policy does ("curator", "curator -12k tok", "curator idle"), not only its name
     let policy = app
         .context
         .as_ref()
@@ -261,7 +254,18 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     // a glyph every common font has, not an icon font's
     let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: base.fg(theme.hunk) });
     let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: base.fg(theme.dim) };
-    let policy_seg = policy.map(|p| Seg { text: p, style: base.fg(theme.accent2) });
+    // what the curator just let go is in its label: green for a moment, then its own colour
+    let policy_seg = policy.map(|p| {
+        let now = app.now();
+        match app.fx.cut.filter(|c| crate::motion::within(Some(c.1), now, crate::motion::CUT_MS)) {
+            Some((_, at)) => {
+                let t = now.saturating_duration_since(at).as_millis() as f32 / crate::motion::CUT_MS as f32;
+                let fg = crate::motion::fade(theme, theme.success, theme.accent2, t);
+                Seg { text: p, style: base.fg(fg).add_modifier(Modifier::BOLD) }
+            }
+            None => Seg { text: p, style: base.fg(theme.accent2) },
+        }
+    });
     // the share of input the cache served (billed at a fraction) and the model calls so far
     let extra = {
         let u = &app.session_usage;

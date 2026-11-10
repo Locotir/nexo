@@ -149,7 +149,7 @@ fn title_pieces_leave_in_order_and_the_session_name_is_bounded() {
         messages_total: 1,
         policy: "curator".into(),
         note: None,
-        label: "curator +3 in".into(),
+        label: "curator +3.0k tok".into(),
         detail: None,
     });
     let texts = |w: usize| -> Vec<String> {

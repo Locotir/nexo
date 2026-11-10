@@ -102,6 +102,17 @@ pub trait ContextPolicy: Send {
 /// bar (`curator`, `curator idle`, `plain`, and `curator off` when `auto`
 /// or `curator` fell back to everything) and the line `/context` and `/status` print.
 pub fn describe(policy: &dyn ContextPolicy, history_tokens: u64, view_tokens: u64) -> (String, String) {
+    describe_since(policy, history_tokens, view_tokens, None)
+}
+
+/// [`describe`], with the last call's figures (`history_tokens`, `view_tokens`): when the curator moved
+/// messages, the label then says by how many tokens that changed the window in use (`curator -12k tok`).
+pub fn describe_since(
+    policy: &dyn ContextPolicy,
+    history_tokens: u64,
+    view_tokens: u64,
+    last: Option<(u64, u64)>,
+) -> (String, String) {
     let name = policy.name();
     if let Some(why) = policy.detail() {
         return ("curator off".to_string(), why);
@@ -114,17 +125,28 @@ pub fn describe(policy: &dyn ContextPolicy, history_tokens: u64, view_tokens: u6
     match policy.activity() {
         Some((0, 0)) | None => (label, detail),
         Some((a, r)) => {
+            // the curator's own doing: this view against the last one plus what the conversation appended
+            // since. A history that shrank was rewound or cleared: nothing to compare with.
+            let moved = last
+                .filter(|&(h, v)| v > 0 && history_tokens >= h)
+                .map(|(h, v)| view_tokens as i64 - (v + (history_tokens - h)) as i64)
+                .filter(|d| d.unsigned_abs() >= MOVED_LEAST);
             // ASCII only: a sign and a word read the same in every terminal
-            let mut tag = String::new();
-            if a > 0 {
-                tag.push_str(&format!(" +{a} in"));
-            }
-            if r > 0 {
-                tag.push_str(&format!(" -{r} out"));
-            }
+            let tag = match moved {
+                Some(d) => format!(" {}{} tok", if d < 0 { '-' } else { '+' }, fmt_k(d.unsigned_abs())),
+                None => String::new(),
+            };
             let what = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+            let window = match moved {
+                Some(d) => format!(
+                    ": the window in use is {} tokens {} for it",
+                    fmt_k(d.unsigned_abs()),
+                    if d < 0 { "smaller" } else { "larger" }
+                ),
+                None => String::new(),
+            };
             let line = format!(
-                "{detail}. This call: {} brought back, {} taken out or cut",
+                "{detail}. This call: {} brought back, {} taken out or cut{window}",
                 what(a, "message", "messages"),
                 what(r, "message", "messages")
             );
@@ -170,6 +192,9 @@ fn describe_base(policy: &dyn ContextPolicy, name: &str, history_tokens: u64, vi
         _ => (name.to_string(), format!("{name}: every call sends the whole history")),
     }
 }
+
+/// The least change of the window, in tokens, the label names: under it the figure is noise.
+const MOVED_LEAST: u64 = 100;
 
 /// 950, 12k, 1.2M.
 fn fmt_k(t: u64) -> String {
@@ -660,10 +685,19 @@ mod tests {
         // the first view of a history puts nothing back and takes nothing out: the conversation's own messages are new
         assert_eq!(describe(&c, 100_000, 62_000).0, "curator");
         c.moved = (2, 5);
-        let (label, detail) = describe(&c, 100_000, 62_000);
-        assert_eq!(label, "curator +2 in -5 out");
+        // the history grew by 4k and the view fell by 8k: the curator took 12k off the window in use
+        let (label, detail) = describe_since(&c, 100_000, 62_000, Some((96_000, 70_000)));
+        assert_eq!(label, "curator -12k tok");
         assert!(label.is_ascii(), "{label}");
         assert!(detail.contains("This call:") && detail.contains("brought back"), "{detail}");
+        assert!(detail.contains("12k tokens smaller"), "{detail}");
+        // what it brought back outweighs what it took out: the window grew by more than the new messages
+        assert_eq!(describe_since(&c, 100_000, 62_000, Some((99_000, 58_000))).0, "curator +3.0k tok");
+        // nothing to compare with (the first call, a rewound history) or a change too small to name
+        assert_eq!(describe(&c, 100_000, 62_000).0, "curator");
+        assert_eq!(describe_since(&c, 100_000, 62_000, Some((0, 0))).0, "curator");
+        assert_eq!(describe_since(&c, 100_000, 62_000, Some((120_000, 70_000))).0, "curator");
+        assert_eq!(describe_since(&c, 100_000, 62_000, Some((99_000, 61_050))).0, "curator");
         c.moved = (0, 0);
         assert_eq!(describe(&c, 100_000, 62_000).0, "curator");
     }

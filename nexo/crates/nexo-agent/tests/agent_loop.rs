@@ -1203,11 +1203,12 @@ async fn the_curator_label_follows_what_each_call_moved() {
         .filter_map(|e| if let AgentEvent::Context { label, .. } = e { Some(label.clone()) } else { None })
         .collect();
     assert_eq!(labels.len(), 7, "{labels:?}");
-    // what the conversation appends is not the curator's doing: nothing here came back, so no call says "in"
-    assert!(labels.iter().all(|l| !l.contains(" in")), "{labels:?}");
-    assert!(!labels[0].contains('+') && !labels[1].contains('+'), "no window pressure yet: {labels:?}");
-    // once the window is full each call takes the oldest out, and the label says so
-    assert!(labels[2..].iter().all(|l| l.contains(" out")), "{labels:?}");
+    // what the conversation appends is not the curator's doing: nothing here came back, so no call says "+"
+    assert!(labels.iter().all(|l| !l.contains('+')), "{labels:?}");
+    assert!(labels[..2].iter().all(|l| !l.contains("tok")), "no window pressure yet: {labels:?}");
+    // once the window is full each call takes the oldest out, and the label says by how many tokens that
+    // made the window in use smaller
+    assert!(labels[2..].iter().all(|l| l.starts_with("curator -") && l.ends_with(" tok")), "{labels:?}");
     r.stop().await;
 }
 

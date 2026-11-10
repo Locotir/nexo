@@ -67,7 +67,7 @@ pub struct ContextInfo {
     pub messages_total: usize,
     pub policy: String,
     pub note: Option<String>,
-    /// What the policy is doing ("curator", "curator +2 in -5 out", "curator idle") and why.
+    /// What the policy is doing ("curator", "curator -12k tok", "curator idle") and why.
     pub label: String,
     pub detail: Option<String>,
 }

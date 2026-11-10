@@ -408,7 +408,7 @@ fn a_todo_result_fills_the_list_and_the_goal_follows_the_agent() {
 }
 
 #[test]
-fn a_cut_of_the_view_shows_by_the_gauge_and_goes_away() {
+fn a_cut_of_the_view_lights_the_curator_label_and_goes_away() {
     let (mut a, _rx) = app();
     let t0 = a.opened;
     a.fx.clock = Some(t0);
@@ -430,11 +430,17 @@ fn a_cut_of_the_view_shows_by_the_gauge_and_goes_away() {
     assert!(a.fx.cut.is_none(), "a view that grew is no cut");
     a.handle_agent(ctx(2000, 5600));
     assert_eq!(a.fx.cut.map(|c| c.0), Some(3200));
-    assert!(bar(&a).contains("−3.2k tok"), "{}", bar(&a));
-    assert!(a.tick_fx(), "the figure keeps the frames coming until it is gone");
-    a.fx.clock = Some(t0 + std::time::Duration::from_millis(crate::motion::CUT_MS + 200));
-    assert!(!bar(&a).contains("tok "), "{}", bar(&a));
+    // the label says what the curator did (the agent writes the figure in it); the bar repeats no number
+    let lit = |a: &App| {
+        let segs = crate::ui::title_segments(a, 200);
+        let label = segs.iter().flatten().find(|s| s.text.contains("curator")).expect("the curator label");
+        label.style.add_modifier.contains(ratatui::style::Modifier::BOLD)
+    };
+    assert!(lit(&a), "{}", bar(&a));
     assert!(!bar(&a).contains("−3.2k"), "{}", bar(&a));
+    assert!(a.tick_fx(), "the light keeps the frames coming until it is gone");
+    a.fx.clock = Some(t0 + std::time::Duration::from_millis(crate::motion::CUT_MS + 200));
+    assert!(!lit(&a), "{}", bar(&a));
     // a rewind takes the history down too: not the curator
     a.fx.cut = None;
     a.handle_agent(ctx(500, 1000));
