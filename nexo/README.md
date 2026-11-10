@@ -24,34 +24,27 @@ curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh
 irm https://raw.githubusercontent.com/Locotir/nexo/main/install.ps1 | iex
 ```
 
-Both download the ready-built nexo from the [latest release](https://github.com/Locotir/nexo/releases/latest)
-(Linux and Windows, x86_64 and ARM; checked against its SHA-256 list) and put it in `~/.local/bin` on Linux
-or `%LOCALAPPDATA%\Programs\nexo` on Windows, adding that folder to PATH. No Rust, no compiler, a few seconds.
-Where no ready-built file fits, or with `NEXO_BUILD=1`, they install what the build needs without asking
-(Rust, a C compiler or the Visual Studio C++ build tools; on Windows only the Windows prompt to allow) and
-build from source. `NEXO_INSTALL_DIR` picks another folder. A copy left in cargo's own folder by older
-installs is removed, unless `NEXO_INSTALL_DIR` is set.
+Both download the ready-built binary from the [latest release](https://github.com/Locotir/nexo/releases/latest)
+(Linux and Windows, x86_64 and ARM; checked against its SHA-256 list) into `~/.local/bin` or
+`%LOCALAPPDATA%\Programs\nexo` and add that folder to PATH. Where no binary fits, or with `NEXO_BUILD=1`,
+they install what a build needs (Rust, a C compiler or the Visual Studio C++ build tools) and build from
+source. `NEXO_INSTALL_DIR` picks another folder.
 
-Each time the interface starts, nexo asks GitHub in the background whether the latest release is newer than
-the commit it was built from and says so; `nexo update` downloads it and replaces nexo where it is (it builds
-from source when no release fits), and `nexo update --check` only says. `[ui] update_check = false` or
-`NEXO_NO_UPDATE_CHECK=1` turns the check off; a build from changes never pushed is not checked.
+`nexo update` replaces nexo with the latest release (it builds from source when none fits);
+`nexo update --check` only says. The interface also checks in the background at start:
+`[ui] update_check = false` or `NEXO_NO_UPDATE_CHECK=1` turns that off.
 
-From a clone:
+From a clone (Rust 1.89 or newer):
 
 ```sh
 cd nexo
-cargo build --release          # target/release/nexo
+cargo build --release          # target/release/nexo (target\release\nexo.exe on Windows)
 install -m 755 target/release/nexo ~/.local/bin/
 ```
 
-**Windows.** The same build (`cargo build --release` in PowerShell gives `target\release\nexo.exe`), or from
-Linux `cargo build --release --target x86_64-pc-windows-gnu` with mingw-w64 installed. Settings and sessions
-live in `%USERPROFILE%\.nexo` (`config.toml`, `sessions\`). Commands run in Git Bash when Git for Windows is
-installed (the model writes POSIX shell, and `C:/…` paths work there), else in PowerShell, and the `bash`
-tool tells the model which; `/status` shows the one in use. Keys typed in `/model` go to
-`%USERPROFILE%\.nexo\keys\<name>` (`api_key_file`). Windows Terminal shows the colours, the mouse and the
-notification at the end of a long turn. Every push is built and tested on Linux and Windows.
+Linux and Windows are built and tested on every push; macOS is not. On Windows, settings and sessions
+live in `%USERPROFILE%\.nexo`, commands run in Git Bash when Git for Windows is installed (else
+PowerShell; `/status` shows which), and keys typed in `/model` go to `%USERPROFILE%\.nexo\keys\<name>`.
 
 ## Start
 
@@ -79,9 +72,21 @@ setup, and `nexo guide` prints the step-by-step guide
 ([`docs/SETUP-FOR-AGENTS.md`](docs/SETUP-FOR-AGENTS.md)), which an assistant
 can follow to set nexo up for you.
 
+More launch flags: `--cwd DIR`, `-w [NAME]` (work in a new git worktree on `nexo/<name>`, kept if it changed), `--theme NAME`, `--no-mouse`, `--no-alt-screen` (keep the session in the scrollback), `--inline` (finished turns go to the terminal's scrollback), `--context POLICY` (`NEXO_CONTEXT`), `--log FILE`. Other commands:
+
+| Command | What it does |
+|---|---|
+| `nexo sessions [rename\|delete\|restore]` | list, name, trash and bring back sessions |
+| `nexo export` | write a session as HTML, markdown or JSON, keys and tokens removed |
+| `nexo review` | review the current diff for CI (see Git commands) |
+| `nexo mcp`, `nexo plugin`, `nexo worktree` | MCP servers, plugins ([docs/PLUGINS.md](docs/PLUGINS.md)), the worktrees nexo made ([docs/WORKTREES.md](docs/WORKTREES.md)) |
+| `nexo audit` | the local audit log of tool calls and requests ([docs/AUDIT.md](docs/AUDIT.md)) |
+| `nexo supervise` | watch long-running sessions and answer their hooks |
+| `nexo acp` | run as an Agent Client Protocol server for editors ([docs/ACP.md](docs/ACP.md)) |
+
 ## In the interface
 
-The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the permission mode (coloured: `auto` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for context that turns yellow, orange and red as the last call approaches the model's window, and the **memory** in tokens (`mem 1.2M`: the whole history kept, in k, M or B). The gauge is what each call sends, so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far: each call re-sends its context, so it grows much faster than the memory, and it is what the cost next to it is paid on. `81% cached` is the share of input the cache served (green from 50%), `12 calls` the model calls so far, and `⏱ 14s` how long the running turn has taken. `/context` prints all of them.
+The keys sit on the top line; the **status bar** is the bottom line, right under the draft. It shows the model, the effort, the permission mode (coloured: `auto` in red), the git branch, a thin line gauge (`━━━╸━━━━ 42%`) for what the last call sent against the model's window (yellow, orange, red as it nears), and the whole history kept (`session 1.2M tok`), so the gap between the two is the saving of the context policy. On the right, `Σ 6.5k billed` adds up the tokens of every call so far (each call re-sends its context, so it grows much faster than the history, and the cost next to it is paid on it), `81% cached` is the share of input the cache served (green from 50%), `12 calls` the calls so far and `⏱ 14s` the running turn. `/context` prints all of them.
 
 
 | Keys | What |
@@ -112,7 +117,7 @@ The keys sit on the top line; the **status bar** is the bottom line, right under
 | drag with the mouse | select text; copied when the button comes up (`Shift`+drag: the terminal's own selection; `/settings mouse` turns capture off) |
 | `Esc` `Esc` (empty draft, idle) | rewind to before an earlier message and edit it; the files the agent wrote since are put back |
 | `Ctrl+B` | the side panel: goal, todo list, changed files |
-| `/`, `Ctrl+Space`, `Alt+P` | command palette (`/model`, `/effort`, `/fast`, `/undo`, `/init`, `/status`, `/tools`, `/pricing`, `/permissions` (`/approvals`), `/logout`, `/plan`, `/sandbox`, `/add-dir`, `/prompt`, `/prompt edit`, `/memory [user|add|share]`, `/goal`, `/compact`, `/clear`, `/resume`, `/rewind`, `/todo`, `/queue`, `/export`, `/rename`, `/diff`, `/cost`, `/context`, `/sent` (`/request`), `/theme`, `/settings`, `/help`); every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`), and typing either puts the command first in the list |
+| `/`, `Ctrl+Space`, `Alt+P` | command palette; every command answers to its aliases too (`/sessions` is `/resume`, `/back` is `/rewind`, `/q` is `/quit`). The list: `/help` |
 | `@` | attach a file (fuzzy picker over the project); an image (`png`, `jpg`, `gif`, `webp`, up to 5 MB) goes as an image for models that see |
 | `!cmd` | run a shell command without a model call |
 
@@ -121,14 +126,11 @@ with a light sweeping across the word; the reply grows behind a blinking caret. 
 rings the terminal's bell when it ends, with a desktop notification where the terminal takes one (OSC 9/777):
 `[ui] notify_after = 0` turns it off.
 
-The status bar answers clicks: the model opens the model picker, the gauge `/context`, the cost `/usage`, the goal `◎ goal` its own window (your words and the restatement, round, state, time, spend and each interruption with its reason; `r` or the Resume button goes on). On the keys row, `todo d/t` opens the todo list (`/todo`), `⚙ N jobs` the jobs window with their output (`/jobs`), `⊕ mem` the shared memory that waits (`/memory share list`), `◷ N queued` the queued messages (`/queue`; pick one to edit it) and the session name the sessions (`/resume`); each is underlined under the pointer, and `Esc` closes the list.
+The status bar answers clicks: the model opens the model picker, the effort `/effort`, the permission mode its picker, the gauge `/context`, the cost `/usage`, `◎ goal` the goal window (your words and the restatement, round, state, time, spend and each interruption with its reason; `r` or Resume goes on). On the keys row, `todo d/t` opens `/todo`, `⚙ N jobs` `/jobs`, `⊕ mem` the shared memory that waits (`/memory share list`), `◷ N queued` `/queue` and the session name `/resume`. Each is underlined under the pointer; `Esc` closes the list.
 
-In the `/usage` window the **Usage** tab ends with "What's contributing to your usage?". nexo reads the sessions saved on this machine in the background and ranks what cost the most as a percentage, each row with one change under it: calls that carried over 150k tokens of context, cache misses, the tools whose output was re-sent most, spend by model and by project, and (for sessions recorded by this version) the history the curator left out. A table lists the biggest sessions by cost and cache hit, each named by its folder and the day it was last used. `d`, `w` and `m` pick today, the last 7 days or the last 30; switching never reads again. Shares overlap, so they do not add up to 100%, and the figures cover only the sessions on this machine.
+The **Usage** tab of `/usage` ends with "What's contributing to your usage?": nexo reads the sessions saved on this machine and ranks what cost the most as a percentage, each row with one change under it (calls over 150k tokens of context, cache misses, tool output re-sent most, spend by model and project, history the curator left out), then a table of the biggest sessions. `d`, `w` and `m` pick today, 7 days or 30. Shares overlap, so they do not add up to 100%.
 
-Scrolling eases out, new blocks fade in, dialogs and the palette pop open and a glow runs along the line
-under a working agent; `[ui] animations = false` turns all motion off (everything lands at once).
-Messages and replies carry a dim `HH:MM` at the right of their first line, and a reply its duration once it ends;
-`[ui] timestamps = false` turns it off, `/settings timestamps` toggles it for the session.
+Motion (smooth scroll, fades, the glow under a working agent) is off with `[ui] animations = false`. Messages carry a dim `HH:MM` and replies their duration; `[ui] timestamps = false` or `/settings timestamps` hides them.
 
 A run of two or more tool calls (thinking in between counts) is one line while it is folded: `Made 1 edit +29 −3, read 2 files, ran 3 shell commands · 1 failed  4.2s ▸`. It reads in the present tense with a live clock while a call runs (the running call stays in view) and folds by itself once all have finished. Select it with the arrows or click it, then Enter or → opens it; `Ctrl+O` opens or folds all of them. `[ui] group_tools = false` shows every call on its own line again.
 
@@ -147,6 +149,16 @@ most. The status bar shows the spending against the limit (`$0.4200/1.00`, orang
 max_cost = 1.0       # dollars per session
 max_cost_day = 5.0   # dollars per day, all sessions
 ```
+
+Other `[agent]` keys:
+
+| Key | Default | What |
+|---|---|---|
+| `reasoning_budget` | `8000` | tokens a reply may reason before it says or calls anything; past it the reply is cut and asked again (`0` off; skipped when an effort level is set) |
+| `parallel_tasks` | `true` | `false` runs sub-agents that can change files one after another |
+| `subagents` | `true` | `false` removes the `task` tool |
+| `subagent_brief`, `subagent_brief_engine` | `3000`, `auto` | the briefing a sub-agent gets (see below) |
+| `system_prompt_file`, `system_prompt_extra` | none | another system prompt file; text appended to it |
 
 **Coming from another coding agent.** What a team already keeps for Claude Code or Codex CLI works on day one:
 
@@ -177,18 +189,17 @@ after the built-in ones, with the `description:` of a front matter block or the 
 description: review the change against our rules
 ---
 Review $ARGUMENTS against CONTRIBUTING.md and list what breaks a rule.
+```
 
 **Agent Skills.** A folder with a `SKILL.md` (front matter `name`, `description`, optional `allowed-tools`)
 and any files it mentions is a skill, the same format Claude Code and Codex use. nexo looks in
 `.nexo/skills`, `.agents/skills` and `.claude/skills` of the project (the working directory up to the
 repository root), then in `~/.nexo/skills`, `~/.agents/skills` and `~/.claude/skills`; on a name clash the
-first wins, nexo's own folders first. The model only sees each skill's name and a short description (up to
-100, in the `skill` tool's description, fixed for the session so the prompt cache holds) and loads the body
-with the `skill` tool when a task matches; the files a skill mentions are read with `read`, relative to its
-folder. You can run one yourself with `/skill-name [args]`; `/skills` lists what was found and where from.
+first wins, nexo's own folders first. The model sees each skill's name and a short description (up to
+100, fixed for the session so the prompt cache holds) and loads the body with the `skill` tool when a
+task matches. Run one yourself with `/skill-name [args]`; `/skills` lists what was found and where from.
 `allowed-tools` is shown but not enforced: the permission rules still decide. Project skills are read like
 `AGENTS.md`, without the trust step that commands and agents need.
-```
 
 **Sub-agents.** The model has a `task` tool: it hands a self-contained job to a sub-agent that works on
 its own and answers with a short report. Only the report enters the conversation, so a wide search costs
@@ -218,44 +229,17 @@ Read the change and list what is wrong with it, worst first.
 `[agent] subagents = false` removes the tool.
 
 **The briefing.** A sub-agent does not start blind. Before it runs, nexo (not the model) picks from the
-conversation that sends it what bears on its task and puts it ahead of the task, at most
-`[agent] subagent_brief` tokens (3000; `0` turns it off):
+conversation what bears on its task and puts it ahead of the task, at most `[agent] subagent_brief` tokens
+(3000; `0` turns it off): the facts (the latest request, rules given earlier, files read and written with a
+read marked `current` while it matches the disk, commands still failing, the todo plan) and excerpts of tool
+outputs and messages that hold the task's words, picked by the curator's selection
+(`subagent_brief_engine = "auto"` or `"curator"`) or by word overlap alone (`"lexical"`). The same conversation
+and task give the same briefing. The sub-agent is told not to read again what is marked current, and its
+report comes back cut at about 2000 tokens. A line says what it was handed: `briefed: 2.1k tok, 6 spans, 5
+facts · curator`. `nexo brief SESSION|FILE TASK…` prints the briefing a task would get (`--tokens`,
+`--engine`, `--json`).
 
-- what nexo knows for a fact: the person's latest request, rules they gave earlier ("never touch
-  Cargo.lock"), the files read, written and edited (those the task names first; a read marked `current`
-  when its lines still match the file on disk), the commands still failing with their error lines, and
-  the todo plan;
-- excerpts: the passages of tool outputs and of the conversation that hold the task's words, a long
-  output cut to the lines around them, reads that a later write made stale left out. With
-  `subagent_brief_engine = "auto"` (the default, also `"curator"`) the curator's selection picks them,
-  run inside nexo: it weighs each turn by how likely the task draws on it (its
-  thread model) and each paragraph by the task's rare words and names it adds; `"lexical"` uses a
-  plainer selection of the same kind, by word overlap alone. The same conversation and task give the
-  same briefing. On the conversations and tasks of `crates/nexo-agent/tests/fixtures/brief/` nexo
-  picks the same spans, with the same labels and texts, as an earlier, unpublished implementation of the
-  selection, whose output is recorded in those fixtures (`the_selection_matches_the_reference`).
-
-The sub-agent is told not to read again what is marked current, and its report comes back without the
-lines it copied from the briefing and cut at about 2000 tokens. Where the sub-agent works, a line says
-what it was handed: `briefed: 2.1k tok, 6 spans, 5 facts · curator`. `nexo brief SESSION|FILE TASK…`
-prints the briefing a task would get from a saved session (or a JSON file of messages), with
-`--tokens`, `--engine`, `--json`.
-
-What it buys, measured. A replay of a recorded session of 26 sub-agents (764 tool
-calls, 0.74M tokens of tool output) and builds each briefing from the conversation that started it:
-
-| | the whole parent conversation | briefing, curator | briefing, lexical | last 3000 tokens |
-|---|---|---|---|---|
-| files the sub-agent read that it names | 53% | 25% | 24% | 15% |
-| same, handed over half-way through the work | 63% | 40% | 30% | 14% |
-| tool calls whose output it already holds (80% of lines) | 2.0% | 0 | 0 | 0 |
-
-Size 3.1k tokens on average; about 0.1 s for a 300k-token parent (median, curator or lexical). In that session
-the main agent wrote long, self-contained task prompts and its sub-agents read new files, so the briefing
-mostly tells them where to look; the excerpts pay off when the main agent read or ran something itself and
-then hands over a short task (`a_sub_agent_starts_with_a_briefing_of_what_the_session_read`). The cost is
-the briefing's tokens once, then read from the cache on every later call of the sub-agent (about
-3.1k × (1.25 + 0.1 × calls) input tokens): it pays for itself when it spares two or three calls.
+Measured on a recorded session of 26 sub-agents, a briefing averages 3.1k tokens, takes about 0.1 s for a 300k-token parent, and is read from the cache after its first call: it pays for itself when it spares two or three calls. The sub-agent got the files it needs more often than from the last 3000 tokens (25% against 15%) but less than from the whole parent conversation (53%).
 
 **Background work.** `bash` with `background: true` starts a command (a server, a watcher, a long build) and
 returns at once with its job id; `task` with `background: true` does the same for a sub-agent that changes
@@ -269,11 +253,10 @@ on Windows), its output goes to a log file under the temp directory, and the res
 pid to stop it with. It is not a job (`jobs` does not list it, exit does not stop it), asks for the same approval
 as any `bash` command and runs inside the OS sandbox when that is on.
 
-**Language servers.** After an edit the agent can ask the file's language server what is wrong with it:
-the `diagnostics` tool starts rust-analyzer, pyright (or pylsp), typescript-language-server, gopls or clangd,
-whichever is installed, in the project's root, keeps it for the session and returns the errors and warnings
-with their lines. rust-analyzer is started with build scripts, proc macros and the check on save off, so a
-diagnostics call does not run the project's code; read-only sub-agents do not get the tool.
+**Language servers.** The `diagnostics` tool asks the file's language server (rust-analyzer, pyright or pylsp,
+typescript-language-server, gopls, clangd; whichever is installed) what is wrong after an edit. It starts
+the server with build scripts, proc macros and check on save off, so it does not run the project's code;
+read-only sub-agents do not get it.
 
 **Hooks.** Shell commands at points of the loop, each given the event as JSON on stdin and `NEXO_EVENT`,
 `NEXO_TOOL`, `NEXO_CWD` in its environment. A `pre_tool` hook that exits with 2 blocks the call, and what
@@ -323,7 +306,7 @@ session knows with this one: pick it (or `/shared-memory <id> [focus]`) and its 
 `Decision:` lines), its constraints, files and failing commands, and the excerpts that bear on the focus (its
 goal or title by default), about 4k tokens at most, go with your next message, once. Nothing earlier is
 rewritten, so the cached prefix holds. `/shared-memory off` drops what waits.
-Each session remembers the provider and model it last used and goes back to them when it is opened again (`--resume`, `--continue`, `/resume`), if that provider is usable and still lists the model; otherwise one line says so and the current model stays. `--model` / `--provider` given for the launch win, and neither your default nor your config file changes.
+A session reopens (`--resume`, `--continue`, `/resume`) on the provider and model it last used, if that provider is usable and still lists the model; else one line says so and the current model stays. An explicit `--model`, `--provider`, `NEXO_MODEL` or `NEXO_PROVIDER` wins, and neither your default nor your config file changes.
 
 Before a write or a command the permission dialog shows the diff or the
 command: `y` once, `a` always (a rule is remembered), `n` deny. Rules look
@@ -345,7 +328,7 @@ sandbox runs without asking; a failure the sandbox may have caused carries a sho
 rerun it with `unsandboxed: true`, which is asked about like any command. `/status` shows the mode and the
 backend. Details and limits: [docs/SANDBOX.md](docs/SANDBOX.md).
 
-Reading and searching are not asked about, except for files that hold keys or credentials: `.env` and
+`read` returns at most 64,000 characters per call (`offset` and `limit` page through a file). Reading and searching are not asked about, except for files that hold keys or credentials: `.env` and
 `.env.*`, anything under `.ssh`, `.gnupg`, `.aws`, `.kube` or `.docker`, private keys and certificates
 (`id_rsa*`, `*.pem`, `*.key`, ...), `.netrc` and its kind, and nexo's own credential store. Those are
 asked about in every mode but `auto`; only an allow rule that names their path (`read(.env)`, not `read`)
@@ -404,27 +387,14 @@ options, picked with the arrows and `Enter`, a digit, or a click; with
 several allowed, `Space` ticks them; the last row takes an answer of one's
 own; `Esc` dismisses. In a run nobody watches the tool is not offered.
 
-### Code
+### Code and themes
 
-Code blocks, files and diffs are coloured for every language `bat` knows
-(Rust, C, C++, C#, Go, Java, Kotlin, Swift, Ruby, PHP, JavaScript,
-TypeScript, JSX, Bash, PowerShell, SQL, HTML, CSS, YAML, TOML, Dockerfile,
-Makefile, Nix, Zig, Haskell, Elixir, Lua and many more), by name, alias, file
-extension or first line; a shell command in a `bash` card is coloured too.
-
-### Themes
-
-The colours are forced: every theme is a complete set of RGB values,
-background included, and nexo paints its own ground, so it looks the same in
-any terminal whatever palette the terminal has configured (a terminal
-without 24-bit colour gets the nearest of the 256-colour cube, and `/theme`
-says so). `/theme` opens a picker that previews each theme as you move and
-remembers the choice (`[ui] theme` in the user configuration). `dark` is the
-default (neutral, the classic terminal colours fixed). The others: `nexo` (a
-deep blue-grey ground, a teal accent, a warm marker for the assistant),
-`light`, `mono` (no colour at all; also when `NO_COLOR` is set),
-`catppuccin-mocha`, `gruvbox`, `nord`, `dracula`, `solarized-dark`,
-`tokyo-night`. Code highlighting follows the theme.
+Code blocks, files and diffs are coloured for every language `bat` knows, by name, alias, extension or
+first line; a shell command in a `bash` card too. Every theme is a complete set of RGB values with its own
+background, so it looks the same in any terminal (without 24-bit colour: the nearest of the 256-colour cube).
+`/theme` previews each as you move and remembers the choice (`[ui] theme`). `dark` is the default; the others:
+`nexo`, `light`, `mono` (no colour; also when `NO_COLOR` is set), `catppuccin-mocha`, `gruvbox`, `nord`,
+`dracula`, `solarized-dark`, `tokyo-night`.
 
 ## Configuration
 
@@ -449,17 +419,14 @@ The project's `.nexo/commands/` and `.nexo/agents/` are not loaded either until 
 one per line; remove the line to take it back) and `nexo config path` says whether it is trusted.
 An `a` (always) answer saved to the project file applies in later sessions once the project is trusted.
 
-**The trust question.** Starting the interface in a project that is not trusted yet and holds something trust
-gates (hooks, servers of `.nexo/config.toml` or `.mcp.json`, hooks of `.claude/settings.json`, commands, agents, the
-settings listed above) opens a dialog before the first prompt: *Do you trust the files in this folder?*, the
-project folder and a line on what a yes enables. `Yes, trust this folder` (`y`, or Enter on the first row) records
-the folder exactly as `nexo config trust` does and loads the project's files for this session, with no restart.
-`No, don't trust` (`n`, Esc, Ctrl+C) goes on without them and asks again at the next start. It is never asked with
-`-p`, in `nexo acp` or any subcommand, or when stdin or stdout is not a terminal: there the notice stays.
-What the managed policy forbids (`allow_project_hooks = false`, `mcp` lists, `extensions.project_commands = false`)
-is left out of the question, and a project with nothing left to enable is not asked about. Trust is per project
-root (the folder `nexo config path` shows), so a sub-folder asks about its root, and a home folder kept in git is
-asked about too, with a line saying that trusting it trusts every folder below it that is not a project of its own.
+**The trust question.** Starting the interface in an untrusted project that holds something trust gates (hooks,
+MCP servers, `.claude/settings.json` hooks, commands, agents, the settings above) opens a dialog before the
+first prompt. `Yes, trust this folder` (`y`, or Enter) records the folder as `nexo config trust` does and loads
+the files for this session; `No, don't trust` (`n`, Esc, Ctrl+C) goes on without them and asks again next
+start. It is never asked with `-p`, in `nexo acp`, in any subcommand, or when stdin or stdout is not a
+terminal. What the managed policy forbids ([docs/MANAGED-POLICY.md](docs/MANAGED-POLICY.md)) is left out of the
+question. Trust is per project root (the folder `nexo config path` shows); a home folder kept in git is asked
+about too, and trusting it trusts every folder below that is not a project of its own.
 
 Everything of your own lives in that one folder, `~/.nexo` (`%USERPROFILE%\.nexo`
 on Windows): `config.toml`, `prompt.md`, `commands/`, `agents/`, `sessions/`,
@@ -580,25 +547,16 @@ Local servers cost 0 per token. Every value can be changed before `Enter`
 saves it (to `~/.nexo/config.toml`, the rest of the file untouched) and
 switches to the model.
 
-**Effort.** The levels a model takes are worked out from the protocol and the
-server and confirmed by the test request: OpenAI's `reasoning_effort`
-(`minimal` on GPT-5), Anthropic's and Gemini's thinking budgets (Gemini Pro
-cannot turn it off), Ollama's `off`/`on` (`low`/`medium`/`high` on gpt-oss),
-none for models whose reasoning is fixed (DeepSeek's reasoner) or when the
-server refuses the parameter. `/effort` picks among them (`/effort high`,
-`/effort default`); the choice is kept per model and shown next to it in the
-status bar (`◆ high`).
+**Effort.** `/effort` picks among the levels the model takes (`/effort high`, `/effort default`), worked out
+from the protocol and the server and confirmed by the test request: OpenAI's `reasoning_effort`, Anthropic's
+and Gemini's thinking budgets, Ollama's `off`/`on` (`low`/`medium`/`high` on gpt-oss), none for models whose
+reasoning is fixed. The choice is kept per model and shown in the status bar (`◆ high`).
 
-**Fast.** `/fast` switches the model in use to its fast version on the same
-provider and back: the same name plus `-fast`, `_fast`, `-highspeed`,
-`-ultraspeed` or `-turbo` (case ignored, the provider's spelling kept; `-fast`
-wins when several are listed), looked up in the configured models and in the
-list the provider returns. `/fast on` and `/fast off` say which way. Where
-speed is a request option instead of a model, `/fast` sets it: the ChatGPT
-subscription (`codex`) and the OpenAI API send `service_tier: "priority"`, as
-the Codex CLI does. With no fast version it says so and changes nothing. The
-status bar shows `⚡` while it is on. Like `/model NAME`, it applies to this
-session only.
+**Fast.** `/fast` switches to the model's fast version on the same provider and back (the same name plus
+`-fast`, `_fast`, `-highspeed`, `-ultraspeed` or `-turbo`, looked up in the configured models and the provider's
+list). Where speed is a request option, it sets that: ChatGPT (`codex`) and the OpenAI API send
+`service_tier: "priority"`. With no fast version it says so and changes nothing. `⚡` shows while it is on; like
+`/model NAME`, it applies to this session only.
 
 ### Prices and limits
 
@@ -629,14 +587,10 @@ or `nexo pricing deepseek/deepseek-chat --set in=0.28 out=0.42 cache=0.028`
 writes the same block to your user file without touching the rest of it.
 `nexo pricing` with no values shows what is known and where it comes from.
 
-The values also correct themselves from the providers' own error messages:
-when a request is refused because it is longer than the window, the number
-in the message (`maximum context length is 131072 tokens`, `exceeds the
-context window of this model (256k)`...) is saved as the model's
-`context_window` and the history is compacted; when `max_tokens` is above
-what the model allows, the limit named is saved as `max_output` and the
-request is retried with it; an unknown model name gets a notice with the
-closest names. Each correction shows a `model` card with `from error`.
+The values also correct themselves from the provider's own error messages: a refusal naming the context
+window is saved as the model's `context_window` and the history is compacted; a `max_tokens` above the limit
+is saved as `max_output` and the request retried; an unknown model name gets a notice with the closest names.
+Each correction shows a `model` card with `from error`.
 
 ### The web
 
@@ -645,7 +599,7 @@ titles, URLs and snippets; `web_fetch` reads one page and gives it back as
 Markdown (title first, scripts, styles, menus and forms dropped, links made
 absolute; text, Markdown and JSON as they are; PDFs and images are refused).
 Long pages come in pieces of 20 000 characters: the output ends with the
-`start` of the next piece.
+`start` of the next piece. After two refused searches in a row `web_search` stops trying for two minutes and tells the model to go on without it.
 
 | `[web] search` | Key | Notes |
 |---|---|---|
@@ -720,19 +674,18 @@ the same on every request, so they stay in the cache, and a raw prompt file
 [context]
 policy = "curator"                   # auto | plain | compact | curator
 # curator_spec = "eoq=15000;ledger=10000"   # change the engine's settings
-# working_set = "10000/0/0"         # target/cap/hard tokens of the view (the default: cost rule, ceiling at 95 % of the model window)
+# working_set = "10000/0/0"         # target/cap/hard tokens of the view (default: cost rule, ceiling at 95 % of the window)
 ```
 
-`--curator-spec SPEC` (or `NEXO_CURATOR_SPEC`) sets them for one run, over the file.
+`--curator-spec SPEC` (or `NEXO_CURATOR_SPEC`) sets them for one run, over the file. One more switch: `kept` (default `0`, off) makes epochs land only when what leaves pays for the view sent again ([`docs/how-it-works.md`](../docs/how-it-works.md)).
 
 The status bar says what the policy is doing, next to the gauge:
 
 | Label | Meaning |
 |---|---|
-| `curator −62%` | this call sends 62% fewer tokens than the whole history |
-| `curator idle` | the whole history still costs less to send than to rewrite: a rewrite pays the provider's prompt cache again, so the curator steps in as the history grows (in recorded sessions, from 30k to 70k tokens, around the 6th to 20th call) |
-| `+3 in` | this call put 3 messages in the view: new ones, and old ones brought back |
-| `-12 out` | this call took 12 messages out of the view, or cut them (they stay in the history and can be asked for) |
+| `curator` | the curator is on; this call changed the window by too little to name |
+| `curator -12k tok` / `curator +3.0k tok` | this call's view is 12k tokens smaller (or 3.0k larger, when old messages came back) than the one before, new messages counted out |
+| `curator idle` | the whole history still costs less to send than to rewrite: a rewrite pays the provider's prompt cache again, so the curator steps in as the history grows (in recorded sessions, from 30k to 70k tokens) |
 | `curator off` | the curator stopped; every call sends the whole history (the reason is in `/context`) |
 | `plain` | every call sends the whole history; when `auto` chose it, a warning says why |
 
@@ -758,20 +711,7 @@ that stopped between a tool call and its result (a session closed or killed
 mid-step) is mended before it is sent: the call is answered as not run, and
 nothing it holds is lost.
 
-Replayed offline on the 7 whole-history recordings in
-`crates/nexo-curator/tests/fixtures/` (`examples/replay.rs`), the curator sends
-26% fewer tokens in total, from −49% to +7% per session
-([`docs/results.md`](../docs/results.md), "Measured in nexo"). On recordings
-that are not in this repository: a scripted 37-call session (reading and searching this
-repository's modules, an OpenAI-compatible endpoint): plain sends 2.78M tokens,
-the curator 0.90M (−68%); with cached input at a tenth of the price, −42% of
-the input cost. Replaying 28 recorded sessions of 8 to 52 calls: −42% of the
-tokens sent; the 9 sessions
-that ended with 18k–80k tokens of history were never cut. The default engine is not made more eager: in the cache-aware
-simulation, rewriting earlier saves less money and adds recovery calls.
-`curator_spec = "eoq=15000;ledger=10000"` traded a little saving for fewer
-calls (−6.4% of cost against −6.7%, 517 calls against 553 on 503 recorded steps);
-those figures were measured with the previous default.
+Savings per recording, live runs and the cache-aware simulation: [`docs/results.md`](../docs/results.md).
 
 The default spec is `D_SPEC` in the crate; [`docs/how-it-works.md`](../docs/how-it-works.md)
 shows it whole, with what each setting does. A spec is `key=value` pairs
@@ -812,25 +752,7 @@ the history passes `compact_at` tokens.
 
 ### Benchmark
 
-`nexo bench` runs agent tasks against a real model under several context
-policies and scores each run with the task's own checker:
-
-```sh
-printf %s "$DEEPSEEK_API_KEY" | nexo bench --upstream https://api.deepseek.com/anthropic --model deepseek-chat \
-  --key - --tasks realm --arms plain,compact,curator \
-  --repeats 1 --max-steps 1000 --budget 5 --out bench-out
-```
-
-An arm is `[NAME@]plain|compact|curator[:k=v;k=v]`: `lean@curator:eoq=15000`
-is the curator with that spec, reported as `lean`. Each run's transcript goes
-to `--out`, with `results.jsonl` (one line per run) and `summary.md` (score,
-steps, requests, tokens, cost, tool errors and repeated calls per arm). The
-`realm` task asks the agent to rebuild a game's coin rule into a `coins.rs`
-from experiments on a binary; the small tasks are Rust mini-projects with a
-trap long runs tend to fall into. `--budget` caps the spending, in dollars; for a
-model nexo has no prices for, give them with `--price MISS,HIT,OUT` (dollars per
-million tokens), or the bench refuses to start.
-External tasks `repoqa` and `canonstep` (with `--llmb DIR`) and `nexo bench report` (report.html): see `nexo bench --help`.
+`nexo bench` runs agent tasks against a real model under several context policies (`--arms plain,compact,curator`) and scores each run with the task's own checker: options, arms, tasks and output in [`docs/usage.md`](../docs/usage.md#the-benchmark-nexo-bench) and `nexo bench --help`. Run it in a container or a VM: the tasks run commands the model writes.
 
 #### Aider Polyglot
 
@@ -856,8 +778,7 @@ before nexo left the calls of a reply cut at max_tokens out of its history
   <img alt="Aider Polyglot, 225 exercises: nexo with deepseek-chat passes 49 % on the first try and 75 % after one retry (.49); DeepSeek V3.2-Exp in Aider, from the public leaderboard: Chat 39 % and 70 % (-e.88), Reasoner 40 % and 74 % (.30). Per language for nexo: C++ 62 then 96 %, Rust 70 then 77 %, Python 44 then 74 %, JavaScript 49 then 71 %, Java 23 then 70 %, Go 59 then 69 %" src="docs/polyglot-deepseek.svg" width="760">
 </picture>
 
-pass@1 is the share solved on the first try; pass@2 counts those solved after
-one retry that sees the output of the failing tests.
+pass@1 is the share solved on the first try; pass@2 counts those solved after one retry that sees the failing tests' output.
 
 | Language | Exercises | pass@1 | pass@2 | Cost |
 |---|---:|---:|---:|---:|
@@ -869,23 +790,9 @@ one retry that sees the output of the failing tests.
 | Rust | 30 | 70.0 % | 76.7 % | $0.28 |
 | **All** | **225** | **48.9 %** | **74.7 %** | **$1.49** |
 
-Aider's leaderboard has DeepSeek V3.2-Exp chat at 70.2 % (pass@2, 0.88 $).
-The numbers are not like for like: nexo is an agent that reads, runs and edits
-with tools in a sealed box, Aider sends whole-file or diff edits without running
-anything, and `deepseek-chat` is whatever DeepSeek serves on the day. The
-other differences are listed in each run's `summary.md`.
+Aider's leaderboard has DeepSeek V3.2-Exp chat at 70.2 % (pass@2, 0.88 $). The numbers are not like for like: nexo reads, runs and edits with tools in a sealed box, Aider sends whole-file or diff edits without running anything, and `deepseek-chat` is whatever DeepSeek serves on the day. On 16 of these exercises `deepseek-reasoner` passed 12 at pass@2 (8 at pass@1), three runs of `deepseek-chat` 8, 9 and 10 (5, 5 and 4), at 2.6 times the cost: too small a sample to size the gap.
 
-On 16 of these exercises (two or three per language), `deepseek-reasoner` passed 12
-at pass@2 and 8 at pass@1, where three runs of `deepseek-chat` (one with the curator) passed 8, 9 and 10
-(5, 5 and 4 at pass@1), for 2.6 times the cost ($0.25 against $0.10). A sample
-that small says the gap is real but not how large it is.
-
-DeepSeek's model list now names `deepseek-flash` (V4.1 Flash) and
-`deepseek-v4-pro`, with a 1M-token window and replies up to 384K tokens;
-`deepseek-chat` is the older name, and its replies still stop at 8192 tokens.
-nexo's DeepSeek preset starts on `deepseek-flash`. One exercise is not a
-measure: on Go's forth, the one where `deepseek-chat` failed after two cut
-replies, `deepseek-flash` passed at pass@1 in 10 steps for $0.0095.
+nexo's DeepSeek preset starts on `deepseek-flash` (1M-token window, replies up to 384K tokens); `deepseek-chat` is the older name and its replies stop at 8192 tokens.
 
 ## Layout of the code
 

@@ -18,7 +18,7 @@ runs all of them; the last column names the test function.
 | Prompt suggestions: when a turn ends, one short side request repeats the last request of the conversation (same system prompt, tools and messages, so the provider's cache is hit) plus one message asking for the likely next message; the answer shows as dim text in the empty input, `Tab` or `→` takes it whole, any typing, a submit or a new turn hides it; a reply that calls a tool or is empty is dropped; `[ui] suggest = false` turns it off (the agent checks it too; only the interface asks, never headless or ACP) ([docs/SUGGESTIONS.md](docs/SUGGESTIONS.md)) | ✅ | `a_suggestion_repeats_the_last_request_with_one_more_message`, `a_suggestion_leaves_the_history_alone_runs_nothing_and_is_not_asked_when_off`, `tab_and_right_take_the_ghost_text_into_the_draft_on_screen`, `a_suggestion_is_asked_for_at_a_normal_end_and_taken_whole_by_tab_or_right` |
 | Prompt history `↑`/`↓`, kept between runs, searched with `Ctrl+R` | ✅ | `history_browses_up_and_down_and_keeps_the_draft`, `ctrl_r_finds_an_earlier_request_and_the_history_outlives_the_run` |
 | Write the draft in `$EDITOR` (`Ctrl+G`) | ✅ | `undo_init_status_tools_and_the_editor_key` |
-| Vim keys (`/vim`, `[ui] vim`) | ✅ | `the_vim_keys_move_edit_and_switch_modes` |
+| Vim keys (`/settings vim`, `[ui] vim`) | ✅ | `the_vim_keys_move_edit_and_switch_modes` |
 | `@file` attachments with a fuzzy picker | ✅ | `attachments_shell_model_and_clear`, `knows_what_the_draft_wants`, `walks_a_project` |
 | Images attached for models that see | ✅ | `an_attached_image_goes_as_an_image_part` |
 | Paste a screenshot with `Ctrl+V` | ✅ | `a_pasted_image_is_kept_and_goes_with_the_request`, and from a real X clipboard: `ctrl_v_reads_an_image_from_a_real_x_clipboard` |

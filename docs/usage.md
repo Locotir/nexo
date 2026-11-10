@@ -70,6 +70,9 @@ docs/
   related-work.md           what this work builds on
   providers-base.md         the provider protocols nexo speaks
   providers-policy.md       what each provider's terms allow
+  context-curator.md        how the curator builds the view of a call
+  CI.md                     the GitHub Action and GitLab template
+  bench/                    plans and results of the head-to-head runs
 nexo/
   README.md                 using nexo
   ARCHITECTURE.md           the crates and their contracts
@@ -83,7 +86,7 @@ nexo/
     nexo-bench              the benchmark behind `nexo bench`
     nexo-tui                the full-screen interface
     nexo-cli                the `nexo` binary
-.github/workflows/ci.yml    format, build, test and clippy on Linux and Windows
+.github/workflows/         ci.yml (format, build, test, clippy on Linux and Windows), install.yml, release.yml
 ```
 
 ## Replaying the curator on a recorded run

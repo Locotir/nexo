@@ -5,7 +5,7 @@ the shape before you write it.
 
 ## Build and check
 
-Rust 1.80 or newer. From `nexo/`, the checks the CI runs: the format check on Linux, the other
+Rust 1.89 or newer. From `nexo/`, the checks the CI runs: the format check on Linux, the other
 three on Linux and Windows:
 
 ```sh
