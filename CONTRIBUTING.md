@@ -47,3 +47,5 @@ One topic per commit, a short imperative subject (`tui: keep the draft when a mo
 the four checks green before you push.
 
 By contributing you agree that your work is released under the [MIT license](LICENSE).
+
+See also the [code of conduct](CODE_OF_CONDUCT.md) and the [changelog](CHANGELOG.md).
