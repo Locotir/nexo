@@ -385,7 +385,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+U", "cut to the start of the line"),
             ("Alt+B / F", "move one word back / forward"),
             ("Ctrl+V", "paste text, or attach a copied image"),
-            ("Ctrl+G", "write in $EDITOR"),
+            ("Ctrl+G", "write in $VISUAL or $EDITOR"),
             ("Click / drag", "place the cursor / select text (copied on release)"),
         ],
     ),

@@ -83,7 +83,7 @@ pub fn placeholder(cfg: &Config) -> Picked {
 
 pub fn nothing_chosen_message() -> String {
     format!(
-        "no provider chosen and no key found: set one (e.g. {}) or run `nexo auth login <provider>`, then `nexo use <provider>`; `nexo guide` explains every way",
+        "no provider chosen and no key found\nset a key (e.g. {}) or run `nexo auth login <provider>`\nthen `nexo use <provider>`; `nexo guide` lists every way",
         crate::account::KEY_IN_ENV
     )
 }
@@ -353,7 +353,7 @@ fn shorten(s: &str, n: usize) -> String {
 }
 
 /// The limits of every model known under `name`: the configured ones, the
-/// catalogue's and the vendor's, with prices and limits resolved the way the
+/// catalogue's and the provider's, with prices and limits resolved the way the
 /// agent resolves them.
 pub async fn print_models(cfg: &Config, provider: Option<&str>, refresh: bool, json: bool) -> anyhow::Result<i32> {
     // with --json the notes go to stderr, so stdout holds only the list
@@ -405,16 +405,16 @@ pub async fn print_models(cfg: &Config, provider: Option<&str>, refresh: bool, j
                 Some(list)
             }
             Ok(Err(e)) => {
-                say!("(the vendor's list is not available: {})", e.message);
+                say!("(the provider's list is not available: {})", e.message);
                 None
             }
             Err(_) => {
-                say!("(the vendor's list did not answer in time)");
+                say!("(the provider's list did not answer in time)");
                 None
             }
         }
     } else {
-        say!("(no key for {name}: the vendor's list is not asked for; {})", crate::account::how_to_unlock(&name, p));
+        say!("(no key for {name}: the provider's list is not asked for; {})", crate::account::how_to_unlock(&name, p));
         None
     };
     if json {

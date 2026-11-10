@@ -317,7 +317,11 @@ impl App {
                 };
                 self.notice(Level::Warn, format!("unknown command /{name} ({hint})"));
             }
-            Command::BadArgument(cmd, arg) => self.notice(Level::Warn, format!("/{cmd}: cannot read '{arg}'")),
+            Command::BadArgument(cmd, arg) => {
+                let valid: Vec<&str> = crate::commands::fixed_args(&cmd).iter().map(|(v, _)| *v).collect();
+                let tail = if valid.is_empty() { String::new() } else { format!(". Use one of: {}", valid.join(", ")) };
+                self.notice(Level::Warn, format!("/{cmd}: cannot read '{arg}'{tail}"))
+            }
         }
         self.dirty = true;
     }

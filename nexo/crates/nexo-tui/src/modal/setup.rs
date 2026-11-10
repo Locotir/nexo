@@ -1046,7 +1046,7 @@ impl Setup {
                     let set = std::env::var(v).is_ok_and(|k| !k.trim().is_empty());
                     say(
                         &mut lines,
-                        &if set { format!("${v} is set: Enter tries it") } else { format!("${v} is not set") },
+                        &if set { format!("${v} is set · Enter try it") } else { format!("${v} is not set") },
                         dim,
                     );
                 }
@@ -1128,7 +1128,7 @@ impl Setup {
                 // the sign-in failed: one line for the reason, then what the keys do
                 let one = e.lines().next().unwrap_or("");
                 lines.push(Line::from(Span::styled(truncate(&format!("✗ {one}"), w.max(8)), theme.style(theme.error))));
-                lines.push(Line::from(Span::styled("Enter tries again, Esc goes back", dim)));
+                lines.push(Line::from(Span::styled("Enter retry · Esc back", dim)));
             } else {
                 say(&mut lines, &format!("✗ {e}"), theme.style(theme.error));
             }
@@ -1140,7 +1140,7 @@ impl Setup {
         if list_at.is_some() {
             if self.list.ranked.is_empty() {
                 let none = if self.step == Step::Model && !self.list.query.trim().is_empty() {
-                    "no match: Enter tries the name as typed"
+                    "no match · Enter try it as typed"
                 } else {
                     "no match"
                 };

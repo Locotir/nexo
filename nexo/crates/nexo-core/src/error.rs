@@ -29,8 +29,37 @@ pub enum ErrorKind {
     Other,
 }
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize, Deserialize)]
-#[error("{kind:?}: {message}")]
+impl ErrorKind {
+    /// A plain lowercase phrase for the kind.
+    pub fn phrase(self) -> &'static str {
+        match self {
+            ErrorKind::Auth => "key missing or rejected",
+            ErrorKind::RateLimit => "rate limited",
+            ErrorKind::Overloaded => "provider overloaded",
+            ErrorKind::ContextLength => "request too long for the model",
+            ErrorKind::BadRequest => "request refused",
+            ErrorKind::Network => "network error",
+            ErrorKind::Parse => "unreadable answer",
+            ErrorKind::Server => "provider error",
+            ErrorKind::Cancelled => "cancelled",
+            ErrorKind::Other => "error",
+        }
+    }
+}
+
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind.phrase(), self.message)?;
+        if self.kind == ErrorKind::Auth {
+            write!(f, " (run `nexo auth login <provider>`)")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderError {
     pub kind: ErrorKind,
     pub status: Option<u16>,

@@ -692,7 +692,7 @@ impl Run {
                     Err(Failure::Model(e)) if e.is_retryable() && tries < ROUND_RETRIES => {
                         tries += 1;
                         let wait = e.retry_after.unwrap_or(Duration::from_secs(2u64 << tries)).min(MAX_WAIT);
-                        say(format!("the model call broke off ({}); asking again in {}s", e.message, wait.as_secs()));
+                        say(format!("the model call broke off ({}); asking again in {}s", e.human(), wait.as_secs()));
                         tokio::select! {
                             _ = tokio::time::sleep(wait) => {}
                             _ = ctx.cancel.cancelled() => return Err(stopped(&messages)),
@@ -701,7 +701,7 @@ impl Run {
                     Err(Failure::Model(e)) => {
                         return Err(format!(
                             "the sub-agent's model call failed: {}{}",
-                            e.message,
+                            e.human(),
                             progress(&messages, round, rounds)
                         ))
                     }

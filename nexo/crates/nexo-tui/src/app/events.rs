@@ -946,7 +946,7 @@ impl App {
                         .collect();
                     self.modal = Some(Modal::Picker(Picker::new(
                         PickKind::Tree,
-                        &format!("Sessions · {n} · Enter jumps"),
+                        &format!("Sessions · {n} · Enter jump"),
                         items,
                         None,
                     )));
@@ -963,7 +963,7 @@ impl App {
                         .collect();
                     self.modal = Some(Modal::Picker(Picker::new(
                         PickKind::Trash,
-                        &format!("Trash · {n} · Enter brings back"),
+                        &format!("Trash · {n} · Enter restore"),
                         items,
                         None,
                     )));

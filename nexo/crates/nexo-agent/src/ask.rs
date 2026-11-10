@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
 /// Options a question offers at most (the person can always write their own).
 pub const MAX_OPTIONS: usize = 6;
 
-pub const APPROVE_AUTO: &str = "Yes, auto-accept edits";
+pub const APPROVE_AUTO: &str = "Yes, and accept edits";
 pub const APPROVE_ASK: &str = "Yes, approve each edit";
 pub const KEEP_PLANNING: &str = "No, keep planning";
 

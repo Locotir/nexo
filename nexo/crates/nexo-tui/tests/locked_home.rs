@@ -145,7 +145,7 @@ fn a_failed_sign_in_is_one_line_with_what_the_keys_do() {
     assert_eq!(out, SetupOut::Nothing);
     let t = text(&s);
     assert!(t.contains("✗ the sign-in was refused") && !t.contains("stack of details"), "{t}");
-    assert!(t.contains("Enter tries again, Esc goes back"), "{t}");
+    assert!(t.contains("Enter retry · Esc back"), "{t}");
 }
 
 #[test]

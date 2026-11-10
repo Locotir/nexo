@@ -361,7 +361,7 @@ impl Run {
                 if stream {
                     line(&json!({"type": "notice", "level": format!("{level:?}").to_lowercase(), "text": text}));
                 } else if self.fmt != Fmt::Legacy {
-                    eprintln!("[{level:?}] {text}");
+                    eprintln!("{}: {text}", format!("{level:?}").to_lowercase());
                 }
             }
             AgentEvent::TurnEnd { reason } => {

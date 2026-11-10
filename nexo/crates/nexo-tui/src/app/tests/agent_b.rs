@@ -58,7 +58,7 @@ fn a_session_is_deleted_with_two_presses_and_comes_back_with_undelete() {
     let Some(Modal::Picker(p)) = &a.modal else { panic!("the picker stays") };
     assert_eq!(p.armed.as_deref(), Some("s1"));
     let rows = frame(&mut a, 70, 16).join("\n");
-    assert!(rows.contains("Del again deletes") && rows.contains("· 2 · Del deletes"), "{rows}");
+    assert!(rows.contains("Del again delete") && rows.contains("· 2 · Del delete"), "{rows}");
     press(&mut a, KeyCode::Esc);
     assert!(a.modal.is_some(), "Esc first unmarks, the picker stays");
     press(&mut a, KeyCode::Delete);

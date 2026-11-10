@@ -42,7 +42,7 @@ pub const COMMANDS: &[Spec] = &[
         "prompt",
         &["system"],
         "[edit]",
-        "show the system prompt as the model receives it; `edit` opens it in $EDITOR",
+        "show the system prompt as the model receives it; `edit` opens it in $VISUAL or $EDITOR",
     ),
     spec(
         "memory",
@@ -521,7 +521,7 @@ pub fn fixed_args(name: &str) -> &'static [(&'static str, &'static str)] {
             ("workspace-write", "read everything, write only the project and temp"),
             ("read-only", "read everything, write nothing"),
         ],
-        "prompt" => &[("edit", "open the system prompt in $EDITOR")],
+        "prompt" => &[("edit", "open the system prompt in $VISUAL or $EDITOR")],
         "memory" => &[
             ("user", "your own instructions, for every project"),
             ("add", "write one line into the project's instructions"),

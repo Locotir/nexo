@@ -520,7 +520,7 @@ fn edit_file(path: &std::path::Path) -> anyhow::Result<()> {
             Err(e) => last = Some(format!("{bin}: {e}")),
         }
     }
-    anyhow::bail!(last.unwrap_or_else(|| "no editor found: set $EDITOR".into()))
+    anyhow::bail!(last.unwrap_or_else(|| "no editor found: set $VISUAL or $EDITOR".into()))
 }
 
 static SUPERVISE: std::sync::OnceLock<nexo_agent::supervise::Options> = std::sync::OnceLock::new();

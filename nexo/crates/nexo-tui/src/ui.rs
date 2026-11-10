@@ -2129,8 +2129,8 @@ fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
         let q = truncate(&crate::render::wrap::clean(p.query.trim()), 24);
         let msg = match &p.kind {
             PaletteKind::Commands => match p.suggestion() {
-                Some(s) => format!(" no command “{q}” · did you mean /{s}? Tab takes it · /help lists all"),
-                None => format!(" no command “{q}” · Enter sends it as text · /help lists all"),
+                Some(s) => format!(" no command “{q}” · did you mean /{s}? Tab accept · /help lists all"),
+                None => format!(" no command “{q}” · Enter send as text · /help lists all"),
             },
             PaletteKind::Files => format!(" no file matches “{q}” · {} files here", p.items.len()),
             PaletteKind::Args(c) => format!(" no value of /{c} matches “{q}”"),
@@ -2420,7 +2420,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 let it = &p.items[idx];
                 let armed = i == p.selected && p.armed.as_deref() == Some(it.value.as_str());
                 let label = truncate(&it.label, inner_w.saturating_sub(2));
-                let hint = if armed { "Del again deletes · Esc keeps" } else { it.hint.as_str() };
+                let hint = if armed { "Del again delete · Esc keep" } else { it.hint.as_str() };
                 let hint = truncate(hint, inner_w.saturating_sub(width(&label) + 4));
                 let pad = inner_w.saturating_sub(width(&label) + width(&hint) + 2);
                 let style = if armed {
@@ -2448,7 +2448,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 ]));
             }
             let title = if p.kind == PickKind::Session && !p.items.is_empty() {
-                format!(" {} · {} · Del deletes ", p.title, p.items.len())
+                format!(" {} · {} · Del delete ", p.title, p.items.len())
             } else {
                 format!(" {} ", p.title)
             };

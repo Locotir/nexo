@@ -257,7 +257,7 @@ pub async fn server(cfg: &ProviderConfig, key: Option<&str>) -> Result<ServerPro
         401 | 403 => {
             probe.needs_key = true;
             trail.push(format!(
-                "{url}: {} — {}",
+                "{url}: {} | {}",
                 a.status,
                 if key.is_some() { "the key was refused" } else { "a key is needed" }
             ));
@@ -311,7 +311,7 @@ async fn cloud_list(cfg: &ProviderConfig, key: Option<&str>, kind: &str) -> Resu
         400 | 401 | 403 => {
             probe.needs_key = true;
             probe.trail.push(format!(
-                "{}: {} — {}",
+                "{}: {} | {}",
                 kind_label(kind),
                 a.status,
                 if key.is_some() { "the key was refused" } else { "a key is needed" }

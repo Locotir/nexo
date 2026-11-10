@@ -256,7 +256,7 @@ impl App {
         self.input.set_text(&text);
         self.refresh_palette();
         self.dirty = true;
-        self.flash("queued message back in the draft: edit it, Enter sends it again");
+        self.flash("queued message back in the draft: edit it, Enter send again");
     }
 
     /// The strip above the draft: a list that is not finished, or one that just finished in this turn.
@@ -374,7 +374,7 @@ impl App {
                 hint: String::new(),
             })
             .collect();
-        self.modal = Some(Modal::Picker(Picker::new(PickKind::Queue, "Queued · Enter edits", items, None)));
+        self.modal = Some(Modal::Picker(Picker::new(PickKind::Queue, "Queued · Enter edit", items, None)));
     }
 
     /// `/shared-memory list`: the memory of other sessions that goes with the next message.

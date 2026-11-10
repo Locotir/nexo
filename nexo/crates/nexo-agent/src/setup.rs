@@ -134,14 +134,14 @@ async fn try_once(
     });
     let start = Instant::now();
     let run = async {
-        let mut s = client.stream(cfg, &req, 0).await.map_err(|e| e.message)?;
+        let mut s = client.stream(cfg, &req, 0).await.map_err(|e| e.human())?;
         let mut t = Tried { ms: 0, text: String::new(), called_tool: false, reasoned: false };
         while let Some(ev) = s.next().await {
             match ev {
                 StreamEvent::TextDelta(d) => t.text.push_str(&d),
                 StreamEvent::ReasoningDelta(_) | StreamEvent::RedactedReasoning { .. } => t.reasoned = true,
                 StreamEvent::ToolCallStart { .. } => t.called_tool = true,
-                StreamEvent::Error(e) => return Err(e.message),
+                StreamEvent::Error(e) => return Err(e.human()),
                 StreamEvent::Done => break,
                 _ => {}
             }

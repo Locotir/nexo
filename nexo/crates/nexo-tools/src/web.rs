@@ -59,7 +59,7 @@ impl From<String> for Fail {
 const BREAKER_AFTER: u32 = 2;
 const BREAKER_OPEN: Duration = Duration::from_secs(120);
 const NO_RETRY: &str = "Web search is not available right now: do not retry it; go on with what you have, or open a URL you already know with web_fetch.";
-const BREAKER_SAID: &str = "web_search: not available in this session (the search backend refused 2 requests in a row). Do not call it again; go on with what you have, or open a URL you already know with web_fetch.";
+const BREAKER_SAID: &str = "web_search: not available in this session (the backend refused 2 requests in a row). Do not call it again; go on with what you have, or open a URL you already know with web_fetch.";
 
 /// Counts refused searches in a row. Open while `BREAKER_AFTER` refusals have come in a row and the
 /// last one is younger than `open_for`. The first call after it closes is a probe: one more refusal
@@ -366,7 +366,7 @@ impl WebSearch {
             return Ok((Backend::DuckDuckGo, false));
         }
         let b = Backend::parse(wanted).ok_or_else(|| {
-            format!("unknown search backend `{wanted}` ([web] search: auto, duckduckgo, brave, tavily, exa, searxng)")
+            format!("unknown backend `{wanted}` ([web] search: auto, duckduckgo, brave, tavily, exa, searxng)")
         })?;
         Ok((b, false))
     }
