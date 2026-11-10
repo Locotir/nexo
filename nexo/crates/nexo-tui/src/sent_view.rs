@@ -203,7 +203,7 @@ impl SentView {
                 return vec![Line::default(), Line::from(spans)];
             }
         }
-        vec![Line::default(), Line::from(Span::styled("Esc closes", theme.dim()))]
+        vec![Line::default(), Line::from(Span::styled("Esc close", theme.dim()))]
     }
 
     /// The body at `w` columns. Also records where each section starts and which lines match the search,

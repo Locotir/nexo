@@ -20,5 +20,5 @@
                                                                                ┃
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything
- y allow · a always · n deny · 1-9 rule · ↑↓ scroll        20261102-100000-ef56
+ y/Enter allow · a always · n/Esc deny · 1-9 rule · ↑↓ scroll
  nexo │ deepseek/deepseek-chat │ ask │ ━━━━━━━━ 69%     Σ 6.5k billed · $0.0031

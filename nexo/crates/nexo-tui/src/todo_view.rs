@@ -238,7 +238,7 @@ impl TodoView {
                 return Line::from(spans);
             }
         }
-        Line::from(Span::styled(truncate("Esc closes", w), theme.dim()))
+        Line::from(Span::styled(truncate("Esc close", w), theme.dim()))
     }
 
     /// The body at `w` columns. `spinner` is the frame of the spinner (None: still), `pulse` 0..1.

@@ -298,6 +298,8 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         mem: bool,
         extra: bool,
         counts: bool,
+        // the curator's label: it outlives the counts
+        label: bool,
         goal: bool,
         gauge: bool,
         mode: bool,
@@ -356,17 +358,17 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                     let mut g: Vec<Seg> = cells.iter().map(|c| Seg { text: c.text.clone(), style: c.style }).collect();
                     if k.counts {
                         g.push(Seg { text: format!(" {}", counts.text), style: counts.style });
-                        // the curator policy rides with the counts when it is listed right after
-                        let at = order.iter().position(|p| *p == "context");
-                        if at.is_some_and(|i| order.get(i + 1) == Some(&"curator")) {
-                            if let Some(p) = &policy_seg {
-                                g.push(Seg { text: format!(" {}", p.text), style: p.style });
-                            }
+                    }
+                    // the curator policy rides with the gauge when it is listed right after
+                    let at = order.iter().position(|p| *p == "context");
+                    if k.label && at.is_some_and(|i| order.get(i + 1) == Some(&"curator")) {
+                        if let Some(p) = &policy_seg {
+                            g.push(Seg { text: format!(" {}", p.text), style: p.style });
                         }
                     }
                     out.push(g);
                 }
-                "curator" if k.counts => {
+                "curator" if k.label => {
                     let at = order.iter().position(|p| *p == "context");
                     let joined = k.gauge && at.is_some_and(|i| order.get(i + 1) == Some(&"curator"));
                     if let (false, Some(p)) = (joined, &policy_seg) {
@@ -394,6 +396,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         mem: true,
         extra: true,
         counts: true,
+        label: true,
         goal: true,
         gauge: true,
         mode: true,
@@ -406,6 +409,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         Keep { dir: false, hint: false, branch: false, extra: false, ..all },
         Keep { dir: false, hint: false, branch: false, mem: false, extra: false, ..all },
         Keep { dir: false, hint: false, branch: false, mem: false, extra: false, counts: false, ..all },
+        Keep { dir: false, hint: false, branch: false, mem: false, extra: false, counts: false, label: false, ..all },
         Keep {
             dir: false,
             hint: false,
@@ -413,6 +417,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             mem: false,
             extra: false,
             counts: false,
+            label: false,
             short_model: true,
             ..all
         },
@@ -423,6 +428,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             mem: false,
             extra: false,
             counts: false,
+            label: false,
             short_model: true,
             goal: false,
             ..all
@@ -434,6 +440,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             mem: false,
             extra: false,
             counts: false,
+            label: false,
             short_model: true,
             goal: false,
             gauge: false,
@@ -446,6 +453,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             mem: false,
             extra: false,
             counts: false,
+            label: false,
             short_model: true,
             goal: false,
             gauge: false,
@@ -1537,8 +1545,12 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     let base = theme.bar();
     let left = if app.modal.is_some() {
         match app.modal.as_ref() {
-            Some(Modal::Permission(p)) if p.rules_shown == 0 => " y allow · a always · n deny · ↑↓ scroll".to_string(),
-            Some(Modal::Permission(_)) => " y allow · a always · n deny · 1-9 rule · ↑↓ scroll".to_string(),
+            Some(Modal::Permission(p)) if p.rules_shown == 0 => {
+                " y/Enter allow · a always · n/Esc deny · ↑↓ scroll".to_string()
+            }
+            // too narrow for the Enter and Esc spellings: the plain keys (the buttons above say the same)
+            Some(Modal::Permission(_)) if area.width < 50 => " y allow · a always · n deny · 1-9 rule".to_string(),
+            Some(Modal::Permission(_)) => " y/Enter allow · a always · n/Esc deny · 1-9 rule · ↑↓ scroll".to_string(),
             Some(Modal::Question(a)) if a.typing => {
                 " type your answer · Enter send · Esc back to the options".to_string()
             }

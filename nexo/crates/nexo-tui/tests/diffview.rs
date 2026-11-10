@@ -147,7 +147,9 @@ fn navigation_folding_and_second_file() {
 #[test]
 fn empty_and_error_states() {
     let mut dv = DiffView::from_collected(Collected::default());
-    assert!(capture(&mut dv, 80, 24).contains("No changes"));
+    let c = capture(&mut dv, 80, 24);
+    assert!(c.contains("No changes"));
+    assert!(c.contains("Esc close") && !c.contains("n/p hunk"), "an empty viewer lists only the way out");
     let mut dv = DiffView::from_collected(Collected { error: Some("fatal: bad object".into()), ..Default::default() });
     assert!(capture(&mut dv, 80, 24).contains("fatal: bad object"));
     let mut dv = DiffView::from_collected(Collected {

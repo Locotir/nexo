@@ -160,7 +160,7 @@ impl JobsView {
                 return Line::from(spans);
             }
         }
-        Line::from(Span::styled("Esc closes", theme.dim()))
+        Line::from(Span::styled("Esc close", theme.dim()))
     }
 
     /// The body at `w` columns: the lines, the line each job's row starts at (the list) and the line

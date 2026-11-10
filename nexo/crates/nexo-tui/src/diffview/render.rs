@@ -202,7 +202,11 @@ pub fn draw(f: &mut Frame, dv: &mut DiffView, area: Rect, theme: &Theme) {
         f.render_widget(Paragraph::new(format!(" {}", truncate(n, area.width as usize - 2))).style(theme.dim()), note);
     }
     let w = area.width as usize - 2;
-    let keys = dv.hint.as_deref().map_or_else(|| fit_keys(KEYS, w), |h| truncate(h, w));
+    // with nothing to show, only the way out does anything
+    let keys = dv
+        .hint
+        .as_deref()
+        .map_or_else(|| fit_keys(if dv.files.is_empty() { "Esc close" } else { KEYS }, w), |h| truncate(h, w));
     f.render_widget(Paragraph::new(format!(" {keys}")).style(theme.dim()), foot);
     if dv.files.is_empty() {
         dv.list_area = Rect::default();

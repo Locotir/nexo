@@ -67,7 +67,7 @@ impl App {
         let top = self.view_top();
         let line = if y < a.y {
             top.saturating_sub(1)
-        } else if y >= a.y + a.height {
+        } else if y as u32 >= a.y as u32 + a.height as u32 {
             top + a.height as usize
         } else {
             top + (y - a.y) as usize

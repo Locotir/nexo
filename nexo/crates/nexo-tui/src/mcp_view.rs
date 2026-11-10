@@ -116,7 +116,7 @@ impl McpView {
                 return Line::from(spans);
             }
         }
-        Line::from(Span::styled("Esc closes", theme.dim()))
+        Line::from(Span::styled("Esc close", theme.dim()))
     }
 
     /// The body at `w` columns: the lines, the line each server's row starts at and the line to keep in sight.

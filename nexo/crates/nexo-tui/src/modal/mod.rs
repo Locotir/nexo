@@ -1005,7 +1005,8 @@ fn two_columns(
 }
 
 pub fn contains(r: Rect, x: u16, y: u16) -> bool {
-    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+    // checked: a rect at the edge of the u16 grid must not overflow
+    x >= r.x && (x as u32) < r.x as u32 + r.width as u32 && y >= r.y && (y as u32) < r.y as u32 + r.height as u32
 }
 
 #[cfg(test)]

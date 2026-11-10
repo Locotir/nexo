@@ -280,7 +280,7 @@ fn modals_and_palette_draw_on_top() {
     assert!(all.contains("$ cargo test"));
     assert!(all.contains("1  bash(cargo *)"));
     assert!(all.contains("[y] allow"));
-    assert!(rows[rows.len() - 2].contains("y allow · a always"));
+    assert!(rows[rows.len() - 2].contains("y/Enter allow · a always · n/Esc deny"));
     a.modal = None;
     a.input.set_text("/mo");
     a.refresh_palette();
