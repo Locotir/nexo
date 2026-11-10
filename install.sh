@@ -109,9 +109,17 @@ case ":$PATH:" in
 *)
     line="export PATH=\"$dir:\$PATH\"  # nexo"
     changed=0
-    for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+    zdir="${ZDOTDIR:-$HOME}"
+    for rc in "$HOME/.profile" "$HOME/.bashrc" "$zdir/.zshrc"; do
         case "$rc" in
         "$HOME/.profile") ;;
+        "$zdir/.zshrc")
+            # zsh does not read .profile: a zsh user with no .zshrc gets one
+            case "${SHELL:-}" in
+            *zsh) mkdir -p "$zdir" ;;
+            *) [ -e "$rc" ] || continue ;;
+            esac
+            ;;
         *) [ -e "$rc" ] || continue ;;
         esac
         grep -qsF "$line" "$rc" || { printf '\n%s\n' "$line" >>"$rc" && changed=1; }

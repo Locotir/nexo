@@ -59,6 +59,13 @@ jobs:
           n="$(grep -cF '# nexo' "$HOME_DIR/.profile")"
           echo "rc lines: $n"
           [ "$n" = 1 ]
+      - name: a zsh user with no .zshrc gets one with the PATH line
+        run: |
+          set -eu
+          home="$RUNNER_TEMP/zhome"
+          mkdir -p "$home"
+          env -i HOME="$home" SHELL=/bin/zsh PATH=/usr/bin:/bin sh ./install.sh
+          [ "$(grep -cF '# nexo' "$home/.zshrc")" = 1 ]
 
   windows:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'

@@ -3580,6 +3580,54 @@ async fn reasoning_past_the_budget_with_nothing_said_is_cut_and_asked_again() {
 }
 
 #[tokio::test]
+async fn after_two_cuts_the_next_call_runs_without_the_budget() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("the answer"))),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests().len(), 3);
+    let said: String = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(said.contains("the answer"), "{said}");
+    assert!(!notices(&evs).iter().any(|n| n.contains("reasoned without answering")));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_reply_that_only_reasons_ends_with_a_notice() {
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.reasoning_budget = 0;
+    let only = vec![
+        StreamEvent::Start { response_id: None, model: None },
+        StreamEvent::ReasoningDelta("thinking".into()),
+        StreamEvent::Usage(Usage { input: 1000, output: 10, ..Default::default() }),
+        StreamEvent::Finish(FinishReason::Stop),
+        StreamEvent::Done,
+    ];
+    let client = Scripted::new(vec![Reply::Events(only.clone()), Reply::Events(only.clone()), Reply::Events(only)]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert!(notices(&evs).iter().any(|n| n.contains("reasoned without answering")), "{:?}", notices(&evs));
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn a_budget_of_zero_lets_the_reasoning_run() {
     let d = tempfile::tempdir().unwrap();
     let mut cfg = config(PermissionMode::Ask);

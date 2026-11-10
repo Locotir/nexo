@@ -139,6 +139,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             let (_, pcfg, model) = st.target.get();
             match setup::effort_of(&pcfg, &model, &st.config.agent.reasoning) {
                 Some(_) => 0,
+                // two cuts in this turn already: this call runs free so the model can finish
+                None if mute >= 2 => 0,
                 None => u64::from(st.config.agent.reasoning_budget),
             }
         };
@@ -201,7 +203,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 msg = m;
             }
         }
-        if over_budget && c.usage.is_empty() {
+        let estimated = over_budget && c.usage.is_empty();
+        if estimated {
             // the stream was dropped before the provider's usage event: the output is what was streamed
             c.usage.output = thought / 4;
             c.call.output = thought / 4;
@@ -248,8 +251,11 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             if !usage.is_empty() {
                 let model = req.model.clone();
                 add_usage(&mut st, &events, &model, usage, call, UsageKind::Main);
-                st.policy.usage(call.cache_read, call.total_input());
-                st.tok_ratio = learn_ratio(st.tok_ratio, st.est_sent, call.total_input());
+                // an estimate has no input side: it says nothing about the cache or the token ratio
+                if !estimated {
+                    st.policy.usage(call.cache_read, call.total_input());
+                    st.tok_ratio = learn_ratio(st.tok_ratio, st.est_sent, call.total_input());
+                }
             }
             if !msg.content.is_empty() && call.total_input() > 0 {
                 let len = st.history.len();
@@ -344,6 +350,13 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             }
         }
         if calls.is_empty() {
+            if msg.text().trim().is_empty() && ck.stopping.is_none() {
+                notice(
+                    &events,
+                    Level::Warn,
+                    "The model reasoned without answering. Send \"continue\" or raise agent.reasoning_budget.",
+                );
+            }
             if cut {
                 notice(&events, Level::Warn, "the reply was cut at max_tokens (agent.max_tokens)");
             }
