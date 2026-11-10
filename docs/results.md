@@ -140,20 +140,30 @@ task for every arm so the arms are paired.
 **Scored by cost on the common tasks.** The README ranks the arms by one rule: on the tasks every arm solved
 (first solved attempt per task and arm), the winner uses the fewest steps, tokens and dollars together. The index is
 the mean of (steps, tokens, cost), each divided by the best arm's value; 1.00 is best. Tokens are input plus output; cost
-uses the price table above. 8 common tasks in each round.
+uses the price table above. Every arm solved 8 tasks in each round, and 5 (round A) and 6 (round B) of them are kept.
+
+What was left out, and why. Reading the logs afterwards, I found that on some tasks an agent fetched the benchmark's own
+published solution or test files from the internet and read them: all five arms on extract-elf in both rounds, nexo and
+Claude Code on count-dataset-tokens in round A, Hermes on git-multibranch in round A, Claude Code on db-wal-recovery in round B
+(14 trials, each checked in its log). The agents of every harness did it, nexo included. A task where any arm did so is
+excluded for all arms, so the five arms stay paired on the same tasks: count-dataset-tokens, extract-elf and git-multibranch
+in round A; db-wal-recovery and extract-elf in round B.
 
 | arm | A: steps | tokens | cost | index | B: steps | tokens | cost | index |
 |---|---|---|---|---|---|---|---|---|
-| nexo | 95 | 1.92M | 0.145 $ | **1.00** | 88 | 1.57M | 0.086 $ | **1.00** |
-| dsh | 109 | 2.74M | 0.149 $ | 1.20 | 112 | 2.17M | 0.136 $ | 1.41 |
-| Hermes | 123 | 3.36M | 0.153 $ | 1.37 | 111 | 2.44M | 0.127 $ | 1.44 |
-| Claude Code | 113 | 3.98M | 0.209 $ | 1.57 | 118 | 3.02M | 0.183 $ | 1.80 |
-| Codex | 111 | 4.90M | 0.237 $ | 1.78 | 100 | 3.01M | 0.133 $ | 1.54 |
+| nexo | 42 | 0.97M | 0.092 $ | **1.18** | 58 | 0.83M | 0.052 $ | **1.04** |
+| Hermes | 59 | 1.35M | 0.060 $ | 1.27 | 82 | 1.63M | 0.088 $ | 1.75 |
+| Codex | 43 | 1.25M | 0.092 $ | 1.29 | 52 | 0.88M | 0.068 $ | 1.12 |
+| dsh | 56 | 1.53M | 0.081 $ | 1.42 | 90 | 1.75M | 0.107 $ | 1.97 |
+| Claude Code | 59 | 2.54M | 0.131 $ | 2.08 | 70 | 1.51M | 0.104 $ | 1.72 |
 
-Round A tasks: circuit-fibsqrt, code-from-image, count-dataset-tokens, db-wal-recovery, extract-elf, fix-git,
-git-multibranch, log-summary-date-ranges. Round B: cancel-async-tasks, code-from-image, db-wal-recovery, extract-elf,
-fix-git, git-multibranch, hf-model-inference, log-summary-date-ranges. Eight tasks and one attempt each: the index
-says which arm was cheapest on these, not which is better.
+Round A tasks kept (5): circuit-fibsqrt, code-from-image, db-wal-recovery, fix-git, log-summary-date-ranges. Round B kept (6):
+cancel-async-tasks, code-from-image, fix-git, git-multibranch, hf-model-inference, log-summary-date-ranges. Five or six tasks and
+one attempt each: the index says which arm was cheapest on these, not which is better.
+
+Before the exclusion (2026-11-09, 8 tasks per round): round A nexo 1.00, dsh 1.20, Hermes 1.37, Claude Code 1.57, Codex 1.78;
+round B nexo 1.00, dsh 1.41, Hermes 1.44, Codex 1.54, Claude Code 1.80. The pass counts and the other tables on this page
+cover all 16 tasks and are not changed.
 
 **Reading it.** With 16 tasks the intervals overlap for every pair, in both rounds. The arms differ on
 about 8 tasks, each with one attempt; adaptive-rejection-sampler fails for all five arms in both rounds and

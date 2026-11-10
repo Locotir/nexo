@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="610" viewBox="0 0 1000 610" font-family="DejaVu Sans, Arial, sans-serif">
   <rect width="1000" height="610" fill="#1a1a19"/>
   <text x="500" y="32" text-anchor="middle" font-size="18" font-weight="bold" fill="#f0efec">Same model, five harnesses: fewest steps, tokens and dollars together</text>
-  <text x="500" y="54" text-anchor="middle" font-size="13" fill="#c3c2b7">Only the 8 tasks every harness solved count. Index = mean of steps, tokens and cost, each over the best harness's. 1.00 is best.</text>
-  <text x="30" y="92" font-size="14" font-weight="bold" fill="#f0efec">Round A: each harness's defaults</text>
+  <text x="500" y="54" text-anchor="middle" font-size="13" fill="#c3c2b7">Only tasks every harness solved count. Index = mean of steps, tokens and cost, each over the best harness's. 1.00 is best.</text>
+  <text x="30" y="92" font-size="14" font-weight="bold" fill="#f0efec">Round A: each harness's defaults (5 tasks)</text>
   <text x="640" y="92" text-anchor="end" font-size="12" fill="#c3c2b7">steps</text>
   <text x="750" y="92" text-anchor="end" font-size="12" fill="#c3c2b7">tokens</text>
   <text x="850" y="92" text-anchor="end" font-size="12" fill="#c3c2b7">cost</text>
@@ -10,27 +10,27 @@
   <line x1="150" y1="106" x2="150" y2="286" stroke="#c3c2b7" stroke-width="1.5"/>
   <line x1="330" y1="106" x2="330" y2="286" stroke="#383835" stroke-width="1" stroke-dasharray="4 3"/>
   <text x="140" y="129.0" text-anchor="end" font-size="14" font-weight="bold" fill="#f0efec">nexo</text>
-  <rect x="150" y="112" width="180" height="24" fill="#8fb8e6"/>
-  <text x="338" y="129.0" font-size="14" font-weight="bold" fill="#f0efec">1.00</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="129.0">95</text><text x="750" y="129.0">1.92M</text><text x="850" y="129.0">$0.145</text><text x="960" y="129.0">13</text></g>
-  <text x="140" y="165.0" text-anchor="end" font-size="14" fill="#f0efec">dsh</text>
-  <rect x="150" y="148" width="216" height="24" fill="#5a5a55"/>
-  <text x="374" y="165.0" font-size="14" font-weight="bold" fill="#f0efec">1.20</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="165.0">109</text><text x="750" y="165.0">2.74M</text><text x="850" y="165.0">$0.149</text><text x="960" y="165.0">13</text></g>
-  <text x="140" y="201.0" text-anchor="end" font-size="14" fill="#f0efec">Hermes</text>
-  <rect x="150" y="184" width="246" height="24" fill="#5a5a55"/>
-  <text x="404" y="201.0" font-size="14" font-weight="bold" fill="#f0efec">1.37</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="201.0">123</text><text x="750" y="201.0">3.36M</text><text x="850" y="201.0">$0.153</text><text x="960" y="201.0">12</text></g>
-  <text x="140" y="237.0" text-anchor="end" font-size="14" fill="#f0efec">Claude Code</text>
-  <rect x="150" y="220" width="282" height="24" fill="#5a5a55"/>
-  <text x="440" y="237.0" font-size="14" font-weight="bold" fill="#f0efec">1.57</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="237.0">113</text><text x="750" y="237.0">3.98M</text><text x="850" y="237.0">$0.209</text><text x="960" y="237.0">12</text></g>
-  <text x="140" y="273.0" text-anchor="end" font-size="14" fill="#f0efec">Codex</text>
-  <rect x="150" y="256" width="321" height="24" fill="#5a5a55"/>
-  <text x="479" y="273.0" font-size="14" font-weight="bold" fill="#f0efec">1.78</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="273.0">111</text><text x="750" y="273.0">4.90M</text><text x="850" y="273.0">$0.237</text><text x="960" y="273.0">13</text></g>
+  <rect x="150" y="112" width="213" height="24" fill="#8fb8e6"/>
+  <text x="371" y="129.0" font-size="14" font-weight="bold" fill="#f0efec">1.18</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="129.0">42</text><text x="750" y="129.0">0.97M</text><text x="850" y="129.0">$0.092</text><text x="960" y="129.0">13</text></g>
+  <text x="140" y="165.0" text-anchor="end" font-size="14" fill="#f0efec">Hermes</text>
+  <rect x="150" y="148" width="228" height="24" fill="#5a5a55"/>
+  <text x="386" y="165.0" font-size="14" font-weight="bold" fill="#f0efec">1.27</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="165.0">59</text><text x="750" y="165.0">1.35M</text><text x="850" y="165.0">$0.060</text><text x="960" y="165.0">12</text></g>
+  <text x="140" y="201.0" text-anchor="end" font-size="14" fill="#f0efec">Codex</text>
+  <rect x="150" y="184" width="232" height="24" fill="#5a5a55"/>
+  <text x="390" y="201.0" font-size="14" font-weight="bold" fill="#f0efec">1.29</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="201.0">43</text><text x="750" y="201.0">1.25M</text><text x="850" y="201.0">$0.092</text><text x="960" y="201.0">13</text></g>
+  <text x="140" y="237.0" text-anchor="end" font-size="14" fill="#f0efec">dsh</text>
+  <rect x="150" y="220" width="256" height="24" fill="#5a5a55"/>
+  <text x="414" y="237.0" font-size="14" font-weight="bold" fill="#f0efec">1.42</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="237.0">56</text><text x="750" y="237.0">1.53M</text><text x="850" y="237.0">$0.081</text><text x="960" y="237.0">13</text></g>
+  <text x="140" y="273.0" text-anchor="end" font-size="14" fill="#f0efec">Claude Code</text>
+  <rect x="150" y="256" width="374" height="24" fill="#5a5a55"/>
+  <text x="532" y="273.0" font-size="14" font-weight="bold" fill="#f0efec">2.08</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="273.0">59</text><text x="750" y="273.0">2.54M</text><text x="850" y="273.0">$0.131</text><text x="960" y="273.0">12</text></g>
   <text x="330" y="302" text-anchor="middle" font-size="11" fill="#c3c2b7">1.00</text>
-  <text x="30" y="320" font-size="14" font-weight="bold" fill="#f0efec">Round B: common 131k-token window</text>
+  <text x="30" y="320" font-size="14" font-weight="bold" fill="#f0efec">Round B: common 131k-token window (6 tasks)</text>
   <text x="640" y="320" text-anchor="end" font-size="12" fill="#c3c2b7">steps</text>
   <text x="750" y="320" text-anchor="end" font-size="12" fill="#c3c2b7">tokens</text>
   <text x="850" y="320" text-anchor="end" font-size="12" fill="#c3c2b7">cost</text>
@@ -38,30 +38,30 @@
   <line x1="150" y1="334" x2="150" y2="514" stroke="#c3c2b7" stroke-width="1.5"/>
   <line x1="330" y1="334" x2="330" y2="514" stroke="#383835" stroke-width="1" stroke-dasharray="4 3"/>
   <text x="140" y="357.0" text-anchor="end" font-size="14" font-weight="bold" fill="#f0efec">nexo</text>
-  <rect x="150" y="340" width="180" height="24" fill="#8fb8e6"/>
-  <text x="338" y="357.0" font-size="14" font-weight="bold" fill="#f0efec">1.00</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="357.0">88</text><text x="750" y="357.0">1.57M</text><text x="850" y="357.0">$0.086</text><text x="960" y="357.0">11</text></g>
-  <text x="140" y="393.0" text-anchor="end" font-size="14" fill="#f0efec">dsh</text>
-  <rect x="150" y="376" width="254" height="24" fill="#5a5a55"/>
-  <text x="412" y="393.0" font-size="14" font-weight="bold" fill="#f0efec">1.41</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="393.0">112</text><text x="750" y="393.0">2.17M</text><text x="850" y="393.0">$0.136</text><text x="960" y="393.0">11</text></g>
-  <text x="140" y="429.0" text-anchor="end" font-size="14" fill="#f0efec">Hermes</text>
-  <rect x="150" y="412" width="258" height="24" fill="#5a5a55"/>
-  <text x="416" y="429.0" font-size="14" font-weight="bold" fill="#f0efec">1.44</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="429.0">111</text><text x="750" y="429.0">2.44M</text><text x="850" y="429.0">$0.127</text><text x="960" y="429.0">12</text></g>
-  <text x="140" y="465.0" text-anchor="end" font-size="14" fill="#f0efec">Codex</text>
-  <rect x="150" y="448" width="277" height="24" fill="#5a5a55"/>
-  <text x="435" y="465.0" font-size="14" font-weight="bold" fill="#f0efec">1.54</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="465.0">100</text><text x="750" y="465.0">3.01M</text><text x="850" y="465.0">$0.133</text><text x="960" y="465.0">14</text></g>
-  <text x="140" y="501.0" text-anchor="end" font-size="14" fill="#f0efec">Claude Code</text>
-  <rect x="150" y="484" width="324" height="24" fill="#5a5a55"/>
-  <text x="482" y="501.0" font-size="14" font-weight="bold" fill="#f0efec">1.80</text>
-  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="501.0">118</text><text x="750" y="501.0">3.02M</text><text x="850" y="501.0">$0.183</text><text x="960" y="501.0">12</text></g>
+  <rect x="150" y="340" width="187" height="24" fill="#8fb8e6"/>
+  <text x="345" y="357.0" font-size="14" font-weight="bold" fill="#f0efec">1.04</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="357.0">58</text><text x="750" y="357.0">0.83M</text><text x="850" y="357.0">$0.052</text><text x="960" y="357.0">11</text></g>
+  <text x="140" y="393.0" text-anchor="end" font-size="14" fill="#f0efec">Codex</text>
+  <rect x="150" y="376" width="202" height="24" fill="#5a5a55"/>
+  <text x="360" y="393.0" font-size="14" font-weight="bold" fill="#f0efec">1.12</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="393.0">52</text><text x="750" y="393.0">0.88M</text><text x="850" y="393.0">$0.068</text><text x="960" y="393.0">14</text></g>
+  <text x="140" y="429.0" text-anchor="end" font-size="14" fill="#f0efec">Claude Code</text>
+  <rect x="150" y="412" width="310" height="24" fill="#5a5a55"/>
+  <text x="468" y="429.0" font-size="14" font-weight="bold" fill="#f0efec">1.72</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="429.0">70</text><text x="750" y="429.0">1.51M</text><text x="850" y="429.0">$0.104</text><text x="960" y="429.0">12</text></g>
+  <text x="140" y="465.0" text-anchor="end" font-size="14" fill="#f0efec">Hermes</text>
+  <rect x="150" y="448" width="315" height="24" fill="#5a5a55"/>
+  <text x="473" y="465.0" font-size="14" font-weight="bold" fill="#f0efec">1.75</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="465.0">82</text><text x="750" y="465.0">1.63M</text><text x="850" y="465.0">$0.088</text><text x="960" y="465.0">12</text></g>
+  <text x="140" y="501.0" text-anchor="end" font-size="14" fill="#f0efec">dsh</text>
+  <rect x="150" y="484" width="354" height="24" fill="#5a5a55"/>
+  <text x="512" y="501.0" font-size="14" font-weight="bold" fill="#f0efec">1.97</text>
+  <g font-size="13" fill="#f0efec" text-anchor="end"><text x="640" y="501.0">90</text><text x="750" y="501.0">1.75M</text><text x="850" y="501.0">$0.107</text><text x="960" y="501.0">11</text></g>
   <text x="330" y="530" text-anchor="middle" font-size="11" fill="#c3c2b7">1.00</text>
   <g font-size="12" fill="#c3c2b7">
     <text x="30" y="548">Model deepseek-flash via the DeepSeek API, 2026-11-09, nexo b99d96c (before epochs). 16 Terminal-Bench tasks, one attempt per task and arm.</text>
-    <text x="30" y="566">Steps, tokens (input plus output) and cost are summed over the 8 common tasks, using each arm's first solved attempt. The 8 tasks differ between rounds.</text>
-    <text x="30" y="584">One price for every arm: 0.30 $ input, 0.006 $ cached input, 1.20 $ output per million tokens. Solved of 16 is context: the pass rates tie within noise.</text>
+    <text x="30" y="566">Of the 8 tasks every harness solved in each round, tasks where an agent downloaded the benchmark's own solutions or tests are left out for all arms.</text>
+    <text x="30" y="584">Steps, tokens (input plus output) and cost are summed over the kept tasks, first solved attempt. One price for every arm: 0.30 $ input, 0.006 $ cached input, 1.20 $ output per million tokens.</text>
     <text x="30" y="602">In round B the curator never acted: nexo's lead there comes from short prompts and a stable prefix. Method and all tables: docs/results.md.</text>
   </g>
 </svg>

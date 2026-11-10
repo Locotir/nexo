@@ -60,11 +60,12 @@ next call needs; cost comes second.
 
 **Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task). Five harnesses on the
 same 16 Terminal-Bench tasks. The winner is the one that, on the tasks every harness solved, uses the fewest steps,
-tokens and dollars together. The index is the mean of each metric over the best harness's, so 1.00 is best.
+tokens and dollars together. The index is the mean of each metric over the best harness's, so 1.00 is best. Tasks where
+an agent of any harness downloaded the benchmark's own solutions are left out for all (3 of 8 in round A, 2 of 8 in round B).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/race-dark.svg">
-  <img alt="Five harnesses on the 8 tasks all of them solved, index of steps, tokens and cost, 1.00 is best. Round A: nexo 1.00, dsh 1.20, Hermes 1.37, Claude Code 1.57, Codex 1.78. Round B, 131k window: nexo 1.00, dsh 1.41, Hermes 1.44, Codex 1.54, Claude Code 1.80" src="docs/img/race.svg" width="760">
+  <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.18, Hermes 1.27, Codex 1.29, dsh 1.42, Claude Code 2.08. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
 </picture>
 
 Every harness solved 11 to 14 of the 16 tasks, a tie within noise, so this compares what a solved task costs, not skill.
