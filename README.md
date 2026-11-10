@@ -66,16 +66,16 @@ Pick a policy in `~/.nexo/config.toml`: `[context] policy = "curator"` (`auto | 
 
 Each result keeps its date and its limit. The curator is held to not forgetting a fact the next call needs; cost comes second.
 
-**Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task, 16 Terminal-Bench tasks). On the tasks all five harnesses solved, nexo has the lowest combined index of steps, tokens and dollars: 1.18 and 1.04, where 1.00 would mean best on all three.
+**Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task, 16 Terminal-Bench tasks). On the tasks all five harnesses solved, nexo has the lowest combined index of steps, tokens and dollars: 1.05 and 1.04, where 1.00 would mean best on all three. It is not the lowest in every column: in round A dsh costs less in dollars.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/race-dark.svg">
-  <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.18, Hermes 1.27, Codex 1.29, dsh 1.42, Claude Code 2.08. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
+  <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.05, Codex 1.15, dsh 1.30, Claude Code 1.88, Hermes 2.88. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
 </picture>
 
 Names and logos belong to their owners and are used only to identify the tools.
 
-Limits: every harness solved 11 to 14 of 16 tasks, a tie within noise, and in round B the curator never acted. Tasks where any agent downloaded the benchmark's own solutions are left out for all. Details: [`docs/results.md`](docs/results.md#harness-race-2026-11-09). Measure your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
+Limits: every harness solved 11 to 14 of 16 tasks, a tie within noise, and in round B the curator never acted. Tasks where any agent downloaded the benchmark's own solutions are left out for all. Correction 2026-11-10: the Hermes run of circuit-fibsqrt in round A ended with an error and recorded no usage, so it was counted as zero; its usage is now read from the agent's own log. Details: [`docs/results.md`](docs/results.md#harness-race-2026-11-09). Measure your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
 
 **Against Claude Code on the same model** (2026-11-10, `claude-sonnet-5-5`, nexo `bf57ed4`, 5 tasks, 3 runs each, plan published before the run).
 

@@ -124,7 +124,7 @@ task for every arm so the arms are paired.
 | nexo | 13/16 (57 to 93 %) | 16.1 | 5.94M / 5.72M / 308k | 96.4 % | 0.468 $ | 0.036 $ |
 | Codex | 13/16 (57 to 93 %) | 18.4 | 11.91M / 11.62M / 354k | 97.6 % | 0.581 $ | 0.045 $ |
 | Claude Code | 12/16 (51 to 90 %) | 18.4 | 11.14M / 10.80M / 346k | 96.9 % | 0.584 $ | 0.049 $ |
-| Hermes | 12/16 (51 to 90 %) | 16.6 | 6.78M / 6.62M / 181k | 97.7 % | 0.305 $ | 0.025 $ |
+| Hermes | 12/16 (51 to 90 %) | 24.1 | 14.19M / 13.92M / 363k | 98.1 % | 0.602 $ | 0.050 $ |
 | DeepSeek harness (dsh) | 13/16 (57 to 93 %) | 17.9 | 10.40M / 10.13M / 235k | 97.4 % | 0.425 $ | 0.033 $ |
 
 **Round B: common window 131072, 16 tasks, 1 attempt per task**
@@ -134,7 +134,7 @@ task for every arm so the arms are paired.
 | nexo | 11/16 (44 to 86 %) | 13.9 | 4.94M / 4.79M / 312k | 97.0 % | 0.448 $ | 0.041 $ |
 | Codex | 14/16 (64 to 97 %) | 17.1 | 10.60M / 10.35M / 311k | 97.7 % | 0.509 $ | 0.036 $ |
 | Claude Code | 12/16 (51 to 90 %) | 16.9 | 9.39M / 9.01M / 375k | 96.0 % | 0.617 $ | 0.051 $ |
-| Hermes | 12/16 (51 to 90 %) | 14.4 | 6.60M / 6.40M / 192k | 97.0 % | 0.327 $ | 0.027 $ |
+| Hermes | 12/16 (51 to 90 %) | 20.0 | 10.29M / 9.98M / 296k | 97.0 % | 0.507 $ | 0.042 $ |
 | dsh | 11/16 (44 to 86 %) | 17.3 | 8.10M / 7.79M / 257k | 96.2 % | 0.447 $ | 0.041 $ |
 
 **Scored by cost on the common tasks.** The README ranks the arms by one rule: on the tasks every arm solved
@@ -151,17 +151,29 @@ in round A; db-wal-recovery and extract-elf in round B.
 
 | arm | A: steps | tokens | cost | index | B: steps | tokens | cost | index |
 |---|---|---|---|---|---|---|---|---|
-| nexo | 42 | 0.97M | 0.092 $ | **1.18** | 58 | 0.83M | 0.052 $ | **1.04** |
-| Hermes | 59 | 1.35M | 0.060 $ | 1.27 | 82 | 1.63M | 0.088 $ | 1.75 |
-| Codex | 43 | 1.25M | 0.092 $ | 1.29 | 52 | 0.88M | 0.068 $ | 1.12 |
-| dsh | 56 | 1.53M | 0.081 $ | 1.42 | 90 | 1.75M | 0.107 $ | 1.97 |
-| Claude Code | 59 | 2.54M | 0.131 $ | 2.08 | 70 | 1.51M | 0.104 $ | 1.72 |
+| nexo | 42 | 0.97M | 0.092 $ | **1.05** | 58 | 0.83M | 0.052 $ | **1.04** |
+| Codex | 43 | 1.25M | 0.092 $ | 1.15 | 52 | 0.88M | 0.068 $ | 1.12 |
+| dsh | 56 | 1.53M | 0.081 $ | 1.30 | 90 | 1.75M | 0.107 $ | 1.97 |
+| Claude Code | 59 | 2.54M | 0.131 $ | 1.88 | 70 | 1.51M | 0.104 $ | 1.72 |
+| Hermes | 100 | 4.09M | 0.165 $ | 2.88 | 82 | 1.63M | 0.088 $ | 1.75 |
 
 Round A tasks kept (5): circuit-fibsqrt, code-from-image, db-wal-recovery, fix-git, log-summary-date-ranges. Round B kept (6):
 cancel-async-tasks, code-from-image, fix-git, git-multibranch, hf-model-inference, log-summary-date-ranges. Five or six tasks and
-one attempt each: the index says which arm was cheapest on these, not which is better.
+one attempt each: the index says which arm was cheapest on these, not which is better. nexo has the lowest index in both
+rounds, but not the lowest value in every column: in round A dsh costs less in dollars, and in round B Codex uses fewer steps.
 
-Before the exclusion (2026-11-09, 8 tasks per round): round A nexo 1.00, dsh 1.20, Hermes 1.37, Claude Code 1.57, Codex 1.78;
+Correction (2026-11-10). The Hermes harness recorded no usage for 6 of its 32 trials, and the tables above counted them as
+zero. One was a solved trial scored in round A (circuit-fibsqrt: it stopped at its 40-turn limit, the harness reported an
+error, the tests passed), so Hermes looked far cheaper than it was. The usage is in the agent's own log (one line per
+model call), and reading it back gives exactly the recorded values for all 26 Hermes trials that did record usage. Real
+values for circuit-fibsqrt: 41 model calls, 2.67M input tokens (2.63M cached), 63k output. Round A index before the
+correction: nexo 1.18, Hermes 1.27, Codex 1.29, dsh 1.42, Claude Code 2.08. The 16-task Hermes rows above are corrected the
+same way, from the logs of its 4 failed zero-usage trials and 2 solved ones. Hermes' large round A total comes from two
+tasks: circuit-fibsqrt (41 steps, 2.74M tokens, the most of any arm) and code-from-image (35 steps against 3 to 5 for the
+others, a long search over variants of the answer). Round B is not affected: the zero-usage Hermes trials there are not among
+its 6 kept tasks.
+
+Before the exclusion (2026-11-09, 8 tasks per round): round A nexo 1.00, dsh 1.20, Claude Code 1.57, Codex 1.78, Hermes 2.23 (the same Hermes correction applied);
 round B nexo 1.00, dsh 1.41, Hermes 1.44, Codex 1.54, Claude Code 1.80. The pass counts and the other tables on this page
 cover all 16 tasks and are not changed.
 
