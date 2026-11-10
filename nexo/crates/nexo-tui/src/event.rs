@@ -94,7 +94,9 @@ pub fn handle(app: &mut App, ev: Event) {
             }
             match &mut app.modal {
                 None => {
-                    if app.locked {
+                    // typed fast, `/help` arrives as a paste: a command is still a command here
+                    let command = app.input.full_text().starts_with('/') || s.trim_start().starts_with('/');
+                    if app.locked && !command {
                         return app.open_setup();
                     }
                     app.input.insert_paste(&s);
@@ -172,11 +174,16 @@ pub fn key(app: &mut App, k: KeyEvent) {
         return app.palette_key();
     }
     // no model works yet: Enter or any text opens the setup instead of filling the draft
-    if app.locked {
-        let text =
-            matches!(k.code, KeyCode::Char(_)) && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-        if text || k.code == KeyCode::Enter {
-            return app.open_setup();
+    // (a draft that starts with `/` is a command being typed: `/help` works here, see submit)
+    if app.locked && !app.input.full_text().starts_with('/') {
+        let plain = !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match k.code {
+            // `/` opens the commands window as usual, `?` is help
+            KeyCode::Char('/') if plain => {}
+            KeyCode::Char('?') if plain => return app.run_command(crate::commands::Command::Help),
+            KeyCode::Char(_) if plain => return app.open_setup(),
+            KeyCode::Enter => return app.open_setup(),
+            _ => {}
         }
     }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);

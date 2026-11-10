@@ -4,6 +4,10 @@ use super::*;
 
 impl App {
     pub fn run_command(&mut self, cmd: Command) {
+        // the first screen runs what needs no model; the rest asks for one
+        if self.locked && !cmd.works_without_model() {
+            return self.open_setup();
+        }
         match cmd {
             Command::Help => self.modal = Some(Modal::Help { scroll: 0 }),
             Command::Model(Some(name)) => {
@@ -363,6 +367,28 @@ impl App {
 
     pub(super) fn nothing_chosen(&self) -> bool {
         self.locked && self.opts.provider.is_empty()
+    }
+
+    /// On the first screen, when the provider that was chosen (flag or config) is not usable: what
+    /// was tried and why it did not work, from what the start-up already knows (no new call).
+    pub fn unreachable_note(&self) -> Option<Vec<String>> {
+        let name = self.opts.provider.as_str();
+        if !self.locked || name.is_empty() {
+            return None;
+        }
+        let (_, c) = self.opts.providers.iter().find(|(n, _)| n == name)?;
+        if let Some(var) = c.api_key_env.as_deref() {
+            return Some(vec![format!("{name} has no key: set ${var} or sign in with the setup")]);
+        }
+        let found = self.scan.as_ref()?;
+        if found.iter().any(|(p, _)| p == name) {
+            return None;
+        }
+        let mut out = vec![format!("{name} did not answer at {}", c.base_url)];
+        if name == "ollama" {
+            out.push("Ollama does not seem to be running: start it with `ollama serve`".into());
+        }
+        Some(out)
     }
 
     pub fn on_plan(&self) -> bool {

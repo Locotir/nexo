@@ -124,7 +124,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     }
     draw_queue(f, app, queue);
     draw_separator(f, app, sep);
-    if app.locked {
+    if app.locked && app.input.is_empty() {
         draw_lock_input(f, app, input);
     } else {
         draw_input(f, app, input);
@@ -516,8 +516,14 @@ fn draw_lock(f: &mut Frame, app: &App, area: Rect, away: f64) {
         ("n e x o".to_string(), theme.bold(theme.accent)),
         (String::new(), Style::default()),
         (LOCK_TITLE.to_string(), if away > 0.5 { theme.dim() } else { theme.bold(theme.fg) }),
-        ("Enter opens the setup · any key does too".to_string(), theme.dim()),
     ];
+    let mut lines = lines;
+    if let Some(why) = app.unreachable_note() {
+        lines.push((String::new(), Style::default()));
+        lines.extend(why.into_iter().map(|l| (l, Style::default().fg(theme.fg))));
+    }
+    lines.push((String::new(), Style::default()));
+    lines.push(("Enter opens the setup · /help lists the commands · /quit or Ctrl+D leaves".to_string(), theme.dim()));
     let h = lines.len() as u16;
     let slide = (away * 4.0).round() as u16;
     let top = area.y + area.height.saturating_sub(h) / 2;

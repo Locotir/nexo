@@ -200,6 +200,28 @@ pub enum Command {
     BadArgument(String, String),
 }
 
+impl Command {
+    /// Whether the command works on the first screen, before any model is set up. The rest
+    /// open the model setup there.
+    pub fn works_without_model(&self) -> bool {
+        matches!(
+            self,
+            Command::Help
+                | Command::Theme(_)
+                | Command::Doctor
+                | Command::Quit
+                | Command::Login
+                | Command::Logout(_)
+                | Command::Model(None)
+                | Command::Mouse
+                | Command::Timestamps
+                | Command::Vim
+                | Command::Unknown(_)
+                | Command::BadArgument(..)
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GoalArg {
     Show,

@@ -210,6 +210,10 @@ impl App {
         }
         self.input.push_history(trimmed);
         self.input.clear();
+        // no model yet: a request has nowhere to go, the setup opens
+        if self.locked {
+            return self.open_setup();
+        }
         let attachments = self.attachments_in(trimmed);
         if self.busy {
             self.queued += 1;
