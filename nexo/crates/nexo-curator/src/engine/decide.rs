@@ -130,6 +130,13 @@ impl Engine {
                 }
             }
         }
+        // what the reply did not take up of the outputs it answered leaves them now (`Params.trim`), while
+        // their message is the last one the cache holds
+        if self.p.trim != 0 {
+            if let Some(mi) = sent.last().and_then(|&mi| self.frontier_trim(mi)) {
+                quiet.push(("miss_trim", mi));
+            }
+        }
         // the provider's cache holds the last view of each topic for a while (`Params.pockets`): where it
         // stops in the view as it stands, which cuts past it do not move
         let (warm, warm_all, cold) =

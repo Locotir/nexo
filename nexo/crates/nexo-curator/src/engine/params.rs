@@ -179,6 +179,14 @@ pub struct Params {
     pub lahead: f64,
     /// With `kept`: how many times its price a landing has to save before it is made.
     pub lmargin: f64,
+    /// The frontier trim: on the request after the agent replied to an output, the parts of it between
+    /// the first and the last that the reply named nothing of leave, while its message is still the last
+    /// one the cache holds, so the rewrite sends again only what stays of that message and the reply
+    /// behind it. 1: of what a process printed, the parts that name nothing the rest of the view does
+    /// not hold. 2: of what a process printed, those and the parts with names of their own, of which the
+    /// first line that holds each of those names stays. 3: the same of every output, a file read too
+    /// (0: off; `Engine::frontier_trim`).
+    pub trim: i64,
 }
 
 impl Params {

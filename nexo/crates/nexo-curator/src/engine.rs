@@ -35,6 +35,7 @@ mod dump;
 mod dups;
 mod files;
 mod fixes;
+mod frontier;
 mod idle;
 mod ingest;
 mod named;
@@ -159,6 +160,8 @@ pub struct Engine {
     /// The messages whose repeated runs would go as pointers but do not pay for the cache that change breaks yet:
     /// they keep going as they were sent until a request rewrites the view from one of them or earlier.
     fresh_wait: FxHashSet<usize>,
+    /// What the frontier trim took (`Params.trim`): the lines that stand for its parts, and their names.
+    trimmed: frontier::Trimmed,
     cap: i64,
     /// Where the cut the cap drives fires (`decide`): the room a view has to grow in is measured to here, not to
     /// the target the cut lands on.
@@ -382,6 +385,7 @@ impl Engine {
             refused: false,
             resent_from: usize::MAX,
             fresh_wait: FxHashSet::default(),
+            trimmed: frontier::Trimmed::default(),
             built: FxHashMap::default(),
             born: Vec::new(),
             held: FxHashMap::default(),

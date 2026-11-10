@@ -118,6 +118,7 @@ mod decide;
 mod dups;
 mod files;
 mod fixes;
+mod frontier;
 mod idle;
 mod ingest;
 mod named;
