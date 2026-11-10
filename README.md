@@ -63,6 +63,8 @@ an agent of any harness downloaded the benchmark's own solutions are left out fo
   <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.18, Hermes 1.27, Codex 1.29, dsh 1.42, Claude Code 2.08. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
 </picture>
 
+Names and logos belong to their owners and are used only to identify the tools.
+
 Every harness solved 11 to 14 of the 16 tasks, a tie within noise, so this compares what a solved task costs, not skill.
 In round B the curator never acted: that lead comes from short prompts and a stable prefix. Method, all tables and caveats:
 [`docs/results.md`](docs/results.md#harness-race-2026-11-09). Older runs (compaction against the curator, 2026-11-04) are
