@@ -95,15 +95,25 @@ All from the run folder `rig/out/20261110-135329-full` (30 runs). Exclusions fil
 
 ## Blind vote
 
-Voting has not opened. The vote covers the 9 visual pairs (section 8 of the plan). The hash of the file that says which side is which arm is published here, before voting opens:
+The vote of the plan (15 people who have not worked on nexo, section 8) was not held. That is a deviation, listed below.
+
+What was done instead: one person, the author of nexo, looked at the 9 visual pairs blind (sides shuffled, arm names hidden) and picked a side or "same" for each. The hash of the file that says which side is which arm was published on this page before anyone looked:
 
 `VOTE_MAP_SHA256 = 5863fc579cf6672be8f4e67117af7a919d4fe3bc1fccc47261684dccec9fde4b`
 
-The map and the raw votes will be published when voting closes. The result of the vote will be added to this page. It measures the quality of the pages, not cost, and it is not part of the verdict above.
+| Task | Pairs | Preferred nexo | Preferred Claude Code | Same |
+| --- | --- | --- | --- | --- |
+| V1 solar system | 3 | 2 | 1 | 0 |
+| V2 Breakout | 3 | 1 | 0 | 2 |
+| V3 bar chart race | 3 | 0 | 0 | 3 |
+| Total | 9 | 3 | 1 | 5 |
+
+By the plan's rule (one arm must win at least 6 of 9 pairs) this is **no difference** in the quality of the pages. One voter, who is the author, is not evidence either way. It is not part of the verdict above, which is about calls, tokens and dollars. The map and the code entered are in the records release, so anyone can repeat the look.
 
 ## Deviations from the plan
 
 - The plan said every `TO FILL` value would be filled before the first counted run. The vote map hash cannot exist before the clips, and the clips come from the counted runs. So `VOTE_MAP_SHA256` is published here, before voting opens, and not in `PLAN.md`. `PLAN.md` is unchanged since commit `79ad041`.
+- The blind vote of section 8 (15 voters) was not held. One blind look by the author replaces it and is reported as such above.
 - The extra arm of the plan (Claude Code with auto-compact forced to 100k tokens) is not in these results. Nothing in this page depends on it.
 
 ## Limits
@@ -115,6 +125,6 @@ The map and the raw votes will be published when voting closes. The result of th
 - Wall time is reported but is not in the index. The two arms use different access paths (API key against subscription token), so seconds are not a fair comparison.
 - nexo's cost was checked only roughly against the provider's side. The account owner read the prepaid balance before and after: it fell by about $2.56. The computed figures are $2.48 for the counted run and $2.76 with the three pilots on the same key. The balance is rounded and is not split per key or per run, so this is a rough check, not a per-key reconciliation.
 - The hidden checks do not cover everything the prompts allow. A solved run is not a perfect run.
-- The raw records (transcripts, token logs, proxy logs, produced files, hidden checks, rig and scoring tools, with the home path of the test machine replaced) are packed and will be attached to a GitHub release when the blind vote closes. They cannot go out earlier: they hold the pages the voters judge blind and say which arm wrote each. The archive's SHA-256 is fixed now: `ccdf33fef4cd7677cc37020f7dac1be9c2ea72add547b61e236412ed8e7ded6f`. Until the release, the figures here cannot be recomputed by others.
+- The raw records (transcripts, token logs, proxy logs, produced files, hidden checks, rig and scoring tools, with the home path of the test machine replaced), the vote map and the code entered are attached to the release [`bench-20261110`](https://github.com/Locotir/nexo/releases/tag/bench-20261110). The archive's SHA-256 is `ccdf33fef4cd7677cc37020f7dac1be9c2ea72add547b61e236412ed8e7ded6f`, published on this page before the release. The figures here can be recomputed from it with the scoring tools inside.
 
 nexo is an independent project. It is not affiliated with or endorsed by Anthropic. Claude and Claude Code are Anthropic products.
