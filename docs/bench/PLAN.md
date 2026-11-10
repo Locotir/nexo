@@ -12,7 +12,7 @@ Two coding-agent harnesses, each driving the same model:
 | --- | --- | --- |
 | Model | `claude-sonnet-5-5` | `claude-sonnet-5-5` |
 | Effort | medium | medium (`--effort medium`) |
-| Version | commit `NEXO_COMMIT` (musl release build, TO FILL when frozen) | 2.1.322, pinned in the image, auto-update off |
+| Version | commit `bf57ed4` (musl release build) | 2.1.322, pinned in the image, auto-update off |
 
 Same model on both sides, so the question is about the harness: how many model calls, how many tokens and how many dollars it takes to get the same job done, not which model is smarter.
 
@@ -233,7 +233,7 @@ An excluded run is repeated once. The launcher has no automatic repeat: the repe
 
 Two pilots were run on 2026-11-10 with `claude-haiku-5-5`, one run per arm on V1 and on the first 2 turns of L1. They are not part of the result. They exist to prove sign-in, session resume, caching and the judge. The nexo arm spent $0.027 in each pilot. In the first pilot the Claude Code arm did not start (its token was rejected) and it was repeated.
 
-The pilot found a bug in nexo: the first call after each new user message re-wrote the whole prompt cache. It is fixed before the counted run, in commit `NEXO_COMMIT`. No comparison between the arms is printed from the pilots, because pilots are not results.
+The pilot found a bug in nexo: the first call after each new user message re-wrote the whole prompt cache. It is fixed before the counted run, in commit `bf57ed4`. No comparison between the arms is printed from the pilots, because pilots are not results.
 - Extra arm, labeled and outside the headline: Claude Code with auto-compact forced to 100k tokens (`CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`), on L1 and L2, 3 repetitions each, 6 runs, no API cost. It exists to answer "what if the rival were tuned"; it never enters the index or the decision.
 
 ## 11. What will be published
