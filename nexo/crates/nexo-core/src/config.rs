@@ -465,6 +465,9 @@ pub struct UiConfig {
     /// Smooth scrolling, fades and the other motion of the interface (off: every
     /// change shows at once).
     pub animations: bool,
+    /// The open to-do list as rows above the draft (the old strip). Off: a done/total count in the status bar instead
+    /// (a click opens `/todo`).
+    pub todo_strip: bool,
     /// Remapped keys, action name -> key (`search = "ctrl+s"`); see `nexo-tui`'s keymap.
     pub keys: BTreeMap<String, String>,
     /// The pieces of the status bar and their order, from `model`, `effort`, `dir`, `branch`,
@@ -501,6 +504,7 @@ impl Default for UiConfig {
             vim: false,
             notify_after: 15,
             animations: true,
+            todo_strip: false,
             keys: BTreeMap::new(),
             status_line: Vec::new(),
             screen: "full".into(),
@@ -1396,6 +1400,14 @@ mod ui_tests {
         assert!(c.ui.animations);
         let c: Config = toml::from_str("[ui]\nanimations = false\n").unwrap();
         assert!(!c.ui.animations);
+    }
+
+    #[test]
+    fn the_todo_strip_is_off_unless_turned_on() {
+        let c: Config = toml::from_str("[ui]\ntheme = \"nord\"\n").unwrap();
+        assert!(!c.ui.todo_strip);
+        let c: Config = toml::from_str("[ui]\ntodo_strip = true\n").unwrap();
+        assert!(c.ui.todo_strip);
     }
 
     #[test]

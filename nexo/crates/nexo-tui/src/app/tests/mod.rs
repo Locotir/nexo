@@ -26,6 +26,7 @@ fn app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
         keys: Default::default(),
         notify_after: 15,
         animations: true,
+        todo_strip: false,
         status_line: vec![],
         status_command: String::new(),
         vim: false,

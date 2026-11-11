@@ -37,6 +37,7 @@ fn app_with(group_tools: bool) -> App {
         status_command: String::new(),
         notify_after: 15,
         animations: false,
+        todo_strip: false,
         vim: false,
         prompt: None,
         session_id: Some("20261102-100000-ef56".into()),

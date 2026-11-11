@@ -85,6 +85,7 @@ mod tests {
             suggest: false,
             notify_after: 15,
             animations: false,
+            todo_strip: false,
             vim: false,
             prompt: None,
             session_id: None,

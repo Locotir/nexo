@@ -10,7 +10,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use nexo_core::agent::AgentEvent;
 use nexo_core::message::Message;
 use nexo_core::permission::PermissionRequest;
-use nexo_core::tool::{ToolDisplay, ToolKind, ToolOutput};
+use nexo_core::tool::{TodoItem, TodoStatus, ToolDisplay, ToolKind, ToolOutput};
 use nexo_tui::modal::{Modal, PickItem, PickKind, Picker};
 use nexo_tui::ui::rows_of;
 use nexo_tui::{draw_frame, App, TuiOptions};
@@ -40,6 +40,7 @@ fn app() -> (App, mpsc::UnboundedReceiver<nexo_core::agent::AgentCommand>) {
         keys: Default::default(),
         notify_after: 15,
         animations: false,
+        todo_strip: false,
         status_line: vec![],
         status_command: String::new(),
         vim: false,
@@ -224,6 +225,7 @@ fn what_a_window_shows_has_no_joiner_in_it() {
     }
     // the to-do strip and its window
     let (mut a, _rx) = app();
+    a.opts.todo_strip = true;
     a.handle_agent(AgentEvent::ToolCall {
         id: "t1".into(),
         name: "todo".into(),
@@ -232,8 +234,20 @@ fn what_a_window_shows_has_no_joiner_in_it() {
     });
     a.handle_agent(AgentEvent::ToolStart { id: "t1".into() });
     a.handle_agent(AgentEvent::ToolDone { id: "t1".into(), output: ToolOutput::ok("ok"), elapsed_ms: 1 });
+    // the list itself comes with the tool's result, not with the call: set it as the app would
+    a.todo = vec![
+        TodoItem { text: joined.into(), status: TodoStatus::InProgress },
+        TodoItem { text: "日本語\t中文".into(), status: TodoStatus::Pending },
+    ];
     for w in [40u16, 80] {
         let rows = screen(&mut a, w, 24);
+        assert!(rows.iter().any(|r| r.contains("echo")), "the strip shows the item: {rows:#?}");
+        assert!(rows.iter().all(|r| !r.contains('\u{200d}') && !r.contains('\t')), "{rows:#?}");
+    }
+    a.open_todo();
+    for w in [40u16, 80] {
+        let rows = screen(&mut a, w, 24);
+        assert!(rows.iter().any(|r| r.contains("echo")), "the window shows the item: {rows:#?}");
         assert!(rows.iter().all(|r| !r.contains('\u{200d}') && !r.contains('\t')), "{rows:#?}");
     }
 }

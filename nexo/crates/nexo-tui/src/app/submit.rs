@@ -260,10 +260,20 @@ impl App {
         self.flash("queued message back in the draft: edit it, Enter send again");
     }
 
-    /// The strip above the draft: a list that is not finished, or one that just finished in this turn.
+    /// A list to show: one that is not finished, or one that just finished in this turn.
     pub fn todo_strip_on(&self) -> bool {
         let all = crate::todo_strip::done_count(&self.todo) == self.todo.len();
         !self.todo.is_empty() && (!all || self.todo_done_live)
+    }
+
+    /// The list as rows above the draft (`[ui] todo_strip = true`).
+    pub fn todo_rows_on(&self) -> bool {
+        self.opts.todo_strip && self.todo_strip_on()
+    }
+
+    /// The list as a count in the status bar (the default): one place only, never beside the rows.
+    pub fn todo_chip_on(&self) -> bool {
+        !self.opts.todo_strip && self.todo_strip_on()
     }
 
     /// `/todo`: the task list in its own window, grouped by state.

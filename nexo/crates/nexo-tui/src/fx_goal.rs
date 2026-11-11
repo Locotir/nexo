@@ -385,7 +385,8 @@ impl crate::app::App {
             panel: self.show_files || self.show_live,
             goal: self.goal.as_ref().map(|g| (matches!(g.state, nexo_core::agent::GoalState::Done), g.round)),
             modal: matches!(self.modal, Some(crate::modal::Modal::Goal(_))),
-            todo: &self.todo,
+            // a list that is drawn nowhere (no strip, no side panel) starts no effect, so nothing keeps the timer alive
+            todo: if self.opts.todo_strip || self.show_files || self.show_live { &self.todo } else { &[] },
         };
         self.fx.goal.note(&view, now, on)
     }

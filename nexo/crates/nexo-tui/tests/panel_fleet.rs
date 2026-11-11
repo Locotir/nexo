@@ -37,6 +37,7 @@ fn app(animations: bool) -> App {
         keys: Default::default(),
         notify_after: 15,
         animations,
+        todo_strip: false,
         status_line: vec![],
         status_command: String::new(),
         vim: false,

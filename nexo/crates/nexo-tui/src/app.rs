@@ -395,6 +395,8 @@ pub enum StatusHit {
     Cost,
     /// The goal: its window.
     Goal,
+    /// The to-do count: `/todo`.
+    Todo,
 }
 
 /// A piece of the keys row that answers a click.

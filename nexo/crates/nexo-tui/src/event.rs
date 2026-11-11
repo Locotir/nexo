@@ -487,6 +487,11 @@ pub fn mouse(app: &mut App, m: MouseEvent) {
                         app.open_goal();
                         return;
                     }
+                    // the to-do count opens the list
+                    Some(StatusHit::Todo) => {
+                        app.open_todo();
+                        return;
+                    }
                     Some(StatusHit::Gauge) => Command::Context,
                     // a separator or an empty part of the row: nothing to do
                     None => return,

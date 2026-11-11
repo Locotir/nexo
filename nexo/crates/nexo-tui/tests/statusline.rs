@@ -18,6 +18,7 @@ fn app(pieces: &[&str]) -> App {
         model: "deepseek-chat".into(),
         models: vec![("deepseek".into(), "deepseek-chat".into())],
         animations: false,
+        todo_strip: false,
         status_line: pieces.iter().map(|s| s.to_string()).collect(),
         ..Default::default()
     };

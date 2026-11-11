@@ -28,6 +28,7 @@ fn app(command: &str) -> App {
         model: "deepseek-chat".into(),
         models: vec![("deepseek".into(), "deepseek-chat".into())],
         animations: false,
+        todo_strip: false,
         status_command: command.to_string(),
         ..Default::default()
     };

@@ -32,6 +32,7 @@ fn app() -> App {
         keys: Default::default(),
         notify_after: 15,
         animations: false,
+        todo_strip: false,
         status_line: vec![],
         status_command: String::new(),
         vim: false,

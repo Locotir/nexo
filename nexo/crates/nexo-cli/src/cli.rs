@@ -726,6 +726,7 @@ async fn interactive(
         suggest: config.ui.suggest,
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,
+        todo_strip: config.ui.todo_strip,
         status_line: config.ui.status_line.clone(),
         status_command: config.ui.status_command.clone(),
         notify_after: config.ui.notify_after,

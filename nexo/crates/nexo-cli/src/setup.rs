@@ -754,6 +754,7 @@ fold_after = 12
 group_tools = true                  # a run of tool calls is one summary line (Made 1 edit, read 2 files, ran 3 shell commands); Enter or a click opens it; false: every call on its own
 complete_words = true                # grey ghost text finishes the word you type from any word of this session (names, paths, hashes, plain words); → takes it; false: off
 animations = true                   # smooth scrolling, fades, pulses; false: no motion
+# todo_strip = false                # true: the open to-do list as rows above the draft; false: a count like 3/7 in the bottom bar (click: /todo)
 suggest = true                      # when a turn ends, a dim suggestion of your next message shows in the empty input; Tab or → takes it; costs one short cached call; false: off
 # timestamps = true                 # a dim HH:MM at the right of each message and reply, and how long a reply took; /settings timestamps toggles
 screen = "full"                     # full (alternate screen) | inline (finished turns go to the terminal scrollback)

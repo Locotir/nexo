@@ -502,6 +502,7 @@ fn the_pieces_of_the_keys_row_light_up_and_open_their_views() {
     use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
     use nexo_core::tool::TodoStatus;
     let (mut a, mut rx) = app();
+    a.opts.todo_strip = true;
     queue_two(&mut a, &mut rx);
     a.todo = vec![
         TodoItem { text: "read".into(), status: TodoStatus::Done },

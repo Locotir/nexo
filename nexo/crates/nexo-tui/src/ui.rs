@@ -91,7 +91,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     // the strip stays out where the list is on screen already: its own window, or the side panel
     let listed = matches!(app.modal, Some(Modal::Todo(_))) || (app.show_files && area.width >= FILES_PANEL_MIN_W);
     let todo_h =
-        if app.todo_strip_on() && !listed { crate::todo_strip::strip_height(&app.todo, area.height) } else { 0 };
+        if app.todo_rows_on() && !listed { crate::todo_strip::strip_height(&app.todo, area.height) } else { 0 };
     // the keys right under the draft, the state (model, context, spend) on the last row
     let [middle, todo_area, queue, sep, input, hints, title] = Layout::vertical([
         Constraint::Min(0),
@@ -144,7 +144,9 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         draw_panel(f, app, files);
         app.fx.diff.draw_open(f.buffer_mut(), files, &app.theme, now0);
     }
-    app.todo_shown = todo_area.height > 0 || (files_w > 0 && !app.todo.is_empty());
+    // the count in the bar is the list shown too: the keys row does not say it again
+    let chip = app.status_hits.iter().any(|(_, h)| *h == StatusHit::Todo);
+    app.todo_shown = todo_area.height > 0 || (files_w > 0 && !app.todo.is_empty()) || chip;
     draw_todo_strip(f, app, todo_area);
     draw_queue(f, app, queue);
     draw_separator(f, app, sep);
@@ -258,6 +260,12 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         GoalState::Paused(_) => Seg { text: "◎ goal paused".to_string(), style: base.fg(theme.dim) },
         GoalState::Done => Seg { text: "✓ goal".to_string(), style: base.fg(theme.success) },
     });
+    // the to-do list as a count (the strip above the draft is opt-in): all done turns it green until the turn ends
+    let todo_chip = app.todo_chip_on().then(|| {
+        let (done, total) = todo_counts(&app.todo);
+        let colour = if done == total { theme.success } else { theme.accent2 };
+        Seg { text: format!("{TODO_MARK} {done}/{total}"), style: base.fg(colour) }
+    });
     let gauge = {
         let (num, den, guessed) = app.gauge_view();
         let pct = share(num, den);
@@ -365,6 +373,8 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         mode: bool,
         // the `◆ default` hint (no level set): the first piece to go
         hint: bool,
+        // the to-do count: goes with the session figure, before the context counts and the model name
+        todo: bool,
     }
     let order = status_pieces(&app.opts.status_line);
     let build = |k: &Keep| {
@@ -410,6 +420,13 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                         if let Some(g) = &goal {
                             m.push(Seg { text: " │ ".to_string(), style: base.fg(theme.border) });
                             m.push(Seg { text: g.text.clone(), style: g.style });
+                        }
+                    }
+                    // the to-do count sits beside the goal: a click opens the list
+                    if k.todo {
+                        if let Some(t) = &todo_chip {
+                            m.push(Seg { text: " │ ".to_string(), style: base.fg(theme.border) });
+                            m.push(Seg { text: t.text.clone(), style: t.style });
                         }
                     }
                     out.push(m);
@@ -464,6 +481,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         gauge: true,
         mode: true,
         hint: true,
+        todo: true,
     };
     // the steps up to this one keep the whole model name, the gauge and the mode
     const LAST_WHOLE_STEP: usize = 6;
@@ -472,14 +490,25 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         Keep { dir: false, hint: false, ..all },
         Keep { dir: false, hint: false, branch: false, ..all },
         Keep { dir: false, hint: false, branch: false, extra: false, ..all },
-        Keep { dir: false, hint: false, branch: false, mem: false, extra: false, ..all },
-        Keep { dir: false, hint: false, branch: false, mem: false, extra: false, counts: false, ..all },
-        Keep { dir: false, hint: false, branch: false, mem: false, extra: false, counts: false, label: false, ..all },
+        Keep { dir: false, hint: false, branch: false, mem: false, todo: false, extra: false, ..all },
+        Keep { dir: false, hint: false, branch: false, mem: false, todo: false, extra: false, counts: false, ..all },
         Keep {
             dir: false,
             hint: false,
             branch: false,
             mem: false,
+            todo: false,
+            extra: false,
+            counts: false,
+            label: false,
+            ..all
+        },
+        Keep {
+            dir: false,
+            hint: false,
+            branch: false,
+            mem: false,
+            todo: false,
             extra: false,
             counts: false,
             label: false,
@@ -491,6 +520,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             hint: false,
             branch: false,
             mem: false,
+            todo: false,
             extra: false,
             counts: false,
             label: false,
@@ -503,6 +533,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             hint: false,
             branch: false,
             mem: false,
+            todo: false,
             extra: false,
             counts: false,
             label: false,
@@ -516,6 +547,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             hint: false,
             branch: false,
             mem: false,
+            todo: false,
             extra: false,
             counts: false,
             label: false,
@@ -535,9 +567,10 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                 return c;
             }
             let mut keep = *k;
-            let back: [fn(&mut Keep); 7] = [
+            let back: [fn(&mut Keep); 8] = [
                 |k| k.label = true,
                 |k| k.counts = true,
+                |k| k.todo = true,
                 |k| k.mem = true,
                 |k| k.extra = true,
                 |k| k.branch = true,
@@ -827,6 +860,8 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
         let hit_of = |i: usize, s: &Seg| -> Option<StatusHit> {
             if is_goal_seg(s) {
                 Some(StatusHit::Goal)
+            } else if is_todo_seg(s) {
+                Some(StatusHit::Todo)
             } else if is_effort_seg(s) {
                 Some(StatusHit::Effort)
             } else if s.text == FAST_MARK {
@@ -904,6 +939,14 @@ fn mode_name(app: &App) -> String {
 /// The goal's piece of the bar: `◎ goal`, `◎ goal: your turn`, `◎ goal paused`, `✓ goal`.
 fn is_goal_seg(s: &Seg) -> bool {
     s.text.starts_with("◎ goal") || s.text.starts_with("✓ goal")
+}
+
+/// The mark of the to-do count in the bar (the terminal's ASCII fallback folds it like the goal's check).
+const TODO_MARK: &str = "✓";
+
+/// The to-do count's piece of the bar: `✓ 3/7`.
+fn is_todo_seg(s: &Seg) -> bool {
+    s.text.strip_prefix(TODO_MARK).is_some_and(|r| r.trim_start().starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// The gauge's percentage (" 42%", " ~42%"), not another piece that ends in one.

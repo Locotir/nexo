@@ -35,6 +35,7 @@ fn app(animations: bool, theme: &str) -> App {
         status_command: String::new(),
         notify_after: 15,
         animations,
+        todo_strip: false,
         vim: false,
         prompt: None,
         session_id: Some("20261027-120000-ab12".into()),
