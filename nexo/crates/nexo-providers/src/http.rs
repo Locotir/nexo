@@ -1,7 +1,7 @@
 //! The HTTP plumbing the adapters share: one client, a streaming POST that
 //! classifies failures, URL joining, and the stream type the parsers take.
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use futures::{Stream, TryStreamExt};
@@ -17,10 +17,15 @@ pub const USER_AGENT: &str = concat!("nexo/", env!("CARGO_PKG_VERSION"));
 /// for this long has gone.
 const IDLE: Duration = Duration::from_secs(300);
 
-/// The shared client, or why TLS could not be set up (see [`crate::tls`]).
-pub fn client() -> Result<&'static reqwest::Client, ProviderError> {
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    let built = CLIENT.get_or_init(|| {
+/// The client of the running tokio runtime, or why TLS could not be set up (see [`crate::tls`]).
+///
+/// A pooled connection is driven by a task of the runtime that opened it, so once that runtime ends
+/// the connection is dead and a request handed to it fails with "error sending request" and no
+/// answer. Each runtime gets a client of its own; a process with one runtime has one client.
+pub fn client() -> Result<reqwest::Client, ProviderError> {
+    let id = tokio::runtime::Handle::try_current().ok().map(|h| h.id());
+    let mut all = CLIENTS.lock().unwrap_or_else(|p| p.into_inner());
+    let built = kept_or_new(&mut all, id, || {
         crate::tls::build_client(|| {
             reqwest::Client::builder()
                 .user_agent(USER_AGENT)
@@ -28,8 +33,29 @@ pub fn client() -> Result<&'static reqwest::Client, ProviderError> {
                 .read_timeout(IDLE)
         })
     });
-    built.as_ref().map_err(|e| ProviderError::new(ErrorKind::Other, e.clone()))
+    built.map_err(|e| ProviderError::new(ErrorKind::Other, e))
 }
+
+type Built = Result<reqwest::Client, String>;
+type Kept = Vec<(Option<tokio::runtime::Id>, Built)>;
+static CLIENTS: Mutex<Kept> = Mutex::new(Vec::new());
+
+/// The client kept for this runtime, or a new one; runtimes that ended are not told apart from live
+/// ones, so the oldest goes when the list is full.
+fn kept_or_new(all: &mut Kept, id: Option<tokio::runtime::Id>, build: impl FnOnce() -> Built) -> Built {
+    if let Some((_, b)) = all.iter().find(|(k, _)| *k == id) {
+        return b.clone();
+    }
+    let b = build();
+    if all.len() >= RUNTIMES_KEPT {
+        let _ = all.remove(0);
+    }
+    all.push((id, b.clone()));
+    b
+}
+
+/// How many runtimes keep a client; the oldest goes first.
+const RUNTIMES_KEPT: usize = 8;
 
 /// `base_url/version/path`, unless the base already ends with a version
 /// segment (`/v1`, `/v1beta`): then `base_url/path`. For protocols whose
@@ -313,5 +339,44 @@ mod tests {
             "authentication_error: bad key"
         );
         assert_eq!(pretty_error("plain"), "plain");
+    }
+}
+
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().build().unwrap()
+    }
+
+    #[test]
+    fn each_runtime_has_a_client_of_its_own_and_reuses_it() {
+        let (a, b) = (rt(), rt());
+        let mut all = Kept::new();
+        let mut get = |r: &tokio::runtime::Runtime, tag: &str| {
+            kept_or_new(&mut all, Some(r.handle().id()), || Err(tag.to_string())).unwrap_err()
+        };
+        assert_eq!(get(&a, "a"), "a");
+        assert_eq!(get(&b, "b"), "b", "another runtime gets its own client");
+        assert_eq!(get(&a, "new"), "a", "the same runtime keeps its client");
+    }
+
+    #[test]
+    fn the_list_of_clients_stays_short_and_drops_the_oldest() {
+        let mut all = Kept::new();
+        let first = rt();
+        kept_or_new(&mut all, Some(first.handle().id()), || Err("first".into())).unwrap_err();
+        let rts: Vec<_> = (0..RUNTIMES_KEPT).map(|_| rt()).collect();
+        for r in &rts {
+            kept_or_new(&mut all, Some(r.handle().id()), || Err("x".into())).unwrap_err();
+        }
+        assert_eq!(all.len(), RUNTIMES_KEPT);
+        assert!(!all.iter().any(|(k, _)| *k == Some(first.handle().id())));
+    }
+
+    #[test]
+    fn outside_a_runtime_there_is_still_a_client() {
+        assert!(client().is_ok());
     }
 }
