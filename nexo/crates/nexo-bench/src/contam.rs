@@ -74,7 +74,8 @@ impl Scope {
         };
         // agents write `/tmp/x` literally, whatever TMPDIR says
         let tmps = [normalize(&std::env::temp_dir()), PathBuf::from("/tmp")];
-        if !tmps.iter().any(|t| p != t && p.starts_with(t)) {
+        // a temporary folder itself is never the run's own, also when TMPDIR sits inside /tmp
+        if tmps.iter().any(|t| p == t) || !tmps.iter().any(|t| p.starts_with(t)) {
             return false;
         }
         std::fs::metadata(p)
@@ -264,6 +265,17 @@ mod tests {
         let gone = format!("{tmp}/contam-gone-none");
         let s = Scope::with_roots(wd, vec![]).made_since(SystemTime::UNIX_EPOCH);
         assert_eq!(s.command(&format!("ls {tmp} {gone}")), [tmp, gone]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tmp_itself_is_never_the_runs_own_and_a_file_made_in_it_is() {
+        let d = tempfile::Builder::new().prefix("contam-tmpdir-").tempdir_in("/tmp").unwrap();
+        let s = Scope::with_roots(Path::new("/nonexistent/nexo-bench-AbC"), vec![]).made_since(SystemTime::UNIX_EPOCH);
+        assert!(!s.own_temp(Path::new("/tmp")));
+        let made = d.path().join("made");
+        std::fs::write(&made, "").unwrap();
+        assert!(s.own_temp(&made), "a file made in the run is its own");
     }
 
     #[test]
