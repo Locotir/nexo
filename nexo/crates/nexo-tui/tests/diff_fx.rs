@@ -107,12 +107,49 @@ fn an_edited_file_is_lit_and_its_figures_roll() {
     assert_ne!(mid, end);
     assert_ne!(calm, end);
     assert_ne!(text(&start), text(&end), "the figure rolls");
+    // the light itself: the file name does not roll, so a cell of it differs in style only, mid-effect
+    let (x, y) = find(&end, "src/a.rs");
+    assert_eq!(mid[(x, y)].symbol(), end[(x, y)].symbol());
+    assert_ne!(
+        (mid[(x, y)].fg, mid[(x, y)].bg, mid[(x, y)].modifier),
+        (end[(x, y)].fg, end[(x, y)].bg, end[(x, y)].modifier),
+        "the edited row is lit"
+    );
+    assert_eq!((calm[(x, y)].bg, calm[(x, y)].modifier), (end[(x, y)].bg, end[(x, y)].modifier));
     assert!(!a.tick_fx());
     let mut s = Terminal::new(TestBackend::new(120, 30)).unwrap();
     let mut b = app(false);
     b.changed = vec![cf("src/a.rs", 40, 1)];
     b.show_files = true;
     same(&end, &frame(&mut s, &mut b, t0));
+}
+
+#[test]
+fn the_panel_reseeds_after_the_viewer_hid_it() {
+    let t0 = Instant::now();
+    let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut a = app(true);
+    a.changed = vec![cf("src/a.rs", 3, 1)];
+    a.show_files = true;
+    frame(&mut t, &mut a, t0);
+    frame(&mut t, &mut a, ms(t0, 1000));
+    let files = parse_unified(TWO_HUNKS, Area::Unstaged);
+    a.diffview =
+        Some(DiffView::from_collected(Collected { files, note: None, error: None, root: PathBuf::from("/repo") }));
+    frame(&mut t, &mut a, ms(t0, 1100));
+    a.changed = vec![cf("src/a.rs", 40, 1), cf("src/b.rs", 5, 0)];
+    frame(&mut t, &mut a, ms(t0, 1200));
+    a.diffview = None;
+    // the plain open fade plays when the panel is back; no file is new and no figure rolls
+    let back = frame(&mut t, &mut a, ms(t0, 1300));
+    assert_eq!(text(&back).matches("+40").count(), 1, "the figure is already the settled one");
+    let settled = frame(&mut t, &mut a, ms(t0, 1300 + OPEN_MS + 10));
+    assert!(!a.tick_fx(), "only the open fade ran: no new file, no roll");
+    let mut s = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut b = app(false);
+    b.changed = vec![cf("src/a.rs", 40, 1), cf("src/b.rs", 5, 0)];
+    b.show_files = true;
+    same(&settled, &frame(&mut s, &mut b, t0));
 }
 
 #[test]
@@ -193,6 +230,34 @@ fn the_file_list_highlight_glides() {
     let end = frame(&mut t, &mut a, ms(t0, 800));
     assert_ne!(mid, end);
     assert!(!a.tick_fx());
+    let mut s = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut b = app(false);
+    let mut files = parse_unified(TWO_HUNKS, Area::Unstaged);
+    files.extend(parse_unified(&TWO_HUNKS.replace("main.rs", "lib.rs"), Area::Unstaged));
+    b.diffview =
+        Some(DiffView::from_collected(Collected { files, note: None, error: None, root: PathBuf::from("/r") }));
+    frame(&mut s, &mut b, t0);
+    b.diffview_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(end, frame(&mut s, &mut b, ms(t0, 800)), "settled equals the still list");
+}
+
+#[test]
+fn a_jump_on_a_tiny_screen_rests_and_lights_nothing_later() {
+    let t0 = Instant::now();
+    let mut t = Terminal::new(TestBackend::new(20, 5)).unwrap();
+    let mut a = app(true);
+    let files = parse_unified(TWO_HUNKS, Area::Unstaged);
+    a.diffview =
+        Some(DiffView::from_collected(Collected { files, note: None, error: None, root: PathBuf::from("/repo") }));
+    frame(&mut t, &mut a, t0);
+    a.diffview_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    frame(&mut t, &mut a, ms(t0, 50));
+    assert!(!a.tick_fx(), "a jump nobody can see does not keep the pacer awake");
+    let mut big = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let first = frame(&mut big, &mut a, ms(t0, 100));
+    let later = frame(&mut big, &mut a, ms(t0, 100 + JUMP_MS + 20));
+    assert_eq!(first, later, "no hunk header is lit by the old jump");
+    assert!(!a.tick_fx());
 }
 
 #[test]
@@ -207,6 +272,19 @@ fn small_terminals_do_not_panic() {
         a.changed.push(cf("b.rs", 1, 1));
         frame(&mut t, &mut a, ms(t0, 20));
     }
+}
+
+/// Where the first cell of `needle` is (rows of one-width glyphs only).
+fn find(b: &Buffer, needle: &str) -> (u16, u16) {
+    let w = b.area.width as usize;
+    let all: Vec<&str> = b.content().iter().map(|c| c.symbol()).collect();
+    for y in 0..b.area.height as usize {
+        let row = all[y * w..(y + 1) * w].concat();
+        if let Some(x) = row.find(needle) {
+            return (row[..x].chars().count() as u16, y as u16);
+        }
+    }
+    panic!("{needle} not on screen");
 }
 
 /// Equal in the panel columns (the banner at the left has its own intro).

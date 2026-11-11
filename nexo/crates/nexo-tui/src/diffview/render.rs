@@ -183,6 +183,9 @@ fn ensure_highlight(dv: &mut DiffView, theme: &Theme) {
 pub fn draw(f: &mut Frame, dv: &mut DiffView, area: Rect, theme: &Theme) {
     f.render_widget(Box_::default().style(theme.base()), area);
     if area.width < 30 || area.height < 6 {
+        // nothing is drawn to light: drop the jump (not stamp it) so it neither keeps the pacer awake nor
+        // lights a stale header after a resize
+        dv.fx.pending = None;
         let p = Paragraph::new("Too small | Esc close").style(theme.dim());
         f.render_widget(p, area);
         return;

@@ -60,6 +60,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     if let Some(dv) = &mut app.diffview {
         dv.fx.now = Some(now0);
         dv.fx.on = on0;
+        app.fx.diff.note(false, &[], now0, on0); // the panel is not shown: reseed when it is back
         crate::diffview::render::draw(f, dv, area, &app.theme);
         // DF7: a dialog (permission, question, info) is always on top, the viewer never hides it
         if app.modal.is_some() {
@@ -70,6 +71,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         return;
     }
     if area.width < MIN_W || area.height < MIN_H {
+        app.fx.diff.note(false, &[], now0, on0);
         draw_too_small(f, app, area);
         app.files_area = Rect::default();
         app.dirty = false;
