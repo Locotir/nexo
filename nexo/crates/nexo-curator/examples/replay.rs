@@ -1808,8 +1808,11 @@ fn main() {
         rep_view += repeated_tokens(&reply.view);
         rep_raw += repeated_tokens(&r.messages);
         let raw: i64 = r.messages.iter().map(tokens_of).sum();
+        // the view in the unit the history is counted in: the engine's own estimate (`reply.tokens`) also
+        // counts each message's wrapper, so a view the curator left untouched would read as larger
+        let view_tok: i64 = reply.view.iter().map(tokens_of).sum();
         sum_raw += raw;
-        sum_view += reply.tokens;
+        sum_view += view_tok;
         let hit = cache.send(&reply.view, r.system_tokens as i64, at);
         sum_hit += hit;
         // counted as the plain cost is, so that a view equal to the history costs the same
@@ -1846,14 +1849,14 @@ fn main() {
         }
         prev_stats = stats;
         if !quiet && (i % every == 0 || i + 1 == requests.len() || !changed.is_empty()) {
-            let kept = if raw > 0 { 100.0 * reply.tokens as f64 / raw as f64 } else { 100.0 };
+            let kept = if raw > 0 { 100.0 * view_tok as f64 / raw as f64 } else { 100.0 };
             println!(
                 "{:>4} {:>5} {:>8} {:>5} {:>8} {:>4.0}%  {:5} {}",
                 i + 1,
                 r.messages.len(),
                 raw,
                 reply.view.len(),
-                reply.tokens,
+                view_tok,
                 kept,
                 if nudge { "yes" } else { "" },
                 changed.join(", ")
