@@ -3,14 +3,22 @@
 use super::*;
 
 pub(super) async fn set_model(state: &Shared, provider: Option<String>, model: String) {
+    switch_model(state, provider, model).await;
+}
+
+/// `set_model`, saying whether the switch happened (a refusal has been told to the person already).
+async fn switch_model(state: &Shared, provider: Option<String>, model: String) -> bool {
     let mut st = state.lock().await;
     let provider = provider.unwrap_or_else(|| st.target.provider());
     if let Err(e) = st.config.check_model(&provider, &model) {
         notice(&st.events, Level::Error, e);
-        return;
+        return false;
     }
     match st.config.providers.get(&provider).cloned() {
-        None => notice(&st.events, Level::Error, format!("unknown provider `{provider}` (see `nexo providers`)")),
+        None => {
+            notice(&st.events, Level::Error, format!("unknown provider `{provider}` (see `nexo providers`)"));
+            false
+        }
         Some(cfg) => {
             let was_fast = fast_on(&st);
             st.limits = limits::resolve(&provider, &cfg, &model, None);
@@ -30,6 +38,7 @@ pub(super) async fn set_model(state: &Shared, provider: Option<String>, model: S
             }
             drop(st);
             spawn_vendor_fill(state);
+            true
         }
     }
 }
@@ -343,17 +352,17 @@ pub(super) async fn save_model(state: &Shared, name: String, cfg: ProviderConfig
     {
         let st = state.lock().await;
         if let Err(e) = st.config.check_model(&name, &model) {
-            notice(&st.events, Level::Error, e.clone());
             failed(&st.events, e);
             return;
         }
     }
     let mut cfg = cfg;
-    let mut kept = None;
-    let key_was_there = setup::key_file(&name).exists();
+    // a new key is written beside the old one; it takes the old one's place only once the configuration
+    // is saved, so a save that fails changes nothing on disk
+    let mut staged = None;
     if let Some(k) = key.as_deref().filter(|k| !k.trim().is_empty()) {
-        match setup::keep_key(&name, k, &mut cfg) {
-            Ok(f) => kept = Some(f),
+        match setup::stage_key(&name, k, &mut cfg) {
+            Ok(s) => staged = Some(s),
             Err(e) => {
                 let st = state.lock().await;
                 let at = setup::key_file(&name);
@@ -397,31 +406,49 @@ pub(super) async fn save_model(state: &Shared, name: String, cfg: ProviderConfig
         merged.effort.insert(model.clone(), e.clone());
     }
     let file = nexo_core::paths::user_config_file();
-    match setup::save(&file, &name, &merged, &model) {
-        Ok(()) => {
+    let before = std::fs::read_to_string(&file).ok();
+    let saved = setup::save(&file, &name, &merged, &model).map_err(|e| {
+        format!("Not saved: {} could not be written ({e}). Make it writable, then press Enter.", file.display())
+    });
+    // the staged key replaces the saved one; when that fails the configuration goes back as it was
+    let saved = saved.and_then(|()| match &staged {
+        None => Ok(None),
+        Some(s) => s.put_in_place(&name).map(Some).map_err(|e| {
+            let _ = crate::config_edit::restore(&file, before.as_deref());
+            format!(
+                "Not saved: the key could not be put in {} ({e}). Make that folder writable, then press Enter.",
+                setup::key_file(&name).display()
+            )
+        }),
+    });
+    match saved {
+        Ok(kept) => {
             let key_note = kept.map(|f| key_note(&f, cfg!(unix))).unwrap_or_default();
             notice(&st.events, Level::Info, format!("{name}/{model} saved to {}{key_note}", file.display()));
         }
-        Err(e) => {
-            // a key file made for this save goes again: nothing points at it
-            if let (Some(f), false) = (&kept, key_was_there) {
-                let _ = std::fs::remove_file(f);
-            }
-            failed(
-                &st.events,
-                format!(
-                    "Not saved: {} could not be written ({e}). Make it writable, then press Enter.",
-                    file.display()
-                ),
-            );
+        Err(reason) => {
+            // dropping `staged` removes the new key file; the old key and the old configuration stay
+            drop(staged);
+            failed(&st.events, reason);
             return;
         }
     }
     st.config.providers.insert(name.clone(), merged);
     st.config.provider = Some(name.clone());
     st.config.model = Some(model.clone());
+    let events = st.events.clone();
     drop(st);
-    set_model(state, Some(name), model).await;
+    // saved, but the switch itself was refused: the wizard must not wait for a change that will not come
+    if !switch_model(state, Some(name.clone()), model.clone()).await {
+        emit(
+            &events,
+            AgentEvent::SaveFailed {
+                name,
+                model,
+                reason: "Saved, but nexo could not switch to it. Pick it from the model list.".into(),
+            },
+        );
+    }
 }
 
 /// Remembers the prices of the model in use in the user's configuration.

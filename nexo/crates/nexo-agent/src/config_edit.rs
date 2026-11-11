@@ -53,17 +53,49 @@ fn table_at<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> &'a mut Table {
     t
 }
 
+/// Several edits as one write: the file is read once, every edit is made in memory, and it is written
+/// once (a temporary file renamed over it). When an edit or the write fails the file is as it was.
+pub fn edit(file: &Path, f: impl FnOnce(&mut DocumentMut) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    let mut doc = load(file)?;
+    f(&mut doc)?;
+    save(file, &doc)
+}
+
+/// Puts the file back as `text` (None: the file was not there). For a change that has to be undone.
+pub fn restore(file: &Path, text: Option<&str>) -> anyhow::Result<()> {
+    match text {
+        Some(t) => save(file, &t.parse::<DocumentMut>()?),
+        None => match std::fs::remove_file(file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// `set` on a document in memory.
+pub fn set_in(doc: &mut DocumentMut, path: &[&str], key: &str, v: Value) {
+    table_at(doc, path)[key] = value(v);
+}
+
 /// Sets `key = v` in the table at `path`.
 pub fn set(file: &Path, path: &[&str], key: &str, v: Value) -> anyhow::Result<()> {
-    let mut doc = load(file)?;
-    table_at(&mut doc, path)[key] = value(v);
-    save(file, &doc)
+    edit(file, |d| {
+        set_in(d, path, key, v);
+        Ok(())
+    })
 }
 
 /// Appends `s` to the array `key` of the table at `path`, unless it is there.
 pub fn push(file: &Path, path: &[&str], key: &str, s: &str) -> anyhow::Result<()> {
-    let mut doc = load(file)?;
-    let t = table_at(&mut doc, path);
+    edit(file, |d| {
+        push_in(d, path, key, s);
+        Ok(())
+    })
+}
+
+/// `push` on a document in memory.
+pub fn push_in(doc: &mut DocumentMut, path: &[&str], key: &str, s: &str) {
+    let t = table_at(doc, path);
     let item = t.entry(key).or_insert_with(|| value(Array::new()));
     if !item.is_array() {
         *item = value(Array::new());
@@ -72,25 +104,36 @@ pub fn push(file: &Path, path: &[&str], key: &str, s: &str) -> anyhow::Result<()
     if !arr.iter().any(|v| v.as_str() == Some(s)) {
         arr.push(s);
     }
-    save(file, &doc)
 }
 
 /// `[providers.<provider>.pricing."<model>"]` with the four prices.
 pub fn set_pricing(file: &Path, provider: &str, model: &str, p: Pricing) -> anyhow::Result<()> {
-    let mut doc = load(file)?;
-    let t = table_at(&mut doc, &["providers", provider, "pricing", model]);
+    edit(file, |d| {
+        set_pricing_in(d, provider, model, p);
+        Ok(())
+    })
+}
+
+/// `set_pricing` on a document in memory.
+pub fn set_pricing_in(doc: &mut DocumentMut, provider: &str, model: &str, p: Pricing) {
+    let t = table_at(doc, &["providers", provider, "pricing", model]);
     t["input"] = value(p.input);
     t["output"] = value(p.output);
     t["cache_read"] = value(p.cache_read);
     t["cache_write"] = value(p.cache_write);
-    save(file, &doc)
 }
 
 /// `[providers.<provider>.<which>]` `"<model>" = n` (`which`: `context_window` or `max_output`).
 pub fn set_limit(file: &Path, provider: &str, model: &str, which: &str, n: u32) -> anyhow::Result<()> {
-    let mut doc = load(file)?;
-    table_at(&mut doc, &["providers", provider, which])[model] = value(i64::from(n));
-    save(file, &doc)
+    edit(file, |d| {
+        set_limit_in(d, provider, model, which, n);
+        Ok(())
+    })
+}
+
+/// `set_limit` on a document in memory.
+pub fn set_limit_in(doc: &mut DocumentMut, provider: &str, model: &str, which: &str, n: u32) {
+    table_at(doc, &["providers", provider, which])[model] = value(i64::from(n));
 }
 
 #[cfg(test)]

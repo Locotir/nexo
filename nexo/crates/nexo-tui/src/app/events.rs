@@ -813,8 +813,14 @@ impl App {
                 self.refresh_welcome();
             }
             AgentEvent::SaveFailed { name, model, reason } => {
-                if let Some(Modal::Setup(s)) = &mut self.modal {
-                    s.save_failed(&name, &model, reason);
+                // the wizard that waits for the save says it on its screen; with none open the failure is
+                // still told, in one line
+                let shown = match &mut self.modal {
+                    Some(Modal::Setup(s)) => s.save_failed(&name, &model, reason.clone()),
+                    _ => false,
+                };
+                if !shown {
+                    self.notice(Level::Warn, reason);
                 }
             }
             AgentEvent::PermissionModeChanged { mode } => {

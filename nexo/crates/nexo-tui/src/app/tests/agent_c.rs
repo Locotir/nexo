@@ -1406,3 +1406,90 @@ fn a_model_saved_from_the_setup_leaves_it_open_on_its_last_screen_until_the_agen
     assert_eq!((a.provider.as_str(), a.model.as_str()), ("deepseek", "m1"));
     assert!(a.opts.models.contains(&("deepseek".to_string(), "m1".to_string())), "offered once saved");
 }
+
+/// The setup walked to the point where Enter on the review has sent `SaveModel` (the setup still open).
+fn saving_setup() -> (App, tokio::sync::mpsc::UnboundedReceiver<AgentCommand>) {
+    use crate::modal::setup::Setup;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use nexo_core::{ModelCheck, ModelInfo, ProviderConfig, ServerProbe};
+    std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json");
+    let (mut a, mut rx) = app();
+    let mut ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_T_APP_SETUP_DS"));
+    ds.default_model = Some("m1".into());
+    let mut s = Setup::new(vec![("deepseek".into(), ds)], Vec::new(), "");
+    let press = |s: &mut Setup, code: KeyCode| s.key(KeyEvent::new(code, KeyModifiers::NONE));
+    press(&mut s, KeyCode::Enter);
+    for c in "sk-made-up-key-0000".chars() {
+        press(&mut s, KeyCode::Char(c));
+    }
+    press(&mut s, KeyCode::Enter);
+    s.probed(Ok(ServerProbe {
+        protocol: "openai-chat".into(),
+        base_url: "https://api.deepseek.com".into(),
+        models: vec![ModelInfo { id: "m1".into(), ..Default::default() }],
+        ..Default::default()
+    }));
+    press(&mut s, KeyCode::Enter);
+    s.checked(ModelCheck { info: ModelInfo { id: "m1".into(), ..Default::default() }, ..Default::default() });
+    a.modal = Some(Modal::Setup(Box::new(s)));
+    let out = a.modal.as_mut().unwrap().key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    a.modal_out(out);
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SaveModel { .. })));
+    (a, rx)
+}
+
+fn setup_text(a: &App) -> String {
+    let Some(Modal::Setup(s)) = &a.modal else { panic!("the setup is open") };
+    s.lines(100, &crate::theme::Theme::nexo(), 0, false)
+        .0
+        .iter()
+        .map(|l| l.spans.iter().map(|x| x.content.to_string()).collect::<String>() + "\n")
+        .collect()
+}
+
+#[test]
+fn a_failed_save_told_by_the_agent_keeps_the_open_setup_on_its_step() {
+    use crate::modal::setup::Step;
+    let (mut a, _rx) = saving_setup();
+    a.handle_agent(AgentEvent::SaveFailed {
+        name: "deepseek".into(),
+        model: "m1".into(),
+        reason: "Not saved: config.toml could not be written. Make it writable, then press Enter.".into(),
+    });
+    let Some(Modal::Setup(s)) = &a.modal else { panic!("still open") };
+    assert_eq!(s.step, Step::Review);
+    let t = setup_text(&a);
+    assert!(t.contains("Not saved") && !t.contains("is ready"), "{t}");
+    // nothing else is told: the wizard said it
+    assert!(!matches!(a.blocks.last(), Some(Block::Notice { level: Level::Warn, .. })));
+}
+
+#[test]
+fn a_failed_save_whose_wizard_was_closed_still_shows_one_warning() {
+    let (mut a, _rx) = saving_setup();
+    a.modal = None;
+    let before = a.blocks.len();
+    a.handle_agent(AgentEvent::SaveFailed {
+        name: "deepseek".into(),
+        model: "m1".into(),
+        reason: "Not saved: config.toml could not be written. Make it writable, then press Enter.".into(),
+    });
+    assert_eq!(a.blocks.len(), before + 1);
+    assert!(
+        matches!(a.blocks.last(), Some(Block::Notice { level: Level::Warn, text }) if text.starts_with("Not saved")),
+        "{:?}",
+        a.blocks.last()
+    );
+}
+
+#[test]
+fn the_last_screen_says_only_you_can_read_it_where_the_file_mode_is_set() {
+    use crate::modal::setup::Step;
+    let (mut a, _rx) = saving_setup();
+    a.handle_agent(AgentEvent::ModelChanged { provider: "deepseek".into(), model: "m1".into() });
+    let Some(Modal::Setup(s)) = &a.modal else { panic!("the last screen") };
+    assert_eq!(s.step, Step::Done);
+    let t = setup_text(&a);
+    assert_eq!(t.contains("only you can read it"), cfg!(unix), "{t}");
+    assert!(t.contains("key is in") || t.contains("Key is in") || t.contains("The key is in"), "{t}");
+}

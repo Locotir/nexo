@@ -19,18 +19,26 @@ pub fn clean(text: &str) -> String {
     s.to_string()
 }
 
+/// The starts of the keys of one service only; each is the service's own, published in its documentation.
+const STARTS: &[(&str, &str)] = &[
+    ("sk-ant-", "anthropic"),
+    ("sk-or-v1-", "openrouter"),
+    ("sk-proj-", "openai"),
+    ("gsk_", "groq"),
+    ("AIza", "gemini"),
+    ("csk-", "cerebras"),
+];
+
+/// Whether a text, as it is typed, starts like the key of a known service and has `more` characters
+/// after that start. Nothing else is taken for a key: a model name or a search never is.
+pub fn starts_like_key(text: &str, more: usize) -> bool {
+    let t = text.trim();
+    STARTS.iter().any(|(p, _)| t.starts_with(p) && t.chars().count() >= p.chars().count() + more)
+}
+
 /// The preset a key belongs to, from a start that only that service uses. A start that two services
 /// share (a bare `sk-`) names none: the person is asked.
 pub fn recognise(key: &str) -> Option<&'static str> {
-    // each start is the service's own, published in its documentation; the longest wins
-    const STARTS: &[(&str, &str)] = &[
-        ("sk-ant-", "anthropic"),
-        ("sk-or-v1-", "openrouter"),
-        ("sk-proj-", "openai"),
-        ("gsk_", "groq"),
-        ("AIza", "gemini"),
-        ("csk-", "cerebras"),
-    ];
     let key = key.trim();
     STARTS
         .iter()

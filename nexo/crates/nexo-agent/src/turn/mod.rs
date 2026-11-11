@@ -962,7 +962,16 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                                         }
                                     }
                                 }
-                                let check = setup::check(client, &name, &probe, &cfg, &model).await;
+                                // bounded, so the trial file of a check never outlives the sweep's patience
+                                let check = tokio::time::timeout(
+                                    setup::CHECK_LIMIT,
+                                    setup::check(client, &name, &probe, &cfg, &model),
+                                )
+                                .await
+                                .unwrap_or_else(|_| nexo_core::ModelCheck {
+                                    error: Some(format!("no answer in {} s", setup::CHECK_LIMIT.as_secs())),
+                                    ..Default::default()
+                                });
                                 emit(&events, AgentEvent::ModelChecked { name, model, seq, check });
                             })
                             .abort_handle(),

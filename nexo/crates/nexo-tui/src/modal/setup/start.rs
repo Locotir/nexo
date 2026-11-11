@@ -179,14 +179,15 @@ impl Setup {
         out
     }
 
-    /// Whether the provider picked is a remote service (not a server on this computer or of one's own).
+    /// Whether the entry picked is a service of nexo's own list of cloud services, reached at the address
+    /// that list gives it. Decided by the entry, never by how a name or an address looks: a server of
+    /// one's own, on any host name, is not in that list.
     fn cloud(&self) -> bool {
         let local = LOCAL.iter().any(|(p, _)| *p == self.name);
-        let url = self.cfg.base_url.to_ascii_lowercase();
-        let host = url.split("://").last().unwrap_or("");
-        let near =
-            ["localhost", "127.", "[::1]", "0.0.0.0", "192.168.", "10.", "172."].iter().any(|h| host.starts_with(h));
-        self.name != "custom" && self.cfg.login.is_none() && !local && !near
+        nexo_providers::presets::presets()
+            .get(&self.name)
+            .is_some_and(|p| p.login.is_none() && p.base_url.starts_with("https://") && p.base_url == self.cfg.base_url)
+            && !local
     }
 
     fn choose_on(&mut self) -> SetupOut {
@@ -366,12 +367,15 @@ impl Setup {
     }
 
     /// The save did not go through: the screen stays where it was and says what failed and what to do.
-    pub fn save_failed(&mut self, provider: &str, model: &str, reason: String) {
-        if self.done.as_ref().is_some_and(|d| d.model == format!("{provider}/{model}")) {
+    /// True when this wizard was waiting for that save (the line is its own); false: nobody is.
+    pub fn save_failed(&mut self, provider: &str, model: &str, reason: String) -> bool {
+        let mine = self.done.as_ref().is_some_and(|d| d.model == format!("{provider}/{model}"));
+        if mine {
             self.done = None;
             self.busy = None;
             self.error = Some(reason);
         }
+        mine
     }
 
     /// What the last screen will say once the save is confirmed.

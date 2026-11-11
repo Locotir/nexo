@@ -6033,3 +6033,127 @@ async fn a_cut_reasoning_call_is_billed_its_input_too() {
     assert!(first.total_input() <= size * 2, "estimate {} for a request of about {size} tokens", first.total_input());
     r.stop().await;
 }
+
+fn trial_files(data: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(data.join("keys"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".trying-")))
+        .collect()
+}
+
+#[tokio::test]
+async fn stopping_a_model_check_removes_the_tried_key_and_applies_no_answer() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    // the server takes the request and never answers
+    let client = Scripted::new(vec![Reply::Hang(vec![])]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    let data = data_dir();
+    let probe = nexo_core::ServerProbe {
+        kind: "openai-compatible".into(),
+        protocol: "openai-chat".into(),
+        base_url: "https://gw.example/v1".into(),
+        ..Default::default()
+    };
+    let cfg = ProviderConfig::new("openai-chat", "https://gw.example/v1", None);
+    r.send(AgentCommand::CheckModel {
+        name: "gw-hold".into(),
+        probe,
+        cfg,
+        model: "m".into(),
+        key: Some("sk-held-0123456789".into()),
+        seq: 7,
+    });
+    let mut seen = false;
+    for _ in 0..100 {
+        if trial_files(&data).iter().any(|p| p.to_string_lossy().contains("gw-hold")) {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(seen, "the check keeps its trial file while it waits for the server");
+    r.send(AgentCommand::CancelCheck);
+    let mut gone = false;
+    for _ in 0..100 {
+        if !trial_files(&data).iter().any(|p| p.to_string_lossy().contains("gw-hold")) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(gone, "stopping the check removes the file");
+    // and nothing is answered
+    let late = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if matches!(r.next().await, AgentEvent::ModelChecked { .. }) {
+                return true;
+            }
+        }
+    })
+    .await;
+    assert!(late.is_err(), "a stopped check applies no answer");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_failed_save_leaves_the_old_key_and_the_old_configuration_as_they_were() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    let data = data_dir();
+    let old_key = data.join("keys").join("gw-keep");
+    std::fs::create_dir_all(old_key.parent().unwrap()).unwrap();
+    std::fs::write(&old_key, "sk-old-key-0123456789").unwrap();
+    let conf = data.join("config.toml");
+    let before = std::fs::read(&conf).ok();
+    let _ = std::fs::remove_file(&conf);
+    std::fs::create_dir(&conf).unwrap();
+    let cfg = ProviderConfig::new("openai-chat", "https://gw.example/v1", None);
+    r.send(AgentCommand::SaveModel {
+        name: "gw-keep".into(),
+        cfg,
+        model: "m".into(),
+        key: Some("sk-new-key-9876543210".into()),
+    });
+    let evs = r.until(|e| matches!(e, AgentEvent::SaveFailed { .. } | AgentEvent::ModelChanged { .. })).await;
+    std::fs::remove_dir(&conf).unwrap();
+    if let Some(b) = before {
+        std::fs::write(&conf, b).unwrap();
+    }
+    assert!(matches!(evs.last(), Some(AgentEvent::SaveFailed { .. })), "{evs:?}");
+    assert_eq!(std::fs::read_to_string(&old_key).unwrap(), "sk-old-key-0123456789", "the old key stays");
+    assert!(trial_files(&data).is_empty(), "the new key's file is gone: {:?}", trial_files(&data));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_good_save_replaces_the_old_key_with_the_new_one() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    let data = data_dir();
+    let old_key = data.join("keys").join("gw-swap");
+    std::fs::create_dir_all(old_key.parent().unwrap()).unwrap();
+    std::fs::write(&old_key, "sk-old-key-0123456789").unwrap();
+    let cfg = ProviderConfig::new("openai-chat", "https://gw.example/v1", None);
+    r.send(AgentCommand::SaveModel {
+        name: "gw-swap".into(),
+        cfg,
+        model: "m".into(),
+        key: Some("sk-new-key-9876543210".into()),
+    });
+    let evs = r.until(|e| matches!(e, AgentEvent::SaveFailed { .. } | AgentEvent::ModelChanged { .. })).await;
+    assert!(matches!(evs.last(), Some(AgentEvent::ModelChanged { .. })), "{evs:?}");
+    assert_eq!(std::fs::read_to_string(&old_key).unwrap(), "sk-new-key-9876543210");
+    assert!(trial_files(&data).is_empty());
+    r.stop().await;
+}

@@ -175,11 +175,12 @@ pub fn provider_ready(name: &str, c: &ProviderConfig, local: &[(String, String)]
 /// Said when a pasted text the program could not place is let go.
 const HELD_DROPPED: &str = "The pasted text was not kept or sent anywhere.";
 
-/// Text that is surely a key (it looks like one and starts like a known service's): never drawn in clear,
-/// never taken for a model name.
+/// Text typed in a search box that is surely a key: it starts like the key of a known service (the list
+/// in `nexo_providers::keys`) and has something after that start. Nothing else is taken for a key, so a
+/// model id such as `deepseek-reasoner` is never hidden or kept. From then on it is drawn as dots, so no
+/// more than the start is ever drawn, and it is never taken for a model name.
 fn looks_like_secret(text: &str) -> bool {
-    let t = text.trim();
-    keys::looks_like_key(t) && (keys::recognise(t).is_some() || t.starts_with("sk-"))
+    keys::starts_like_key(text, 1)
 }
 
 /// The host of an address: `https://auth.openai.com/oauth?x=1` is `auth.openai.com`.
@@ -889,7 +890,7 @@ impl Setup {
         match self.step {
             Step::Provider => {
                 // a key typed key by key (no bracketed paste) is a key, taken as a paste is
-                if keys::looks_like_key(&self.list.query) {
+                if keys::starts_like_key(&self.list.query, 1) && keys::looks_like_key(&self.list.query) {
                     let typed = std::mem::take(&mut self.list.query);
                     self.refilter();
                     return self.key_pasted(keys::clean(&typed));
@@ -901,6 +902,12 @@ impl Setup {
                     return SetupOut::Nothing;
                 }
                 if let Some(pm) = it.value.strip_prefix("use:") {
+                    // a model already set up needs no key: a pasted text held is let go, and the person
+                    // is told before anything is sent (the wizard stays; Enter again switches)
+                    if self.pending_key.take().is_some() {
+                        self.error = Some(HELD_DROPPED.into());
+                        return SetupOut::Nothing;
+                    }
                     let (provider, model) = match pm.split_once('/') {
                         Some((p, m)) => (Some(p.to_string()), m.to_string()),
                         None => (None, pm.to_string()),
@@ -1228,11 +1235,7 @@ impl Setup {
                         say(&mut lines, &about, dim);
                     }
                 }
-                lines.push(prompt(
-                    self.list.query.clone(),
-                    self.step == Step::Provider && keys::looks_like_key(&self.list.query)
-                        || looks_like_secret(&self.list.query),
-                ));
+                lines.push(prompt(self.list.query.clone(), looks_like_secret(&self.list.query)));
             }
             Step::Review if !self.details => {
                 lines.push(Line::from(vec![Span::styled(
@@ -2277,6 +2280,100 @@ mod tests {
     }
 
     #[test]
+    fn typed_text_is_a_key_only_with_a_known_start_and_is_masked_from_the_first_character_after_it() {
+        let mut s = first_run();
+        s.paste("a");
+        s.step = Step::Provider;
+        s.fill_providers();
+        // a model id of 17 characters is a model id: shown as typed, and Enter does not hold it as a key
+        typing(&mut s, "deepseek-reasoner");
+        assert!(!looks_like_secret("deepseek-reasoner"), "shown as typed");
+        press(&mut s, KeyCode::Enter);
+        assert!(s.pending_key.is_none(), "not a key");
+        assert_eq!(s.list.query, "deepseek-reasoner", "the search stays what it was");
+        s.list.query.clear();
+        s.refilter();
+        // a known start: the start may be drawn, nothing after it ever is
+        typing(&mut s, "gsk_ab");
+        assert!(looks_like_secret(&s.list.query), "masked as soon as one character follows the known start");
+        assert!(!looks_like_secret("gsk_"), "a start alone is only a start");
+        typing(&mut s, "cdefghijklmnop");
+        press(&mut s, KeyCode::Enter);
+        assert_eq!(s.pending_key.as_deref(), Some("gsk_abcdefghijklmnop"), "a known start and long enough: a key");
+    }
+
+    #[test]
+    fn an_answer_with_the_open_counter_but_another_name_is_ignored() {
+        let mut s = first_run();
+        let SetupOut::Send(AgentCommand::Probe { seq, .. }) = s.paste("sk-ant-api03-madeupmadeupmade") else {
+            panic!("a probe")
+        };
+        s.probed_from("deepseek", seq, Ok(deepseek_probe()));
+        assert!(s.busy.is_some() && s.probe.is_none(), "only the name told it apart");
+    }
+
+    #[test]
+    fn esc_makes_the_answer_of_the_stopped_check_late_even_for_a_wait_that_began_without_a_new_check() {
+        let mut s = first_run();
+        let SetupOut::Send(AgentCommand::Probe { seq, .. }) = s.paste("sk-ant-api03-madeupmadeupmade") else {
+            panic!("a probe")
+        };
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Send(AgentCommand::CancelCheck));
+        // another wait begins on the same provider without a check of its own (the screen is waiting again)
+        s.busy = Some("waiting".into());
+        s.probed_from("anthropic", seq, Ok(deepseek_probe()));
+        assert!(s.busy.is_some() && s.probe.is_none(), "the stopped check's answer is late");
+    }
+
+    #[test]
+    fn picking_a_model_already_set_up_with_a_paste_held_says_the_one_line_and_waits() {
+        let mut s = setup();
+        s.step = Step::Provider;
+        s.fill_providers();
+        s.pending_key = Some(HELD.into());
+        typing(&mut s, "deepseek-chat");
+        for _ in 0..4 {
+            if s.list.current().is_some_and(|i| i.value.starts_with("use:")) {
+                break;
+            }
+            press(&mut s, KeyCode::Down);
+        }
+        assert!(s.list.current().is_some_and(|i| i.value.starts_with("use:")), "{:?}", s.list.current());
+        assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing, "the wizard does not close on a dropped paste");
+        assert!(s.pending_key.is_none());
+        assert_eq!(s.error.as_deref(), Some(HELD_DROPPED));
+        assert!(matches!(press(&mut s, KeyCode::Enter), SetupOut::SendAndClose(AgentCommand::SetModel { .. })));
+    }
+
+    #[test]
+    fn a_held_paste_goes_only_to_the_services_of_nexos_own_list_by_the_entry_picked() {
+        // a provider of the person's own on a host name of the local network: not in the list
+        let lan = ProviderConfig::new("openai-chat", "https://gpu-box.corp.example/v1", Some("NEXO_T_LAN"));
+        let mut ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_T_LAN_DS"));
+        ds.default_model = Some("deepseek-chat".into());
+        no_auth();
+        for (name, cfg, goes) in [("gpu-box", lan.clone(), false), ("deepseek", ds, true)] {
+            let mut s = Setup::new(vec![(name.into(), cfg)], Vec::new(), "");
+            s.paste("a");
+            s.step = Step::Provider;
+            s.fill_providers();
+            s.pending_key = Some(HELD.into());
+            let out = s.choose(&format!("new:{name}"));
+            let sent = matches!(out, SetupOut::Send(AgentCommand::Probe { key: Some(_), .. })) || s.key.is_some();
+            assert_eq!(sent, goes, "{name}: {out:?}");
+            if !goes {
+                assert_eq!(s.error.as_deref(), Some(HELD_DROPPED));
+            }
+        }
+        // a built-in name pointed at a host of the person's own is not the built-in service either
+        let moved = ProviderConfig::new("openai-chat", "http://nas.local:8000/v1", Some("NEXO_T_LAN"));
+        let mut s = Setup::new(vec![("deepseek".into(), moved)], Vec::new(), "");
+        s.pending_key = Some(HELD.into());
+        s.choose("new:deepseek");
+        assert!(s.key.is_none(), "kept nothing for an address that is not the service's");
+    }
+
+    #[test]
     fn a_key_typed_where_a_model_name_goes_is_masked_and_not_sent_as_a_name() {
         let mut s = first_run();
         press(&mut s, KeyCode::Enter);
@@ -2284,7 +2381,7 @@ mod tests {
         press(&mut s, KeyCode::Enter);
         s.probed(Ok(deepseek_probe()));
         assert_eq!(s.step, Step::Model);
-        let k = "sk-0123456789abcdef0123456789abcdef";
+        let k = "sk-ant-0123456789abcdef0123456789abcdef";
         s.list.query = k.into();
         assert!(!row_text(&s, 100).contains(k), "masked on screen");
         assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing, "not sent as a model");
