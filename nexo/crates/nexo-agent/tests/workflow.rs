@@ -25,6 +25,11 @@ use serde_json::{json, Value};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
+/// Waits for `f` at most [`PATIENCE`]: a rule that is broken fails the test with a message, it does not hang it.
+async fn bounded<T>(what: &str, f: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(PATIENCE, f).await.unwrap_or_else(|_| panic!("{what} did not end in time"))
+}
+
 /// What a sub-agent answers.
 #[derive(Clone)]
 enum Say {
@@ -810,9 +815,13 @@ impl Running {
 }
 
 fn start(client: &Arc<Mock>, d: &Path, mode: PermissionMode, tools: ToolSet) -> Running {
+    start_with(client, d, config(mode), tools)
+}
+
+fn start_with(client: &Arc<Mock>, d: &Path, config: Config, tools: ToolSet) -> Running {
     let (handle, ends) = channels();
     let setup = AgentSetup {
-        config: config(mode),
+        config,
         cwd: d.to_path_buf(),
         provider: "mock".into(),
         model: "m1".into(),
@@ -1480,11 +1489,12 @@ async fn snapshots_reach_the_interface_but_are_not_in_the_session_file() {
     // nothing of it was written down
     let mut files = Vec::new();
     files_under(&nexo_core::paths::sessions_dir(), &mut files);
-    let texts: Vec<String> = files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).collect();
-    assert!(texts.iter().any(|t| t.contains("run it qzx")), "the session file was not found");
-    for t in &texts {
-        assert!(!t.contains("flow_run") && !t.contains("wf#1"), "a snapshot was written to a session file");
-    }
+    // only this test's own session file: the one that holds its marker (the folder is shared by every test here)
+    let texts: Vec<String> =
+        files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).filter(|t| t.contains("run it qzx")).collect();
+    assert_eq!(texts.len(), 1, "this test's session file was not found once: {}", texts.len());
+    assert!(texts[0].contains("all done qzx"), "the session file is not the whole conversation");
+    assert!(!texts[0].contains("flow_run") && !texts[0].contains("wf#"), "a snapshot was written to the session file");
 }
 
 #[tokio::test]
@@ -1522,7 +1532,7 @@ title = "Two"
             assert!(c.jobs.kill(j));
         }
     };
-    let (out, ()) = tokio::join!(wf.run(json!({"inline": toml}), &c), stopper);
+    let (out, ()) = tokio::join!(bounded("the run", wf.run(json!({"inline": toml}), &c)), stopper);
     assert!(!out.is_error, "{}", out.content);
     assert!(steps_line(&out, "a").contains("failed: stopped by the person"), "{}", out.content);
     assert!(steps_line(&out, "b").contains(": ok"), "{}", out.content);
@@ -1582,7 +1592,7 @@ title = "Two"
             c.jobs.kill(j);
         }
     };
-    let (out, ()) = tokio::join!(wf.run(json!({"inline": toml}), &c), stopper);
+    let (out, ()) = tokio::join!(bounded("the run", wf.run(json!({"inline": toml}), &c)), stopper);
     assert!(out.content.contains("Stopped by the person"), "{}", out.content);
     assert!(out.content.contains("Ended: done. Stopped: a, b. Not started: c, z."), "{}", out.content);
     assert_eq!(client.tasks().len(), 3, "something started after the stop: {:?}", client.tasks());
@@ -1605,14 +1615,14 @@ async fn one_run_at_a_time_a_second_is_refused_in_one_sentence_by_the_tool_too_a
         client.st.gate.add_permits(1);
         refused
     };
-    let (out, refused) = tokio::join!(wf.run(json!({"inline": first}), &c), second);
+    let (out, refused) = tokio::join!(bounded("the first run", wf.run(json!({"inline": first}), &c)), second);
     assert!(!out.is_error, "{}", out.content);
     assert!(refused.is_error);
     assert_eq!(refused.content, "A workflow is already running (wf#1); wait for it to end or stop it first.");
     assert_eq!(client.tasks().len(), 1, "the refused one started a sub-agent");
     // once the first has ended, the next goes
     client.st.gate.add_permits(1);
-    let again = wf.run(json!({"inline": first}), &c).await;
+    let again = bounded("the next run", wf.run(json!({"inline": first}), &c)).await;
     assert!(!again.is_error, "{}", again.content);
     assert_eq!(c.jobs.subs().flows().iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["wf#1", "wf#2"]);
 }
@@ -1801,6 +1811,24 @@ async fn the_commands_stop_a_step_and_the_run_through_the_agent_and_the_interrup
     r.task.await.unwrap().unwrap();
 }
 
+/// Every event that is already on its way, until the agent is quiet.
+async fn drain(r: &mut Running) -> Vec<AgentEvent> {
+    let mut out = Vec::new();
+    while let Ok(Some(e)) = tokio::time::timeout(Duration::from_millis(150), r.handle.events.recv()).await {
+        out.push(e);
+    }
+    out
+}
+
+fn flows_in(evs: &[AgentEvent]) -> Vec<&FlowInfo> {
+    evs.iter()
+        .filter_map(|e| match e {
+            AgentEvent::FlowRun { info } => Some(info),
+            _ => None,
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn clear_during_a_run_stops_it_and_none_of_its_events_reach_the_new_conversation() {
     let d = project_with("saved", BYNAME.replace("GATE", "HANG").as_str());
@@ -1812,24 +1840,24 @@ async fn clear_during_a_run_stops_it_and_none_of_its_events_reach_the_new_conver
     r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
     r.until(|e| matches!(e, AgentEvent::FlowRun { info } if running(info, "a"))).await;
     r.send(AgentCommand::Clear);
-    r.until(|e| matches!(e, AgentEvent::HistoryCleared)).await;
-    // the new conversation starts its own count, and the old run says nothing more: the first snapshot it
-    // hears is the new run beginning
+    let mut evs = r.until(|e| matches!(e, AgentEvent::HistoryCleared)).await;
+    // the new conversation goes on with the count (an old id is never given twice), and the old run says nothing
+    // more: the first snapshot it hears is the new run beginning
     r.send(AgentCommand::FlowStart { name: "saved".into(), args: "again".into() });
     let req = r.ask().await;
     r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
-    let evs = r.until(|e| matches!(e, AgentEvent::FlowRun { info } if running(info, "a"))).await;
-    let flows: Vec<&FlowInfo> = evs
-        .iter()
-        .filter_map(|e| match e {
-            AgentEvent::FlowRun { info } => Some(info),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(flows[0].id, "wf#1", "{flows:?}");
-    assert_eq!(flows[0].state, FlowState::Running);
-    assert!(flows[0].phases[0].steps.iter().all(|s| s.state == StepState::Waiting), "{:?}", flows[0]);
+    evs.extend(r.until(|e| matches!(e, AgentEvent::FlowRun { info } if running(info, "a"))).await);
+    // the old run has had its time to end: nothing it did is told
+    evs.extend(drain(&mut r).await);
+    let flows = flows_in(&evs);
+    let first = flows[0];
+    assert_eq!((first.id.as_str(), first.state), ("wf#2", FlowState::Running), "{flows:?}");
+    assert!(flows.iter().all(|i| i.id != "wf#1"), "the old run spoke into the new conversation: {flows:?}");
     assert!(flows.iter().all(|i| i.state == FlowState::Running), "an old end reached the new one: {flows:?}");
+    assert!(first.phases[0].steps.iter().all(|s| s.state == StepState::Waiting), "{first:?}");
+    let named: Vec<&AgentEvent> = evs.iter().filter(|e| notice_has(e, "saved")).collect();
+    assert!(named.is_empty(), "the new conversation was told of the old run: {named:?}");
+    assert!(client.main_msgs.lock().unwrap().is_empty(), "the main agent got a note of the old run");
     r.send(AgentCommand::Shutdown);
     r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
     r.task.await.unwrap().unwrap();
@@ -1875,4 +1903,365 @@ async fn a_session_with_no_saved_workflow_sends_a_request_that_says_nothing_of_w
     r.send(AgentCommand::Shutdown);
     r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
     r.task.await.unwrap().unwrap();
+}
+
+/// A saved workflow whose one step ends at once.
+#[cfg(unix)]
+fn quick() -> String {
+    BYNAME.replace("GATE", "DONE")
+}
+
+#[cfg(unix)]
+fn with_hook(event: &str, matcher: &str, command: &str) -> Config {
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.hooks.push(nexo_core::config::HookConfig {
+        event: event.into(),
+        matcher: Some(matcher.into()),
+        command: command.into(),
+        ..Default::default()
+    });
+    cfg
+}
+
+async fn stop_agent(mut r: Running) {
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_start_by_name_runs_the_pre_tool_hooks_a_block_says_its_words_and_nothing_is_asked() {
+    let d = project_with("saved", &quick());
+    let client = Mock::new(vec![]);
+    let cfg = with_hook("pre_tool", "workflow", "cat > pre.json; echo 'not on fridays' >&2; exit 2");
+    let mut r = start_with(&client, d.path(), cfg, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "x".into() });
+    let evs = r.until(|e| notice_has(e, "was not started")).await;
+    assert!(notice_has(evs.last().unwrap(), "not on fridays"), "{:?}", evs.last());
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. } | AgentEvent::FlowRun { .. })));
+    assert!(client.tasks().is_empty());
+    // the hook saw the call as it sees the tool's
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(d.path().join("pre.json")).unwrap()).unwrap();
+    assert_eq!(seen["tool_name"], "workflow");
+    assert_eq!(seen["tool_input"]["name"], "saved");
+    stop_agent(r).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hook_decision_reaches_the_permission_of_a_start_by_name() {
+    let d = project_with("saved", &quick());
+    let client = Mock::new(vec![]);
+    let cfg = with_hook(
+        "pre_tool",
+        "workflow",
+        r#"case "$(cat)" in *allowme*) echo '{"decision":"allow"}';; *denyme*) echo '{"decision":"deny","reason":"the hook says no"}';; esac"#,
+    );
+    let mut r = start_with(&client, d.path(), cfg, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    // allow: it runs with no question, though the mode asks
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "allowme".into() });
+    let ended = |e: &AgentEvent| matches!(e, AgentEvent::FlowRun { info } if info.state == FlowState::Ok);
+    let evs = r.until(|e| ended(e) || matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    assert!(ended(evs.last().unwrap()), "it asked though the hook allowed it: {:?}", evs.last());
+    r.turn().await;
+    // deny: refused with the hook's reason and no question
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "denyme".into() });
+    let evs = r.until(|e| notice_has(e, "was not started") || matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    assert!(notice_has(evs.last().unwrap(), "the hook says no"), "{:?}", evs.last());
+    assert_eq!(client.count("DONE"), 1);
+    // no decision: the person is asked, as before
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "other".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Deny { reason: None } });
+    r.until(|e| notice_has(e, "was not started")).await;
+    stop_agent(r).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hook_that_replaces_the_input_of_a_start_by_name_gets_the_new_file_pinned_and_asked() {
+    let other = "[[phase]]\ntitle = \"B\"\n[[phase.step]]\nid = \"b\"\nprompt = \"GATE swapped {{args}}\"\n";
+    let d = project_with("saved", BYNAME);
+    std::fs::write(d.path().join(".nexo/workflows/other.toml"), other).unwrap();
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let cfg = with_hook(
+        "pre_tool",
+        "workflow",
+        r#"case "$(cat)" in *first*) echo '{"updated_input":{"name":"other","args":"now"}}';; esac"#,
+    );
+    let mut r = start_with(&client, d.path(), cfg, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "first".into() });
+    let req = r.ask().await;
+    // the question is about what will run: the other file, pinned as it is now
+    assert_eq!(req.suggested_rules, vec![format!("workflow({})", subject("other", other))]);
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    client.until_started(1).await;
+    assert_eq!(client.tasks(), vec!["GATE swapped now".to_string()]);
+    client.st.gate.add_permits(1);
+    r.turn().await;
+    stop_agent(r).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_post_tool_hook_of_a_start_by_name_fires_and_its_words_reach_the_main_agent_in_the_note() {
+    let d = project_with("saved", &quick());
+    let client = Mock::new(vec![]);
+    let cfg = with_hook("post_tool", "workflow", "cat > post.json; echo 'formatted it' >&2; exit 2");
+    let mut r = start_with(&client, d.path(), cfg, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "x".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    let ended = |e: &AgentEvent| matches!(e, AgentEvent::FlowRun { info } if info.state == FlowState::Ok);
+    r.until_both(ended, |e| matches!(e, AgentEvent::TurnEnd { .. })).await;
+    let note = client.main_msgs.lock().unwrap().last().cloned().unwrap();
+    assert!(note.contains("[hook] formatted it"), "{note}");
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(d.path().join("post.json")).unwrap()).unwrap();
+    assert_eq!(seen["tool_name"], "workflow");
+    stop_agent(r).await;
+}
+
+#[tokio::test]
+async fn a_second_start_while_the_first_is_asking_is_refused_in_one_sentence_and_a_denial_frees_the_slot() {
+    let d = project_with("saved", BYNAME);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "one".into() });
+    let first = r.ask().await;
+    // the question is open and no run exists yet: the slot is what refuses
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "two".into() });
+    let evs = r.until(|e| notice_has(e, "already starting") || matches!(e, AgentEvent::PermissionAsk { .. })).await;
+    assert!(notice_has(evs.last().unwrap(), "already starting"), "a second question was asked: {:?}", evs.last());
+    r.send(AgentCommand::Permission { id: first.id, decision: PermissionDecision::Deny { reason: None } });
+    r.until(|e| notice_has(e, "was not started")).await;
+    // a denial frees it: the next start is asked
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "three".into() });
+    let again = r.ask().await;
+    r.send(AgentCommand::Permission { id: again.id, decision: PermissionDecision::Allow });
+    client.until_started(1).await;
+    assert_eq!(client.tasks(), vec!["GATE three".to_string()]);
+    // and the slot is held until the run ends: a start while it runs is refused before any question
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "four".into() });
+    let evs = r.until(|e| notice_has(e, "already")).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })));
+    client.st.gate.add_permits(1);
+    r.turn().await;
+    // the end frees it too
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "five".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Deny { reason: None } });
+    r.until(|e| notice_has(e, "was not started")).await;
+    stop_agent(r).await;
+}
+
+/// How the conversation is replaced in the tests that follow.
+#[derive(Clone, Copy, Debug)]
+enum Replace {
+    Clear,
+    Fork,
+    Resume,
+}
+
+/// The session the agent starts in (one turn done, so it is recorded) and the agent.
+async fn recorded(client: &Arc<Mock>, d: &Path) -> (Running, String) {
+    let mut r = start(client, d, PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    let sid = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        e => panic!("{e:?}"),
+    };
+    r.submit("hello");
+    r.turn().await;
+    (r, sid)
+}
+
+/// Replaces the conversation the way `how` says; `first` is the session recorded at the start.
+async fn replace(r: &mut Running, how: Replace, first: &str) -> Vec<AgentEvent> {
+    r.send(match how {
+        Replace::Clear => AgentCommand::Clear,
+        Replace::Fork => AgentCommand::Fork { index: None },
+        Replace::Resume => AgentCommand::Resume { id: first.into() },
+    });
+    r.until(|e| matches!(e, AgentEvent::SessionChanged { .. })).await
+}
+
+#[tokio::test]
+async fn a_question_open_when_the_conversation_is_replaced_is_denied_silently_and_no_rule_is_kept() {
+    for how in [Replace::Clear, Replace::Fork, Replace::Resume] {
+        let d = project_with("saved", BYNAME);
+        let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+        let (mut r, sid1) = recorded(&client, d.path()).await;
+        if matches!(how, Replace::Resume) {
+            // a second session, so that the first can be resumed
+            replace(&mut r, Replace::Clear, &sid1).await;
+        }
+        r.send(AgentCommand::FlowStart { name: "saved".into(), args: "q".into() });
+        let req = r.ask().await;
+        replace(&mut r, how, &sid1).await;
+        // the answer of the person comes late and belongs to the old conversation: it keeps no rule
+        r.send(AgentCommand::Permission {
+            id: req.id.clone(),
+            decision: PermissionDecision::AllowAlways { rule: req.suggested_rules[0].clone(), persist: false },
+        });
+        let evs = drain(&mut r).await;
+        assert!(!evs.iter().any(|e| notice_has(e, "was not started")), "{how:?}: the new session was told: {evs:?}");
+        assert!(flows_in(&evs).is_empty(), "{how:?}");
+        // the slot is free and the same start is asked again
+        r.send(AgentCommand::FlowStart { name: "saved".into(), args: "q".into() });
+        let evs = r.until(|e| matches!(e, AgentEvent::PermissionAsk { .. } | AgentEvent::FlowRun { .. })).await;
+        assert!(
+            matches!(evs.last(), Some(AgentEvent::PermissionAsk { .. })),
+            "{how:?}: the rule of an old conversation allowed it: {:?}",
+            evs.last()
+        );
+        assert!(client.tasks().is_empty(), "{how:?}");
+        stop_agent(r).await;
+    }
+}
+
+#[tokio::test]
+async fn the_run_count_goes_on_after_clear_fork_and_resume_and_each_replaces_the_run_before() {
+    let d = project_with("saved", BYNAME.replace("GATE", "HANG").as_str());
+    let client = Mock::new(vec![("HANG", Say::Hang)]);
+    let (mut r, sid1) = recorded(&client, d.path()).await;
+    let mut n = 0;
+    for how in [None, Some(Replace::Clear), Some(Replace::Fork), Some(Replace::Resume)] {
+        if let Some(how) = how {
+            replace(&mut r, how, &sid1).await;
+        }
+        n += 1;
+        r.send(AgentCommand::FlowStart { name: "saved".into(), args: n.to_string() });
+        let req = r.ask().await;
+        r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+        let evs = r.until(|e| matches!(e, AgentEvent::FlowRun { info } if running(info, "a"))).await;
+        let id = format!("wf#{n}");
+        assert!(flows_in(&evs).iter().all(|i| i.id == id), "{how:?}: {:?}", flows_in(&evs));
+    }
+    stop_agent(r).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_that_ends_after_a_clear_fires_no_hook_and_tells_nothing_to_the_new_conversation() {
+    let d = project_with("saved", BYNAME.replace("GATE", "HANG").as_str());
+    let client = Mock::new(vec![("HANG", Say::Hang)]);
+    let cfg = with_hook("post_tool", "workflow", "echo ran > post-ran.txt");
+    let mut r = start_with(&client, d.path(), cfg, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "s".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    r.until(|e| matches!(e, AgentEvent::FlowRun { info } if running(info, "a"))).await;
+    r.send(AgentCommand::Clear);
+    let mut evs = r.until(|e| matches!(e, AgentEvent::HistoryCleared)).await;
+    // the old run ends in the cleared session; the hooks of the new one are not run for it
+    evs.extend(drain(&mut r).await);
+    evs.extend(drain(&mut r).await);
+    assert!(!d.path().join("post-ran.txt").exists(), "a hook ran for a run of a session that is gone");
+    assert!(!evs.iter().any(|e| notice_has(e, "saved")), "{evs:?}");
+    assert!(client.main_msgs.lock().unwrap().is_empty());
+    stop_agent(r).await;
+}
+
+#[tokio::test]
+async fn a_sub_agent_that_ends_while_the_main_agent_is_idle_starts_no_turn_and_the_run_makes_one_note() {
+    let two = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"DONE a\"\n[[phase.step]]\nid = \"b\"\nprompt = \"GATE b\"\n";
+    let d = project_with("saved", two);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: String::new() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    // one step ended and the other is held: the run goes on, and the main agent has been told nothing
+    let mut evs = r
+        .until(|e| matches!(e, AgentEvent::FlowRun { info } if fstep(info, "a").state == StepState::Ok && running(info, "b")))
+        .await;
+    evs.extend(drain(&mut r).await);
+    assert!(client.main_msgs.lock().unwrap().is_empty(), "a turn started: {:?}", client.main_msgs.lock().unwrap());
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })), "{evs:?}");
+    // the end of the run is one note, once
+    client.st.gate.add_permits(1);
+    r.turn().await;
+    evs = drain(&mut r).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::TurnStart { .. })), "a second turn: {evs:?}");
+    assert_eq!(client.main_msgs.lock().unwrap().len(), 1);
+    assert!(client.main_msgs.lock().unwrap()[0].contains("nexo ran the saved workflow `saved`"));
+    stop_agent(r).await;
+}
+
+const EACH_STOP: &str = r#"
+max_parallel = 1
+[[phase]]
+title = "Find"
+  [[phase.step]]
+  id = "find"
+  prompt = "FIND"
+  returns = "list"
+[[phase]]
+title = "Check"
+  [[phase.step]]
+  id = "check"
+  each = "find"
+  prompt = "CHECK {{item}}"
+"#;
+
+#[tokio::test]
+async fn a_stopped_step_does_not_start_the_items_that_waited_for_a_place_and_ends_failed_with_the_reason() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Mock::new(vec![("FIND", says("[\"DONE one\", \"HANG two\", \"HANG three\"]")), ("HANG", Say::Hang)]);
+    let c = ctx(d.path());
+    let mut rx = c.jobs.subs().changes();
+    let wf = tool(&client, d.path());
+    let stopper = async {
+        // find, the first item (ends at once) and the second (held): the third waits for a place
+        client.until_started(3).await;
+        let i = until_flow(&mut rx, |i| running(i, "check")).await;
+        let jobs = c.jobs.subs().stop_flow_step(&i.id, "check").unwrap();
+        assert_eq!(jobs.len(), 1, "only the second item is at work");
+        for j in jobs {
+            assert!(c.jobs.kill(j));
+        }
+    };
+    let (out, ()) = tokio::join!(bounded("the run", wf.run(json!({"inline": EACH_STOP}), &c)), stopper);
+    assert!(steps_line(&out, "check").contains("failed: stopped by the person"), "{}", out.content);
+    assert_eq!(client.count("HANG three"), 0, "an item of a stopped step started: {:?}", client.tasks());
+    assert_eq!(c.jobs.running(), 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stop_that_comes_while_a_sub_agent_is_starting_reaches_it_as_soon_as_it_has_started() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Mock::new(vec![("HANG", Say::Hang)]);
+    // the hook of the sub-agent's start holds the start until the test lets it go
+    let hold = nexo_core::config::HookConfig {
+        event: "subagent_start".into(),
+        command: "touch starting; while [ ! -f go ]; do sleep 0.02; done".into(),
+        ..Default::default()
+    };
+    let sub = sub_agent(&client, ToolSet::new().with(Arc::new(Read))).with_hooks(vec![hold]);
+    let wf = Workflow::new(Arc::new(sub), d.path().to_path_buf());
+    let toml = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"HANG a\"\n";
+    let c = ctx(d.path());
+    let mut rx = c.jobs.subs().changes();
+    let stopper = async {
+        let i = until_flow(&mut rx, |_| true).await;
+        let end = tokio::time::Instant::now() + PATIENCE;
+        while !d.path().join("starting").exists() {
+            assert!(tokio::time::Instant::now() < end, "the sub-agent never began to start");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // no sub-agent is at work yet, so the stop has nobody to cancel
+        assert!(c.jobs.subs().stop_flow_step(&i.id, "a").unwrap().is_empty());
+        std::fs::write(d.path().join("go"), "").unwrap();
+    };
+    let (out, ()) = tokio::join!(bounded("the run", wf.run(json!({"inline": toml}), &c)), stopper);
+    assert!(steps_line(&out, "a").contains("failed: stopped by the person"), "{}", out.content);
+    assert_eq!(c.jobs.running(), 0);
 }

@@ -178,6 +178,9 @@ struct State {
     bin_told: bool,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
     epoch: u64,
+    /// The one-run slot of a workflow started by name: 0 when free, else the number of the start that holds it.
+    /// It starts over with the conversation (see `flow`).
+    flow_slot: Arc<std::sync::atomic::AtomicU64>,
     /// Plan mode: the mode to go back to and the switch an approved plan asks for.
     plan: crate::ask::PlanCell,
     /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
@@ -487,6 +490,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         repeats: Default::default(),
         bin_told,
         epoch: 0,
+        flow_slot: Default::default(),
         plan,
         last_prompt: None,
         est_sent: 0,
@@ -679,15 +683,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                                 emit(&events, AgentEvent::Queued { pending: 0 });
                             }
                         }
-                        // nothing of the old conversation's workflow runs reaches the new one: the registry starts over
-                        // first (what a run still sends is dropped at the source), and what it sent already is dropped here
-                        jobs.subs().clear();
-                        while !matches!(
-                            sub_changes.try_recv(),
-                            Err(tokio::sync::broadcast::error::TryRecvError::Empty | tokio::sync::broadcast::error::TryRecvError::Closed)
-                        ) {}
                         jobs.kill_all();
                         clear(&state).await;
+                        flow::forget_old(&jobs, &mut sub_changes, &chan_gate);
                         // the killed jobs are not news for the new conversation
                         jobs.take_ended();
                         if was_running {
@@ -735,14 +733,22 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         if turn.is_some() {
                             notice(&events, Level::Warn, "finish or interrupt the turn before resuming another session");
                         } else {
+                            let before = state.lock().await.epoch;
                             resume_session(&state, &id).await;
+                            if state.lock().await.epoch != before {
+                                flow::forget_old(&jobs, &mut sub_changes, &chan_gate);
+                            }
                         }
                     }
                     AgentCommand::Fork { index } => {
                         if turn.is_some() {
                             notice(&events, Level::Warn, "finish or interrupt the turn before forking");
                         } else {
+                            let before = state.lock().await.epoch;
                             fork_session(&state, index).await;
+                            if state.lock().await.epoch != before {
+                                flow::forget_old(&jobs, &mut sub_changes, &chan_gate);
+                            }
                         }
                     }
                     AgentCommand::ShowTree => {

@@ -60,6 +60,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.noticed.clear();
     st.checked_in = false;
     st.epoch += 1;
+    flow::release_slot(st);
     st.turn_start = 0;
     st.turns = 0;
     st.goal = st.session.goal().map(String::from);
@@ -358,6 +359,7 @@ pub(super) async fn clear(state: &Shared) {
     st.noticed.clear();
     st.checked_in = false;
     st.epoch += 1;
+    flow::release_slot(&st);
     st.reads.clear();
     st.digests.clear();
     st.inbox.clear();

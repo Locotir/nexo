@@ -73,7 +73,7 @@ pub struct FlowPhase {
 /// What a view draws of a run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlowInfo {
-    /// `wf#1`, counted per session.
+    /// `wf#1`: counted over the process, so no id is given twice, not even after `/clear`.
     pub id: String,
     /// The workflow's name.
     pub name: String,
@@ -103,6 +103,7 @@ impl Subs {
     pub fn begin_flow(&self, name: &str, phases: &[(String, Vec<String>)]) -> Result<FlowRun, String> {
         let entry;
         let id;
+        let generation;
         {
             let mut runs = self.0.flows.lock().unwrap();
             if let Some(busy) = runs.iter().find_map(|e| {
@@ -155,8 +156,10 @@ impl Subs {
             let gone: HashSet<String> = ended.into_iter().take(over).map(|(_, id)| id).collect();
             runs.retain(|e| !gone.contains(&e.data.lock().unwrap().info.id));
             runs.push(entry.clone());
+            // read with the list locked: `clear` changes it with the list locked too
+            generation = self.0.generation.load(Ordering::SeqCst);
         }
-        let run = FlowRun { entry, subs: self.clone(), generation: self.0.generation.load(Ordering::SeqCst) };
+        let run = FlowRun { entry, subs: self.clone(), generation };
         run.send(&run.entry.data.lock().unwrap());
         Ok(run)
     }
@@ -237,9 +240,7 @@ impl FlowRun {
     }
 
     fn send(&self, d: &Data) {
-        if self.live() {
-            let _ = self.subs.0.changes.send(SubChange::Flow(d.info.clone()));
-        }
+        self.subs.send_if_live(self.generation, SubChange::Flow(d.info.clone()));
     }
 
     /// Nothing more may start: the person stopped the run, or the session it belongs to is gone.
@@ -431,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn after_a_clear_the_old_run_tells_nobody_and_counting_starts_again() {
+    fn after_a_clear_the_old_run_tells_nobody_and_its_id_is_not_given_again() {
         let subs = Subs::new();
         let old = subs.begin_flow("w", &phases()).unwrap();
         subs.clear();
@@ -441,7 +442,12 @@ mod tests {
         old.end(FlowState::Ok);
         assert!(infos(&mut rx).is_empty());
         assert!(subs.flows().is_empty());
-        assert_eq!(subs.begin_flow("w", &phases()).unwrap().id(), "wf#1");
+        // a late command that names `wf#1` finds nothing, and the next run is not `wf#1`
+        let new = subs.begin_flow("w", &phases()).unwrap();
+        assert_eq!(new.id(), "wf#2");
+        assert!(subs.stop_flow("wf#1").unwrap_err().contains("no workflow run"));
+        assert!(subs.stop_flow_step("wf#1", "a").unwrap_err().contains("no workflow run"));
+        assert!(!new.run_stopped());
     }
 
     #[test]

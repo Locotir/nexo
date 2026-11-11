@@ -185,11 +185,16 @@ fn now_ms() -> u64 {
 
 struct Inner {
     runs: Mutex<Vec<Arc<Entry>>>,
-    /// The workflow runs ([`flow`]), and how many began (the next one is `wf#` of that plus one).
+    /// The workflow runs ([`flow`]), and how many began in this process (the next one is `wf#` of that plus one).
     flows: Mutex<Vec<Arc<flow::Entry>>>,
     flow_seq: AtomicU64,
-    /// Counts the times the registry was cleared; a run of an older count sends nothing.
+    /// Counts the times the registry was cleared; a run of an older count sends nothing. Only [`Subs::clear`]
+    /// changes it, with `flows` locked, so a run that reads it under that lock gets the count of the session it
+    /// is entered in.
     generation: AtomicU64,
+    /// Held while a run checks the count and sends, and while a clear changes it: a clear and what a run still
+    /// sent before it are in order, so the one who drains the channel after the clear leaves nothing of the old.
+    gate: Mutex<()>,
     changes: broadcast::Sender<SubChange>,
 }
 
@@ -217,6 +222,7 @@ impl Subs {
             flows: Mutex::new(Vec::new()),
             flow_seq: AtomicU64::new(0),
             generation: AtomicU64::new(0),
+            gate: Mutex::new(()),
             changes,
         }))
     }
@@ -323,13 +329,29 @@ impl Subs {
     }
 
     /// The session starts over: no run is kept.
+    ///
+    /// The count of workflow runs goes on: `wf#N` is never given twice in one process, so a late command that
+    /// names an old run cannot reach a new one.
     pub fn clear(&self) {
         let mut runs = self.0.runs.lock().unwrap();
-        self.0.generation.fetch_add(1, Ordering::SeqCst);
-        runs.clear();
+        // the count changes with `flows` locked, so a run that begins meanwhile either is in the list this clears
+        // (and has the old count) or gets the new count and stays
         let mut flows = self.0.flows.lock().unwrap();
+        {
+            let _gate = self.0.gate.lock().unwrap();
+            self.0.generation.fetch_add(1, Ordering::SeqCst);
+        }
+        runs.clear();
         flows.clear();
-        self.0.flow_seq.store(0, Ordering::SeqCst);
+    }
+
+    /// Sends `c` for a run that began at count `generation`, unless the registry was cleared since. Checking and
+    /// sending are one step against [`Subs::clear`].
+    fn send_if_live(&self, generation: u64, c: SubChange) {
+        let _gate = self.0.gate.lock().unwrap();
+        if self.0.generation.load(Ordering::SeqCst) == generation {
+            let _ = self.0.changes.send(c);
+        }
     }
 
     /// Drops the ended runs beyond [`KEEP_RUNS`], the one that ended longest ago first. Run `keep` (the one
@@ -387,9 +409,7 @@ impl SubRun {
     }
 
     fn send(&self, c: SubChange) {
-        if self.live() {
-            let _ = self.subs.0.changes.send(c);
-        }
+        self.subs.send_if_live(self.generation, c);
     }
 
     pub fn id(&self) -> &str {
