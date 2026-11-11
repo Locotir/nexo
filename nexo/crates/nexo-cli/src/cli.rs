@@ -249,6 +249,8 @@ pub enum Cmd {
         #[command(subcommand)]
         what: crate::worktree::WorktreeCmd,
     },
+    /// Read an ELF or PE x86-64 file and answer in bounded pieces: info, fn, bytes, strings, find (the file is never run).
+    Bin(crate::bin_cmd::BinArgs),
     /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
     Acp,
     #[cfg(feature = "bench")]
@@ -348,6 +350,9 @@ pub async fn main() -> i32 {
                 }
             },
         };
+    }
+    if let Some(Cmd::Bin(b)) = &args.cmd {
+        return crate::bin_cmd::run(b);
     }
     if let (None, Some(word)) = (&args.cmd, &args.first) {
         use clap::CommandFactory;
@@ -582,6 +587,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         None => {}
         // handled before the configuration is read
         Some(Cmd::Supervise { .. }) => return Ok(0),
+        Some(Cmd::Bin(_)) => return Ok(0),
     }
 
     if args.prompt.is_none() && args.headless.any() {

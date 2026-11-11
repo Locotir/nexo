@@ -7,6 +7,7 @@ mod acp;
 mod audit_cmd;
 #[cfg(feature = "bench")]
 mod bench_cmd;
+mod bin_cmd;
 mod cli;
 mod export_cmd;
 mod first_use;

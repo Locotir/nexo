@@ -1,0 +1,608 @@
+//! Opening a file: headers, sections, symbols, imports, exports, hardening. Bytes only.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use object::read::pe::{ImageNtHeaders, ImageOptionalHeader, PeFile64};
+use object::{
+    pe, Architecture, BinaryFormat, Endianness, FileKind, LittleEndian as LE, Object, ObjectSection, ObjectSegment,
+    ObjectSymbol, SectionFlags, SegmentFlags, SymbolKind,
+};
+use sha2::{Digest, Sha256};
+
+use crate::funcs::Func;
+use crate::strings::Str;
+use crate::{Error, Result};
+
+/// The largest file read (bytes).
+const MAX_FILE: u64 = 1 << 30;
+const MAX_SECTIONS: usize = 4096;
+const MAX_SYMBOLS: usize = 500_000;
+const MAX_IMPORTS: usize = 200_000;
+const MAX_NAME: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Elf,
+    Pe,
+}
+
+impl Format {
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Elf => "ELF64",
+            Format::Pe => "PE32+",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Section {
+    pub index: usize,
+    pub name: String,
+    /// Virtual address (with the image base for PE).
+    pub addr: u64,
+    /// Size in memory.
+    pub size: u64,
+    /// Where the bytes start in the file, and how many the file holds (0 for .bss).
+    pub file_off: u64,
+    pub file_size: u64,
+    pub read: bool,
+    pub write: bool,
+    pub exec: bool,
+    /// Loaded into memory (ELF sections without the ALLOC flag, like debug info, are not).
+    pub alloc: bool,
+}
+
+impl Section {
+    /// `rwx` letters, `-` for a flag that is off.
+    pub fn flags(&self) -> String {
+        format!(
+            "{}{}{}",
+            if self.read { 'r' } else { '-' },
+            if self.write { 'w' } else { '-' },
+            if self.exec { 'x' } else { '-' }
+        )
+    }
+
+    /// How many bytes at `addr` the file holds, as an end address.
+    pub(crate) fn backed_len(&self) -> u64 {
+        self.size.min(self.file_size)
+    }
+
+    pub(crate) fn contains(&self, addr: u64) -> bool {
+        addr >= self.addr && addr - self.addr < self.size
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub name: String,
+    pub addr: u64,
+    pub size: u64,
+    pub func: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub lib: Option<String>,
+    pub name: String,
+    /// The address of the slot the loader fills (GOT entry or IAT entry), when known.
+    pub slot: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Export {
+    pub name: String,
+    pub addr: u64,
+}
+
+/// Hardening read from the headers: ordered (name, value) pairs.
+#[derive(Debug, Clone, Default)]
+pub struct Hardening {
+    pub items: Vec<(&'static str, String)>,
+}
+
+pub struct Image {
+    pub path: PathBuf,
+    pub format: Format,
+    pub entry: u64,
+    pub image_base: u64,
+    pub sections: Vec<Section>,
+    pub symbols: Vec<Symbol>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Export>,
+    pub hardening: Hardening,
+    pub sha256: String,
+    pub(crate) data: Vec<u8>,
+    /// Exact-address names: function symbols, exports, then data symbols.
+    pub(crate) names: BTreeMap<u64, String>,
+    /// Import slot address to index in `imports`.
+    pub(crate) slots: HashMap<u64, usize>,
+    /// PE exception directory (RVA, size).
+    pub(crate) exception_dir: Option<(u64, u64)>,
+    sorted: Vec<usize>,
+    funcs: OnceLock<Vec<Func>>,
+    strings: OnceLock<Vec<Str>>,
+}
+
+impl Image {
+    /// Read the file and parse its headers.
+    pub fn open(path: &Path) -> Result<Image> {
+        let meta = std::fs::metadata(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))?;
+        if !meta.is_file() {
+            return Err(Error::NotRead(format!("{} is not a file", path.display())));
+        }
+        if meta.len() > MAX_FILE {
+            return Err(Error::NotRead(format!(
+                "{} is {} bytes; files over 1 GiB are not read",
+                path.display(),
+                meta.len()
+            )));
+        }
+        let data = std::fs::read(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))?;
+        Image::from_bytes(data, path.to_path_buf())
+    }
+
+    /// Parse bytes already in memory.
+    pub fn from_bytes(data: Vec<u8>, path: PathBuf) -> Result<Image> {
+        let kind = FileKind::parse(&data[..]).map_err(|_| not_a_binary(&data))?;
+        let mut img = match kind {
+            FileKind::Elf64 => load_elf(&data)?,
+            FileKind::Pe64 => load_pe(&data)?,
+            other => return Err(Error::NotRead(format!("{} is not read yet", describe_kind(other, &data)))),
+        };
+        img.path = path;
+        img.sha256 = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        img.data = data;
+        img.finish();
+        Ok(img)
+    }
+
+    fn finish(&mut self) {
+        // function names win over exports, exports over data names
+        let mut names: BTreeMap<u64, String> = BTreeMap::new();
+        for s in self.symbols.iter().filter(|s| s.func) {
+            names.entry(s.addr).or_insert_with(|| s.name.clone());
+        }
+        for e in &self.exports {
+            names.entry(e.addr).or_insert_with(|| e.name.clone());
+        }
+        for s in self.symbols.iter().filter(|s| !s.func) {
+            names.entry(s.addr).or_insert_with(|| s.name.clone());
+        }
+        self.names = names;
+        self.slots = self.imports.iter().enumerate().filter_map(|(i, im)| im.slot.map(|s| (s, i))).collect();
+        let mut sorted: Vec<usize> =
+            (0..self.sections.len()).filter(|&i| self.sections[i].alloc && self.sections[i].size > 0).collect();
+        sorted.sort_by_key(|&i| (self.sections[i].addr, i));
+        self.sorted = sorted;
+    }
+
+    /// The loaded section that holds `addr`.
+    pub fn section_at(&self, addr: u64) -> Option<&Section> {
+        let n = self.sorted.partition_point(|&i| self.sections[i].addr <= addr);
+        // sections may overlap (ELF .tbss): look a few back
+        self.sorted[..n].iter().rev().take(4).map(|&i| &self.sections[i]).find(|s| s.contains(addr))
+    }
+
+    /// The bytes of a section the file holds.
+    pub fn section_bytes(&self, s: &Section) -> &[u8] {
+        let end = s.file_off.saturating_add(s.backed_len()).min(self.data.len() as u64);
+        let start = s.file_off.min(end);
+        &self.data[start as usize..end as usize]
+    }
+
+    /// Address to file offset, when the file holds a byte for it.
+    pub fn addr_to_offset(&self, addr: u64) -> Option<u64> {
+        let s = self.section_at(addr)?;
+        let d = addr - s.addr;
+        (d < s.backed_len() && s.file_off.checked_add(d)? < self.data.len() as u64).then(|| s.file_off + d)
+    }
+
+    /// File offset to address (the first loaded section that holds the offset).
+    pub fn offset_to_addr(&self, off: u64) -> Option<u64> {
+        self.sections.iter().filter(|s| s.alloc && s.file_size > 0).find_map(|s| {
+            let end = s.file_off.checked_add(s.backed_len())?;
+            (off >= s.file_off && off < end).then(|| s.addr + (off - s.file_off))
+        })
+    }
+
+    /// Up to `len` bytes at `addr`, as many as the file holds in that one section. `None` when none.
+    pub fn read_at(&self, addr: u64, len: usize) -> Option<&[u8]> {
+        let s = self.section_at(addr)?;
+        let bytes = self.section_bytes(s);
+        let d = (addr - s.addr) as usize;
+        if d >= bytes.len() {
+            return None;
+        }
+        let end = d.saturating_add(len).min(bytes.len());
+        Some(&bytes[d..end])
+    }
+
+    /// The name of a symbol, export or import slot that sits exactly at `addr`.
+    pub fn name_at(&self, addr: u64) -> Option<&str> {
+        self.names
+            .get(&addr)
+            .map(String::as_str)
+            .or_else(|| self.slots.get(&addr).map(|&i| self.imports[i].name.as_str()))
+    }
+
+    /// The nearest named data or code symbol at or below `addr` and inside its size.
+    pub(crate) fn symbol_covering(&self, addr: u64) -> Option<(&str, u64)> {
+        let (a, n) = self.names.range(..=addr).next_back()?;
+        let size = self.symbols.iter().find(|s| s.addr == *a && &s.name == n).map_or(0, |s| s.size);
+        (addr == *a || addr - a < size).then(|| (n.as_str(), addr - a))
+    }
+
+    pub fn is_exec(&self, addr: u64) -> bool {
+        self.section_at(addr).is_some_and(|s| s.exec)
+    }
+
+    /// The functions found (see the lane notes): sorted, no duplicates.
+    pub fn funcs(&self) -> &[Func] {
+        self.funcs.get_or_init(|| crate::funcs::find(self))
+    }
+
+    /// The strings found in the data sections, sorted by address.
+    pub fn strings(&self) -> &[Str] {
+        self.strings.get_or_init(|| crate::strings::scan(self))
+    }
+
+    /// The function that holds `addr`.
+    pub fn func_at(&self, addr: u64) -> Option<&Func> {
+        let f = self.funcs();
+        let n = f.partition_point(|x| x.start <= addr);
+        f[..n].last().filter(|x| addr < x.end)
+    }
+
+    /// The string that holds `addr`, with the offset into it.
+    pub fn string_at(&self, addr: u64) -> Option<(&Str, u64)> {
+        let s = self.strings();
+        let n = s.partition_point(|x| x.addr <= addr);
+        s[..n].last().filter(|x| addr - x.addr < x.byte_len).map(|x| (x, addr - x.addr))
+    }
+
+    /// `name` or `name+0x1c` for an address inside a function.
+    pub fn label(&self, addr: u64) -> Option<String> {
+        let f = self.func_at(addr)?;
+        Some(if addr == f.start { f.name.clone() } else { format!("{}+{:#x}", f.name, addr - f.start) })
+    }
+
+    pub fn arch_name(&self) -> &'static str {
+        "x86-64"
+    }
+
+    pub fn code_sections(&self) -> impl Iterator<Item = &Section> {
+        self.sections.iter().filter(|s| s.alloc && s.exec && s.file_size > 0)
+    }
+}
+
+fn not_a_binary(data: &[u8]) -> Error {
+    if data.is_empty() {
+        return Error::NotRead("the file is empty, not a binary".into());
+    }
+    let head = &data[..data.len().min(4096)];
+    if std::str::from_utf8(head).is_ok() || head.iter().all(|b| b.is_ascii()) {
+        Error::NotRead("this is a text file, not an ELF or PE binary".into())
+    } else {
+        Error::NotRead("not an ELF or PE binary (unknown file signature)".into())
+    }
+}
+
+/// What was found, in words: "Mach-O arm64", "ELF32 x86".
+fn describe_kind(kind: FileKind, data: &[u8]) -> String {
+    let of = |f: BinaryFormat| {
+        object::File::parse(data).ok().filter(|o| o.format() == f).map(|o| arch_word(o.architecture()))
+    };
+    match kind {
+        FileKind::Elf32 => format!("ELF32 {}", of(BinaryFormat::Elf).unwrap_or("")).trim().to_string(),
+        FileKind::Pe32 => format!("PE32 {}", of(BinaryFormat::Pe).unwrap_or("x86")).trim().to_string(),
+        FileKind::MachO32 | FileKind::MachO64 => {
+            format!("Mach-O {}", of(BinaryFormat::MachO).unwrap_or("")).trim().to_string()
+        }
+        FileKind::MachOFat32 | FileKind::MachOFat64 => "Mach-O universal binary".into(),
+        FileKind::Archive => "static library (ar archive)".into(),
+        FileKind::Coff | FileKind::CoffBig | FileKind::CoffImport => "COFF object file".into(),
+        FileKind::DyldCache => "dyld shared cache".into(),
+        FileKind::Xcoff32 | FileKind::Xcoff64 => "XCOFF".into(),
+        FileKind::Elf64 => "ELF64".into(),
+        FileKind::Pe64 => "PE32+".into(),
+        _ => "this file format".into(),
+    }
+}
+
+fn blank(format: Format) -> Image {
+    Image {
+        path: PathBuf::new(),
+        format,
+        entry: 0,
+        image_base: 0,
+        sections: Vec::new(),
+        symbols: Vec::new(),
+        imports: Vec::new(),
+        exports: Vec::new(),
+        hardening: Hardening::default(),
+        sha256: String::new(),
+        data: Vec::new(),
+        names: BTreeMap::new(),
+        slots: HashMap::new(),
+        exception_dir: None,
+        sorted: Vec::new(),
+        funcs: OnceLock::new(),
+        strings: OnceLock::new(),
+    }
+}
+
+/// Demangle Rust and C++ names; anything else stays as written. Long names are cut.
+pub(crate) fn demangle(raw: &str) -> String {
+    let raw: String = raw.chars().take(MAX_NAME).collect();
+    if raw.starts_with("_Z") || raw.starts_with("_R") {
+        if let Ok(d) = rustc_demangle::try_demangle(&raw) {
+            return format!("{d:#}");
+        }
+        if raw.starts_with("_Z") {
+            if let Ok(s) = cpp_demangle::Symbol::new(raw.as_bytes()) {
+                if let Ok(t) = s.demangle() {
+                    return t.chars().take(MAX_NAME).collect();
+                }
+            }
+        }
+    }
+    raw
+}
+
+/// Sections, symbols and exports: what ELF and PE have in common.
+fn common<'d, O: Object<'d>>(o: &O, img: &mut Image) {
+    for s in o.sections().take(MAX_SECTIONS) {
+        let (read, write, exec, alloc) = match s.flags() {
+            SectionFlags::Elf { sh_flags, .. } => {
+                let f = sh_flags.0;
+                (f & 2 != 0, f & 1 != 0, f & 4 != 0, f & 2 != 0)
+            }
+            SectionFlags::Coff { characteristics } => {
+                let characteristics = characteristics.0;
+                (
+                    characteristics & 0x4000_0000 != 0,
+                    characteristics & 0x8000_0000 != 0,
+                    characteristics & 0x2000_0000 != 0 || characteristics & 0x20 != 0,
+                    true,
+                )
+            }
+            _ => (true, false, false, false),
+        };
+        let (file_off, file_size) = s.file_range().unwrap_or((0, 0));
+        img.sections.push(Section {
+            index: s.index().0,
+            name: s.name().unwrap_or("").chars().take(64).collect(),
+            addr: s.address(),
+            size: s.size(),
+            file_off,
+            file_size,
+            read,
+            write,
+            exec,
+            alloc,
+        });
+    }
+    if img.sections.is_empty() {
+        // no section headers (a stripped ELF): the loadable segments stand in
+        for (i, g) in o.segments().enumerate().take(MAX_SECTIONS) {
+            let p_flags = match g.flags() {
+                SegmentFlags::Elf { p_flags, .. } => p_flags.0,
+                _ => 0,
+            };
+            let (file_off, file_size) = g.file_range();
+            img.sections.push(Section {
+                index: i,
+                name: format!("LOAD{i}"),
+                addr: g.address(),
+                size: g.size(),
+                file_off,
+                file_size,
+                read: p_flags & 4 != 0,
+                write: p_flags & 2 != 0,
+                exec: p_flags & 1 != 0,
+                alloc: true,
+            });
+        }
+    }
+    for s in o.symbols().chain(o.dynamic_symbols()).take(MAX_SYMBOLS) {
+        if !s.is_definition() || s.address() == 0 {
+            continue;
+        }
+        let kind = s.kind();
+        if !matches!(kind, SymbolKind::Text | SymbolKind::Data | SymbolKind::Unknown | SymbolKind::Label) {
+            continue;
+        }
+        let Ok(raw) = s.name() else { continue };
+        if raw.is_empty() {
+            continue;
+        }
+        img.symbols.push(Symbol {
+            name: demangle(raw),
+            addr: s.address(),
+            size: s.size(),
+            func: kind == SymbolKind::Text,
+        });
+    }
+    if let Ok(ex) = o.exports() {
+        for e in ex.take(MAX_SYMBOLS).flatten() {
+            let (object::read::NameOrOrdinal::Name(n), object::read::ExportTarget::Address { address }) =
+                (e.name(), e.target())
+            else {
+                continue;
+            };
+            let name = String::from_utf8_lossy(n).chars().take(MAX_NAME).collect::<String>();
+            if !name.is_empty() {
+                img.exports.push(Export { name: demangle(&name), addr: address });
+            }
+        }
+    }
+    img.entry = o.entry();
+}
+
+fn load_elf(data: &[u8]) -> Result<Image> {
+    let elf = object::read::elf::ElfFile64::<Endianness>::parse(data)
+        .map_err(|e| Error::NotRead(format!("not a readable ELF file: {e}")))?;
+    if elf.architecture() != Architecture::X86_64 {
+        return Err(Error::NotRead(format!(
+            "ELF64 {} is not read yet (only x86-64 is)",
+            arch_word(elf.architecture())
+        )));
+    }
+    let mut img = blank(Format::Elf);
+    common(&elf, &mut img);
+    // imports: undefined dynamic symbols; the slot comes from the relocation that fills it
+    let mut slot_of = HashMap::new();
+    if let Some(relocs) = elf.dynamic_relocations() {
+        for (off, r) in relocs.take(MAX_IMPORTS) {
+            if let object::RelocationTarget::Symbol(idx) = r.target() {
+                slot_of.entry(idx).or_insert(off);
+            }
+        }
+    }
+    for s in elf.dynamic_symbols().take(MAX_IMPORTS) {
+        if !s.is_undefined() {
+            continue;
+        }
+        let Ok(name) = s.name() else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        img.imports.push(Import { lib: None, name: demangle(name), slot: slot_of.get(&s.index()).copied() });
+    }
+    // headers
+    use object::elf::{
+        DF_1_NOW, DF_BIND_NOW, DT_BIND_NOW, DT_FLAGS, DT_FLAGS_1, ET_DYN, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK,
+    };
+    use object::read::elf::{Dyn, ProgramHeader};
+    let e = elf.endian();
+    let mut base = u64::MAX;
+    let (mut stack, mut relro, mut dynamic) = (None, false, None);
+    for ph in elf.elf_program_headers() {
+        let t = ph.p_type(e);
+        if t == object::elf::PT_LOAD {
+            base = base.min(ph.p_vaddr(e));
+        } else if t == PT_GNU_STACK {
+            stack = Some(ph.p_flags(e).0 & PF_X.0 != 0);
+        } else if t == PT_GNU_RELRO {
+            relro = true;
+        } else if t == PT_DYNAMIC {
+            dynamic = ph.dynamic(e, data).ok().flatten();
+        }
+    }
+    let mut now = false;
+    for d in dynamic.unwrap_or(&[]).iter().take(4096) {
+        let tag = d.d_tag(e);
+        let val = d.d_val(e);
+        if tag == DT_BIND_NOW
+            || (tag == DT_FLAGS && val & DF_BIND_NOW.0 != 0)
+            || (tag == DT_FLAGS_1 && val & DF_1_NOW.0 != 0)
+        {
+            now = true;
+        }
+    }
+    img.image_base = if base == u64::MAX { 0 } else { base };
+    let pie = elf.elf_header().e_type.get(e) == ET_DYN;
+    img.hardening.items = vec![
+        ("pie", if pie { "yes (position independent)".into() } else { "no (fixed base)".into() }),
+        (
+            "nx_stack",
+            match stack {
+                Some(false) => "yes".into(),
+                Some(true) => "no (stack is executable)".into(),
+                None => "no (no GNU_STACK header, so the stack is executable)".into(),
+            },
+        ),
+        (
+            "relro",
+            if !relro {
+                "none".into()
+            } else if now {
+                "full".into()
+            } else {
+                "partial".into()
+            },
+        ),
+    ];
+    Ok(img)
+}
+
+fn load_pe(data: &[u8]) -> Result<Image> {
+    let pe = PeFile64::parse(data).map_err(|e| Error::NotRead(format!("not a readable PE file: {e}")))?;
+    if pe.architecture() != Architecture::X86_64 {
+        return Err(Error::NotRead(format!("PE32+ {} is not read yet (only x86-64 is)", arch_word(pe.architecture()))));
+    }
+    let mut img = blank(Format::Pe);
+    common(&pe, &mut img);
+    let oh = pe.nt_headers().optional_header();
+    img.image_base = oh.image_base();
+    if let Some(d) = pe.data_directory(pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
+        let (rva, size) = (u64::from(d.virtual_address.get(LE)), u64::from(d.size.get(LE)));
+        if rva != 0 && size != 0 {
+            img.exception_dir = Some((rva, size));
+        }
+    }
+    // imports, with the address of each IAT slot
+    if let Ok(Some(table)) = pe.import_table() {
+        if let Ok(mut descs) = table.descriptors() {
+            'all: while let Ok(Some(d)) = descs.next() {
+                let lib = table
+                    .name(d.name.get(LE))
+                    .ok()
+                    .map(|n| String::from_utf8_lossy(n).chars().take(MAX_NAME).collect::<String>());
+                let first = u64::from(d.first_thunk.get(LE));
+                let lookup = match d.original_first_thunk.get(LE) {
+                    0 => d.first_thunk.get(LE),
+                    v => v,
+                };
+                let Ok(mut thunks) = table.thunks(lookup) else { continue };
+                let mut i = 0u64;
+                while let Ok(Some(t)) = thunks.next::<pe::ImageNtHeaders64>() {
+                    let name = match table.import::<pe::ImageNtHeaders64>(t) {
+                        Ok(object::read::pe::Import::Name(_, n)) => {
+                            String::from_utf8_lossy(n).chars().take(MAX_NAME).collect()
+                        }
+                        Ok(object::read::pe::Import::Ordinal(o)) => format!("ordinal#{o}"),
+                        Err(_) => break,
+                    };
+                    img.imports.push(Import {
+                        lib: lib.clone(),
+                        name,
+                        slot: Some(img.image_base.wrapping_add(first).wrapping_add(i * 8)),
+                    });
+                    i += 1;
+                    if img.imports.len() >= MAX_IMPORTS {
+                        break 'all;
+                    }
+                }
+            }
+        }
+    }
+    let dll = oh.dll_characteristics();
+    let yes_no = |bit: pe::DllFlags| if dll.contains(bit) { "yes" } else { "no" }.to_string();
+    img.hardening.items = vec![
+        ("aslr", yes_no(pe::IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)),
+        ("high_entropy_aslr", yes_no(pe::IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA)),
+        ("dep", yes_no(pe::IMAGE_DLLCHARACTERISTICS_NX_COMPAT)),
+        ("cfg", yes_no(pe::IMAGE_DLLCHARACTERISTICS_GUARD_CF)),
+    ];
+    Ok(img)
+}
+
+/// An architecture in one word, as people write it.
+fn arch_word(a: Architecture) -> &'static str {
+    match a {
+        Architecture::Aarch64 | Architecture::Aarch64_Ilp32 => "arm64",
+        Architecture::Arm => "arm",
+        Architecture::I386 => "x86",
+        Architecture::X86_64 | Architecture::X86_64_X32 => "x86-64",
+        Architecture::Riscv64 => "riscv64",
+        Architecture::Riscv32 => "riscv32",
+        Architecture::PowerPc64 => "ppc64",
+        Architecture::Mips | Architecture::Mips64 => "mips",
+        _ => "unknown arch",
+    }
+}

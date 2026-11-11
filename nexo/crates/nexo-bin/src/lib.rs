@@ -1,0 +1,81 @@
+//! `nexo-bin`: reads ELF and PE x86-64 files as bytes and answers questions about them in
+//! bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search.
+//!
+//! The file is only read. It is never run, loaded or handed to another program. No function here
+//! prints: each op returns an [`Output`] that has a text form and a JSON form, and
+//! [`Output::page`] cuts either one to a line budget, saying exactly what is left and how to get it.
+
+mod disasm;
+mod funcs;
+mod image;
+mod ops;
+mod page;
+mod strings;
+
+#[cfg(any(test, feature = "fixtures"))]
+pub mod fixtures;
+#[cfg(test)]
+mod tests;
+
+pub use image::{Export, Format, Hardening, Image, Import, Section, Symbol};
+pub use ops::{bytes, find_bytes, find_imm, func, info, strings, ElemType};
+pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
+
+use std::fmt;
+
+/// Why an op could not answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    /// The file is not one this crate reads (not a binary, another format, another architecture).
+    NotRead(String),
+    /// The file could not be opened or read.
+    Io(String),
+    /// The question cannot be answered: an unknown name, an address outside the file, a bad argument.
+    Bad(String),
+}
+
+impl Error {
+    /// The exit code `nexo bin` ends with: 2 for a file that is not read, 1 for the rest.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Error::NotRead(_) => 2,
+            Error::Io(_) | Error::Bad(_) => 1,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::NotRead(s) | Error::Io(s) | Error::Bad(s) => f.write_str(s),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// A number written as `0x401000`, `401000h` is not accepted; plain digits are decimal.
+pub fn parse_number(s: &str) -> Result<i128> {
+    let t = s.trim();
+    let (neg, t) = match t.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, t),
+    };
+    let v = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        i128::from_str_radix(&h.replace('_', ""), 16)
+    } else {
+        t.replace('_', "").parse::<i128>()
+    };
+    match v {
+        Ok(v) if v.unsigned_abs() <= u64::MAX as u128 => Ok(if neg { -v } else { v }),
+        _ => Err(Error::Bad(format!("{s:?} is not a number (write 0x401000 for hex, plain digits for decimal)"))),
+    }
+}
+
+/// An address: a non-negative number that fits 64 bits.
+pub fn parse_addr(s: &str) -> Result<u64> {
+    let v = parse_number(s)?;
+    u64::try_from(v).map_err(|_| Error::Bad(format!("{s:?} is not an address")))
+}

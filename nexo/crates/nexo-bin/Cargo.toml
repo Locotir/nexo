@@ -1,0 +1,21 @@
+[package]
+name = "nexo-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: reads ELF and PE x86-64 files as bytes and answers questions about them in bounded pieces"
+
+[features]
+# byte-by-byte tiny ELF and PE files for tests (also used by the nexo-cli tests)
+fixtures = []
+
+[dependencies]
+object = { workspace = true }
+iced-x86 = { workspace = true }
+rustc-demangle = { workspace = true }
+cpp_demangle = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }

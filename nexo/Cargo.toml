@@ -7,6 +7,7 @@ members = [
     "crates/nexo-curator",
     "crates/nexo-agent",
     "crates/nexo-tui",
+    "crates/nexo-bin",
     "crates/nexo-cli",
     "crates/nexo-bench",
 ]
@@ -28,6 +29,7 @@ nexo-curator = { path = "crates/nexo-curator" }
 nexo-agent = { path = "crates/nexo-agent" }
 nexo-tui = { path = "crates/nexo-tui" }
 nexo-bench = { path = "crates/nexo-bench" }
+nexo-bin = { path = "crates/nexo-bin" }
 
 # runtime
 tokio = { version = "1.54", features = ["full"] }
@@ -59,6 +61,12 @@ webpki-root-certs = "1"
 url = "2"
 eventsource-stream = "0.2"
 htmd = "0.5"
+
+# binary files (nexo-bin): read ELF and PE as bytes, decode x86-64, demangle names
+object = { version = "0.41", default-features = false, features = ["read", "std"] }
+iced-x86 = { version = "1.22", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }
+rustc-demangle = "0.1"
+cpp_demangle = "0.5"
 
 # files and search
 dirs = "7"
