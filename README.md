@@ -4,7 +4,13 @@
 
 # nexo
 
-**The coding agent that doesn't run out of context.**
+### The coding agent that doesn't run out of context.
+
+**No compaction. No summaries. The whole history stays on disk.**
+
+<a href="#proof"><img src="docs/img/hero.svg" width="880" alt="Measured on the same model, 2026-11-10. Against Claude Code, 5 tasks, 3 runs each: 40% fewer tokens (3.65M against 6.04M), cheaper in 15 of 15 runs (2.48 dollars against 3.97), solved 15 of 15 against 14 of 15. Against Codex CLI, one 10-turn session, one run: 41% fewer input tokens (3.86M against 6.53M), 0 compactions, 27 calls against 42; Codex CLI compacted twice and did not solve it"></a>
+
+[**Install**](#install) · [**Proof**](#proof) · [**How it works**](#how-it-works) · [**Providers**](#providers) · [**Full guide**](nexo/README.md)
 
 [![CI](https://github.com/Locotir/nexo/actions/workflows/ci.yml/badge.svg)](https://github.com/Locotir/nexo/actions/workflows/ci.yml)
 [![Rust 1.89+](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -15,16 +21,23 @@
 
 </div>
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/Locotir/nexo/main/install.sh | sh    # Linux; Windows and source below
+```
+
 nexo is a terminal coding agent written in Rust, for any model provider. Its context curator keeps long sessions
 small without summaries: the whole history stays on disk, and the model is sent only what the next step needs.
 It runs as a full-screen TUI, headless for scripts and CI, or inside editors over the Agent Client Protocol (ACP).
-
-[Install](#install) · [Proof](#proof) · [How it works](#how-it-works) · [Providers](#providers) · [Full guide](nexo/README.md) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
 <p align="center"><img src="docs/img/demo.svg" width="880" alt="nexo fixing a failing test in the terminal"></p>
 
 <sub>Recorded from the real TUI. The model replies are scripted, and the curator limits are lowered so it acts in a session this short.</sub>
 
+| | An agent that compacts | nexo |
+| --- | --- | --- |
+| The window fills up | a summary replaces the work | nothing is summarized, the history stays on disk |
+| The exact error line from early in the session | gone with the summary | comes back by itself when a step names it |
+| The provider's prompt cache | restarts after each compaction | keeps hitting: the view is rewritten only at an epoch |
 
 ## Install
 
