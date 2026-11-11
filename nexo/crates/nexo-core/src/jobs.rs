@@ -6,7 +6,7 @@
 //! it when it was waiting for the person. Dropping the last handle of the
 //! registry (the session ends) stops every job still running.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -454,8 +454,9 @@ impl DetachWhy {
 struct DetachInner {
     fired: Mutex<Option<DetachWhy>>,
     notify: Notify,
-    /// The calls (`task` call ids) that already went to the background.
-    gone: Mutex<HashSet<String>>,
+    /// The sub-agent runs that are alive, by their own id: true once a run is in the background, false
+    /// while a call waits for it.
+    runs: Mutex<HashMap<String, bool>>,
 }
 
 /// The signal that sends the sub-agents a round waits for to the background. It stays set until the round
@@ -503,19 +504,41 @@ impl Detach {
         }
     }
 
-    /// The `task` call `call_id` went to the background.
-    pub fn mark(&self, call_id: &str) {
-        self.0.gone.lock().unwrap().insert(call_id.to_string());
+    /// The sub-agent run `run` (an id of its own, never a provider's call id: those can repeat) starts,
+    /// in the background (`background`) or waited for by its call.
+    pub fn begin(&self, run: &str, background: bool) {
+        self.0.runs.lock().unwrap().insert(run.to_string(), background);
     }
 
-    /// It ended.
-    pub fn unmark(&self, call_id: &str) {
-        self.0.gone.lock().unwrap().remove(call_id);
+    /// The call lets go of run `run`. False when the run already ended: its call then takes the report.
+    pub fn to_background(&self, run: &str) -> bool {
+        match self.0.runs.lock().unwrap().get_mut(run) {
+            Some(bg) => {
+                *bg = true;
+                true
+            }
+            None => false,
+        }
     }
 
-    /// Whether `ask_id` (`<task call>.<call>`) is a question of a sub-agent in the background.
+    /// The run ended; nothing of it stays behind.
+    pub fn end(&self, run: &str) {
+        self.0.runs.lock().unwrap().remove(run);
+    }
+
+    /// How many runs a call waits for now.
+    pub fn attached(&self) -> usize {
+        self.0.runs.lock().unwrap().values().filter(|bg| !**bg).count()
+    }
+
+    /// Whether `ask_id` (`<run>.<call>`) is a question of a sub-agent in the background.
     pub fn is_gone(&self, ask_id: &str) -> bool {
-        self.0.gone.lock().unwrap().iter().any(|c| ask_id.strip_prefix(c.as_str()).is_some_and(|r| r.starts_with('.')))
+        self.0
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(run, bg)| *bg && ask_id.strip_prefix(run.as_str()).is_some_and(|r| r.starts_with('.')))
     }
 }
 
@@ -693,5 +716,35 @@ mod tests {
         assert!(r.new.trim_end().ends_with(&format!("[{} characters of this line cut]", LINE_CHARS * 9)));
         assert!(r.new.chars().count() < LINE_CHARS + 100);
         drop(h);
+    }
+
+    #[test]
+    fn a_run_that_ended_before_the_call_let_go_leaves_nothing_marked() {
+        let d = Detach::default();
+        d.begin("t1#1", false);
+        assert_eq!(d.attached(), 1);
+        // it ends in the same moment the person writes: the call must take the report, not the "moved" text
+        d.end("t1#1");
+        assert!(!d.to_background("t1#1"), "an ended run cannot be let go of");
+        assert!(!d.is_gone("t1#1.s1"));
+        assert_eq!(d.attached(), 0);
+    }
+
+    #[test]
+    fn a_question_is_in_the_background_only_for_its_own_run() {
+        let d = Detach::default();
+        // two runs of calls that share a provider id
+        d.begin("call_0#1", true);
+        d.begin("call_0#2", false);
+        assert!(d.is_gone("call_0#1.s1"));
+        assert!(!d.is_gone("call_0#2.s1"), "the run a call still waits for is not in the background");
+        assert!(!d.is_gone("call_0#12.s1"), "a longer id is another run");
+        assert_eq!(d.attached(), 1);
+        assert!(d.to_background("call_0#2"));
+        assert!(d.is_gone("call_0#2.s1"));
+        assert_eq!(d.attached(), 0);
+        d.end("call_0#1");
+        assert!(!d.is_gone("call_0#1.s1"));
+        assert!(d.is_gone("call_0#2.s1"));
     }
 }

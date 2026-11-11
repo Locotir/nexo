@@ -576,7 +576,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                     }
                     AgentCommand::Detach => {
-                        if turn.is_some() {
+                        // the key acts on what is attached now; with nothing attached it leaves no signal
+                        // behind for a sub-agent that starts later
+                        if turn.is_some() && detach.attached() > 0 {
                             detach.fire(nexo_core::jobs::DetachWhy::Key);
                         }
                     }

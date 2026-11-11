@@ -2640,14 +2640,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
                 lines = Modal::permission_lines_with(&p.req, inner_w, &theme, true, false);
             }
             let b = crate::modal::permission_buttons(inner_w.saturating_sub(1));
-            (
-                match &p.req.agent {
-                    Some(a) => format!(" permission · {a} · {} ", p.req.tool),
-                    None => format!(" permission · {} ", p.req.tool),
-                },
-                lines,
-                Some(b),
-            )
+            (crate::modal::permission_title(p.req.agent.as_deref(), &p.req.tool, inner_w), lines, Some(b))
         }
         Modal::Picker(p) => {
             let mut lines = vec![

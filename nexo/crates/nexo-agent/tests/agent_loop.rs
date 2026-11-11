@@ -2791,7 +2791,7 @@ async fn a_general_sub_agent_asks_for_its_writes_and_its_spending_is_counted() {
         AgentEvent::PermissionAsk { request } => request.clone(),
         _ => unreachable!(),
     };
-    assert_eq!((req.id.as_str(), req.tool.as_str()), ("t1.s1", "write"));
+    assert_eq!((req.id.as_str(), req.tool.as_str()), ("t1#1.s1", "write"));
     r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
     let evs = r.turn().await;
     assert!(evs.iter().any(
@@ -3313,8 +3313,9 @@ async fn a_sub_agent_that_can_write_runs_in_the_background_when_asked() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![
         Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "change a.txt", "background": true}))),
+        // one reply for the sub-agent and one for the main agent: whichever asks first gets the first
         Reply::Events(text("changed a.txt")),
-        Reply::Events(text("done")),
+        Reply::Events(text("changed a.txt")),
     ]);
     let mut r = start(client, config(PermissionMode::Auto), None, d.path()).await;
     r.next().await;
@@ -3328,6 +3329,15 @@ async fn a_sub_agent_that_can_write_runs_in_the_background_when_asked() {
         })
         .unwrap();
     assert!(out.contains("Started sub-agent job"), "{out}");
+    // and the work completes: the job ends well, with the sub-agent's report as its output
+    let ended = |e: &AgentEvent| {
+        matches!(e, AgentEvent::Jobs { jobs } if jobs.iter().any(|j| {
+            j.id == 1 && j.status == nexo_core::jobs::JobStatus::Done { ok: true, how: "reported".into() }
+        }))
+    };
+    if !evs.iter().any(ended) {
+        r.until(ended).await;
+    }
     r.stop().await;
 }
 

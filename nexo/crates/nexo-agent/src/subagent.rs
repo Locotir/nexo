@@ -600,6 +600,9 @@ struct Run {
     /// The files of the sub-agents at work, and this one's label in them.
     claims: Claims,
     label: String,
+    /// This run's own id (the task call's id and the job's): the owner of its claims and the start of the
+    /// ids of its questions. A provider's call id alone can repeat, so it never names a run.
+    id: String,
 }
 
 impl Run {
@@ -844,19 +847,20 @@ impl Run {
             }
         }
         // a file another sub-agent at work is changing stays its own: two at once would lose a change
-        if t.kind() == ToolKind::Write {
-            if let Some(p) = args.get("path").and_then(Value::as_str) {
-                let key = plain_path(p, &ctx.cwd);
-                if let Err(label) = self.claims.hold(key, &ctx.call_id, &self.label) {
-                    return refused(ToolOutput::error(format!(
-                        "`{p}` is being changed by another sub-agent running at the same time ({label}); \
-                         leave it to that one and say so in your report"
-                    )));
-                }
+        // (every file the call names: an `edit` of several files or a `paths` list claims each of them)
+        let paths = if t.kind() == ToolKind::Write { nexo_core::tool::call_paths(args) } else { Vec::new() };
+        if !paths.is_empty() {
+            let keys: Vec<PathBuf> = paths.iter().map(|p| plain_path(p, &ctx.cwd)).collect();
+            if let Err((i, label)) = self.claims.hold_all(&keys, &self.id, &self.label) {
+                let p = &paths[i];
+                return refused(ToolOutput::error(format!(
+                    "`{p}` is being changed by another sub-agent running at the same time ({label}); \
+                     leave it to that one and say so in your report"
+                )));
             }
         }
         // the main agent's rules hold for every sub-agent: its deny rules, and its asks (keys, writes)
-        let call_id = format!("{}.{id}", ctx.call_id);
+        let call_id = format!("{}.{id}", self.id);
         let verdict = match &self.host {
             Some(h) => h.permit(&call_id, &self.profile.name, t.as_ref(), args, &ctx.cancel, decision).await,
             None if self.profile.read_only => Ok(Why::RULE),
@@ -874,8 +878,8 @@ impl Run {
                 };
             }
         };
-        if let (Some(h), ToolKind::Write) = (&self.host, t.kind()) {
-            if let Some(p) = args.get("path").and_then(Value::as_str) {
+        if let Some(h) = &self.host {
+            for p in &paths {
                 let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { ctx.cwd.join(p) };
                 h.before_write(path).await;
             }
@@ -1072,7 +1076,7 @@ impl Tool for SubAgent {
             Some(h) if self.brief.tokens > 0 => brief::build(prompt, &h.history().await, &ctx.cwd, &self.brief).await,
             _ => None,
         };
-        let run = Run {
+        let mut run = Run {
             client: self.client.clone(),
             target: self.target.clone(),
             provider,
@@ -1081,6 +1085,7 @@ impl Tool for SubAgent {
             profile,
             host,
             claims: ctx.claims.clone(),
+            id: String::new(),
             label: args
                 .get("description")
                 .or_else(|| args.get("prompt"))
@@ -1119,6 +1124,12 @@ impl Tool for SubAgent {
         let label: String = label.lines().next().unwrap_or("").chars().take(80).collect();
         let job = ctx.jobs.start(JobKind::Agent, label.clone());
         let id = job.id();
+        // this run's own id: the provider's call id can come again in a later turn
+        run.id = format!("{}#{id}", ctx.call_id);
+        let run_id = run.id.clone();
+        // a background reader keeps the note and the job output it always had; every other sub-agent that
+        // ends away from its call brings its report in the note
+        let inline = writes || !asked;
         let (hooks, agent_name) = (self.hooks.clone(), run.profile.name.clone());
         let (main_cwd, session_id, call_id) = (ctx.cwd.clone(), ctx.session_id.clone(), ctx.call_id.clone());
         let mut jctx = ictx;
@@ -1128,14 +1139,19 @@ impl Tool for SubAgent {
         let progress = if asked { None } else { ctx.progress.as_ref().map(|p| p.downgrade()) };
         jctx.progress = None;
         let attached = Arc::new(AtomicBool::new(!asked));
-        let release = Release { claims: ctx.claims.clone(), owner: call_id.clone() };
+        let release = Release { claims: ctx.claims.clone(), owner: run_id.clone() };
         let detach = ctx.detach.clone();
+        // one asked to run in the background is one from the start: its questions stay open on Esc
+        if let Some(d) = &detach {
+            d.begin(&run_id, asked);
+        }
+        let ended_id = run_id.clone();
         let prompt = prompt.to_string();
         let (tx, mut rx) = tokio::sync::oneshot::channel::<Ended>();
         let flag = attached.clone();
         tokio::spawn(async move {
             // whatever it held is free again when it ends, is stopped, or the task is dropped
-            let _release = release;
+            let release = release;
             let job = Arc::new(job);
             let say = {
                 let job = job.clone();
@@ -1153,6 +1169,8 @@ impl Tool for SubAgent {
                 say(b.line());
             }
             let res = run.go(&prompt, briefing.as_ref(), &jctx, &say).await;
+            // its files are free before anyone is told it ended (the note starts a turn that may write them)
+            drop(release);
             // an isolated one is finished here, also when it was stopped: no worktree is left behind
             let tail = match isolated {
                 Some(wt) => tokio::task::spawn_blocking(move || worktree_note(&wt)).await.unwrap_or_default(),
@@ -1163,8 +1181,9 @@ impl Tool for SubAgent {
                     say(f);
                 }
             }
+            // from here on the call cannot let go of it: the report goes to the one that is still waiting
             if let Some(d) = &detach {
-                d.unmark(&call_id);
+                d.end(&ended_id);
             }
             drop(say);
             let Ok(job) = Arc::try_unwrap(job) else { return };
@@ -1173,7 +1192,9 @@ impl Tool for SubAgent {
                     let full = format!("{report}{tail}");
                     job.line("--- report ---");
                     job.text(&full);
-                    job.set_report(&full);
+                    if inline {
+                        job.set_report(&full);
+                    }
                     job.finish(true, "reported");
                     Ended::Report(full)
                 }
@@ -1184,18 +1205,26 @@ impl Tool for SubAgent {
                 }
                 Err(e) => {
                     job.line(&e);
-                    job.set_report(&format!("failed: {e}{tail}"));
+                    if inline {
+                        job.set_report(&format!("failed: {e}{tail}"));
+                    }
                     job.finish(false, "failed");
                     Ended::Failed(e, tail)
                 }
             };
             let _ = tx.send(ended);
         });
+        if asked && !inline {
+            return ToolOutput::ok(format!(
+                "Started sub-agent job {id} ({name}): \"{label}\". It works while you go on; you will be told when it \
+                 ends. Its report is the job's output: jobs {{\"action\": \"output\", \"id\": {id}}} (add \"wait\" to \
+                 wait for it), stop it with {{\"action\": \"kill\", \"id\": {id}}}."
+            ));
+        }
         if asked {
             return ToolOutput::ok(format!(
                 "Started sub-agent job {id} ({name}): \"{label}\". It works while you go on; you will be told when it \
-                 ends, with its report. Stop it with the jobs tool: {{\"action\": \"kill\", \"id\": {id}}}.",
-                name = agent_name_of(&args)
+                 ends, with its report. Stop it with the jobs tool: {{\"action\": \"kill\", \"id\": {id}}}."
             ));
         }
         let gone = async {
@@ -1216,11 +1245,12 @@ impl Tool for SubAgent {
                 }
             }
             why = gone => {
-                attached.store(false, Ordering::Relaxed);
-                if let Some(d) = &ctx.detach {
-                    d.mark(&ctx.call_id);
+                if ctx.detach.as_ref().is_some_and(|d| d.to_background(&run_id)) {
+                    attached.store(false, Ordering::Relaxed);
+                    return ToolOutput::ok(why.text(id));
                 }
-                return ToolOutput::ok(why.text(id));
+                // it ended in the same moment: this call is the one that gives the model its report
+                (&mut rx).await
             }
         };
         // the model has the outcome in this tool result: no ended note for it
@@ -1248,10 +1278,6 @@ enum Ended {
 
 /// Seconds an interrupted call waits for the sub-agent to finish its cleanup.
 const CLEANUP: Duration = Duration::from_secs(5);
-
-fn agent_name_of(args: &Value) -> String {
-    args.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).unwrap_or(DEFAULT).to_string()
-}
 
 #[cfg(test)]
 mod tests {

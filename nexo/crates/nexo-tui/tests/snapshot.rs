@@ -946,3 +946,34 @@ fn the_permission_dialog_at_80x24_is_drawn_over_clear_ground_not_over_the_welcom
         assert!(!inner.contains('●'), "welcome box cell beside the dialog: {r:?}");
     }
 }
+
+#[test]
+fn the_permission_title_of_a_sub_agent_fits_a_60_column_screen_and_the_main_agents_is_unchanged() {
+    let ask = |agent: Option<&str>| PermissionRequest {
+        agent: agent.map(str::to_string),
+        id: "p1".into(),
+        tool: "bash".into(),
+        kind: ToolKind::Exec,
+        summary: "cargo test".into(),
+        detail: ToolDisplay::Shell {
+            command: "cargo test".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+        },
+        suggested_rules: vec![],
+    };
+    // the main agent: the title is what it always was
+    let mut a = app();
+    a.handle_agent(AgentEvent::PermissionAsk { request: ask(None) });
+    let rows = draw(&mut a, 60, 24);
+    assert!(rows.iter().any(|r| r.contains("╭ permission · bash ─")), "{}", rows.join("\n"));
+    // a sub-agent with a name far longer than the room: the title is cut with an ellipsis and stays on one line
+    let mut a = app();
+    let name = "a-sub-agent-with-a-name-that-goes-on-and-on";
+    a.handle_agent(AgentEvent::PermissionAsk { request: ask(Some(name)) });
+    let rows = draw(&mut a, 60, 24);
+    let top = rows.iter().find(|r| r.contains("permission · a-sub")).unwrap_or_else(|| panic!("{}", rows.join("\n")));
+    assert!(top.contains("… · bash ") && !top.contains(name), "{top}");
+    assert!(top.trim_end().ends_with('╮') && top.trim_end().chars().count() <= 60, "{top}");
+}

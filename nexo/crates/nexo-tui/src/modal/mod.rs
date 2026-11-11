@@ -961,6 +961,23 @@ impl Modal {
     }
 }
 
+/// Columns of a sub-agent's name the title of a permission dialog keeps.
+const TITLE_AGENT_COLS: usize = 16;
+
+/// The title of a permission dialog within `room` columns: ` permission · bash `, and for a sub-agent
+/// ` permission · <agent> · bash ` with the agent's name cut (with an ellipsis) to fit. The main agent's
+/// title never changes; when not even a short name fits, the sub-agent's is the same short title.
+pub fn permission_title(agent: Option<&str>, tool: &str, room: usize) -> String {
+    let plain = format!(" permission · {tool} ");
+    let Some(agent) = agent else { return plain };
+    let fixed = crate::render::wrap::width(&plain) + 3;
+    let cols = room.saturating_sub(fixed).min(TITLE_AGENT_COLS);
+    if cols < 2 {
+        return plain;
+    }
+    format!(" permission · {} · {tool} ", truncate(agent, cols))
+}
+
 /// The permission buttons that fit `avail` columns: (label, key), and the gap between them.
 /// Full words when there is room, then closer together, then the keys alone.
 pub fn permission_buttons(avail: usize) -> (Vec<(String, char)>, usize) {
@@ -1035,6 +1052,23 @@ pub fn contains(r: Rect, x: u16, y: u16) -> bool {
 mod tests {
     use super::*;
     use nexo_core::tool::ToolKind;
+
+    #[test]
+    fn the_permission_title_names_a_sub_agent_within_the_room_and_keeps_the_main_agents_as_it_was() {
+        assert_eq!(permission_title(None, "bash", 52), " permission · bash ");
+        assert_eq!(
+            permission_title(None, "mcp__a_very_long_server__a_very_long_tool_name", 20),
+            " permission · mcp__a_very_long_server__a_very_long_tool_name "
+        );
+        assert_eq!(permission_title(Some("general"), "bash", 52), " permission · general · bash ");
+        // a long name is cut with an ellipsis, never past the room
+        let t = permission_title(Some("a-very-long-agent-name-that-goes-on"), "bash", 52);
+        assert_eq!(t, " permission · a-very-long-age… · bash ");
+        let t = permission_title(Some("a-very-long-agent-name-that-goes-on"), "bash", 30);
+        assert!(crate::render::wrap::width(&t) <= 30 && t.contains('…'), "{t:?}");
+        // no room for a name: the short title
+        assert_eq!(permission_title(Some("general"), "bash", 20), " permission · bash ");
+    }
 
     fn req() -> PermissionRequest {
         PermissionRequest {

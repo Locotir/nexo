@@ -62,6 +62,9 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         // the spend limits are checked before the call, so none is passed by more than one call
         {
             let mut st = state.lock().await;
+            // a signal to send sub-agents to the background belongs to the round it came in: a round that
+            // went on without `take_inbox` (a nudge, a retry) leaves none for the next one
+            st.detach.clear();
             match budget::verdict(st.cost, budget::spent_today(), st.budget, st.config.agent.max_cost_day) {
                 budget::Verdict::Stop(why) => {
                     notice(&events, Level::Error, why);

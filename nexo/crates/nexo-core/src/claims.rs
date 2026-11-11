@@ -33,6 +33,30 @@ impl Claims {
         }
     }
 
+    /// Takes every key for `owner` or none: when one is held by another call, the ones this call took are
+    /// given back (those `owner` held before stay). Err(index of the refused key, label of its holder).
+    pub fn hold_all(&self, keys: &[PathBuf], owner: &str, label: &str) -> Result<(), (usize, String)> {
+        let mut held = self.table();
+        let mut taken: Vec<&PathBuf> = Vec::new();
+        for (i, key) in keys.iter().enumerate() {
+            match held.get(key) {
+                Some((o, l)) if o != owner => {
+                    let refused = (i, l.clone());
+                    for k in taken {
+                        held.remove(k);
+                    }
+                    return Err(refused);
+                }
+                Some(_) => {}
+                None => {
+                    held.insert(key.clone(), (owner.to_string(), label.to_string()));
+                    taken.push(key);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The label of the sub-agent that holds `key`, if any.
     pub fn holder(&self, key: &Path) -> Option<String> {
         self.table().get(key).map(|(_, l)| l.clone())
@@ -84,5 +108,19 @@ mod tests {
         c.release("t1");
         assert!(c.holder(&key).is_none());
         assert!(c.hold(key, "t2", "second").is_ok());
+    }
+
+    #[test]
+    fn a_call_of_several_files_takes_all_or_none() {
+        let c = Claims::default();
+        let (a, b, d) = (PathBuf::from("/p/a"), PathBuf::from("/p/b"), PathBuf::from("/p/d"));
+        assert!(c.hold(b.clone(), "t1", "first").is_ok());
+        // t2 already held `a`; asks for a, b, d: b is refused, d is never taken, a stays t2's
+        assert!(c.hold(a.clone(), "t2", "second").is_ok());
+        assert_eq!(c.hold_all(&[d.clone(), a.clone(), b.clone()], "t2", "second"), Err((2, "first".to_string())));
+        assert!(c.holder(&d).is_none(), "what the refused call took is given back");
+        assert_eq!(c.holder(&a).as_deref(), Some("second"), "what it held before stays");
+        assert!(c.hold_all(&[a, d.clone()], "t2", "second").is_ok());
+        assert_eq!(c.holder(&d).as_deref(), Some("second"));
     }
 }
