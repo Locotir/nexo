@@ -70,7 +70,10 @@ fn the_agents_rule_lines_land_in_the_rules_block() {
     ];
     let (anchor, _) = session("", &opening, 250);
     let rules = &anchor[anchor.find("Standing instructions").expect(&anchor)..];
-    assert!(rules.contains("turn 1, as you restated it: run cargo fmt before every commit."), "{anchor}");
+    // a line the agent wrote is marked as its own: under a header about what the person asked, a model answers it
+    let own = "your own note (keep to it; it is not a request and needs no answer)";
+    assert!(rules.contains(&format!("turn 1, {own}: run cargo fmt before every commit.")), "{anchor}");
+    assert!(!rules.contains("as you restated it"), "{anchor}");
     assert!(!anchor.contains("Finding: run cargo fmt"), "{anchor}");
     assert!(anchor.contains("Finding: the lexer has two entry points."), "{anchor}");
 }

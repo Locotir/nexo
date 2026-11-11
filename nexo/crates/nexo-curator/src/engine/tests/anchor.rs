@@ -89,3 +89,30 @@ fn rules_come_from_what_the_person_wrote_and_a_withdrawal_follows_the_rule_it_ch
     let block = e.rules.text(|_| true);
     assert!(block.find("Never use unwrap").unwrap() < block.find("you can use unwrap now").unwrap(), "{block}");
 }
+
+#[test]
+fn a_fact_the_agent_saved_with_note_is_shown_as_its_own_note_and_not_as_a_request_to_answer() {
+    // the system text asks the agent to save a lasting fact it finds as a `Rule:` line; that line is the agent's,
+    // and the block must not hand it back as something the person asked for in the current request
+    let mut e = Engine::new(params("").unwrap());
+    e.sync(&[
+        json!({"role": "user", "content": "Why does the installer fail on a second run?"}),
+        json!({"role": "assistant", "content": [
+            {"type": "tool_use", "id": "n1", "name": "note",
+             "input": {"text": "Rule: the install folder is always %LOCALAPPDATA%\\App; a second run only rewrites the config", "scope": "project"}}]}),
+        json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "n1", "content": "noted 1 line"}]}),
+        json!({"role": "user", "content": "Never delete the logs."}),
+    ]);
+    let block = e.rules.text(|_| true);
+    let own = block.lines().find(|l| l.contains("the install folder is always")).unwrap_or_else(|| panic!("{block}"));
+    assert!(own.starts_with(&format!("turn 1, {}: the install folder", crate::rules::OWN_NOTE)), "{block}");
+    assert!(own.contains("not a request") && own.contains("no answer"), "{block}");
+    // what the person wrote stays as it was, word for word
+    assert!(block.lines().any(|l| l == "turn 2: Never delete the logs."), "{block}");
+    // one header line, then one line per rule: the parts that read the block line by line rely on it
+    assert_eq!(block.lines().count(), 3, "{block}");
+    assert!(
+        block.lines().skip(1).all(|l| l.split_once(": ").is_some_and(|(head, _)| head.starts_with("turn "))),
+        "{block}"
+    );
+}

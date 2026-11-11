@@ -11,6 +11,15 @@ use regex::Regex;
 
 use crate::mechanical::MARK;
 
+/// How the block marks a line the agent wrote itself (a `Rule:` line of its text or of a `note` call): the
+/// header above it speaks of what the person asked, and a fact the agent saved is not a request to answer.
+/// Without ": " inside: the parts that read the block split a line at the first one.
+/// How the block marks a line the agent wrote itself (a `Rule:` line of its text or of a `note` call). The
+/// header above it speaks of what the person asked for; a fact the agent saved is not a request, and a model
+/// that reads it as one answers it ("yes, it already works that way") before it goes on. No ": " inside:
+/// the parts that read the block split a line at the first one.
+pub const OWN_NOTE: &str = "your own note (keep to it; it is not a request and needs no answer)";
+
 /// Characters of a rule kept; a longer line is cut there and ends in "…".
 pub const RULE_CHARS: usize = 600;
 /// A line longer than this needs a strong cue: the weak ones are too common in a plain request.
@@ -577,7 +586,7 @@ impl Rules {
         )];
         for r in self.list.iter().filter(|r| shown(r)) {
             if r.restated {
-                lines.push(format!("turn {}, as you restated it: {}", r.turn, r.text));
+                lines.push(format!("turn {}, {OWN_NOTE}: {}", r.turn, r.text));
             } else {
                 lines.push(format!("turn {}: {}", r.turn, r.text));
             }
@@ -750,7 +759,8 @@ mod tests {
         let t = rs.text(|_| true);
         let (a, b) = (t.find("turn 2: Always use tabs").unwrap(), t.find("turn 7: Use spaces, not tabs").unwrap());
         assert!(a < b, "{t}");
-        assert!(t.contains("turn 7, as you restated it: Use four spaces."));
+        assert!(t.contains(&format!("turn 7, {OWN_NOTE}: Use four spaces.")));
+        assert!(!OWN_NOTE.contains(": "));
         assert!(t.contains("the later one wins"));
         assert_eq!(rs.text(|_| false), "");
     }
