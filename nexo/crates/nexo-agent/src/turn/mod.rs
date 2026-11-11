@@ -330,7 +330,12 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             .with_parallel(config.agent.parallel_tasks)
             .with_hooks(config.hooks.clone())
             .with_worktree_setup(config.agent.worktree_setup.clone());
-        tools.add(Arc::new(sub));
+        let sub = Arc::new(sub);
+        tools.add(sub.clone());
+        // offered only where a workflow is saved: it costs a description in every request
+        if crate::workflow::Workflow::any_saved(&cwd) {
+            tools.add(Arc::new(crate::workflow::Workflow::new(sub, cwd.clone())));
+        }
     }
     // after the sub-agents: questions are the main agent's alone
     let plan: crate::ask::PlanCell = Arc::default();

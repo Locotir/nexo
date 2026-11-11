@@ -7,6 +7,9 @@ pub(super) fn detail_of(name: &str, kind: ToolKind, args: &Value, cwd: &Path) ->
     if let Some(items) = mcp_items(name, args) {
         return ToolDisplay::List { items };
     }
+    if name == "workflow" {
+        return ToolDisplay::List { items: crate::workflow::tool::question(args, cwd).1 };
+    }
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     match kind {
         ToolKind::Exec => ToolDisplay::Shell {

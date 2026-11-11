@@ -111,7 +111,9 @@ impl Policy {
         }
         // reading a web page changes nothing here: read-only mode still asks for it
         let reads = matches!(kind, ToolKind::Read | ToolKind::Search | ToolKind::Network);
-        if self.mode.reads_only() && !reads {
+        // a workflow is asked about as it is in every mode, also where only reads run: like `task`, what its
+        // sub-agents do is decided call by call
+        if self.mode.reads_only() && !reads && tool != "workflow" {
             return Decision::Deny(format!("{} mode", self.mode.as_str()));
         }
         // it reads, but by starting the project's own build tools (build scripts, macros, plugins),
@@ -397,8 +399,17 @@ pub fn rule_matches_as(rule: &str, tool: &str, kind: ToolKind, args: &Value, cwd
     if !name_ok {
         return false;
     }
+    // a rule for the workflow tool covers saved workflows, never text the model wrote: that asks every time
+    if tool == "workflow" && !deny && args.get("inline").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) {
+        return false;
+    }
     let Some(pattern) = pattern else { return true };
     let pattern = pattern.trim();
+    // `workflow(find-bugs)`: the saved workflow by name
+    if tool == "workflow" {
+        let named = args.get("name").and_then(Value::as_str).unwrap_or("");
+        return pattern == "*" || pattern.is_empty() || glob(pattern).is_some_and(|g| g.is_match(named));
+    }
     if pattern == "*" || pattern.is_empty() {
         return true;
     }
@@ -863,6 +874,15 @@ fn runs_code(part: &str) -> bool {
 /// Rules the person may adopt instead of being asked again for this call.
 pub fn suggested_rules(tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Vec<String> {
     let mut out = Vec::new();
+    if tool == "workflow" {
+        // by name for a saved one; none for text the model wrote
+        return match args.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) {
+            Some(n) if args.get("inline").and_then(Value::as_str).is_none_or(|t| t.trim().is_empty()) => {
+                vec![format!("workflow({n})")]
+            }
+            _ => out,
+        };
+    }
     match (kind, target_of(kind, args)) {
         (ToolKind::Exec, Some(cmd)) => {
             let words: Vec<&str> = cmd.split_whitespace().collect();
@@ -1405,6 +1425,41 @@ mod note_scope_tests {
         ));
         let denied = Policy { deny: vec!["note".into()], ..policy(PermissionMode::Auto) };
         assert!(matches!(denied.decide("note", ToolKind::Other, &call("project"), c), Decision::Deny(_)));
+    }
+
+    #[test]
+    fn a_workflow_rule_covers_saved_names_never_text_the_model_wrote() {
+        let d = tempfile::tempdir().unwrap();
+        let c = d.path();
+        let (saved, other, inline) =
+            (json!({"name": "bugs"}), json!({"name": "other"}), json!({"inline": "[[phase]]", "name": ""}));
+        let decide = |p: &Policy, a: &Value| p.decide("workflow", ToolKind::Other, a, c);
+        let with = |allow: &[&str]| Policy {
+            allow: allow.iter().map(|r| r.to_string()).collect(),
+            ..policy(PermissionMode::Ask)
+        };
+        for a in [&saved, &inline] {
+            assert_eq!(decide(&policy(PermissionMode::Ask), a), Decision::Ask);
+            assert_eq!(decide(&policy(PermissionMode::AcceptEdits), a), Decision::Ask);
+            // like `task`, it runs where only reads run: it asks, and its sub-agents are judged call by call
+            assert_eq!(decide(&policy(PermissionMode::ReadOnly), a), Decision::Ask);
+            assert_eq!(decide(&policy(PermissionMode::Auto), a), Decision::Allow);
+        }
+        assert_eq!(decide(&with(&["workflow(bugs)"]), &saved), Decision::Allow);
+        assert_eq!(decide(&with(&["workflow(bugs)"]), &other), Decision::Ask);
+        assert_eq!(decide(&with(&["workflow(b*)"]), &saved), Decision::Allow);
+        assert_eq!(decide(&with(&["workflow"]), &saved), Decision::Allow);
+        assert_eq!(decide(&with(&["workflow(*)"]), &saved), Decision::Allow);
+        for rule in ["workflow", "workflow(*)", "workflow(bugs)", "work*"] {
+            assert_eq!(decide(&with(&[rule]), &inline), Decision::Ask, "{rule}");
+        }
+        // a deny rule covers both
+        let denied = Policy { deny: vec!["workflow".into()], ..policy(PermissionMode::Auto) };
+        assert!(matches!(decide(&denied, &saved), Decision::Deny(_)));
+        assert!(matches!(decide(&denied, &inline), Decision::Deny(_)));
+        // what is offered to remember: the name, nothing for inline text
+        assert_eq!(suggested_rules("workflow", ToolKind::Other, &saved, c), vec!["workflow(bugs)".to_string()]);
+        assert!(suggested_rules("workflow", ToolKind::Other, &inline, c).is_empty());
     }
 }
 

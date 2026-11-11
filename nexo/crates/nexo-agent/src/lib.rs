@@ -41,6 +41,7 @@ pub mod setup;
 pub mod subagent;
 pub mod supervise;
 mod turn;
+pub mod workflow;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -207,7 +207,7 @@ pub fn parse(text: &str, fallback_name: &str) -> Option<Profile> {
                     .trim_matches(|c| c == '[' || c == ']')
                     .split(',')
                     .map(|t| t.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
-                    .filter(|t| !t.is_empty() && t != "task")
+                    .filter(|t| !t.is_empty() && t != "task" && t != "workflow")
                     .collect();
                 if !list.is_empty() {
                     p.tools = Some(list);
@@ -327,6 +327,11 @@ pub struct SubAgent {
 }
 
 impl SubAgent {
+    /// The names of the kinds of sub-agent it starts.
+    pub(crate) fn kinds(&self) -> Vec<String> {
+        self.profiles.iter().map(|p| p.name.clone()).collect()
+    }
+
     pub fn new(
         client: Arc<dyn ModelClient>,
         target: Target,
@@ -337,7 +342,7 @@ impl SubAgent {
         let mut tools = ToolSet::new();
         for spec in all.specs() {
             if let Some(t) = all.get(&spec.name) {
-                if spec.name != "task" {
+                if spec.name != "task" && spec.name != "workflow" {
                     tools.add(t.clone());
                 }
             }
@@ -418,6 +423,211 @@ impl SubAgent {
             }
         }
         set
+    }
+
+    /// Starts one sub-agent as a job and a task of its own and returns at once with the way to its end. The
+    /// `task` tool and the workflow runner both start theirs here, so a sub-agent has the same hooks,
+    /// briefing, claims, registry entry and permission questions whoever started it.
+    pub(crate) async fn launch(&self, l: Launch<'_>, ctx: &ToolContext) -> Result<Started, String> {
+        let Launch { agent: name, prompt, provider, model, description, title, background: asked, detachable } = l;
+        let Some(profile) = self.profiles.iter().find(|p| p.name == name).cloned() else {
+            let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
+            return Err(format!("no sub-agent `{name}`; there are: {}", names.join(", ")));
+        };
+        let provider = match provider {
+            None => None,
+            Some(p) => match self.providers.iter().find(|(n, _)| n.eq_ignore_ascii_case(p)) {
+                Some((n, c)) => Some((n.clone(), c.clone())),
+                None => {
+                    let names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
+                    let set_up = if names.is_empty() { "none".to_string() } else { names.join(", ") };
+                    return Err(format!("no provider `{p}` is set up; there are: {set_up}"));
+                }
+            },
+        };
+        let model = model.map(str::to_string);
+        // a model only another provider lists runs there, when no provider was named
+        let provider = match (provider, &model) {
+            (None, Some(m)) => {
+                let (main_provider, main_cfg, _) = self.target.get();
+                match provider_of(m, (&main_provider, &main_cfg), &self.providers) {
+                    Ok(None) => None,
+                    Ok(Some(n)) => self.providers.get_key_value(n).map(|(n, c)| (n.clone(), c.clone())),
+                    Err(on) => return Err(format!("model {m} is set up on: {}; pass provider", on.join(", "))),
+                }
+            }
+            (p, _) => p,
+        };
+        let host = self.host.get().cloned();
+        // SubagentStart hooks: what they print is added to the task
+        let prompt_owned = {
+            let o = crate::hooks::run(
+                &self.hooks,
+                "subagent_start",
+                Some(&profile.name),
+                &json!({"agent_type": profile.name, "prompt": prompt}),
+                &ctx.cwd,
+                &ctx.session_id,
+            )
+            .await;
+            for f in &o.failures {
+                ctx.report(f.clone());
+            }
+            if o.context.is_empty() {
+                prompt.to_string()
+            } else {
+                format!("{prompt}\n\n{}", o.context.join("\n\n"))
+            }
+        };
+        // what names the run in the claims is the person's or model's own words, before the hooks add to them
+        let own_words = description.unwrap_or(prompt);
+        let prompt = prompt_owned.as_str();
+        let briefing = match &host {
+            Some(h) if self.brief.tokens > 0 => brief::build(prompt, &h.history().await, &ctx.cwd, &self.brief).await,
+            _ => None,
+        };
+        let mut run = Run {
+            client: self.client.clone(),
+            target: self.target.clone(),
+            provider,
+            model,
+            tools: self.tools_for(&profile),
+            profile,
+            host,
+            claims: ctx.claims.clone(),
+            id: String::new(),
+            sub: None,
+            label: own_words.lines().next().unwrap_or("").chars().take(60).collect(),
+        };
+        let writes = self.can_write(&run.profile);
+        // an isolated one works in a worktree of its own, on its own branch
+        let isolated = if writes && run.profile.isolation {
+            let (cwd, setup) = (ctx.cwd.clone(), self.worktree_setup.clone());
+            let name = format!("agent-{}-{}", run.profile.name, nexo_core::worktree::random_name());
+            match tokio::task::spawn_blocking(move || nexo_core::worktree::create(&cwd, Some(&name), &setup)).await {
+                Ok(Ok(wt)) => Some(wt),
+                Ok(Err(e)) => return Err(format!("could not make the sub-agent a worktree: {e}")),
+                Err(e) => return Err(format!("could not make the sub-agent a worktree: {e}")),
+            }
+        } else {
+            None
+        };
+        let mut ictx = ctx.clone();
+        if let Some(wt) = &isolated {
+            ictx.cwd = wt.path.clone();
+        }
+        // every sub-agent is a job of its own that runs as its own task. `background: true` leaves it
+        // there at once; otherwise this call waits for it (attached), and lets go of it when the person
+        // writes or presses the key (see `Detach`)
+        let label = description.unwrap_or(prompt);
+        let label: String = label.lines().next().unwrap_or("").chars().take(80).collect();
+        let job = ctx.jobs.start(JobKind::Agent, label.clone());
+        let id = job.id();
+        // this run's own id: the provider's call id can come again in a later turn
+        run.id = format!("{}#{id}", ctx.call_id);
+        let run_id = run.id.clone();
+        let subs = ctx.jobs.subs();
+        let sub = match title {
+            Some(t) => subs.begin_titled(&run_id, &run.profile.name, t, prompt, asked),
+            None => subs.begin(&run_id, &run.profile.name, prompt, asked),
+        };
+        let meter = sub.meter();
+        run.sub = Some(sub);
+        // a background reader keeps the note and the job output it always had; every other sub-agent that
+        // ends away from its call brings its report in the note
+        let inline = writes || !asked;
+        let (hooks, agent_name) = (self.hooks.clone(), run.profile.name.clone());
+        let (main_cwd, session_id, call_id) = (ctx.cwd.clone(), ctx.session_id.clone(), ctx.call_id.clone());
+        let mut jctx = ictx;
+        jctx.cancel = job.cancel();
+        // lines go to the call's progress only while this call waits; the sender is held weakly so the
+        // call's own end closes the channel
+        let progress = if asked || !detachable { None } else { ctx.progress.as_ref().map(|p| p.downgrade()) };
+        jctx.progress = None;
+        let attached = Arc::new(AtomicBool::new(!asked));
+        let release = Release { claims: ctx.claims.clone(), owner: run_id.clone() };
+        let detach = ctx.detach.clone();
+        // one asked to run in the background is one from the start: its questions stay open on Esc
+        if let (Some(d), true) = (&detach, detachable) {
+            d.begin(&run_id, asked);
+        }
+        let ended_id = run_id.clone();
+        let prompt = prompt.to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Ended>();
+        let flag = attached.clone();
+        tokio::spawn(async move {
+            // whatever it held is free again when it ends, is stopped, or the task is dropped
+            let release = release;
+            let job = Arc::new(job);
+            let say = {
+                let job = job.clone();
+                let call_id = call_id.clone();
+                move |l: String| {
+                    job.line(&l);
+                    if flag.load(Ordering::Relaxed) {
+                        if let Some(p) = progress.as_ref().and_then(|p| p.upgrade()) {
+                            let _ = p.send(nexo_core::tool::ToolProgress { call_id: call_id.clone(), line: l });
+                        }
+                    }
+                }
+            };
+            if let Some(b) = &briefing {
+                say(b.line());
+            }
+            let res = run.go(&prompt, briefing.as_ref(), &jctx, &say).await;
+            if let Some(s) = &run.sub {
+                s.end(match &res {
+                    Ok(_) => SubState::Ok,
+                    Err(_) if jctx.cancel.is_cancelled() => SubState::Killed,
+                    Err(_) => SubState::Failed,
+                });
+            }
+            // its files are free before anyone is told it ended (the note starts a turn that may write them)
+            drop(release);
+            // an isolated one is finished here, also when it was stopped: no worktree is left behind
+            let tail = match isolated {
+                Some(wt) => tokio::task::spawn_blocking(move || worktree_note(&wt)).await.unwrap_or_default(),
+                None => String::new(),
+            };
+            if let Ok(report) = &res {
+                for f in stop_hooks(&hooks, &main_cwd, &session_id, &agent_name, report).await {
+                    say(f);
+                }
+            }
+            // from here on the call cannot let go of it: the report goes to the one that is still waiting
+            if let Some(d) = &detach {
+                d.end(&ended_id);
+            }
+            drop(say);
+            let Ok(job) = Arc::try_unwrap(job) else { return };
+            let ended = match res {
+                Ok(report) => {
+                    let full = format!("{report}{tail}");
+                    job.line("--- report ---");
+                    job.text(&full);
+                    if inline {
+                        job.set_report(&full);
+                    }
+                    job.finish(true, "reported");
+                    Ended::Report(full)
+                }
+                // killed: the registry already says so
+                Err(e) if jctx.cancel.is_cancelled() => {
+                    drop(job);
+                    Ended::Stopped(e, tail)
+                }
+                Err(e) => {
+                    job.line(&e);
+                    if inline {
+                        job.set_report(&format!("failed: {e}{tail}"));
+                    }
+                    job.finish(false, "failed");
+                    Ended::Failed(e, tail)
+                }
+            };
+            let _ = tx.send(ended);
+        });
+        Ok(Started { id, label, run_id, rx, attached, inline, meter })
     }
 }
 
@@ -1069,210 +1279,24 @@ impl Tool for SubAgent {
             return ToolOutput::error("`prompt` is required: the task for the sub-agent");
         };
         let name = args.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).unwrap_or(DEFAULT);
-        let Some(profile) = self.profiles.iter().find(|p| p.name == name).cloned() else {
-            let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
-            return ToolOutput::error(format!("no sub-agent `{name}`; there are: {}", names.join(", ")));
-        };
         let asked_for = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
-        let provider = match asked_for("provider") {
-            None => None,
-            Some(p) => match self.providers.iter().find(|(n, _)| n.eq_ignore_ascii_case(p)) {
-                Some((n, c)) => Some((n.clone(), c.clone())),
-                None => {
-                    let names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
-                    let set_up = if names.is_empty() { "none".to_string() } else { names.join(", ") };
-                    return ToolOutput::error(format!("no provider `{p}` is set up; there are: {set_up}"));
-                }
-            },
-        };
-        let model = asked_for("model").map(str::to_string);
-        // a model only another provider lists runs there, when no provider was named
-        let provider = match (provider, &model) {
-            (None, Some(m)) => {
-                let (main_provider, main_cfg, _) = self.target.get();
-                match provider_of(m, (&main_provider, &main_cfg), &self.providers) {
-                    Ok(None) => None,
-                    Ok(Some(n)) => self.providers.get_key_value(n).map(|(n, c)| (n.clone(), c.clone())),
-                    Err(on) => {
-                        return ToolOutput::error(format!("model {m} is set up on: {}; pass provider", on.join(", ")))
-                    }
-                }
-            }
-            (p, _) => p,
-        };
-        let host = self.host.get().cloned();
-        // SubagentStart hooks: what they print is added to the task
-        let prompt_owned = {
-            let o = crate::hooks::run(
-                &self.hooks,
-                "subagent_start",
-                Some(&profile.name),
-                &json!({"agent_type": profile.name, "prompt": prompt}),
-                &ctx.cwd,
-                &ctx.session_id,
-            )
-            .await;
-            for f in &o.failures {
-                ctx.report(f.clone());
-            }
-            if o.context.is_empty() {
-                prompt.to_string()
-            } else {
-                format!("{prompt}\n\n{}", o.context.join("\n\n"))
-            }
-        };
-        let prompt = prompt_owned.as_str();
-        let briefing = match &host {
-            Some(h) if self.brief.tokens > 0 => brief::build(prompt, &h.history().await, &ctx.cwd, &self.brief).await,
-            _ => None,
-        };
-        let mut run = Run {
-            client: self.client.clone(),
-            target: self.target.clone(),
-            provider,
-            model,
-            tools: self.tools_for(&profile),
-            profile,
-            host,
-            claims: ctx.claims.clone(),
-            id: String::new(),
-            sub: None,
-            label: args
-                .get("description")
-                .or_else(|| args.get("prompt"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(60)
-                .collect(),
-        };
         let asked = matches!(args.get("background"), Some(Value::Bool(true)))
             || args.get("background").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("true"));
-        let writes = self.can_write(&run.profile);
-        // an isolated one works in a worktree of its own, on its own branch
-        let isolated = if writes && run.profile.isolation {
-            let (cwd, setup) = (ctx.cwd.clone(), self.worktree_setup.clone());
-            let name = format!("agent-{}-{}", run.profile.name, nexo_core::worktree::random_name());
-            match tokio::task::spawn_blocking(move || nexo_core::worktree::create(&cwd, Some(&name), &setup)).await {
-                Ok(Ok(wt)) => Some(wt),
-                Ok(Err(e)) => return ToolOutput::error(format!("could not make the sub-agent a worktree: {e}")),
-                Err(e) => return ToolOutput::error(format!("could not make the sub-agent a worktree: {e}")),
-            }
-        } else {
-            None
+        let launch = Launch {
+            agent: name,
+            prompt,
+            provider: asked_for("provider"),
+            model: asked_for("model"),
+            description: args.get("description").and_then(Value::as_str),
+            title: None,
+            background: asked,
+            detachable: true,
         };
-        let mut ictx = ctx.clone();
-        if let Some(wt) = &isolated {
-            ictx.cwd = wt.path.clone();
-        }
-        // every sub-agent is a job of its own that runs as its own task. `background: true` leaves it
-        // there at once; otherwise this call waits for it (attached), and lets go of it when the person
-        // writes or presses the key (see `Detach`)
-        let label = args.get("description").and_then(Value::as_str).unwrap_or(prompt);
-        let label: String = label.lines().next().unwrap_or("").chars().take(80).collect();
-        let job = ctx.jobs.start(JobKind::Agent, label.clone());
-        let id = job.id();
-        // this run's own id: the provider's call id can come again in a later turn
-        run.id = format!("{}#{id}", ctx.call_id);
-        let run_id = run.id.clone();
-        run.sub = Some(ctx.jobs.subs().begin(&run_id, &run.profile.name, prompt, asked));
-        // a background reader keeps the note and the job output it always had; every other sub-agent that
-        // ends away from its call brings its report in the note
-        let inline = writes || !asked;
-        let (hooks, agent_name) = (self.hooks.clone(), run.profile.name.clone());
-        let (main_cwd, session_id, call_id) = (ctx.cwd.clone(), ctx.session_id.clone(), ctx.call_id.clone());
-        let mut jctx = ictx;
-        jctx.cancel = job.cancel();
-        // lines go to the call's progress only while this call waits; the sender is held weakly so the
-        // call's own end closes the channel
-        let progress = if asked { None } else { ctx.progress.as_ref().map(|p| p.downgrade()) };
-        jctx.progress = None;
-        let attached = Arc::new(AtomicBool::new(!asked));
-        let release = Release { claims: ctx.claims.clone(), owner: run_id.clone() };
-        let detach = ctx.detach.clone();
-        // one asked to run in the background is one from the start: its questions stay open on Esc
-        if let Some(d) = &detach {
-            d.begin(&run_id, asked);
-        }
-        let ended_id = run_id.clone();
-        let prompt = prompt.to_string();
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<Ended>();
-        let flag = attached.clone();
-        tokio::spawn(async move {
-            // whatever it held is free again when it ends, is stopped, or the task is dropped
-            let release = release;
-            let job = Arc::new(job);
-            let say = {
-                let job = job.clone();
-                let call_id = call_id.clone();
-                move |l: String| {
-                    job.line(&l);
-                    if flag.load(Ordering::Relaxed) {
-                        if let Some(p) = progress.as_ref().and_then(|p| p.upgrade()) {
-                            let _ = p.send(nexo_core::tool::ToolProgress { call_id: call_id.clone(), line: l });
-                        }
-                    }
-                }
-            };
-            if let Some(b) = &briefing {
-                say(b.line());
-            }
-            let res = run.go(&prompt, briefing.as_ref(), &jctx, &say).await;
-            if let Some(s) = &run.sub {
-                s.end(match &res {
-                    Ok(_) => SubState::Ok,
-                    Err(_) if jctx.cancel.is_cancelled() => SubState::Killed,
-                    Err(_) => SubState::Failed,
-                });
-            }
-            // its files are free before anyone is told it ended (the note starts a turn that may write them)
-            drop(release);
-            // an isolated one is finished here, also when it was stopped: no worktree is left behind
-            let tail = match isolated {
-                Some(wt) => tokio::task::spawn_blocking(move || worktree_note(&wt)).await.unwrap_or_default(),
-                None => String::new(),
-            };
-            if let Ok(report) = &res {
-                for f in stop_hooks(&hooks, &main_cwd, &session_id, &agent_name, report).await {
-                    say(f);
-                }
-            }
-            // from here on the call cannot let go of it: the report goes to the one that is still waiting
-            if let Some(d) = &detach {
-                d.end(&ended_id);
-            }
-            drop(say);
-            let Ok(job) = Arc::try_unwrap(job) else { return };
-            let ended = match res {
-                Ok(report) => {
-                    let full = format!("{report}{tail}");
-                    job.line("--- report ---");
-                    job.text(&full);
-                    if inline {
-                        job.set_report(&full);
-                    }
-                    job.finish(true, "reported");
-                    Ended::Report(full)
-                }
-                // killed: the registry already says so
-                Err(e) if jctx.cancel.is_cancelled() => {
-                    drop(job);
-                    Ended::Stopped(e, tail)
-                }
-                Err(e) => {
-                    job.line(&e);
-                    if inline {
-                        job.set_report(&format!("failed: {e}{tail}"));
-                    }
-                    job.finish(false, "failed");
-                    Ended::Failed(e, tail)
-                }
-            };
-            let _ = tx.send(ended);
-        });
+        let Started { id, label, run_id, rx, attached, inline, .. } = match self.launch(launch, ctx).await {
+            Ok(s) => s,
+            Err(why) => return ToolOutput::error(why),
+        };
+        let mut rx = rx;
         if asked && !inline {
             return ToolOutput::ok(format!(
                 "Started sub-agent job {id} ({name}): \"{label}\". It works while you go on; you will be told when it \
@@ -1327,8 +1351,42 @@ impl Tool for SubAgent {
     }
 }
 
+/// What starts a sub-agent: the arguments of a `task` call, or a step of a workflow.
+pub(crate) struct Launch<'a> {
+    /// The kind of sub-agent (a name of [`SubAgent::profiles`]).
+    pub agent: &'a str,
+    pub prompt: &'a str,
+    /// Another provider or model, as the `task` tool takes them.
+    pub provider: Option<&'a str>,
+    pub model: Option<&'a str>,
+    /// What the job and the claims call it; the first line of the prompt when none.
+    pub description: Option<&'a str>,
+    /// What the registry calls it; the first line of the task when none.
+    pub title: Option<&'a str>,
+    /// Starts in the background: no call waits for it.
+    pub background: bool,
+    /// The call that waits for it may let go of it when the person writes or presses the key, and sees its
+    /// progress lines. A workflow keeps its sub-agents until they end: false.
+    pub detachable: bool,
+}
+
+/// A sub-agent at work, as whoever started it sees it.
+pub(crate) struct Started {
+    /// Its job.
+    pub id: u32,
+    pub label: String,
+    /// Its own id in the registry.
+    pub run_id: String,
+    pub rx: tokio::sync::oneshot::Receiver<Ended>,
+    pub attached: Arc<AtomicBool>,
+    /// Its report is also the job's report (what the ended note carries).
+    pub inline: bool,
+    /// What it has spent so far; stays readable when the registry lets go of the run.
+    pub meter: nexo_core::subs::SubMeter,
+}
+
 /// How a sub-agent's run ended, for the call that waits for it.
-enum Ended {
+pub(crate) enum Ended {
     Report(String),
     /// It failed: the error and the worktree note.
     Failed(String, String),

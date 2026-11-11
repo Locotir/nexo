@@ -219,7 +219,13 @@ impl Subs {
 
     /// A run begins with `task`. `background`: it was started in the background, else a call waits for it.
     pub fn begin(&self, id: &str, profile: &str, task: &str, background: bool) -> SubRun {
-        let title: String = task.lines().next().unwrap_or("").chars().take(TITLE_CHARS).collect();
+        self.begin_titled(id, profile, task.lines().next().unwrap_or(""), task, background)
+    }
+
+    /// Like [`Subs::begin`], with a title of its own instead of the first line of the task (a step of a
+    /// workflow is listed by its place in the workflow).
+    pub fn begin_titled(&self, id: &str, profile: &str, title: &str, task: &str, background: bool) -> SubRun {
+        let title: String = title.lines().next().unwrap_or("").chars().take(TITLE_CHARS).collect();
         let entry = Arc::new(Entry {
             id: id.to_string(),
             profile: profile.to_string(),
@@ -339,7 +345,24 @@ pub struct SubRun {
     generation: u64,
 }
 
+/// Reads what one run has spent. It outlives the registry's entry: a run pruned from the list can still be read.
+#[derive(Clone)]
+pub struct SubMeter(Arc<Entry>);
+
+impl SubMeter {
+    /// Input tokens (cached ones included) and output tokens, as the run spent them so far.
+    pub fn tokens(&self) -> (u64, u64) {
+        let d = self.0.data.lock().unwrap();
+        (d.tokens_in, d.tokens_out)
+    }
+}
+
 impl SubRun {
+    /// A reader of what this run spends.
+    pub fn meter(&self) -> SubMeter {
+        SubMeter(self.entry.clone())
+    }
+
     /// The registry was not cleared since this run began. After a clear the run still winds down, but it
     /// tells nobody: its id belongs to a session that is gone.
     fn live(&self) -> bool {
@@ -625,5 +648,21 @@ mod tests {
         new.end(SubState::Ok);
         assert!(!kinds(&mut rx).is_empty());
         assert_eq!(subs.list().len(), 1);
+    }
+
+    #[test]
+    fn a_run_can_carry_its_own_title_and_its_meter_outlives_the_list() {
+        let subs = Subs::new();
+        let run = subs.begin_titled("a", "explore", "flow · Find · find #2\nignored", "the task\nmore", true);
+        assert_eq!(subs.list()[0].title, "flow · Find · find #2");
+        let meter = run.meter();
+        run.spent(&Usage { input: 7, output: 3, ..Default::default() }, 0.0);
+        run.end(SubState::Ok);
+        // 32 runs ended after it push it out of the list
+        for i in 0..KEEP_RUNS + 1 {
+            subs.begin(&format!("b{i}"), "explore", "t", true).end(SubState::Ok);
+        }
+        assert!(subs.list().iter().all(|r| r.id != "a"));
+        assert_eq!(meter.tokens(), (7, 3));
     }
 }
