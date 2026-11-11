@@ -266,12 +266,21 @@ fn notify_hooks(state: &Shared, kind: &'static str, message: String) {
 /// A Stop hook may ask the agent to go on this many times in a row; then the request ends anyway.
 const STOP_HOOK_CAP: u32 = 3;
 
+/// Removes the scratch folders of dead processes, once per process, off the first frame.
+fn sweep_scratch_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::thread::Builder::new().name("scratch-sweep".into()).spawn(nexo_tools::bash::sweep_tmp);
+    });
+}
+
 pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let AgentEnds { mut commands, events } = ends;
     let AgentSetup { mut config, cwd, provider, model, mut tools, client, resume, gate, mail, mcp, model_pinned } =
         setup;
     // whoever built the setup (the interface, a script, ACP), the managed policy is applied once more here
     config.enforce_managed();
+    sweep_scratch_once();
     let headless = gate.is_some();
     let chan_gate = ChannelGate::new(events.clone());
     let asker = crate::ask::ChannelAsker::new(events.clone());
