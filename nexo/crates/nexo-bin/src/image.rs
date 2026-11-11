@@ -349,9 +349,13 @@ const HEAD: u64 = 4096;
 /// relocatable object). Only the headers in the first 4096 bytes are read, as bytes: the file is not
 /// run, not loaded and not read whole, so a large file costs the same as a small one. A path that
 /// leaves through a symlink is read the same way. `false` for anything else, including a missing file.
+/// The kind of file is asked before it is opened: opening a named pipe that nobody writes to never returns.
 pub fn opens(path: &Path) -> bool {
     use object::read::elf::FileHeader;
     use std::io::Read;
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
     let Ok(file) = std::fs::File::open(path) else { return false };
     if !file.metadata().is_ok_and(|m| m.is_file()) {
         return false;

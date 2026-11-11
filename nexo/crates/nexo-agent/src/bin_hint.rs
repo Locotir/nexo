@@ -69,14 +69,28 @@ pub fn round(told: &mut bool, calls: &[(String, String, Value)], results: Vec<Pa
                 .find(|(id, n, _)| *id == call_id && n == "bash")
                 .filter(|(_, _, a)| !flag(a, "background") && !flag(a, "detach"))
                 .and_then(|(_, _, a)| a.get("command").and_then(Value::as_str));
-            if !*told && command.is_some_and(|c| wanted(c, cwd)) {
+            let text: String = content.iter().filter_map(Part::as_text).collect::<Vec<_>>().join("\n");
+            // a command that was refused, blocked or interrupted never ran: its file is not looked at and the
+            // one line of the session is not spent on it
+            if !*told && (!is_error || ran(&text)) && command.is_some_and(|c| wanted(c, cwd)) {
                 *told = true;
-                let text: String = content.iter().filter_map(Part::as_text).collect::<Vec<_>>().join("\n");
                 content = vec![Part::text(format!("{text}\n\n{LINE}"))];
             }
             Part::ToolResult { call_id, name, content, is_error }
         })
         .collect()
+}
+
+/// Whether a failed shell result is of a command that ran: the shell tool gives those a line with the exit code,
+/// or one that says it was killed (a dump too long for the time limit is where the line helps most). Other lines
+/// nexo adds may follow it. A refusal, a hook's block, a cancel or an interruption has none.
+fn ran(text: &str) -> bool {
+    text.lines().map(str::trim).any(|l| {
+        let code = l.strip_prefix("[exit code ").and_then(|r| r.strip_suffix(']'));
+        code.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit() || b == b'-'))
+            || l == "[killed by a signal]"
+            || (l.starts_with("[killed: timed out after ") && l.ends_with(" s]"))
+    })
 }
 
 fn flag(args: &Value, key: &str) -> bool {
@@ -109,6 +123,64 @@ mod tests {
                 _ => String::new(),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_command_that_never_ran_gets_no_line_and_does_not_spend_it() {
+        let cwd = tempfile::tempdir().unwrap();
+        let command = format!("objdump -d '{}'", this_binary().display());
+        for refusal in ["Permission denied: the person said no", "Blocked by a hook: no", "interrupted by the person"] {
+            let mut told = false;
+            let out =
+                round(&mut told, &[call("c1", &command)], vec![Part::tool_result("c1", refusal, true)], cwd.path());
+            assert_eq!(texts(&out), [refusal.to_string()], "{refusal}");
+            assert!(!told, "{refusal}: the one line of the session is still there for a command that runs");
+        }
+        // a command that ran and failed (the reader is not installed) is where the line helps most
+        let mut told = false;
+        let failed = "sh: objdump: command not found\n\n[exit code 127]";
+        let out = round(&mut told, &[call("c1", &command)], vec![Part::tool_result("c1", failed, true)], cwd.path());
+        assert!(texts(&out)[0].ends_with(LINE) && told, "{:?}", texts(&out));
+        assert!(ran("x\n\n[exit code 1]") && ran("[exit code -1]\n") && ran("x\n\n[exit code 127]\n\n[nexo: more]"));
+        assert!(
+            ran("partial\n\n[killed: timed out after 120 s]")
+                && ran("[killed by a signal]")
+                && !ran("x\n\n[cancelled]")
+        );
+        assert!(!ran("Permission denied: [exit code ]") && !ran("[exit code 1] and more") && !ran("exit code 1"));
+    }
+
+    #[test]
+    fn a_line_that_already_uses_nexo_bin_gets_none_even_with_a_reader_in_it() {
+        let cwd = tempfile::tempdir().unwrap();
+        let exe = this_binary();
+        let exe = exe.display();
+        assert!(wanted(&format!("echo x; xxd '{exe}'"), cwd.path()), "the same line without nexo bin asks for it");
+        assert!(!wanted(&format!("nexo bin fn '{exe}' main; xxd '{exe}'"), cwd.path()));
+        assert!(!wanted(&format!("nexo bin info '{exe}' | strings '{exe}'"), cwd.path()));
+    }
+
+    /// A named pipe nobody writes to: opening it never returns, so its kind is asked first.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_not_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipe = dir.path().join("pipe");
+        let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("no mkfifo here: not checked");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cwd = dir.path().to_path_buf();
+        std::thread::spawn(move || tx.send(wanted("strings pipe", &cwd)));
+        let got = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // let a reader that did block go, so no thread outlives the test; opened for both ways, which never waits
+        if got.is_err() {
+            let _ = std::fs::OpenOptions::new().read(true).write(true).open(&pipe);
+        }
+        assert_eq!(got, Ok(false), "the check must come back at once and say no");
+        assert!(!nexo_bin::opens(dir.path()), "a folder is not a program either");
     }
 
     #[test]
@@ -229,7 +301,7 @@ mod tests {
         let out = round(&mut told, &bg, vec![result("a", "job started")], dir.path());
         assert!(!told && texts(&out) == ["job started"]);
         let calls = vec![call("b", &hit)];
-        let err = Part::tool_result("b", "bash: objdump: command not found", true);
+        let err = Part::tool_result("b", "bash: objdump: command not found\n\n[exit code 127]", true);
         let out = round(&mut told, &calls, vec![err], dir.path());
         assert!(told);
         assert!(texts(&out)[0].ends_with(LINE));

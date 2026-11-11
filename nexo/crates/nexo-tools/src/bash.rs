@@ -778,7 +778,8 @@ fn add_nexo_path(cmd: &mut tokio::process::Command, path: Option<&std::ffi::OsSt
 
 /// The PATH for a command so that `nexo` is found: `path` with the folder of the running nexo (`exe`) added at the
 /// END, never in front of anything. `None` (leave the PATH alone) when a `nexo` is already found on it, when the
-/// running program is not called `nexo`, or when there is no PATH to add to (the shell then uses its own default).
+/// running program is not called `nexo`, when there is no PATH to add to (the shell then uses its own default), or
+/// when others can write in that folder (a nexo run from `/tmp`): a program someone else drops there must not be found.
 pub fn nexo_on_path(path: Option<&std::ffi::OsStr>, exe: Option<&std::path::Path>) -> Option<std::ffi::OsString> {
     let name = if cfg!(windows) { "nexo.exe" } else { "nexo" };
     let exe = exe?;
@@ -786,10 +787,23 @@ pub fn nexo_on_path(path: Option<&std::ffi::OsStr>, exe: Option<&std::path::Path
         return None;
     }
     let (path, dir) = (path.filter(|p| !p.is_empty())?, exe.parent()?);
-    if std::env::split_paths(path).any(|d| d.join(name).is_file()) {
+    if std::env::split_paths(path).any(|d| d.join(name).is_file()) || others_write(dir) {
         return None;
     }
     std::env::join_paths(std::env::split_paths(path).chain(std::iter::once(dir.to_path_buf()))).ok()
+}
+
+/// Whether the group or everybody may write in `dir`; a folder that cannot be asked counts as such.
+#[cfg(unix)]
+fn others_write(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(dir).map_or(true, |m| m.permissions().mode() & 0o022 != 0)
+}
+
+/// Windows keeps who may write in a list this does not read: the folder is taken as the person's own.
+#[cfg(not(unix))]
+fn others_write(_dir: &std::path::Path) -> bool {
+    false
 }
 
 /// Runs `command` in `cwd`, each line of its output (stdout and stderr) to
@@ -1219,6 +1233,27 @@ mod tests {
         assert_eq!(w(""), Some(vec![]));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_others_can_write_in_is_never_added_to_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let (bin, other) = (home.path().join("shared"), home.path().join("other"));
+        for d in [&bin, &other] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(bin.join("nexo"), "x").unwrap();
+        let path = std::env::join_paths([&other]).unwrap();
+        for mode in [0o777, 0o1777, 0o775, 0o757] {
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(nexo_on_path(Some(&path), Some(&bin.join("nexo"))), None, "{mode:o}");
+        }
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(nexo_on_path(Some(&path), Some(&bin.join("nexo"))).is_some());
+        // a folder that is gone cannot be asked, so it is not added either
+        assert_eq!(nexo_on_path(Some(&path), Some(&home.path().join("gone").join("nexo"))), None);
+    }
+
     #[test]
     fn nexo_is_added_at_the_end_of_the_path_only_when_none_is_found() {
         use std::ffi::OsString;
@@ -1230,6 +1265,12 @@ mod tests {
         }
         std::fs::write(bin.join(name), "x").unwrap();
         std::fs::write(with.join(name), "x").unwrap();
+        // whatever the umask of the machine: this folder is the person's alone
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let exe = bin.join(name);
         let join = |ds: &[&std::path::Path]| std::env::join_paths(ds).unwrap();
         // absent: the folder of the running nexo comes last, what was there stays in order
