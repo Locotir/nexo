@@ -324,7 +324,7 @@ fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         .map(|c| Seg { text: format!("session {} tok", fmt_k(c.history_tokens)), style: base.fg(theme.warn2) })
         // a loaded conversation the curator is still counting
         .or_else(|| {
-            (app.context.is_none() && app.context_wait && !lean)
+            (app.context.is_none() && app.context_wait)
                 .then(|| Seg { text: mem_waiting(app.spinner), style: base.fg(theme.dim) })
         });
     // a glyph every common font has, not an icon font's

@@ -191,13 +191,15 @@ fn a_hand_listed_bar_still_gets_the_pieces_it_names() {
 }
 
 #[test]
-fn the_counting_segment_is_gone_while_the_curator_counts() {
-    let (mut a, _rx) = app(Detail::Quiet);
-    a.context_wait = true;
-    assert!(!render(&mut a, 120, 36).pop().unwrap().contains("counting"));
-    let (mut f, _rx) = app(Detail::Full);
-    f.context_wait = true;
-    assert!(render(&mut f, 120, 36).pop().unwrap().contains("counting"));
+fn the_spinner_shows_while_the_curator_counts_a_loaded_session() {
+    // opening a long session takes a moment: the default screen says so too, and stops when the figure is in
+    for detail in [Detail::Quiet, Detail::Full] {
+        let (mut a, _rx) = app(detail);
+        assert!(!render(&mut a, 120, 36).pop().unwrap().contains("counting"), "nothing loaded, nothing to wait for");
+        a.context_wait = true;
+        let bar = render(&mut a, 120, 36).pop().unwrap();
+        assert!(bar.contains("counting"), "{bar:?}");
+    }
 }
 
 #[test]
