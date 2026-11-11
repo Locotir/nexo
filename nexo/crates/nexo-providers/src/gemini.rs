@@ -45,8 +45,7 @@ impl Gemini {
             body["systemInstruction"] = json!({"parts": [{"text": req.system}]});
         }
         if !req.tools.is_empty() {
-            let decls: Vec<Value> =
-                req.tools.iter().map(|t| json!({"name": t.name, "description": t.description, "parameters": clean_schema(&t.parameters)})).collect();
+            let decls: Vec<Value> = req.tools.iter().map(declaration).collect();
             body["tools"] = json!([{"functionDeclarations": decls}]);
             if req.no_tool_call {
                 body["toolConfig"] = json!({"functionCallingConfig": {"mode": "NONE"}});
@@ -85,6 +84,17 @@ impl Gemini {
     pub fn parse(events: impl futures::Stream<Item = Result<SseEvent, String>> + Send + 'static) -> EventStream {
         crate::parse::run(events, GeminiParser::default())
     }
+}
+
+/// A tool as a function declaration. A tool with no arguments goes without `parameters`: the API
+/// answers 400 to an object schema whose `properties` is empty ("should be non-empty for OBJECT type").
+fn declaration(t: &nexo_core::ToolSpec) -> Value {
+    let mut d = json!({"name": t.name, "description": t.description});
+    let params = clean_schema(&t.parameters);
+    if params["properties"].as_object().is_some_and(|p| !p.is_empty()) || params["type"] != "object" {
+        d["parameters"] = params;
+    }
+    d
 }
 
 /// The messages as `contents`, with tool results named after their calls.
@@ -263,7 +273,8 @@ impl Feed for GeminiParser {
                     let id =
                         fc["id"].as_str().or_else(|| p["id"].as_str()).map(String::from).unwrap_or_else(fresh_call_id);
                     let name = fc["name"].as_str().unwrap_or("").to_string();
-                    let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
+                    // a call with no arguments has no `args`, or a null one
+                    let args = fc.get("args").filter(|a| !a.is_null()).cloned().unwrap_or_else(|| json!({}));
                     out.push(StreamEvent::ToolCallStart { id: id.clone(), name: name.clone() });
                     out.push(StreamEvent::ToolCallEnd { id, name, args });
                 } else if let Some(t) = p["text"].as_str() {

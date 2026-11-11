@@ -41,7 +41,8 @@ impl OpenAiResponses {
         if subscription || !req.system.is_empty() {
             body["instructions"] = json!(req.system);
         }
-        if let (Some(t), false) = (req.temperature, subscription) {
+        let fixed = crate::openai_chat::default_temperature_only(cfg, &req.model);
+        if let (Some(t), false, false) = (req.temperature, subscription, fixed) {
             body["temperature"] = temp(t);
         }
         if !req.tools.is_empty() {
@@ -225,7 +226,8 @@ impl Feed for ResponsesParser {
                     });
                 }
             }
-            "response.output_text.delta" => {
+            // a refusal is the model's answer, and the person reads it
+            "response.output_text.delta" | "response.refusal.delta" => {
                 if let Some(d) = v["delta"].as_str() {
                     self.prog.content = true;
                     out.push(StreamEvent::TextDelta(d.to_string()));
@@ -369,14 +371,15 @@ impl ResponsesParser {
 }
 
 pub fn usage(u: &Value) -> Usage {
-    let input = u["input_tokens"].as_u64().unwrap_or(0);
-    let cached = u["input_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+    let count = |v: &Value| crate::openai_chat::count(v).unwrap_or(0);
+    let input = count(&u["input_tokens"]);
+    let cached = count(&u["input_tokens_details"]["cached_tokens"]);
     Usage {
         input: input.saturating_sub(cached),
-        output: u["output_tokens"].as_u64().unwrap_or(0),
+        output: count(&u["output_tokens"]),
         cache_read: cached,
         cache_write: 0,
-        reasoning: u["output_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0),
+        reasoning: count(&u["output_tokens_details"]["reasoning_tokens"]),
     }
 }
 

@@ -42,6 +42,18 @@ impl OpenAiChat {
         for m in &req.messages {
             messages.extend(convert(m, send_reasoning));
         }
+        if host_is(cfg, "api.mistral.ai") {
+            for m in &mut messages {
+                if let Some(calls) = m.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
+                    for c in calls {
+                        c["id"] = json!(mistral_id(c["id"].as_str().unwrap_or("")));
+                    }
+                }
+                if let Some(id) = m["tool_call_id"].as_str().map(mistral_id) {
+                    m["tool_call_id"] = json!(id);
+                }
+            }
+        }
         let mut body = json!({"model": req.model, "messages": messages, "stream": true, "stream_options": {"include_usage": true}});
         let max_key = cfg.extra.get("max_tokens_key").and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| {
             if needs_completion_key(&req.model) {
@@ -51,7 +63,7 @@ impl OpenAiChat {
             }
         });
         body[max_key] = json!(req.max_tokens);
-        if let Some(t) = req.temperature {
+        if let Some(t) = req.temperature.filter(|_| !default_temperature_only(cfg, &req.model)) {
             body["temperature"] = temp(t);
         }
         if !req.stop.is_empty() {
@@ -92,10 +104,41 @@ impl OpenAiChat {
 
 /// Whether the provider is OpenAI itself (`api.openai.com`).
 pub(crate) fn is_openai(cfg: &ProviderConfig) -> bool {
+    host_is(cfg, "api.openai.com")
+}
+
+fn host_is(cfg: &ProviderConfig, host: &str) -> bool {
     reqwest::Url::parse(&cfg.base_url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case("api.openai.com")))
+        .and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case(host)))
         .unwrap_or(false)
+}
+
+/// Mistral answers 400 to a tool call id that is not exactly nine letters and digits, and a
+/// conversation carries the ids other providers made (`call_0`, `toolu_...`). The same id always
+/// maps to the same nine characters, so a call and its result still meet.
+pub(crate) fn mistral_id(id: &str) -> String {
+    if id.len() == 9 && id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return id.to_string();
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in id.bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    (0..9)
+        .map(|_| {
+            let c = DIGITS[(h % 62) as usize] as char;
+            h /= 62;
+            c
+        })
+        .collect()
+}
+
+/// OpenAI's reasoning models (`o*`, `gpt-5*`) answer 400 to a temperature other than their default,
+/// so on OpenAI itself none is sent. The `-chat` models of the GPT-5 line are not reasoning models.
+pub(crate) fn default_temperature_only(cfg: &ProviderConfig, model: &str) -> bool {
+    is_openai(cfg) && needs_completion_key(model) && !model.to_ascii_lowercase().contains("-chat")
 }
 
 /// Newer OpenAI models reject `max_tokens` (`o*`, `gpt-5*`).
@@ -186,13 +229,115 @@ pub(crate) fn image_url(source: &ImageSource) -> String {
 /// Folds chat-completion chunks into events.
 #[derive(Debug, Default)]
 pub struct ChatParser {
-    /// Open tool calls by chunk index: (index, id, name, argument fragments).
-    calls: Vec<(usize, String, String, String)>,
+    /// Open tool calls: (index, id given to nexo, name, argument fragments, id as the server sent it).
+    calls: Vec<(usize, String, String, String, String)>,
     prog: Progress,
     /// The latest usage: servers that send running counts end with the final ones.
     usage: Option<Usage>,
+    /// A leading `<think>` block in the text.
+    think: ThinkSplit,
+}
+/// Where a reply stands with respect to a leading `<think>` block.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum ThinkState {
+    /// Nothing but blanks has come: the reply may still open with the tag.
+    #[default]
+    Start,
+    Thinking,
+    /// The block just closed: the blanks that follow it are not the answer.
+    Closed,
+    Answer,
 }
 
+/// Splits a leading `<think>...</think>` out of the text of a reply: servers that do not separate
+/// reasoning themselves (LM Studio, llama.cpp, vLLM and Ollama without their reasoning option) send
+/// it inside `content`. A tag cut between two chunks is held until it is whole.
+#[derive(Debug, Default)]
+struct ThinkSplit {
+    state: ThinkState,
+    held: String,
+}
+
+const THINK_OPEN: &str = "<think>";
+const THINK_CLOSE: &str = "</think>";
+
+impl ThinkSplit {
+    /// The pieces to emit, in order: (is reasoning, text).
+    fn push(&mut self, s: &str) -> Vec<(bool, String)> {
+        let mut out = Vec::new();
+        let mut buf = std::mem::take(&mut self.held);
+        buf.push_str(s);
+        loop {
+            match self.state {
+                ThinkState::Start => {
+                    let t = buf.trim_start();
+                    if t.is_empty() || THINK_OPEN.starts_with(t) {
+                        self.held = buf;
+                        return out;
+                    }
+                    match t.strip_prefix(THINK_OPEN) {
+                        Some(rest) => {
+                            self.state = ThinkState::Thinking;
+                            buf = rest.to_string();
+                        }
+                        None => self.state = ThinkState::Answer,
+                    }
+                }
+                ThinkState::Thinking => match buf.find(THINK_CLOSE) {
+                    Some(i) => {
+                        if i > 0 {
+                            out.push((true, buf[..i].to_string()));
+                        }
+                        buf = buf[i + THINK_CLOSE.len()..].to_string();
+                        self.state = ThinkState::Closed;
+                    }
+                    None => {
+                        let keep = (1..THINK_CLOSE.len())
+                            .rev()
+                            .find(|k| {
+                                buf.len() >= *k
+                                    && buf.is_char_boundary(buf.len() - k)
+                                    && THINK_CLOSE.starts_with(&buf[buf.len() - k..])
+                            })
+                            .unwrap_or(0);
+                        let cut = buf.len() - keep;
+                        if cut > 0 {
+                            out.push((true, buf[..cut].to_string()));
+                        }
+                        self.held = buf[cut..].to_string();
+                        return out;
+                    }
+                },
+                ThinkState::Closed => {
+                    let t = buf.trim_start();
+                    if t.is_empty() {
+                        return out;
+                    }
+                    buf = t.to_string();
+                    self.state = ThinkState::Answer;
+                }
+                ThinkState::Answer => {
+                    if !buf.is_empty() {
+                        out.push((false, buf));
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+
+    /// The reply ended: what is held goes out as what it was.
+    fn flush(&mut self) -> Vec<(bool, String)> {
+        let held = std::mem::take(&mut self.held);
+        let thinking = self.state == ThinkState::Thinking;
+        self.state = ThinkState::Answer;
+        if held.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![(thinking, held)]
+        }
+    }
+}
 impl Feed for ChatParser {
     fn feed(&mut self, data: &str) -> Vec<StreamEvent> {
         let mut out = Vec::new();
@@ -220,7 +365,10 @@ impl Feed for ChatParser {
                 model: v["model"].as_str().map(String::from),
             });
         }
-        if let Some(choice) = v["choices"].as_array().and_then(|c| c.first()) {
+        // only choice 0 is the reply; a choice with another index (a gateway that sends several) is not mixed in
+        if let Some(choice) =
+            v["choices"].as_array().and_then(|c| c.iter().find(|c| c["index"].as_u64().unwrap_or(0) == 0))
+        {
             // a server that ignores `stream: true` answers with one body whose `message` is the whole reply
             let delta = if choice["delta"].is_object() { &choice["delta"] } else { &choice["message"] };
             if let Some(r) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
@@ -231,8 +379,8 @@ impl Feed for ChatParser {
             }
             match &delta["content"] {
                 Value::String(t) if !t.is_empty() => {
-                    self.prog.content = true;
-                    out.push(StreamEvent::TextDelta(t.clone()));
+                    let pieces = self.think.push(t);
+                    self.say(&mut out, pieces);
                 }
                 Value::Array(parts) => {
                     // Mistral-style typed parts
@@ -258,7 +406,14 @@ impl Feed for ChatParser {
                 }
                 _ => {}
             }
+            // a refusal is the model's answer, and the person reads it (OpenAI sends it apart from `content`)
+            if let Some(r) = delta["refusal"].as_str().filter(|r| !r.is_empty()) {
+                self.prog.content = true;
+                out.push(StreamEvent::TextDelta(r.to_string()));
+            }
             if let Some(calls) = delta["tool_calls"].as_array() {
+                let held = self.think.flush();
+                self.say(&mut out, held);
                 for c in calls {
                     let id = c["id"].as_str().unwrap_or("");
                     let name = c["function"]["name"].as_str().unwrap_or("");
@@ -268,16 +423,23 @@ impl Feed for ChatParser {
                         Some(i) => i as usize,
                         // no index (some servers): a known id continues its call, a new id or
                         // a name starts one, a bare fragment goes to the last one
-                        None if !id.is_empty() => self.calls.iter().position(|k| k.1 == id).unwrap_or(self.calls.len()),
+                        None if !id.is_empty() => {
+                            self.calls.iter().rposition(|k| k.4 == id).map_or(self.calls.len(), |i| self.calls[i].0)
+                        }
                         None if !name.is_empty() => self.calls.len(),
                         None => self.calls.len().saturating_sub(1),
                     };
                     // a new id on an index already open is another call (some servers number every parallel call 0)
-                    let known = self.calls.iter().rposition(|k| k.0 == idx && (id.is_empty() || k.1 == id));
+                    let known = self.calls.iter().rposition(|k| k.0 == idx && (id.is_empty() || k.4 == id));
                     match known {
                         None => {
-                            let id = if id.is_empty() { format!("call_{idx}") } else { id.to_string() };
-                            self.calls.push((idx, id.clone(), name.to_string(), String::new()));
+                            // a made-up id must not repeat in the next turn, or a result lands on an older card
+                            // (and a second call that reuses the id of the first would answer to its result)
+                            let used = self.calls.iter().any(|k| k.1 == id);
+                            let sent = id;
+                            let id =
+                                if id.is_empty() || used { crate::gemini::fresh_call_id() } else { id.to_string() };
+                            self.calls.push((idx, id.clone(), name.to_string(), String::new(), sent.to_string()));
                             self.prog.saw_tool = true;
                             self.prog.content = true;
                             out.push(StreamEvent::ToolCallStart { id: id.clone(), name: name.to_string() });
@@ -304,20 +466,44 @@ impl Feed for ChatParser {
                 }
             }
             if let Some(reason) = choice["finish_reason"].as_str() {
+                let held = self.think.flush();
+                self.say(&mut out, held);
+                // Z.ai ends a reply it failed to make with `network_error`, OpenRouter with `error`: a failed
+                // attempt the client can send again, not an empty answer; the calls it cut are dropped
+                if matches!(reason, "network_error" | "error") {
+                    self.calls.clear();
+                    if !self.prog.finished {
+                        self.prog.finished = true;
+                        out.push(StreamEvent::Error(ProviderError::new(
+                            ErrorKind::Network,
+                            format!("the provider ended the reply with an error ({reason})"),
+                        )));
+                    }
+                    return out;
+                }
                 out.extend(self.end_calls());
                 if !self.prog.finished {
                     self.prog.finished = true;
                     out.push(StreamEvent::Finish(match reason {
-                        "length" => FinishReason::Length,
+                        // `model_length` is Mistral's word, `model_context_window_exceeded` Z.ai's
+                        "length" | "model_length" | "model_context_window_exceeded" => FinishReason::Length,
                         "tool_calls" | "function_call" if self.prog.saw_tool => FinishReason::ToolUse,
-                        "content_filter" => FinishReason::ContentFilter,
+                        // `sensitive` is Z.ai's word for a reply it blocked
+                        "content_filter" | "sensitive" => FinishReason::ContentFilter,
                         _ if self.prog.saw_tool => FinishReason::ToolUse,
                         _ => FinishReason::Stop,
                     }));
                 }
             }
         }
-        if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
+        // `usage` is the standard place; Groq repeats it in `x_groq` and Moonshot streams it inside the choice
+        let object = |u: &&Value| u.is_object();
+        let found = v
+            .get("usage")
+            .filter(object)
+            .or_else(|| v["x_groq"].get("usage").filter(object))
+            .or_else(|| v["choices"][0].get("usage").filter(object));
+        if let Some(u) = found {
             self.usage = Some(usage(u));
         }
         out
@@ -338,24 +524,38 @@ impl Feed for ChatParser {
         // calls still open without a finish_reason or [DONE]: their arguments may be cut
         let open = !self.calls.is_empty();
         self.calls.clear();
-        let mut out: Vec<StreamEvent> = self.prog.at_end_with_calls(open).into_iter().collect();
+        let held = self.think.flush();
+        let mut out = Vec::new();
+        self.say(&mut out, held);
+        out.extend(self.prog.at_end_with_calls(open));
         out.extend(self.usage.take().map(StreamEvent::Usage));
         out
     }
 }
 
 impl ChatParser {
+    /// Text and reasoning pieces as events.
+    fn say(&mut self, out: &mut Vec<StreamEvent>, pieces: Vec<(bool, String)>) {
+        for (reasoning, s) in pieces {
+            self.prog.content = true;
+            out.push(if reasoning { StreamEvent::ReasoningDelta(s) } else { StreamEvent::TextDelta(s) });
+        }
+    }
+
     fn end_calls(&mut self) -> Vec<StreamEvent> {
         let calls = std::mem::take(&mut self.calls);
         calls
             .into_iter()
-            .map(|(_, id, name, args)| StreamEvent::ToolCallEnd { id, name, args: parse_args(&args) })
+            .map(|(_, id, name, args, _)| StreamEvent::ToolCallEnd { id, name, args: parse_args(&args) })
             .collect()
     }
 
     /// `[DONE]`: the response is complete whatever came before it.
     fn close(&mut self) -> Vec<StreamEvent> {
-        let mut out = self.end_calls();
+        let held = self.think.flush();
+        let mut out = Vec::new();
+        self.say(&mut out, held);
+        out.extend(self.end_calls());
         if !self.prog.finished {
             self.prog.finished = true;
             self.prog.started = true;
@@ -378,11 +578,16 @@ pub(crate) fn parse_args(s: &str) -> Value {
     if s.is_empty() {
         return json!({});
     }
-    serde_json::from_str(s).unwrap_or_else(|_| json!({"_raw": s}))
+    match serde_json::from_str(s) {
+        // a call with no arguments, written as `null` by some servers
+        Ok(Value::Null) => json!({}),
+        Ok(v) => v,
+        Err(_) => json!({"_raw": s}),
+    }
 }
 
 /// A token count, whether the server sent `12` or `12.0`.
-fn count(v: &Value) -> Option<u64> {
+pub(crate) fn count(v: &Value) -> Option<u64> {
     v.as_u64().or_else(|| v.as_f64().filter(|f| *f >= 0.0).map(|f| f.round() as u64))
 }
 
@@ -400,6 +605,7 @@ pub fn usage(u: &Value) -> Usage {
     let prompt = count(&u["prompt_tokens"]).unwrap_or(0);
     let cached = count(&u["prompt_tokens_details"]["cached_tokens"])
         .or_else(|| count(&u["prompt_cache_hit_tokens"]))
+        .or_else(|| count(&u["cached_tokens"]))
         .unwrap_or(0);
     Usage {
         input: prompt.saturating_sub(cached),
@@ -428,8 +634,10 @@ impl Protocol for OpenAiChat {
 
     async fn list_models(&self, cfg: &ProviderConfig, key: Option<&str>) -> Result<Vec<ModelInfo>, ProviderError> {
         let v = http::get_json(&http::openai_url(cfg, "models"), Self::headers(cfg, key)).await?;
+        // Together answers with the bare array
         let mut out: Vec<ModelInfo> = v["data"]
             .as_array()
+            .or_else(|| v.as_array())
             .map(|a| {
                 a.iter()
                     .filter_map(|m| m["id"].as_str())

@@ -237,7 +237,8 @@ fn convert(m: &Message, model: &str) -> (Value, bool) {
     for p in &m.content {
         match p {
             Part::Text { text } => {
-                if !text.is_empty() {
+                // a text block of blanks only is a 400 ("text content blocks must contain non-whitespace text")
+                if !text.trim().is_empty() {
                     content.push(json!({"type": "text", "text": text}));
                 }
             }

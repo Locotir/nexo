@@ -333,13 +333,14 @@ async fn c6_reasoning_under_reasoning_content_and_under_reasoning() {
 }
 
 #[tokio::test]
-async fn c7_think_tags_inside_content_stay_in_the_text_today() {
-    // recorded behaviour: nexo does not parse <think> tags; they arrive as text
+async fn c7_think_tags_at_the_start_of_the_content_are_reasoning() {
+    // changed on purpose (tests/conformance.rs t2_chat_think_tags_*): local servers that do not split
+    // the reasoning put it in the content, and it must not be read as the answer
     let text = sse(&[delta(json!({"content":"<think>plan</think>answer"})), stop()]);
     let (c, _) = run(&text, 0).await;
     no_error(&c);
-    assert_eq!(c.message().text(), "<think>plan</think>answer");
-    assert_eq!(c.message().reasoning(), "");
+    assert_eq!(c.message().text(), "answer");
+    assert_eq!(c.message().reasoning(), "plan");
 }
 
 // ---- d: usage ----
