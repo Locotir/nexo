@@ -35,6 +35,8 @@ struct Scripted {
     requests: Mutex<Vec<ModelRequest>>,
     /// The provider each request went to, by its address.
     bases: Mutex<Vec<String>>,
+    /// Each wait the loop asked for before sending a request again itself, by its number.
+    waits: Mutex<Vec<u32>>,
 }
 
 impl Scripted {
@@ -43,6 +45,7 @@ impl Scripted {
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),
             bases: Mutex::new(Vec::new()),
+            waits: Mutex::new(Vec::new()),
         })
     }
 
@@ -74,6 +77,11 @@ impl ModelClient for Scripted {
                 })))
             }
         }
+    }
+
+    fn backoff(&self, n: u32, _e: &ProviderError) -> Duration {
+        self.waits.lock().unwrap().push(n);
+        Duration::ZERO
     }
 }
 
@@ -3729,6 +3737,132 @@ async fn replies_of_only_reasoning_stop_after_two_asks() {
     r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
     r.turn().await;
     assert_eq!(client.requests()[3].max_tokens, base);
+    r.stop().await;
+}
+
+/// A stream the network cut after `said`, as DeepSeek's breaks: billed `input` tokens all the same.
+fn broken(said: Vec<StreamEvent>, input: u64) -> Vec<StreamEvent> {
+    let mut evs = vec![StreamEvent::Start { response_id: None, model: None }];
+    evs.extend(said);
+    evs.push(StreamEvent::Usage(Usage { input, output: 7, ..Default::default() }));
+    evs.push(StreamEvent::Error(ProviderError::new(ErrorKind::Network, "stream cut: error decoding response body")));
+    evs.push(StreamEvent::Done);
+    evs
+}
+
+fn reasoning(s: &str) -> StreamEvent {
+    StreamEvent::ReasoningDelta(s.into())
+}
+
+/// The session's tokens after the last call of `evs`.
+fn spent(evs: &[AgentEvent]) -> Usage {
+    evs.iter()
+        .rev()
+        .find_map(|e| if let AgentEvent::Usage { session, .. } = e { Some(*session) } else { None })
+        .unwrap()
+}
+
+const SENT_AGAIN: &str = "cut while the model reasoned";
+
+#[tokio::test]
+async fn a_stream_cut_inside_the_reasoning_is_sent_again_without_it() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(broken(vec![reasoning("PLAN-A: the eigenvalue "), reasoning("comes from")], 400)),
+        Reply::Events(text("done")),
+        Reply::Events(text("and again")),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done, "{:?}", notices(&evs));
+    assert_eq!(text_of(&evs), "done");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2, "the request went out a second time");
+    assert_eq!(reqs[1].messages, reqs[0].messages, "the same request: nothing of the cut reply in it");
+    assert!(!serde_json::to_string(&reqs[1]).unwrap().contains("PLAN-A"));
+    assert_eq!(*client.waits.lock().unwrap(), [1], "the client's own wait, once");
+    // both attempts are spent: 400 + 7 for the cut one, 1000 + 2000 cached + 100 for the answer
+    let session = spent(&evs);
+    assert_eq!((session.input, session.cache_read, session.output), (1400, 2000, 107), "{session:?}");
+    // on the screen the cut reasoning is not one reply with what follows: the notice and a new start part them
+    let at = |f: &dyn Fn(&AgentEvent) -> bool| evs.iter().position(f).unwrap();
+    let said = at(&|e| matches!(e, AgentEvent::Notice { level: Level::Warn, text, .. } if text.contains(SENT_AGAIN)));
+    let starts: Vec<usize> =
+        evs.iter().enumerate().filter(|(_, e)| matches!(e, AgentEvent::AssistantStart)).map(|(i, _)| i).collect();
+    assert_eq!(starts.len(), 2);
+    assert!(at(&|e| matches!(e, AgentEvent::ReasoningDelta { .. })) < said && said < starts[1], "{evs:?}");
+    // and it was never a message: not told as one, not in what the next request of the person carries
+    let told: Vec<&Message> = evs
+        .iter()
+        .filter_map(|e| if let AgentEvent::AssistantDone { message } = e { Some(message) } else { None })
+        .collect();
+    assert_eq!(told.len(), 1);
+    assert_eq!((told[0].text().as_str(), told[0].reasoning().as_str()), ("done", ""));
+    r.send(AgentCommand::Submit { text: "next".into(), attachments: vec![] });
+    r.turn().await;
+    let next = &client.requests()[2].messages;
+    assert_eq!(next.len(), 3, "{next:?}");
+    assert!(!serde_json::to_string(next).unwrap().contains("PLAN-A"));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn three_cuts_inside_the_reasoning_stop_with_the_error_after_two_more_tries() {
+    let d = tempfile::tempdir().unwrap();
+    let cut = || Reply::Events(broken(vec![reasoning("thinking")], 400));
+    let client = Scripted::new(vec![cut(), cut(), cut(), Reply::Events(text("never"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Error);
+    assert_eq!(client.requests().len(), 3, "the request and two more tries");
+    assert_eq!(*client.waits.lock().unwrap(), [1, 2]);
+    assert_eq!(notices(&evs).iter().filter(|n| n.contains(SENT_AGAIN)).count(), 2, "{:?}", notices(&evs));
+    // the error of the last cut is the one the person reads, as a failed call always was
+    let p = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Notice { level: Level::Error, problem: Some(p), .. } => Some(p.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("an error notice with a problem: {evs:?}"));
+    assert!(p.plain().contains("stream cut"), "{p:?}");
+    assert_eq!(spent(&evs).input, 1200, "the three attempts are spent");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_stream_cut_after_text_or_a_call_began_is_not_sent_again() {
+    let begun = StreamEvent::ToolCallStart { id: "c1".into(), name: "read".into() };
+    for said in [vec![reasoning("hm"), StreamEvent::TextDelta("half".into())], vec![reasoning("hm"), begun]] {
+        let d = tempfile::tempdir().unwrap();
+        let client = Scripted::new(vec![Reply::Events(broken(said.clone(), 400)), Reply::Events(text("never"))]);
+        let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Error, "{said:?}");
+        assert_eq!(client.requests().len(), 1, "{said:?}");
+        assert!(!notices(&evs).iter().any(|n| n.contains(SENT_AGAIN)), "{:?}", notices(&evs));
+        r.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn with_retries_off_a_cut_inside_the_reasoning_is_not_sent_again() {
+    let d = tempfile::tempdir().unwrap();
+    let client =
+        Scripted::new(vec![Reply::Events(broken(vec![reasoning("thinking")], 400)), Reply::Events(text("never"))]);
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.retries = 0;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    assert_eq!(end_of(&r.turn().await), TurnEnd::Error);
+    assert_eq!(client.requests().len(), 1);
     r.stop().await;
 }
 

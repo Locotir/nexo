@@ -223,6 +223,10 @@ impl ModelClient for Recorder {
             }
         }
     }
+
+    fn backoff(&self, n: u32, e: &ProviderError) -> std::time::Duration {
+        self.inner.backoff(n, e)
+    }
 }
 
 /// What is written for one request once its reply is complete.

@@ -423,6 +423,27 @@ fn streams_into_blocks_and_closes_them() {
 }
 
 #[test]
+fn the_reasoning_of_a_reply_sent_again_is_closed_and_not_joined_to_the_new_one() {
+    let (mut a, _rx) = bare();
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.handle_agent(AgentEvent::AssistantStart);
+    a.handle_agent(AgentEvent::ReasoningDelta { text: "first try".into() });
+    let said =
+        "the stream was cut while the model reasoned; that reasoning is dropped and the request sent again (1/2)";
+    a.handle_agent(AgentEvent::Notice { level: Level::Warn, text: said.into(), problem: None });
+    a.handle_agent(AgentEvent::AssistantStart);
+    assert!(!a.blocks[0].is_live(), "no spinner left on the reply that was dropped");
+    a.handle_agent(AgentEvent::ReasoningDelta { text: "second try".into() });
+    a.handle_agent(AgentEvent::TextDelta { text: "done".into() });
+    a.handle_agent(AgentEvent::AssistantDone { message: Message::assistant("done") });
+    a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
+    assert!(matches!(&a.blocks[0], Block::Reasoning { text, streaming: false, .. } if text == "first try"));
+    assert!(matches!(&a.blocks[1], Block::Notice { level: Level::Warn, .. }));
+    assert!(matches!(&a.blocks[2], Block::Reasoning { text, streaming: false, .. } if text == "second try"));
+    assert!(matches!(&a.blocks[3], Block::Assistant { text, streaming: false, .. } if text == "done"));
+}
+
+#[test]
 fn web_cards_are_summarised_on_replay() {
     assert_eq!(summarise("web_search", &serde_json::json!({"query": "tokio select"})), "web_search: tokio select");
     assert_eq!(

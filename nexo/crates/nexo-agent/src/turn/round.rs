@@ -43,6 +43,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     let mut cut_calls = 0u32;
     // replies in a row that held only reasoning: no answer and no call
     let mut mute = 0u32;
+    // times in a row this request was sent again because its stream broke inside the reasoning
+    let mut recut = 0u32;
     // times in a row a Stop hook asked the agent to go on (capped at STOP_HOOK_CAP)
     let mut stop_blocks = 0u32;
     // an edit, a write or a command that changes things has run in this turn (`agent.close_on_verified`)
@@ -141,7 +143,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 None => u64::from(st.config.agent.reasoning_budget),
             }
         };
-        let (mut thought, mut spoke, mut over_budget) = (0u64, false, false);
+        let (mut thought, mut reasoned, mut spoke, mut over_budget) = (0u64, false, false, false);
         let mut c = Collector::for_model(req.model.clone());
         let mut interrupted = false;
         let mut marker = ck.pending.is_some().then(checkpoint::MarkerFilter::start);
@@ -163,6 +165,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                             }
                             StreamEvent::ReasoningDelta(t) => {
                                 emit(&events, AgentEvent::ReasoningDelta { text: t.clone() });
+                                reasoned = true;
                                 thought += t.chars().count() as u64;
                             }
                             StreamEvent::ToolCallStart { .. }
@@ -248,6 +251,27 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     _ => {}
                 }
             }
+        }
+        // the stream broke inside the reasoning, before any text or call: the client leaves it alone (the
+        // reasoning is on the screen by then), and ending the turn here loses the request to one bad
+        // connection. What was thought is dropped, neither kept nor sent back, and the request goes out again
+        // through the checks at the top of the loop; what the attempt was billed stays spent
+        let lost = c.error.as_ref().filter(|e| e.is_retryable() && reasoned && !spoke && !interrupted);
+        let again = RECUT_RETRIES.min(retries);
+        match lost {
+            Some(e) if recut < again => {
+                recut += 1;
+                bill_attempt(&state, &events, &req.model, usage, call).await;
+                let why =
+                    "the stream was cut while the model reasoned; that reasoning is dropped and the request sent again";
+                notice(&events, Level::Warn, format!("{why} ({recut}/{again})"));
+                tokio::select! {
+                    _ = tokio::time::sleep(client.backoff(recut, e)) => {}
+                    _ = cancel.cancelled() => return TurnEnd::Interrupted,
+                }
+                continue;
+            }
+            _ => recut = 0,
         }
         {
             let mut st = state.lock().await;
@@ -593,6 +617,10 @@ pub(super) const CUT_TEMPERATURE: f32 = 0.6;
 pub(super) fn retry_temperature(t: Option<f32>) -> Option<f32> {
     t.map(|t| t.max(CUT_TEMPERATURE))
 }
+
+/// How many times one request is sent again after its stream broke inside the reasoning (`agent.retries`
+/// lower than this, or 0, lowers it).
+pub(super) const RECUT_RETRIES: u32 = 2;
 
 /// Sent when a reply held only reasoning (often cut at max_tokens while thinking): not a request of the person.
 pub(super) const MUTE_NOTE: &str =

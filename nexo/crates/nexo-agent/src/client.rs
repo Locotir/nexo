@@ -1,6 +1,7 @@
 //! How the loop reaches a model, and which model that is right now.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use nexo_core::config::ProviderConfig;
@@ -16,6 +17,12 @@ pub trait ModelClient: Send + Sync {
         req: &ModelRequest,
         retries: u32,
     ) -> Result<EventStream, ProviderError>;
+
+    /// The wait before the loop issues a request again itself, for the `n`th time (1-based), after `e` cut
+    /// its reply. A client with no waits of its own (a scripted one) asks for none.
+    fn backoff(&self, _n: u32, _e: &ProviderError) -> Duration {
+        Duration::ZERO
+    }
 
     /// The vendor's model list, where there is one.
     async fn list_models(&self, _cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError> {

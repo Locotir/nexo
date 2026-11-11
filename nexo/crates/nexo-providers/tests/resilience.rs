@@ -226,6 +226,39 @@ async fn a_stream_cut_after_text_is_not_re_issued() {
     assert_eq!(hits.load(Ordering::SeqCst), 1, "no second request after text was shown");
 }
 
+/// A cut after reasoning alone is not the client's to send again either (the reasoning is on the caller's
+/// screen): it reaches the caller as a retryable error with nothing said, and the agent loop sends it again.
+#[tokio::test]
+async fn a_stream_cut_after_reasoning_alone_reaches_the_caller_as_a_retryable_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h = hits.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else { return };
+            h.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                read_request(&mut sock).await;
+                let part = "data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"content\":null,\"reasoning_content\":\"hm\"}}]}\n\n";
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(format!("{head}{part}").as_bytes()).await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    let mut s = quick().stream(&cfg(&format!("http://{addr}")), &req(), 3).await.unwrap();
+    let mut c = Collector::new();
+    while let Some(ev) = s.next().await {
+        c.push(ev);
+    }
+    let m = c.message();
+    assert_eq!((m.reasoning().as_str(), m.text().as_str(), m.tool_calls().count()), ("hm", "", 0));
+    let e = c.error.expect("the cut is told");
+    assert!(e.is_retryable() && e.message.starts_with("stream cut"), "{e:?}");
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "one request: the reasoning was already shown");
+}
+
 // ---- 6: silence ----
 
 /// Accepts, reads the request, then says nothing for ever (or after `head`).

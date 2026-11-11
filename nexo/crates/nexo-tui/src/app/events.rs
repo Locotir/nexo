@@ -547,7 +547,9 @@ impl App {
                 self.queued = self.queued.saturating_sub(1);
                 self.trim_queue();
             }
-            AgentEvent::AssistantStart => {}
+            // a reply that starts while one is still open: the open one was dropped and the request sent again
+            // (a stream cut inside its reasoning), so what it streamed is closed and not joined to the new one
+            AgentEvent::AssistantStart => self.close_streaming(),
             AgentEvent::TextDelta { text } => {
                 self.streamed_chars += text.len();
                 if self.fx_on() {

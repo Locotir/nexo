@@ -145,6 +145,8 @@ impl Client {
                         continue;
                     }
                     match &ev {
+                        // reasoning counts: it is on the caller's screen by now, so a cut after it alone is the
+                        // caller's to send again (the agent loop drops that reasoning and says so)
                         StreamEvent::TextDelta(_)
                         | StreamEvent::ReasoningDelta(_)
                         | StreamEvent::ToolCallStart { .. } => content = true,

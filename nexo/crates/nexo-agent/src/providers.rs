@@ -18,6 +18,10 @@ impl ModelClient for nexo_providers::Client {
         nexo_providers::Client::stream(self, cfg, req, retries).await
     }
 
+    fn backoff(&self, n: u32, e: &ProviderError) -> std::time::Duration {
+        nexo_providers::Client::backoff(self, n, e)
+    }
+
     async fn list_models(&self, cfg: &ProviderConfig) -> Result<Vec<ModelInfo>, ProviderError> {
         nexo_providers::Client::list_models(self, cfg).await
     }
