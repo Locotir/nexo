@@ -8,11 +8,16 @@ const MOCK: &str =
 
 fn nexo(dir: &Path, config: &str, args: &[&str]) -> Output {
     std::fs::write(dir.join("config.toml"), config).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_nexo"))
-        .args(args)
-        .current_dir(dir)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nexo"));
+    cmd.args(args).current_dir(dir).env_clear();
+    // Windows cannot open a socket without these (os error 10106), so a test of an
+    // unreachable address would see the wrong failure.
+    for name in ["SystemRoot", "SYSTEMROOT", "windir"] {
+        if let Some(v) = std::env::var_os(name) {
+            cmd.env(name, v);
+        }
+    }
+    cmd.env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", dir)
         .env("NEXO_CONFIG_DIR", dir)
         .env("NEXO_DATA_DIR", dir.join("data"))
