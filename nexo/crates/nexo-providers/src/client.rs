@@ -164,7 +164,10 @@ impl Client {
                                 attempt += 1;
                                 let wait = this.backoff(attempt, &last);
                                 tracing::warn!(attempt, ?wait, "{last}; retrying");
-                                tokio::time::sleep(wait).await;
+                                tokio::select! {
+                                    _ = tokio::time::sleep(wait) => {}
+                                    _ = tx.closed() => return, // the caller left: no request to bill
+                                }
                                 match protocol.stream(&cfg, key.as_deref(), &req).await {
                                     Ok(s) => {
                                         inner = s;
@@ -335,5 +338,53 @@ mod tests {
         let evs = run(failed, vec![Err(overloaded), Ok(good)], 1).await;
         assert!(matches!(&evs[0], StreamEvent::Error(e) if e.kind == ErrorKind::Overloaded), "{evs:?}");
         assert_eq!(evs.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod gone {
+    use super::*;
+    use async_trait::async_trait;
+    use nexo_core::Message;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counting(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Protocol for Counting {
+        fn id(&self) -> &'static str {
+            "counting"
+        }
+
+        async fn stream(
+            &self,
+            _cfg: &ProviderConfig,
+            _key: Option<&str>,
+            _req: &ModelRequest,
+        ) -> Result<EventStream, ProviderError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(futures::stream::iter(vec![StreamEvent::TextDelta("hi".into()), StreamEvent::Done])))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_caller_that_left_during_the_wait_is_not_billed_for_another_request() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut busy = ProviderError::new(ErrorKind::Overloaded, "Overloaded").with_status(529);
+        busy.retry_after = Some(Duration::from_secs(10));
+        let failed = vec![StreamEvent::Error(busy), StreamEvent::Done];
+        let call = Call {
+            protocol: Arc::new(Counting(calls.clone())),
+            cfg: ProviderConfig::new("counting", "http://127.0.0.1:9", None),
+            key: None,
+            req: ModelRequest::new("m", "", vec![Message::user("hi")]),
+            retries: 3,
+        };
+        let s = Client::new(Registry::new()).forward(Box::pin(futures::stream::iter(failed)), call, 0);
+        // the task is now asleep in its backoff; the turn is cancelled and the stream dropped
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        drop(s);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no request is sent for a caller that is gone");
     }
 }
