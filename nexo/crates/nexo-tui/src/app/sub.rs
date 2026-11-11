@@ -101,6 +101,8 @@ pub struct SubView {
     base: u64,
     /// Items added since the view was last built.
     grown: usize,
+    /// Messages sent from this view that the run has not shown as its own person items yet.
+    pending: usize,
     /// A transcript was asked for and has not come.
     asking: bool,
     /// Something changed while it was awaited.
@@ -111,6 +113,11 @@ impl App {
     /// The sub-agent's conversation is on show.
     pub fn in_sub(&self) -> bool {
         self.sub_view.as_ref().is_some_and(|v| !v.main_in)
+    }
+
+    /// Messages sent from the open view that have not come back as the run's person items.
+    pub fn sub_pending(&self) -> usize {
+        self.sub_view.as_ref().filter(|v| !v.main_in).map_or(0, |v| v.pending)
     }
 
     /// The open run's title and whether it ended, for the rule over the box.
@@ -183,6 +190,7 @@ impl App {
             parked: Parked::empty(),
             main_in: true,
             draft: Some(draft),
+            pending: 0,
             answered: false,
             base: 0,
             grown: 0,
@@ -253,6 +261,10 @@ impl App {
                 r.seen += 1;
                 let (count, exact) = (r.seen, r.exact);
                 let Some(v) = self.sub_view.as_mut().filter(|v| v.id == id && !v.main_in) else { return };
+                if matches!(item, SubItem::Person { .. }) && v.pending > 0 {
+                    v.pending -= 1;
+                    self.dirty = true;
+                }
                 if !exact {
                     return self.sub_ask();
                 }
@@ -278,7 +290,13 @@ impl App {
                 }
                 self.sub_delta(&text);
             }
-            AgentEvent::SubNotDelivered { why, .. } => self.toast(Kind::Error, &format!("not delivered: {why}")),
+            AgentEvent::SubNotDelivered { id, why } => {
+                if let Some(v) = self.sub_view.as_mut().filter(|v| v.id == id && !v.main_in) {
+                    v.pending = v.pending.saturating_sub(1);
+                    self.dirty = true;
+                }
+                self.toast(Kind::Error, &format!("not delivered: {why}"))
+            }
             AgentEvent::SubTranscript { id, transcript }
                 if self.sub_view.as_ref().is_some_and(|v| v.id == id && !v.main_in) =>
             {
@@ -348,6 +366,7 @@ impl App {
         self.reveal = None;
         self.selection = None;
         self.search = None;
+        self.inline_flushed = 0;
         match t {
             Some(t) => {
                 for item in t.items {
@@ -478,6 +497,9 @@ impl App {
         self.input.push_history(&trimmed);
         self.input.clear();
         self.send(AgentCommand::SubSubmit { id, text: trimmed });
+        if let Some(v) = self.sub_view.as_mut() {
+            v.pending += 1;
+        }
         self.scroll_to_end();
         self.dirty = true;
     }

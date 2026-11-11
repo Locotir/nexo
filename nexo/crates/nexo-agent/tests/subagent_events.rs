@@ -1158,3 +1158,19 @@ async fn a_view_can_ask_for_the_conversation_of_a_run() {
         assert!(!text.contains("ASKED-THOUGHT-5"), "{}", f.display());
     }
 }
+
+#[tokio::test]
+async fn a_rewind_announces_the_live_runs_again() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(
+        vec![Reply::Events(call("t1", "task", bg("explore", "slow look"))), Reply::Events(text("started it"))],
+        vec![Reply::Events(call("w1", "wait", json!({"file": "go"}))), Reply::Events(text("late report"))],
+    );
+    let mut r = start(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    let id = held_sub_agent(&mut r, &client).await;
+    r.send(AgentCommand::Rewind { index: 0 });
+    let evs = r.until(|e| matches!(e, AgentEvent::SubState { info } if info.id == id)).await;
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::HistoryCleared)), "the state comes after the clear: {evs:?}");
+    release(d.path(), "go");
+    r.stop().await;
+}

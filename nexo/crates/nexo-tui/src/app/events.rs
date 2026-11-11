@@ -964,8 +964,14 @@ impl App {
             }
             AgentEvent::Suggestion { text } => {
                 // only into an empty box, between turns; a reply that comes late is let go
+                // (and not while a sub-agent's view is open: its box is not the main chat's)
                 let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if self.opts.suggest && !self.busy && self.input.is_empty() && !text.is_empty() {
+                if self.opts.suggest
+                    && !self.busy
+                    && self.sub_view.is_none()
+                    && self.input.is_empty()
+                    && !text.is_empty()
+                {
                     self.suggestion = Some(text);
                     self.dirty = true;
                 }

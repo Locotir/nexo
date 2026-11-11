@@ -117,7 +117,12 @@ impl App {
     /// The suggested next message as it shows now: only in an empty draft, with no window, palette
     /// or picked block holding the keys.
     pub fn suggestion_shown(&self) -> Option<&str> {
-        if self.palette.is_some() || self.modal.is_some() || self.selected.is_some() || !self.input.is_empty() {
+        if self.in_sub()
+            || self.palette.is_some()
+            || self.modal.is_some()
+            || self.selected.is_some()
+            || !self.input.is_empty()
+        {
             return None;
         }
         self.suggestion.as_deref()

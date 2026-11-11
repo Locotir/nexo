@@ -294,7 +294,9 @@ pub fn key(app: &mut App, k: KeyEvent) {
             KeyCode::Char('n') if app.search.is_some() => return app.search_jump(!shift),
             KeyCode::Char('N') if app.search.is_some() => return app.search_jump(false),
             // ↑ with requests queued takes the last one back into the draft to edit it
-            KeyCode::Up if !shift && !ctrl && app.selected.is_none() && !app.queued_msgs.is_empty() => {
+            KeyCode::Up
+                if !shift && !ctrl && app.selected.is_none() && !app.in_sub() && !app.queued_msgs.is_empty() =>
+            {
                 let last = app.queued_msgs.len() - 1;
                 return app.unqueue(last);
             }

@@ -1676,11 +1676,20 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     // an empty box says what it takes, or shows the suggested next message (Tab or → takes it whole)
     if app.input.is_empty() && app.palette.is_none() && editor.width > 4 {
         let shared;
+        let pend;
         let text = if let Some((_, ended)) = app.sub_label() {
             if ended {
                 "ended · Esc back"
             } else {
-                "message this sub-agent · Esc back"
+                let n = app.sub_pending();
+                if n == 0 {
+                    "message this sub-agent · Esc back"
+                } else if n == 1 {
+                    "sent · arrives at its next step"
+                } else {
+                    pend = format!("{n} sent · arrive at its next step");
+                    pend.as_str()
+                }
             }
         } else if let Some(s) = app.suggestion_shown() {
             s

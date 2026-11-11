@@ -239,6 +239,10 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
         &st.events,
         AgentEvent::SessionChanged { session_id: st.session.id().to_string(), title: st.session.meta().title.clone() },
     );
+    // the view dropped its runs with the history: it is told where each one stands
+    for e in sub_resync(&st.jobs.subs()) {
+        emit(&st.events, e);
+    }
     mail_sync(&st);
     replay_history(&st.events, &st.session, &st.tools);
     if !st.history.is_empty() {

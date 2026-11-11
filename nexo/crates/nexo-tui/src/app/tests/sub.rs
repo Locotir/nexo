@@ -393,3 +393,200 @@ fn the_jobs_chip_opens_the_one_run_and_the_list_when_there_are_several() {
     a.handle_agent(AgentEvent::Jobs { jobs: vec![job(3, JobKind::Agent), job(4, JobKind::Shell)] });
     assert_eq!(a.sub_chip_target(), None);
 }
+
+// ------------------------------------------------------------ the fix round
+
+fn send_text(a: &mut App, t: &str) {
+    a.input.set_text(t);
+    a.submit();
+}
+
+#[test]
+fn a_paste_in_the_view_marks_the_screen_dirty_and_the_box_shows_it() {
+    let (mut a, _rx) = opened(vec![reply("x")]);
+    frame(&mut a, 100, 30);
+    a.dirty = false;
+    crate::event::handle(&mut a, crossterm::event::Event::Paste("also check the lexer".into()));
+    assert!(a.dirty, "a paste repaints");
+    assert!(on_screen(&frame(&mut a, 100, 30), "also check the lexer"));
+}
+
+#[test]
+fn the_view_hands_nothing_to_the_inline_scrollback_and_the_main_flush_count_is_kept() {
+    let (mut a, _rx) = bare();
+    for i in 0..3 {
+        a.push(Block::User { text: format!("main {i}"), at: None });
+    }
+    a.handle_agent(AgentEvent::SubState { info: info(RUN, "survey", SubState::Background) });
+    assert!(!crate::inline::take_settled(&mut a, 100).is_empty());
+    assert_eq!(a.inline_flushed, 3);
+    a.open_sub(RUN);
+    answer(&mut a, RUN, vec![reply("sub one"), reply("sub two")], 0);
+    assert!(crate::inline::take_settled(&mut a, 100).is_empty(), "the sub transcript stays out of the scrollback");
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.in_sub());
+    assert_eq!(a.inline_flushed, 3);
+    assert!(crate::inline::take_settled(&mut a, 100).is_empty());
+}
+
+#[test]
+fn a_rebuilt_answer_starts_with_nothing_flushed() {
+    let (mut a, _rx) = opened(vec![reply("one")]);
+    a.inline_flushed = 2;
+    answer(&mut a, RUN, vec![reply("one"), reply("two")], 0);
+    assert_eq!(a.inline_flushed, 0);
+}
+
+#[test]
+fn tab_right_and_up_in_the_view_leave_the_main_chats_suggestion_and_queue_alone() {
+    let (mut a, mut rx) = opened(vec![reply("x")]);
+    a.opts.suggest = true;
+    a.suggestion = Some("run the tests".into());
+    a.queued_msgs.push("queued request".into());
+    a.queued = 1;
+    drain(&mut rx);
+    for code in [KeyCode::Tab, KeyCode::Right, KeyCode::Up] {
+        press(&mut a, code);
+        assert!(a.input.is_empty(), "{code:?} put {:?} in the box", a.input.text());
+    }
+    assert!(drain(&mut rx).iter().all(|c| !matches!(c, AgentCommand::Unqueue { .. })));
+    assert_eq!(a.queued_msgs, vec!["queued request".to_string()]);
+}
+
+#[test]
+fn a_suggestion_arriving_in_the_view_is_dropped_and_never_shown() {
+    let (mut a, _rx) = opened(vec![reply("x")]);
+    a.opts.suggest = true;
+    a.handle_agent(AgentEvent::Suggestion { text: "ship it now".into() });
+    assert!(!on_screen(&frame(&mut a, 100, 30), "ship it now"));
+    press(&mut a, KeyCode::Tab);
+    assert!(a.input.is_empty());
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.in_sub());
+    assert!(a.suggestion.is_none(), "dropped, not kept for the return");
+}
+
+#[test]
+fn after_a_rewind_the_run_announced_again_still_opens_from_jobs() {
+    let (mut a, mut rx) = opened(vec![reply("x")]);
+    // a rewind: the main chat is cleared and the agent says where every run stands
+    a.handle_agent(AgentEvent::HistoryCleared);
+    assert!(!a.in_sub() && a.sub_runs.is_empty());
+    a.handle_agent(AgentEvent::SubState { info: info(RUN, "survey the parser", SubState::Background) });
+    a.handle_agent(AgentEvent::Jobs { jobs: vec![job(3, JobKind::Agent)] });
+    drain(&mut rx);
+    a.open_jobs();
+    press(&mut a, KeyCode::Enter);
+    assert!(a.in_sub());
+    assert!(drain(&mut rx).iter().any(|c| matches!(c, AgentCommand::SubTranscript { id } if id == RUN)));
+}
+
+fn pending_text(a: &mut App, w: u16) -> Vec<String> {
+    frame(a, w, 30)
+}
+
+#[test]
+fn a_sent_message_shows_in_the_empty_boxs_placeholder_until_it_arrives() {
+    let (mut a, mut rx) = opened(vec![reply("x")]);
+    send_text(&mut a, "also check the lexer");
+    drain(&mut rx);
+    let rows = pending_text(&mut a, 100);
+    assert!(on_screen(&rows, "sent · arrives at its next step"), "{}", rows.join("\n"));
+    assert!(!on_screen(&rows, "also check the lexer"), "the message is not drawn a second time");
+    item(&mut a, RUN, person("also check the lexer"));
+    let rows = pending_text(&mut a, 100);
+    assert!(on_screen(&rows, "message this sub-agent · Esc back"), "{}", rows.join("\n"));
+    assert!(!on_screen(&rows, "sent ·"));
+}
+
+#[test]
+fn a_not_delivered_notice_lowers_the_count_and_two_sends_count_two() {
+    let (mut a, mut rx) = opened(vec![reply("x")]);
+    send_text(&mut a, "one");
+    send_text(&mut a, "two");
+    drain(&mut rx);
+    assert!(on_screen(&pending_text(&mut a, 100), "2 sent · arrive at its next step"));
+    item(&mut a, RUN, person("one"));
+    assert!(on_screen(&pending_text(&mut a, 100), "sent · arrives at its next step"));
+    a.handle_agent(AgentEvent::SubNotDelivered { id: RUN.into(), why: "it ended".into() });
+    assert!(on_screen(&pending_text(&mut a, 100), "message this sub-agent · Esc back"));
+}
+
+#[test]
+fn leaving_the_view_forgets_the_pending_count_and_the_placeholder_is_cut_when_narrow() {
+    let (mut a, mut rx) = opened(vec![reply("x")]);
+    send_text(&mut a, "one");
+    send_text(&mut a, "two");
+    drain(&mut rx);
+    let rows = pending_text(&mut a, 40);
+    assert!(on_screen(&rows, "2 sent · arrive at its next step"), "{}", rows.join("\n"));
+    let rows = pending_text(&mut a, 26);
+    let line = rows.iter().find(|r| r.contains("sent")).unwrap_or_else(|| panic!("{:?}", rows));
+    assert!(line.contains('…'), "{line}");
+    press(&mut a, KeyCode::Esc);
+    a.open_sub(RUN);
+    answer(&mut a, RUN, vec![reply("x")], 0);
+    assert!(on_screen(&pending_text(&mut a, 100), "message this sub-agent · Esc back"));
+}
+
+#[test]
+fn events_of_another_run_change_nothing_in_the_open_view() {
+    let (mut a, _rx) = opened(vec![reply("mine")]);
+    let other = "call_2#5";
+    a.handle_agent(AgentEvent::SubState { info: info(other, "other", SubState::Background) });
+    frame(&mut a, 100, 30);
+    a.dirty = false;
+    let blocks = a.blocks.len();
+    item(&mut a, other, reply("elsewhere"));
+    a.handle_agent(AgentEvent::SubDelta { id: other.into(), text: "x".into() });
+    assert!(!a.dirty);
+    assert_eq!(a.blocks.len(), blocks);
+    assert!(!on_screen(&frame(&mut a, 100, 30), "elsewhere"));
+}
+
+#[test]
+fn a_resize_while_the_view_is_open_leaves_the_main_chat_where_a_plain_resize_would() {
+    let build = || {
+        let (mut a, rx) = bare();
+        for i in 0..80 {
+            a.push(Block::User { text: format!("main line {i} with some words to wrap around the screen"), at: None });
+        }
+        a.handle_agent(AgentEvent::SubState { info: info(RUN, "survey", SubState::Background) });
+        frame(&mut a, 100, 30);
+        a.scroll = 12;
+        a.follow = false;
+        (a, rx)
+    };
+    let (mut plain, _r1) = build();
+    crate::event::handle(&mut plain, crossterm::event::Event::Resize(60, 20));
+    let want = frame(&mut plain, 60, 20);
+    let (mut a, _r2) = build();
+    a.open_sub(RUN);
+    answer(&mut a, RUN, vec![reply("sub text")], 0);
+    frame(&mut a, 100, 30);
+    crate::event::handle(&mut a, crossterm::event::Event::Resize(60, 20));
+    frame(&mut a, 60, 20);
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(frame(&mut a, 60, 20), want);
+    assert_eq!(a.scroll, plain.scroll);
+    assert_eq!(a.follow, plain.follow);
+}
+
+#[test]
+fn right_and_l_on_a_run_row_open_the_jobs_detail_and_a_click_opens_the_conversation() {
+    for code in [KeyCode::Right, KeyCode::Char('l')] {
+        let (mut a, _rx) = with_run();
+        a.open_jobs();
+        press(&mut a, KeyCode::Down);
+        press(&mut a, code);
+        assert!(!a.in_sub(), "{code:?} stays in the window");
+        assert!(matches!(&a.modal, Some(Modal::Jobs(v)) if v.detail), "{code:?} opens the job's own output");
+    }
+    let (mut a, mut rx) = with_run();
+    a.open_jobs();
+    press(&mut a, KeyCode::Down);
+    drain(&mut rx);
+    let Some(Modal::Jobs(v)) = &mut a.modal else { panic!("the jobs window") };
+    let out = v.click_row(1);
+    assert!(matches!(out, ModalOut::OpenSub(ref id) if id == RUN), "a click on the run row opens it");
+}

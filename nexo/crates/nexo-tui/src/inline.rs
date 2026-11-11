@@ -47,6 +47,10 @@ pub fn settled_count(app: &App) -> usize {
 /// The rows of the blocks that settled since the last call, wrapped for `width` columns with the
 /// blank lines between blocks that the screen has; marks them as written.
 pub fn take_settled(app: &mut App, width: u16) -> Vec<Line<'static>> {
+    // a sub-agent's conversation is on show: it never goes to the terminal's scrollback
+    if app.in_sub() {
+        return Vec::new();
+    }
     let target = settled_count(app);
     let w = width.saturating_sub(1).max(1) as usize;
     let mut out = Vec::new();

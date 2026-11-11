@@ -9,6 +9,8 @@ impl App {
     pub fn refresh_palette(&mut self) {
         // no commands from a sub-agent's conversation
         if self.in_sub() {
+            // the box changed (a paste or a burst of keys): it must be drawn
+            self.dirty = true;
             self.palette = None;
             return;
         }
