@@ -262,6 +262,7 @@ fn modals_and_palette_draw_on_top() {
     fill(&mut a);
     a.handle_agent(AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "p1".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,
@@ -917,6 +918,7 @@ fn the_permission_dialog_at_80x24_is_drawn_over_clear_ground_not_over_the_welcom
     let mut a = app();
     a.handle_agent(AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "p1".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,

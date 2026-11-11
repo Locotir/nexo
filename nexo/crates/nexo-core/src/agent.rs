@@ -32,6 +32,8 @@ pub enum AgentCommand {
     },
     /// Stop the running turn (tools are cancelled, the partial reply is kept).
     Interrupt,
+    /// Send the sub-agents the running turn waits for to the background (they go on; the turn is free).
+    Detach,
     /// Stop the running turn and run the queued request at once (Enter on an empty draft). With
     /// nothing queued it is an `Interrupt`.
     InterruptRun,

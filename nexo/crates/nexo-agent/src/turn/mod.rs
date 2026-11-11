@@ -161,6 +161,10 @@ struct State {
     digests: HashMap<u64, String>,
     /// Commands and sub-agents running in the background.
     jobs: Jobs,
+    /// The files running sub-agents are changing (the main agent's writes respect them).
+    claims: nexo_core::claims::Claims,
+    /// Sends the sub-agents a round waits for to the background.
+    detach: nexo_core::jobs::Detach,
     /// The files the model has read or written, as they were then.
     seen: nexo_core::seen::Seen,
     /// What the step-level check remembers: commands too slow to repeat, and the last check's report.
@@ -388,6 +392,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let (usage, cost) = (session.usage(), session.cost());
     let max_cost = config.agent.max_cost;
     let jobs = Jobs::new();
+    let detach = nexo_core::jobs::Detach::default();
     let mut job_changes = jobs.changes();
     let state: Shared = Arc::new(Mutex::new(State {
         config,
@@ -431,6 +436,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         worked: VecDeque::new(),
         digests: HashMap::new(),
         jobs: jobs.clone(),
+        claims: Default::default(),
+        detach: detach.clone(),
         seen: Default::default(),
         post: Default::default(),
         repeats: Default::default(),
@@ -512,6 +519,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         if turn.is_some() {
                             st.inbox.push_back((text, attachments));
                             emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
+                            // the person is heard now: sub-agents the round waits for go to the background
+                            if st.config.agent.detach_on_message {
+                                detach.fire(nexo_core::jobs::DetachWhy::Message);
+                            }
                         } else {
                             person_spoke(&mut st);
                             drop(st);
@@ -564,11 +575,17 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         }
                         emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                     }
+                    AgentCommand::Detach => {
+                        if turn.is_some() {
+                            detach.fire(nexo_core::jobs::DetachWhy::Key);
+                        }
+                    }
                     AgentCommand::Interrupt | AgentCommand::InterruptRun => {
                         if turn.is_some() {
                             run_queue = matches!(cmd, AgentCommand::InterruptRun);
                             cancel.cancel();
-                            chan_gate.deny_all("interrupted");
+                            // the questions of the turn; those of sub-agents in the background stay open
+                            chan_gate.deny_turn("interrupted", &detach);
                             asker.drop_all();
                         }
                     }
@@ -605,6 +622,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             }
                             cancel = CancellationToken::new();
                             run_queue = false;
+                            detach.clear();
                             let mut st = state.lock().await;
                             if !st.inbox.is_empty() {
                                 st.inbox.clear();
@@ -947,12 +965,13 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 let ended = matches!(&change, Ok(c) if !c.0.status.running());
                 // a job ended while the agent waited for the person: it goes on with the result
                 if ended && turn.is_none() && !jobs.untold().is_empty() {
-                    let note = nexo_core::jobs::ended_note(&jobs.take_ended());
+                    let note = jobs.note_ended(&jobs.take_ended());
                     turn = Some(start_turn(&state, note, Vec::new(), cancel.child_token()).await);
                 }
             }
             res = async { turn.as_mut().expect("a turn is running").await }, if turn.is_some() => {
                 turn = None;
+                detach.clear();
                 let reason = res.unwrap_or_else(|e| {
                     let how = if e.is_panic() { "panicked" } else { "was aborted" };
                     notice(&events, Level::Error, format!("the turn {how}"));
@@ -1006,7 +1025,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 }
                 // a job that ended after the turn's last model call
                 if turn.is_none() && reason == TurnEnd::Done && !jobs.untold().is_empty() {
-                    let note = nexo_core::jobs::ended_note(&jobs.take_ended());
+                    let note = jobs.note_ended(&jobs.take_ended());
                     turn = Some(start_turn(&state, note, Vec::new(), cancel.child_token()).await);
                 }
                 if turn.is_none() {

@@ -28,6 +28,7 @@ fn click(app: &mut App, x: u16, y: u16) {
 fn a_click_outside_every_window_closes_it_and_a_decision_dialog_stays() {
     let goal = crate::app::Goal { text: "g".into(), round: 1, max: 3, state: nexo_core::agent::GoalState::Active };
     let req = nexo_core::permission::PermissionRequest {
+        agent: None,
         id: "1".into(),
         tool: "bash".into(),
         kind: nexo_core::tool::ToolKind::Exec,

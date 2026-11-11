@@ -27,10 +27,12 @@ pub enum Action {
     Mode,
     Diff,
     Curated,
+    /// Send the sub-agents the turn waits for to the background.
+    Detach,
 }
 
 impl Action {
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 19] = [
         Action::Cancel,
         Action::Quit,
         Action::Search,
@@ -49,6 +51,7 @@ impl Action {
         Action::Mode,
         Action::Diff,
         Action::Curated,
+        Action::Detach,
     ];
 
     pub fn name(self) -> &'static str {
@@ -71,6 +74,7 @@ impl Action {
             Action::Mode => "mode",
             Action::Diff => "diff",
             Action::Curated => "curated",
+            Action::Detach => "background",
         }
     }
 
@@ -94,6 +98,7 @@ impl Action {
             Action::Mode => "backtab",
             Action::Diff => "f4",
             Action::Curated => "f3",
+            Action::Detach => "ctrl+x",
         }
     }
 }

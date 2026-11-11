@@ -120,7 +120,7 @@ pub(super) async fn start_turn(
         let text = if ended.is_empty() || text.starts_with("[background jobs ended]") {
             text
         } else {
-            let note = nexo_core::jobs::ended_note(&ended);
+            let note = st.jobs.note_ended(&ended);
             added.push(AddedPart::new(AddedKind::Jobs, "background jobs that ended", note.clone()));
             format!("{note}\n\n{text}")
         };
@@ -218,9 +218,11 @@ pub(super) async fn bill_attempt(state: &Shared, events: &EventTx, model: &str, 
 pub(super) async fn take_inbox(state: &Shared) -> bool {
     let mut st = state.lock().await;
     // jobs that ended while the tools ran: the model hears of them now
+    st.detach.clear();
     let ended = st.jobs.take_ended();
     if !ended.is_empty() {
-        push_user(&mut st, nexo_core::jobs::ended_note(&ended), &[], Vec::new());
+        let note = st.jobs.note_ended(&ended);
+        push_user(&mut st, note, &[], Vec::new());
     }
     if st.inbox.is_empty() {
         return false;

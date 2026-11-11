@@ -6,7 +6,7 @@
 //! it when it was waiting for the person. Dropping the last handle of the
 //! registry (the session ends) stops every job still running.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -114,6 +114,8 @@ struct Entry {
     status: Mutex<JobStatus>,
     /// The model was told it ended.
     told: Mutex<bool>,
+    /// What a sub-agent reported when it ended (the end note carries it).
+    report: Mutex<Option<String>>,
     cancel: CancellationToken,
     done: Notify,
 }
@@ -203,6 +205,11 @@ impl JobHandle {
         }
     }
 
+    /// What a sub-agent reported: the ended note carries it, so the model needs no `jobs output` call.
+    pub fn set_report(&self, text: &str) {
+        *self.entry.report.lock().unwrap() = Some(text.to_string());
+    }
+
     /// The job ended by itself. A job killed or stopped stays so.
     pub fn finish(self, ok: bool, how: impl Into<String>) {
         let killed = { !self.entry.status.lock().unwrap().running() };
@@ -264,6 +271,7 @@ impl Jobs {
             out: Mutex::new(Out { lines: VecDeque::new(), chars: 0, dropped: 0, read: 0 }),
             status: Mutex::new(JobStatus::Running),
             told: Mutex::new(false),
+            report: Mutex::new(None),
             cancel: self.0.root.child_token(),
             done: Notify::new(),
         });
@@ -397,9 +405,117 @@ impl Jobs {
             .collect()
     }
 
+    /// The model got the outcome of job `id` some other way (a tool result): no ended note for it.
+    pub fn tell(&self, id: u32) {
+        if let Some(e) = self.entry(id) {
+            *e.told.lock().unwrap() = true;
+        }
+    }
+
+    /// What the sub-agent of job `id` reported, if it did.
+    pub fn report_of(&self, id: u32) -> Option<String> {
+        self.entry(id).and_then(|e| e.report.lock().unwrap().clone())
+    }
+
+    /// The note for jobs that ended (see [`ended_note`]), with the report of each sub-agent inline.
+    pub fn note_ended(&self, ended: &[JobInfo]) -> String {
+        let reports: Vec<Option<String>> =
+            ended.iter().map(|j| if j.kind == JobKind::Agent { self.report_of(j.id) } else { None }).collect();
+        note(ended, &reports)
+    }
+
     /// Every start and end, as they happen.
     pub fn changes(&self) -> broadcast::Receiver<JobChange> {
         self.0.changes.subscribe()
+    }
+}
+
+/// Why attached sub-agents go to the background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetachWhy {
+    /// The person wrote while they ran.
+    Message,
+    /// The person pressed the key that sends them to the background.
+    Key,
+}
+
+impl DetachWhy {
+    /// What the `task` call answers when it lets go of the sub-agent.
+    pub fn text(self, id: u32) -> String {
+        let why = match self {
+            DetachWhy::Message => "the person wrote while it ran",
+            DetachWhy::Key => "the person sent it to the background",
+        };
+        format!("Moved to the background as job {id}: {why}. You will be told when it ends, with its report.")
+    }
+}
+
+#[derive(Default)]
+struct DetachInner {
+    fired: Mutex<Option<DetachWhy>>,
+    notify: Notify,
+    /// The calls (`task` call ids) that already went to the background.
+    gone: Mutex<HashSet<String>>,
+}
+
+/// The signal that sends the sub-agents a round waits for to the background. It stays set until the round
+/// ends, so a sub-agent that starts after the person wrote lets go at once. Cloning shares it.
+#[derive(Clone, Default)]
+pub struct Detach(Arc<DetachInner>);
+
+impl std::fmt::Debug for Detach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Detach({:?})", self.why())
+    }
+}
+
+impl Detach {
+    pub fn fire(&self, why: DetachWhy) {
+        {
+            let mut f = self.0.fired.lock().unwrap();
+            // the key says more than a message
+            if f.is_none() || why == DetachWhy::Key {
+                *f = Some(why);
+            }
+        }
+        self.0.notify.notify_waiters();
+    }
+
+    /// The round ended: sub-agents that start from now on stay attached.
+    pub fn clear(&self) {
+        *self.0.fired.lock().unwrap() = None;
+    }
+
+    pub fn why(&self) -> Option<DetachWhy> {
+        *self.0.fired.lock().unwrap()
+    }
+
+    /// Returns when the signal is (or already was) set.
+    pub async fn wait(&self) -> DetachWhy {
+        loop {
+            let n = self.0.notify.notified();
+            tokio::pin!(n);
+            n.as_mut().enable();
+            if let Some(w) = self.why() {
+                return w;
+            }
+            n.await;
+        }
+    }
+
+    /// The `task` call `call_id` went to the background.
+    pub fn mark(&self, call_id: &str) {
+        self.0.gone.lock().unwrap().insert(call_id.to_string());
+    }
+
+    /// It ended.
+    pub fn unmark(&self, call_id: &str) {
+        self.0.gone.lock().unwrap().remove(call_id);
+    }
+
+    /// Whether `ask_id` (`<task call>.<call>`) is a question of a sub-agent in the background.
+    pub fn is_gone(&self, ask_id: &str) -> bool {
+        self.0.gone.lock().unwrap().iter().any(|c| ask_id.strip_prefix(c.as_str()).is_some_and(|r| r.starts_with('.')))
     }
 }
 
@@ -417,6 +533,13 @@ fn cap(text: &str, max: usize) -> String {
 
 /// The note the model gets when jobs have ended.
 pub fn ended_note(jobs: &[JobInfo]) -> String {
+    note(jobs, &vec![None; jobs.len()])
+}
+
+/// Characters of a sub-agent's report the ended note carries (as many as one `jobs` read gives).
+pub const REPORT_NOTE_CHARS: usize = READ_CHARS;
+
+fn note(jobs: &[JobInfo], reports: &[Option<String>]) -> String {
     let lines: Vec<String> = jobs
         .iter()
         .map(|j| {
@@ -433,10 +556,17 @@ pub fn ended_note(jobs: &[JobInfo]) -> String {
             )
         })
         .collect();
-    format!(
-        "[background jobs ended]\n{}\nRead the output with the `jobs` tool (action \"output\", the job's id).",
-        lines.join("\n")
-    )
+    let mut out = format!("[background jobs ended]\n{}", lines.join("\n"));
+    for (j, r) in jobs.iter().zip(reports) {
+        if let Some(r) = r {
+            out.push_str(&format!("\n\n--- report of job {} ---\n{}", j.id, cap(r, REPORT_NOTE_CHARS)));
+        }
+    }
+    // a job whose report is not here is read with the tool
+    if reports.iter().any(Option::is_none) {
+        out.push_str("\nRead the output with the `jobs` tool (action \"output\", the job's id).");
+    }
+    out
 }
 
 fn one_line(s: &str) -> String {

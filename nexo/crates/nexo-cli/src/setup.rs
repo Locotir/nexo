@@ -732,6 +732,7 @@ max_tokens = 16384                 # reply size asked for; on a model whose wind
 # watch = true                      # the supervisor counts repeats, undone edits and long read runs, and adds a hidden note to the next request (no model call)
 # check_in = true                   # a stopped session with unfinished work gets one background check-in with its own model (CONTINUE or DONE)
 # parallel_tasks = true             # several sub-agents of one message run at once, also ones that change files
+# detach_on_message = true          # a message sent while a sub-agent runs sends it to the background and is answered at once
 # reasoning = "medium"              # off | low | medium | high | a token budget
 # max_cost = 1.0                    # stop a session at this many dollars
 # max_cost_day = 5.0                # and every session together at this many a day

@@ -84,6 +84,7 @@ fn permissions_queue_behind_the_open_modal() {
         summary: "x".into(),
         detail: ToolDisplay::Plain,
         suggested_rules: vec![],
+        agent: None,
     };
     a.handle_agent(AgentEvent::PermissionAsk { request: req("p1") });
     a.handle_agent(AgentEvent::PermissionAsk { request: req("p2") });
@@ -819,6 +820,7 @@ fn ctrl_c_in_a_permission_dialog_denies_it_and_stops_the_turn() {
     a.handle_agent(AgentEvent::TurnStart { turn: 1 });
     a.handle_agent(AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "p1".into(),
             tool: "bash".into(),
             kind: nexo_core::tool::ToolKind::Exec,

@@ -164,6 +164,10 @@ pub struct ToolContext {
     pub post_check: bool,
     /// Seconds a `check` command of `edit` or `write` may take.
     pub check_secs: u64,
+    /// The files running sub-agents are changing: a write to one of them is refused.
+    pub claims: crate::claims::Claims,
+    /// Sends the sub-agents the turn waits for to the background (the interface or a message asks). None: never.
+    pub detach: Option<crate::jobs::Detach>,
 }
 
 /// What the permission rules would do with a call, without asking anyone.
@@ -193,6 +197,8 @@ impl ToolContext {
             vision: true,
             post_check: false,
             check_secs: 45,
+            claims: Default::default(),
+            detach: None,
         }
     }
 
@@ -265,6 +271,11 @@ pub trait Tool: Send + Sync {
     /// What the sandbox does for this tool, for `/status`: the line and whether it works.
     fn sandbox_status(&self, _sandbox: &crate::sandbox::SandboxSettings) -> Option<(String, bool)> {
         None
+    }
+    /// The tool ends a call that is cancelled by itself (it has cleanup to do, and answers in time): the
+    /// agent does not drop its future when the turn is interrupted.
+    fn handles_cancel(&self) -> bool {
+        false
     }
     /// One line that says what this call does (`read src/main.rs`, `bash: cargo test`).
     fn summary(&self, args: &Value) -> String;

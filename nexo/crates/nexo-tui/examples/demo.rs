@@ -309,6 +309,7 @@ async fn play(events: &nexo_core::agent::EventTx, commands: &mut nexo_core::agen
     });
     let _ = events.send(AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "c3".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,

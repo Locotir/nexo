@@ -63,6 +63,9 @@ pub struct PermissionRequest {
     pub detail: ToolDisplay,
     /// Rules the person may adopt to not be asked again (`bash(git *)`, `write(src/**)`).
     pub suggested_rules: Vec<String>,
+    /// The sub-agent that asks (its profile name); None: the main agent.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

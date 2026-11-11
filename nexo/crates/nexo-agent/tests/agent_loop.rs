@@ -3309,7 +3309,7 @@ async fn a_rewind_puts_back_what_a_sub_agent_wrote() {
 }
 
 #[tokio::test]
-async fn a_sub_agent_that_can_write_does_not_run_in_the_background() {
+async fn a_sub_agent_that_can_write_runs_in_the_background_when_asked() {
     let d = tempfile::tempdir().unwrap();
     let client = Scripted::new(vec![
         Reply::Events(call("t1", "task", json!({"agent": "general", "prompt": "change a.txt", "background": true}))),
@@ -3327,7 +3327,7 @@ async fn a_sub_agent_that_can_write_does_not_run_in_the_background() {
             _ => None,
         })
         .unwrap();
-    assert!(out.contains("changed a.txt") && !out.contains("Started sub-agent job"), "{out}");
+    assert!(out.contains("Started sub-agent job"), "{out}");
     r.stop().await;
 }
 

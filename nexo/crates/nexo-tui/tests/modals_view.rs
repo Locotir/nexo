@@ -47,6 +47,7 @@ fn app() -> App {
 fn shell_ask(command: &str) -> AgentEvent {
     AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "p1".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,
@@ -284,6 +285,7 @@ fn a_plan_question_and_a_big_diff_keep_their_answers_reachable_when_small() {
             ((0..60).map(|i| format!("old {i}\n")).collect(), (0..60).map(|i| format!("new {i}\n")).collect());
         a.handle_agent(AgentEvent::PermissionAsk {
             request: PermissionRequest {
+                agent: None,
                 id: "p2".into(),
                 tool: "edit".into(),
                 kind: ToolKind::Write,

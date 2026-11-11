@@ -225,6 +225,7 @@ pub(super) async fn permit_why(
             notify_hooks(state, "permission_prompt", format!("nexo needs your permission to use {name}: {summary}"));
             let req = PermissionRequest {
                 id: id.to_string(),
+                agent: agent.map(str::to_string),
                 tool: name.to_string(),
                 kind,
                 summary,

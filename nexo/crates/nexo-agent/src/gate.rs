@@ -36,6 +36,19 @@ impl ChannelGate {
         }
     }
 
+    /// Denies the asks of the turn (the main agent and the sub-agents it waits for); those of sub-agents in
+    /// the background stay open.
+    pub fn deny_turn(&self, reason: &str, background: &nexo_core::jobs::Detach) {
+        let ours: Vec<_> = {
+            let mut p = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let ids: Vec<String> = p.keys().filter(|id| !background.is_gone(id)).cloned().collect();
+            ids.into_iter().filter_map(|id| p.remove(&id)).collect()
+        };
+        for tx in ours {
+            let _ = tx.send(PermissionDecision::Deny { reason: Some(reason.to_string()) });
+        }
+    }
+
     pub fn waiting(&self) -> usize {
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
     }

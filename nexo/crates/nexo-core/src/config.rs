@@ -284,6 +284,9 @@ pub struct AgentConfig {
     /// file one of them is changing is closed to the others until it ends. Off: those that can change
     /// files run one after another.
     pub parallel_tasks: bool,
+    /// A message sent while a sub-agent runs sends it to the background and is answered at once. Off: the
+    /// message waits for the round to end (the key that sends sub-agents to the background still works).
+    pub detach_on_message: bool,
     /// The most a session may spend, in dollars (none: no limit).
     pub max_cost: Option<f64>,
     /// The most every session together may spend in a day, in dollars (none: no limit).
@@ -359,6 +362,7 @@ impl Default for AgentConfig {
             retries: 4,
             subagents: true,
             parallel_tasks: true,
+            detach_on_message: true,
             max_cost: None,
             max_cost_day: None,
             subagent_brief: 3000,

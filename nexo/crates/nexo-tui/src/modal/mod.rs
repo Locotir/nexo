@@ -1038,6 +1038,7 @@ mod tests {
 
     fn req() -> PermissionRequest {
         PermissionRequest {
+            agent: None,
             id: "p1".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,

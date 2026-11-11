@@ -446,6 +446,20 @@ pub(super) async fn run_call(
                 emit(events, AgentEvent::ToolDone { id: id.into(), output: out.clone(), elapsed_ms: 0 });
                 return (result(&out), false);
             };
+            // a file a running sub-agent is changing is its own until it ends
+            if tool.kind() == ToolKind::Write {
+                let claims = state.lock().await.claims.clone();
+                for p in nexo_core::tool::call_paths(args) {
+                    if let Some(label) = claims.holder(&nexo_core::claims::plain_path(&p, cwd)) {
+                        let out = ToolOutput::error(format!(
+                            "`{p}` is being changed by a sub-agent that is still running ({label}); leave it to that \
+                             one until it ends, or stop it with the `jobs` tool"
+                        ));
+                        emit(events, AgentEvent::ToolDone { id: id.into(), output: out.clone(), elapsed_ms: 0 });
+                        return (result(&out), false);
+                    }
+                }
+            }
             // what a file looked like before the agent writes it, for a rewind
             if tool.kind() == ToolKind::Write {
                 for p in nexo_core::tool::call_paths(args).iter().map(String::as_str) {
@@ -474,7 +488,7 @@ pub(super) async fn run_call(
                 }
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
-            let (jobs, seen, perm, rules_cwd, sandbox, vision, post_check, check_secs) = {
+            let (jobs, claims, detach, seen, perm, rules_cwd, sandbox, vision, post_check, check_secs) = {
                 let mut st = state.lock().await;
                 count_step(&mut st);
                 let (provider, _, model) = st.target.get();
@@ -488,6 +502,8 @@ pub(super) async fn run_call(
                     && nexo_tools::project::check_command_within(cwd, Some(cwd)).is_some();
                 (
                     st.jobs.clone(),
+                    st.claims.clone(),
+                    st.detach.clone(),
                     st.seen.clone(),
                     st.perm.clone(),
                     cwd.to_path_buf(),
@@ -505,6 +521,8 @@ pub(super) async fn run_call(
                 progress: Some(ptx),
                 env: Default::default(),
                 jobs,
+                claims,
+                detach: Some(detach),
                 seen,
                 sandbox,
                 vision,
@@ -526,9 +544,14 @@ pub(super) async fn run_call(
             } else if let Some(recorded) = repeated_check(state, name, args, cwd).await {
                 recorded
             } else {
-                tokio::select! {
-                    o = tool.run(args.clone(), &ctx) => o,
-                    _ = cancel.cancelled() => ToolOutput::error("interrupted by the person"),
+                if tool.handles_cancel() {
+                    // it ends itself, with its cleanup done (a sub-agent's worktree)
+                    tool.run(args.clone(), &ctx).await
+                } else {
+                    tokio::select! {
+                        o = tool.run(args.clone(), &ctx) => o,
+                        _ = cancel.cancelled() => ToolOutput::error("interrupted by the person"),
+                    }
                 }
             };
             drop(ctx);

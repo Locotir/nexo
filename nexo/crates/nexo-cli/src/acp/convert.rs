@@ -368,6 +368,7 @@ mod tests {
     #[test]
     fn answers_map_to_decisions() {
         let req = PermissionRequest {
+            agent: None,
             id: "c1".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,

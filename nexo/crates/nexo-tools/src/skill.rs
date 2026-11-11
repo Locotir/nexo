@@ -93,6 +93,8 @@ mod tests {
             vision: true,
             post_check: false,
             check_secs: 45,
+            claims: Default::default(),
+            detach: None,
         }
     }
 

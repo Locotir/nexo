@@ -205,6 +205,8 @@ pub fn key(app: &mut App, k: KeyEvent) {
         Some(Action::Files) => return app.toggle_files(app.term_width),
         Some(Action::Diff) => return app.open_diffview(),
         Some(Action::Curated) => return app.cycle_curated(),
+        // while the turn waits for sub-agents, they go to the background and the chat is free
+        Some(Action::Detach) if app.busy => return app.send(nexo_core::agent::AgentCommand::Detach),
         Some(Action::Redraw) => {
             app.force_clear = true;
             return;

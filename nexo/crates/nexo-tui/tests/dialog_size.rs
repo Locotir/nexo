@@ -152,6 +152,7 @@ fn a_permission_keeps_its_size_while_it_scrolls() {
         let mut a = app();
         a.handle_agent(AgentEvent::PermissionAsk {
             request: PermissionRequest {
+                agent: None,
                 id: "p1".into(),
                 tool: "bash".into(),
                 kind: ToolKind::Exec,
@@ -298,6 +299,7 @@ fn an_edit_permission_names_the_file_and_shows_old_and_new_at_80x24() {
     let mut a = app();
     a.handle_agent(AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "p2".into(),
             tool: "edit".into(),
             kind: ToolKind::Write,

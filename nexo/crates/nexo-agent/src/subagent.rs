@@ -10,10 +10,12 @@
 //!   (the person), a front matter with `name`, `description`, `tools`, `model` and
 //!   `rounds`, and a body that is the sub-agent's instructions.
 //!
-//! With `background: true` a sub-agent that changes nothing runs as a job: the main agent goes on,
-//! and the report is the job's output. One that can change files runs in the foreground.
+//! Every sub-agent runs as its own task and job. With `background: true` the call returns at once and
+//! the report comes in the note of the ended job. Without it the call waits for the report, unless the
+//! person writes or presses the key: then the sub-agent goes to the background and the call returns.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -252,11 +254,9 @@ pub trait Host: Send + Sync {
 /// Set once the agent's state exists (the tool is made before it).
 pub type HostCell = Arc<OnceLock<Arc<dyn Host>>>;
 
-/// The files sub-agents running at the same time are changing: path, then (the call that holds it, its
-/// label). A file one of them changes is closed to the others until that one ends.
-type Claims = Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, (String, String)>>>;
+use nexo_core::claims::{plain_path, Claims};
 
-/// Gives back the files a sub-agent held when it ends, also when it is stopped half way.
+/// Gives back the files a sub-agent held when it ends, also when it is stopped half way or dropped.
 struct Release {
     claims: Claims,
     owner: String,
@@ -264,24 +264,8 @@ struct Release {
 
 impl Drop for Release {
     fn drop(&mut self) {
-        self.claims.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (o, _)| *o != self.owner);
+        self.claims.release(&self.owner);
     }
-}
-
-/// The path as written, made absolute and without `.` and `..`, so two spellings of one file meet.
-fn plain_path(p: &str, cwd: &Path) -> PathBuf {
-    let path = if Path::new(p).is_absolute() { PathBuf::from(p) } else { cwd.join(p) };
-    let mut out = PathBuf::new();
-    for c in path.components() {
-        match c {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// What the parent is told when an isolated sub-agent ends: its branch and what it changed, or that its
@@ -332,9 +316,8 @@ pub struct SubAgent {
     brief: BriefConfig,
     /// The providers set up, by name: a sub-agent may be sent to another one.
     providers: std::collections::BTreeMap<String, ProviderConfig>,
-    /// Sub-agents that can change files run beside each other too (see [`Claims`]).
+    /// Sub-agents that can change files run beside each other too (see [`Claims`]; the session's are in the tool context).
     parallel: bool,
-    claims: Claims,
     /// SubagentStart and SubagentStop hooks.
     hooks: Vec<nexo_core::config::HookConfig>,
     /// Commands run in a new worktree (`[agent] worktree_setup`).
@@ -367,7 +350,6 @@ impl SubAgent {
             brief: BriefConfig { tokens: 0, ..Default::default() },
             providers: Default::default(),
             parallel: false,
-            claims: Default::default(),
             hooks: Vec::new(),
             worktree_setup: Vec::new(),
         }
@@ -865,18 +847,11 @@ impl Run {
         if t.kind() == ToolKind::Write {
             if let Some(p) = args.get("path").and_then(Value::as_str) {
                 let key = plain_path(p, &ctx.cwd);
-                let mut held = self.claims.lock().unwrap_or_else(|e| e.into_inner());
-                match held.get(&key) {
-                    Some((owner, label)) if *owner != ctx.call_id => {
-                        return refused(ToolOutput::error(format!(
-                            "`{p}` is being changed by another sub-agent running at the same time ({label}); \
-                             leave it to that one and say so in your report"
-                        )));
-                    }
-                    Some(_) => {}
-                    None => {
-                        held.insert(key, (ctx.call_id.clone(), self.label.clone()));
-                    }
+                if let Err(label) = self.claims.hold(key, &ctx.call_id, &self.label) {
+                    return refused(ToolOutput::error(format!(
+                        "`{p}` is being changed by another sub-agent running at the same time ({label}); \
+                         leave it to that one and say so in your report"
+                    )));
                 }
             }
         }
@@ -1009,6 +984,10 @@ impl Tool for SubAgent {
         }
     }
 
+    fn handles_cancel(&self) -> bool {
+        true
+    }
+
     fn summary(&self, args: &Value) -> String {
         let d = args.get("description").or_else(|| args.get("prompt")).and_then(Value::as_str).unwrap_or("");
         let d: String = d.chars().take(60).collect();
@@ -1101,7 +1080,7 @@ impl Tool for SubAgent {
             tools: self.tools_for(&profile),
             profile,
             host,
-            claims: self.claims.clone(),
+            claims: ctx.claims.clone(),
             label: args
                 .get("description")
                 .or_else(|| args.get("prompt"))
@@ -1116,8 +1095,6 @@ impl Tool for SubAgent {
         };
         let asked = matches!(args.get("background"), Some(Value::Bool(true)))
             || args.get("background").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("true"));
-        // one that can change files keeps its write slot to the end: in the background it would edit
-        // beside the main agent and other sub-agents
         let writes = self.can_write(&run.profile);
         // an isolated one works in a worktree of its own, on its own branch
         let isolated = if writes && run.profile.isolation {
@@ -1135,76 +1112,145 @@ impl Tool for SubAgent {
         if let Some(wt) = &isolated {
             ictx.cwd = wt.path.clone();
         }
-        if !asked || writes {
-            if let Some(b) = &briefing {
-                ctx.report(b.line());
-            }
-            let note = if asked { "(ran in the foreground: it can change files)\n\n" } else { "" };
-            // whatever it held is free again when it ends, also when it is stopped
-            let _release = Release { claims: self.claims.clone(), owner: ctx.call_id.clone() };
-            let res = run.go(prompt, briefing.as_ref(), &ictx, &|l| ctx.report(l)).await;
-            let tail = match isolated {
-                Some(wt) => tokio::task::spawn_blocking(move || worktree_note(&wt)).await.unwrap_or_default(),
-                None => String::new(),
-            };
-            if let Ok(report) = &res {
-                let fails = stop_hooks(&self.hooks, &ctx.cwd, &ctx.session_id, &run.profile.name, report).await;
-                fails.into_iter().for_each(|f| ctx.report(f));
-            }
-            return match res {
-                Ok(report) => ToolOutput::ok(format!("{note}{report}{tail}")),
-                Err(e) if ctx.cancel.is_cancelled() => {
-                    ToolOutput::error(format!("interrupted by the person ({e}){tail}"))
-                }
-                Err(e) => ToolOutput::error(format!("{e}{tail}")),
-            };
-        }
+        // every sub-agent is a job of its own that runs as its own task. `background: true` leaves it
+        // there at once; otherwise this call waits for it (attached), and lets go of it when the person
+        // writes or presses the key (see `Detach`)
         let label = args.get("description").and_then(Value::as_str).unwrap_or(prompt);
         let label: String = label.lines().next().unwrap_or("").chars().take(80).collect();
         let job = ctx.jobs.start(JobKind::Agent, label.clone());
-        let (hooks, agent_name) = (self.hooks.clone(), run.profile.name.clone());
         let id = job.id();
-        let mut jctx = ctx.clone();
+        let (hooks, agent_name) = (self.hooks.clone(), run.profile.name.clone());
+        let (main_cwd, session_id, call_id) = (ctx.cwd.clone(), ctx.session_id.clone(), ctx.call_id.clone());
+        let mut jctx = ictx;
         jctx.cancel = job.cancel();
+        // lines go to the call's progress only while this call waits; the sender is held weakly so the
+        // call's own end closes the channel
+        let progress = if asked { None } else { ctx.progress.as_ref().map(|p| p.downgrade()) };
         jctx.progress = None;
+        let attached = Arc::new(AtomicBool::new(!asked));
+        let release = Release { claims: ctx.claims.clone(), owner: call_id.clone() };
+        let detach = ctx.detach.clone();
         let prompt = prompt.to_string();
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<Ended>();
+        let flag = attached.clone();
         tokio::spawn(async move {
+            // whatever it held is free again when it ends, is stopped, or the task is dropped
+            let _release = release;
             let job = Arc::new(job);
             let say = {
                 let job = job.clone();
-                move |l: String| job.line(&l)
+                let call_id = call_id.clone();
+                move |l: String| {
+                    job.line(&l);
+                    if flag.load(Ordering::Relaxed) {
+                        if let Some(p) = progress.as_ref().and_then(|p| p.upgrade()) {
+                            let _ = p.send(nexo_core::tool::ToolProgress { call_id: call_id.clone(), line: l });
+                        }
+                    }
+                }
             };
             if let Some(b) = &briefing {
                 say(b.line());
             }
             let res = run.go(&prompt, briefing.as_ref(), &jctx, &say).await;
+            // an isolated one is finished here, also when it was stopped: no worktree is left behind
+            let tail = match isolated {
+                Some(wt) => tokio::task::spawn_blocking(move || worktree_note(&wt)).await.unwrap_or_default(),
+                None => String::new(),
+            };
             if let Ok(report) = &res {
-                for f in stop_hooks(&hooks, &jctx.cwd, &jctx.session_id, &agent_name, report).await {
+                for f in stop_hooks(&hooks, &main_cwd, &session_id, &agent_name, report).await {
                     say(f);
                 }
             }
+            if let Some(d) = &detach {
+                d.unmark(&call_id);
+            }
             drop(say);
             let Ok(job) = Arc::try_unwrap(job) else { return };
-            match res {
+            let ended = match res {
                 Ok(report) => {
+                    let full = format!("{report}{tail}");
                     job.line("--- report ---");
-                    job.text(&report);
+                    job.text(&full);
+                    job.set_report(&full);
                     job.finish(true, "reported");
+                    Ended::Report(full)
                 }
                 // killed: the registry already says so
-                Err(_) if jctx.cancel.is_cancelled() => drop(job),
+                Err(e) if jctx.cancel.is_cancelled() => {
+                    drop(job);
+                    Ended::Stopped(e, tail)
+                }
                 Err(e) => {
                     job.line(&e);
+                    job.set_report(&format!("failed: {e}{tail}"));
                     job.finish(false, "failed");
+                    Ended::Failed(e, tail)
+                }
+            };
+            let _ = tx.send(ended);
+        });
+        if asked {
+            return ToolOutput::ok(format!(
+                "Started sub-agent job {id} ({name}): \"{label}\". It works while you go on; you will be told when it \
+                 ends, with its report. Stop it with the jobs tool: {{\"action\": \"kill\", \"id\": {id}}}.",
+                name = agent_name_of(&args)
+            ));
+        }
+        let gone = async {
+            match &ctx.detach {
+                Some(d) => d.wait().await,
+                None => std::future::pending::<nexo_core::jobs::DetachWhy>().await,
+            }
+        };
+        let ended = tokio::select! {
+            biased;
+            r = &mut rx => r,
+            _ = ctx.cancel.cancelled() => {
+                // Esc: stop it and give its cleanup (the worktree, the hooks) a few seconds
+                ctx.jobs.kill(id);
+                match tokio::time::timeout(CLEANUP, &mut rx).await {
+                    Ok(r) => r,
+                    Err(_) => return ToolOutput::error("interrupted by the person"),
                 }
             }
-        });
-        ToolOutput::ok(format!(
-            "Started sub-agent job {id} ({name}): \"{label}\". It works while you go on; you will be told when it \
-             ends. Its report is the job's output: jobs {{\"action\": \"output\", \"id\": {id}}} (add \"wait\" to \
-             wait for it), stop it with {{\"action\": \"kill\", \"id\": {id}}}."
-        ))
+            why = gone => {
+                attached.store(false, Ordering::Relaxed);
+                if let Some(d) = &ctx.detach {
+                    d.mark(&ctx.call_id);
+                }
+                return ToolOutput::ok(why.text(id));
+            }
+        };
+        // the model has the outcome in this tool result: no ended note for it
+        ctx.jobs.tell(id);
+        match ended {
+            Ok(Ended::Report(r)) => ToolOutput::ok(r),
+            Ok(Ended::Failed(e, tail)) => ToolOutput::error(format!("{e}{tail}")),
+            Ok(Ended::Stopped(e, tail)) if ctx.cancel.is_cancelled() => {
+                ToolOutput::error(format!("interrupted by the person ({e}){tail}"))
+            }
+            Ok(Ended::Stopped(e, tail)) => ToolOutput::error(format!("the sub-agent was stopped ({e}){tail}")),
+            Err(_) => ToolOutput::error("the sub-agent ended without a report"),
+        }
     }
+}
+
+/// How a sub-agent's run ended, for the call that waits for it.
+enum Ended {
+    Report(String),
+    /// It failed: the error and the worktree note.
+    Failed(String, String),
+    /// It was stopped: what it had said, and the worktree note.
+    Stopped(String, String),
+}
+
+/// Seconds an interrupted call waits for the sub-agent to finish its cleanup.
+const CLEANUP: Duration = Duration::from_secs(5);
+
+fn agent_name_of(args: &Value) -> String {
+    args.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).unwrap_or(DEFAULT).to_string()
 }
 
 #[cfg(test)]

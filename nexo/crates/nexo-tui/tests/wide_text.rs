@@ -199,6 +199,7 @@ fn a_reply_with_wide_text_stays_inside_the_screen() {
 fn ask(a: &mut App, summary: &str) {
     a.handle_agent(AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "p1".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,

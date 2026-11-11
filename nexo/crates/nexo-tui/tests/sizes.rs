@@ -136,6 +136,7 @@ fn conversation(a: &mut App) {
 fn permission(a: &mut App) {
     a.handle_agent(AgentEvent::PermissionAsk {
         request: PermissionRequest {
+            agent: None,
             id: "p1".into(),
             tool: "bash".into(),
             kind: ToolKind::Exec,
