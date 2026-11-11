@@ -40,6 +40,8 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     // the jobs of the session left behind stop, and none of them is reported to this one
     st.jobs.kill_all();
     st.jobs.take_ended();
+    // its scratch folder (`$NEXO_TMP`) goes with it
+    nexo_tools::bash::wipe_tmp(st.session.id());
     st.session = session;
     prefix::adopt(st);
     st.checkpoints.clear();
@@ -318,6 +320,7 @@ pub(super) async fn export(state: &Shared, path: Option<PathBuf>, format: Option
 pub(super) async fn clear(state: &Shared) {
     let mut st = state.lock().await;
     let (provider, _, model) = st.target.get();
+    nexo_tools::bash::wipe_tmp(st.session.id());
     st.session = match Session::create(&st.cwd, &provider, &model) {
         Ok(s) => s,
         Err(e) => {

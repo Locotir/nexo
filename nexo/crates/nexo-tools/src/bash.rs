@@ -27,7 +27,7 @@ pub fn tmp_dir(session: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("nexo-tmp-{}-{id}", std::process::id()))
 }
 
-/// Removes a session's scratch folder; the agent calls it when a turn ends.
+/// Removes a session's scratch folder; the agent calls it when the session ends or is replaced.
 pub fn wipe_tmp(session: &str) {
     let _ = std::fs::remove_dir_all(tmp_dir(session));
 }
@@ -46,12 +46,12 @@ impl Tool for Bash {
             description: format!(
                 "Run a shell command ({}) in the working directory; returns its output \
                  (stdout and stderr interleaved) and exit code. Killed after `timeout` \
-                 seconds (default 120, at most 600); long output keeps its head \
+                 seconds (default 120, max 600); long output keeps its head \
                  and tail. `background: true` \
                  runs it as a job while you work: the call returns its job id, you are told \
                  when it ends, and `jobs` reads its output or stops it. Background jobs end with the session; \
                  `detach: true` keeps a service running after it. \
-                 Temp files: $NEXO_TMP.",
+                 Session scratch: $NEXO_TMP.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
                     "bash" => "Git Bash on Windows: POSIX shell, C:/... paths work",
@@ -952,7 +952,7 @@ fn prints_lines(script: &str) -> bool {
 mod tests {
     #[cfg(unix)]
     #[tokio::test]
-    async fn nexo_tmp_is_wiped_at_turn_end() {
+    async fn nexo_tmp_is_kept_between_commands_until_it_is_wiped() {
         let d = tempfile::tempdir().unwrap();
         let mut c = ToolContext::new(d.path().to_path_buf());
         c.session_id = "tmp-test-session".into();
@@ -961,11 +961,15 @@ mod tests {
         let dir = std::path::PathBuf::from(out.content.trim());
         assert!(dir.join("probe.txt").is_file(), "{dir:?}");
         assert!(!dir.starts_with(d.path()), "the folder is not in the project");
+        // a later command (the next turn) still finds the file
+        let out = Bash.run(json!({"command": "cat \"$NEXO_TMP/probe.txt\"; echo again > \"$NEXO_TMP/p2\""}), &c).await;
+        assert_eq!(out.content.trim(), "probe");
         wipe_tmp("tmp-test-session");
-        assert!(!dir.exists(), "{dir:?} is gone after the turn");
+        assert!(!dir.exists(), "{dir:?} is gone once the session ends");
         // a later command gets a fresh one
-        let out = Bash.run(json!({"command": "echo again > \"$NEXO_TMP/p2\"; ls \"$NEXO_TMP\""}), &c).await;
-        assert_eq!(out.content.trim(), "p2");
+        let out =
+            Bash.run(json!({"command": "ls \"$NEXO_TMP\"; echo x > \"$NEXO_TMP/p3\"; ls \"$NEXO_TMP\""}), &c).await;
+        assert_eq!(out.content.trim(), "p3");
         wipe_tmp("tmp-test-session");
     }
 

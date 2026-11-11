@@ -287,6 +287,58 @@ async fn a_file_a_command_of_the_model_made_is_not_attached_at_the_next_request(
     r.stop().await;
 }
 
+/// The scratch folder lives as long as the session: kept over turns, gone after `/clear`, after a
+/// resume of another session and at shutdown.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_scratch_folder_lasts_for_the_session() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("b1", "bash", json!({"command": "echo saved > \"$NEXO_TMP/s.sh\""}))),
+        Reply::Events(text("one")),
+        Reply::Events(call("b2", "bash", json!({"command": "cp \"$NEXO_TMP/s.sh\" seen.txt"}))),
+        Reply::Events(text("two")),
+        Reply::Events(call("b3", "bash", json!({"command": "echo again > \"$NEXO_TMP/t.sh\""}))),
+        Reply::Events(text("three")),
+        Reply::Events(call("b4", "bash", json!({"command": "echo third > \"$NEXO_TMP/u.sh\""}))),
+        Reply::Events(text("four")),
+    ]);
+    let set = tools().with(Arc::new(nexo_tools::bash::Bash));
+    let mut r = start_with(client, config(PermissionMode::Auto), None, d.path(), set).await;
+    let sid1 = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        e => panic!("{e:?}"),
+    };
+    let dir1 = nexo_tools::bash::tmp_dir(&sid1);
+    r.send(AgentCommand::Submit { text: "save a script".into(), attachments: vec![] });
+    r.turn().await;
+    assert!(dir1.join("s.sh").is_file(), "kept after the turn ended");
+    r.send(AgentCommand::Submit { text: "use it".into(), attachments: vec![] });
+    r.turn().await;
+    assert_eq!(std::fs::read_to_string(d.path().join("seen.txt")).unwrap().trim(), "saved");
+    // /clear starts another session: the folder of the first goes, the second gets its own
+    r.send(AgentCommand::Clear);
+    let sid2 = match r.until(|e| matches!(e, AgentEvent::SessionChanged { .. })).await.pop() {
+        Some(AgentEvent::SessionChanged { session_id, .. }) => session_id,
+        e => panic!("{e:?}"),
+    };
+    assert_ne!(sid1, sid2);
+    assert!(!dir1.exists(), "gone after /clear");
+    let dir2 = nexo_tools::bash::tmp_dir(&sid2);
+    r.send(AgentCommand::Submit { text: "again".into(), attachments: vec![] });
+    r.turn().await;
+    assert!(dir2.join("t.sh").is_file());
+    // resuming the first session replaces the second
+    r.send(AgentCommand::Resume { id: sid1.clone() });
+    r.until(|e| matches!(e, AgentEvent::SessionChanged { .. })).await;
+    assert!(!dir2.exists(), "gone after the session is replaced");
+    r.send(AgentCommand::Submit { text: "third".into(), attachments: vec![] });
+    r.turn().await;
+    assert!(dir1.join("u.sh").is_file());
+    r.stop().await;
+    assert!(!dir1.exists(), "gone at shutdown");
+}
+
 #[tokio::test]
 async fn a_plain_message_is_told_as_nothing_added_and_sent_asks_before_any_request() {
     let d = tempfile::tempdir().unwrap();
