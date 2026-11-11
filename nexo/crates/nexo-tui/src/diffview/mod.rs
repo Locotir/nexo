@@ -62,6 +62,7 @@ pub struct DiffView {
     pub list_area: Rect,
     pub body_area: Rect,
     pub hl: HashMap<usize, Highlighted>,
+    pub fx: crate::fx_diff::ViewFx,
 }
 
 impl DiffView {
@@ -86,6 +87,7 @@ impl DiffView {
             list_area: Rect::default(),
             body_area: Rect::default(),
             hl: HashMap::new(),
+            fx: Default::default(),
         }
     }
 
@@ -197,6 +199,7 @@ impl DiffView {
         }
         self.hunk = if forward { (self.hunk + 1).min(starts.len() - 1) } else { self.hunk.saturating_sub(1) };
         self.scroll = starts[self.hunk];
+        self.fx.pending = Some((self.sel, self.hunk));
         self.clamp_scroll();
     }
 

@@ -187,6 +187,8 @@ async fn main() -> anyhow::Result<()> {
             ("20261027-101500-7f3a".into(), "fix the failing test".into()),
             ("20261026-180002-c0de".into(), "add a tonnes unit".into()),
         ],
+        // DEMO_STILL=1 runs with the animations off, to compare the settled frame
+        animations: std::env::var_os("DEMO_STILL").is_none(),
         ..Default::default()
     };
     nexo_tui::run(handle, opts).await

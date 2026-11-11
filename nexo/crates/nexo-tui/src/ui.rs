@@ -36,13 +36,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // list shows the row before the one chosen
     let now = app.now();
     let fx = &app.fx;
-    if fx.pick_sel.moving(now) || fx.pal_sel.moving(now) || fx.block_sel.moving(now) {
+    if fx.pick_sel.moving(now)
+        || fx.pal_sel.moving(now)
+        || fx.block_sel.moving(now)
+        || fx.diff.moving(now)
+        || app.diffview.as_ref().is_some_and(|d| d.fx.moving(now))
+    {
         app.moving = true;
     }
 }
 
 fn draw_all(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    let (now0, on0) = (app.now(), app.fx_on());
     app.term_width = area.width;
     app.queue_rows.clear();
     app.todo_area = Rect::default();
@@ -52,6 +58,8 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     // the theme's ground under everything: no cell is left to the terminal's own colours
     f.render_widget(Box_::default().style(app.theme.base()), area);
     if let Some(dv) = &mut app.diffview {
+        dv.fx.now = Some(now0);
+        dv.fx.on = on0;
         crate::diffview::render::draw(f, dv, area, &app.theme);
         // DF7: a dialog (permission, question, info) is always on top, the viewer never hides it
         if app.modal.is_some() {
@@ -99,6 +107,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         0
     };
     let [text_area, files] = Layout::horizontal([Constraint::Min(0), Constraint::Length(files_w)]).areas(middle);
+    app.fx.diff.note(files_w > 0, &app.changed, now0, on0);
     let transcript = text_area;
     app.files_area = if files_w > 0 { files } else { Rect::default() };
     if files_w == 0 && (app.show_files || app.show_live) {
@@ -128,6 +137,7 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     }
     if files_w > 0 {
         draw_panel(f, app, files);
+        app.fx.diff.draw_open(f.buffer_mut(), files, &app.theme, now0);
     }
     app.todo_shown = todo_area.height > 0 || (files_w > 0 && !app.todo.is_empty());
     draw_todo_strip(f, app, todo_area);
@@ -1917,7 +1927,18 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
     if app.changed.is_empty() {
         lines.push(Line::from(vec![rail(), Span::styled("none yet", theme.dim())]));
     }
+    let (fnow, mut fading) = (app.now(), Vec::new());
     for c in &app.changed {
+        let look = app.fx.diff.look(&c.path, fnow);
+        // a rolling figure keeps the width of the settled one, so the path never moves
+        let fig = |shown: Option<u64>, settled: usize| {
+            let s = settled.to_string();
+            match shown.map(|n| crate::motion::fixed(&n.to_string(), &s)) {
+                Some(r) if width(&r) == width(&s) => r,
+                _ => s,
+            }
+        };
+        let (fa, fd) = (fig(look.map(|l| l.added), c.added), fig(look.map(|l| l.removed), c.removed));
         let counts = format!("+{} −{}", c.added, c.removed);
         let avail = inner_w.saturating_sub(width(&counts) + 1);
         let path = if width(&c.path) > avail {
@@ -1926,14 +1947,30 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
             c.path.clone()
         };
         let pad = avail.saturating_sub(width(&path));
-        lines.push(Line::from(vec![
+        let glow = look.map_or(0.0, |l| l.lit);
+        let tint = |col: ratatui::style::Color| {
+            let s = theme.style(col);
+            if glow > 0.0 {
+                s.bg(crate::motion::fade(theme, theme.bg, col, 0.4 * glow)).add_modifier(Modifier::BOLD)
+            } else {
+                s
+            }
+        };
+        let mut line = Line::from(vec![
             rail(),
             Span::raw(path),
             Span::raw(" ".repeat(pad + 1)),
-            Span::styled(format!("+{}", c.added), theme.style(theme.diff_add)),
+            Span::styled(format!("+{fa}"), tint(theme.diff_add)),
             Span::raw(" "),
-            Span::styled(format!("−{}", c.removed), theme.style(theme.diff_del)),
-        ]));
+            Span::styled(format!("−{fd}"), tint(theme.diff_del)),
+        ]);
+        if glow > 0.0 {
+            line = line.style(crate::motion::lit_style(theme, Style::default(), 0.6 * glow));
+        }
+        if look.is_some_and(|l| l.born < 1.0) {
+            fading.push((lines.len(), look.map_or(1.0, |l| l.born)));
+        }
+        lines.push(line);
     }
     lines.truncate(area.height as usize);
     while lines.len() < area.height as usize {
@@ -1941,6 +1978,13 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
     }
     clear_bg(f, area, theme);
     f.render_widget(Paragraph::new(Text::from(lines)), area);
+    // a file that just showed up fades in from the ground (its rail stays)
+    for (i, k) in fading {
+        if i < area.height as usize {
+            let row = Rect { x: area.x + 2, y: area.y + i as u16, width: area.width.saturating_sub(2), height: 1 };
+            crate::fx_diff::fade_row(f.buffer_mut(), row, theme, k);
+        }
+    }
 }
 
 /// Token counts one cell of the context map can stand for.

@@ -50,6 +50,8 @@ pub struct Fx {
     pub chg_at: [Option<Instant>; 3],
     /// When the locked home opened: the welcome card slides away.
     pub unlock_at: Option<Instant>,
+    /// The diff side panel: its open fade and its changed files (see `fx_diff`).
+    pub diff: crate::fx_diff::PanelFx,
 }
 
 impl App {
@@ -102,6 +104,8 @@ impl App {
                 || motion::within(fx.turn_start, now, motion::MODE_MS)
                 || motion::within(fx.ghost_at, now, crate::anim::POP_MS)
                 || motion::within(fx.unlock_at, now, crate::ui::UNLOCK_MS)
+                || fx.diff.moving(now)
+                || self.diffview.as_ref().is_some_and(|d| d.fx.moving(now))
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
         t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)
     }

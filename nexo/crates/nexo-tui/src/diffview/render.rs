@@ -274,6 +274,9 @@ fn draw_list(f: &mut Frame, dv: &mut DiffView, area: Rect, theme: &Theme) {
     let cw = digits(max_add) + digits(max_del) + 3;
     let bar_w = if w >= 34 { 6 } else { 0 };
     let right_w = if w >= 24 { bar_w + usize::from(bar_w > 0) + cw } else { 0 };
+    dv.fx.note_sel(dv.sel);
+    let gnow = dv.fx.clock();
+    let gliding = dv.fx.on && dv.fx.sel.moving(gnow);
     let mut lines = Vec::new();
     for (i, file) in dv.files.iter().enumerate().skip(dv.list_top).take(h) {
         let left_w = w.saturating_sub(right_w + 6);
@@ -302,8 +305,11 @@ fn draw_list(f: &mut Frame, dv: &mut DiffView, area: Rect, theme: &Theme) {
             ));
         }
         let mut line = Line::from(spans);
-        if i == dv.sel {
-            line = line.style(if dv.focus == Focus::List { theme.highlight() } else { theme.selection() });
+        let settled = if dv.focus == Focus::List { theme.highlight() } else { theme.selection() };
+        if gliding {
+            line = line.style(crate::fx_diff::glide_style(theme, settled, dv.fx.sel.level(i, gnow)));
+        } else if i == dv.sel {
+            line = line.style(settled);
         }
         lines.push(line);
     }
@@ -311,6 +317,7 @@ fn draw_list(f: &mut Frame, dv: &mut DiffView, area: Rect, theme: &Theme) {
 }
 
 fn draw_body(f: &mut Frame, dv: &mut DiffView, area: Rect, theme: &Theme) {
+    dv.fx.take_pending();
     ensure_highlight(dv, theme);
     let [title, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
     dv.body_area = body;
@@ -373,7 +380,12 @@ fn draw_body(f: &mut Frame, dv: &mut DiffView, area: Rect, theme: &Theme) {
                 } else {
                     format!("▾ {}", hunk.header)
                 };
-                out.push(Line::from(slice(&[Span::raw(text)], 0, w, theme.style(theme.hunk))));
+                let mut line = Line::from(slice(&[Span::raw(text)], 0, w, theme.style(theme.hunk)));
+                let glow = dv.fx.hunk_lit(dv.sel, hi);
+                if glow > 0.0 {
+                    line = line.style(crate::motion::lit_style(theme, Style::default(), glow));
+                }
+                out.push(line);
             }
             Row::Line(hi, li) => {
                 let l = &file.hunks[hi].lines[li];
