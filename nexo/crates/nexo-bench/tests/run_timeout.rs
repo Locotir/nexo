@@ -110,13 +110,24 @@ fn running(marker: &str) -> usize {
 
 const LIMIT: Duration = Duration::from_secs(3);
 
+/// The limit for a test in which a step has to finish before the limit: three times what a short whole run (a reply, a
+/// tool call, a last reply) takes on this machine right now, plus 2 s, and never under `LIMIT`. A busy CI runner on
+/// Windows needed more than 3 s for one reply, and the run was cut before the step the test counts.
+async fn roomy_limit() -> Duration {
+    let first = Step::Reply(reply("Looking.", Some(("ls", json!({"path": "."})))));
+    let (r, _, took) = run_script(vec![first, Step::Reply(reply("The parser is fixed.", None))], None).await;
+    assert_eq!(r.stop, Some(Stop::Done), "{r:?}");
+    LIMIT.max(took * 3 + Duration::from_secs(2))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_stalls_forever_ends_as_timeout_with_the_partial_stats() {
     let first = Step::Reply(reply("Looking.", Some(("ls", json!({"path": "."})))));
-    let (r, spent, took) = run_script(vec![first, Step::Stall], Some(LIMIT)).await;
+    let limit = roomy_limit().await;
+    let (r, spent, took) = run_script(vec![first, Step::Stall], Some(limit)).await;
     assert_eq!(r.stop, Some(Stop::Timeout), "{r:?}");
     assert!(!r.finished, "{r:?}");
-    assert!(took >= LIMIT && took < LIMIT + Duration::from_secs(20), "{took:?}");
+    assert!(took >= limit && took < limit + Duration::from_secs(20), "{took:?} of {limit:?}");
     assert_eq!((r.steps, r.requests), (2, 2), "{r:?}");
     assert!(r.input >= 1_000_000 && r.cost > 0.0, "the reply before the stall is kept: {r:?}");
     assert_eq!(spent, r.cost, "what the run spent counts toward the bench's budget");
@@ -134,9 +145,10 @@ async fn a_reply_that_never_ends_ends_as_timeout() {
 async fn a_command_that_hangs_ends_as_timeout_and_leaves_no_process() {
     let marker = "sleep 4217";
     let hang = Step::Reply(call(&format!("{marker}; echo never"), false));
-    let (r, spent, took) = run_script(vec![hang], Some(LIMIT)).await;
+    let limit = roomy_limit().await;
+    let (r, spent, took) = run_script(vec![hang], Some(limit)).await;
     assert_eq!(r.stop, Some(Stop::Timeout), "{r:?}");
-    assert!(took >= LIMIT && took < LIMIT + Duration::from_secs(20), "{took:?}");
+    assert!(took >= limit && took < limit + Duration::from_secs(20), "{took:?} of {limit:?}");
     assert_eq!((r.steps, r.tool_calls), (1, 1), "{r:?}");
     assert!(r.cost > 0.0 && spent == r.cost, "{r:?}");
     assert_eq!(running(marker), 0, "the command outlived the run");
@@ -165,8 +177,9 @@ async fn a_run_inside_its_time_is_unaffected_and_zero_means_no_limit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_run_after_a_timeout_starts_and_finishes() {
+    let limit = roomy_limit().await;
     let out = tempfile::tempdir().unwrap();
-    let bench = bench(vec![Step::Stall, Step::Reply(reply("The parser is fixed.", None))], Some(LIMIT), out.path());
+    let bench = bench(vec![Step::Stall, Step::Reply(reply("The parser is fixed.", None))], Some(limit), out.path());
     let task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     let arm = Arm::parse("plain").unwrap();
     let a = run::run(&bench, &task, &arm, 0, 5.0).await.unwrap();
