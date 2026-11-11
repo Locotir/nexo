@@ -22,6 +22,8 @@ pub fn items_from_args(args: &Value) -> Option<Vec<TodoItem>> {
         if text.is_empty() {
             return None;
         }
+        // the strip and the window draw it as it is: no joiners, tabs or escapes
+        let text = crate::render::wrap::clean(text);
         let status =
             match it.get("status").and_then(Value::as_str).unwrap_or("pending").trim().to_ascii_lowercase().as_str() {
                 "pending" | "todo" | "" => TodoStatus::Pending,
@@ -29,7 +31,7 @@ pub fn items_from_args(args: &Value) -> Option<Vec<TodoItem>> {
                 "done" | "completed" | "complete" => TodoStatus::Done,
                 _ => return None,
             };
-        out.push(TodoItem { text: text.to_string(), status });
+        out.push(TodoItem { text: text.into_owned(), status });
     }
     Some(out)
 }

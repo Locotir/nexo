@@ -113,11 +113,8 @@ pub fn handle(app: &mut App, ev: Event) {
                     app.dirty = true;
                 }
                 // the filter of a picker is one line: line breaks become spaces, the words stay apart
-                Some(m @ crate::modal::Modal::Picker(_)) => {
-                    for c in s.chars().filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t')) {
-                        let c = if c.is_control() { ' ' } else { c };
-                        m.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-                    }
+                Some(crate::modal::Modal::Picker(p)) => {
+                    p.paste(&s);
                     app.dirty = true;
                 }
                 // the answer of one's own in a question

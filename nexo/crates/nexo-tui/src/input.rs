@@ -37,6 +37,49 @@ pub struct Input {
     dragged: bool,
 }
 
+/// Whether `c` adds nothing to the cell before it: a combining mark, a joiner, a selector, a skin
+/// tone (the box draws none of them, see `wrap::clean`).
+fn no_cell(c: char) -> bool {
+    !c.is_control() && (unicode_width::UnicodeWidthChar::width(c) == Some(0) || crate::render::wrap::unsafe_char(c))
+}
+
+fn regional(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
+/// The end of the visible character that starts at `i`: the character, its marks, and for a flag both its letters.
+fn cluster_end(chars: &[char], i: usize) -> usize {
+    let mut e = i + 1;
+    if regional(chars[i]) && chars.get(e).is_some_and(|c| regional(*c)) {
+        e += 1;
+    }
+    while chars.get(e).is_some_and(|c| no_cell(*c)) {
+        e += 1;
+    }
+    e
+}
+
+/// The visible character (`start`, `end` in code points) that holds the code point `at`.
+fn cluster_of(chars: &[char], at: usize) -> (usize, usize) {
+    let mut i = 0;
+    loop {
+        let e = cluster_end(chars, i);
+        if at < e {
+            return (i, e);
+        }
+        i = e;
+    }
+}
+
+/// The visible character the position `col` falls inside of (not at an edge of).
+fn cluster_at(chars: &[char], col: usize) -> Option<(usize, usize)> {
+    if col == 0 || col >= chars.len() {
+        return None;
+    }
+    let (s, e) = cluster_of(chars, col);
+    (s < col).then_some((s, e))
+}
+
 /// The draft laid out in rows of at most `width` cells (a line is cut where the next
 /// character would not fit), with the cursor's row and column in that layout.
 pub fn wrapped_rows(input: &Input, width: usize) -> (Vec<String>, (usize, usize)) {
@@ -362,7 +405,41 @@ impl Input {
                 return (row, if end { e } else { s });
             }
         }
+        // never inside a visible character: a base with its marks, a flag
+        if let Some(line) = self.editor.lines().get(row) {
+            let chars: Vec<char> = line.chars().collect();
+            if let Some((s, e)) = cluster_at(&chars, col) {
+                let end = toward.unwrap_or(col - s >= e - col);
+                return (row, if end { e } else { s });
+            }
+        }
         (row, col)
+    }
+
+    /// Backspace or Delete on a visible character of several code points (a letter with its
+    /// marks, a flag): it goes whole.
+    fn delete_cluster(&mut self, key: KeyEvent) -> bool {
+        if !key.modifiers.is_empty() || self.editor.selection_range().is_some() {
+            return false;
+        }
+        let backward = match key.code {
+            KeyCode::Backspace => true,
+            KeyCode::Delete => false,
+            _ => return false,
+        };
+        let (row, col) = self.editor.cursor();
+        let Some(line) = self.editor.lines().get(row) else { return false };
+        let chars: Vec<char> = line.chars().collect();
+        let Some(at) = if backward { col.checked_sub(1) } else { Some(col) }.filter(|a| *a < chars.len()) else {
+            return false;
+        };
+        let (s, e) = cluster_of(&chars, at);
+        if e - s < 2 {
+            return false;
+        }
+        self.editor.move_cursor(CursorMove::Jump(row as u16, s as u16));
+        self.editor.delete_str(e - s);
+        true
     }
 
     /// Backspace, Ctrl+W or Alt+Backspace at the end of a chip, or Delete at its start: the whole chip goes, with its paste.
@@ -718,9 +795,21 @@ impl Input {
         if self.delete_chip(key) {
             return Edit::Changed;
         }
+        if self.delete_cluster(key) {
+            return Edit::Changed;
+        }
         let before = self.editor.cursor();
+        let len = self.editor.lines().get(before.0).map_or(0, |l| l.chars().count());
         self.editor.input(key);
-        let now = self.editor.cursor();
+        let mut now = self.editor.cursor();
+        // a word taken out up to a mark: the mark goes with it
+        if now.0 == before.0 && self.editor.lines().get(now.0).is_some_and(|l| l.chars().count() < len) {
+            let chars: Vec<char> = self.editor.lines()[now.0].chars().collect();
+            if let Some((_, e)) = cluster_at(&chars, now.1) {
+                self.editor.delete_str(e - now.1);
+                now = self.editor.cursor();
+            }
+        }
         let to = self.snap(now, Some(now > before));
         if to != now {
             self.editor.move_cursor(CursorMove::Jump(to.0 as u16, to.1 as u16));

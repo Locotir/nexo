@@ -98,7 +98,19 @@ impl Picker {
     pub fn current(&self) -> Option<&PickItem> {
         self.ranked.get(self.selected).map(|&i| &self.items[i])
     }
+
+    /// Pasted text into the filter: one line (breaks and tabs become spaces, other control
+    /// characters go), at most [`MAX_QUERY`] characters, and ranked once, not once per character.
+    pub fn paste(&mut self, text: &str) {
+        let room = MAX_QUERY.saturating_sub(self.query.chars().count());
+        let line = text.chars().filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'));
+        self.query.extend(line.map(|c| if c.is_control() { ' ' } else { c }).take(room));
+        self.refilter();
+    }
 }
+
+/// The longest filter a picker takes from a paste.
+const MAX_QUERY: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct Permission {
@@ -817,10 +829,12 @@ impl Modal {
             Span::styled(req.tool.clone(), Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::raw(truncate(
-                req.summary
-                    .strip_prefix(req.tool.as_str())
-                    .map(|r| r.trim_start_matches(':').trim_start())
-                    .unwrap_or(req.summary.as_str()),
+                &crate::render::wrap::clean(
+                    req.summary
+                        .strip_prefix(req.tool.as_str())
+                        .map(|r| r.trim_start_matches(':').trim_start())
+                        .unwrap_or(req.summary.as_str()),
+                ),
                 w.saturating_sub(req.tool.len() + 2),
             )),
         ])];
@@ -897,7 +911,7 @@ impl Modal {
         for (i, r) in req.suggested_rules.iter().take(9).enumerate() {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {}  ", i + 1), theme.style(theme.accent)),
-                Span::raw(r.clone()),
+                Span::raw(crate::render::wrap::clean(r).into_owned()),
             ]));
         }
         lines
