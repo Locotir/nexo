@@ -61,6 +61,9 @@ pub(crate) fn target(ins: &Instruction) -> Option<(u64, bool)> {
 
 /// What the address is, in a few words: an import, a function, a string or a symbol. Empty when unknown.
 pub(crate) fn describe(img: &Image, addr: u64, memory: bool) -> Option<String> {
+    if let Some(n) = img.user_name(addr) {
+        return Some(n.to_string());
+    }
     if memory {
         if let Some(&i) = img.slots.get(&addr) {
             return Some(img.imports[i].name.clone());
@@ -93,4 +96,30 @@ pub(crate) fn describe(img: &Image, addr: u64, memory: bool) -> Option<String> {
 pub(crate) fn comment(img: &Image, ins: &Instruction) -> Option<String> {
     let (addr, memory) = target(ins)?;
     describe(img, addr, memory)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes of executable sections decoded on this thread (tests count passes).
+    pub(crate) static DECODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// [`walk`] over the bytes the file holds for an executable section.
+pub(crate) fn walk_code(img: &Image, sec: &crate::image::Section, f: impl FnMut(&Instruction, &[u8])) {
+    let bytes = img.section_bytes(sec);
+    #[cfg(test)]
+    DECODED.with(|c| c.set(c.get() + bytes.len()));
+    walk(bytes, sec.addr, f);
+}
+
+/// The instruction at `addr` as text, or `None` when the file holds no bytes there.
+pub(crate) fn text_at(img: &Image, fmt: &mut IntelFormatter, addr: u64) -> Option<String> {
+    let bytes = img.read_at(addr, 15)?;
+    let ins = Decoder::with_ip(64, bytes, addr, DecoderOptions::NONE).decode();
+    if ins.is_invalid() {
+        return Some("(bad)".into());
+    }
+    let mut line = String::new();
+    fmt.format(&ins, &mut line);
+    Some(line)
 }

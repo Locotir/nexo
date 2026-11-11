@@ -114,3 +114,31 @@ pub fn shell_word(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
 }
+
+/// The rows `start..end` of an answer of `total` lines that a page of `budget` lines starting at line
+/// `from` needs. One more row than the page shows is included, so the cut line can name where to resume.
+pub(crate) fn window(from: Option<u64>, budget: usize, total: usize) -> (usize, usize) {
+    let start = from.map_or(0, |k| usize::try_from(k).unwrap_or(usize::MAX)).min(total);
+    (start, start.saturating_add(budget.max(MIN_LINES)).min(total))
+}
+
+/// Render only the window of `items` that a page needs. Rows are keyed by line position, so the page
+/// after this one resumes with `--from <position>`. The second value counts the lines after the window.
+pub(crate) fn cut<T>(
+    items: &[T],
+    from: Option<u64>,
+    budget: usize,
+    mut render: impl FnMut(&T) -> Row,
+) -> (Vec<Row>, usize) {
+    let (start, end) = window(from, budget, items.len());
+    let rows = items[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut r = render(t);
+            r.key = (start + i) as u64;
+            r
+        })
+        .collect();
+    (rows, items.len() - end)
+}

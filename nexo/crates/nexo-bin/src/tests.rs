@@ -198,14 +198,14 @@ fn strings_grep() {
     let f = fixtures::elf64(false);
     let img = open(&f);
     let o = strings(&img, Some("nexo")).unwrap();
-    assert_eq!(text(&o), format!("{:#010x}  \"{STRING}\"", f.string));
+    assert_eq!(text(&o), format!("{:#010x}     1  \"{STRING}\"", f.string));
     assert_eq!(o.meta["matched"], 1);
     let t = text(&strings(&img, Some("^zzz$")).unwrap());
     assert!(t.starts_with("no string matches"), "{t}");
     assert!(strings(&img, Some("(")).unwrap_err().to_string().contains("bad regular expression"));
     let p = fixtures::pe64(false);
     let img = open(&p);
-    assert_eq!(text(&strings(&img, Some("hello")).unwrap()), format!("{:#010x}  \"{STRING}\"", p.string));
+    assert_eq!(text(&strings(&img, Some("hello")).unwrap()), format!("{:#010x}     1  \"{STRING}\"", p.string));
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn strings_finds_utf16() {
     }
     let img = Image::from_bytes(data, PathBuf::from("/fx/prog")).unwrap();
     let t = text(&strings(&img, Some("Wide")).unwrap());
-    assert_eq!(t, format!("{:#010x}  L\"Wide!\"", f.table));
+    assert_eq!(t, format!("{:#010x}     0  L\"Wide!\"", f.table));
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn a_long_real_function_is_cut_and_joined_exactly() {
 }
 
 /// The test binary itself, unless it is not x86-64 (then the reason is printed and the test passes).
-fn this_binary() -> Option<Image> {
+pub(crate) fn this_binary() -> Option<Image> {
     let exe = std::env::current_exe().expect("current exe");
     match Image::open(&exe) {
         Ok(img) => Some(img),
@@ -414,6 +414,23 @@ fn ask_everything(img: &Image) {
         let _ = func(img, &format!("{:#x}", f.start), true).map(|o| o.page(None, 50));
     }
     let _ = strings(img, Some("e")).map(|o| o.page(None, 50));
+    let _ = strings_window(img, None, StrSort::Refs, None, 50).map(|o| o.page(None, 50));
+    for f in img.funcs().iter().take(8) {
+        let at = format!("{:#x}", f.start);
+        let _ = xref(img, &at).map(|o| o.page(None, 50));
+        let _ = calls(img, &at).map(|o| o.page(None, 50));
+        let _ = func_view(img, &FnQuery { to: Some(&format!("{:#x}", f.end.saturating_add(40))), ..FnQuery::new(&at) })
+            .map(|o| o.page(None, 50));
+        let _ = func(img, &format!("{:#x}", f.start.saturating_add(3)), false).map(|o| o.page(None, 50));
+    }
+    for s in img.sections.iter().take(8) {
+        let _ = xref(img, &format!("{:#x}", s.addr)).map(|o| o.page(None, 50));
+    }
+    for sort in [FuncSort::Addr, FuncSort::Size, FuncSort::Callers, FuncSort::Callees] {
+        let _ = func_list(img, sort, None, 0).map(|o| o.page(None, 50));
+    }
+    let _ = xref_str(img, "e", true).map(|o| o.page(None, 50));
+    let _ = names_list(img).page(None, 50);
     let _ = find_bytes(img, "00 00").map(|o| o.page(None, 50));
     let _ = find_imm(img, 1337).map(|o| o.page(None, 50));
     for s in img.sections.iter().take(8) {
@@ -427,7 +444,14 @@ fn ask_everything(img: &Image) {
 
 #[test]
 fn truncated_files_give_ok_or_err_never_a_panic() {
-    for f in [fixtures::elf64(false), fixtures::elf64(true), fixtures::pe64(false), fixtures::pe64(true)] {
+    for f in [
+        fixtures::elf64(false),
+        fixtures::elf64(true),
+        fixtures::pe64(false),
+        fixtures::pe64(true),
+        fixtures::elf64_xref(),
+        fixtures::pe64_xref(),
+    ] {
         let n = f.bytes.len();
         for i in 0..64 {
             let cut = n * i / 63;
@@ -440,7 +464,7 @@ fn truncated_files_give_ok_or_err_never_a_panic() {
 
 #[test]
 fn damaged_headers_give_ok_or_err_never_a_panic() {
-    for f in [fixtures::elf64(true), fixtures::pe64(true)] {
+    for f in [fixtures::elf64(true), fixtures::pe64(true), fixtures::elf64_xref(), fixtures::pe64_xref()] {
         let n = f.bytes.len();
         for round in 0..3u8 {
             for i in 0..n.min(0x500) {

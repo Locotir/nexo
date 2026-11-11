@@ -13,6 +13,8 @@ use object::{
 use sha2::{Digest, Sha256};
 
 use crate::funcs::Func;
+use crate::names::UserNames;
+use crate::refs::Refs;
 use crate::strings::Str;
 use crate::{Error, Result};
 
@@ -21,6 +23,8 @@ const MAX_FILE: u64 = 1 << 30;
 const MAX_SECTIONS: usize = 4096;
 const MAX_SYMBOLS: usize = 500_000;
 const MAX_IMPORTS: usize = 200_000;
+/// The most dynamic relocations read.
+const MAX_RELOCS: usize = 4_000_000;
 const MAX_NAME: usize = 256;
 /// Longest raw (mangled) name that is demangled.
 const MAX_NAME_IN: usize = 4096;
@@ -128,8 +132,13 @@ pub struct Image {
     /// PE exception directory (RVA, size).
     pub(crate) exception_dir: Option<(u64, u64)>,
     sorted: Vec<usize>,
+    /// Pointers the loader writes (ELF relative relocations): (slot, value).
+    pub(crate) rel_ptrs: Vec<(u64, u64)>,
+    /// Names and notes the person gave (see `names`).
+    pub(crate) user: UserNames,
     funcs: OnceLock<Vec<Func>>,
     strings: OnceLock<Vec<Str>>,
+    refs: OnceLock<Refs>,
 }
 
 impl Image {
@@ -264,6 +273,38 @@ impl Image {
         self.strings.get_or_init(|| crate::strings::scan(self))
     }
 
+    /// Every reference found (see [`Refs`]), built on the first call. When the functions are not
+    /// found yet, the same decode pass finds them too; ask for the references before the functions
+    /// where both are needed.
+    pub fn refs(&self) -> &Refs {
+        self.refs.get_or_init(|| {
+            let t0 = std::time::Instant::now();
+            let mut c = crate::refs::Collector::new();
+            if self.funcs.get().is_some() {
+                crate::funcs::decode_refs(self, &mut c);
+            } else {
+                let f = crate::funcs::find_with(self, Some(&mut c));
+                let _ = self.funcs.set(f);
+            }
+            crate::refs::build(self, c, t0)
+        })
+    }
+
+    /// The name of a function to show: the one the person gave, else the one found.
+    pub fn func_name<'a>(&'a self, f: &'a Func) -> &'a str {
+        self.user.names.get(&f.start).map_or(f.name.as_str(), String::as_str)
+    }
+
+    /// The name the person gave to `addr`, if any.
+    pub fn user_name(&self, addr: u64) -> Option<&str> {
+        self.user.names.get(&addr).map(String::as_str)
+    }
+
+    /// The note the person left at `addr`, if any.
+    pub fn note_at(&self, addr: u64) -> Option<&str> {
+        self.user.notes.get(&addr).map(String::as_str)
+    }
+
     /// The function that holds `addr`.
     pub fn func_at(&self, addr: u64) -> Option<&Func> {
         let f = self.funcs();
@@ -281,7 +322,8 @@ impl Image {
     /// `name` or `name+0x1c` for an address inside a function.
     pub fn label(&self, addr: u64) -> Option<String> {
         let f = self.func_at(addr)?;
-        Some(if addr == f.start { f.name.clone() } else { format!("{}+{:#x}", f.name, addr - f.start) })
+        let name = self.func_name(f);
+        Some(if addr == f.start { name.to_string() } else { format!("{name}+{:#x}", addr - f.start) })
     }
 
     pub fn arch_name(&self) -> &'static str {
@@ -345,8 +387,11 @@ fn blank(format: Format) -> Image {
         slots: HashMap::new(),
         exception_dir: None,
         sorted: Vec::new(),
+        rel_ptrs: Vec::new(),
+        user: UserNames::default(),
         funcs: OnceLock::new(),
         strings: OnceLock::new(),
+        refs: OnceLock::new(),
     }
 }
 
@@ -484,9 +529,16 @@ fn load_elf(data: &[u8]) -> Result<Image> {
     // imports: undefined dynamic symbols; the slot comes from the relocation that fills it
     let mut slot_of = HashMap::new();
     if let Some(relocs) = elf.dynamic_relocations() {
-        for (off, r) in relocs.take(MAX_IMPORTS) {
+        for (off, r) in relocs.take(MAX_RELOCS) {
             if let object::RelocationTarget::Symbol(idx) = r.target() {
-                slot_of.entry(idx).or_insert(off);
+                if slot_of.len() < MAX_IMPORTS {
+                    slot_of.entry(idx).or_insert(off);
+                }
+            } else if r.flags() == (object::RelocationFlags::Elf { r_type: object::elf::R_X86_64_RELATIVE })
+                && img.rel_ptrs.len() < MAX_RELOCS
+            {
+                // the loader stores base + addend at the slot: a pointer inside the image
+                img.rel_ptrs.push((off, r.addend() as u64));
             }
         }
     }

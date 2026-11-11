@@ -26,6 +26,13 @@ pub struct Fixture {
     pub string: u64,
     pub table: u64,
     pub image_base: u64,
+    /// Only in the `*_xref` files: E (writes the global, calls B) and F (reads it, loads the string).
+    pub e: Option<u64>,
+    pub f: Option<u64>,
+    /// Only in the `*_xref` files: the global (a u32) E writes and F reads.
+    pub global: Option<u64>,
+    /// Only in the `*_xref` files: two 8-byte pointers, to B and to C.
+    pub ptrs: Option<u64>,
 }
 
 #[derive(Default)]
@@ -63,9 +70,12 @@ fn rel32(from_next: u64, to: u64) -> u32 {
     (to as i64 - from_next as i64) as i32 as u32
 }
 
-/// Machine code for A, B, C (and D) placed at `base`. `iat` is the address of the import slot C calls
-/// through, when there is one.
-fn code(base: u64, string: u64, iat: Option<u64>, hidden: bool) -> (Vec<u8>, u64, u64, Option<u64>) {
+/// What `code` makes: the bytes, the addresses of A, C and D, and E and F when there is a global.
+type Code = (Vec<u8>, u64, u64, Option<u64>, Option<(u64, u64)>);
+
+/// Machine code for A, B, C (and D, and with a global E and F) placed at `base`. `iat` is the address of
+/// the import slot C calls through, when there is one. `global` is the address E writes and F reads.
+fn code(base: u64, string: u64, iat: Option<u64>, hidden: bool, global: Option<u64>) -> Code {
     let (a, b, c) = (base, base + 16, base + 32);
     let mut t = Buf::default();
     // A: push rbp ; mov rbp, rsp ; call B ; call C ; pop rbp ; ret   (16 bytes)
@@ -90,17 +100,50 @@ fn code(base: u64, string: u64, iat: Option<u64>, hidden: bool) -> (Vec<u8>, u64
         t.bytes(&[0x90, 0xc3]);
         at
     });
-    (t.0, a, c, d)
+    // E and F sit at fixed offsets, with int3 between the functions
+    let ef = global.map(|g| {
+        let (e, f) = (base + 48, base + 80);
+        while (t.0.len() as u64) < 48 {
+            t.u8(0xcc);
+        }
+        // E: mov dword ptr [rip+global], 1 ; call B ; ret   (16 bytes)
+        t.bytes(&[0xc7, 0x05]).u32(rel32(e + 10, g)).u32(1);
+        t.u8(0xe8).u32(rel32(e + 15, b));
+        t.u8(0xc3);
+        while (t.0.len() as u64) < 80 {
+            t.u8(0xcc);
+        }
+        // F: mov eax, [rip+global] ; lea rsi, [rip+string] ; ret   (14 bytes)
+        t.bytes(&[0x8b, 0x05]).u32(rel32(f + 6, g));
+        t.bytes(&[0x48, 0x8d, 0x35]).u32(rel32(f + 13, string));
+        t.u8(0xc3);
+        (e, f)
+    });
+    (t.0, a, c, d, ef)
 }
 
 /// A minimal ELF64 x86-64 executable: .text, .eh_frame, .data, .symtab (main, helper), .strtab,
 /// .shstrtab; three program headers (code, data, GNU_STACK).
 pub fn elf64(hidden: bool) -> Fixture {
+    elf64_with(hidden, false)
+}
+
+/// The ELF of [`elf64`] with D hidden, plus E and F, a global and a table of two pointers (see [`Fixture`]).
+/// B is called by A and by E and pointed at by the table; C by A and the table; D, E and F by nobody;
+/// the string is loaded by B and F; the global is written by E and read by F.
+pub fn elf64_xref() -> Fixture {
+    elf64_with(true, true)
+}
+
+fn elf64_with(hidden: bool, xref: bool) -> Fixture {
     const BASE: u64 = 0x40_0000;
     let (text_off, eh_off, data_off, sym_off) = (0x100usize, 0x180usize, 0x200usize, 0x240usize);
+    let (data_off, sym_off, shstr_pos, sh_pos) =
+        if xref { (0x240usize, 0x2c0usize, 0x320usize, 0x380usize) } else { (data_off, sym_off, 0x2a0, 0x300) };
     let data_addr = BASE + data_off as u64;
     let string = data_addr + 16;
-    let (text, a, c, d) = code(BASE + text_off as u64, string, None, hidden);
+    let global = xref.then_some(data_addr + 32);
+    let (text, a, c, d, ef) = code(BASE + text_off as u64, string, None, hidden, global);
     let b = a + 16;
     let text_end = a + text.len() as u64;
 
@@ -109,6 +152,10 @@ pub fn elf64(hidden: bool) -> Fixture {
         let mut v = vec![(a, 16u64), (b, 16), (c, 3)];
         if let Some(d) = d {
             v.push((d, 2));
+        }
+        if let Some((e, f)) = ef {
+            v.push((e, 16));
+            v.push((f, 14));
         }
         v
     };
@@ -129,6 +176,9 @@ pub fn elf64(hidden: bool) -> Fixture {
         data.u32(v);
     }
     data.bytes(STRING.as_bytes()).u8(0);
+    if xref {
+        data.pad_to(32).u32(0).pad_to(40).u64(b).u64(c);
+    }
 
     // .symtab: null, main, helper
     let mut sym = Buf::default();
@@ -138,7 +188,7 @@ pub fn elf64(hidden: bool) -> Fixture {
     }
     let strtab = b"\0main\0helper\0";
     let shstr = b"\0.text\0.eh_frame\0.data\0.symtab\0.strtab\0.shstrtab\0";
-    let (strtab_off, shstr_off, sh_off) = (sym_off + sym.0.len(), 0x2a0usize, 0x300usize);
+    let (strtab_off, shstr_off, sh_off) = (sym_off + sym.0.len(), shstr_pos, sh_pos);
     assert!(strtab_off + strtab.len() <= shstr_off);
 
     let mut f = Buf::default();
@@ -183,17 +233,41 @@ pub fn elf64(hidden: bool) -> Fixture {
     sh(23, 2, 0, 0, sym_off, sym.0.len(), 5, 1, 24);
     sh(31, 3, 0, 0, strtab_off, strtab.len(), 0, 0, 0);
     sh(39, 3, 0, 0, shstr_off, shstr.len(), 0, 0, 0);
-    Fixture { bytes: f.0, a, b, c, d, text_end, string, table: data_addr, image_base: BASE }
+    Fixture {
+        bytes: f.0,
+        a,
+        b,
+        c,
+        d,
+        text_end,
+        string,
+        table: data_addr,
+        image_base: BASE,
+        e: ef.map(|x| x.0),
+        f: ef.map(|x| x.1),
+        global,
+        ptrs: xref.then_some(data_addr + 40),
+    }
 }
 
 /// A minimal PE32+ x86-64 executable: .text, .rdata (the string and an unwind record), .data,
 /// .idata (KERNEL32!ExitProcess) and .pdata.
 pub fn pe64(hidden: bool) -> Fixture {
+    pe64_with(hidden, false)
+}
+
+/// The PE of [`pe64`] with the same additions as [`elf64_xref`]. C also calls `ExitProcess` through its import slot.
+pub fn pe64_xref() -> Fixture {
+    pe64_with(true, true)
+}
+
+fn pe64_with(hidden: bool, xref: bool) -> Fixture {
     const BASE: u64 = 0x1_4000_0000;
     let (text_rva, rdata_rva, data_rva, idata_rva, pdata_rva) = (0x1000u64, 0x2000u64, 0x3000u64, 0x4000u64, 0x5000u64);
     let string = BASE + rdata_rva;
     let iat = BASE + idata_rva + 0x50;
-    let (text, a, c, d) = code(BASE + text_rva, string, Some(iat), hidden);
+    let global = xref.then_some(BASE + data_rva + 32);
+    let (text, a, c, d, ef) = code(BASE + text_rva, string, Some(iat), hidden, global);
     let b = a + 16;
     let text_end = a + text.len() as u64;
 
@@ -205,6 +279,9 @@ pub fn pe64(hidden: bool) -> Fixture {
     let mut data = Buf::default();
     for v in TABLE {
         data.u32(v);
+    }
+    if xref {
+        data.pad_to(32).u32(0).pad_to(40).u64(b).u64(c);
     }
 
     let mut idata = Buf::default();
@@ -220,6 +297,10 @@ pub fn pe64(hidden: bool) -> Fixture {
     let mut ents = vec![(text_rva, 16u32), (text_rva + 16, 16), (text_rva + 32, 9)];
     if hidden {
         ents.push((text_rva + 41, 2));
+    }
+    if let Some((e, f)) = ef {
+        ents.push((e - BASE, 16));
+        ents.push((f - BASE, 14));
     }
     for (begin, len) in ents {
         pdata.u32(begin as u32).u32(begin as u32 + len).u32(unwind_rva);
@@ -270,5 +351,19 @@ pub fn pe64(hidden: bool) -> Fixture {
         at += raw_len(bytes.len());
         f.pad_to(at);
     }
-    Fixture { bytes: f.0, a, b, c, d, text_end, string, table: BASE + data_rva, image_base: BASE }
+    Fixture {
+        bytes: f.0,
+        a,
+        b,
+        c,
+        d,
+        text_end,
+        string,
+        table: BASE + data_rva,
+        image_base: BASE,
+        e: ef.map(|x| x.0),
+        f: ef.map(|x| x.1),
+        global,
+        ptrs: xref.then_some(BASE + data_rva + 40),
+    }
 }

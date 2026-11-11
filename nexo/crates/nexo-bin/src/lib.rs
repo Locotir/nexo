@@ -6,20 +6,33 @@
 //! [`Output::page`] cuts either one to a line budget, saying exactly what is left and how to get it.
 
 mod disasm;
+mod fnview;
 mod funcs;
 mod image;
+mod names;
 mod ops;
 mod page;
+mod refs;
 mod strings;
+mod xops;
 
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_x;
 
+pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use image::{Export, Format, Hardening, Image, Import, Section, Symbol};
-pub use ops::{bytes, find_bytes, find_imm, func, func_window, info, strings, ElemType};
+pub use names::{attach as attach_names, file_path as names_path, MAX_ENTRIES as MAX_NAMES};
+pub use ops::{bytes, find_bytes, find_imm, func, func_window, info, strings, strings_window, ElemType, StrSort};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
+pub use refs::{Kind, Ref, Refs, MAX_REFS};
+pub use xops::{
+    calls, calls_window, func_list, func_list_window, name_clear, name_set, names_list, names_list_window, note_clear,
+    note_set, xref, xref_str, xref_str_window, xref_window, FuncSort,
+};
 
 use std::fmt;
 
@@ -32,6 +45,8 @@ pub enum Error {
     Io(String),
     /// The question cannot be answered: an unknown name, an address outside the file, a bad argument.
     Bad(String),
+    /// The arguments cannot be used together or point outside what the op takes (a `--to` before its start).
+    Usage(String),
 }
 
 impl Error {
@@ -39,7 +54,7 @@ impl Error {
     /// question that has no answer.
     pub fn exit_code(&self) -> i32 {
         match self {
-            Error::NotRead(_) | Error::Io(_) => 2,
+            Error::NotRead(_) | Error::Io(_) | Error::Usage(_) => 2,
             Error::Bad(_) => 1,
         }
     }
@@ -48,7 +63,7 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotRead(s) | Error::Io(s) | Error::Bad(s) => f.write_str(s),
+            Error::NotRead(s) | Error::Io(s) | Error::Bad(s) | Error::Usage(s) => f.write_str(s),
         }
     }
 }

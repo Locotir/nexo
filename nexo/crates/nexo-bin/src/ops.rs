@@ -3,7 +3,7 @@
 use iced_x86::{Formatter, Instruction, OpKind};
 use serde_json::{json, Value};
 
-use crate::disasm::{comment, describe, formatter, walk};
+use crate::disasm::{describe, formatter, walk};
 use crate::image::Section;
 use crate::page::{shell_word, Output, Row, MIN_LINES};
 use crate::strings::shorten;
@@ -16,7 +16,7 @@ const MAX_HITS: usize = 100_000;
 /// The longest pattern `find` takes (bytes).
 const MAX_PATTERN: usize = 64;
 
-fn command(img: &Image, op: &str, rest: &str) -> String {
+pub(crate) fn command(img: &Image, op: &str, rest: &str) -> String {
     let path = shell_word(&img.path.display().to_string());
     if rest.is_empty() {
         format!("nexo bin {op} {path}")
@@ -25,7 +25,7 @@ fn command(img: &Image, op: &str, rest: &str) -> String {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
 }
 
@@ -108,14 +108,19 @@ fn section_json(s: &Section) -> Value {
            "loaded": s.alloc, "file_offset": s.file_off, "file_size": s.file_size})
 }
 
+/// A target written as a number (0x401000 or plain digits), not a name.
+pub(crate) fn numeric(t: &str) -> bool {
+    let t = t.trim();
+    t.starts_with("0x") || t.starts_with("0X") || (!t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// Find the function a user means: an address inside it, or its name.
-fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::funcs::Func> {
+pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::funcs::Func> {
     let t = target.trim();
     if t.is_empty() {
         return Err(Error::Bad("give an address (0x401000) or a function name".into()));
     }
-    let numeric = t.starts_with("0x") || t.starts_with("0X") || t.chars().all(|c| c.is_ascii_digit());
-    if numeric {
+    if numeric(t) {
         let a = parse_addr(t)?;
         return img.func_at(a).ok_or_else(|| match img.section_at(a) {
             Some(s) if s.exec => {
@@ -126,10 +131,10 @@ fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::funcs::Func> {
         });
     }
     let funcs = img.funcs();
-    if let Some(f) = funcs.iter().find(|f| f.name == t) {
+    if let Some(f) = funcs.iter().find(|f| img.func_name(f) == t || f.name == t) {
         return Ok(f);
     }
-    let hits: Vec<_> = funcs.iter().filter(|f| f.name.contains(t)).collect();
+    let hits: Vec<_> = funcs.iter().filter(|f| img.func_name(f).contains(t) || f.name.contains(t)).collect();
     match hits.as_slice() {
         [one] => Ok(one),
         [] => {
@@ -141,14 +146,16 @@ fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::funcs::Func> {
             Err(Error::Bad(format!("no function is named {t:?}{hint}")))
         }
         many => {
-            let list: Vec<String> = many.iter().take(5).map(|f| format!("{} ({:#x})", f.name, f.start)).collect();
+            let list: Vec<String> =
+                many.iter().take(5).map(|f| format!("{} ({:#x})", img.func_name(f), f.start)).collect();
             let more = if many.len() > 5 { format!(" and {} more", many.len() - 5) } else { String::new() };
             Err(Error::Bad(format!("{} functions match {t:?}: {}{more}; use an address", many.len(), list.join(", "))))
         }
     }
 }
 
-/// The whole function that holds the address (or has the name), one line per instruction.
+/// The whole function that holds the address (or has the name), one line per instruction. An address
+/// inside the function opens the page a few instructions before it (see [`crate::fnview`]).
 pub fn func(img: &Image, target: &str, with_bytes: bool) -> Result<Output> {
     func_window(img, target, with_bytes, None, usize::MAX)
 }
@@ -156,68 +163,10 @@ pub fn func(img: &Image, target: &str, with_bytes: bool) -> Result<Output> {
 /// Like [`func`], but only the rows a page of `budget` lines starting at `from` can show are built.
 /// The rest are counted (`Output::tail`), so the "more lines" figure stays exact.
 pub fn func_window(img: &Image, target: &str, with_bytes: bool, from: Option<u64>, budget: usize) -> Result<Output> {
-    let f = resolve(img, target)?;
-    let bytes = img.read_at(f.start, (f.end - f.start) as usize).unwrap_or(&[]);
-    let mut fmt = formatter();
-    let mut rows: Vec<Row> = Vec::new();
-    let mut line = String::new();
-    // the heading row is the first row of the answer and counts against the budget
-    let heading = from.is_none_or(|k| f.start >= k);
-    let room = budget.max(MIN_LINES).saturating_sub(usize::from(heading));
-    let mut total = 0usize;
-    let mut wanted = 0usize;
-    walk(bytes, f.start, |ins, raw| {
-        total += 1;
-        if from.is_some_and(|k| ins.ip() < k) {
-            return;
-        }
-        wanted += 1;
-        if rows.len() >= room {
-            return;
-        }
-        line.clear();
-        fmt.format(ins, &mut line);
-        let note = comment(img, ins);
-        let mut text = format!("{:#010x}  ", ins.ip());
-        if with_bytes {
-            text.push_str(&format!("{:<24}", hex(raw)));
-        }
-        text.push_str(&line);
-        if let Some(n) = &note {
-            text.push_str("  ; ");
-            text.push_str(n);
-        }
-        rows.push(Row {
-            key: ins.ip(),
-            text,
-            json: Some(json!({"addr": ins.ip(), "bytes": hex(raw), "text": line, "comment": note})),
-        });
-    });
-    let tail = wanted - rows.len();
-    if heading {
-        let header = Row {
-            key: f.start,
-            text: format!(
-                "fn {} {:#x}..{:#x} ({} bytes, {} instructions)",
-                f.name,
-                f.start,
-                f.end,
-                f.end - f.start,
-                total
-            ),
-            json: None,
-        };
-        rows.insert(0, header);
-    }
-    let meta = json!({"name": f.name, "start": f.start, "end": f.end, "size": f.end - f.start, "instructions": total});
-    let extra = if with_bytes { " --bytes" } else { "" };
-    Ok(Output {
-        op: "fn",
-        meta,
-        rows,
-        tail,
-        command: command(img, "fn", &format!("{}{extra}", shell_word(target.trim()))),
-    })
+    crate::fnview::func_view(
+        img,
+        &crate::fnview::FnQuery { with_bytes, from, budget, ..crate::fnview::FnQuery::new(target) },
+    )
 }
 
 /// How `bytes` reads memory.
@@ -417,31 +366,97 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
     })
 }
 
+/// How `strings` orders its list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrSort {
+    /// By address, lowest first.
+    Addr,
+    /// Most references first.
+    Refs,
+}
+
+impl StrSort {
+    pub const NAMES: [&'static str; 2] = ["addr", "refs"];
+
+    pub fn parse(s: &str) -> Result<StrSort> {
+        match s {
+            "addr" => Ok(StrSort::Addr),
+            "refs" => Ok(StrSort::Refs),
+            _ => Err(Error::Bad(format!("{s:?} is not a sort; use addr or refs"))),
+        }
+    }
+}
+
 /// Strings (ASCII and UTF-16LE) whose text matches the regex; all of them without one.
 pub fn strings(img: &Image, grep: Option<&str>) -> Result<Output> {
+    strings_window(img, grep, StrSort::Addr, None, usize::MAX)
+}
+
+/// Like [`strings`], with an order and only the rows of one page built. Sorted by address the rows are
+/// keyed by address; sorted by references, by position in the list.
+pub fn strings_window(
+    img: &Image,
+    grep: Option<&str>,
+    sort: StrSort,
+    from: Option<u64>,
+    budget: usize,
+) -> Result<Output> {
     let re = grep.map(regex::Regex::new).transpose().map_err(|e| Error::Bad(format!("bad regular expression: {e}")))?;
     let all = img.strings();
-    let mut rows = Vec::new();
-    for s in all {
-        if re.as_ref().is_some_and(|r| !r.is_match(&s.text)) {
-            continue;
-        }
-        rows.push(Row {
-            key: s.addr,
-            text: format!("{:#010x}  {}\"{}\"", s.addr, if s.wide { "L" } else { "" }, shorten(&s.text, 200)),
-            json: Some(json!({"addr": s.addr, "wide": s.wide, "chars": s.chars, "text": s.text})),
-        });
+    let refs = img.refs();
+    let count = |s: &crate::strings::Str| refs.within(s.addr, s.byte_len).len();
+    let mut list: Vec<(usize, usize)> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| re.as_ref().is_none_or(|r| r.is_match(&s.text)))
+        .map(|(i, s)| (i, count(s)))
+        .collect();
+    if sort == StrSort::Refs {
+        list.sort_by_key(|&(i, n)| (std::cmp::Reverse(n), i));
     }
-    let matched = rows.len();
-    if rows.is_empty() {
+    let matched = list.len();
+    let budget = budget.max(MIN_LINES);
+    let (start, end) = match (sort, from) {
+        (StrSort::Addr, Some(k)) => {
+            let s = list.partition_point(|&(i, _)| all[i].addr < k);
+            (s, s.saturating_add(budget).min(list.len()))
+        }
+        _ => crate::page::window(from, budget, list.len()),
+    };
+    let mut rows: Vec<Row> = list[start..end]
+        .iter()
+        .enumerate()
+        .map(|(n, &(i, refs))| {
+            let s = &all[i];
+            Row {
+                key: if sort == StrSort::Addr { s.addr } else { (start + n) as u64 },
+                text: format!(
+                    "{:#010x}  {refs:>4}  {}\"{}\"",
+                    s.addr,
+                    if s.wide { "L" } else { "" },
+                    shorten(&s.text, 200)
+                ),
+                json: Some(json!({"addr": s.addr, "wide": s.wide, "chars": s.chars, "text": s.text, "refs": refs})),
+            }
+        })
+        .collect();
+    let tail = list.len() - end;
+    if rows.is_empty() && matched == 0 {
         rows.push(Row { key: 0, text: format!("no string matches (of {} found)", all.len()), json: None });
     }
-    let rest = grep.map(|g| format!("--grep {}", shell_word(g))).unwrap_or_default();
+    let mut rest = String::new();
+    if sort == StrSort::Refs {
+        rest.push_str("--sort refs");
+    }
+    if let Some(g) = grep {
+        rest.push_str(&format!("{}--grep {}", if rest.is_empty() { "" } else { " " }, shell_word(g)));
+    }
     Ok(Output {
         op: "strings",
-        meta: json!({"total": all.len(), "matched": matched, "grep": grep}),
+        meta: json!({"total": all.len(), "matched": matched, "grep": grep,
+            "sort": if sort == StrSort::Refs { "refs" } else { "addr" }}),
         rows,
-        tail: 0,
+        tail,
         command: command(img, "strings", &rest),
     })
 }

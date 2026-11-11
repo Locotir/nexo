@@ -5,8 +5,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use iced_x86::{FlowControl, Mnemonic, OpKind};
 
-use crate::disasm::{target, walk};
+use crate::disasm::{target, walk, walk_code};
 use crate::image::Section;
+use crate::refs::Collector;
 use crate::{Format, Image};
 
 #[derive(Debug, Clone)]
@@ -24,6 +25,12 @@ impl Func {
 }
 
 pub(crate) fn find(img: &Image) -> Vec<Func> {
+    find_with(img, None)
+}
+
+/// Like [`find`]; when a collector is given, the same decode pass hands it every instruction, so the
+/// references need no second pass.
+pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> Vec<Func> {
     let in_code = |a: u64| img.section_at(a).is_some_and(|s| s.exec && a - s.addr < s.backed_len());
     let mut starts: BTreeSet<u64> = BTreeSet::new();
     for s in img.symbols.iter().filter(|s| s.func) {
@@ -40,7 +47,10 @@ pub(crate) fn find(img: &Image) -> Vec<Func> {
         starts.insert(img.entry);
     }
     for sec in img.code_sections() {
-        walk(img.section_bytes(sec), sec.addr, |ins, _| {
+        walk_code(img, sec, |ins, _| {
+            if let Some(c) = collector.as_deref_mut() {
+                c.instruction(img, ins);
+            }
             if ins.flow_control() == FlowControl::Call {
                 if let Some((t, false)) = target(ins) {
                     if in_code(t) {
@@ -271,5 +281,12 @@ fn eh_frame(img: &Image, sec: &Section, starts: &mut BTreeSet<u64>) {
             }
         }
         pos = end;
+    }
+}
+
+/// The references of every executable section, when the functions were found without a collector.
+pub(crate) fn decode_refs(img: &Image, c: &mut Collector) {
+    for sec in img.code_sections() {
+        walk_code(img, sec, |ins, _| c.instruction(img, ins));
     }
 }
