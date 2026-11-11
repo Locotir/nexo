@@ -1010,6 +1010,7 @@ pub fn is_trusted(root: &Path, trust_file: &Path) -> bool {
 }
 
 /// Adds `root` (resolved) to `trust_file`, one path per line; true when it was not there yet.
+/// The line is appended in one write, so sessions adding at the same moment lose nothing.
 pub fn trust_project(root: &Path, trust_file: &Path) -> std::io::Result<bool> {
     let root = root.canonicalize()?;
     if is_trusted(&root, trust_file) {
@@ -1018,12 +1019,12 @@ pub fn trust_project(root: &Path, trust_file: &Path) -> std::io::Result<bool> {
     if let Some(d) = trust_file.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let mut text = std::fs::read_to_string(trust_file).unwrap_or_default();
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(&format!("{}\n", root.display()));
-    std::fs::write(trust_file, text)?;
+    // One append, never a rewrite: two sessions trusting at once both keep their line. A blank
+    // line or the same path twice is harmless to `is_trusted`.
+    let open_line = std::fs::read(trust_file).is_ok_and(|b| b.last().is_some_and(|c| *c != b'\n'));
+    let line = format!("{}{}\n", if open_line { "\n" } else { "" }, root.display());
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(trust_file)?;
+    std::io::Write::write_all(&mut f, line.as_bytes())?;
     Ok(true)
 }
 
@@ -1182,6 +1183,38 @@ cache_read = 0.028
             assert!(!trust_project(&root, &trust).unwrap(), "listed once");
         }
         Config::load_files(&home.join("config.toml"), Some(&root.join(".nexo/config.toml")), &trust).unwrap()
+    }
+
+    #[test]
+    fn sixteen_sessions_trusting_at_once_all_stay_listed() {
+        let d = tempfile::tempdir().unwrap();
+        let trust = d.path().join("home").join("trusted-projects");
+        let roots: Vec<PathBuf> = (0..16).map(|i| d.path().join(format!("proj{i}"))).collect();
+        for r in &roots {
+            std::fs::create_dir_all(r).unwrap();
+        }
+        for round in 0..20 {
+            let _ = std::fs::remove_file(&trust);
+            // a list a person edited by hand, with no newline at its end
+            std::fs::create_dir_all(trust.parent().unwrap()).unwrap();
+            std::fs::write(&trust, "# mine").unwrap();
+            let gate = std::sync::Barrier::new(roots.len());
+            std::thread::scope(|s| {
+                for r in &roots {
+                    let (gate, trust) = (&gate, &trust);
+                    s.spawn(move || {
+                        gate.wait();
+                        assert!(trust_project(r, trust).unwrap());
+                    });
+                }
+            });
+            for r in &roots {
+                assert!(is_trusted(&r.canonicalize().unwrap(), &trust), "round {round}: {} was lost", r.display());
+            }
+            let text = std::fs::read_to_string(&trust).unwrap();
+            assert_eq!(text.lines().filter(|l| l.contains("proj")).count(), 16, "round {round}: {text}");
+            assert!(text.starts_with("# mine\n"), "the hand-written line keeps its own row: {text:?}");
+        }
     }
 
     const USER: &str = "[providers.deepseek]\nprotocol = 'openai-chat'\nbase_url = 'https://api.deepseek.com'\napi_key_env = 'DEEPSEEK_API_KEY'\n[context]\ncurator_spec = 'eoq=24000'\npolicy = 'curator'\n[[hooks]]\nevent = 'pre_tool'\ncommand = 'true'\n";
