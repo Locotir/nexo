@@ -6,7 +6,7 @@
 //! person's `~/.nexo/prompt.md` or to the project's instructions file, dated, under `## Remembered by nexo`.
 
 use async_trait::async_trait;
-use nexo_core::compat::Saved;
+use nexo_core::compat::{Replaced, Saved};
 use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
@@ -152,7 +152,7 @@ impl Tool for Note {
                 "`replaces` corrects one saved line: send exactly one `Rule:` line, with `scope` `project` or `global`",
             );
         }
-        let (mut replaced, mut unmatched) = (None, false);
+        let (mut replaced, mut unmatched, mut already) = (None, false, false);
         let mut saved = None;
         if scope != "session" {
             let home = nexo_core::compat::foreign_home();
@@ -172,13 +172,18 @@ impl Tool for Note {
                 }
                 if let Some(old) = replaces {
                     match nexo_core::compat::replace_rule(&file, old, &r) {
-                        Ok(Some(was)) => {
+                        Ok(Replaced::Done(was)) => {
                             fresh.push(r.split_whitespace().collect::<Vec<_>>().join(" "));
                             replaced = Some(was);
                             continue;
                         }
+                        // the file has the right rule already: the named line is not nexo's to take out
+                        Ok(Replaced::There) => {
+                            already = true;
+                            continue;
+                        }
                         // no line is named: the rule is saved as any other, and the result says so
-                        Ok(None) => unmatched = true,
+                        Ok(Replaced::NoLine) => unmatched = true,
                         Err(e) => return ToolOutput::error(format!("cannot save to {}: {e}", file.display())),
                     }
                 }
@@ -209,6 +214,9 @@ impl Tool for Note {
             }
             if unmatched {
                 out += " (no saved line is what `replaces` says, so nothing was replaced)";
+            }
+            if already {
+                out += " (the file already has this rule, so the line `replaces` names was left as it is)";
             }
             if !refused.is_empty() {
                 out += &format!(" (not saved: {})", refused.join("; "));
@@ -404,15 +412,26 @@ mod tests {
         let after = std::fs::read_to_string(&f).unwrap();
         assert_eq!(after, before.replace("port 5433", "port 5434"));
         assert_eq!(after.lines().filter(|l| l.starts_with("- ")).count(), 2, "{after}");
-        // a line that is not there: said, and the rule is treated as any other (here the file has it already)
-        with["replaces"] = json!("the relay keeps events for seven days");
+        // the right rule is in the file already: said, and the line named stays
+        with["replaces"] = json!("never touch vendor/");
         let out = Note.run(with.clone(), &cx).await;
         assert!(
-            out.content.contains("0 new rules saved") && out.content.contains("nothing was replaced"),
+            out.content.contains("0 new rules saved") && out.content.contains("already has this rule"),
             "{}",
             out.content
         );
         assert_eq!(std::fs::read_to_string(&f).unwrap(), after);
+        // a line that is not there: said, and the rule is saved as any other
+        let lost = json!({"text": "Rule: backups run at 03:00 UTC", "scope": "project", "replaces": "the relay keeps events for seven days"});
+        let out = Note.run(lost, &cx).await;
+        assert!(
+            out.content.contains("1 new rule saved") && out.content.contains("nothing was replaced"),
+            "{}",
+            out.content
+        );
+        let last = std::fs::read_to_string(&f).unwrap();
+        assert!(last.starts_with(&after) && last.ends_with(": backups run at 03:00 UTC\n"), "{last}");
+        assert_eq!(last.lines().filter(|l| l.starts_with("- ")).count(), 3, "{last}");
         // one rule at a time, and only for a saved scope; a secret is refused as ever
         for bad in [
             json!({"text": "Rule: a\nRule: b", "scope": "project", "replaces": "never touch vendor/"}),
@@ -425,7 +444,7 @@ mod tests {
         let secret = json!({"text": "Rule: the deploy token is ghp_0123456789abcdefghijklmnopqrstuvwxyzAB", "scope": "project", "replaces": "never touch vendor/"});
         let out = Note.run(secret, &cx).await;
         assert!(out.is_error && out.content.contains("secret"), "{}", out.content);
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), after);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), last);
     }
 
     #[tokio::test]

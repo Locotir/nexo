@@ -767,35 +767,72 @@ pub fn near_rule(text: &str, rule: &str) -> Option<String> {
     nearest(&remembered_lines(text), rule).map(|(_, l)| bare(l))
 }
 
-/// `text` with the line of its `## Remembered by nexo` section that `old` names put as `rule`, dated `date`,
-/// in the same place; and that line as it was, without its list marker. `old` names a line by having its
-/// words (the list marker and the date do not count), else by saying nearly the same (`near_rule`). `None`
-/// when the section has no such line, or when a line of `text` already says `rule`. Every other byte of
-/// `text` stays: the person's own lines are never the ones changed.
-pub fn with_replaced(text: &str, old: &str, rule: &str, date: &str) -> Option<(String, String)> {
-    let rule = rule.split_whitespace().collect::<Vec<_>>().join(" ");
-    let (key, want) = (rule_key(&rule), rule_key(old));
-    if key.is_empty() || want.is_empty() || text.lines().any(|l| rule_key(l) == key) {
+/// The saved line that `old` names: the list line of `lines` with its words (the marker and the date do not
+/// count), else the only one that says nearly the same on both sides (`NEAR_WORDS` telling words shared, six
+/// in ten of those of the longer of the two). A vague quote, or one that fits two lines, names none: the wrong
+/// line rewritten is worse than none. A line the person wrote in the section without a list marker is theirs.
+fn named<'a>(lines: &[(usize, &'a str)], old: &str) -> Option<(usize, &'a str)> {
+    let items = || lines.iter().copied().filter(|(_, l)| l.trim_start().starts_with(['-', '*']));
+    let want = rule_key(old);
+    if want.is_empty() {
         return None;
     }
-    let lines = remembered_lines(text);
-    let (at, line) = lines.iter().copied().find(|(_, l)| rule_key(l) == want).or_else(|| nearest(&lines, old))?;
+    if let Some(l) = items().find(|(_, l)| rule_key(l) == want) {
+        return Some(l);
+    }
+    let mine = telling(old);
+    let mut like = items().filter(|(_, l)| {
+        let theirs = telling(l);
+        let shared = mine.intersection(&theirs).count();
+        shared >= NEAR_WORDS && shared * 10 >= mine.len().max(theirs.len()) * 6
+    });
+    match (like.next(), like.next()) {
+        (Some(l), None) => Some(l),
+        _ => None,
+    }
+}
+
+/// `text` with the line of its `## Remembered by nexo` section that `old` names (see `named`) put as `rule`,
+/// dated `date`, in the same place; and that line as it was, without its list marker. `None` when the
+/// section has no such line, or when a line of `text` already says `rule`. Every other byte of `text`
+/// stays: the person's own lines are never the ones changed.
+pub fn with_replaced(text: &str, old: &str, rule: &str, date: &str) -> Option<(String, String)> {
+    let rule = rule.split_whitespace().collect::<Vec<_>>().join(" ");
+    let key = rule_key(&rule);
+    if key.is_empty() || text.lines().any(|l| rule_key(l) == key) {
+        return None;
+    }
+    let (at, line) = named(&remembered_lines(text), old)?;
     let end = &line[line.trim_end_matches(['\r', '\n']).len()..];
     Some((format!("{}- {date}: {rule}{end}{}", &text[..at], &text[at + line.len()..]), bare(line)))
 }
 
-/// Puts `rule` in the place of the saved line of `file` that `old` names (see `with_replaced`, dated today)
-/// and gives that line as it was; `None`, and nothing written, when no line is named.
-pub fn replace_rule(file: &Path, old: &str, rule: &str) -> std::io::Result<Option<String>> {
+/// What `replace_rule` did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Replaced {
+    /// The named line was rewritten; this is what it said, without its list marker.
+    Done(String),
+    /// Nothing written: no saved line is the one named.
+    NoLine,
+    /// Nothing written: a line of the file already says the rule.
+    There,
+}
+
+/// Puts `rule` in the place of the saved line of `file` that `old` names (see `with_replaced`, dated today).
+pub fn replace_rule(file: &Path, old: &str, rule: &str) -> std::io::Result<Replaced> {
     let text = match std::fs::read_to_string(file) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Replaced::NoLine),
         Err(e) => return Err(e),
     };
+    let key = rule_key(rule);
+    if !key.is_empty() && text.lines().any(|l| rule_key(l) == key) {
+        return Ok(Replaced::There);
+    }
     let today = time::OffsetDateTime::now_utc().date();
-    let Some((new, was)) = with_replaced(&text, old, rule, &today.to_string()) else { return Ok(None) };
+    let Some((new, was)) = with_replaced(&text, old, rule, &today.to_string()) else { return Ok(Replaced::NoLine) };
     std::fs::write(file, new)?;
-    Ok(Some(was))
+    Ok(Replaced::Done(was))
 }
 
 /// Saves `rule` into `file` (see `with_rule`, dated today), starting from `seed` when the file is new.
@@ -1208,12 +1245,33 @@ mod rule_tests {
         ] {
             assert_eq!(with_replaced(text, old, fixed, D), Some((want.clone(), was.clone())), "{old}");
         }
-        // no such line in nexo's section (the person's own line above it is not a candidate), nothing to name,
-        // no section at all, and a rule the file already has
+        // no such line in nexo's section, nothing to name, the same words outside any such section, and a rule
+        // the file already has (the same line takes another rule)
+        let old = "the staging database is on port 5433 of db-stage";
         assert_eq!(with_replaced(text, "the relay keeps events for seven days", fixed, D), None);
         assert_eq!(with_replaced(text, "", fixed, D), None);
-        assert_eq!(with_replaced("- the staging database is on port 5433 of db-stage\n", fixed, fixed, D), None);
+        assert_eq!(
+            with_replaced("# P\n- 2026-11-02: the staging database is on port 5433 of db-stage\n", old, fixed, D),
+            None
+        );
+        assert!(with_replaced(text, "tests run with make test", "tests run with make check", D).is_some());
         assert_eq!(with_replaced(text, "tests run with make test", "Never touch vendor", D), None);
+        // a line the person wrote in the section without a list marker is theirs; a vague quote names no line,
+        // and neither does one that fits two
+        let mixed = "## Remembered by nexo\nBackups: nightly at 03:00 to the big disk\n- 2026-11-01: the staging database is on port 5433 of db-stage, user shop\n- 2026-11-02: the staging replica is on port 5434 of db-stage-ro, user shop\n";
+        assert_eq!(with_replaced(mixed, "Backups: nightly at 03:00 to the big disk", fixed, D), None);
+        assert_eq!(with_replaced(mixed, "staging database port", fixed, D), None);
+        assert_eq!(with_replaced(mixed, "staging on port of db-stage, user shop", fixed, D), None);
+        let (now, was) =
+            with_replaced(mixed, "the staging database is on port 5433 of db-stage (user shop)", fixed, D).unwrap();
+        assert_eq!(was, "2026-11-01: the staging database is on port 5433 of db-stage, user shop");
+        assert_eq!(
+            now,
+            mixed.replace(
+                "- 2026-11-01: the staging database is on port 5433 of db-stage, user shop",
+                "- 2026-11-12: the staging database is on port 5434 of db-stage"
+            )
+        );
         // the last line of a file without a final line end
         assert_eq!(
             with_replaced("## Remembered by nexo\n- 2026-11-01: port is 5433", "port is 5433", "port is 5434", D),
@@ -1225,14 +1283,15 @@ mod rule_tests {
         // on disk: the file changes only when a line is named, and a missing file is not made
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("AGENTS.md");
-        assert_eq!(replace_rule(&f, "port is 5433", "port is 5434").unwrap(), None);
+        assert_eq!(replace_rule(&f, "port is 5433", "port is 5434").unwrap(), Replaced::NoLine);
         assert!(!f.exists());
         std::fs::write(&f, "## Remembered by nexo\n- 2026-11-01: port is 5433\n").unwrap();
-        assert_eq!(replace_rule(&f, "something else entirely", "port is 5434").unwrap(), None);
+        assert_eq!(replace_rule(&f, "something else entirely", "port is 5434").unwrap(), Replaced::NoLine);
+        assert_eq!(replace_rule(&f, "something else entirely", "Port is 5433.").unwrap(), Replaced::There);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "## Remembered by nexo\n- 2026-11-01: port is 5433\n");
         assert_eq!(
-            replace_rule(&f, "port is 5433", "port is 5434").unwrap().as_deref(),
-            Some("2026-11-01: port is 5433")
+            replace_rule(&f, "port is 5433", "port is 5434").unwrap(),
+            Replaced::Done("2026-11-01: port is 5433".to_string())
         );
         let now = std::fs::read_to_string(&f).unwrap();
         assert!(
