@@ -322,10 +322,13 @@ impl Setup {
             KeyCode::Enter if !self.field.is_empty() => {
                 let typed = keys::clean(&self.field);
                 self.field.clear();
-                if keys::looks_like_key(&typed) {
+                // typed text is a key only when it starts the way a known key does (a paste is told apart by
+                // the terminal and takes the other road); anything else is dropped, never held or sent
+                if keys::starts_like_key(&typed, 1) && keys::looks_like_key(&typed) {
                     self.key_pasted(typed)
                 } else {
-                    self.error = Some("That does not look like a key. Pick one below.".into());
+                    self.error =
+                        Some("That is not a key nexo knows. Pick its service below, then paste the key.".into());
                     SetupOut::Nothing
                 }
             }

@@ -2280,6 +2280,25 @@ mod tests {
     }
 
     #[test]
+    fn text_typed_at_the_first_step_is_held_as_a_key_only_with_a_known_start() {
+        // a model id, a password, a word: long enough to pass for a key by length alone
+        for typed in ["deepseek-reasoner", "correct-horse-battery-staple", "0123456789abcdef0123456789abcdef"] {
+            let mut s = first_run();
+            assert_eq!(s.step, Step::Start);
+            typing(&mut s, typed);
+            let out = press(&mut s, KeyCode::Enter);
+            assert!(matches!(out, SetupOut::Nothing), "{typed}: nothing is sent");
+            assert_eq!((s.step, s.pending_key.as_deref()), (Step::Start, None), "{typed}: not held");
+            assert!(s.field.is_empty(), "{typed}: dropped");
+            assert!(s.error.as_deref().is_some_and(|e| e.contains("not a key nexo knows")), "{typed}: said so");
+        }
+        let mut s = first_run();
+        typing(&mut s, "sk-made-up-0123-made-up-4567-abcd");
+        press(&mut s, KeyCode::Enter);
+        assert_eq!(s.pending_key.as_deref(), Some("sk-made-up-0123-made-up-4567-abcd"), "a known start is held");
+    }
+
+    #[test]
     fn typed_text_is_a_key_only_with_a_known_start_and_is_masked_from_the_first_character_after_it() {
         let mut s = first_run();
         s.paste("a");
