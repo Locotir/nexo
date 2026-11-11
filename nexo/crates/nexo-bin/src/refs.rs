@@ -43,6 +43,9 @@ pub enum Kind {
     Write,
     /// The address is taken (`lea`).
     Addr,
+    /// The address is written inside a memory operand next to a register (`[reg+address]`): a table
+    /// or an array that starts here, read, written or jumped through at an index.
+    Base,
     /// A number in an instruction that is also an address of a mapped section: maybe an address.
     Imm,
     /// A pointer stored in a data section.
@@ -50,7 +53,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [Kind::Call, Kind::Jump, Kind::Read, Kind::Write, Kind::Addr, Kind::Imm, Kind::Ptr];
+    pub const ALL: [Kind; 8] =
+        [Kind::Call, Kind::Jump, Kind::Read, Kind::Write, Kind::Addr, Kind::Base, Kind::Imm, Kind::Ptr];
 
     /// The word in a row.
     pub fn word(self) -> &'static str {
@@ -60,6 +64,7 @@ impl Kind {
             Kind::Read => "read",
             Kind::Write => "write",
             Kind::Addr => "addr",
+            Kind::Base => "base",
             Kind::Imm => "imm",
             Kind::Ptr => "ptr",
         }
@@ -73,6 +78,7 @@ impl Kind {
             Kind::Read => "reads",
             Kind::Write => "writes",
             Kind::Addr => "address taken (lea)",
+            Kind::Base => "used with a register added",
             Kind::Imm => "numbers that may be this address",
             Kind::Ptr => "pointers in data",
         }
@@ -203,37 +209,55 @@ impl Collector {
                     if mapped(slot) {
                         self.push(slot, src, kind);
                     }
-                } else if kind == Kind::Jump {
-                    self.indirect_jumps += 1;
                 } else {
-                    self.indirect_calls += 1;
+                    match written_address(ins).filter(|&(a, _)| mapped(a)) {
+                        // through a slot at a fixed address, as above
+                        Some((slot, true)) => {
+                            self.push(slot, src, kind);
+                        }
+                        // through a table at an index: the table is named, where it lands is not known
+                        other => {
+                            if let Some((table, _)) = other {
+                                self.push(table, src, Kind::Base);
+                            }
+                            if kind == Kind::Jump {
+                                self.indirect_jumps += 1;
+                            } else {
+                                self.indirect_calls += 1;
+                            }
+                        }
+                    }
                 }
                 return;
             }
             _ => {}
         }
-        if ins.is_ip_rel_memory_operand() {
-            let a = ins.ip_rel_memory_address();
-            if mapped(a) {
-                let kind = if ins.mnemonic() == Mnemonic::Lea {
-                    Kind::Addr
-                } else {
-                    let info = self.info.info_options(ins, InstructionInfoOptions::NO_REGISTER_USAGE);
-                    match info
-                        .used_memory()
-                        .iter()
-                        .find(|m| m.displacement() == a && m.index() == Register::None)
-                        .map(|m| m.access())
-                    {
-                        Some(OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite) => {
-                            Kind::Write
-                        }
-                        Some(OpAccess::NoMemAccess) => Kind::Addr,
-                        _ => Kind::Read,
+        let named = if ins.is_ip_rel_memory_operand() {
+            Some((ins.ip_rel_memory_address(), true))
+        } else {
+            written_address(ins)
+        };
+        if let Some((a, alone)) = named.filter(|&(a, _)| mapped(a)) {
+            let kind = if !alone {
+                Kind::Base
+            } else if ins.mnemonic() == Mnemonic::Lea {
+                Kind::Addr
+            } else {
+                let info = self.info.info_options(ins, InstructionInfoOptions::NO_REGISTER_USAGE);
+                match info
+                    .used_memory()
+                    .iter()
+                    .find(|m| m.displacement() == a && m.index() == Register::None)
+                    .map(|m| m.access())
+                {
+                    Some(OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite) => {
+                        Kind::Write
                     }
-                };
-                self.push(a, src, kind);
-            }
+                    Some(OpAccess::NoMemAccess) => Kind::Addr,
+                    _ => Kind::Read,
+                }
+            };
+            self.push(a, src, kind);
         }
         if !matches!(
             ins.mnemonic(),
@@ -257,6 +281,25 @@ impl Collector {
             }
         }
     }
+}
+
+/// The address a memory operand carries in its own bytes (`[0x429a80]`, `[rdx+0x429a80]`,
+/// `[rax*8+0x429a80]`; not the RIP-relative form), and whether it stands alone. None when the
+/// operand has no 4-byte offset, when the offset is too small to be an address, for a stack slot
+/// (`[rsp+...]`) and for thread storage (`fs:`, `gs:`). The caller still checks that it is mapped.
+pub(crate) fn written_address(ins: &Instruction) -> Option<(u64, bool)> {
+    if ins.is_ip_rel_memory_operand() || ins.memory_displ_size() < 4 {
+        return None;
+    }
+    if !(0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory) {
+        return None;
+    }
+    if ins.memory_base() == Register::RSP || matches!(ins.memory_segment(), Register::FS | Register::GS) {
+        return None;
+    }
+    let a = ins.memory_displacement64();
+    let alone = ins.memory_base() == Register::None && ins.memory_index() == Register::None;
+    (a >= MIN_ADDR).then_some((a, alone))
 }
 
 /// Sections whose 8-byte words are not pointers of the program (tables the loader reads).

@@ -579,7 +579,8 @@ fn imm_matches(ins: &Instruction, v: i128) -> bool {
     })
 }
 
-/// Every instruction with the number as an immediate, and every place the data sections hold it as a
+/// Every instruction with the number as an immediate or as the address written inside a memory
+/// operand (`[rdx+0x429a80]`, kind `disp` in JSON), and every place the data sections hold it as a
 /// 4-byte (or, for a larger number, 8-byte) little-endian value.
 pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
     if value < i128::from(i64::MIN) || value > i128::from(u64::MAX) {
@@ -604,12 +605,20 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
         let Some(code) = img.read_at(start, (end - start) as usize) else { continue };
         let mut full = false;
         walk(code, start, |ins, _| {
-            if full || !imm_matches(ins, value) {
+            if full {
                 return;
             }
+            let what = if imm_matches(ins, value) {
+                "imm"
+            } else if u64::try_from(value).is_ok_and(|v| crate::refs::written_address(ins).is_some_and(|(a, _)| a == v))
+            {
+                "disp"
+            } else {
+                return;
+            };
             line.clear();
             fmt.format(ins, &mut line);
-            rows.push(hit_row(img, ins.ip(), &line, "imm"));
+            rows.push(hit_row(img, ins.ip(), &line, what));
             full = rows.len() >= MAX_HITS;
         });
         if full {

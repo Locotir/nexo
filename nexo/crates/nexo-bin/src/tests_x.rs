@@ -1279,3 +1279,50 @@ fn a_name_that_would_be_read_as_an_address_is_refused() {
         assert!(name_set(&img, dir.path(), &hex(f.b), ok).is_ok(), "{ok}");
     }
 }
+
+/// The xref ELF with the 14 bytes of F replaced, and F's address.
+fn with_f(f: &Fixture, first: &[u8], rest: &[u8]) -> (Image, u64) {
+    let at = f.f.unwrap();
+    let mut d = f.bytes.clone();
+    let off = Image::from_bytes(d.clone(), "/x".into()).unwrap().addr_to_offset(at).unwrap() as usize;
+    let mut code = first.to_vec();
+    code.extend_from_slice(&(f.table as u32).to_le_bytes());
+    code.extend_from_slice(rest);
+    assert_eq!(code.len(), 14, "F is 14 bytes");
+    d[off..off + 14].copy_from_slice(&code);
+    (Image::from_bytes(d, "/x".into()).unwrap(), at)
+}
+
+#[test]
+fn an_address_written_inside_a_memory_operand_is_a_reference() {
+    let f = fixtures::elf64_xref();
+    let kinds = |img: &Image, at: u64| -> Vec<Kind> {
+        img.refs().at(f.table).iter().filter(|r| r.src >= at && r.src < at + 14).map(|r| r.kind).collect()
+    };
+    let nops_ret: [u8; 7] = [0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0xc3];
+    // mov rax, [rdx+table]: the table with a register added
+    let (img, at) = with_f(&f, &[0x48, 0x8b, 0x82], &nops_ret);
+    assert_eq!(kinds(&img, at), [Kind::Base]);
+    let t = whole(&xref(&img, &hex(f.table)).unwrap());
+    assert!(t.contains("used with a register added (1)"), "{t}");
+    assert!(t.contains(&format!("[rdx+{:#x}]", f.table)), "{t}");
+    // the number is found by find --imm too
+    let o = find_imm(&img, i128::from(f.table)).unwrap();
+    let row = whole(&o).lines().find(|l| l.starts_with(&format!("{at:#010x}"))).map(str::to_string);
+    assert!(row.as_deref().is_some_and(|l| l.contains(&format!("[rdx+{:#x}]", f.table))), "{}", whole(&o));
+    // mov eax, [table] and mov [table], eax: no register, so a plain read and a plain write
+    let (img, at) = with_f(&f, &[0x8b, 0x04, 0x25], &nops_ret);
+    assert_eq!(kinds(&img, at), [Kind::Read]);
+    let (img, at) = with_f(&f, &[0x89, 0x04, 0x25], &nops_ret);
+    assert_eq!(kinds(&img, at), [Kind::Write]);
+    // jmp [rax*8+table]: a jump table. The table is named and the jump still counts as not resolved
+    let (img, at) = with_f(&f, &[0xff, 0x24, 0xc5], &[0xcc; 7]);
+    assert_eq!(kinds(&img, at), [Kind::Base]);
+    assert_eq!(img.refs().indirect_jumps, 1);
+    // mov rax, fs:[table] is thread storage, not the table
+    let (img, at) = with_f(&f, &[0x64, 0x48, 0x8b, 0x04, 0x25], &[0x90, 0x90, 0x90, 0x90, 0xc3]);
+    assert_eq!(kinds(&img, at), []);
+    // mov rax, [rsp+table] is a stack slot
+    let (img, at) = with_f(&f, &[0x48, 0x8b, 0x84, 0x24], &[0x90, 0x90, 0x90, 0x90, 0x90, 0xc3]);
+    assert_eq!(kinds(&img, at), []);
+}

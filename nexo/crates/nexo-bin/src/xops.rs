@@ -190,7 +190,7 @@ fn lazy_cut(
     (rows, total - end)
 }
 
-fn counts_json(counts: &[usize; 7]) -> Value {
+fn counts_json(counts: &[usize; Kind::ALL.len()]) -> Value {
     let mut m = serde_json::Map::new();
     for k in Kind::ALL {
         m.insert(k.word().into(), json!(counts[k as usize]));
@@ -274,7 +274,7 @@ pub fn xref_window(img: &Image, target: &str, from: Option<u64>, budget: usize) 
     let refs = img.refs();
     // a PLT stub also answers for the slot it jumps through: that reference is one more line
     let lists: Vec<&[Ref]> = std::iter::once(refs.at(t)).chain(stub_slot(img, t).map(|s| refs.at(s))).collect();
-    let mut counts = [0usize; 7];
+    let mut counts = [0usize; Kind::ALL.len()];
     for r in lists.iter().flat_map(|l| l.iter()) {
         counts[r.kind as usize] += 1;
     }
