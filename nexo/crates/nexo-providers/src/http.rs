@@ -268,12 +268,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_connection_says_why_in_the_message() {
-        let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
-        let e = reqwest::Client::new().get(format!("http://127.0.0.1:{port}/")).send().await.unwrap_err();
-        let p = net_error(e);
+        // a port that was just free: on a busy machine another program can take it before the request, so
+        // an answer means "try another port", not a fault here
+        let mut refused = None;
+        for _ in 0..8 {
+            let port = {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                l.local_addr().unwrap().port()
+            };
+            if let Err(e) = reqwest::Client::new().get(format!("http://127.0.0.1:{port}/")).send().await {
+                refused = Some(e);
+                break;
+            }
+        }
+        let p = net_error(refused.expect("eight freed ports in a row were all taken by other programs"));
         assert_eq!(p.kind, ErrorKind::Network);
         let m = p.message.to_ascii_lowercase();
         assert!(m.contains("refused") || m.contains("os error 111") || m.contains("10061"), "{m}");
