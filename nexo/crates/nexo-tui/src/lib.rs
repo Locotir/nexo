@@ -29,6 +29,7 @@ pub mod fuzzy;
 pub mod fx_chrome;
 pub mod fx_diff;
 pub mod fx_effort;
+pub mod fx_galaxy;
 pub mod fx_goal;
 pub mod fx_stars;
 pub mod fx_stream;
@@ -100,6 +101,8 @@ pub struct TuiOptions {
     pub keys: std::collections::BTreeMap<String, String>,
     /// Smooth scrolling, fades, pulses and the other motion (`[ui] animations`).
     pub animations: bool,
+    /// The figure of dots on the welcome screen (`[ui] figure`).
+    pub figure: nexo_core::config::Figure,
     /// How much the screen says by itself: `quiet` drops the key hints and the doubled figures (`[ui] detail`).
     pub detail: nexo_core::config::Detail,
     /// The to-do list as rows above the draft; off: a count in the status bar (`[ui] todo_strip`).
@@ -137,6 +140,7 @@ impl Default for TuiOptions {
             suggest: true,
             keys: Default::default(),
             animations: true,
+            figure: nexo_core::config::Figure::Galaxy,
             detail: nexo_core::config::Detail::Quiet,
             todo_strip: false,
             status_line: Vec::new(),

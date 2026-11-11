@@ -26,6 +26,7 @@ fn app() -> App {
         theme: "dark".into(),
         animations: false,
         detail: nexo_core::config::Detail::Full,
+        figure: nexo_core::config::Figure::Galaxy,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);

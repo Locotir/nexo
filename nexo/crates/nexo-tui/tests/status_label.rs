@@ -22,6 +22,7 @@ fn bar_of(width: u16, model: &str) -> String {
         theme: "dark".into(),
         animations: false,
         detail: nexo_core::config::Detail::Full,
+        figure: nexo_core::config::Figure::Galaxy,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);
@@ -85,6 +86,7 @@ fn bar_with_branch(width: u16) -> String {
         theme: "dark".into(),
         animations: false,
         detail: nexo_core::config::Detail::Full,
+        figure: nexo_core::config::Figure::Galaxy,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);

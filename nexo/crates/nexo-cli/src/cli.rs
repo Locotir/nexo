@@ -733,6 +733,7 @@ async fn interactive(
         suggest: config.ui.suggest,
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,
+        figure: config.ui.figure,
         detail: config.ui.detail,
         todo_strip: config.ui.todo_strip,
         status_line: config.ui.status_line.clone(),

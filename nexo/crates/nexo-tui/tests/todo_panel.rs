@@ -36,6 +36,7 @@ fn app(animations: bool, theme: &str) -> App {
         notify_after: 15,
         animations,
         detail: nexo_core::config::Detail::Full,
+        figure: nexo_core::config::Figure::Galaxy,
         todo_strip: false,
         vim: false,
         prompt: None,

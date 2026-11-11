@@ -27,6 +27,7 @@ fn app(scanner: Scanner) -> App {
         models: vec![("deepseek".into(), "deepseek-chat".into())],
         animations: false,
         detail: nexo_core::config::Detail::Full,
+        figure: nexo_core::config::Figure::Galaxy,
         ..Default::default()
     };
     let mut a = App::new(opts, tx);

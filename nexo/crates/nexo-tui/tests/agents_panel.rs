@@ -36,6 +36,7 @@ fn app() -> App {
         notify_after: 15,
         animations: false,
         detail: nexo_core::config::Detail::Full,
+        figure: nexo_core::config::Figure::Galaxy,
         todo_strip: false,
         status_line: vec![],
         status_command: String::new(),

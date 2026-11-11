@@ -468,6 +468,31 @@ impl<'de> Deserialize<'de> for Detail {
     }
 }
 
+/// The figure of dots on the welcome screen (`[ui] figure`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Figure {
+    /// A turning spiral galaxy.
+    #[default]
+    Galaxy,
+    /// A turning constellation on a sphere.
+    Constellation,
+    /// No figure, and no frames asked for it.
+    None,
+}
+
+impl<'de> Deserialize<'de> for Figure {
+    /// An unknown word reads as the default.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Figure, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "constellation" => Figure::Constellation,
+            "none" => Figure::None,
+            _ => Figure::Galaxy,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -488,6 +513,8 @@ pub struct UiConfig {
     /// Smooth scrolling, fades and the other motion of the interface (off: every
     /// change shows at once).
     pub animations: bool,
+    /// The figure of dots on the welcome screen: `galaxy` (default), `constellation` or `none`.
+    pub figure: Figure,
     /// `quiet` (default): the screen drops the key hints, the doubled figures and the sentences nobody needs to act on;
     /// detail sits behind a key or a click. `full`: all of it on screen, as before.
     pub detail: Detail,
@@ -530,6 +557,7 @@ impl Default for UiConfig {
             vim: false,
             notify_after: 15,
             animations: true,
+            figure: Figure::Galaxy,
             detail: Detail::Quiet,
             todo_strip: false,
             keys: BTreeMap::new(),
@@ -1465,6 +1493,19 @@ mod ui_tests {
         // an unknown word reads as the default
         let c: Config = toml::from_str("[ui]\ndetail = \"loud\"\n").unwrap();
         assert_eq!(c.ui.detail, Detail::Quiet);
+    }
+
+    #[test]
+    fn the_welcome_figure_is_the_galaxy_unless_another_is_named() {
+        let c: Config = toml::from_str("[ui]\ntheme = \"nord\"\n").unwrap();
+        assert_eq!(c.ui.figure, Figure::Galaxy);
+        let c: Config = toml::from_str("[ui]\nfigure = \"constellation\"\n").unwrap();
+        assert_eq!(c.ui.figure, Figure::Constellation);
+        let c: Config = toml::from_str("[ui]\nfigure = \" None \"\n").unwrap();
+        assert_eq!(c.ui.figure, Figure::None);
+        // an unknown word reads as the default
+        let c: Config = toml::from_str("[ui]\nfigure = \"comet\"\n").unwrap();
+        assert_eq!(c.ui.figure, Figure::Galaxy);
     }
 
     #[test]

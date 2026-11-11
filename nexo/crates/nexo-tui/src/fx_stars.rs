@@ -17,8 +17,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
 
+use nexo_core::config::Figure;
+
 use crate::anim::{ease_out, progress};
 use crate::app::App;
+use crate::fx_galaxy;
 use crate::motion::fade;
 
 /// The full figure in cells, and the smallest one a lower or narrower room still gets (the same shape,
@@ -50,11 +53,11 @@ const TWINKLE_MS: f64 = 2600.0;
 
 // ---- maths without libm ----
 
-const PI: f32 = std::f32::consts::PI;
-const TAU: f32 = std::f32::consts::TAU;
+pub(crate) const PI: f32 = std::f32::consts::PI;
+pub(crate) const TAU: f32 = std::f32::consts::TAU;
 
 /// `sin` from IEEE operations only (a Taylor polynomial on [-pi/2, pi/2]).
-fn sin(x: f32) -> f32 {
+pub(crate) fn sin(x: f32) -> f32 {
     let mut a = x - TAU * (x / TAU + 0.5).floor();
     if a > PI / 2.0 {
         a = PI - a;
@@ -65,7 +68,7 @@ fn sin(x: f32) -> f32 {
     a * (1.0 + a2 * (-1.0 / 6.0 + a2 * (1.0 / 120.0 + a2 * (-1.0 / 5040.0 + a2 * (1.0 / 362_880.0)))))
 }
 
-fn cos(x: f32) -> f32 {
+pub(crate) fn cos(x: f32) -> f32 {
     sin(x + PI / 2.0)
 }
 
@@ -78,7 +81,7 @@ fn mix(mut x: u32) -> u32 {
 }
 
 /// 0..1 from a seed.
-fn unit(seed: u32) -> f32 {
+pub(crate) fn unit(seed: u32) -> f32 {
     (mix(seed) >> 8) as f32 / 16_777_216.0
 }
 
@@ -182,6 +185,8 @@ pub struct FigCell {
     pub level: f32,
     /// Part of a bright node.
     pub node: bool,
+    /// Part of the galaxy's bright core.
+    pub core: bool,
 }
 
 /// The figure as cells, `cols` x `rows`, row by row.
@@ -200,7 +205,7 @@ impl Grid {
     }
 }
 
-struct Canvas {
+pub(crate) struct Canvas {
     cols: usize,
     rows: usize,
     /// Dots per cell, horizontally and vertically.
@@ -210,10 +215,11 @@ struct Canvas {
     bits: Vec<u8>,
     level: Vec<f32>,
     node: Vec<bool>,
+    core: Vec<bool>,
 }
 
 impl Canvas {
-    fn new(cols: u16, rows: u16, ascii: bool) -> Canvas {
+    pub(crate) fn new(cols: u16, rows: u16, ascii: bool) -> Canvas {
         let (cols, rows) = (cols as usize, rows as usize);
         let (dx, dy) = if ascii { (1, 2) } else { (2, 4) };
         Canvas {
@@ -225,14 +231,20 @@ impl Canvas {
             bits: vec![0; cols * rows],
             level: vec![0.0; cols * rows],
             node: vec![false; cols * rows],
+            core: vec![false; cols * rows],
         }
     }
 
-    fn dots(&self) -> (f32, f32) {
+    pub(crate) fn dots(&self) -> (f32, f32) {
         ((self.cols * self.dx) as f32, (self.rows * self.dy) as f32)
     }
 
     fn plot(&mut self, x: f32, y: f32, level: f32, node: bool) {
+        self.plot_kind(x, y, level, node, false);
+    }
+
+    /// A dot that is part of a bright node and/or of the galaxy's core (the colour follows).
+    pub(crate) fn plot_kind(&mut self, x: f32, y: f32, level: f32, node: bool, core: bool) {
         let (w, h) = self.dots();
         if !(x >= 0.0 && y >= 0.0 && x < w && y < h) || level <= 0.0 {
             return;
@@ -247,19 +259,20 @@ impl Canvas {
             self.level[i] = level;
         }
         self.node[i] |= node;
+        self.core[i] |= core;
     }
 
-    fn finish(self) -> Grid {
+    pub(crate) fn finish(self) -> Grid {
         let cells = (0..self.cols * self.rows)
             .map(|i| {
                 let ch = match (self.bits[i], self.ascii) {
                     (0, _) => ' ',
-                    (_, true) if self.node[i] || self.level[i] >= 0.72 => '*',
+                    (_, true) if self.node[i] || self.core[i] || self.level[i] >= 0.72 => '*',
                     (_, true) if self.level[i] >= 0.42 => ':',
                     (_, true) => '.',
                     (b, false) => char::from_u32(0x2800 + b as u32).unwrap_or(' '),
                 };
-                FigCell { ch, level: self.level[i], node: self.node[i] }
+                FigCell { ch, level: self.level[i], node: self.node[i], core: self.core[i] }
             })
             .collect();
         Grid { cols: self.cols as u16, rows: self.rows as u16, cells }
@@ -267,7 +280,7 @@ impl Canvas {
 }
 
 /// The brightness of a dot at depth `z` (-1 far, +1 near).
-fn lit(z: f32) -> f32 {
+pub(crate) fn lit(z: f32) -> f32 {
     let d = ((z + 1.0) / 2.0).clamp(0.0, 1.0);
     0.12 + 0.88 * d
 }
@@ -469,7 +482,14 @@ impl App {
 /// faded by `away` (0..1) while the home unlocks. Nothing when the room is too small.
 pub fn draw(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f64) {
     let free = top.saturating_sub(area.y).saturating_sub(1);
-    let Some((cols, rows)) = fit(area.width, free) else {
+    let figure = app.opts.figure;
+    let galaxy = figure == Figure::Galaxy;
+    let size = match figure {
+        Figure::None => None,
+        Figure::Galaxy => fx_galaxy::fit(area.width, free),
+        Figure::Constellation => fit(area.width, free),
+    };
+    let Some((cols, rows)) = size else {
         app.fx.stars.shown.set(false);
         return;
     };
@@ -477,8 +497,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f6
     let theme = &app.theme;
     let now = app.now();
     let still = !app.fx_on();
-    let (phase, gather) = if still { (NICE_MS, 1.0) } else { (app.fx.stars.phase(now), app.fx.stars.gather(now)) };
-    let grid = grid(phase, gather, cols, rows, crate::ascii::wanted());
+    let nice = if galaxy { fx_galaxy::NICE_MS } else { NICE_MS };
+    let (phase, gather) = if still { (nice, 1.0) } else { (app.fx.stars.phase(now), app.fx.stars.gather(now)) };
+    let scene = if galaxy { fx_galaxy::grid } else { grid };
+    let grid = scene(phase, gather, cols, rows, crate::ascii::wanted());
     let x0 = area.x + (area.width - cols) / 2;
     let y0 = top as i32 - 1 - rows as i32 - slide as i32;
     let buf = f.buffer_mut();
@@ -493,8 +515,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f6
         }
         let level = c.level * keep;
         let style = if theme.mono {
-            // no colour: the near ones bold, the far ones dim
-            let m = if level > 0.66 {
+            // no colour: the near ones bold, the far ones dim (the galaxy: its core and knots bold)
+            let m = if galaxy && (c.core || c.node) {
+                Modifier::BOLD
+            } else if galaxy {
+                if level < 0.35 {
+                    Modifier::DIM
+                } else {
+                    Modifier::empty()
+                }
+            } else if level > 0.66 {
                 Modifier::BOLD
             } else if level < 0.35 {
                 Modifier::DIM
@@ -503,7 +533,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f6
             };
             Style::default().add_modifier(m)
         } else {
-            let to = if c.node { theme.accent2 } else { theme.accent };
+            let to = if c.core {
+                theme.fg
+            } else if c.node {
+                theme.accent2
+            } else {
+                theme.accent
+            };
             let k = 0.18 + 0.82 * level;
             let s = Style::default().fg(fade(theme, theme.bg, to, k));
             if level > 0.9 {

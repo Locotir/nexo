@@ -35,6 +35,7 @@ fn app() -> App {
         // Pop-ins depend on the clock; snapshots check the settled layout.
         animations: false,
         detail: nexo_core::config::Detail::Full,
+        figure: nexo_core::config::Figure::Galaxy,
         todo_strip: false,
         status_line: vec![],
         status_command: String::new(),

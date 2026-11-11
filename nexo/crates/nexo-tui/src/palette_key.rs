@@ -85,6 +85,7 @@ mod tests {
             suggest: false,
             notify_after: 15,
             animations: false,
+            figure: nexo_core::config::Figure::Galaxy,
             detail: nexo_core::config::Detail::Full,
             todo_strip: false,
             vim: false,
