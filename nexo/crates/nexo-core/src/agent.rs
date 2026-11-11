@@ -35,6 +35,12 @@ pub enum AgentCommand {
     Interrupt,
     /// Send the sub-agents the running turn waits for to the background (they go on; the turn is free).
     Detach,
+    /// A message for the sub-agent run `id`: it joins that run's conversation between its rounds (the main agent
+    /// sees nothing of it). When it cannot be delivered (unknown id, the run ended) a `SubNotDelivered` says why.
+    SubSubmit {
+        id: String,
+        text: String,
+    },
     /// Stop the running turn and run the queued request at once (Enter on an empty draft). With
     /// nothing queued it is an `Interrupt`.
     InterruptRun,
@@ -760,6 +766,26 @@ pub enum AgentEvent {
     Jobs {
         jobs: Vec<crate::jobs::JobInfo>,
     },
+    /// An item of a sub-agent run's conversation (see [`crate::subs`]). The four `Sub` events are for the
+    /// interface only: they are not written to the session and not printed by the headless mode.
+    Sub {
+        id: String,
+        item: crate::subs::SubItem,
+    },
+    /// Part of the reply a sub-agent run is writing; the whole reply follows as a `Sub` text item.
+    SubDelta {
+        id: String,
+        text: String,
+    },
+    /// A sub-agent run began, or its state changed.
+    SubState {
+        info: crate::subs::SubInfo,
+    },
+    /// A message sent with `SubSubmit` was not delivered.
+    SubNotDelivered {
+        id: String,
+        why: String,
+    },
     /// The end of the output of each background job, answering `JobTails`.
     JobTails {
         tails: Vec<crate::jobs::JobTail>,
@@ -893,6 +919,32 @@ pub enum AgentEvent {
     Shutdown,
 }
 
+impl AgentEvent {
+    /// One of the events about a sub-agent run's own conversation: for the interface only, never written to
+    /// the session and never printed by the headless mode.
+    pub fn is_sub(&self) -> bool {
+        matches!(
+            self,
+            AgentEvent::Sub { .. }
+                | AgentEvent::SubDelta { .. }
+                | AgentEvent::SubState { .. }
+                | AgentEvent::SubNotDelivered { .. }
+        )
+    }
+}
+
+impl From<crate::subs::SubChange> for AgentEvent {
+    fn from(c: crate::subs::SubChange) -> AgentEvent {
+        use crate::subs::SubChange;
+        match c {
+            SubChange::State(info) => AgentEvent::SubState { info },
+            SubChange::Item { id, item } => AgentEvent::Sub { id, item },
+            SubChange::Delta { id, text } => AgentEvent::SubDelta { id, text },
+            SubChange::NotDelivered { id, why } => AgentEvent::SubNotDelivered { id, why },
+        }
+    }
+}
+
 pub type CommandTx = mpsc::UnboundedSender<AgentCommand>;
 pub type CommandRx = mpsc::UnboundedReceiver<AgentCommand>;
 pub type EventTx = mpsc::UnboundedSender<AgentEvent>;
@@ -915,4 +967,23 @@ pub fn channels() -> (AgentHandle, AgentEnds) {
     let (ctx, crx) = mpsc::unbounded_channel();
     let (etx, erx) = mpsc::unbounded_channel();
     (AgentHandle { commands: ctx, events: erx }, AgentEnds { commands: crx, events: etx })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subs::SubItem;
+
+    #[test]
+    fn sub_events_are_marked_and_the_others_are_not() {
+        let item = SubItem::Task { text: "t".into() };
+        let subs = [
+            AgentEvent::Sub { id: "a#1".into(), item },
+            AgentEvent::SubDelta { id: "a#1".into(), text: "x".into() },
+            AgentEvent::SubNotDelivered { id: "a#1".into(), why: "it ended".into() },
+        ];
+        assert!(subs.iter().all(AgentEvent::is_sub));
+        assert!(!AgentEvent::Shutdown.is_sub());
+        assert!(!AgentEvent::Jobs { jobs: vec![] }.is_sub());
+    }
 }

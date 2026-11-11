@@ -414,6 +414,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let jobs = Jobs::new();
     let detach = nexo_core::jobs::Detach::default();
     let mut job_changes = jobs.changes();
+    let mut sub_changes = jobs.subs().changes();
     let state: Shared = Arc::new(Mutex::new(State {
         config,
         cwd,
@@ -950,6 +951,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         emit(&events, AgentEvent::Jobs { jobs: jobs.list() });
                     }
                     AgentCommand::JobTails => emit(&events, AgentEvent::JobTails { tails: jobs.tails() }),
+                    // the event for a message that cannot be delivered is made by the registry
+                    AgentCommand::SubSubmit { id, text } => {
+                        let _ = jobs.subs().submit(&id, &text);
+                    }
                     AgentCommand::ShowJobs => {
                         notice(&events, Level::Info, jobs_text(&jobs));
                         emit(&events, AgentEvent::Jobs { jobs: jobs.list() });
@@ -977,6 +982,14 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 if turn.is_none() && current {
                     state.lock().await.hidden.push(r.text);
                     turn = Some(start_turn(&state, SUPERVISOR_RESUME_MARK.to_string(), Vec::new(), cancel.child_token()).await);
+                }
+            }
+            change = sub_changes.recv() => {
+                match change {
+                    Ok(c) => emit(&events, c.into()),
+                    // a slow interface lost some; the registry has them all
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 }
             }
             change = job_changes.recv() => {

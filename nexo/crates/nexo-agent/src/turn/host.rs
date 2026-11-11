@@ -6,7 +6,7 @@ use super::*;
 /// attempt that answered, without the attempts the client retried, and empty for a side call (a
 /// sub-agent, the reader, a compaction) whose request is not the conversation's.
 pub(super) fn add_usage(st: &mut State, events: &EventTx, model: &str, usage: Usage, call: Usage, kind: UsageKind) {
-    add_usage_priced(st, events, model, usage, call, None, kind)
+    add_usage_priced(st, events, model, usage, call, None, kind);
 }
 
 /// [`add_usage`] with the prices of another provider (a sub-agent sent there); none: the main agent's.
@@ -18,7 +18,7 @@ pub(super) fn add_usage_priced(
     call: Usage,
     other: Option<Pricing>,
     kind: UsageKind,
-) {
+) -> f64 {
     st.usage += usage;
     let (prov, cfg, main) = st.target.get();
     let sent_to_other = other.is_some();
@@ -60,6 +60,7 @@ pub(super) fn add_usage_priced(
     emit(events, AgentEvent::Usage { turn: usage, call, session: st.usage, cost_usd: st.cost });
     let day = budget::add(cost);
     emit(events, budget_event(st, day));
+    cost
 }
 
 /// The sub-agents' way to the agent: its permissions and its bill.
@@ -121,10 +122,13 @@ impl crate::subagent::Host for StateHost {
         });
     }
 
-    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) {
-        if let Some(state) = self.state.upgrade() {
-            let mut st = state.lock().await;
-            add_usage_priced(&mut st, &self.events, model, usage, Usage::default(), pricing, UsageKind::Sub);
+    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) -> f64 {
+        match self.state.upgrade() {
+            Some(state) => {
+                let mut st = state.lock().await;
+                add_usage_priced(&mut st, &self.events, model, usage, Usage::default(), pricing, UsageKind::Sub)
+            }
+            None => 0.0,
         }
     }
 

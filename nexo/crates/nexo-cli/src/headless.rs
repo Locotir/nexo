@@ -279,6 +279,15 @@ struct Run {
     reach: Option<String>,
 }
 
+/// The line the legacy JSON output prints for an event. The events about a sub-agent run's own conversation
+/// are for the interface: they are not printed.
+fn legacy_line(ev: &AgentEvent) -> Option<String> {
+    if ev.is_sub() {
+        return None;
+    }
+    serde_json::to_string(ev).ok()
+}
+
 fn line(v: &Value) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{v}");
@@ -302,7 +311,7 @@ impl Run {
     /// Handles one agent event; true when the request is over.
     fn on_event(&mut self, ev: &AgentEvent) -> bool {
         if self.fmt == Fmt::Legacy {
-            if let Ok(s) = serde_json::to_string(ev) {
+            if let Some(s) = legacy_line(ev) {
                 let mut out = std::io::stdout().lock();
                 let _ = writeln!(out, "{s}");
             }
@@ -747,7 +756,10 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    use super::legacy_line;
     use super::{notice_line, user_text};
+    use nexo_core::agent::AgentEvent;
+    use nexo_core::subs::{SubInfo, SubItem, SubState};
     use nexo_core::{Level, Problem, ProblemCtx, ProviderError};
 
     #[test]
@@ -764,6 +776,32 @@ mod tests {
         assert!(red.ends_with(&plain[plain.find('\n').unwrap() + 1..]), "only the title is coloured");
         // any other notice keeps its `level: text` line
         assert_eq!(notice_line(Level::Warn, "careful", false, true), "warn: careful");
+    }
+
+    #[test]
+    fn the_legacy_output_prints_events_but_not_those_of_sub_agent_conversations() {
+        let info = SubInfo {
+            id: "a#1".into(),
+            profile: "explore".into(),
+            title: "t".into(),
+            state: SubState::Ok,
+            started_ms: 0,
+            ended_ms: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+        };
+        let subs = [
+            AgentEvent::Sub { id: "a#1".into(), item: SubItem::Text { text: "x".into() } },
+            AgentEvent::SubDelta { id: "a#1".into(), text: "x".into() },
+            AgentEvent::SubState { info },
+            AgentEvent::SubNotDelivered { id: "a#1".into(), why: "w".into() },
+        ];
+        for e in &subs {
+            assert_eq!(legacy_line(e), None, "{e:?}");
+        }
+        let line = legacy_line(&AgentEvent::TextDelta { text: "hi".into() }).unwrap();
+        assert!(line.contains("\"text_delta\""), "{line}");
     }
 
     #[test]

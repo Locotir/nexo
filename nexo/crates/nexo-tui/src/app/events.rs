@@ -1086,6 +1086,11 @@ impl App {
                 self.dirty = true;
             }
             AgentEvent::Compacted { .. } | AgentEvent::Retrying { .. } | AgentEvent::TodoChanged { .. } => {}
+            // the view of a sub-agent's conversation comes later; until then these change nothing on screen
+            AgentEvent::Sub { .. }
+            | AgentEvent::SubDelta { .. }
+            | AgentEvent::SubState { .. }
+            | AgentEvent::SubNotDelivered { .. } => {}
 
             AgentEvent::Shutdown => self.should_quit = true,
         }

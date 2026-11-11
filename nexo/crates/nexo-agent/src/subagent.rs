@@ -29,6 +29,7 @@ use nexo_core::message::{Message, Part, Role};
 use nexo_core::pricing::Pricing;
 use nexo_core::provider::{ModelRequest, ToolSpec};
 use nexo_core::stream::{FinishReason, StreamEvent, Usage};
+use nexo_core::subs::{SubItem, SubRun, SubState};
 use nexo_core::tool::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -241,8 +242,9 @@ pub trait Host: Send + Sync {
     }
     /// A tool call of a sub-agent is over: its line in the audit log (when that is on).
     async fn audit(&self, _call: AuditCall<'_>) {}
-    /// `pricing`: the prices of another provider the sub-agent ran on; none: priced as the main agent prices `model`.
-    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>);
+    /// Bills a sub-agent's model call to the session and says what it cost. `pricing`: the prices of another
+    /// provider the sub-agent ran on; none: priced as the main agent prices `model`.
+    async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) -> f64;
     /// The conversation so far, to brief the sub-agent from.
     async fn history(&self) -> Vec<Message> {
         Vec::new()
@@ -507,6 +509,15 @@ enum Failure {
     Model(ProviderError),
 }
 
+/// A message a person sent a sub-agent joins its conversation as a user message: after the tool results it
+/// answers, else as a message of its own.
+fn join_person(messages: &mut Vec<Message>, text: String) {
+    match messages.last_mut() {
+        Some(m) if m.role == Role::User => m.content.push(Part::text(text)),
+        _ => messages.push(Message::user(text)),
+    }
+}
+
 fn stopped(messages: &[Message]) -> String {
     format!("stopped{}", progress(messages, usize::MAX, 0))
 }
@@ -603,6 +614,8 @@ struct Run {
     /// This run's own id (the task call's id and the job's): the owner of its claims and the start of the
     /// ids of its questions. A provider's call id alone can repeat, so it never names a run.
     id: String,
+    /// Its conversation, kept for whoever watches it, and its inbox (see [`nexo_core::subs`]).
+    sub: Option<SubRun>,
 }
 
 impl Run {
@@ -652,6 +665,13 @@ impl Run {
         // one id for every round of this run: its own prefix, apart from the parent's and the other runs'
         let cache_id = format!("{}-sub-{}", ctx.session_id, &uuid::Uuid::new_v4().simple().to_string()[..8]);
         for round in 0..=rounds {
+            // what a person wrote to this sub-agent joins it here, between its rounds
+            if let Some(s) = &self.sub {
+                for t in s.take_inbox() {
+                    s.item(SubItem::Person { text: t.clone() });
+                    join_person(&mut messages, t);
+                }
+            }
             // the rounds are over: one more request, told to report what it has
             let last = round == rounds;
             if last {
@@ -668,8 +688,12 @@ impl Run {
             let mut tries = 0u32;
             let (text, calls) = loop {
                 let (got, usage) = self.ask(&cfg, &req, ctx).await;
+                let mut cost = 0.0;
                 if let (Some(h), false) = (&self.host, usage.is_empty()) {
-                    h.spent(&model, usage, pricing).await;
+                    cost = h.spent(&model, usage, pricing).await;
+                }
+                if let Some(s) = &self.sub {
+                    s.spent(&usage, cost);
                 }
                 match got {
                     Ok(reply) => break reply,
@@ -692,6 +716,18 @@ impl Run {
                     }
                 }
             };
+            if !text.is_empty() {
+                if let Some(s) = &self.sub {
+                    s.item(SubItem::Text { text: text.clone() });
+                }
+            }
+            // a person wrote while it was answering: it reads that before it ends
+            if calls.is_empty() && !last && self.sub.as_ref().is_some_and(|s| s.has_mail()) {
+                if !text.trim().is_empty() {
+                    messages.push(Message::new(Role::Assistant, vec![Part::text(text)]));
+                }
+                continue;
+            }
             if calls.is_empty() || last {
                 let report = text.trim();
                 return if report.is_empty() {
@@ -714,7 +750,14 @@ impl Run {
             let mut results = vec![];
             for (id, name, a) in calls {
                 asked.push(Part::tool_call(&id, &name, a.clone()));
+                if let Some(s) = &self.sub {
+                    let summary = self.tools.get(&name).map_or_else(|| name.clone(), |t| t.summary(&a));
+                    s.item(SubItem::Call { id: id.clone(), name: name.clone(), summary });
+                }
                 let out = self.call(&id, &name, &a, ctx, say).await;
+                if let Some(s) = &self.sub {
+                    s.item(SubItem::Result { id: id.clone(), ok: !out.is_error, bytes: out.content.len() });
+                }
                 results.push(Part::ToolResult {
                     call_id: id,
                     name: Some(name),
@@ -750,7 +793,12 @@ impl Run {
                 _ = ctx.cancel.cancelled() => return (Err(Failure::Stopped), usage),
             };
             match ev {
-                Some(StreamEvent::TextDelta(d)) => text.push_str(&d),
+                Some(StreamEvent::TextDelta(d)) => {
+                    if let Some(s) = &self.sub {
+                        s.delta(&d);
+                    }
+                    text.push_str(&d);
+                }
                 Some(StreamEvent::ToolCallStart { .. }) => open += 1,
                 Some(StreamEvent::Finish(FinishReason::Length)) => cut = true,
                 Some(StreamEvent::ToolCallEnd { id, name, args }) => {
@@ -1086,6 +1134,7 @@ impl Tool for SubAgent {
             host,
             claims: ctx.claims.clone(),
             id: String::new(),
+            sub: None,
             label: args
                 .get("description")
                 .or_else(|| args.get("prompt"))
@@ -1127,6 +1176,7 @@ impl Tool for SubAgent {
         // this run's own id: the provider's call id can come again in a later turn
         run.id = format!("{}#{id}", ctx.call_id);
         let run_id = run.id.clone();
+        run.sub = Some(ctx.jobs.subs().begin(&run_id, &run.profile.name, prompt, asked));
         // a background reader keeps the note and the job output it always had; every other sub-agent that
         // ends away from its call brings its report in the note
         let inline = writes || !asked;
@@ -1169,6 +1219,13 @@ impl Tool for SubAgent {
                 say(b.line());
             }
             let res = run.go(&prompt, briefing.as_ref(), &jctx, &say).await;
+            if let Some(s) = &run.sub {
+                s.end(match &res {
+                    Ok(_) => SubState::Ok,
+                    Err(_) if jctx.cancel.is_cancelled() => SubState::Killed,
+                    Err(_) => SubState::Failed,
+                });
+            }
             // its files are free before anyone is told it ended (the note starts a turn that may write them)
             drop(release);
             // an isolated one is finished here, also when it was stopped: no worktree is left behind
@@ -1247,6 +1304,7 @@ impl Tool for SubAgent {
             why = gone => {
                 if ctx.detach.as_ref().is_some_and(|d| d.to_background(&run_id)) {
                     attached.store(false, Ordering::Relaxed);
+                    ctx.jobs.subs().to_background(&run_id);
                     return ToolOutput::ok(why.text(id));
                 }
                 // it ended in the same moment: this call is the one that gives the model its report

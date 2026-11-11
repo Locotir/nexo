@@ -40,6 +40,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     // the jobs of the session left behind stop, and none of them is reported to this one
     st.jobs.kill_all();
     st.jobs.take_ended();
+    st.jobs.subs().clear();
     // its scratch folder (`$NEXO_TMP`) goes with it
     nexo_tools::bash::wipe_tmp(st.session.id());
     st.session = session;

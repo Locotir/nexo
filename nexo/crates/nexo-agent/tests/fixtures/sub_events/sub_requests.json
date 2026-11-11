@@ -1,0 +1,200 @@
+[
+  {
+    "model": "m1",
+    "system": "You are a sub-agent of a coding assistant. You get one task; do it with the tools you have and answer with a report for the assistant that sent you: what you found or did, with file paths and line numbers, in at most 300 words. Do not ask questions back: decide and report. A briefing may come before the task: passages of the conversation that sent you, picked for it. Trust it, do not read again what it holds when it says current, and do not quote it back in the report: cite path:line instead.\nSearch narrow first: the working directory and the paths the task names, with the search tools; widen one step at a time only when that finds nothing. Never sweep the whole home folder, / or /tmp in one command: it is slow and the person waits for it. Ask for independent reads and searches together in one round.\nYou have 16 rounds of tool calls.\n\nYou can only read: read files, search, list, search the web. You cannot change anything.",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "look around"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "name": "read",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "wait",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "max_tokens": 4096,
+    "stop": [],
+    "cache": true,
+    "session_id": null,
+    "extra": {}
+  },
+  {
+    "model": "m1",
+    "system": "You are a sub-agent of a coding assistant. You get one task; do it with the tools you have and answer with a report for the assistant that sent you: what you found or did, with file paths and line numbers, in at most 300 words. Do not ask questions back: decide and report. A briefing may come before the task: passages of the conversation that sent you, picked for it. Trust it, do not read again what it holds when it says current, and do not quote it back in the report: cite path:line instead.\nSearch narrow first: the working directory and the paths the task names, with the search tools; widen one step at a time only when that finds nothing. Never sweep the whole home folder, / or /tmp in one command: it is slow and the person waits for it. Ask for independent reads and searches together in one round.\nYou have 16 rounds of tool calls.\n\nYou can only read: read files, search, list, search the web. You cannot change anything.",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "look around"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "s1",
+            "name": "read",
+            "input": {}
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "s1",
+            "name": "read",
+            "content": [
+              {
+                "type": "text",
+                "text": "contents"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "name": "read",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "wait",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "max_tokens": 4096,
+    "stop": [],
+    "cache": true,
+    "session_id": null,
+    "extra": {}
+  },
+  {
+    "model": "m1",
+    "system": "You are a sub-agent of a coding assistant. You get one task; do it with the tools you have and answer with a report for the assistant that sent you: what you found or did, with file paths and line numbers, in at most 300 words. Do not ask questions back: decide and report. A briefing may come before the task: passages of the conversation that sent you, picked for it. Trust it, do not read again what it holds when it says current, and do not quote it back in the report: cite path:line instead.\nSearch narrow first: the working directory and the paths the task names, with the search tools; widen one step at a time only when that finds nothing. Never sweep the whole home folder, / or /tmp in one command: it is slow and the person waits for it. Ask for independent reads and searches together in one round.\nYou have 16 rounds of tool calls.\n\nYou can only read: read files, search, list, search the web. You cannot change anything.",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "slow look"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "name": "read",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "wait",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "max_tokens": 4096,
+    "stop": [],
+    "cache": true,
+    "session_id": null,
+    "extra": {}
+  },
+  {
+    "model": "m1",
+    "system": "You are a sub-agent of a coding assistant. You get one task; do it with the tools you have and answer with a report for the assistant that sent you: what you found or did, with file paths and line numbers, in at most 300 words. Do not ask questions back: decide and report. A briefing may come before the task: passages of the conversation that sent you, picked for it. Trust it, do not read again what it holds when it says current, and do not quote it back in the report: cite path:line instead.\nSearch narrow first: the working directory and the paths the task names, with the search tools; widen one step at a time only when that finds nothing. Never sweep the whole home folder, / or /tmp in one command: it is slow and the person waits for it. Ask for independent reads and searches together in one round.\nYou have 16 rounds of tool calls.\n\nYou can only read: read files, search, list, search the web. You cannot change anything.",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "slow look"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "w1",
+            "name": "wait",
+            "input": {}
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "w1",
+            "name": "wait",
+            "content": [
+              {
+                "type": "text",
+                "text": "went"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "name": "read",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "wait",
+        "description": "fake",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "max_tokens": 4096,
+    "stop": [],
+    "cache": true,
+    "session_id": null,
+    "extra": {}
+  }
+]

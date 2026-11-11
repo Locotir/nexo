@@ -140,6 +140,7 @@ struct Inner {
     jobs: Mutex<BTreeMap<u32, Arc<Entry>>>,
     root: CancellationToken,
     changes: broadcast::Sender<JobChange>,
+    subs: crate::subs::Subs,
 }
 
 impl Drop for Inner {
@@ -256,6 +257,7 @@ impl Jobs {
             jobs: Mutex::new(BTreeMap::new()),
             root: CancellationToken::new(),
             changes,
+            subs: crate::subs::Subs::new(),
         }))
     }
 
@@ -427,6 +429,11 @@ impl Jobs {
     /// Every start and end, as they happen.
     pub fn changes(&self) -> broadcast::Receiver<JobChange> {
         self.0.changes.subscribe()
+    }
+
+    /// The conversations of the session's sub-agent runs.
+    pub fn subs(&self) -> crate::subs::Subs {
+        self.0.subs.clone()
     }
 }
 
