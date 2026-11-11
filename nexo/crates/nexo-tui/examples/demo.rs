@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nexo_core::agent::{channels, AgentCommand, AgentEvent, Level, TurnEnd};
+use nexo_core::agent::{channels, AgentCommand, AgentEvent, GoalState, Level, TurnEnd};
 use nexo_core::message::Message;
 use nexo_core::permission::{PermissionMode, PermissionRequest};
 use nexo_core::pricing::Pricing;
@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
             history.push(Message::assistant(REPLY));
         }
         let mut forks = 0;
+        let mut goal_round = 0;
         let mut tree: Vec<(usize, String, String)> = vec![(0, "demo-session".into(), "fix the failing test".into())];
         loop {
             match ends.commands.recv().await {
@@ -149,7 +150,16 @@ async fn main() -> anyhow::Result<()> {
                     let _ = events.send(limits(pricing, "preset"));
                 }
                 Some(AgentCommand::SetGoal { text }) => {
-                    let _ = events.send(AgentEvent::Goal { text, round: 0, max: 3, state: Default::default() });
+                    // scripted runs (NEXO_DEMO_GOAL): "/goal next round" and "/goal goal met" move the goal along
+                    let scripted = std::env::var_os("NEXO_DEMO_GOAL").is_some();
+                    let kept = Some("make the weight tests pass".to_string());
+                    let (text, round, state) = match text.as_deref() {
+                        Some("next round") if scripted => (kept, goal_round + 1, GoalState::Active),
+                        Some("goal met") if scripted => (kept, goal_round, GoalState::Done),
+                        _ => (text, 0, GoalState::Active),
+                    };
+                    goal_round = round;
+                    let _ = events.send(AgentEvent::Goal { text, round, max: 3, state });
                 }
                 Some(AgentCommand::SetPricing { pricing: p }) => {
                     pricing = p;

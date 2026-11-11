@@ -86,6 +86,8 @@ pub struct GoalFx {
     pub met_at: Option<Instant>,
     pub count_at: Option<Instant>,
     bar: Tween,
+    /// The last tick ran with animations on (a stale bar then holds its value until the next tick).
+    animated: bool,
 }
 
 impl Default for GoalFx {
@@ -105,6 +107,7 @@ impl Default for GoalFx {
             met_at: None,
             count_at: None,
             bar: Tween::new(0.0, BAR_MS),
+            animated: false,
         }
     }
 }
@@ -159,6 +162,7 @@ impl GoalFx {
             self.bar.snap(frac);
         }
         self.seen = true;
+        self.animated = on;
         self.alive(now)
     }
 
@@ -173,9 +177,10 @@ impl GoalFx {
             || self.rows.iter().any(|r| r.moving(now))
     }
 
-    /// The figure the to-do bar shows: eased while it moves, exactly `frac` otherwise.
+    /// The figure the to-do bar shows: eased while it moves, exactly `frac` otherwise. A figure the next
+    /// tick has not retargeted to yet keeps the bar where it is, so it never steps ahead and back.
     pub fn bar_shown(&self, frac: f64, now: Instant) -> f64 {
-        if (self.bar.target() - frac).abs() > 1e-9 {
+        if (self.bar.target() - frac).abs() > 1e-9 && !(self.seen && self.animated) {
             return frac;
         }
         self.bar.value_at(now)
@@ -312,13 +317,17 @@ pub fn row(theme: &Theme, lines: &mut [Line<'static>], mark: usize, rf: &RowFx, 
     let from_fg = fg_of(theme, from_style);
     match rf.status {
         TodoStatus::Done => {
+            // the pop may split the mark's span in up to three: the text starts after all of them
+            let mut split = 0;
             if let Some(first) = lines.first_mut() {
+                let spans = first.spans.len();
                 pop(theme, first, mark_text(first, mark).as_str(), Some(since), now, POP_MS);
+                split = first.spans.len() - spans;
             }
             if within(Some(since), now, WIPE_MS) {
                 let p = progress(Some(since), now, WIPE_MS) as f32;
-                for l in lines.iter_mut() {
-                    wipe(theme, l, mark + 1, from_style, from_fg, p);
+                for (i, l) in lines.iter_mut().enumerate() {
+                    wipe(theme, l, mark + 1 + if i == 0 { split } else { 0 }, from_style, from_fg, p);
                 }
             }
         }
@@ -517,6 +526,49 @@ mod tests {
         let mut end = settled.clone();
         row(&t, &mut end, 0, &rf, at(t0, WIPE_MS.max(POP_MS)));
         assert_eq!(end, settled);
+    }
+
+    #[test]
+    fn the_wipe_spares_the_popped_mark_of_the_strip() {
+        let t = Theme::dark();
+        let t0 = Instant::now();
+        let settled = vec![Line::from(vec![Span::styled(" ✓ ", t.dim()), Span::styled("write the report", t.dim())])];
+        let rf = RowFx {
+            text: "write the report".into(),
+            status: TodoStatus::Done,
+            from: TodoStatus::InProgress,
+            since: Some(t0),
+            born: None,
+        };
+        // early in the effect the wipe head is still inside its soft edge on the first cells
+        let now = at(t0, 30);
+        let mut popped = settled.clone();
+        pop(&t, &mut popped[0], "✓", Some(t0), now, POP_MS);
+        let mark = |l: &Line<'static>| l.spans.iter().find(|s| s.content == "✓").unwrap().style;
+        let mut mid = settled.clone();
+        row(&t, &mut mid, 0, &rf, now);
+        assert_eq!(mark(&mid[0]), mark(&popped[0]), "the mark keeps its pop colour");
+        assert_ne!(mark(&mid[0]).fg, Some(fg_of(&t, t.todo_running())));
+        assert_eq!(text(&mid[0]), text(&settled[0]));
+        // the words are still wiping
+        assert!(mid[0].spans.iter().skip(3).any(|s| s.style != t.dim()));
+    }
+
+    #[test]
+    fn the_bar_never_steps_back_when_drawn_before_the_tick() {
+        let t0 = Instant::now();
+        let mut fx = GoalFx::default();
+        fx.note(&view(&[it("a", TodoStatus::Pending), it("b", TodoStatus::Pending)]), t0, true);
+        let b = [it("a", TodoStatus::Done), it("b", TodoStatus::Pending)];
+        // a draw between the event and the tick keeps the old figure
+        let mut shown = vec![fx.bar_shown(0.5, at(t0, 1000))];
+        assert_eq!(shown[0], 0.0);
+        fx.note(&view(&b), at(t0, 1008), true);
+        for ms in [1008, 1050, 1100, 1200, 1308, 1400] {
+            shown.push(fx.bar_shown(0.5, at(t0, ms)));
+        }
+        assert!(shown.windows(2).all(|w| w[0] <= w[1]), "{shown:?}");
+        assert_eq!(shown.last(), Some(&0.5));
     }
 
     #[test]

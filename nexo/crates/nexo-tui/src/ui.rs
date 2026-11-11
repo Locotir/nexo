@@ -2548,7 +2548,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     app.fx.pick_sel.note(psel, now, on);
     let glide = app.fx.pick_sel;
     let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
-    let gfx = app.fx.goal.clone();
+    let gfx = matches!(app.modal, Some(Modal::Goal(_))).then(|| app.fx.goal.clone()).unwrap_or_default();
     let card = card_rect(app);
     let Some(modal) = &mut app.modal else { return };
     if area.width < 12 || area.height < 5 {

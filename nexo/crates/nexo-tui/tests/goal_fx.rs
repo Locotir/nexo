@@ -213,10 +213,12 @@ fn the_goal_window_opens_row_by_row() {
         30,
         |_| {},
         |a| a.modal = Some(Modal::Goal(Box::new(GoalView::new(goal(1, GoalState::Active), log.clone())))),
-        &[60],
+        &[0, 170],
     );
     assert!(rests);
-    assert_eq!(frames.len(), 2);
+    // the window's own pop (140 ms from its first drawn frame) moves its frame: past it, only the rows still
+    // coming in differ
+    assert_style_only_of("goal window", &frames, 1);
 }
 
 #[test]
