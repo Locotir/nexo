@@ -184,16 +184,13 @@ pub(super) async fn permit_why(
     agent: Option<&str>,
 ) -> (Verdict, Why) {
     let kind = tool.kind();
-    let mut decision = {
+    let (mut decision, epoch) = {
         let st = state.lock().await;
         let d = st.perm.decide_boxed(name, kind, args, cwd, st.sandbox.mode.is_on());
         // a command the OS sandbox holds in needs no asking (a rule that denies still wins)
         let boxed = tool.sandbox_holds(args, &st.sandbox);
-        if d == Decision::Ask && boxed {
-            Decision::Allow
-        } else {
-            d
-        }
+        let d = if d == Decision::Ask && boxed { Decision::Allow } else { d };
+        (d, st.epoch)
     };
     let mut by_hook = false;
     match (hook, &decision) {
@@ -250,8 +247,17 @@ pub(super) async fn permit_why(
                 // a flagged call is allowed this once, whatever the answer says: nothing is remembered for it
                 PermissionDecision::AllowAlways { .. } if !words.is_empty() => (Verdict::Run, ASKED),
                 PermissionDecision::AllowAlways { rule, persist } => {
-                    state.lock().await.perm.add_allow(&rule);
-                    if persist {
+                    // the conversation was replaced while the question was open: this call still runs, but the
+                    // rule belongs to the conversation that was asked, not to the new one
+                    let same = {
+                        let mut st = state.lock().await;
+                        let same = st.epoch == epoch;
+                        if same {
+                            st.perm.add_allow(&rule);
+                        }
+                        same
+                    };
+                    if persist && same {
                         match nexo_core::paths::project_dir(cwd) {
                             Some(dir) => {
                                 if let Err(e) = permission::persist_rule(&dir, &rule) {

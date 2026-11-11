@@ -1863,6 +1863,75 @@ async fn clear_during_a_run_stops_it_and_none_of_its_events_reach_the_new_conver
     r.task.await.unwrap().unwrap();
 }
 
+/// A gate that holds each question until the test answers it, whatever becomes of the conversation meanwhile.
+struct HeldGate {
+    asked: tokio::sync::mpsc::UnboundedSender<nexo_core::permission::PermissionRequest>,
+    answers: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<PermissionDecision>>,
+}
+
+#[async_trait]
+impl nexo_core::permission::PermissionGate for HeldGate {
+    async fn ask(&self, req: nexo_core::permission::PermissionRequest) -> PermissionDecision {
+        let _ = self.asked.send(req);
+        self.answers.lock().await.recv().await.unwrap_or(PermissionDecision::Deny { reason: None })
+    }
+}
+
+#[tokio::test]
+async fn an_always_allow_answered_after_a_clear_adds_no_rule_to_the_new_conversation() {
+    let d = project_with("saved", BYNAME);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let (asked, mut asked_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (answer, answers) = tokio::sync::mpsc::unbounded_channel();
+    let gate = Arc::new(HeldGate { asked, answers: tokio::sync::Mutex::new(answers) });
+    let (handle, ends) = channels();
+    let setup = AgentSetup {
+        config: config(PermissionMode::Ask),
+        cwd: d.path().to_path_buf(),
+        provider: "mock".into(),
+        model: "m1".into(),
+        tools: ToolSet::new().with(Arc::new(Read)),
+        client: client.clone(),
+        resume: None,
+        gate: Some(gate),
+        mail: None,
+        mcp: None,
+        model_pinned: false,
+    };
+    let mut r = Running { handle, task: tokio::spawn(nexo_agent::run(ends, setup)) };
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "x".into() });
+    let req = bounded("the question", asked_rx.recv()).await.unwrap();
+    // the conversation is replaced while the question is open (this gate does not deny it), then it is answered
+    r.send(AgentCommand::Clear);
+    r.until(|e| matches!(e, AgentEvent::HistoryCleared)).await;
+    answer.send(PermissionDecision::AllowAlways { rule: req.suggested_rules[0].clone(), persist: false }).unwrap();
+    // the old start ends without running; until it lets its slot go, a new start is refused and is sent again
+    let start_again = |r: &Running| r.send(AgentCommand::FlowStart { name: "saved".into(), args: "y".into() });
+    start_again(&r);
+    let mut again = None;
+    while again.is_none() {
+        tokio::select! {
+            q = asked_rx.recv() => again = q,
+            ev = r.next() => match ev {
+                AgentEvent::FlowRun { .. } => panic!("the always-allow of the old conversation holds in the new one"),
+                e if notice_has(&e, "already starting") => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    start_again(&r);
+                }
+                _ => {}
+            },
+        }
+    }
+    let again = again.expect("the new conversation asks again");
+    assert_eq!(again.suggested_rules, req.suggested_rules);
+    answer.send(PermissionDecision::Deny { reason: Some("no".into()) }).unwrap();
+    r.until(|e| notice_has(e, "was not started")).await;
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn a_session_with_no_saved_workflow_sends_a_request_that_says_nothing_of_workflows() {
     #[derive(Default)]
