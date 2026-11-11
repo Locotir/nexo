@@ -1035,7 +1035,7 @@ mod tests {
             if let Some(Value::Array(bs)) = m.get_mut("content") {
                 bs.retain(|b| {
                     let t = b.get("text").and_then(Value::as_str).unwrap_or("");
-                    !(t.starts_with("Facts from earlier in this session") || t.starts_with("Recall (lines of earlier"))
+                    !(t.starts_with("Background that nexo brought back") || t.starts_with("Recall (lines of earlier"))
                 });
                 // a text that was a plain string became a list of blocks to carry the tail: the same text again
                 if let [b] = bs.as_slice() {

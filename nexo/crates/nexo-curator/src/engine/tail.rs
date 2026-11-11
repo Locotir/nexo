@@ -18,8 +18,11 @@ use super::Engine;
 /// Standing facts in one tail.
 const FACTS: usize = 12;
 /// The line above the standing facts of a tail. They ride on the person's own message: bare, a model reads them
-/// as something the person just said and answers them before the task.
-pub(crate) const FACTS_HEAD: &str = "Facts from earlier in this session that bear on this step (apply them; the person is not saying them now, so do not answer them):";
+/// as something the person just said and answers them before the task. Measured with a real model (2026-11-11,
+/// 20 runs an arm, a question the fact touches but does not need): bare, 17 replies brought the fact up and 4
+/// answered it as said by the person; told to apply it and not to answer it, 17 and 0; with this wording, 9 and 1.
+/// A request that needs the fact used it in 10 of 10 either way.
+pub(crate) const FACTS_HEAD: &str = "Background that nexo brought back from earlier in this session (use it only if this step needs it; otherwise do not mention it):";
 
 /// Lines of the history one tail brings back, at most for each key of the request and in all, and the tokens they
 /// may take (the standing facts count apart).
