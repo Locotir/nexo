@@ -292,3 +292,46 @@ fn a_resize_works_the_size_out_again_and_a_replaced_dialog_starts_afresh() {
     draw(&mut big, &mut a);
     assert!(rect(&a).height < on_big.height, "{:?} vs {on_big:?}", rect(&a));
 }
+
+#[test]
+fn an_edit_permission_names_the_file_and_shows_old_and_new_at_80x24() {
+    let mut a = app();
+    a.handle_agent(AgentEvent::PermissionAsk {
+        request: PermissionRequest {
+            id: "p2".into(),
+            tool: "edit".into(),
+            kind: ToolKind::Write,
+            summary: "edit src/lib.rs".into(),
+            detail: ToolDisplay::List {
+                items: [
+                    "src/lib.rs (6 changes)",
+                    "- let a = 1;",
+                    "+ let a = 2;",
+                    "- fn old()",
+                    "+ fn new()",
+                    "+4 more",
+                ]
+                .map(String::from)
+                .to_vec(),
+            },
+            suggested_rules: vec!["edit".into()],
+        },
+    });
+    let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    draw_frame(&mut t, &mut a).unwrap();
+    let buf = t.backend().buffer().clone();
+    let rows: Vec<String> =
+        (0..24u16).map(|y| (0..80u16).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect();
+    let all = rows.join("\n");
+    for want in ["src/lib.rs (6 changes)", "- let a = 1;", "+ let a = 2;", "- fn old()", "+ fn new()", "+4 more"] {
+        assert!(all.contains(want), "{want:?} missing\n{all}");
+    }
+    // the old line is red, the new one green, the count dim: three different colours
+    let at = |text: &str| {
+        let y = rows.iter().position(|r| r.contains(text)).unwrap() as u16;
+        let x = rows[y as usize].chars().position(|c| c == text.chars().next().unwrap()).unwrap() as u16;
+        buf[(x, y)].fg
+    };
+    let (del, add, more) = (at("- let a"), at("+ let a"), at("+4 more"));
+    assert!(del != add && add != more && del != more, "{del:?} {add:?} {more:?}");
+}

@@ -1,10 +1,10 @@
 ╭──────────────────────────────────────────────────────────────────────────╮
-│ ●─╮ ╭─●   ne╭ usage ──────────────────────────────────────[✗]──╮         │
-│   ╰●╯     de│  1 Context   2 Usage   3 Session                 │         │
-│ ●─╯ ╰─●   /t│ ──────────────────────────────────────────────── │         │
-│             │                edits early in the prompt re-send │         │
-│ /model sets │                everything.                       │         │
-╰─────────────│ ██████▍░  80%  of spend on model-x  $4.10        │─────────╯
+              ╭ usage ──────────────────────────────────────[✗]──╮
+              │  1 Context   2 Usage   3 Session                 │
+              │ ──────────────────────────────────────────────── │
+              │                edits early in the prompt re-send │
+              │                everything.                       │
+              │ ██████▍░  80%  of spend on model-x  $4.10        │
               │                Use a cheaper model for routine   │
               │                steps.                            │
               │ █▊░░░░░░  22%  Curator left out 1.20M            │

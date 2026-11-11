@@ -20,14 +20,18 @@ pub(super) fn detail_of(kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay
                 let start_line = line_in_file(&file, &old);
                 ToolDisplay::Diff { path, old, new, start_line }
             } else if args.get("files").is_some() {
-                // several files: the dialog names each one
-                ToolDisplay::List { items: nexo_core::tool::call_paths(args) }
+                // several files: each one with what it replaces (the paths alone when that cannot be read)
+                match replacements(args) {
+                    Some(items) => ToolDisplay::List { items },
+                    None => ToolDisplay::List { items: nexo_core::tool::call_paths(args) },
+                }
             } else if args.get("edits").is_some() {
                 // several changes: the whole file as they would leave it
                 let old = std::fs::read_to_string(&file).unwrap_or_default();
                 match nexo_tools::edit::changes(args).and_then(|c| nexo_tools::edit::apply(&old, &c, &path)) {
                     Ok((new, _)) => ToolDisplay::Diff { path, old, new, start_line: 1 },
-                    Err(_) => ToolDisplay::Plain,
+                    // a change that does not fit the file: what it asks for is still shown
+                    Err(_) => replacements(args).map_or(ToolDisplay::Plain, |items| ToolDisplay::List { items }),
                 }
             } else if let Some(content) = s("content") {
                 let old = std::fs::read_to_string(&file).unwrap_or_default();
@@ -47,6 +51,53 @@ pub(super) fn detail_of(kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay
         },
         _ => ToolDisplay::Plain,
     }
+}
+
+/// Replacements the permission dialog spells out; the rest are counted.
+const REPLACEMENTS_SHOWN: usize = 4;
+
+/// The first line of a fragment, with a mark when more follows.
+fn first_line(text: &str) -> String {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    match (lines.next(), lines.next().is_some()) {
+        (Some(l), true) => format!("{l} …"),
+        (Some(l), false) => l.to_string(),
+        (None, _) => "(empty)".to_string(),
+    }
+}
+
+/// What a call of `edit` with `edits` or `files` replaces, as lines for the dialog: each file's path (with
+/// its number of changes) and, for each replacement, `- old` and `+ new`; after the first
+/// `REPLACEMENTS_SHOWN` a count of what is left. `None` when the call has nothing readable.
+pub(super) fn replacements(args: &Value) -> Option<Vec<String>> {
+    let path_of = |v: &Value| {
+        v.get("path").or_else(|| v.get("file_path")).and_then(Value::as_str).unwrap_or("(no path)").to_string()
+    };
+    let files: Vec<(String, Vec<nexo_tools::edit::Change>)> = match args.get("files").and_then(Value::as_array) {
+        Some(list) => {
+            list.iter().map(|f| Some((path_of(f), nexo_tools::edit::changes(f).ok()?))).collect::<Option<Vec<_>>>()?
+        }
+        None => vec![(path_of(args), nexo_tools::edit::changes(args).ok()?)],
+    };
+    let total: usize = files.iter().map(|(_, c)| c.len()).sum();
+    let mut items = Vec::new();
+    let mut shown = 0;
+    for (path, changes) in &files {
+        if shown >= REPLACEMENTS_SHOWN {
+            break;
+        }
+        let n = changes.len();
+        items.push(if n > 1 { format!("{path} ({n} changes)") } else { path.clone() });
+        for (old, new, _) in changes.iter().take(REPLACEMENTS_SHOWN - shown) {
+            items.push(format!("- {}", first_line(old)));
+            items.push(format!("+ {}", first_line(new)));
+            shown += 1;
+        }
+    }
+    if total > shown {
+        items.push(format!("+{} more", total - shown));
+    }
+    (!items.is_empty()).then_some(items)
 }
 
 /// The most of a file read to find where a text sits in it (the edit tool takes as much).
@@ -233,5 +284,57 @@ mod detail_tests {
         // a whole file written over another is shown whole
         let whole = json!({"path": "a.rs", "content": "new"});
         assert_eq!(start_of(&detail_of(ToolKind::Write, &whole, d.path())), 1);
+    }
+    fn items_of(d: ToolDisplay) -> Vec<String> {
+        match d {
+            ToolDisplay::List { items } => items,
+            other => panic!("not a list: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn several_files_name_each_path_with_what_it_replaces_and_count_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        let files = json!({"files": [
+            {"path": "a.rs", "old_string": "alpha", "new_string": "beta"},
+            {"path": "b.rs", "edits": [
+                {"old_string": "one\ntwo", "new_string": "1"},
+                {"old_string": "three", "new_string": "3"},
+                {"old_string": "four", "new_string": "4"},
+                {"old_string": "five", "new_string": "5"},
+            ]},
+        ]});
+        let items = items_of(detail_of(ToolKind::Write, &files, d.path()));
+        assert_eq!(
+            items,
+            [
+                "a.rs",
+                "- alpha",
+                "+ beta",
+                "b.rs (4 changes)",
+                "- one …",
+                "+ 1",
+                "- three",
+                "+ 3",
+                "- four",
+                "+ 4",
+                "+1 more"
+            ]
+        );
+        // a call with nothing readable still lists its paths
+        let bad = json!({"files": [{"path": "a.rs"}, {"path": "b.rs"}]});
+        assert_eq!(items_of(detail_of(ToolKind::Write, &bad, d.path())), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn edits_that_do_not_fit_the_file_are_still_spelled_out() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.rs"), "nothing alike\n").unwrap();
+        let call = json!({"path": "a.rs", "edits": [
+            {"old_string": "x", "new_string": "y"},
+            {"old_string": "z", "new_string": "w"},
+        ]});
+        let items = items_of(detail_of(ToolKind::Write, &call, d.path()));
+        assert_eq!(items, ["a.rs (2 changes)", "- x", "+ y", "- z", "+ w"]);
     }
 }

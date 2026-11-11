@@ -860,7 +860,15 @@ impl Modal {
             }
             ToolDisplay::List { items } | ToolDisplay::Remembered { items, .. } => {
                 for it in items {
-                    lines.extend(wrap_plain(it, w, Style::default(), &[]));
+                    // what an edit of several files replaces: `- old` and `+ new` read as a diff does;
+                    // a path, or the count of what is left, stays plain
+                    let style = match (req.tool == "edit", it.as_str()) {
+                        (true, t) if t.starts_with("- ") => theme.diff_del_line(),
+                        (true, t) if t.starts_with("+ ") => theme.diff_add_line(),
+                        (true, t) if t.starts_with("+") => theme.dim(),
+                        _ => Style::default(),
+                    };
+                    lines.extend(wrap_plain(it, w, style, &[]));
                 }
             }
             ToolDisplay::Todo { items } => {

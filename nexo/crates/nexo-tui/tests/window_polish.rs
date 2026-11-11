@@ -83,3 +83,21 @@ fn the_theme_picker_leaves_the_chat_in_sight() {
         assert!(text.contains("nexo 0.1.0"), "{cmd:?}: the screen behind the picker is not wiped\n{text}");
     }
 }
+
+#[test]
+fn a_window_over_the_welcome_card_leaves_no_piece_of_its_frame_beside_it() {
+    for cmd in [Command::Effort(None), Command::Model(None), Command::Context] {
+        let mut a = app();
+        a.run_command(cmd.clone());
+        let rows = draw(&mut a, 80, 24);
+        let all = rows.join("\n");
+        let top =
+            rows.iter().position(|r| r.contains('╭') && !r.contains("nexo 0.1.0") && !r.starts_with('╭')).expect(&all);
+        let bottom = rows.iter().rposition(|r| r.contains('╰') && r.contains('╯')).expect(&all);
+        // in the rows of the window, the card's left edge and corners are gone (the card's own rows above and below stay)
+        for (y, r) in rows.iter().enumerate().take(bottom + 1).skip(top) {
+            let first = r.chars().next().unwrap_or(' ');
+            assert!(first == ' ', "{cmd:?} row {y}: column 0 shows {first:?}\n{all}");
+        }
+    }
+}

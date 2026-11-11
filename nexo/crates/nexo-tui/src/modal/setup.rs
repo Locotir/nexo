@@ -354,7 +354,7 @@ impl Setup {
         let own = PickItem {
             label: "set up your own server".into(),
             value: CUSTOM.into(),
-            hint: "any OpenAI-compatible address (Ollama, vLLM, LM Studio)".into(),
+            hint: "OpenAI-compatible (Ollama, vLLM, LM Studio)".into(),
         };
         if !filtering || !fuzzy::rank(&q, &[format!("{} {}", own.label, own.hint)]).is_empty() {
             items.push(own);

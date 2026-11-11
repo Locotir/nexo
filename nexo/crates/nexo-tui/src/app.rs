@@ -1043,7 +1043,7 @@ fn mark_head(head: &mut Line<'static>, m: CallMark, cost: Option<f64>, w: usize,
     head.spans.push(Span::styled(text, style));
 }
 
-/// Cuts `line` to at most `w` cells, ending in an ellipsis; the spans keep their styles.
+/// Cuts `line` to at most `w` cells, ending in an ellipsis (or before a trailing fact that does not fit); the spans keep their styles.
 fn cut_line(line: &mut Line<'static>, w: usize) {
     use crate::render::wrap::{truncate, width};
     let mut acc = 0;
@@ -1054,7 +1054,13 @@ fn cut_line(line: &mut Line<'static>, w: usize) {
             acc += sw;
             continue;
         }
-        // this span reaches the edge: it ends in the ellipsis and the rest goes
+        // this span reaches the edge. A fact after the text (` · 40 lines`, `  44ms`) is shown whole
+        // or not at all: cut, it would end in `· …` or a figure with its tail missing
+        if i > 0 && line.spans[i].content.starts_with(' ') {
+            line.spans.truncate(i);
+            return;
+        }
+        // any other span ends in the ellipsis and the rest goes
         let c = line.spans[i].content.to_string();
         line.spans[i].content = if sw > rem {
             truncate(&c, rem)

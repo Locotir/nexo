@@ -557,6 +557,13 @@ impl App {
         self.dirty = true;
     }
 
+    /// Whether there is a block the keys can step into (what the `Shift+↑ blocks` hint promises).
+    /// Once anything was said the answer is yes without looking at every block (a long session keeps the
+    /// lines of the blocks in view only); before that it is exact, the few notices under the banner asked.
+    pub fn has_navigable(&mut self) -> bool {
+        !self.fresh() || (0..self.blocks.len()).rev().any(|i| self.navigable(i))
+    }
+
     /// Shift+↑ (or Tab) on an empty draft: the last block, where the eye already is.
     pub fn select_last(&mut self) {
         match (0..self.blocks.len()).rev().find(|&i| self.navigable(i)) {

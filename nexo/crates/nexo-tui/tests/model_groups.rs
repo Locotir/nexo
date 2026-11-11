@@ -111,7 +111,7 @@ fn the_row_for_a_server_of_ones_own_is_last() {
     assert_eq!(values(&s).last().unwrap(), "new:");
     let t = text(&s);
     let last = t.lines().rfind(|l| !l.trim().is_empty()).unwrap();
-    assert!(last.contains("set up your own server") && last.contains("OpenAI-compatible address"), "{last}");
+    assert!(last.contains("set up your own server") && last.contains("OpenAI-compatible (Ollama"), "{last}");
     press(&mut s, KeyCode::End);
     assert_eq!(s.list.current().unwrap().value, "new:");
     press(&mut s, KeyCode::Home);
@@ -153,5 +153,5 @@ fn a_narrow_window_keeps_what_to_do_and_cuts_the_address() {
         lines.iter().map(|l| l.spans.iter().map(|x| x.content.to_string()).collect::<String>() + "\n").collect();
     assert!(t.contains("needs NEXO_T_NO_KEY_3"), "{t}");
     let own = s.list.items.iter().find(|i| i.value == "new:").unwrap();
-    assert!(own.hint.starts_with("any OpenAI-compatible"), "{}", own.hint);
+    assert!(own.hint.starts_with("OpenAI-compatible"), "{}", own.hint);
 }

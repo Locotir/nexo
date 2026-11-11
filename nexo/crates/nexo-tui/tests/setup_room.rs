@@ -102,3 +102,25 @@ fn the_scan_note_goes_when_nothing_was_found() {
     assert!(matches!(a.modal, Some(Modal::Setup(_))));
     assert_eq!(count(&screen(&mut a, 120, 40), note), 0);
 }
+
+#[test]
+fn every_row_of_the_first_setup_screen_fits_80_columns_and_60_degrade_cleanly() {
+    for w in [80u16, 60] {
+        let mut a = clean();
+        press(&mut a, KeyCode::Enter);
+        let rows = screen(&mut a, w, 24);
+        let all = rows.join("\n");
+        let own = rows.iter().find(|r| r.contains("set up your own server")).expect(&all);
+        assert!(own.chars().count() <= w as usize, "{w}: {own:?}");
+        if w == 80 {
+            // the whole row, nothing cut by an ellipsis
+            assert!(own.contains("LM Studio)") && !own.contains('…'), "{own:?}");
+        } else {
+            // narrower: the row ends in one ellipsis inside the frame, and nothing runs past the right edge
+            assert!(own.contains('…') && own.trim_end().ends_with('│'), "{own:?}");
+        }
+        for r in &rows {
+            assert!(r.chars().count() <= w as usize, "{w}: {r:?}");
+        }
+    }
+}

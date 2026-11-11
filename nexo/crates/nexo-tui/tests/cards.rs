@@ -143,3 +143,27 @@ fn a_picked_block_takes_the_arrows_even_over_a_draft() {
     assert!(screen(&mut a, 80, 24).matches("line1").count() < out.matches("line1").count());
     assert_eq!(a.input.text(), "half a thought");
 }
+
+#[test]
+fn the_blocks_hint_shows_only_when_there_is_a_block_to_step_into() {
+    let hints = |a: &mut App, w: u16, h: u16| {
+        screen(a, w, h)
+            .lines()
+            .find(|l| l.contains("Enter send") || l.contains("Esc interrupt"))
+            .unwrap_or_default()
+            .to_string()
+    };
+    for (w, h) in [(120u16, 40u16), (200, 40)] {
+        // an empty transcript: Shift+↑ would only say "nothing to select yet"
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut empty = App::new(TuiOptions { animations: false, ..TuiOptions::default() }, tx);
+        empty.root = false;
+        empty.unlock();
+        let line = hints(&mut empty, w, h);
+        assert!(line.contains("Enter send") && !line.contains("Shift+↑"), "{w}x{h}: {line}");
+        // with the cards of a turn (it still runs: its own line of keys) the hint is back
+        let mut full = app_with(true);
+        let all = screen(&mut full, w, h);
+        assert!(all.contains("Shift+↑ blocks"), "{w}x{h}: {all}");
+    }
+}

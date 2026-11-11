@@ -318,6 +318,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     };
 
     // what each candidate keeps, from the whole bar down to the model alone
+    #[derive(Clone, Copy, PartialEq)]
     struct Keep {
         short_model: bool,
         dir: bool,
@@ -432,6 +433,8 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         mode: true,
         hint: true,
     };
+    // the steps up to this one keep the whole model name, the gauge and the mode
+    const LAST_WHOLE_STEP: usize = 6;
     let steps = [
         Keep { ..all },
         Keep { dir: false, hint: false, ..all },
@@ -490,10 +493,39 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
             mode: false,
         },
     ];
-    for k in &steps {
+    for (i, k) in steps.iter().enumerate() {
         let c = build(k);
         if segs_width(app, &c) <= avail {
-            return c;
+            // the steps drop pieces together, so the last one may have left room: while the model is
+            // whole and the gauge and mode stay, a piece it took out comes back where it fits, the
+            // one that matters most first (the order the steps drop them in, reversed)
+            if i > LAST_WHOLE_STEP {
+                return c;
+            }
+            let mut keep = *k;
+            let back: [fn(&mut Keep); 7] = [
+                |k| k.label = true,
+                |k| k.counts = true,
+                |k| k.mem = true,
+                |k| k.extra = true,
+                |k| k.branch = true,
+                |k| k.dir = true,
+                |k| k.hint = true,
+            ];
+            let mut out = c;
+            for add in back {
+                let mut more = keep;
+                add(&mut more);
+                if more == keep {
+                    continue;
+                }
+                let c = build(&more);
+                if segs_width(app, &c) <= avail {
+                    keep = more;
+                    out = c;
+                }
+            }
+            return out;
         }
     }
     build(&steps[steps.len() - 1])
@@ -848,6 +880,27 @@ fn clear_margin(f: &mut Frame, r: Rect, area: Rect, theme: &Theme) {
     let x = r.x.saturating_sub(1).max(area.x);
     let end = (r.x + r.width + 1).min(area.x + area.width);
     clear_bg(f, Rect::new(x, r.y, end - x, r.height), theme);
+}
+
+/// Where the welcome card is on the screen (an empty rectangle when it is not in sight).
+fn card_rect(app: &App) -> Rect {
+    if !app.has_welcome() {
+        return Rect::default();
+    }
+    let t = app.transcript_area;
+    let card_end = app.offsets.get(1).copied().unwrap_or(app.total_lines);
+    let rows = card_end.saturating_sub(app.view_top()).min(usize::from(t.height)) as u16;
+    Rect { height: rows, ..t }
+}
+
+/// A window over the welcome card clears the card's rows it spans, across the card: no piece of
+/// the card's frame (its edge, its corners) is left beside the window. Rows of the card the window
+/// does not reach, and every other kind of text, stay in sight.
+fn clear_card_beside(f: &mut Frame, card: Rect, window: Rect, theme: &Theme) {
+    let (top, bottom) = (window.y.max(card.y), (window.y + window.height).min(card.y + card.height));
+    if top < bottom {
+        clear_bg(f, Rect::new(card.x, top, card.width, bottom - top), theme);
+    }
 }
 
 /// Cells of the status bar's context gauge.
@@ -1592,6 +1645,9 @@ pub fn hint_right_text(app: &App) -> String {
     hint_right(app).iter().map(|s| s.content.to_string()).collect()
 }
 
+/// Columns kept clear between the keys and the right part of the hint bar.
+const HINT_GAP: usize = 2;
+
 fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
@@ -1637,9 +1693,12 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
         let dk = if app.selected_is_edit() { format!(" {key} diff · ") } else { " ".to_string() };
         format!("{dk}↑↓ move · → open · ← fold · Enter toggle · Esc or typing back to the draft")
     } else if app.busy {
-        " Esc interrupt · Enter add a message · PgUp/PgDn scroll · Shift+↑ blocks".to_string()
+        // the blocks key is said only once there is a block to step into
+        let blocks = if app.has_navigable() { " · Shift+↑ blocks" } else { "" };
+        format!(" Esc interrupt · Enter add a message · PgUp/PgDn scroll{blocks}")
     } else {
-        " Enter send · Ctrl+J newline · / commands · @ files · ! shell · Shift+↑ blocks · ? help".to_string()
+        let blocks = if app.has_navigable() { " · Shift+↑ blocks" } else { "" };
+        format!(" Enter send · Ctrl+J newline · / commands · @ files · ! shell{blocks} · ? help")
     };
     let suffix = if app.mouse_on { "" } else { " · mouse off · /settings mouse to enable" };
     let mut prefix = match (app.input.vim, app.modal.is_some()) {
@@ -1678,7 +1737,9 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     }
     // the idle line keeps "? help" at its end; the others drop from the end (their last key is the least)
     let keep_last = left.ends_with("? help");
-    let left = fit_hints(&prefix, &left, suffix, keep_last, w.saturating_sub(right_w));
+    // the keys and what stands on the right never touch: a message (Ctrl+C again to quit) is not a continuation of the last key
+    let gap = if right_w > 0 { HINT_GAP } else { 0 };
+    let left = fit_hints(&prefix, &left, suffix, keep_last, w.saturating_sub(right_w + gap));
     let pad = w.saturating_sub(width(&left) + right_w);
     // a change of state (idle, busy, a block, the palette, a dialog) fades the new keys in
     let key = {
@@ -2363,6 +2424,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     app.fx.pick_sel.note(psel, now, on);
     let glide = app.fx.pick_sel;
     let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
+    let card = card_rect(app);
     let Some(modal) = &mut app.modal else { return };
     if area.width < 12 || area.height < 5 {
         return draw_too_narrow(f, &theme, area, area.width < 12);
@@ -2533,6 +2595,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     let y = area.y + (area.height - h) / 2;
     let r = pop_rect(Rect::new(x, y, w, h), pop);
     app.dialog_size.modal.drawn = r;
+    clear_card_beside(f, card, Rect::new(x, y, w, h), &theme);
     clear_margin(f, r, area, &theme);
     clear_bg(f, r, &theme);
     let block = Box_::default()
@@ -2904,6 +2967,7 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme.clone();
     let pop = app.modal_pop();
     let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
+    let card = card_rect(app);
     let Some(Modal::Question(a)) = &mut app.modal else { return };
     if area.width < 20 || area.height < 6 {
         return draw_too_narrow(f, &theme, area, area.width < 20);
@@ -2928,8 +2992,10 @@ fn draw_question(f: &mut Frame, app: &mut App, area: Rect) {
     // the size it took when it opened: moving the cursor (a description, a typed answer) never resizes it
     let want_h = (body.len() as u16 + 1 + rows_h + 2).min(max_h);
     let (w, h) = app.dialog_size.modal.keep(key, f.area(), Rect::new(0, 0, area.width, max_h), || (w, want_h));
-    let r = pop_rect(Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h), pop);
+    let still = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    let r = pop_rect(still, pop);
     app.dialog_size.modal.drawn = r;
+    clear_card_beside(f, card, still, &theme);
     clear_bg(f, r, &theme);
     let title = if a.q.plan.is_some() { " plan ".to_string() } else { format!(" {} ", a.q.header.to_lowercase()) };
     // a plan wears the colour of plan mode; any other question the warning colour
@@ -3009,6 +3075,7 @@ fn draw_info(f: &mut Frame, app: &mut App, area: Rect) {
     let h = (3.0 + (full.height.saturating_sub(3)) as f64 * grow).round() as u16;
     let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
     app.dialog_size.modal.drawn = r;
+    clear_card_beside(f, card_rect(app), full, &theme);
     clear_bg(f, r, &theme);
     let block = Box_::default()
         .borders(Borders::ALL)

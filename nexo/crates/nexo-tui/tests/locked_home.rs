@@ -274,3 +274,18 @@ fn the_first_ctrl_c_on_the_first_screen_says_to_press_it_again() {
     event::key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(screen(&mut a).contains("Ctrl+C again to quit"), "{}", screen(&mut a));
 }
+
+#[test]
+fn the_setup_keys_and_the_ctrl_c_message_never_touch() {
+    for w in [60u16, 70, 80, 100] {
+        let mut a = app("codex", codex());
+        press(&mut a, KeyCode::Enter);
+        event::key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        let mut t = Terminal::new(TestBackend::new(w, 24)).unwrap();
+        draw_frame(&mut t, &mut a).unwrap();
+        let rows = rows_of(t.backend().buffer());
+        let row = rows.iter().find(|r| r.contains("Ctrl+C again to quit")).expect("the message is on screen");
+        let at = row.find("Ctrl+C again to quit").unwrap();
+        assert!(row[..at].ends_with("  "), "{w}: the keys touch the message: {row:?}");
+    }
+}

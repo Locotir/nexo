@@ -55,6 +55,27 @@ fn a_long_command_is_cut_so_the_cache_mark_and_price_still_show() {
 }
 
 #[test]
+fn a_head_never_ends_in_a_separator_and_an_ellipsis_or_a_cut_figure() {
+    use crate::render::wrap::width;
+    let theme = Theme::dark();
+    let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+    // the facts after the text are whole pieces: for every room the mark leaves, none is cut
+    for w in 66..=79 {
+        let mut l = Line::from(vec![
+            Span::raw("✓ "),
+            Span::raw("read "),
+            Span::raw("src/components/deeply/some-file-name.rs"),
+            Span::raw(" · 40 lines"),
+            Span::raw("  44ms"),
+        ]);
+        mark_head(&mut l, CallMark::Sent, None, w, &theme);
+        let t = text(&l);
+        assert!(!t.contains("· …") && !t.contains("· 4…") && !t.contains("lin…") && !t.contains(" 4…"), "{w}: {t}");
+        assert!(t.ends_with("● full price") && width(&t) == w, "{w}: {t}");
+    }
+}
+
+#[test]
 fn an_update_shows_its_card_once_and_a_later_check_only_when_more_came_out() {
     let (mut a, _rx) = app();
     let cards = |a: &App| a.blocks.iter().filter(|b| matches!(b, Block::Update { .. })).count();

@@ -73,3 +73,49 @@ fn with_no_model_yet_the_bar_shows_no_bare_slash() {
     let b = bar_of(80, "");
     assert!(!b.contains("│ / │") && !b.contains(" / "), "{b}");
 }
+
+/// The bar of a session that ran a turn, in a repository.
+fn bar_with_branch(width: u16) -> String {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let opts = TuiOptions {
+        cwd: PathBuf::from("/tmp/p"),
+        provider: "p".into(),
+        model: "m".into(),
+        theme: "dark".into(),
+        animations: false,
+        ..TuiOptions::default()
+    };
+    let mut a = App::new(opts, tx);
+    a.root = false;
+    a.unlock();
+    a.branch = Some("main".into());
+    a.context = Some(ContextInfo { view_tokens: 4_000, history_tokens: 30_000, ..ContextInfo::default() });
+    a.session_usage.input = 2_000;
+    a.session_usage.cache_read = 1_000;
+    a.call_inputs = vec![2_000, 3_000];
+    let mut t = Terminal::new(TestBackend::new(width, 30)).unwrap();
+    draw_frame(&mut t, &mut a).unwrap();
+    let rows = rows_of(t.backend().buffer());
+    rows.iter().rev().find(|r| r.contains(" nexo")).cloned().unwrap_or_default()
+}
+
+#[test]
+fn the_branch_and_the_directory_go_only_when_they_do_not_fit() {
+    let mut seen_branch_without_dir = false;
+    for w in 40..=140u16 {
+        let b = bar_with_branch(w);
+        // the free columns between what the bar says on the left and the billed tokens on the right
+        // past this the model name itself is cut: the bar is down to what matters most
+        if !b.contains("p/m") {
+            continue;
+        }
+        let Some(right) = b.find(" Σ ").or_else(|| b.find(" $")) else { continue };
+        let free = b[..right].chars().rev().take_while(|c| *c == ' ').count();
+        let (dir, branch) = (b.contains("/tmp/p"), b.contains("⎇ main"));
+        // " │ ⎇ main" is 9 columns, " │ /tmp/p" 9 more
+        assert!(branch || free < 9, "{w}: {free} free columns, no branch: {b}");
+        assert!(dir || free < 9 || !branch && free < 18, "{w}: {free} free columns, no directory: {b}");
+        seen_branch_without_dir |= branch && !dir;
+    }
+    assert!(seen_branch_without_dir, "the branch comes back on its own where the directory does not fit");
+}
