@@ -406,7 +406,12 @@ impl Volatile {
         if !cfg.hermetic {
             let home = compat::foreign_home();
             for i in compat::instructions(cwd, &paths::config_dir(), home.as_deref()) {
-                instructions.push_str(&format!("\n\nInstructions from {}:\n{}", i.path.display(), i.text));
+                // saved rules are framed as background in what is sent (the file keeps its bytes)
+                instructions.push_str(&format!(
+                    "\n\nInstructions from {}:\n{}",
+                    i.path.display(),
+                    compat::framed(&i.text)
+                ));
             }
             let nested = compat::nested_instructions(cwd);
             if !nested.is_empty() {
@@ -452,7 +457,7 @@ pub fn system_prompt_with(
     out.push_str(&guidance_for(tools, window));
     out.push_str(&vol.instructions);
     if !prefs.is_empty() {
-        out.push_str(&format!("\n\nThe person's preferences:\n{prefs}"));
+        out.push_str(&format!("\n\nThe person's preferences:\n{}", compat::framed(&prefs)));
     }
     if let Some(extra) = &cfg.system_prompt_extra {
         if !extra.trim().is_empty() {
@@ -732,7 +737,13 @@ mod tests {
         std::env::remove_var("NEXO_CONFIG_DIR");
         assert!(!g.is_error && !p.is_error, "{} / {}", g.content, p.content);
         assert!(!before.contains("dotfiles") && !before.contains("4100"));
-        assert!(after.contains("The person's preferences:\n## Remembered by nexo\n- "), "{after}");
+        // the model is told, right under each heading, that this is background and not the person speaking now
+        let f = compat::REMEMBERED_FRAME;
+        assert!(after.contains(&format!("The person's preferences:\n## Remembered by nexo\n{f}\n- ")), "{after}");
+        assert_eq!(after.matches(f).count(), 2, "{after}");
+        // and neither file holds that line
+        let agents = std::fs::read_to_string(cwd.path().join("AGENTS.md")).unwrap();
+        assert!(agents.contains("## Remembered by nexo\n- ") && !agents.contains(f), "{agents}");
         assert!(after.contains("my .bashrc is at ~/dotfiles/bashrc"), "{after}");
         assert!(after.contains("the dev server runs on port 4100"), "{after}");
         assert!(after.contains(&format!("Instructions from {}", cwd.path().join("AGENTS.md").display())), "{after}");

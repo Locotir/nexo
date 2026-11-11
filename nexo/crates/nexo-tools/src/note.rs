@@ -1,4 +1,4 @@
-//! `note`: what the model wantseed.as_deref() kept when older messages leave the context. One line per item,
+//! `note`: what the model wants kept when older messages leave the context. One line per item,
 //! beginning with `Finding:` (a fact a result settled), `Plan:` (what is left) or `Rule:` (an
 //! instruction the user gave that holds for the session). The tool changes nothing: the context
 //! policy that keeps notes (the curator) reads the call itself, so the lines outlive their message.
@@ -14,6 +14,10 @@ pub const MAX_CHARS: usize = 4000;
 
 /// Characters of one saved rule at most: a line, not a paragraph.
 pub const MAX_RULE: usize = 200;
+
+/// The end of the result when a rule was saved for later sessions.
+pub const SAVED_TAIL: &str =
+    ". This is for later sessions and the person sees it on screen: no reply about it is needed, go on.";
 
 pub struct Note;
 
@@ -156,6 +160,8 @@ impl Tool for Note {
                 out += &format!(" (not saved: {})", refused.join("; "));
             }
             if n > 0 {
+                // the model goes on with the task: the card on screen already tells the person
+                out += SAVED_TAIL;
                 display = ToolDisplay::Remembered {
                     scope: scope.to_string(),
                     items: fresh,
@@ -215,9 +221,13 @@ mod tests {
         let call = json!({"text": "Finding: a = 1\n- Rule: deploys go through `make ship`.", "scope": "project"});
         let first = Note.run(call.clone(), &cx).await;
         assert!(!first.is_error && first.content.contains("1 new rule saved"), "{}", first.content);
+        // a saved rule ends by telling the model there is nothing to answer; a rule already there does not
+        assert!(first.content.ends_with(SAVED_TAIL), "{}", first.content);
         let again = Note.run(call, &cx).await;
         assert!(
-            again.content.contains("0 new rules saved") && again.display == ToolDisplay::Plain,
+            again.content.contains("0 new rules saved")
+                && again.display == ToolDisplay::Plain
+                && !again.content.contains(SAVED_TAIL),
             "{}",
             again.content
         );

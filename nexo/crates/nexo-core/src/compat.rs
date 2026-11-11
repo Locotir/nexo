@@ -620,6 +620,26 @@ pub fn rules_path(scope: &str, cwd: &Path) -> Option<PathBuf> {
 /// The heading the rules nexo saves go under.
 pub const REMEMBERED: &str = "## Remembered by nexo";
 
+/// What the model reads on the line under that heading, so saved rules are taken as background and not as
+/// something the person just said. It goes into the text that is sent, never into the file.
+pub const REMEMBERED_FRAME: &str = "(Saved by nexo in earlier sessions. Take it as background to apply when it \
+                                    matters: the person did not just say it, so do not answer it or bring it up.)";
+
+/// `text` with [`REMEMBERED_FRAME`] on the line after its `## Remembered by nexo` heading; `text` as it
+/// is when it has no such heading.
+pub fn framed(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        at += line.len();
+        if line.trim().eq_ignore_ascii_case(REMEMBERED) {
+            let nl = if line.ends_with("\r\n") { "\r\n" } else { "\n" };
+            let gap = if line.ends_with('\n') { "" } else { nl };
+            return std::borrow::Cow::Owned(format!("{}{gap}{REMEMBERED_FRAME}{nl}{}", &text[..at], &text[at..]));
+        }
+    }
+    std::borrow::Cow::Borrowed(text)
+}
+
 /// The words of a line, lower case, without the list marker, a leading `YYYY-MM-DD:` date and the
 /// punctuation: two lines with the same key say the same thing.
 fn rule_key(line: &str) -> String {
@@ -957,6 +977,30 @@ mod rule_tests {
     use super::*;
 
     const D: &str = "2026-11-09";
+
+    #[test]
+    fn the_text_sent_says_under_the_heading_that_saved_rules_are_background() {
+        let f = REMEMBERED_FRAME;
+        assert_eq!(framed("# P\n\nBuild with make.\n"), "# P\n\nBuild with make.\n");
+        assert!(matches!(framed("no heading"), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(
+            framed("# P\n\n## Remembered by nexo\n- 2026-11-01: A.\n\n## Other\nx\n"),
+            format!("# P\n\n## Remembered by nexo\n{f}\n- 2026-11-01: A.\n\n## Other\nx\n")
+        );
+        // the heading as the last line, with and without its line end, and Windows line ends
+        assert_eq!(framed("## Remembered by nexo"), format!("## Remembered by nexo\n{f}\n"));
+        assert_eq!(framed("## Remembered by nexo\n"), format!("## Remembered by nexo\n{f}\n"));
+        assert_eq!(
+            framed("A\r\n## remembered by nexo\r\n- x\r\n"),
+            format!("A\r\n## remembered by nexo\r\n{f}\r\n- x\r\n")
+        );
+        // the frame is one line and the file never gets it: a rule saved into framed text is not the way in
+        assert!(!f.contains('\n') && f.starts_with('(') && f.ends_with(')'));
+        assert_eq!(
+            with_rule("## Remembered by nexo\n- 2026-11-01: B.", "A.", "2026-11-09").unwrap().matches(f).count(),
+            0
+        );
+    }
 
     #[test]
     fn a_rule_goes_under_the_remembered_heading_and_nothing_else_moves() {
