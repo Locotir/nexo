@@ -183,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
             ("mock".into(), "fast".into()),
             ("deepseek".into(), "deepseek-chat".into()),
         ],
+        animations: std::env::var_os("NEXO_DEMO_STILL").is_none(),
         sessions: vec![
             ("20261027-101500-7f3a".into(), "fix the failing test".into()),
             ("20261026-180002-c0de".into(), "add a tonnes unit".into()),

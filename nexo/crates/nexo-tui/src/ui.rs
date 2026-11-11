@@ -1531,12 +1531,14 @@ fn draw_todo_strip(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let lines = crate::todo_strip::strip_lines(
+    let fx = app.fx_on().then(|| (&app.fx.goal, app.now()));
+    let lines = crate::todo_strip::strip_lines_fx(
         &app.todo,
         area.width as usize,
         area.height as usize,
         &app.theme,
         app.todo_done_live,
+        fx,
     );
     f.render_widget(Paragraph::new(lines), area);
     app.todo_area = area;
@@ -1934,6 +1936,7 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
             return;
         }
     }
+    let (gfx, now) = (&app.fx.goal, app.now());
     if let Some(goal) = &app.goal {
         lines.push(header("goal".to_string()));
         let runs = crate::render::markdown::inline_runs(goal.headline(), theme, theme.style(theme.accent));
@@ -1955,15 +1958,27 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
         };
         if let Some(state) = state {
             let body = crate::render::wrap::wrap_runs(&[state], inner_w, &[rail()], &[rail()]);
+            let first = lines.len();
             lines.extend(body.into_iter().take(2));
+            if let GoalState::Active = goal.state {
+                let fig = format!("{round}/{max}");
+                crate::fx_goal::light(theme, &mut lines[first], &fig, gfx.round_at, now, crate::motion::LIT_MS);
+            }
+            if let GoalState::Done = goal.state {
+                crate::fx_goal::pop(theme, &mut lines[first], "✓", gfx.met_at, now, crate::fx_goal::MET_MS);
+                crate::fx_goal::glow(theme, &mut lines[first], 1, gfx.met_at, now);
+            }
         }
         lines.push(Line::from(rail()));
     }
     if !app.todo.is_empty() {
         let (done, total) = todo_counts(&app.todo);
         let mut head = vec![rail(), Span::styled("≡ todo  ", Style::default().add_modifier(Modifier::BOLD))];
-        head.extend(crate::render::todo::todo_summary(theme, done as f64 / total as f64, done, total, false));
-        lines.push(Line::from(head));
+        let frac = done as f64 / total as f64;
+        head.extend(crate::render::todo::todo_summary(theme, gfx.bar_shown(frac, now), done, total, false));
+        let mut head = Line::from(head);
+        crate::fx_goal::light(theme, &mut head, &format!("{done}/{total}"), gfx.count_at, now, crate::motion::LIT_MS);
+        lines.push(head);
         let ctx = crate::render::todo::RowCtx {
             spinner: app.opts.animations.then_some(app.spinner),
             compact: true,
@@ -1971,12 +1986,19 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
             roomy: lines.len() + app.todo.len() * 2 + 3 + app.changed.len().max(1) <= area.height as usize,
             ..Default::default()
         };
-        for it in &app.todo {
-            for row in crate::render::todo::todo_row(it, inner_w, theme, ctx) {
-                let mut spans = vec![rail()];
-                spans.extend(row.spans);
-                lines.push(Line::from(spans));
+        for (k, it) in app.todo.iter().enumerate() {
+            let mut rows: Vec<Line<'static>> = crate::render::todo::todo_row(it, inner_w, theme, ctx)
+                .into_iter()
+                .map(|row| {
+                    let mut spans = vec![rail()];
+                    spans.extend(row.spans);
+                    Line::from(spans)
+                })
+                .collect();
+            if let Some(rf) = gfx.row(k, &it.text) {
+                crate::fx_goal::row(theme, &mut rows, 1, rf, now);
             }
+            lines.extend(rows);
         }
         lines.push(Line::from(rail()));
     }
@@ -2029,6 +2051,7 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(line);
     }
+    crate::fx_goal::open_rows(theme, &mut lines, 0, gfx.open_at, now);
     lines.truncate(area.height as usize);
     while lines.len() < area.height as usize {
         lines.push(Line::from(Span::styled("│", theme.style(theme.border))));
@@ -2525,6 +2548,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     app.fx.pick_sel.note(psel, now, on);
     let glide = app.fx.pick_sel;
     let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
+    let gfx = app.fx.goal.clone();
     let card = card_rect(app);
     let Some(modal) = &mut app.modal else { return };
     if area.width < 12 || area.height < 5 {
@@ -2653,7 +2677,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             let (rows, button) = v.pinned(inner_w, &theme);
             pinned = rows;
             goal_button = button;
-            (v.title(), v.lines(inner_w, &theme, nexo_core::mailbox::now_ms()), None)
+            (v.title(), v.lines_fx(inner_w, &theme, nexo_core::mailbox::now_ms(), &gfx, now), None)
         }
         Modal::Sent(v) => {
             let lines = v.layout(inner_w, &theme);

@@ -101,6 +101,31 @@ impl GoalView {
         (out, button)
     }
 
+    /// [`lines`](Self::lines) with the motion of the moment: the rows coming in, the round lit once, the mark of a
+    /// met goal popping with a sweep of light along its row (`at` is the time the effects are read at).
+    pub fn lines_fx(
+        &self,
+        w: usize,
+        theme: &Theme,
+        now: i64,
+        fx: &crate::fx_goal::GoalFx,
+        at: std::time::Instant,
+    ) -> Vec<Line<'static>> {
+        let mut out = self.lines(w, theme, now);
+        let fig = format!("{}/{}", self.goal.round, self.goal.max);
+        if let Some(l) = out.iter_mut().find(|l| l.spans.iter().any(|s| s.content.contains(&format!("round {fig}")))) {
+            crate::fx_goal::light(theme, l, &fig, fx.round_at, at, crate::motion::LIT_MS);
+        }
+        if self.goal.state == GoalState::Done {
+            if let Some(l) = out.first_mut() {
+                crate::fx_goal::pop(theme, l, "✓", fx.met_at, at, crate::fx_goal::MET_MS);
+                crate::fx_goal::glow(theme, l, 0, fx.met_at, at);
+            }
+        }
+        crate::fx_goal::open_rows(theme, &mut out, 0, fx.modal_at, at);
+        out
+    }
+
     /// The body at `w` columns, with the clock read at `now` (unix ms).
     pub fn lines(&self, w: usize, theme: &Theme, now: i64) -> Vec<Line<'static>> {
         let head = |t: &str| Line::from(Span::styled(t.to_string(), theme.dim()));

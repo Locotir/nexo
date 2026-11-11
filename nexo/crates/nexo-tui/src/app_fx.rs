@@ -66,6 +66,8 @@ pub struct Fx {
     pub chip_seen: Vec<(String, Instant)>,
     /// When a draft was last rejected (a command that does not exist): the rule flashes.
     pub reject_at: Option<Instant>,
+    /// The goal and to-do views: the panel opening, the bar, the marks and the rows (see `fx_goal`).
+    pub goal: crate::fx_goal::GoalFx,
 }
 
 impl App {
@@ -107,6 +109,7 @@ impl App {
         // the cut figure goes away by itself, animations or not
         let cut = motion::within(self.fx.cut.map(|c| c.1), now, motion::CUT_MS + 100);
         let changed = self.note_bar_changes(now);
+        self.note_goal_fx(now);
         let fx = &self.fx;
         let still = on
             && !self.theme.mono
@@ -125,6 +128,7 @@ impl App {
                 || motion::within(fx.bar_lit, now, fx_chrome::BAR_MS)
                 || motion::within(fx.reject_at, now, fx_chrome::REJECT_MS)
                 || fx.chip_seen.iter().any(|(_, t)| motion::within(Some(*t), now, fx_chrome::CHIP_MS))
+                || fx.goal.alive(now)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
         t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)
     }

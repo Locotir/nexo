@@ -83,6 +83,19 @@ pub fn strip_height(items: &[TodoItem], h: u16) -> u16 {
 
 /// The strip's rows at `w` columns and `rows` rows (see `strip_height`).
 pub fn strip_lines(items: &[TodoItem], w: usize, rows: usize, theme: &Theme, shown_done: bool) -> Vec<Line<'static>> {
+    strip_lines_fx(items, w, rows, theme, shown_done, None)
+}
+
+/// [`strip_lines`] with the motion of the moment: the count lit, a checked item popping and wiping, a new
+/// row fading in, a started task taking its colour (`fx` is the lane's state and the time it is drawn at).
+pub fn strip_lines_fx(
+    items: &[TodoItem],
+    w: usize,
+    rows: usize,
+    theme: &Theme,
+    shown_done: bool,
+    fx: Option<(&crate::fx_goal::GoalFx, std::time::Instant)>,
+) -> Vec<Line<'static>> {
     let total = items.len();
     let done = done_count(items);
     let all = done == total;
@@ -90,6 +103,12 @@ pub fn strip_lines(items: &[TodoItem], w: usize, rows: usize, theme: &Theme, sho
     let cur = items.iter().position(|i| i.status == TodoStatus::InProgress);
     let cut = |s: &str, room: usize| truncate(&one_line(s), room);
     let head_style = theme.todo_head();
+    let lit = |line: &mut Line<'static>| {
+        if let Some((g, now)) = fx {
+            let fig = format!("{done}/{total}");
+            crate::fx_goal::light(theme, line, &fig, g.count_at, now, crate::motion::LIT_MS);
+        }
+    };
     if rows <= 1 {
         let mut spans = vec![Span::styled(format!(" {count}"), head_style)];
         if let Some(i) = cur {
@@ -97,9 +116,12 @@ pub fn strip_lines(items: &[TodoItem], w: usize, rows: usize, theme: &Theme, sho
             spans.push(Span::styled(" ▸ ", theme.todo_running()));
             spans.push(Span::styled(cut(&items[i].text, w.saturating_sub(used)), theme.todo_running()));
         }
-        return vec![Line::from(spans)];
+        let mut line = Line::from(spans);
+        lit(&mut line);
+        return vec![line];
     }
     let mut lines = vec![Line::from(Span::styled(format!(" {count}"), head_style))];
+    lit(&mut lines[0]);
     let room = rows - 1;
     let (start, slots) = if total <= room {
         (0, total)
@@ -109,14 +131,20 @@ pub fn strip_lines(items: &[TodoItem], w: usize, rows: usize, theme: &Theme, sho
         // keep the window inside the list so the tail never shows a short window
         (first.min(total.saturating_sub(slots)), slots)
     };
-    for it in items.iter().skip(start).take(slots) {
+    for (k, it) in items.iter().enumerate().skip(start).take(slots) {
         let (mark, style) = match it.status {
             TodoStatus::Done => ("✓", theme.dim()),
             TodoStatus::InProgress => ("▸", theme.todo_running()),
             TodoStatus::Pending => ("○", theme.todo_pending()),
         };
         let text = cut(&it.text, w.saturating_sub(3));
-        lines.push(Line::from(vec![Span::styled(format!(" {mark} "), style), Span::styled(text, style)]));
+        let mut row = [Line::from(vec![Span::styled(format!(" {mark} "), style), Span::styled(text, style)])];
+        if let Some((g, now)) = fx {
+            if let Some(rf) = g.row(k, &it.text) {
+                crate::fx_goal::row(theme, &mut row, 0, rf, now);
+            }
+        }
+        lines.extend(row);
     }
     let hidden = total - slots.min(total);
     if hidden > 0 {
