@@ -140,6 +140,8 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
         [] => {
             let hint = if t.len() >= 3 && t.chars().all(|c| c.is_ascii_hexdigit()) {
                 format!("; for an address write 0x{t}")
+            } else if img.imports.iter().any(|i| i.name == t) {
+                format!("; {t} is an import, its code is not in this file (who uses it: nexo bin xref)")
             } else {
                 String::new()
             };

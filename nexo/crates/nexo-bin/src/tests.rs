@@ -140,6 +140,9 @@ fn fn_asks_fail_with_a_reason() {
     assert!(e.contains("no function is named"), "{e}");
     let e = func(&img, "0x400200", false).unwrap_err().to_string();
     assert!(e.contains("data, not code"), "{e}");
+    // an import has no body here: the answer says so and names the command that lists its users
+    let e = func(&open(&fixtures::pe64(false)), "ExitProcess", false).unwrap_err().to_string();
+    assert!(e.contains("ExitProcess is an import") && e.contains("nexo bin xref"), "{e}");
     let e = func(&img, "0x10", false).unwrap_err().to_string();
     assert!(e.contains("not inside any section"), "{e}");
     let pe = open(&fixtures::pe64(false));

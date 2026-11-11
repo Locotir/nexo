@@ -249,7 +249,7 @@ pub enum Cmd {
         #[command(subcommand)]
         what: crate::worktree::WorktreeCmd,
     },
-    /// Read an ELF or PE x86-64 file and answer in bounded pieces: info, fn, bytes, strings, find (the file is never run).
+    /// Read an ELF or PE x86-64 file and answer in bounded pieces: info, fn, xref, calls, funcs, strings, bytes, find (the file is never run).
     Bin(crate::bin_cmd::BinArgs),
     /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
     Acp,
