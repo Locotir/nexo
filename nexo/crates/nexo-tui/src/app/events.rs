@@ -798,13 +798,24 @@ impl App {
                 // a model was chosen in the setup: the home opens
                 self.unlock();
                 if let Some(Modal::Setup(s)) = &mut self.modal {
-                    s.saved(&provider, &model);
+                    // the switcher offers a model only once it was saved, so after its check passed
+                    if s.saved(&provider, &model) {
+                        let pair = (provider.clone(), model.clone());
+                        if !self.opts.models.contains(&pair) {
+                            self.opts.models.push(pair);
+                        }
+                    }
                 }
                 self.flash(&format!("model: {provider}/{model}"));
                 self.provider = provider;
                 self.model = model;
                 self.limits = None;
                 self.refresh_welcome();
+            }
+            AgentEvent::SaveFailed { name, model, reason } => {
+                if let Some(Modal::Setup(s)) = &mut self.modal {
+                    s.save_failed(&name, &model, reason);
+                }
             }
             AgentEvent::PermissionModeChanged { mode } => {
                 if mode != self.permission_mode && self.opts.animations {
@@ -861,14 +872,14 @@ impl App {
                     }
                 }
             }
-            AgentEvent::Probed { result, .. } => {
+            AgentEvent::Probed { name, seq, result } => {
                 if let Some(Modal::Setup(s)) = &mut self.modal {
-                    s.probed(result);
+                    s.probed_from(&name, seq, result);
                 }
             }
-            AgentEvent::ModelChecked { check, .. } => {
+            AgentEvent::ModelChecked { name, model, seq, check } => {
                 if let Some(Modal::Setup(s)) = &mut self.modal {
-                    s.checked(check);
+                    s.checked_from(&name, &model, seq, check);
                 }
             }
             AgentEvent::Effort { current, levels, .. } => {

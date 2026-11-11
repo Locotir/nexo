@@ -2478,7 +2478,14 @@ async fn the_model_setup_checks_saves_switches_and_sets_the_effort() {
         ..Default::default()
     };
     let cfg = ProviderConfig::new("openai-chat", "https://gw.example/v1", Some("GW_KEY"));
-    r.send(AgentCommand::CheckModel { name: "gw".into(), probe, cfg: cfg.clone(), model: "think-1".into(), key: None });
+    r.send(AgentCommand::CheckModel {
+        name: "gw".into(),
+        probe,
+        cfg: cfg.clone(),
+        model: "think-1".into(),
+        key: None,
+        seq: 0,
+    });
     let evs = r.until(|e| matches!(e, AgentEvent::ModelChecked { .. })).await;
     let AgentEvent::ModelChecked { check, .. } = evs.last().unwrap() else { unreachable!() };
     assert!(check.error.is_none(), "{check:?}");
@@ -2515,6 +2522,46 @@ async fn the_model_setup_checks_saves_switches_and_sets_the_effort() {
     let last = client.requests().pop().unwrap();
     assert_eq!(last.model, "think-1");
     assert!(matches!(last.reasoning, Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::High))));
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_save_that_cannot_write_says_so_keeps_no_key_and_never_switches() {
+    let _g = config_lock().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![]);
+    let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    let data = data_dir();
+    // the configuration file cannot be written: a folder stands where it should be
+    let conf = data.join("config.toml");
+    let before = std::fs::read(&conf).ok();
+    let _ = std::fs::remove_file(&conf);
+    std::fs::create_dir(&conf).unwrap();
+    let secret = "sk-never-left-on-disk-0123456789";
+    let cfg = ProviderConfig::new("openai-chat", "https://gw.example/v1", Some("GW_KEY"));
+    r.send(AgentCommand::SaveModel { name: "gw-fail".into(), cfg, model: "m".into(), key: Some(secret.into()) });
+    let evs = r.until(|e| matches!(e, AgentEvent::SaveFailed { .. } | AgentEvent::ModelChanged { .. })).await;
+    std::fs::remove_dir(&conf).unwrap();
+    if let Some(b) = before {
+        std::fs::write(&conf, b).unwrap();
+    }
+    assert!(
+        matches!(evs.last(), Some(AgentEvent::SaveFailed { name, model, reason }) if name == "gw-fail" && model == "m" && reason.starts_with("Not saved")),
+        "{evs:?}"
+    );
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::ModelChanged { .. })));
+    fn holds(dir: &std::path::Path, needle: &str) -> bool {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                holds(&p, needle)
+            } else {
+                std::fs::read_to_string(&p).is_ok_and(|t| t.contains(needle))
+            }
+        })
+    }
+    assert!(!holds(&data, secret), "a key of a save that failed is not left on disk");
     r.stop().await;
 }
 

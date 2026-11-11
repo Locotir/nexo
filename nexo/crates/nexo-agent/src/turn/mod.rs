@@ -533,6 +533,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let mut turn: Option<JoinHandle<TurnEnd>> = None;
     // a sign-in waiting for the browser, so Esc in the setup can drop it
     let mut signing_in: Option<tokio::task::AbortHandle> = None;
+    let mut checking: Option<tokio::task::AbortHandle> = None;
+    // a pasted key that a killed run was trying must not stay on disk until the setup opens again
+    tokio::task::spawn_blocking(setup::sweep_trial_keys);
     let mut cancel = CancellationToken::new();
     // the running turn was stopped to run the queued request now, not to wait for the person
     let mut run_queue = false;
@@ -882,14 +885,19 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::ScanLocal => {
                         let events = events.clone();
+                        // trial keys a killed run left behind: the setup opening is the time to clear them
+                        tokio::task::spawn_blocking(setup::sweep_trial_keys);
                         tokio::spawn(async move {
                             let found = nexo_providers::probe::scan_local().await;
                             emit(&events, AgentEvent::LocalServers { found });
                         });
                     }
-                    AgentCommand::Probe { name, cfg, key } => {
+                    AgentCommand::Probe { name, cfg, key, seq } => {
                         let events = events.clone();
-                        tokio::spawn(async move {
+                        if let Some(prev) = checking.take() {
+                            prev.abort();
+                        }
+                        checking = Some(tokio::spawn(async move {
                             // a stored subscription login is renewed and applied like in a request
                             let (cfg, stored) = match (&key, cfg.auth.is_some()) {
                                 (None, true) => nexo_providers::login::prepare(&cfg).await.unwrap_or((cfg.clone(), None)),
@@ -897,8 +905,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             };
                             let key = key.or_else(|| cfg.resolve_key()).or(stored);
                             let result = nexo_providers::probe::server(&cfg, key.as_deref()).await;
-                            emit(&events, AgentEvent::Probed { name, result });
-                        });
+                            emit(&events, AgentEvent::Probed { name, seq, result });
+                        }).abort_handle());
                     }
                     AgentCommand::Login { name, flow } => {
                         if let Some(prev) = signing_in.take() {
@@ -927,23 +935,38 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             prev.abort();
                         }
                     }
-                    AgentCommand::CheckModel { name, probe, cfg, model, key } => {
+                    AgentCommand::CancelCheck => {
+                        if let Some(prev) = checking.take() {
+                            prev.abort();
+                        }
+                    }
+                    AgentCommand::CheckModel { name, probe, cfg, model, key, seq } => {
                         let events = events.clone();
                         let client = state.lock().await.client.clone();
-                        tokio::spawn(async move {
-                            let mut cfg = cfg;
-                            cfg.protocol = probe.protocol.clone();
-                            cfg.base_url = probe.base_url.clone();
-                            if let Some(k) = key.as_deref().filter(|k| !k.trim().is_empty()) {
-                                // only for the test request: the key's own file waits for the save
-                                if let Err(e) = setup::trial_key(&name, k, &mut cfg) {
-                                    notice(&events, Level::Warn, format!("the key could not be tried: {e}"));
+                        if let Some(prev) = checking.take() {
+                            prev.abort();
+                        }
+                        checking = Some(
+                            tokio::spawn(async move {
+                                let mut cfg = cfg;
+                                cfg.protocol = probe.protocol.clone();
+                                cfg.base_url = probe.base_url.clone();
+                                // only for the test request: the key's own file waits for the save, and
+                                // the guard removes the trial file when the check ends or is stopped
+                                let mut _trial = None;
+                                if let Some(k) = key.as_deref().filter(|k| !k.trim().is_empty()) {
+                                    match setup::trial_key(&name, k, &mut cfg) {
+                                        Ok(t) => _trial = Some(t),
+                                        Err(e) => {
+                                            notice(&events, Level::Warn, format!("the key could not be tried: {e}"))
+                                        }
+                                    }
                                 }
-                            }
-                            let check = setup::check(client, &name, &probe, &cfg, &model).await;
-                            setup::drop_trial_key(&name);
-                            emit(&events, AgentEvent::ModelChecked { name, model, check });
-                        });
+                                let check = setup::check(client, &name, &probe, &cfg, &model).await;
+                                emit(&events, AgentEvent::ModelChecked { name, model, seq, check });
+                            })
+                            .abort_handle(),
+                        );
                     }
                     AgentCommand::SaveModel { name, cfg, model, key } => save_model(&state, name, cfg, model, key).await,
                     AgentCommand::SetEffort { effort } => set_effort(&state, effort).await,

@@ -593,9 +593,11 @@ fn commands_and_submissions_reach_the_agent() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert!(matches!(rx.try_recv(), Ok(AgentCommand::Probe { name, .. }) if name == "ollama"));
+    let Ok(AgentCommand::Probe { name, seq, .. }) = rx.try_recv() else { panic!("a probe") };
+    assert_eq!(name, "ollama");
     a.handle_agent(AgentEvent::Probed {
         name: "ollama".into(),
+        seq,
         result: Ok(nexo_core::ServerProbe {
             kind: "ollama".into(),
             protocol: "openai-chat".into(),

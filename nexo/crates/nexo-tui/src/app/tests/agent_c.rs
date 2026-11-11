@@ -1388,11 +1388,11 @@ fn a_model_saved_from_the_setup_leaves_it_open_on_its_last_screen_until_the_agen
     a.modal = Some(Modal::Setup(Box::new(s)));
     let out = a.modal.as_mut().unwrap().key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     a.modal_out(out);
-    // sent, offered by the switcher, and the setup is still there
+    // sent, not yet offered by the switcher (only a save that went through is), and the setup is still there
     assert!(
         matches!(rx.try_recv(), Ok(AgentCommand::SaveModel { ref name, ref model, .. }) if name == "deepseek" && model == "m1")
     );
-    assert!(a.opts.models.contains(&("deepseek".to_string(), "m1".to_string())));
+    assert!(!a.opts.models.contains(&("deepseek".to_string(), "m1".to_string())));
     let Some(Modal::Setup(st)) = &a.modal else { panic!("the setup stays open") };
     assert_eq!(st.step, Step::Review);
     // another model changing is not our save
@@ -1404,4 +1404,5 @@ fn a_model_saved_from_the_setup_leaves_it_open_on_its_last_screen_until_the_agen
     let Some(Modal::Setup(st)) = &a.modal else { panic!("the last screen") };
     assert_eq!(st.step, Step::Done);
     assert_eq!((a.provider.as_str(), a.model.as_str()), ("deepseek", "m1"));
+    assert!(a.opts.models.contains(&("deepseek".to_string(), "m1".to_string())), "offered once saved");
 }

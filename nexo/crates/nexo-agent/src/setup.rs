@@ -165,21 +165,85 @@ pub fn keep_key(name: &str, key: &str, cfg: &mut ProviderConfig) -> anyhow::Resu
     keep_key_at(key_file(name), key, cfg)
 }
 
-/// Writes a typed key to a file that lasts only for the test request (`drop_trial_key` removes it): the
-/// key's own file is not touched until the model is saved, so a key that fails leaves nothing behind.
-pub fn trial_key(name: &str, key: &str, cfg: &mut ProviderConfig) -> anyhow::Result<PathBuf> {
-    keep_key_at(trial_file(name), key, cfg)
+/// A key written for one test request only. The file has a name of its own (never shared by two
+/// checks) and is removed when this guard is dropped, so a check that is cancelled, aborted or
+/// panics leaves nothing behind. The key's own file waits for the save.
+#[derive(Debug)]
+pub struct TrialKey {
+    path: PathBuf,
 }
 
-fn trial_file(name: &str) -> PathBuf {
-    let f = key_file(name);
-    let own = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    f.with_file_name(format!(".trying-{own}"))
+impl TrialKey {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
-/// Removes the file `trial_key` wrote.
-pub fn drop_trial_key(name: &str) {
-    let _ = std::fs::remove_file(trial_file(name));
+impl Drop for TrialKey {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        live().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.path);
+    }
+}
+
+/// The trial files this process has open right now: the sweep leaves them alone.
+fn live() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = std::sync::OnceLock::new();
+    LIVE.get_or_init(Default::default)
+}
+
+const TRIAL: &str = ".trying-";
+/// A trial file of another process is old enough to be a leftover after this long.
+const STALE: Duration = Duration::from_secs(300);
+
+/// Writes a typed key to a file that lasts only for the test request: `cfg` points at it until the
+/// guard is dropped. The key's own file is not touched, so a key that fails leaves nothing behind.
+pub fn trial_key(name: &str, key: &str, cfg: &mut ProviderConfig) -> anyhow::Result<TrialKey> {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let own = key_file(name);
+    let own = own.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let file = key_file(name).with_file_name(format!("{TRIAL}{own}-{}-{n}-{nanos:x}", std::process::id()));
+    let path = keep_key_at(file, key, cfg)?;
+    live().lock().unwrap_or_else(|e| e.into_inner()).insert(path.clone());
+    Ok(TrialKey { path })
+}
+
+/// Whether the process that wrote this trial file is surely gone. Known only where the system
+/// lists its processes as folders (Linux); elsewhere the file's age decides.
+fn writer_gone(name: &str) -> bool {
+    let pid = name.rsplit('-').nth(2).and_then(|p| p.parse::<u32>().ok());
+    match pid {
+        Some(pid) if cfg!(target_os = "linux") && Path::new("/proc/self").exists() => {
+            !Path::new(&format!("/proc/{pid}")).exists()
+        }
+        _ => false,
+    }
+}
+
+/// Removes the trial files a killed run left in the keys folder: those of this process that no check
+/// holds, those whose process is gone, and those of other processes untouched for a while. Called
+/// when nexo starts and when the setup opens.
+pub fn sweep_trial_keys() -> usize {
+    let Ok(dir) = std::fs::read_dir(key_file("x").parent().map(Path::to_path_buf).unwrap_or_default()) else {
+        return 0;
+    };
+    let me = format!("-{}-", std::process::id());
+    let held = live().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut n = 0;
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(TRIAL) || held.contains(&e.path()) {
+            continue;
+        }
+        let old =
+            e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > STALE);
+        if (name.contains(&me) || old || writer_gone(&name)) && std::fs::remove_file(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
 }
 
 fn keep_key_at(f: PathBuf, key: &str, cfg: &mut ProviderConfig) -> anyhow::Result<PathBuf> {
@@ -286,12 +350,83 @@ mod tests {
         assert_eq!((mode(&old), mode(&old.join("k"))), (0o700, 0o600));
     }
 
+    static DATA: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Tests that point the data folder at a temp dir take turns.
+    fn in_temp_data<R>(f: impl FnOnce(&Path) -> R) -> R {
+        let _g = DATA.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_DATA_DIR", d.path());
+        f(d.path())
+    }
+
     #[test]
-    fn a_key_tried_goes_to_a_file_beside_its_own_never_to_its_own() {
-        let (own, trial) = (key_file("deepseek"), trial_file("deepseek"));
-        assert_ne!(own, trial, "the key's own file waits for the save");
-        assert_eq!(own.parent(), trial.parent());
-        assert!(trial.file_name().unwrap().to_string_lossy().starts_with(".trying-"));
+    fn a_key_tried_goes_to_a_file_of_its_own_per_check_and_leaves_with_its_guard() {
+        in_temp_data(|_| {
+            let mut cfg = ProviderConfig::new("openai-chat", "http://localhost:11434/v1", None);
+            let mut other = cfg.clone();
+            let a = trial_key("deepseek", "sk-one", &mut cfg).unwrap();
+            let b = trial_key("deepseek", "sk-two", &mut other).unwrap();
+            assert_ne!(a.path(), b.path(), "two checks never share a file");
+            assert_ne!(a.path(), key_file("deepseek"), "the key's own file waits for the save");
+            assert_eq!(std::fs::read_to_string(a.path()).unwrap(), "sk-one");
+            assert_eq!(cfg.resolve_key().as_deref(), Some("sk-one"));
+            let (pa, pb) = (a.path().to_path_buf(), b.path().to_path_buf());
+            drop(a);
+            assert!(!pa.exists() && pb.exists(), "dropping one guard removes only its file");
+            drop(b);
+            assert!(!pb.exists());
+            assert!(!key_file("deepseek").exists());
+        });
+    }
+
+    #[test]
+    fn a_check_stopped_midway_removes_its_key_file() {
+        let _g = DATA.lock().unwrap_or_else(|e| e.into_inner());
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(stopped_midway());
+    }
+
+    async fn stopped_midway() {
+        let d = tempfile::tempdir().unwrap();
+        std::env::set_var("NEXO_DATA_DIR", d.path());
+        let mut cfg = ProviderConfig::new("openai-chat", "http://localhost:11434/v1", None);
+        let guard = trial_key("deepseek", "sk-one", &mut cfg).unwrap();
+        let path = guard.path().to_path_buf();
+        let task = tokio::spawn(async move {
+            let _held = guard;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(path.exists(), "the key is on disk while the check runs");
+        task.abort();
+        let _ = task.await;
+        assert!(!path.exists(), "an aborted check leaves no key behind");
+    }
+
+    #[test]
+    fn leftover_trial_files_are_swept_when_the_setup_opens_but_a_live_one_stays() {
+        in_temp_data(|_| {
+            let mut cfg = ProviderConfig::new("openai-chat", "http://localhost:11434/v1", None);
+            let live = trial_key("deepseek", "sk-live", &mut cfg).unwrap();
+            let dir = key_file("x").parent().unwrap().to_path_buf();
+            // what a run killed in the middle of a check left, from this pid and from another
+            let mine = dir.join(format!(".trying-deepseek-{}-99-1", std::process::id()));
+            let theirs = dir.join(".trying-deepseek-1-0-1");
+            let fresh_theirs = dir.join(".trying-deepseek-2-0-1");
+            // a process number above any the system gives out: its writer is gone for sure
+            let killed = dir.join(".trying-deepseek-4194999-0-1");
+            let own = key_file("deepseek");
+            for f in [&mine, &theirs, &fresh_theirs, &killed, &own] {
+                std::fs::write(f, "sk-old").unwrap();
+            }
+            let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+            std::fs::File::options().write(true).open(&theirs).unwrap().set_modified(old).unwrap();
+            assert_eq!(sweep_trial_keys(), if cfg!(target_os = "linux") { 3 } else { 2 });
+            assert!(!mine.exists() && !theirs.exists());
+            assert_eq!(killed.exists(), !cfg!(target_os = "linux"), "a killed run's key goes at the next start");
+            assert!(fresh_theirs.exists(), "a young file of another process may be a check running there");
+            assert!(live.path().exists() && own.exists(), "a live check and a saved key stay");
+        });
     }
 
     #[test]

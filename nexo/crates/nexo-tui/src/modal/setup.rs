@@ -131,6 +131,15 @@ pub struct Setup {
     pub details: bool,
     /// What the last screen will say, once the save is confirmed.
     done: Option<Done>,
+    /// The check (address probe or test request) that is open now: Esc and every new check change it,
+    /// and an answer that carries another number is a late one.
+    seq: u64,
+}
+
+/// The numbers of checks never repeat in a run, so an answer to a setup that was closed cannot fit a new one.
+fn next_seq() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether a provider can be used as it is: a login saved, a key found, a local server that
@@ -161,6 +170,16 @@ pub fn provider_ready(name: &str, c: &ProviderConfig, local: &[(String, String)]
             !url.is_empty() && !on_this_machine
         }
     }
+}
+
+/// Said when a pasted text the program could not place is let go.
+const HELD_DROPPED: &str = "The pasted text was not kept or sent anywhere.";
+
+/// Text that is surely a key (it looks like one and starts like a known service's): never drawn in clear,
+/// never taken for a model name.
+fn looks_like_secret(text: &str) -> bool {
+    let t = text.trim();
+    keys::looks_like_key(t) && (keys::recognise(t).is_some() || t.starts_with("sk-"))
 }
 
 /// The host of an address: `https://auth.openai.com/oauth?x=1` is `auth.openai.com`.
@@ -220,6 +239,7 @@ impl Setup {
             again: Again::Probe,
             details: false,
             done: None,
+            seq: 0,
         };
         s.fill_providers();
         // nothing to switch to yet: the first run starts with a few clear choices
@@ -453,7 +473,27 @@ impl Setup {
     fn probe_cmd(&mut self) -> SetupOut {
         self.error = None;
         self.busy = Some(self.wait_text());
-        SetupOut::Send(AgentCommand::Probe { name: self.name.clone(), cfg: self.cfg.clone(), key: self.key.clone() })
+        self.seq = next_seq();
+        SetupOut::Send(AgentCommand::Probe {
+            name: self.name.clone(),
+            cfg: self.cfg.clone(),
+            key: self.key.clone(),
+            seq: self.seq,
+        })
+    }
+
+    /// The answer to a probe, applied only when it belongs to the probe that is open now.
+    pub fn probed_from(&mut self, name: &str, seq: u64, result: Result<ServerProbe, String>) {
+        if name == self.name && seq == self.seq && self.step != Step::Done {
+            self.probed(result);
+        }
+    }
+
+    /// The answer to a check of a model, applied only when it belongs to the check that is open now.
+    pub fn checked_from(&mut self, name: &str, model: &str, seq: u64, check: ModelCheck) {
+        if name == self.name && model == self.model && seq == self.seq {
+            self.checked(check);
+        }
     }
 
     /// The list of the sign-in step: the saved login (when there is one), then the ways to sign in.
@@ -648,14 +688,23 @@ impl Setup {
                 self.prompt = None;
                 return SetupOut::Send(AgentCommand::CancelLogin);
             }
-            return SetupOut::Nothing;
+            // the running check is stopped, and whatever it answers later belongs to no one
+            self.seq = next_seq();
+            return SetupOut::Send(AgentCommand::CancelCheck);
         }
         match self.step {
+            // text typed (hidden) on the first screen goes first; a second Esc closes
+            Step::Start if !self.field.is_empty() => self.field.clear(),
             Step::Start | Step::Done => return SetupOut::Close,
-            Step::Provider if self.from_start => {
-                self.pending_key = None;
-                self.fill_start();
+            // a pasted text that was not taken for a key is dropped, and the person is told
+            Step::Provider if self.pending_key.take().is_some() => {
+                self.fill_providers();
+                if self.from_start {
+                    self.fill_start();
+                }
+                self.error = Some(HELD_DROPPED.into());
             }
+            Step::Provider if self.from_start => self.fill_start(),
             Step::Provider => return SetupOut::Close,
             Step::Login | Step::Address | Step::Key => self.go_origin(),
             Step::Trouble if self.again == Again::Check => {
@@ -839,6 +888,12 @@ impl Setup {
     fn pick(&mut self) -> SetupOut {
         match self.step {
             Step::Provider => {
+                // a key typed key by key (no bracketed paste) is a key, taken as a paste is
+                if keys::looks_like_key(&self.list.query) {
+                    let typed = std::mem::take(&mut self.list.query);
+                    self.refilter();
+                    return self.key_pasted(keys::clean(&typed));
+                }
                 let Some(it) = self.list.current().cloned() else { return SetupOut::Nothing };
                 // a header opens or closes (while filtering every fold with a match is open)
                 if it.value.starts_with("group:") {
@@ -879,6 +934,13 @@ impl Setup {
             }
             Step::Model => {
                 let typed = self.list.query.trim().to_string();
+                // a key typed here is not a model name: it is not sent as one
+                if looks_like_secret(&typed) {
+                    self.list.query.clear();
+                    self.refilter();
+                    self.error = Some("That looks like a key, not a model name. It was not kept.".into());
+                    return SetupOut::Nothing;
+                }
                 let model = match self.list.current() {
                     Some(it) => it.value.clone(),
                     None if !typed.is_empty() => typed,
@@ -886,14 +948,16 @@ impl Setup {
                 };
                 self.model = model.clone();
                 self.error = None;
-                self.busy = Some(format!("testing {model}"));
                 let Some(probe) = self.probe.clone() else { return SetupOut::Nothing };
+                self.busy = Some(format!("testing {model}"));
+                self.seq = next_seq();
                 SetupOut::Send(AgentCommand::CheckModel {
                     name: self.name.clone(),
                     probe,
                     cfg: self.cfg.clone(),
                     model,
                     key: self.key.clone(),
+                    seq: self.seq,
                 })
             }
             _ => SetupOut::Nothing,
@@ -1144,8 +1208,11 @@ impl Setup {
                         h
                     } else if self.name == "custom" {
                         format!("✓ {} at {}", kind_label(&p.kind), p.base_url)
-                    } else if self.has_key() && self.cfg.login.is_none() {
+                    } else if self.has_key() && self.cfg.login.is_none() && p.key_proved {
                         "✓ The key works".to_string()
+                    } else if self.has_key() && self.cfg.login.is_none() {
+                        // a list anyone can read says nothing of the key: the test request will
+                        format!("✓ Models found at {}", self.name)
                     } else {
                         format!("✓ Connected to {}", self.name)
                     };
@@ -1161,7 +1228,11 @@ impl Setup {
                         say(&mut lines, &about, dim);
                     }
                 }
-                lines.push(prompt(self.list.query.clone(), false));
+                lines.push(prompt(
+                    self.list.query.clone(),
+                    self.step == Step::Provider && keys::looks_like_key(&self.list.query)
+                        || looks_like_secret(&self.list.query),
+                ));
             }
             Step::Review if !self.details => {
                 lines.push(Line::from(vec![Span::styled(
@@ -1944,7 +2015,7 @@ mod tests {
         typing(&mut s, "sk-good-key-0000");
         press(&mut s, KeyCode::Enter);
         assert!(s.busy.is_some());
-        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Send(AgentCommand::CancelCheck));
         assert!(s.busy.is_none() && s.step == Step::Key);
     }
 
@@ -2007,5 +2078,248 @@ mod tests {
         press(&mut s, KeyCode::Esc);
         assert_eq!(s.step, Step::Start);
         assert_eq!(s.list.current().map(|i| i.value.as_str()), Some("more"));
+    }
+
+    // ---- the key leaves no residue, and the screens claim only what happened ----
+
+    const HELD: &str = "sk-0123456789abcdef0123456789abcdef";
+
+    /// A paste of unknown kind, the person on the list of providers.
+    fn holding() -> Setup {
+        let mut s = first_run();
+        assert_eq!(s.paste(HELD), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Provider);
+        s
+    }
+
+    #[test]
+    fn an_answer_of_a_check_that_was_left_changes_nothing() {
+        let mut s = first_run();
+        let SetupOut::Send(AgentCommand::Probe { name: a, seq: seq_a, .. }) = s.paste("sk-ant-api03-madeupmadeupmade")
+        else {
+            panic!("a probe")
+        };
+        assert_eq!(a, "anthropic");
+        // Esc stops the check; the agent is told
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Send(AgentCommand::CancelCheck));
+        assert!(s.busy.is_none());
+        // a check on another provider
+        assert_eq!(s.paste(HELD), SetupOut::Nothing);
+        typing(&mut s, "set up deep");
+        let SetupOut::Send(AgentCommand::Probe { name: b, seq: seq_b, .. }) = press(&mut s, KeyCode::Enter) else {
+            panic!("a probe")
+        };
+        assert_eq!(b, "deepseek");
+        assert_ne!(seq_a, seq_b);
+        // the first one answers late: wrong name, then the right name with the old counter
+        s.probed_from("anthropic", seq_a, Ok(deepseek_probe()));
+        s.probed_from("deepseek", seq_a, Ok(deepseek_probe()));
+        assert!(s.busy.is_some() && s.probe.is_none(), "the screen is still the second check's");
+        s.probed_from("deepseek", seq_b, Ok(deepseek_probe()));
+        assert!(s.busy.is_none() && s.probe.is_some());
+    }
+
+    #[test]
+    fn a_model_check_answer_of_another_check_is_ignored() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        let SetupOut::Send(AgentCommand::CheckModel { seq, .. }) = press(&mut s, KeyCode::Enter) else {
+            panic!("a check")
+        };
+        let ok =
+            ModelCheck { info: ModelInfo { id: "deepseek-chat".into(), ..Default::default() }, ..Default::default() };
+        s.checked_from("deepseek", "deepseek-chat", seq + 1, ok.clone());
+        s.checked_from("deepseek", "other", seq, ok.clone());
+        assert!(s.busy.is_some(), "not ours");
+        s.checked_from("deepseek", "deepseek-chat", seq, ok);
+        assert!(s.busy.is_none());
+    }
+
+    #[test]
+    fn a_save_that_failed_keeps_the_step_says_why_and_never_reaches_the_end_screen() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        press(&mut s, KeyCode::Enter);
+        s.checked(ModelCheck {
+            info: ModelInfo { id: "deepseek-chat".into(), ..Default::default() },
+            ..Default::default()
+        });
+        assert!(matches!(press(&mut s, KeyCode::Enter), SetupOut::Send(AgentCommand::SaveModel { .. })));
+        s.save_failed(
+            "deepseek",
+            "deepseek-chat",
+            "Not saved: config.toml could not be written. Make it writable, then press Enter.".into(),
+        );
+        assert_eq!(s.step, Step::Review);
+        assert!(s.busy.is_none() && s.done.is_none());
+        let t = row_text(&s, 100);
+        assert!(t.contains("Not saved") && !t.contains("is ready"), "{t}");
+        // a failure that is not ours changes nothing; a later success of the same save still works
+        assert!(!s.saved("deepseek", "deepseek-chat"), "nothing was waiting");
+        assert_eq!(s.step, Step::Review);
+    }
+
+    #[test]
+    fn the_key_works_only_when_a_request_that_needs_the_key_passed() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        let t = row_text(&s, 100);
+        assert!(!t.contains("The key works") && t.contains("Models found"), "a public list proves nothing: {t}");
+        let mut s2 = first_run();
+        press(&mut s2, KeyCode::Enter);
+        typing(&mut s2, "sk-good-key-0000");
+        press(&mut s2, KeyCode::Enter);
+        s2.probed(Ok(ServerProbe { key_proved: true, ..deepseek_probe() }));
+        assert!(row_text(&s2, 100).contains("The key works"));
+    }
+
+    #[test]
+    fn a_held_paste_is_dropped_with_a_line_when_a_local_server_is_picked() {
+        let mut s = holding();
+        typing(&mut s, "set up oll");
+        s.found_local(vec![("ollama".into(), "Ollama 0.12.6".into())]);
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(
+            matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, key: None, .. }) if name == "ollama"),
+            "{out:?}"
+        );
+        assert!(s.key.is_none() && s.pending_key.is_none());
+        assert_eq!(s.error.as_deref(), Some(HELD_DROPPED));
+    }
+
+    #[test]
+    fn a_held_paste_is_dropped_with_a_line_when_the_custom_server_is_picked_and_when_esc_closes() {
+        let mut s = holding();
+        typing(&mut s, "your own");
+        press(&mut s, KeyCode::Enter);
+        assert_eq!((s.step, s.name.as_str()), (Step::Address, "custom"));
+        assert!(s.key.is_none() && s.pending_key.is_none());
+        assert_eq!(s.error.as_deref(), Some(HELD_DROPPED));
+        // Esc on the list with a held paste drops it first
+        let mut s = holding();
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert!(s.pending_key.is_none());
+        assert_eq!(s.error.as_deref(), Some(HELD_DROPPED));
+    }
+
+    #[test]
+    fn a_held_paste_still_goes_to_the_cloud_provider_the_person_picks() {
+        let mut s = holding();
+        typing(&mut s, "set up deep");
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(matches!(out, SetupOut::Send(AgentCommand::Probe { key: Some(ref k), .. }) if k == HELD), "{out:?}");
+        assert!(s.error.is_none());
+    }
+
+    /// A server that records the head of every request it gets.
+    fn recording_server() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("127.0.0.1:{}", l.local_addr().unwrap().port());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { break };
+                let mut buf = [0u8; 4096];
+                let n = c.read(&mut buf).unwrap_or(0);
+                log.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = c.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        (addr, seen)
+    }
+
+    #[test]
+    fn a_held_paste_never_reaches_a_server_at_an_address_the_person_typed() {
+        let (addr, seen) = recording_server();
+        let mut s = holding();
+        typing(&mut s, "your own");
+        press(&mut s, KeyCode::Enter);
+        s.field.clear();
+        typing(&mut s, &addr);
+        let SetupOut::Send(AgentCommand::Probe { cfg, key, .. }) = press(&mut s, KeyCode::Enter) else {
+            panic!("a probe")
+        };
+        assert!(key.is_none(), "the command carries no key");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _ = rt.block_on(nexo_providers::probe::server(&cfg, key.as_deref()));
+        let heads = seen.lock().unwrap().clone();
+        assert!(!heads.is_empty(), "the server was asked");
+        for h in heads {
+            let h = h.to_ascii_lowercase();
+            assert!(!h.contains("authorization") && !h.contains("x-api-key") && !h.contains(&HELD[..12]), "{h}");
+        }
+    }
+
+    #[test]
+    fn a_key_typed_in_the_search_box_is_masked_and_taken_as_a_key() {
+        let mut s = first_run();
+        s.paste("a");
+        s.step = Step::Provider;
+        s.fill_providers();
+        let typed = "sk-ant-api03-madeupmadeupmade";
+        typing(&mut s, typed);
+        assert_eq!(s.list.query, typed, "all of it is kept until Enter");
+        assert!(!row_text(&s, 100).contains(&typed[..14]), "never drawn in clear");
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(matches!(out, SetupOut::Send(AgentCommand::Probe { key: Some(ref k), .. }) if k == typed), "{out:?}");
+        assert!(s.list.query.is_empty());
+    }
+
+    #[test]
+    fn a_key_typed_where_a_model_name_goes_is_masked_and_not_sent_as_a_name() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        assert_eq!(s.step, Step::Model);
+        let k = "sk-0123456789abcdef0123456789abcdef";
+        s.list.query = k.into();
+        assert!(!row_text(&s, 100).contains(k), "masked on screen");
+        assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing, "not sent as a model");
+        assert!(s.list.query.is_empty() && s.error.is_some());
+    }
+
+    #[test]
+    fn the_last_screen_says_only_you_can_read_it_only_where_the_mode_is_set() {
+        let mut s = first_run();
+        s.done =
+            Some(Done { model: "deepseek/m".into(), config: "/c.toml".into(), key: Some("/k".into()), private: false });
+        s.step = Step::Done;
+        let t = row_text(&s, 100);
+        assert!(t.contains("The key is in /k") && !t.contains("only you can read it"), "{t}");
+        s.done.as_mut().unwrap().private = true;
+        assert!(row_text(&s, 100).contains("only you can read it"));
+    }
+
+    #[test]
+    fn esc_on_the_first_screen_clears_hidden_text_first_and_a_second_esc_closes() {
+        let mut s = first_run();
+        s.paste("some words");
+        assert!(!s.field.is_empty());
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert!(s.field.is_empty());
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Close);
+    }
+
+    #[test]
+    fn nothing_is_busy_when_the_probe_to_check_with_does_not_exist() {
+        let mut s = first_run();
+        s.step = Step::Model;
+        s.probe = None;
+        s.list.query = "some-model".into();
+        let _ = press(&mut s, KeyCode::Enter);
+        assert!(s.busy.is_none(), "{:?}", s.busy);
     }
 }

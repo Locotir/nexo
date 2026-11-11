@@ -197,6 +197,9 @@ pub enum AgentCommand {
         cfg: ProviderConfig,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
+        /// Which check this is: the answer carries it back, and a late answer is told apart.
+        #[serde(default)]
+        seq: u64,
     },
     /// Sign in to a provider's subscription (`/model` setup) with `flow` (see `login::choices`);
     /// the address to open is announced with `LoginPrompt` and the end with `LoggedIn`. The
@@ -207,6 +210,9 @@ pub enum AgentCommand {
     },
     /// Give up a sign-in that waits for the browser.
     CancelLogin,
+    /// Give up the address probe or the test request the setup waits for (its task is stopped and a
+    /// key tried leaves nothing behind).
+    CancelCheck,
     /// Find out what one model can do and try it with a real request (one short reply that
     /// should call a test tool); answered with `ModelChecked`.
     CheckModel {
@@ -216,6 +222,8 @@ pub enum AgentCommand {
         model: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
+        #[serde(default)]
+        seq: u64,
     },
     /// Save the provider and the model as the setup left them in the user's configuration
     /// (a typed key goes to a file of its own, readable only by the user) and switch to them.
@@ -714,6 +722,12 @@ pub enum AgentEvent {
         provider: String,
         model: String,
     },
+    /// The setup could not save the model (nothing was changed): why, and what to do.
+    SaveFailed {
+        name: String,
+        model: String,
+        reason: String,
+    },
     PermissionModeChanged {
         mode: PermissionMode,
     },
@@ -844,12 +858,16 @@ pub enum AgentEvent {
     Probed {
         name: String,
         result: Result<ServerProbe, String>,
+        #[serde(default)]
+        seq: u64,
     },
     /// What a model can do and how the test request went.
     ModelChecked {
         name: String,
         model: String,
         check: ModelCheck,
+        #[serde(default)]
+        seq: u64,
     },
     /// The reasoning level of the model in use and the levels it takes (empty: it has none
     /// that can be set, or none is known).

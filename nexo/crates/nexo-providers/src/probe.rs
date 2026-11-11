@@ -253,6 +253,11 @@ pub async fn server(cfg: &ProviderConfig, key: Option<&str>) -> Result<ServerPro
                 probe.kind = "vllm".into();
             }
             trail.push(format!("{url}: {} models", probe.models.len()));
+            // a list anyone can read proves nothing about a key: asked again without it
+            if key.is_some() {
+                let bare = get(&url, bearer(&cfg, None), ASK).await;
+                probe.key_proved = bare.is_ok_and(|b| matches!(b.status, 401 | 403));
+            }
         }
         401 | 403 => {
             probe.needs_key = true;
@@ -307,6 +312,8 @@ async fn cloud_list(cfg: &ProviderConfig, key: Option<&str>, kind: &str) -> Resu
                 gemini_models(&a.body)
             };
             probe.trail.push(format!("{}: {} models", kind_label(kind), probe.models.len()));
+            // these lists are never public: an answer with a key is the key accepted
+            probe.key_proved = key.is_some();
         }
         400 | 401 | 403 => {
             probe.needs_key = true;
@@ -635,6 +642,28 @@ mod tests {
         assert!(p.trail.iter().any(|l| l.contains("refused")), "{:?}", p.trail);
         let dead = server(&cfg("openai-chat", "http://127.0.0.1:9"), None).await.unwrap_err();
         assert!(dead.contains("nothing answers"), "{dead}");
+    }
+
+    #[tokio::test]
+    async fn a_key_is_proved_only_by_a_list_that_refuses_without_it() {
+        let guarded = MockServer::start();
+        guarded.mock(|w, t| {
+            w.method(GET).path("/v1/models").header("authorization", "Bearer k");
+            t.status(200).json_body(json!({"data": [{"id": "m"}]}));
+        });
+        guarded.mock(|w, t| {
+            w.method(GET).path("/v1/models");
+            t.status(401).json_body(json!({"error": {"message": "no key"}}));
+        });
+        let p = server(&cfg("openai-chat", &format!("{}/v1", guarded.base_url())), Some("k")).await.unwrap();
+        assert!(p.key_proved && p.models.len() == 1, "{p:?}");
+        let public = MockServer::start();
+        public.mock(|w, t| {
+            w.method(GET).path("/v1/models");
+            t.status(200).json_body(json!({"data": [{"id": "m"}]}));
+        });
+        let p = server(&cfg("openai-chat", &format!("{}/v1", public.base_url())), Some("wrong")).await.unwrap();
+        assert!(!p.key_proved && p.models.len() == 1, "a public list proves nothing: {p:?}");
     }
 
     #[test]

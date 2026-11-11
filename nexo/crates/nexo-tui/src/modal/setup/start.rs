@@ -36,6 +36,8 @@ pub struct Done {
     pub config: String,
     /// The file the key went to (none when there was no typed key).
     pub key: Option<String>,
+    /// The file mode that keeps others out is set (Unix); the line says "only you can read it" only then.
+    pub private: bool,
 }
 
 /// The reason of a failed test request, as an error the problem card knows: the status in
@@ -165,7 +167,29 @@ impl Setup {
             .map(|(_, c)| c.clone())
             .unwrap_or_else(|| ProviderConfig::new("openai-chat", "", None));
         self.name = if name.is_empty() { "custom".into() } else { name };
-        self.key = self.pending_key.take();
+        // a pasted text of unknown kind goes only to a cloud service the person picks: a server on this
+        // computer or of one's own never gets it
+        let held = self.pending_key.take();
+        let dropped = held.is_some() && !self.cloud();
+        self.key = held.filter(|_| !dropped);
+        let out = self.choose_on();
+        if dropped {
+            self.error = Some(super::HELD_DROPPED.into());
+        }
+        out
+    }
+
+    /// Whether the provider picked is a remote service (not a server on this computer or of one's own).
+    fn cloud(&self) -> bool {
+        let local = LOCAL.iter().any(|(p, _)| *p == self.name);
+        let url = self.cfg.base_url.to_ascii_lowercase();
+        let host = url.split("://").last().unwrap_or("");
+        let near =
+            ["localhost", "127.", "[::1]", "0.0.0.0", "192.168.", "10.", "172."].iter().any(|h| host.starts_with(h));
+        self.name != "custom" && self.cfg.login.is_none() && !local && !near
+    }
+
+    fn choose_on(&mut self) -> SetupOut {
         // a subscription: the login first, kept under the provider's name
         if self.cfg.login.is_some() {
             let own = self.name.clone();
@@ -331,11 +355,22 @@ impl Setup {
     }
 
     /// The save went through: the last screen.
-    pub fn saved(&mut self, provider: &str, model: &str) {
-        if self.done.as_ref().is_some_and(|d| d.model == format!("{provider}/{model}")) {
+    pub fn saved(&mut self, provider: &str, model: &str) -> bool {
+        let mine = self.done.as_ref().is_some_and(|d| d.model == format!("{provider}/{model}"));
+        if mine {
             self.busy = None;
             self.error = None;
             self.step = Step::Done;
+        }
+        mine
+    }
+
+    /// The save did not go through: the screen stays where it was and says what failed and what to do.
+    pub fn save_failed(&mut self, provider: &str, model: &str, reason: String) {
+        if self.done.as_ref().is_some_and(|d| d.model == format!("{provider}/{model}")) {
+            self.done = None;
+            self.busy = None;
+            self.error = Some(reason);
         }
     }
 
@@ -343,7 +378,7 @@ impl Setup {
     pub(super) fn expect_done(&mut self, name: &str) {
         let config = nexo_core::paths::shown(&nexo_core::paths::user_config_file());
         let key = self.key.as_ref().map(|_| nexo_core::paths::shown(&nexo_agent::setup::key_file(name)));
-        self.done = Some(Done { model: format!("{name}/{}", self.model), config, key });
+        self.done = Some(Done { model: format!("{name}/{}", self.model), config, key, private: cfg!(unix) });
         self.busy = Some("saving".into());
     }
 
@@ -429,10 +464,12 @@ impl Setup {
         ])];
         lines.push(Line::from(Span::styled(truncate(&format!("Saved in {}", d.config), w.max(8)), dim)));
         if let Some(k) = &d.key {
-            lines.push(Line::from(Span::styled(
-                truncate(&format!("The key is in {k}, only you can read it"), w.max(8)),
-                dim,
-            )));
+            let text = if d.private {
+                format!("The key is in {k}, only you can read it")
+            } else {
+                format!("The key is in {k}")
+            };
+            lines.push(Line::from(Span::styled(truncate(&text, w.max(8)), dim)));
         }
         lines.push(Line::default());
         lines.push(Line::from(Span::styled("Try it", theme.bold(theme.fg))));

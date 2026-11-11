@@ -158,6 +158,10 @@ pub struct ServerProbe {
     pub base_url: String,
     /// The server asked for a key (it answered 401/403 without one).
     pub needs_key: bool,
+    /// The model list answered with the key and refused without it: the key is proved. A public list
+    /// proves nothing about a key.
+    #[serde(default)]
+    pub key_proved: bool,
     /// Its models, with whatever it says of each.
     pub models: Vec<ModelInfo>,
     /// What was asked and what answered, one line each.

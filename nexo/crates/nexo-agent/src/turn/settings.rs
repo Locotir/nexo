@@ -324,23 +324,44 @@ pub(super) async fn set_fast(state: &Shared, on: Option<bool>) {
     }
 }
 
-/// Saves what the setup found for a model and switches to it.
+/// What the notice after a save says of the key: where it is, and "only you can read it" only where the
+/// file mode that makes it so is set (Unix).
+pub(crate) fn key_note(path: &std::path::Path, private: bool) -> String {
+    if private {
+        format!("; the key is in {} (only you can read it)", path.display())
+    } else {
+        format!("; the key is in {}", path.display())
+    }
+}
+
+/// Saves what the setup found for a model and switches to it. When the model is refused or something
+/// cannot be written, nothing is switched and `SaveFailed` says why and what to do.
 pub(super) async fn save_model(state: &Shared, name: String, cfg: ProviderConfig, model: String, key: Option<String>) {
+    let failed = |events: &EventTx, reason: String| {
+        emit(events, AgentEvent::SaveFailed { name: name.clone(), model: model.clone(), reason });
+    };
     {
         let st = state.lock().await;
         if let Err(e) = st.config.check_model(&name, &model) {
-            notice(&st.events, Level::Error, e);
+            notice(&st.events, Level::Error, e.clone());
+            failed(&st.events, e);
             return;
         }
     }
     let mut cfg = cfg;
     let mut kept = None;
-    {
-        let st = state.lock().await;
-        if let Some(k) = key.as_deref().filter(|k| !k.trim().is_empty()) {
-            match setup::keep_key(&name, k, &mut cfg) {
-                Ok(f) => kept = Some(f),
-                Err(e) => notice(&st.events, Level::Warn, format!("the key could not be kept: {e}")),
+    let key_was_there = setup::key_file(&name).exists();
+    if let Some(k) = key.as_deref().filter(|k| !k.trim().is_empty()) {
+        match setup::keep_key(&name, k, &mut cfg) {
+            Ok(f) => kept = Some(f),
+            Err(e) => {
+                let st = state.lock().await;
+                let at = setup::key_file(&name);
+                failed(
+                    &st.events,
+                    format!("Not saved: the key could not be written to {} ({e}). Make that folder writable, then press Enter.", at.display()),
+                );
+                return;
             }
         }
     }
@@ -378,11 +399,23 @@ pub(super) async fn save_model(state: &Shared, name: String, cfg: ProviderConfig
     let file = nexo_core::paths::user_config_file();
     match setup::save(&file, &name, &merged, &model) {
         Ok(()) => {
-            let key_note =
-                kept.map(|f| format!("; the key is in {} (only you can read it)", f.display())).unwrap_or_default();
+            let key_note = kept.map(|f| key_note(&f, cfg!(unix))).unwrap_or_default();
             notice(&st.events, Level::Info, format!("{name}/{model} saved to {}{key_note}", file.display()));
         }
-        Err(e) => notice(&st.events, Level::Warn, format!("{name}/{model} is set for this session only ({e})")),
+        Err(e) => {
+            // a key file made for this save goes again: nothing points at it
+            if let (Some(f), false) = (&kept, key_was_there) {
+                let _ = std::fs::remove_file(f);
+            }
+            failed(
+                &st.events,
+                format!(
+                    "Not saved: {} could not be written ({e}). Make it writable, then press Enter.",
+                    file.display()
+                ),
+            );
+            return;
+        }
     }
     st.config.providers.insert(name.clone(), merged);
     st.config.provider = Some(name.clone());

@@ -254,7 +254,7 @@ fn the_models_screen_says_what_the_chosen_one_is_for() {
     for (w, h) in SIZES {
         let rows = draw(at_model(), w, h, false);
         let all = dialog(&rows).join("\n");
-        assert!(all.contains("The key works"), "{w}x{h}\n{all}");
+        assert!(all.contains("Models found"), "{w}x{h}\n{all}");
         assert!(all.contains("suggests for everyday work"), "{w}x{h}\n{all}");
         assert!(all.contains("deepseek-chat") && all.contains("deepseek-reasoner"), "{w}x{h}\n{all}");
     }

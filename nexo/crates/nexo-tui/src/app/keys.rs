@@ -304,13 +304,8 @@ impl App {
                 self.trust_answer = Some(yes);
             }
             ModalOut::Send(cmd) => {
-                // the setup saves and stays open on its last screen: the switcher offers the model all the same
-                if let AgentCommand::SaveModel { name, model, .. } = &cmd {
-                    let pair = (name.clone(), model.clone());
-                    if !self.opts.models.contains(&pair) {
-                        self.opts.models.push(pair);
-                    }
-                }
+                // the setup saves and stays open on its last screen; the switcher offers the model once the
+                // save is confirmed (`ModelChanged`), never before
                 self.send(cmd)
             }
             ModalOut::Copy(text) => match crate::clipboard::copy(&text) {
@@ -320,11 +315,6 @@ impl App {
             ModalOut::SendAndClose(cmd) => {
                 self.modal = None;
                 if let AgentCommand::SaveModel { name, model, .. } = &cmd {
-                    // the switcher offers it from now on
-                    let pair = (name.clone(), model.clone());
-                    if !self.opts.models.contains(&pair) {
-                        self.opts.models.push(pair);
-                    }
                     self.flash(&format!("{name}/{model}: saving and switching…"));
                 }
                 self.send(cmd);
