@@ -317,7 +317,7 @@ command: `y` once, `a` always (a rule is remembered), `n` deny. Rules look
 like `bash(git *)` or `edit(src/**)`. `~` and links are resolved before a path rule is checked: a deny rule
 sees both the path as written and where its links lead, and an allow rule must match both, so
 `edit(src/**)` does not reach a link in `src/` that points out of the project. `accept-edits` writes
-without asking only inside the project, never in `.git`, `.nexo` or shell start-up files.
+without asking only inside the project, never in `.git`, `.nexo`, `.claude`, `.codex`, `.vscode`, `.idea`, `.husky`, shell start-up files, `.mcp.json`, `.envrc` or `.gitconfig`.
 An allow rule for `bash` covers a command only when it is plainly that command: a redirection to a
 file, `$'..'`, `${..@..}`, a substitution or an option that runs code (`git -c`, `find -exec`,
 `xargs`) is asked about. Deny rules for `bash` are a guard against mistakes, not a sandbox; the OS sandbox below is.

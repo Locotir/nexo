@@ -328,18 +328,33 @@ pub fn is_sensitive(p: &str, cwd: &Path) -> bool {
     [&lex, &real].iter().any(|f| nexo_core::paths::holds_keys(f))
 }
 
+/// Folders whose files run something here later or change what an agent may do.
+const GUARDED_DIRS: &[&str] = &[".git", ".nexo", ".claude", ".codex", ".vscode", ".idea", ".husky"];
+/// Shell start-up files and other single files with the same effect.
+const GUARDED_FILES: &[&str] = &[
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".mcp.json",
+    ".envrc",
+    ".gitconfig",
+];
+
 /// accept-edits writes without asking only inside the project (links resolved), and never into
-/// `.git`, `.nexo`, shell start-up files or files that hold keys.
+/// the guarded folders and files above or files that hold keys.
 fn editable(args: &Value, cwd: &Path) -> bool {
-    const RC: &[&str] =
-        &[".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshrc", ".zshenv", ".zprofile"];
     let Some(p) = target_of(ToolKind::Write, args) else { return false };
     let (lex, root) = (lexical(&p, cwd), normalise(cwd));
     let (real, real_root) = (real_path(&lex), real_path(&root));
     let (Ok(rel), Ok(real_rel)) = (lex.strip_prefix(&root), real.strip_prefix(&real_root)) else { return false };
     let guarded = |r: &Path| {
-        r.components().any(|c| matches!(c.as_os_str().to_str(), Some(".git" | ".nexo")))
-            || r.file_name().and_then(|n| n.to_str()).is_some_and(|n| RC.contains(&n))
+        r.components().any(|c| c.as_os_str().to_str().is_some_and(|n| GUARDED_DIRS.contains(&n)))
+            || r.file_name().and_then(|n| n.to_str()).is_some_and(|n| GUARDED_FILES.contains(&n))
     };
     !rel.as_os_str().is_empty() && !guarded(rel) && !guarded(real_rel) && !is_sensitive(&p, cwd)
 }
@@ -1203,6 +1218,23 @@ mod tests {
         }
         assert_eq!(w("src/a.rs"), Decision::Allow);
         assert_eq!(w(" src/a.rs"), Decision::Allow);
+        for path in [
+            ".claude/settings.json",
+            ".codex/config.toml",
+            ".vscode/tasks.json",
+            ".idea/workspace.xml",
+            ".husky/pre-commit",
+            ".mcp.json",
+            ".envrc",
+            ".gitconfig",
+            "sub/.vscode/tasks.json",
+            "sub/.mcp.json",
+        ] {
+            assert_eq!(w(path), Decision::Ask, "{path}");
+        }
+        for path in [".github/workflows/ci.yml", ".gitignore", "sub/mcp.json"] {
+            assert_eq!(w(path), Decision::Allow, "{path}");
+        }
         assert_eq!(p.decide("write", ToolKind::Write, &json!({}), &c), Decision::Ask, "no path: ask");
     }
 

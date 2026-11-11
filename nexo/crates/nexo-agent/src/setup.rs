@@ -162,9 +162,23 @@ pub fn key_file(name: &str) -> PathBuf {
 
 /// Writes a typed key to its file (mode 600) and points `cfg` at it.
 pub fn keep_key(name: &str, key: &str, cfg: &mut ProviderConfig) -> anyhow::Result<PathBuf> {
-    let f = key_file(name);
+    keep_key_at(key_file(name), key, cfg)
+}
+
+fn keep_key_at(f: PathBuf, key: &str, cfg: &mut ProviderConfig) -> anyhow::Result<PathBuf> {
     if let Some(d) = f.parent() {
-        std::fs::create_dir_all(d)?;
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            b.mode(0o700);
+            b.create(d)?;
+            // a folder that was there already, wider than 700, is narrowed
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
+        }
+        #[cfg(not(unix))]
+        b.create(d)?;
     }
     // created readable only by the user, never for a moment by others; a file that was there
     // already is narrowed before the key goes in
@@ -234,6 +248,26 @@ pub fn effort_of(cfg: &ProviderConfig, model: &str, fallback: &Option<String>) -
 mod tests {
     use super::*;
     use nexo_core::Pricing;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_keys_folder_is_private_and_a_wider_one_is_narrowed() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let d = tempfile::tempdir().unwrap();
+        let mut cfg = ProviderConfig::new("openai-chat", "http://localhost:11434/v1", None);
+        let fresh = d.path().join("a/keys");
+        let f = keep_key_at(fresh.join("k"), " sk-1 ", &mut cfg).unwrap();
+        assert_eq!((mode(&fresh), mode(&f)), (0o700, 0o600));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "sk-1");
+        let old = d.path().join("old");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(old.join("k"), "x").unwrap();
+        std::fs::set_permissions(old.join("k"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        keep_key_at(old.join("k"), "sk-2", &mut cfg).unwrap();
+        assert_eq!((mode(&old), mode(&old.join("k"))), (0o700, 0o600));
+    }
 
     #[test]
     fn a_saved_model_reads_back_as_the_default_with_its_facts() {
