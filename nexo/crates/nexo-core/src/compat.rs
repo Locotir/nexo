@@ -28,12 +28,15 @@ const IMPORT_DEPTH: usize = 5;
 /// The most nested instruction files listed.
 const NESTED_MAX: usize = 20;
 
-/// The nearest ancestor of `cwd` with a `.git` entry below the person's home (never the home itself, kept
-/// in git or not), else `cwd` itself.
+/// The nearest ancestor of `cwd` with a `.git` entry below the person's home, else `cwd` itself.
 pub fn project_root(cwd: &Path) -> PathBuf {
-    let home = dirs::home_dir();
+    project_root_with(cwd, dirs::home_dir().as_deref())
+}
+
+/// [`project_root`] below the person's home `own_home`.
+fn project_root_with(cwd: &Path, own_home: Option<&Path>) -> PathBuf {
     for d in cwd.ancestors() {
-        if crate::paths::is_home(d, home.as_deref()) {
+        if home_stop(d, cwd, own_home) {
             break;
         }
         if d.join(".git").exists() {
@@ -41,6 +44,14 @@ pub fn project_root(cwd: &Path) -> PathBuf {
         }
     }
     cwd.to_path_buf()
+}
+
+/// Whether the walk up from `cwd` stops at `d` as the person's home (`own_home`): it does, kept in git or
+/// not (as for skills), unless the person works in the home itself and it is a real repository (a
+/// container whose home is the project); a stray `.git` folder makes none.
+fn home_stop(d: &Path, cwd: &Path, own_home: Option<&Path>) -> bool {
+    let repo = d.join(".git").is_file() || d.join(".git/HEAD").is_file();
+    crate::paths::is_home(d, own_home) && !(d == cwd && repo)
 }
 
 /// Where `~/.claude` and `~/.codex` are looked for: `NEXO_COMPAT_HOME` when set (empty turns the
@@ -81,13 +92,13 @@ pub fn instructions(cwd: &Path, config_dir: &Path, home: Option<&Path>) -> Vec<I
 }
 
 /// The folders whose instruction files are the project's, nearest first: from `cwd` up to the repository
-/// root. The person's home (`own_home`) is never one, kept in git or not (as for skills): a file there
-/// speaks to every tool run in any folder below it (another tool's state notes, say), and nexo's own user
-/// file lives in its config folder.
+/// root. The person's home (`own_home`) is none (see [`home_stop`]): a file there speaks to every tool run
+/// in any folder below it (another tool's state notes, say), and nexo's own user file lives in its config
+/// folder.
 fn project_dirs<'a>(cwd: &'a Path, own_home: Option<&Path>) -> Vec<&'a Path> {
     let mut out = Vec::new();
     for d in cwd.ancestors() {
-        if crate::paths::is_home(d, own_home) {
+        if home_stop(d, cwd, own_home) {
             break;
         }
         out.push(d);
@@ -98,7 +109,7 @@ fn project_dirs<'a>(cwd: &'a Path, own_home: Option<&Path>) -> Vec<&'a Path> {
     out
 }
 
-/// Whether `cwd` is in no project: the person's home, kept in git or not. nexo maps no tree there and
+/// Whether `cwd` is in no project: the person's home (see [`home_stop`]). nexo maps no tree there and
 /// reads no instruction file of it, so the notes and folders of everything kept under it stay out.
 pub fn no_project(cwd: &Path) -> bool {
     project_dirs(cwd, dirs::home_dir().as_deref()).is_empty()
@@ -286,7 +297,7 @@ fn nested_instructions_with(cwd: &Path, claude: bool, own_home: Option<&Path>) -
     if project_dirs(cwd, own_home).is_empty() {
         return Vec::new();
     }
-    let root = project_root(cwd);
+    let root = project_root_with(cwd, own_home);
     let loaded: Vec<&Path> = cwd.ancestors().take_while(|d| d.starts_with(&root)).collect();
     let mut found = Vec::new();
     let walk = ignore::WalkBuilder::new(&root).max_depth(Some(5)).build();
@@ -597,8 +608,9 @@ fn claude_hooks_in(
     trust_file: &Path,
     home: Option<&Path>,
 ) -> (Vec<crate::config::HookConfig>, Option<String>) {
-    let root = project_root(cwd);
-    if Some(root.as_path()) == home {
+    // the settings in the home folder are the person's own for Claude Code, never a project's hooks
+    let root = project_root_with(cwd, home);
+    if crate::paths::is_home(&root, home) {
         return (Vec::new(), None);
     }
     let trusted = crate::config::is_trusted(&root, trust_file);
@@ -650,10 +662,11 @@ fn rules_file_with(
     own_home: Option<&Path>,
 ) -> Option<(PathBuf, Option<String>)> {
     match scope {
-        "project" if project_dirs(cwd, own_home).is_empty() => Some(user_file(config_dir, home)),
+        // no seed: a note is no reason to copy another agent's user file into nexo's own
+        "project" if project_dirs(cwd, own_home).is_empty() => Some((user_file(config_dir, home).0, None)),
         "project" => {
             let file = project_file_with(cwd, claude_code(), own_home, config_dir);
-            let file = if file.is_file() { file } else { project_root(cwd).join("AGENTS.md") };
+            let file = if file.is_file() { file } else { project_root_with(cwd, own_home).join("AGENTS.md") };
             Some((file, None))
         }
         "global" => Some((config_dir.join("prompt.md"), Some(crate::paths::PREFS_TEMPLATE.to_string()))),
@@ -1000,35 +1013,52 @@ mod tests {
     }
 
     #[test]
-    fn the_persons_home_is_no_project_unless_it_is_a_repository() {
+    fn the_persons_home_is_no_project_seen_from_below_and_one_only_as_a_real_repository() {
         // a home holding another tool's state notes, and a folder below it that is no repository
-        let (home, cfg) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (home, cfg, other) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let h = home.path();
         w(h.join("AGENTS.md"), "Read this first: the lanes and their state.");
         w(h.join("CLAUDE.md"), "Act for the boss, unasked.");
         w(h.join("work/AGENTS.md"), "Work rules.");
+        w(other.path().join(".claude/CLAUDE.md"), "Another agent's mandate.");
         let sub = h.join("Downloads");
         std::fs::create_dir_all(&sub).unwrap();
-        for cwd in [h, sub.as_path()] {
+        let none_from = |cwd: &Path| {
             let got = instructions_with(cwd, cfg.path(), None, true, Some(h));
             assert!(got.is_empty(), "{cwd:?}: {got:?}");
+            assert!(nested_instructions_with(cwd, true, Some(h)).is_empty(), "{cwd:?}");
+        };
+        // no `.git`, then a stray `.git` folder that is no repository: the same
+        for stray in [false, true] {
+            if stray {
+                std::fs::create_dir_all(h.join(".git/info")).unwrap();
+            }
+            none_from(h);
+            none_from(&sub);
+            assert!(project_dirs(h, Some(h)).is_empty() && project_dirs(&sub, Some(h)) == [sub.as_path()]);
+            assert_eq!(project_root_with(&sub, Some(h)), sub);
+            // what /memory opens and where a project rule goes: nexo's own user file in the home (never seeded
+            // from another agent's), a new file below it
+            assert_eq!(project_file_with(h, true, Some(h), cfg.path()), cfg.path().join("AGENTS.md"));
+            assert_eq!(project_file_with(&sub, true, Some(h), cfg.path()), sub.join("AGENTS.md"));
+            let (f, seed) = rules_file_with("project", h, cfg.path(), Some(other.path()), Some(h)).unwrap();
+            assert_eq!((f, seed), (cfg.path().join("AGENTS.md"), None));
+            assert_eq!(rules_file_with("project", &sub, cfg.path(), None, Some(h)).unwrap().0, sub.join("AGENTS.md"));
         }
-        assert!(nested_instructions_with(h, true, Some(h)).is_empty());
-        assert!(project_dirs(h, Some(h)).is_empty() && project_dirs(&sub, Some(h)) == [sub.as_path()]);
-        // what /memory opens and where a project rule goes: nexo's own user file in the home, a new file below it
-        assert_eq!(project_file_with(h, true, Some(h), cfg.path()), cfg.path().join("AGENTS.md"));
-        assert_eq!(project_file_with(&sub, true, Some(h), cfg.path()), sub.join("AGENTS.md"));
-        assert_eq!(rules_file_with("project", h, cfg.path(), None, Some(h)).unwrap().0, cfg.path().join("AGENTS.md"));
-        assert_eq!(rules_file_with("project", &sub, cfg.path(), None, Some(h)).unwrap().0, sub.join("AGENTS.md"));
-        // a home kept in git (dotfiles, or a stray `.git` folder) is still no project; a repository below it is
-        std::fs::create_dir_all(h.join(".git/info")).unwrap();
-        assert!(instructions_with(&sub, cfg.path(), None, true, Some(h)).is_empty());
-        assert!(project_dirs(h, Some(h)).is_empty());
+        // a repository below the home is a project
         let work = h.join("work");
         std::fs::create_dir_all(work.join(".git")).unwrap();
         let got: Vec<String> =
             instructions_with(&work, cfg.path(), None, true, Some(h)).into_iter().map(|i| i.text).collect();
         assert_eq!(got, ["Work rules."]);
+        // a home that is a real repository (a container whose home is the project) is one in the home itself,
+        // never from a folder below it
+        w(h.join(".git/HEAD"), "ref: refs/heads/main\n");
+        let got: Vec<String> =
+            instructions_with(h, cfg.path(), None, true, Some(h)).into_iter().map(|i| i.text).collect();
+        assert_eq!(got, ["Read this first: the lanes and their state."]);
+        none_from(&sub);
     }
 
     #[test]

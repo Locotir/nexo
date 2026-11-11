@@ -167,10 +167,11 @@ Other `[agent]` keys:
 **Coming from another coding agent.** What a team already keeps for Claude Code or Codex CLI works on day one:
 
 - Instructions: `AGENTS.md`, `CLAUDE.md` (also `.claude/CLAUDE.md`) and `CLAUDE.local.md` in the project folders (from
-  where you are up to the repository root, never your home folder unless it is a repository itself), nearest first; `AGENTS.md` wins over `CLAUDE.md` in the same folder, `NEXO.md` comes before both. A word like `@docs/style.md`
+  where you are up to the repository root; your home folder only when you work in it and it is a real repository), nearest first; `AGENTS.md` wins over `CLAUDE.md` in the same folder, `NEXO.md` comes before both. A word like `@docs/style.md`
   places that file (relative path, up to 5 levels, no cycles, never a key file) after its line. Instruction files in
   folders you are not working in are listed, to be read when you work there. For you: `~/.nexo/NEXO.md` or `AGENTS.md`,
-  and only when neither exists `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`.
+  and only when neither exists `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`, sent as background notes written for
+  another agent (up to 4,000 characters), never as a request. A resumed session gets the files as they are now.
 - Commands: `.claude/commands/**/*.md` (`git/sync.md` is `/git:sync`) and `.codex/prompts/*.md`, in the project (once
   trusted) and in your home. `description:` and `argument-hint:` show in the palette; `$ARGUMENTS` and `$1` to `$9`
   are filled in; `allowed-tools:` is read but not enforced. A command in nexo's own folders wins on a name clash.

@@ -22,7 +22,7 @@ pub(super) fn settle(
     tools: &mut ToolSet,
 ) -> Prefix {
     match session.prefix().cloned() {
-        Some(p) => {
+        Some(mut p) => {
             for name in MACHINE_TOOLS {
                 let (stored, has) = (p.tools.iter().any(|t| t == name), tools.get(name).is_some());
                 if stored && !has {
@@ -33,6 +33,13 @@ pub(super) fn settle(
                 } else if !stored && has {
                     tools.remove(name);
                 }
+            }
+            // instruction files edited since, or read otherwise by a newer nexo (one that no longer reads a
+            // home folder's): the session goes on with them as they are now, at the cost of one uncached request
+            let now = prompt::Volatile::capture(cwd, cfg).instructions;
+            if now != p.volatile.instructions {
+                p.volatile.instructions = now;
+                let _ = session.record_prefix(&p);
             }
             p
         }

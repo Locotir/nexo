@@ -72,8 +72,7 @@ pub(super) fn pick(
     skip: &[PathBuf],
     allowed: &dyn Fn(&str, &Path) -> bool,
 ) -> Vec<(String, u64)> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
-    pick_in(root, budget, skip, allowed, home.as_deref())
+    pick_in(root, budget, skip, allowed, nexo_core::paths::own_home().as_deref())
 }
 
 /// [`pick`] with the home folder given. Nothing is picked when `root` is that home folder or a filesystem root,

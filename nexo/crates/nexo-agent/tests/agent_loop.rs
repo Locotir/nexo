@@ -5807,6 +5807,37 @@ async fn a_session_saved_without_a_prefix_gets_one_once() {
     assert!(last_user_text(&reqs[1]).contains("later.txt"));
 }
 
+/// Instruction files that changed while a session was closed reach it on resume; unchanged, the
+/// system text is the same bytes as before.
+#[tokio::test]
+async fn a_resumed_session_gets_its_instruction_files_as_they_are_now() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("AGENTS.md"), "Use tabs.").unwrap();
+    let client = Scripted::new(vec![Reply::Events(text("one"))]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let id = match r.next().await {
+        AgentEvent::Ready { session_id, .. } => session_id,
+        _ => panic!(),
+    };
+    r.send(AgentCommand::Submit { text: "first".into(), attachments: vec![] });
+    r.turn().await;
+    r.stop().await;
+    std::fs::write(d.path().join("AGENTS.md"), "Use spaces.").unwrap();
+    let later = Scripted::new(vec![Reply::Events(text("two")), Reply::Events(text("three"))]);
+    for (n, reply) in ["second", "third"].into_iter().enumerate() {
+        let mut r = start(later.clone(), config(PermissionMode::Ask), Some(id.clone()), d.path()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: reply.into(), attachments: vec![] });
+        r.turn().await;
+        r.stop().await;
+        let sys = &later.requests()[n].system;
+        assert!(sys.contains("Use spaces.") && !sys.contains("Use tabs."), "{sys}");
+    }
+    let (first, reqs) = (client.requests(), later.requests());
+    assert!(first[0].system.contains("Use tabs."));
+    assert_eq!(reqs[1].system, reqs[0].system, "nothing changed since: the same bytes");
+}
+
 // ---- each session remembers its provider and model
 
 async fn ready_id(r: &mut Running) -> String {

@@ -124,6 +124,11 @@ pub fn project_dir(cwd: &Path) -> Option<PathBuf> {
     project_dir_in(cwd, dirs::home_dir().as_deref(), &[home_dir(), config_dir()])
 }
 
+/// The person's home folder, as every check of it reads it.
+pub fn own_home() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
 /// Whether `dir` is the person's `home` (compared resolved). A home kept in git is still the
 /// person's own folder, never a project's.
 pub fn is_home(dir: &Path, home: Option<&Path>) -> bool {
