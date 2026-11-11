@@ -13,18 +13,29 @@ use super::price::tokens_of;
 use crate::distinctive_words;
 
 /// The words of `reply` that `history` holds but neither `view` nor `system` does, and how many of its
-/// words `history` holds.
+/// words `history` holds. The name of a tool the reply calls is not one of them: it comes from the tool
+/// list sent with every request, so a view that holds no earlier call of that tool has forgotten nothing.
 pub fn forgotten(reply: &Value, history: &[Value], view: &[Value], system: &str) -> (Vec<String>, usize) {
     let mut seen = HashSet::new();
     for m in view {
         seen.extend(words_of(m).iter().cloned());
     }
     seen.extend(distinctive_words(system));
+    let called: HashSet<&str> = reply["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["type"] == "tool_use")
+        .filter_map(|b| b["name"].as_str())
+        .collect();
     let mut held = HashSet::new();
     for m in history {
         held.extend(words_of(m).iter().cloned());
     }
-    let copied: Vec<String> = distinctive_words(&said_of(reply)).into_iter().filter(|w| held.contains(w)).collect();
+    let copied: Vec<String> = distinctive_words(&said_of(reply))
+        .into_iter()
+        .filter(|w| held.contains(w) && !called.contains(w.as_str()))
+        .collect();
     let n = copied.len();
     (copied.into_iter().filter(|w| !seen.contains(w)).collect(), n)
 }

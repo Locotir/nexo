@@ -55,3 +55,27 @@ fn a_reasoned_word_held_in_a_result_the_view_lacks_is_forgotten() {
     assert!(n >= 1);
     assert!(lost.iter().any(|w| w == "warehouse_ledger_total"), "{lost:?}");
 }
+
+fn call(name: &str, input: Value) -> Value {
+    json!({"type": "tool_use", "id": "b", "name": name, "input": input})
+}
+
+#[test]
+fn the_name_of_the_tool_a_reply_calls_is_not_forgotten() {
+    // an older call of the same tool is all the history holds of the name; the view has dropped it
+    let history = vec![assistant(vec![call("edit_file", json!({"path": "a.py"}))])];
+    let reply = assistant(vec![call("edit_file", json!({"path": "b.py"}))]);
+    let (lost, n) = forgotten(&reply, &history, &[], "");
+    assert!(lost.is_empty(), "the tool list names it on every request: {lost:?}");
+    assert_eq!(n, 0, "a tool's name is not copied from the history");
+}
+
+#[test]
+fn a_tool_name_written_as_an_argument_still_counts() {
+    // the same word as data (an argument of another call) is taken from the history like any other
+    let history = vec![result("the hook is named stock_level_check")];
+    let reply = assistant(vec![call("run_command", json!({"command": "grep stock_level_check"}))]);
+    let (lost, n) = forgotten(&reply, &history, &[], "");
+    assert_eq!(n, 1);
+    assert_eq!(lost, vec!["stock_level_check".to_string()]);
+}
