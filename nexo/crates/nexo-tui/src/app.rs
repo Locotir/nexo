@@ -1026,14 +1026,15 @@ fn is_step(b: &Block) -> bool {
 /// the reply's text. Narrow terminals keep every column for the text.
 /// The word at the right of a tool card's head: where its output stands for the last model call (in the
 /// cached part of the request, paid in full, trimmed, set aside, recalled). A glyph and a word, coloured like the bar,
-/// and only when it fits beside the head.
+/// and only when it fits beside the head. Set aside is the glyph alone: it is where every card of an answered request
+/// stands, and the same word on each of them would only be noise.
 fn mark_head(head: &mut Line<'static>, m: CallMark, cost: Option<f64>, w: usize, theme: &Theme) {
     use crate::render::wrap::width;
     let (word, style) = match m {
         CallMark::Cached => ("● cached", theme.style(theme.success)),
         CallMark::Sent => ("● full price", theme.style(theme.accent)),
         CallMark::Cut => ("◐ trimmed", theme.style(theme.warn)),
-        CallMark::Out => ("○ set aside", theme.dim2()),
+        CallMark::Out => ("○", theme.dim2()),
         CallMark::Back => ("↺ recalled", theme.style(theme.accent2)),
     };
     // the mark wins over the end of a long head: the command is cut with an ellipsis, never below this

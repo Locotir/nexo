@@ -704,7 +704,7 @@ did with that card's output:
 | `● cached` | sent whole, inside the part of the request that did not change since the call before, so the provider serves it from its prompt cache | about a tenth of the normal price |
 | `● full price` | sent whole, after the point where the request changed, so the provider reads it again | the normal input price |
 | `◐ trimmed` | sent shortened: the curator kept the lines that matter (errors, results, the first and last lines) and left a note saying what was cut | less than whole |
-| `○ set aside` | not sent this time; the model did not see it in this call. It is still in the history, with its name, and nothing is lost | nothing |
+| `○` | set aside: not sent this time; the model did not see it in this call. It is still in the history, with its name, and nothing is lost. Every card of an answered request usually stands here, so it is the glyph alone | nothing |
 | `↺ recalled` | it had been set aside and came back, whole or in part, because the model asked for it (`recall`) or the work turned back to it | as `full price` for what came back |
 
 A card with no mark was not part of the last call's decision (for example it is still running).
