@@ -23,6 +23,8 @@ fn app(animations: bool) -> App {
         model: "deepseek-chat".into(),
         theme: "dark".into(),
         animations,
+        // an empty session drifts its stars for a while (src/app/tests/bursts.rs); these frames are about other things
+        home_stars: false,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);
@@ -42,6 +44,8 @@ fn locked(animations: bool) -> App {
         providers: vec![("codex".to_string(), c)],
         theme: "dark".into(),
         animations,
+        // an empty session drifts its stars for a while (src/app/tests/bursts.rs); these frames are about other things
+        home_stars: false,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);

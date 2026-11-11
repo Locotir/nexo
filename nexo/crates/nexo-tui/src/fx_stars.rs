@@ -431,7 +431,7 @@ impl StarsFx {
         self.base + run + STOP_MS as f64 / 3.0 * (1.0 - (1.0 - u).powi(3))
     }
 
-    fn at_rest(&self, now: Instant) -> bool {
+    pub(crate) fn at_rest(&self, now: Instant) -> bool {
         let Some(start) = self.start else { return true };
         let run = self.last_input.map_or(0.0, |l| ms(start, l)) + REST_AFTER_MS as f64;
         ms(start, now) > run + STOP_MS as f64
@@ -459,6 +459,7 @@ impl App {
     pub fn stars_input(&mut self) {
         let now = self.now();
         self.fx.stars.input(now);
+        self.home_input(now);
     }
 
     /// The figure is on screen and turning (the beat is wanted): the welcome screen is up, the motion is

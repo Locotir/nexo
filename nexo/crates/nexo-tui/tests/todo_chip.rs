@@ -27,6 +27,8 @@ fn app(strip: bool, animations: bool) -> App {
         animations,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         todo_strip: strip,
         session_id: Some("20261027-120000-ab12".into()),
         ..TuiOptions::default()

@@ -27,6 +27,8 @@ fn app() -> App {
         animations: false,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);

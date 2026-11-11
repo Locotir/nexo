@@ -34,6 +34,8 @@ fn locked_with(animations: bool, theme: &str, figure: Figure) -> App {
         providers: vec![("codex".to_string(), c)],
         theme: theme.into(),
         animations,
+        // an empty session drifts its stars for a while (src/app/tests/bursts.rs); these frames are about other things
+        home_stars: false,
         figure,
         ..TuiOptions::default()
     };

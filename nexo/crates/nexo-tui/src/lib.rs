@@ -26,11 +26,13 @@ pub mod event;
 pub mod frame;
 pub mod frame_stats;
 pub mod fuzzy;
+pub mod fx_burst;
 pub mod fx_chrome;
 pub mod fx_diff;
 pub mod fx_effort;
 pub mod fx_galaxy;
 pub mod fx_goal;
+pub mod fx_home;
 pub mod fx_stars;
 pub mod fx_stream;
 pub mod goal_view;
@@ -103,6 +105,10 @@ pub struct TuiOptions {
     pub animations: bool,
     /// The figure of dots on the welcome screen (`[ui] figure`).
     pub figure: nexo_core::config::Figure,
+    /// Faint stars drifting across an empty session (`[ui] home_stars`).
+    pub home_stars: bool,
+    /// A burst of dots when a goal is met or a turn fails (`[ui] bursts`).
+    pub bursts: bool,
     /// How much the screen says by itself: `quiet` drops the key hints and the doubled figures (`[ui] detail`).
     pub detail: nexo_core::config::Detail,
     /// The to-do list as rows above the draft; off: a count in the status bar (`[ui] todo_strip`).
@@ -141,6 +147,8 @@ impl Default for TuiOptions {
             keys: Default::default(),
             animations: true,
             figure: nexo_core::config::Figure::Galaxy,
+            home_stars: true,
+            bursts: true,
             detail: nexo_core::config::Detail::Quiet,
             todo_strip: false,
             status_line: Vec::new(),

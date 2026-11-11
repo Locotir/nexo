@@ -79,6 +79,12 @@ pub struct Fx {
     pub goal: crate::fx_goal::GoalFx,
     /// The constellation above the welcome card (see `fx_stars`).
     pub stars: crate::fx_stars::StarsFx,
+    /// The stars drifting across an empty session (see `fx_home`).
+    pub home: crate::fx_home::HomeFx,
+    /// The burst of a goal met or a failure, and where the side panel drew the goal's state this frame
+    /// (see `fx_burst`).
+    pub burst: Option<crate::fx_burst::Burst>,
+    pub goal_spot: std::cell::Cell<Option<(u16, u16)>>,
     /// The letters of the reply that arrived lately, drawn dimmer while they settle (see `fx_stream`).
     pub ink: crate::fx_stream::Ink,
 }
@@ -129,6 +135,7 @@ impl App {
         let changed = self.note_bar_changes(now);
         self.note_goal_fx(now);
         self.note_effort(now);
+        self.note_home(now);
         let fx = &self.fx;
         let still = on
             && !self.theme.mono
@@ -150,6 +157,8 @@ impl App {
                 || fx.chip_seen.iter().any(|(_, t)| motion::within(Some(*t), now, fx_chrome::CHIP_MS))
                 || fx.goal.alive(now)
                 || self.effort_moving(now)
+                || self.home_moving(now)
+                || self.burst_moving(now)
                 || fx.ink.alive(now)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
         t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)

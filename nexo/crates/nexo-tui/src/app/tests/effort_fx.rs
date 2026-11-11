@@ -17,6 +17,8 @@ fn effort_event(a: &mut App, current: Option<&str>, levels: Vec<String>) {
 /// An app on a model with three levels, set to `medium` first, then to the top one `high` at `t0`.
 fn ignited(t0: Instant) -> App {
     let (mut a, _rx) = app();
+    // an empty session drifts its stars on a beat of their own (see `bursts.rs`); these are about the chip
+    a.opts.home_stars = false;
     fx_at(&mut a, t0, 0);
     effort_event(&mut a, Some("medium"), levels());
     effort_event(&mut a, Some("medium"), levels());

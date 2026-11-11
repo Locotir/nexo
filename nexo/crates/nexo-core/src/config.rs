@@ -515,6 +515,10 @@ pub struct UiConfig {
     pub animations: bool,
     /// The figure of dots on the welcome screen: `galaxy` (default), `constellation` or `none`.
     pub figure: Figure,
+    /// Faint stars drift across an empty session until its first message.
+    pub home_stars: bool,
+    /// A burst of dots when a goal is met (green) or a turn or goal stops on a failure (red).
+    pub bursts: bool,
     /// `quiet` (default): the screen drops the key hints, the doubled figures and the sentences nobody needs to act on;
     /// detail sits behind a key or a click. `full`: all of it on screen, as before.
     pub detail: Detail,
@@ -558,6 +562,8 @@ impl Default for UiConfig {
             notify_after: 15,
             animations: true,
             figure: Figure::Galaxy,
+            home_stars: true,
+            bursts: true,
             detail: Detail::Quiet,
             todo_strip: false,
             keys: BTreeMap::new(),
@@ -1506,6 +1512,14 @@ mod ui_tests {
         // an unknown word reads as the default
         let c: Config = toml::from_str("[ui]\nfigure = \"comet\"\n").unwrap();
         assert_eq!(c.ui.figure, Figure::Galaxy);
+    }
+
+    #[test]
+    fn the_home_stars_and_the_bursts_are_on_unless_turned_off() {
+        let c: Config = toml::from_str("[ui]\ntheme = \"nord\"\n").unwrap();
+        assert!(c.ui.home_stars && c.ui.bursts);
+        let c: Config = toml::from_str("[ui]\nhome_stars = false\nbursts = false\n").unwrap();
+        assert!(!c.ui.home_stars && !c.ui.bursts);
     }
 
     #[test]

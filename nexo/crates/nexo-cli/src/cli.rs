@@ -734,6 +734,8 @@ async fn interactive(
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,
         figure: config.ui.figure,
+        home_stars: config.ui.home_stars,
+        bursts: config.ui.bursts,
         detail: config.ui.detail,
         todo_strip: config.ui.todo_strip,
         status_line: config.ui.status_line.clone(),

@@ -30,6 +30,8 @@ fn app(command: &str) -> App {
         animations: false,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         todo_strip: false,
         status_command: command.to_string(),
         ..Default::default()

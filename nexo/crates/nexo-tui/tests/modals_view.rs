@@ -34,6 +34,9 @@ fn app() -> App {
         animations: false,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        // an empty session drifts its stars for a while (src/app/tests/bursts.rs); these frames are about other things
+        home_stars: false,
+        bursts: true,
         todo_strip: false,
         vim: false,
         prompt: None,

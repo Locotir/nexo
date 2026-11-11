@@ -870,6 +870,8 @@ fn ctrl_c_in_a_permission_dialog_denies_it_and_stops_the_turn() {
 fn a_list_at_rest_shows_the_row_the_arrow_reached_without_another_key() {
     let (mut a, _rx) = app();
     a.opts.animations = true;
+    // the stars of the empty session behind the list rest later (see `bursts.rs`)
+    a.opts.home_stars = false;
     a.opts.sessions = (0..5).map(|i| (format!("s{i}"), format!("chat {i}"))).collect();
     a.run_command(Command::Sessions);
     let t0 = Instant::now();

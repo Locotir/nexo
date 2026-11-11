@@ -42,6 +42,8 @@ fn app() -> (App, mpsc::UnboundedReceiver<nexo_core::agent::AgentCommand>) {
         animations: false,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         todo_strip: false,
         status_line: vec![],
         status_command: String::new(),

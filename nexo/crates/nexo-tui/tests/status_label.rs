@@ -23,6 +23,8 @@ fn bar_of(width: u16, model: &str) -> String {
         animations: false,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);
@@ -87,6 +89,8 @@ fn bar_with_branch(width: u16) -> String {
         animations: false,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);

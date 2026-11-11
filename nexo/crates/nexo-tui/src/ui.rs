@@ -147,10 +147,17 @@ fn draw_all(f: &mut Frame, app: &mut App) {
             }
         }
     }
+    app.fx.goal_spot.set(None);
     if files_w > 0 {
         draw_panel(f, app, files);
         app.fx.diff.draw_open(f.buffer_mut(), files, &app.theme, now0);
     }
+    // the stars of an empty session over the transcript (not its scrollbar), then a burst over the whole room
+    if !app.locked {
+        app.note_home(now0);
+        crate::fx_home::draw(f.buffer_mut(), app, Rect { width: transcript.width.saturating_sub(1), ..transcript });
+    }
+    crate::fx_burst::draw(f.buffer_mut(), app, middle);
     // the count in the bar is the list shown too: the keys row does not say it again
     let chip = app.status_hits.iter().any(|(_, h)| *h == StatusHit::Todo);
     app.todo_shown = todo_area.height > 0 || (files_w > 0 && !app.todo.is_empty()) || chip;
@@ -2206,6 +2213,11 @@ fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
             let body = crate::render::wrap::wrap_runs(&[state], inner_w, &[rail()], &[rail()]);
             let first = lines.len();
             lines.extend(body.into_iter().take(2));
+            // a burst for the goal starts here: at the ✓ of a goal met, else at the start of the state
+            if first < area.height as usize {
+                let at = if goal.state == GoalState::Done { 6 } else { 4 };
+                app.fx.goal_spot.set(Some(((area.x + at).min(area.right() - 1), area.y + first as u16)));
+            }
             if let GoalState::Active = goal.state {
                 let fig = format!("{round}/{max}");
                 crate::fx_goal::light(theme, &mut lines[first], &fig, gfx.round_at, now, crate::motion::LIT_MS);

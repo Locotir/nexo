@@ -37,6 +37,8 @@ fn app_with(theme: &str, complete: bool) -> App {
         animations: false,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         todo_strip: false,
         vim: false,
         prompt: None,

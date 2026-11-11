@@ -316,8 +316,8 @@ impl App {
         if self.tick_fx_with(false) {
             any = true;
         }
-        // the welcome figure turns on the beat: a frame per tick, not 60 a second
-        if self.stars_alive(self.now()) {
+        // the welcome figure and the stars of an empty session move on the beat: a frame per tick, not 60 a second
+        if self.stars_alive(self.now()) || self.home_alive(self.now()) {
             self.dirty = true;
         }
         // the thinking header settles when the reasoning closes, and the rail of an interrupted block warms
@@ -436,8 +436,9 @@ impl App {
             Load::Motion
         } else if self.busy
             || self.status.is_some()
-            // the welcome figure turns on the beat
+            // the welcome figure turns on the beat, and the stars of an empty session drift on it
             || self.stars_alive(self.now())
+            || self.home_alive(self.now())
             // the memory figure waits on the curator: its spinner needs the beat
             || self.context_wait
             // the answer of the /diff collection is taken on a tick: an idle clock would hold it for seconds
@@ -920,6 +921,21 @@ impl App {
                     }
                     _ => {}
                 }
+                // a goal met bursts green; one stopped by a failure (not by the person) red
+                let outcome = match (&text, &self.goal, &state) {
+                    (Some(_), Some(g), GoalState::Done) if g.state != GoalState::Done => {
+                        Some(crate::fx_burst::Kind::Met)
+                    }
+                    (Some(_), Some(g), GoalState::Paused(why))
+                        if g.state.is_active() && crate::fx_burst::failed(why) =>
+                    {
+                        Some(crate::fx_burst::Kind::Failed)
+                    }
+                    _ => None,
+                };
+                if let Some(kind) = outcome {
+                    self.burst(kind);
+                }
                 self.goal = text.map(|text| Goal { text, round, max, state });
                 if self.goal.is_none() {
                     self.goal_log = Default::default();
@@ -936,6 +952,10 @@ impl App {
                 self.busy = false;
                 if matches!(reason, TurnEnd::Done) {
                     self.turn_glow();
+                }
+                // an error or the turn limit: the red burst (an interrupt is the person's own stop)
+                if matches!(reason, TurnEnd::Error | TurnEnd::MaxTurns) {
+                    self.burst(crate::fx_burst::Kind::Failed);
                 }
                 self.turns_ended += 1;
                 let elapsed_ms = self.turn_started.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);

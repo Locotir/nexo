@@ -27,6 +27,8 @@ fn app() -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
         notify_after: 15,
         animations: true,
         figure: nexo_core::config::Figure::Galaxy,
+        home_stars: true,
+        bursts: true,
         detail: nexo_core::config::Detail::Full,
         todo_strip: false,
         status_line: vec![],
@@ -209,6 +211,7 @@ fn docs_server() -> nexo_core::agent::McpServerInfo {
 mod agent_a;
 mod agent_b;
 mod agent_c;
+mod bursts;
 mod effort_fx;
 mod outside_click;
 mod sub;
