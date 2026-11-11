@@ -337,6 +337,30 @@ fn the_status_bar_opens_the_model_the_context_and_the_usage() {
 }
 
 #[test]
+fn the_line_under_a_hovered_effort_starts_at_its_mark_not_under_the_blank_before_it() {
+    use crossterm::event::MouseEventKind as K;
+    use ratatui::style::Modifier;
+    let (mut a, _rx) = app();
+    a.effort = Some("high".into());
+    a.fast = true;
+    frame(&mut a, 120, 12);
+    for hit in [StatusHit::Effort, StatusHit::Fast] {
+        let r = a.status_hits.iter().find(|(_, x)| *x == hit).map(|(r, _)| *r).expect("on the bar");
+        pointer(&mut a, K::Moved, r.x + 1, r.y);
+        assert_eq!(a.hover, Hover::Status(hit));
+        let buf = buf_of(&mut a, 120, 12);
+        let cell = |x: u16| &buf[(x, r.y)];
+        assert_eq!(cell(r.x).symbol(), " ", "{hit:?} begins with its blank");
+        assert!(!cell(r.x).modifier.contains(Modifier::UNDERLINED), "{hit:?}: no line under the blank");
+        assert!(cell(r.x + 1).modifier.contains(Modifier::UNDERLINED), "{hit:?}: its mark is lit");
+        // (the fast mark is one wide glyph: its second cell carries no style of its own)
+        if hit == StatusHit::Effort {
+            assert!(cell(r.x + r.width - 1).modifier.contains(Modifier::UNDERLINED), "to its last cell");
+        }
+    }
+}
+
+#[test]
 fn the_status_bar_effort_and_mode_answer_a_click_and_follow_the_width() {
     use crossterm::event::{MouseButton, MouseEventKind as K};
     let (mut a, mut rx) = app();

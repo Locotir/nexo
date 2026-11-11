@@ -984,7 +984,14 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             }
             used += sw;
             let m = h.map(lit).unwrap_or_else(Modifier::empty);
-            spans.push(Span::styled(shown, s.style.add_modifier(m)));
+            // the line under a hovered piece starts at its first mark, not under the blank before it
+            let lead = shown.len() - shown.trim_start().len();
+            if !m.is_empty() && lead > 0 && lead < shown.len() {
+                spans.push(Span::styled(shown[..lead].to_string(), s.style));
+                spans.push(Span::styled(shown[lead..].to_string(), s.style.add_modifier(m)));
+            } else {
+                spans.push(Span::styled(shown, s.style.add_modifier(m)));
+            }
         }
         if let Some((rh, st, rw)) = run.take() {
             hits.push((Rect::new(area.x + st as u16, area.y, rw as u16, 1), rh));
