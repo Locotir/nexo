@@ -41,6 +41,11 @@ pub enum AgentCommand {
         id: String,
         text: String,
     },
+    /// Asks for the kept conversation of the sub-agent run `id`; one `SubTranscript` event answers (with `None`
+    /// when the run is unknown or was forgotten).
+    SubTranscript {
+        id: String,
+    },
     /// Stop the running turn and run the queued request at once (Enter on an empty draft). With
     /// nothing queued it is an `Interrupt`.
     InterruptRun,
@@ -786,6 +791,11 @@ pub enum AgentEvent {
         id: String,
         why: String,
     },
+    /// The answer to `SubTranscript`: what the registry keeps of the run, or nothing if it has no such run.
+    SubTranscript {
+        id: String,
+        transcript: Option<crate::subs::SubTranscript>,
+    },
     /// The end of the output of each background job, answering `JobTails`.
     JobTails {
         tails: Vec<crate::jobs::JobTail>,
@@ -929,6 +939,7 @@ impl AgentEvent {
                 | AgentEvent::SubDelta { .. }
                 | AgentEvent::SubState { .. }
                 | AgentEvent::SubNotDelivered { .. }
+                | AgentEvent::SubTranscript { .. }
         )
     }
 }

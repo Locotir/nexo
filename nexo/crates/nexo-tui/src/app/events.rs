@@ -1090,7 +1090,8 @@ impl App {
             AgentEvent::Sub { .. }
             | AgentEvent::SubDelta { .. }
             | AgentEvent::SubState { .. }
-            | AgentEvent::SubNotDelivered { .. } => {}
+            | AgentEvent::SubNotDelivered { .. }
+            | AgentEvent::SubTranscript { .. } => {}
 
             AgentEvent::Shutdown => self.should_quit = true,
         }

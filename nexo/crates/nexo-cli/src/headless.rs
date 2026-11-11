@@ -796,6 +796,7 @@ mod tests {
             AgentEvent::SubDelta { id: "a#1".into(), text: "x".into() },
             AgentEvent::SubState { info },
             AgentEvent::SubNotDelivered { id: "a#1".into(), why: "w".into() },
+            AgentEvent::SubTranscript { id: "a#1".into(), transcript: None },
         ];
         for e in &subs {
             assert_eq!(legacy_line(e), None, "{e:?}");

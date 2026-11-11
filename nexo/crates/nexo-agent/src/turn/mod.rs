@@ -217,6 +217,12 @@ fn emit(events: &EventTx, ev: AgentEvent) {
     let _ = events.send(ev);
 }
 
+/// What a view that lost some sub-agent events is sent so it can catch up: the state of every run the
+/// registry lists.
+fn sub_resync(subs: &nexo_core::subs::Subs) -> Vec<AgentEvent> {
+    subs.list().into_iter().map(|info| AgentEvent::SubState { info }).collect()
+}
+
 fn notice(events: &EventTx, level: Level, text: impl Into<String>) {
     emit(events, AgentEvent::Notice { level, text: text.into(), problem: None });
 }
@@ -415,6 +421,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let detach = nexo_core::jobs::Detach::default();
     let mut job_changes = jobs.changes();
     let mut sub_changes = jobs.subs().changes();
+    // the registry lives as long as `jobs`, so its channel does not close; if it ever did, the branch stops
+    // (a closed channel answers at once, and the loop would spin)
+    let mut subs_open = true;
     let state: Shared = Arc::new(Mutex::new(State {
         config,
         cwd,
@@ -955,6 +964,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     AgentCommand::SubSubmit { id, text } => {
                         let _ = jobs.subs().submit(&id, &text);
                     }
+                    AgentCommand::SubTranscript { id } => {
+                        let transcript = jobs.subs().transcript(&id);
+                        emit(&events, AgentEvent::SubTranscript { id, transcript });
+                    }
                     AgentCommand::ShowJobs => {
                         notice(&events, Level::Info, jobs_text(&jobs));
                         emit(&events, AgentEvent::Jobs { jobs: jobs.list() });
@@ -984,12 +997,16 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     turn = Some(start_turn(&state, SUPERVISOR_RESUME_MARK.to_string(), Vec::new(), cancel.child_token()).await);
                 }
             }
-            change = sub_changes.recv() => {
+            change = sub_changes.recv(), if subs_open => {
                 match change {
                     Ok(c) => emit(&events, c.into()),
-                    // a slow interface lost some; the registry has them all
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
+                    // a slow interface lost some: it gets every run's state again, and the registry has the rest
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        for e in sub_resync(&jobs.subs()) {
+                            emit(&events, e);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => subs_open = false,
                 }
             }
             change = job_changes.recv() => {

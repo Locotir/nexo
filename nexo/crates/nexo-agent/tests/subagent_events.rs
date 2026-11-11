@@ -416,17 +416,80 @@ fn requests_of(client: &Scripted, word: &str) -> Vec<ModelRequest> {
     client.sub_requests().into_iter().filter(|r| task_of(r).contains(word)).collect()
 }
 
+/// The ways one folder is written in a request: as given, in its canonical form (a temp dir may be a link),
+/// with the `\\?\` prefix Windows puts on a canonical path and without it, and with `/` for `\`. Longest
+/// first, so a form never leaves the tail of a longer one behind.
+fn path_forms(paths: &[String]) -> Vec<String> {
+    let mut forms = Vec::new();
+    for p in paths {
+        let bare = p.strip_prefix(r"\\?\").unwrap_or(p);
+        for f in [bare.to_string(), format!(r"\\?\{bare}")] {
+            forms.push(f.replace('\\', "/"));
+            forms.push(f);
+        }
+    }
+    forms.retain(|f| !f.is_empty());
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    forms.dedup();
+    forms
+}
+
+/// Every string inside `v` with each folder form written as `<cwd>`. This works on the values and not on
+/// the JSON text: there a Windows path has its backslashes doubled and would not be found.
+fn blank_paths(v: &mut Value, forms: &[String]) {
+    match v {
+        Value::String(s) => {
+            for f in forms {
+                if s.contains(f.as_str()) {
+                    *s = s.replace(f.as_str(), "<cwd>");
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| blank_paths(x, forms)),
+        Value::Object(o) => o.values_mut().for_each(|x| blank_paths(x, forms)),
+        _ => {}
+    }
+}
+
+#[test]
+fn a_windows_temp_path_is_blanked_in_every_form_it_takes_in_a_request() {
+    let named = [r"C:\Users\x\Temp\.tmpA".to_string(), r"\\?\C:\Users\x\Temp\.tmpA".to_string()];
+    let forms = path_forms(&named);
+    let mut v = json!({
+        "a": r"cwd is C:\Users\x\Temp\.tmpA\sub and more",
+        "b": [r"\\?\C:\Users\x\Temp\.tmpA", "C:/Users/x/Temp/.tmpA/file"],
+        "c": {"d": r"C:\Users\x\Temp\.tmpB stays"},
+    });
+    blank_paths(&mut v, &forms);
+    assert_eq!(
+        v,
+        json!({
+            "a": r"cwd is <cwd>\sub and more",
+            "b": ["<cwd>", "<cwd>/file"],
+            "c": {"d": r"C:\Users\x\Temp\.tmpB stays"},
+        })
+    );
+    // the JSON text of the same value holds the path with doubled backslashes: the text is not where to look
+    let text = json!({"a": r"C:\Users\x\Temp\.tmpA"}).to_string();
+    assert!(!text.contains(r"C:\Users\x\Temp\.tmpA"));
+}
+
 /// The main agent's requests of a run as the provider receives them: every field, the run's own ids and
 /// folders written out as words.
 fn wire(reqs: &[ModelRequest], cwd: &Path) -> Value {
-    let cwd = cwd.to_string_lossy().to_string();
+    let mut named = vec![cwd.to_string_lossy().to_string()];
+    if let Ok(c) = cwd.canonicalize() {
+        named.push(c.to_string_lossy().to_string());
+    }
+    let forms = path_forms(&named);
     let mut all = Vec::new();
     for r in reqs {
         let mut v = serde_json::to_value(r).unwrap();
         v["session_id"] = Value::Null;
+        blank_paths(&mut v, &forms);
         all.push(v);
     }
-    let mut s = serde_json::to_string_pretty(&all).unwrap().replace(&cwd, "<cwd>");
+    let mut s = serde_json::to_string_pretty(&all).unwrap();
     // the date and the machine are in the system prompt
     while let Some(a) = s.find("Date: 2") {
         let b = a + s[a..].find("\\nGit:").expect("the system prompt names the repository");
@@ -875,7 +938,7 @@ async fn sub_agent_events_are_not_written_to_the_session_and_what_a_run_spends_i
         vec![
             Reply::Events(call("t1", "task", bg("explore", "slow look"))),
             Reply::Events(text("started it")),
-            Reply::Events(text("noted the report")),
+            Reply::Events(text("NOTED-REPORT-ONLY-IN-THE-SESSION-TEST")),
         ],
         vec![
             Reply::Events(says_then_calls(&["SUB-THOUGHT-77"], "w1", "wait", spends(100, 20))),
@@ -891,6 +954,8 @@ async fn sub_agent_events_are_not_written_to_the_session_and_what_a_run_spends_i
     let id = held_sub_agent(&mut r, &client).await;
     r.send(AgentCommand::SubSubmit { id: id.clone(), text: "SECRET-NUDGE-42".into() });
     r.sync().await;
+    r.send(AgentCommand::SubTranscript { id: id.clone() });
+    r.until(|e| matches!(e, AgentEvent::SubTranscript { transcript: Some(_), .. })).await;
     release(d.path(), "go");
     let evs = r.turn().await;
     // two calls of 100 in and 20 out, at 1 and 2 dollars a token
@@ -925,7 +990,171 @@ async fn sub_agent_events_are_not_written_to_the_session_and_what_a_run_spends_i
     for f in &files {
         let Ok(text) = std::fs::read_to_string(f) else { continue };
         assert!(!text.contains("SECRET-NUDGE-42") && !text.contains("SUB-THOUGHT-77"), "{}", f.display());
-        seen_report |= text.contains("noted the report");
+        seen_report |= text.contains("NOTED-REPORT-ONLY-IN-THE-SESSION-TEST");
     }
-    assert!(seen_report, "the session file was found and holds what the main agent said");
+    assert!(seen_report, "the session file was found and holds the marker only this test writes");
+}
+
+// ---- a view that falls behind, mail that never stops, a view that asks --------------------------------------
+
+/// A reply of `n` pieces of text, one event each.
+fn many_deltas(n: usize) -> Vec<StreamEvent> {
+    let mut evs = vec![StreamEvent::Start { response_id: None, model: None }];
+    evs.extend((0..n).map(|i| StreamEvent::TextDelta(format!("p{i} "))));
+    evs.push(StreamEvent::Finish(FinishReason::Stop));
+    evs.push(StreamEvent::Done);
+    evs
+}
+
+#[tokio::test]
+async fn a_view_that_falls_behind_is_sent_the_state_of_every_run_and_the_forwarder_goes_on() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(
+        vec![
+            Reply::Events(call("t1", "task", bg("explore", "burst"))),
+            Reply::Events(text("started it")),
+            Reply::Events(text("noted it")),
+            Reply::Events(text("noted again")),
+        ],
+        // far more events than the channel holds, written without a pause
+        vec![Reply::Events(many_deltas(9000))],
+    );
+    let mut r = start(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    r.submit("go");
+    let evs = r
+        .until_all(&[&|e| matches!(e, AgentEvent::SubState { info } if info.state == SubState::Ok), &|e| {
+            matches!(e, AgentEvent::Sub { item: SubItem::Text { .. }, .. })
+        }])
+        .await;
+    let at = |f: &dyn Fn(&AgentEvent) -> bool| evs.iter().position(f);
+    let task_at = at(&|e| matches!(e, AgentEvent::Sub { item: SubItem::Task { .. }, .. })).unwrap();
+    let first = at(&|e| matches!(e, AgentEvent::SubDelta { .. })).expect("the newest pieces of text arrived");
+    let deltas = evs.iter().filter(|e| matches!(e, AgentEvent::SubDelta { .. })).count();
+    assert!(deltas < 9000, "the channel did not overflow, so nothing was tested ({deltas} deltas)");
+    // a state event after the task and before the text: the run began before them, so only the catch-up
+    // sent when the lag was seen can be there
+    assert!(evs[task_at..first].iter().any(is_sub_state), "no state event after the lag");
+    // the forwarder goes on: an answer made by the registry still reaches the view
+    r.send(AgentCommand::SubSubmit { id: "nobody#9".into(), text: "hello".into() });
+    r.until(|e| matches!(e, AgentEvent::SubNotDelivered { .. })).await;
+    r.stop().await;
+}
+
+/// Mail keeps arriving: after every reply a message is waiting.
+async fn feed_mail_until_done(
+    client: &Arc<Scripted>,
+    subs: &nexo_core::subs::Subs,
+    d: &Path,
+    run: &tokio::task::JoinHandle<ToolOutput>,
+) {
+    let mut seen = 0;
+    while !run.is_finished() {
+        if client.sub_count() > seen {
+            seen += 1;
+            let _ = subs.submit("t1#1", "and another thing");
+            release(d, &format!("r{}", seen - 1));
+        } else {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+}
+
+fn slow_replies(d: &Path, n: usize) -> Vec<Reply> {
+    (0..n).map(|i| late(d, &format!("r{i}"), text(&format!("answer {i}")))).collect()
+}
+
+#[tokio::test]
+async fn mail_that_never_stops_ends_at_the_rounds_of_the_profile() {
+    let d = tempfile::tempdir().unwrap();
+    // the explore profile has 16 rounds: 17 requests at most, whatever arrives
+    let client = Scripted::new(vec![], slow_replies(d.path(), 40));
+    let (agent, ctx) = (Arc::new(task_tool(&client)), call_ctx(d.path(), "t1"));
+    let subs = ctx.jobs.subs();
+    let run = {
+        let ctx = ctx.clone();
+        tokio::spawn(async move { agent.run(task("explore", "answer"), &ctx).await })
+    };
+    tokio::time::timeout(PATIENCE, feed_mail_until_done(&client, &subs, d.path(), &run)).await.expect("it ends");
+    let out = run.await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(client.sub_requests().len(), 17);
+    assert!(subs.list()[0].state == SubState::Ok);
+}
+
+#[tokio::test]
+async fn mail_that_never_stops_ends_when_the_person_cancels() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(vec![], slow_replies(d.path(), 40));
+    let (agent, ctx) = (Arc::new(task_tool(&client)), call_ctx(d.path(), "t1"));
+    let subs = ctx.jobs.subs();
+    let run = {
+        let ctx = ctx.clone();
+        tokio::spawn(async move { agent.run(task("explore", "answer"), &ctx).await })
+    };
+    let mut seen = 0;
+    while seen < 3 {
+        if client.sub_count() > seen {
+            seen += 1;
+            subs.submit("t1#1", "and another thing").unwrap();
+            release(d.path(), &format!("r{}", seen - 1));
+        } else {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+    // the fourth reply is on its way when the person stops it
+    until_sub(&client, 4).await;
+    subs.submit("t1#1", "and another thing").unwrap();
+    ctx.cancel.cancel();
+    release(d.path(), "r3");
+    let out = tokio::time::timeout(PATIENCE, run).await.expect("it ends").unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert_eq!(client.sub_requests().len(), 4, "no round after the cancel");
+    assert_eq!(subs.list()[0].state, SubState::Killed);
+}
+
+#[tokio::test]
+async fn a_view_can_ask_for_the_conversation_of_a_run() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new(
+        vec![
+            Reply::Events(call("t1", "task", bg("explore", "slow look"))),
+            Reply::Events(text("started it")),
+            Reply::Events(text("noted the report")),
+        ],
+        vec![
+            Reply::Events(says_then_calls(&["ASKED-THOUGHT-5"], "w1", "wait", spends(10, 5))),
+            Reply::Events(text_spending("late report", spends(20, 7))),
+        ],
+    );
+    let mut r = start(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    let id = held_sub_agent(&mut r, &client).await;
+    r.send(AgentCommand::SubTranscript { id: id.clone() });
+    r.send(AgentCommand::SubTranscript { id: "nobody#9".into() });
+    let evs = r.until_all(&[&|e| matches!(e, AgentEvent::SubTranscript { id, .. } if id == "nobody#9")]).await;
+    let answers: Vec<&AgentEvent> = evs.iter().filter(|e| matches!(e, AgentEvent::SubTranscript { .. })).collect();
+    assert_eq!(answers.len(), 2, "one answer for each question: {answers:?}");
+    let AgentEvent::SubTranscript { id: got, transcript: Some(t) } = answers[0] else { panic!("{answers:?}") };
+    assert_eq!(got, &id);
+    assert_eq!(t.dropped, 0);
+    assert!(matches!(&t.items[0], SubItem::Task { text } if text == "slow look"), "{:?}", t.items);
+    assert!(t.items.iter().any(|i| matches!(i, SubItem::Text { text } if text == "ASKED-THOUGHT-5")), "{:?}", t.items);
+    assert!(matches!(answers[1], AgentEvent::SubTranscript { transcript: None, .. }));
+    // it is the registry's own answer: the same as reading it
+    assert!(evs.iter().all(|e| e.is_sub() || !matches!(e, AgentEvent::Notice { .. })));
+    release(d.path(), "go");
+    r.turn().await;
+    // the event is for the interface only: not in the session file
+    r.stop().await;
+    let mut files = Vec::new();
+    let mut stack = vec![PathBuf::from(std::env::var_os("NEXO_DATA_DIR").unwrap())];
+    while let Some(p) = stack.pop() {
+        match std::fs::read_dir(&p) {
+            Ok(rd) => stack.extend(rd.flatten().map(|e| e.path())),
+            Err(_) => files.push(p),
+        }
+    }
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else { continue };
+        assert!(!text.contains("ASKED-THOUGHT-5"), "{}", f.display());
+    }
 }

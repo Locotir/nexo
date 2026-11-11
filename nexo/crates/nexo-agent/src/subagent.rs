@@ -788,9 +788,11 @@ impl Run {
         // the reply hit the output limit, and how many calls it opened without closing
         let (mut cut, mut open) = (false, 0usize);
         loop {
+            // biased: a stop that is already asked for wins over a reply that is ready
             let ev = tokio::select! {
-                ev = stream.next() => ev,
+                biased;
                 _ = ctx.cancel.cancelled() => return (Err(Failure::Stopped), usage),
+                ev = stream.next() => ev,
             };
             match ev {
                 Some(StreamEvent::TextDelta(d)) => {

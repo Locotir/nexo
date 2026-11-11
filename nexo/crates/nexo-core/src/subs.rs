@@ -7,6 +7,7 @@
 //! sub-agent, and the registry stays whole. Locks here are never held across an `.await`.
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -179,6 +180,8 @@ fn now_ms() -> u64 {
 
 struct Inner {
     runs: Mutex<Vec<Arc<Entry>>>,
+    /// Counts the times the registry was cleared; a run of an older count sends nothing.
+    generation: AtomicU64,
     changes: broadcast::Sender<SubChange>,
 }
 
@@ -201,7 +204,7 @@ impl std::fmt::Debug for Subs {
 impl Subs {
     pub fn new() -> Subs {
         let (changes, _) = broadcast::channel(CHANGES);
-        Subs(Arc::new(Inner { runs: Mutex::new(Vec::new()), changes }))
+        Subs(Arc::new(Inner { runs: Mutex::new(Vec::new()), generation: AtomicU64::new(0), changes }))
     }
 
     /// Every change from now on. A receiver that falls behind loses the oldest ones (`Lagged`): the
@@ -239,7 +242,7 @@ impl Subs {
             runs.retain(|e| e.id != id);
             runs.push(entry.clone());
         }
-        let run = SubRun { entry, subs: self.clone() };
+        let run = SubRun { entry, subs: self.clone(), generation: self.0.generation.load(Ordering::SeqCst) };
         {
             let d = run.entry.data.lock().unwrap();
             let _ = self.0.changes.send(SubChange::State(run.entry.info(&d)));
@@ -301,23 +304,29 @@ impl Subs {
 
     /// The session starts over: no run is kept.
     pub fn clear(&self) {
-        self.0.runs.lock().unwrap().clear();
+        let mut runs = self.0.runs.lock().unwrap();
+        self.0.generation.fetch_add(1, Ordering::SeqCst);
+        runs.clear();
     }
 
-    /// Drops the oldest ended runs beyond [`KEEP_RUNS`].
-    fn prune(&self) {
+    /// Drops the ended runs beyond [`KEEP_RUNS`], the one that ended longest ago first. Run `keep` (the one
+    /// that just ended) stays.
+    fn prune(&self, keep: &str) {
         let mut runs = self.0.runs.lock().unwrap();
-        let mut ended = runs.iter().filter(|e| !e.data.lock().unwrap().state.running()).count();
-        let mut gone: HashSet<String> = HashSet::new();
-        for e in runs.iter() {
-            if ended <= KEEP_RUNS {
-                break;
-            }
-            if !e.data.lock().unwrap().state.running() {
-                gone.insert(e.id.clone());
-                ended -= 1;
-            }
+        let mut ended: Vec<(u64, String)> = runs
+            .iter()
+            .filter_map(|e| {
+                let d = e.data.lock().unwrap();
+                (!d.state.running() && e.id != keep).then(|| (d.ended_ms.unwrap_or(0), e.id.clone()))
+            })
+            .collect();
+        // the one just ended counts toward the limit
+        let over = (ended.len() + 1).saturating_sub(KEEP_RUNS);
+        if over == 0 {
+            return;
         }
+        ended.sort_by_key(|(at, _)| *at);
+        let gone: HashSet<String> = ended.into_iter().take(over).map(|(_, id)| id).collect();
         runs.retain(|e| !gone.contains(&e.id));
     }
 }
@@ -326,9 +335,23 @@ impl Subs {
 pub struct SubRun {
     entry: Arc<Entry>,
     subs: Subs,
+    /// The registry's count of clears when this run began.
+    generation: u64,
 }
 
 impl SubRun {
+    /// The registry was not cleared since this run began. After a clear the run still winds down, but it
+    /// tells nobody: its id belongs to a session that is gone.
+    fn live(&self) -> bool {
+        self.subs.0.generation.load(Ordering::SeqCst) == self.generation
+    }
+
+    fn send(&self, c: SubChange) {
+        if self.live() {
+            let _ = self.subs.0.changes.send(c);
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.entry.id
     }
@@ -345,13 +368,13 @@ impl SubRun {
                 d.dropped += 1;
             }
         }
-        let _ = self.subs.0.changes.send(SubChange::Item { id: self.entry.id.clone(), item });
+        self.send(SubChange::Item { id: self.entry.id.clone(), item });
     }
 
     /// Part of the reply being written.
     pub fn delta(&self, text: &str) {
         let _d = self.entry.data.lock().unwrap();
-        let _ = self.subs.0.changes.send(SubChange::Delta { id: self.entry.id.clone(), text: text.to_string() });
+        self.send(SubChange::Delta { id: self.entry.id.clone(), text: text.to_string() });
     }
 
     /// What one model call spent.
@@ -382,13 +405,15 @@ impl SubRun {
         }
         d.state = state;
         d.ended_ms = Some(now_ms());
-        let _ = self.subs.0.changes.send(SubChange::State(e.info(&d)));
+        self.send(SubChange::State(e.info(&d)));
         for _ in d.inbox.drain(..) {
             let why = "that sub-agent ended before it read the message".to_string();
-            let _ = self.subs.0.changes.send(SubChange::NotDelivered { id: e.id.clone(), why });
+            self.send(SubChange::NotDelivered { id: e.id.clone(), why });
         }
         drop(d);
-        self.subs.prune();
+        if self.live() {
+            self.subs.prune(&e.id);
+        }
     }
 }
 
@@ -484,6 +509,22 @@ mod tests {
     }
 
     #[test]
+    fn a_long_run_that_ends_last_is_kept_and_the_oldest_ended_one_goes() {
+        let subs = Subs::new();
+        let long = subs.begin("long", "explore", "t", true);
+        for i in 0..KEEP_RUNS {
+            subs.begin(&format!("s{i}"), "explore", "t", true).end(SubState::Ok);
+        }
+        long.item(SubItem::Text { text: "the whole report".into() });
+        long.end(SubState::Ok);
+        let ids: Vec<String> = subs.list().into_iter().map(|i| i.id).collect();
+        assert_eq!(ids.len(), KEEP_RUNS);
+        assert!(ids.contains(&"long".to_string()), "{ids:?}");
+        assert!(!ids.contains(&"s0".to_string()) && ids.contains(&"s1".to_string()), "{ids:?}");
+        assert_eq!(subs.transcript("long").unwrap().items.len(), 2);
+    }
+
+    #[test]
     fn a_message_goes_to_a_running_run_only_and_a_dead_or_unknown_one_says_so() {
         let subs = Subs::new();
         let mut rx = subs.changes();
@@ -564,5 +605,25 @@ mod tests {
         subs.begin("a", "explore", "t", true).end(SubState::Ok);
         subs.clear();
         assert!(subs.list().is_empty() && subs.transcript("a").is_none());
+    }
+
+    #[test]
+    fn a_run_that_winds_down_after_a_clear_tells_nobody() {
+        let subs = Subs::new();
+        let old = subs.begin("old", "explore", "t", true);
+        subs.clear();
+        let mut rx = subs.changes();
+        old.item(SubItem::Text { text: "late".into() });
+        old.delta("late");
+        old.spent(&Usage::default(), 0.5);
+        old.end(SubState::Failed);
+        drop(old);
+        assert!(kinds(&mut rx).is_empty());
+        assert!(subs.list().is_empty());
+        // a run of the new session is heard
+        let new = subs.begin("new", "explore", "t", true);
+        new.end(SubState::Ok);
+        assert!(!kinds(&mut rx).is_empty());
+        assert_eq!(subs.list().len(), 1);
     }
 }
