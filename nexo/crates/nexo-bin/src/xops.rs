@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::disasm::{describe, formatter, text_at};
 use crate::names;
 use crate::ops::{command, numeric, resolve};
-use crate::page::{cut, shell_word, Output, Row};
+use crate::page::{cut, shell_word, window, Output, Row};
 use crate::refs::{Kind, Ref, MAX_REFS};
 use crate::strings::shorten;
 use crate::{parse_addr, Error, Image, Result};
@@ -24,6 +24,12 @@ pub const MAX_STR_HITS: usize = 2000;
 const MAX_OCCURRENCES: usize = 64;
 /// Longest text of a string in a heading (characters).
 const SHOWN_STRING: usize = 80;
+
+#[cfg(test)]
+thread_local! {
+    /// References copied into a list of their own by an answer of this thread (tests only).
+    pub(crate) static BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// A line of an answer with no JSON of its own.
 fn text_row(t: impl Into<String>) -> Row {
@@ -69,6 +75,12 @@ pub(crate) fn target_addr(img: &Image, t: &str) -> Result<u64> {
     }
     if let Some(f) = img.funcs().iter().find(|f| f.name == t) {
         return Ok(f.start);
+    }
+    // an ELF import is called through its PLT stub: that is the address its call sites target
+    if img.imports.iter().any(|i| i.name == t) {
+        if let Some(f) = img.funcs().iter().find(|f| f.name.strip_suffix("@plt") == Some(t)) {
+            return Ok(f.start);
+        }
     }
     if let Some(slot) = img.imports.iter().find(|i| i.name == t).and_then(|i| i.slot) {
         return Ok(slot);
@@ -126,29 +138,128 @@ fn ref_row(img: &Image, fmt: &mut IntelFormatter, r: &Ref, string: Option<u64>) 
     Row { key: 0, text, json: Some(j) }
 }
 
-enum XItem {
-    Head(String),
-    Title(String),
-    Ref(Ref),
+/// One part of an answer, counted but not yet built: a line of text, or a run of references whose
+/// rows are only built when a page asks for them.
+enum Seg<'a> {
+    Text(String),
     Str { at: usize, refs: usize },
-    Ref2(Ref, u64),
-    Empty(String),
+    Refs { n: usize, kind: Option<Kind>, lists: Vec<&'a [Ref]>, string: Option<u64> },
 }
 
-fn counts_json(list: &[Ref]) -> Value {
+impl Seg<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Seg::Refs { n, .. } => *n,
+            _ => 1,
+        }
+    }
+}
+
+/// Build only the rows of the page: the work is the page, whatever the length of the lists.
+fn lazy_cut(
+    segs: &[Seg<'_>],
+    from: Option<u64>,
+    budget: usize,
+    mut line: impl FnMut(&Seg<'_>) -> Row,
+    mut one: impl FnMut(&Ref, Option<u64>) -> Row,
+) -> (Vec<Row>, usize) {
+    let total: usize = segs.iter().map(Seg::len).sum();
+    let (start, end) = window(from, budget, total);
+    let mut rows: Vec<Row> = Vec::new();
+    let mut pos = 0usize;
+    for seg in segs {
+        if pos >= end {
+            break;
+        }
+        let n = seg.len();
+        let (lo, hi) = (pos.max(start), (pos + n).min(end));
+        if lo < hi {
+            match seg {
+                Seg::Refs { kind, lists, string, .. } => {
+                    let it = lists.iter().flat_map(|l| l.iter()).filter(|r| kind.is_none_or(|k| r.kind == k));
+                    rows.extend(it.skip(lo - pos).take(hi - lo).map(|r| one(r, *string)));
+                }
+                other => rows.push(line(other)),
+            }
+        }
+        pos += n;
+    }
+    for (i, r) in rows.iter_mut().enumerate() {
+        r.key = (start + i) as u64;
+    }
+    (rows, total - end)
+}
+
+fn counts_json(counts: &[usize; 7]) -> Value {
     let mut m = serde_json::Map::new();
     for k in Kind::ALL {
-        m.insert(k.word().into(), json!(list.iter().filter(|r| r.kind == k).count()));
+        m.insert(k.word().into(), json!(counts[k as usize]));
     }
     Value::Object(m)
 }
 
-fn capped_note(img: &Image) -> String {
-    if img.refs().capped {
-        format!("  ; the list was cut at {MAX_REFS} references, some are missing")
+/// The line that says the reference list was cut, and what the cut dropped.
+fn cut_line(img: &Image) -> Option<String> {
+    let r = img.refs();
+    if !r.capped {
+        None
+    } else if r.capped_code {
+        Some(format!(
+            "the list was cut at {MAX_REFS} references: code references come first, so some are missing, \
+             and data pointers were kept only where there was room"
+        ))
     } else {
-        String::new()
+        Some(format!(
+            "the list was cut at {MAX_REFS} references: all code references are kept, some data pointers are missing"
+        ))
     }
+}
+
+/// The line that says how many indirect calls and jumps could not be followed.
+fn indirect_line(img: &Image) -> Option<String> {
+    let r = img.refs();
+    let mut parts: Vec<String> = Vec::new();
+    if r.indirect_calls > 0 {
+        parts.push(format!("{} indirect call{}", r.indirect_calls, if r.indirect_calls == 1 { "" } else { "s" }));
+    }
+    if r.indirect_jumps > 0 {
+        parts.push(format!("{} indirect jump{}", r.indirect_jumps, if r.indirect_jumps == 1 { "" } else { "s" }));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let verb = if parts.len() == 1 && r.indirect_calls + r.indirect_jumps == 1 { "is" } else { "are" };
+    Some(format!("{} {verb} not resolved", parts.join(" and ")))
+}
+
+/// The closing lines of an answer that depends on the reference list.
+fn closing(img: &Image, indirect: bool) -> Vec<Seg<'static>> {
+    let mut v: Vec<Seg<'static>> = Vec::new();
+    v.extend(cut_line(img).map(Seg::Text));
+    if indirect {
+        v.extend(indirect_line(img).map(Seg::Text));
+    }
+    v
+}
+
+/// [`closing`] as plain lines, for the answers that build their items another way.
+fn closing_lines(img: &Image, indirect: bool) -> Vec<String> {
+    closing(img, indirect)
+        .into_iter()
+        .filter_map(|s| match s {
+            Seg::Text(t) => Some(t),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The GOT slot an ELF PLT stub jumps through, when `t` is the start of such a stub.
+fn stub_slot(img: &Image, t: u64) -> Option<u64> {
+    let funcs = img.funcs();
+    let i = funcs.partition_point(|f| f.start < t);
+    let f = funcs.get(i).filter(|f| f.start == t)?;
+    let import = f.name.strip_suffix("@plt")?;
+    img.imports.iter().find(|x| x.name == import).and_then(|x| x.slot)
 }
 
 /// Everything that calls, jumps to, reads, writes, takes the address of, or points at `target`.
@@ -161,36 +272,43 @@ pub fn xref_window(img: &Image, target: &str, from: Option<u64>, budget: usize) 
     let _ = img.refs();
     let t = target_addr(img, target)?;
     let refs = img.refs();
-    let list = refs.at(t);
-    let word = if list.len() == 1 { "reference" } else { "references" };
-    let head = format!(
-        "xref {t:#x}  {}  ; {} {word}{}{}",
-        target_desc(img, t),
-        list.len(),
-        capped_note(img),
-        note_suffix(img, t)
-    );
-    let mut items = vec![XItem::Head(head)];
+    // a PLT stub also answers for the slot it jumps through: that reference is one more line
+    let lists: Vec<&[Ref]> = std::iter::once(refs.at(t)).chain(stub_slot(img, t).map(|s| refs.at(s))).collect();
+    let mut counts = [0usize; 7];
+    for r in lists.iter().flat_map(|l| l.iter()) {
+        counts[r.kind as usize] += 1;
+    }
+    let total: usize = counts.iter().sum();
+    let word = if total == 1 { "reference" } else { "references" };
+    let head = format!("xref {t:#x}  {}  ; {total} {word}{}", target_desc(img, t), note_suffix(img, t));
+    let mut segs = vec![Seg::Text(head)];
     for k in Kind::ALL {
-        let n = list.iter().filter(|r| r.kind == k).count();
+        let n = counts[k as usize];
         if n > 0 {
-            items.push(XItem::Title(format!("{} ({n})", k.title())));
-            items.extend(list.iter().filter(|r| r.kind == k).map(|r| XItem::Ref(*r)));
+            segs.push(Seg::Text(format!("{} ({n})", k.title())));
+            segs.push(Seg::Refs { n, kind: Some(k), lists: lists.clone(), string: None });
         }
     }
-    if list.is_empty() {
-        items.push(XItem::Empty(format!("no reference to {t:#x} was found")));
+    if total == 0 {
+        segs.push(Seg::Text(format!("no reference to {t:#x} was found")));
     }
+    segs.extend(closing(img, true));
     let mut fmt = formatter();
-    let (rows, tail) = cut(&items, from, budget, |it| match it {
-        XItem::Head(s) | XItem::Title(s) | XItem::Empty(s) => text_row(s.clone()),
-        XItem::Ref(r) => ref_row(img, &mut fmt, r, None),
-        _ => text_row(""),
-    });
+    let (rows, tail) = lazy_cut(
+        &segs,
+        from,
+        budget,
+        |s| match s {
+            Seg::Text(s) => text_row(s.clone()),
+            _ => text_row(""),
+        },
+        |r, string| ref_row(img, &mut fmt, r, string),
+    );
     let holder = img.func_at(t);
     let meta = json!({
-        "target": t, "description": target_desc(img, t), "references": list.len(), "counts": counts_json(list),
-        "capped": refs.capped, "function": holder.map(|f| img.func_name(f)), "note": img.note_at(t),
+        "target": t, "description": target_desc(img, t), "references": total, "counts": counts_json(&counts),
+        "capped": refs.capped, "indirect_calls": refs.indirect_calls, "indirect_jumps": refs.indirect_jumps,
+        "function": holder.map(|f| img.func_name(f)), "note": img.note_at(t),
     });
     Ok(Output { op: "xref", meta, rows, tail, command: command(img, "xref", &shell_word(target.trim())) })
 }
@@ -212,8 +330,9 @@ pub fn xref_str_window(img: &Image, text: &str, insensitive: bool, from: Option<
     let mut hits: Vec<usize> = Vec::new();
     let mut capped = false;
     let mut total_refs = 0usize;
-    // the references of each string, narrowed to the literal that holds the match
-    let mut per: Vec<Vec<Ref>> = Vec::new();
+    // the references of each string, narrowed to the literal that holds the match: slices of the one
+    // list, never copies
+    let mut per: Vec<Vec<&[Ref]>> = Vec::new();
     for (i, s) in all.iter().enumerate() {
         let hay = if insensitive { s.text.to_ascii_lowercase() } else { s.text.clone() };
         let found: Vec<usize> = hay.match_indices(&needle).map(|(p, _)| p).take(MAX_OCCURRENCES).collect();
@@ -225,7 +344,7 @@ pub fn xref_str_window(img: &Image, text: &str, insensitive: bool, from: Option<
             break;
         }
         let inside = refs.within(s.addr, s.byte_len);
-        let mut mine: Vec<Ref> = Vec::new();
+        let mut spans: Vec<(usize, usize)> = Vec::new();
         for p in found {
             let (off, len) = if s.wide {
                 (hay[..p].chars().count() as u64 * 2, needle.chars().count() as u64 * 2)
@@ -238,13 +357,22 @@ pub fn xref_str_window(img: &Image, text: &str, insensitive: bool, from: Option<
             let lo = if before > 0 { inside[before - 1].target } else { a };
             let x = inside.partition_point(|r| r.target < lo);
             let y = inside.partition_point(|r| r.target < b);
-            mine.extend_from_slice(&inside[x..y.max(x)]);
+            if y > x {
+                spans.push((x, y));
+            }
         }
-        mine.sort_unstable_by_key(|r| (r.src, r.target, r.kind));
-        mine.dedup();
-        total_refs += mine.len();
+        // overlapping spans join, so each reference is counted once
+        spans.sort_unstable();
+        let mut joined: Vec<(usize, usize)> = Vec::new();
+        for (x, y) in spans {
+            match joined.last_mut() {
+                Some(last) if x <= last.1 => last.1 = last.1.max(y),
+                _ => joined.push((x, y)),
+            }
+        }
+        total_refs += joined.iter().map(|&(x, y)| y - x).sum::<usize>();
         hits.push(i);
-        per.push(mine);
+        per.push(joined.iter().map(|&(x, y)| &inside[x..y]).collect());
     }
     let mut head = format!("xref --str {}  ; {} strings, {total_refs} references", shorten(text, 60), hits.len());
     if insensitive {
@@ -253,36 +381,41 @@ pub fn xref_str_window(img: &Image, text: &str, insensitive: bool, from: Option<
     if capped {
         head.push_str(&format!("  ; stopped at {MAX_STR_HITS} strings, add text to narrow it"));
     }
-    head.push_str(&capped_note(img));
-    let mut items = vec![XItem::Head(head)];
+    let mut segs = vec![Seg::Text(head)];
     if hits.is_empty() {
-        items.push(XItem::Empty(format!("no string contains {:?} (of {} found)", shorten(text, 60), all.len())));
+        segs.push(Seg::Text(format!("no string contains {:?} (of {} found)", shorten(text, 60), all.len())));
     }
-    for (at, mine) in hits.iter().zip(&per) {
-        items.push(XItem::Str { at: *at, refs: mine.len() });
-        let s_addr = all[*at].addr;
-        items.extend(mine.iter().map(|r| XItem::Ref2(*r, s_addr)));
+    for (at, lists) in hits.iter().zip(per) {
+        let n: usize = lists.iter().map(|l| l.len()).sum();
+        segs.push(Seg::Str { at: *at, refs: n });
+        segs.push(Seg::Refs { n, kind: None, lists, string: Some(all[*at].addr) });
     }
+    segs.extend(closing(img, true));
     let mut fmt = formatter();
-    let (rows, tail) = cut(&items, from, budget, |it| match it {
-        XItem::Head(s) | XItem::Title(s) | XItem::Empty(s) => text_row(s.clone()),
-        XItem::Str { at, refs } => {
-            let s = &all[*at];
-            let w = if s.wide { "L" } else { "" };
-            let n = if *refs == 1 { "reference" } else { "references" };
-            Row {
-                key: 0,
-                text: format!("string {:#010x} {w}\"{}\"  ({refs} {n})", s.addr, shorten(&s.text, SHOWN_STRING)),
-                json: Some(
-                    json!({"item": "string", "addr": s.addr, "wide": s.wide, "text": s.text, "references": refs}),
-                ),
+    let (rows, tail) = lazy_cut(
+        &segs,
+        from,
+        budget,
+        |it| match it {
+            Seg::Text(s) => text_row(s.clone()),
+            Seg::Str { at, refs } => {
+                let s = &all[*at];
+                let w = if s.wide { "L" } else { "" };
+                let n = if *refs == 1 { "reference" } else { "references" };
+                Row {
+                    key: 0,
+                    text: format!("string {:#010x} {w}\"{}\"  ({refs} {n})", s.addr, shorten(&s.text, SHOWN_STRING)),
+                    json: Some(
+                        json!({"item": "string", "addr": s.addr, "wide": s.wide, "text": s.text, "references": refs}),
+                    ),
+                }
             }
-        }
-        XItem::Ref2(r, s) => ref_row(img, &mut fmt, r, Some(*s)),
-        XItem::Ref(r) => ref_row(img, &mut fmt, r, None),
-    });
+            Seg::Refs { .. } => text_row(""),
+        },
+        |r, string| ref_row(img, &mut fmt, r, string),
+    );
     let meta = json!({"text": text, "ignore_case": insensitive, "strings": hits.len(), "references": total_refs,
-        "capped": capped || refs.capped});
+        "capped": capped || refs.capped, "indirect_calls": refs.indirect_calls, "indirect_jumps": refs.indirect_jumps});
     let rest = format!("--str {}{}", shell_word(text), if insensitive { " --i" } else { "" });
     Ok(Output { op: "xref", meta, rows, tail, command: command(img, "xref", &rest) })
 }
@@ -367,6 +500,7 @@ pub fn func_list_window(
         items.push(L::Empty(format!("no function matches (of {} found)", funcs.len())));
     }
     items.extend(list.iter().map(|&(i, c, e)| L::Func(i, c, e)));
+    items.extend(closing_lines(img, false).into_iter().map(L::Empty));
     let (rows, tail) = cut(&items, from, budget, |it| match it {
         L::Head(s) | L::Empty(s) => text_row(s.clone()),
         L::Func(i, callers, callees) => {
@@ -435,16 +569,16 @@ pub fn calls_window(img: &Image, target: &str, from: Option<u64>, budget: usize)
         Caller(u64, usize),
         Callee(u64, usize),
         None,
+        Note(String),
     }
     let mut items = vec![L::Head(format!(
-        "calls {} {:#x}..{:#x}  ; {} callers ({} call sites), {} callees{}{}",
+        "calls {} {:#x}..{:#x}  ; {} callers ({} call sites), {} callees{}",
         img.func_name(f),
         f.start,
         f.end,
         callers.len(),
         sites(&callers),
         callees.len(),
-        capped_note(img),
         note_suffix(img, f.start)
     ))];
     items.push(L::Title(format!("callers ({})", callers.len())));
@@ -457,8 +591,9 @@ pub fn calls_window(img: &Image, target: &str, from: Option<u64>, budget: usize)
     if callees.is_empty() {
         items.push(L::None);
     }
+    items.extend(closing_lines(img, true).into_iter().map(L::Note));
     let (rows, tail) = cut(&items, from, budget, |it| match it {
-        L::Head(s) | L::Title(s) => text_row(s.clone()),
+        L::Head(s) | L::Title(s) | L::Note(s) => text_row(s.clone()),
         L::None => text_row("  none"),
         L::Caller(a, n) => {
             let name = img.func_at(*a).map_or_else(|| format!("{a:#x}"), |h| img.func_name(h).to_string());

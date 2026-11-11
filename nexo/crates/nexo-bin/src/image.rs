@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use object::read::pe::{ImageNtHeaders, ImageOptionalHeader, PeFile64};
 use object::{
     pe, Architecture, BinaryFormat, Endianness, FileKind, LittleEndian as LE, Object, ObjectSection, ObjectSegment,
-    ObjectSymbol, SectionFlags, SegmentFlags, SymbolKind,
+    ObjectSymbol, ObjectSymbolTable, SectionFlags, SegmentFlags, SymbolKind,
 };
 use sha2::{Digest, Sha256};
 
@@ -290,6 +290,13 @@ impl Image {
         })
     }
 
+    /// Put a list made by hand in place of the real one (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_refs_for_test(&self, r: Refs) {
+        let _ = self.funcs();
+        let _ = self.refs.set(r);
+    }
+
     /// The name of a function to show: the one the person gave, else the one found.
     pub fn func_name<'a>(&'a self, f: &'a Func) -> &'a str {
         self.user.names.get(&f.start).map_or(f.name.as_str(), String::as_str)
@@ -510,6 +517,18 @@ fn common<'d, O: Object<'d>>(o: &O, img: &mut Image) {
     img.entry = o.entry();
 }
 
+/// The pointer the loader stores for a relocation, when it is one into the image: the base plus the
+/// addend (`RELATIVE`), the resolver an `IRELATIVE` slot starts from, or a defined symbol plus the addend
+/// (`R_X86_64_64`).
+pub(crate) fn reloc_pointer(r_type: object::elf::RelocationType, defined: Option<u64>, addend: i64) -> Option<u64> {
+    use object::elf::{R_X86_64_64, R_X86_64_IRELATIVE, R_X86_64_RELATIVE};
+    match r_type {
+        R_X86_64_RELATIVE | R_X86_64_IRELATIVE => Some(addend as u64),
+        R_X86_64_64 => defined.map(|s| s.wrapping_add(addend as u64)),
+        _ => None,
+    }
+}
+
 fn load_elf(data: &[u8]) -> Result<Image> {
     let elf = object::read::elf::ElfFile64::<Endianness>::parse(data)
         .map_err(|e| Error::NotRead(format!("not a readable ELF file: {e}")))?;
@@ -530,15 +549,22 @@ fn load_elf(data: &[u8]) -> Result<Image> {
     let mut slot_of = HashMap::new();
     if let Some(relocs) = elf.dynamic_relocations() {
         for (off, r) in relocs.take(MAX_RELOCS) {
+            let mut defined = None;
             if let object::RelocationTarget::Symbol(idx) = r.target() {
                 if slot_of.len() < MAX_IMPORTS {
                     slot_of.entry(idx).or_insert(off);
                 }
-            } else if r.flags() == (object::RelocationFlags::Elf { r_type: object::elf::R_X86_64_RELATIVE })
-                && img.rel_ptrs.len() < MAX_RELOCS
-            {
-                // the loader stores base + addend at the slot: a pointer inside the image
-                img.rel_ptrs.push((off, r.addend() as u64));
+                defined = elf
+                    .dynamic_symbol_table()
+                    .and_then(|t| t.symbol_by_index(idx).ok())
+                    .filter(|s| !s.is_undefined())
+                    .map(|s| s.address());
+            }
+            let object::RelocationFlags::Elf { r_type } = r.flags() else { continue };
+            if let Some(v) = reloc_pointer(r_type, defined, r.addend()) {
+                if img.rel_ptrs.len() < MAX_RELOCS {
+                    img.rel_ptrs.push((off, v));
+                }
             }
         }
     }

@@ -17,6 +17,23 @@ pub const MAX_REFS: usize = 8_000_000;
 /// Smallest value taken for an address (an immediate or a data word): below it, numbers are noise.
 const MIN_ADDR: u64 = 0x1000;
 
+#[cfg(test)]
+thread_local! {
+    /// A smaller cap for tests, so a cut can be seen on a small file.
+    pub(crate) static TEST_MAX: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_REFS) };
+}
+
+fn max_refs() -> usize {
+    #[cfg(test)]
+    {
+        TEST_MAX.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    {
+        MAX_REFS
+    }
+}
+
 /// What a reference does, in the order an answer lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
@@ -75,6 +92,10 @@ pub struct Refs {
     by_src: Vec<u32>,
     /// True when the list hit [`MAX_REFS`] and some references are missing.
     pub capped: bool,
+    /// True when the cut dropped code references too (data pointers are added last, so they go first).
+    pub capped_code: bool,
+    /// Indirect calls (`call rax`, `call [rax+0x18]`): the targets are not known.
+    pub indirect_calls: u64,
     /// Indirect jumps that are not through an import slot (`jmp rax`, `jmp [rax*8+table]`): the
     /// jump tables this version does not recover.
     pub indirect_jumps: u64,
@@ -122,21 +143,36 @@ impl Refs {
 /// Collects references while the code is decoded.
 pub(crate) struct Collector {
     list: Vec<Ref>,
+    max: usize,
     capped: bool,
+    capped_code: bool,
+    indirect_calls: u64,
     indirect_jumps: u64,
     info: InstructionInfoFactory,
 }
 
 impl Collector {
     pub fn new() -> Collector {
-        Collector { list: Vec::new(), capped: false, indirect_jumps: 0, info: InstructionInfoFactory::new() }
+        Collector {
+            list: Vec::new(),
+            max: max_refs(),
+            capped: false,
+            capped_code: false,
+            indirect_calls: 0,
+            indirect_jumps: 0,
+            info: InstructionInfoFactory::new(),
+        }
     }
 
-    fn push(&mut self, target: u64, src: u64, kind: Kind) {
-        if self.list.len() >= MAX_REFS {
+    /// False when the list is full and the reference was dropped.
+    fn push(&mut self, target: u64, src: u64, kind: Kind) -> bool {
+        if self.list.len() >= self.max {
             self.capped = true;
+            self.capped_code |= kind != Kind::Ptr;
+            false
         } else {
             self.list.push(Ref { target, src, kind });
+            true
         }
     }
 
@@ -169,6 +205,8 @@ impl Collector {
                     }
                 } else if kind == Kind::Jump {
                     self.indirect_jumps += 1;
+                } else {
+                    self.indirect_calls += 1;
                 }
                 return;
             }
@@ -234,6 +272,8 @@ fn data_pointers(img: &Image, c: &mut Collector) {
         let first = (8 - (sec.addr % 8) as usize) % 8;
         let mut i = first;
         while i + 8 <= data.len() {
+            #[cfg(test)]
+            SCANNED.with(|c| c.set(c.get() + 1));
             let v = u64::from_le_bytes([
                 data[i],
                 data[i + 1],
@@ -246,15 +286,17 @@ fn data_pointers(img: &Image, c: &mut Collector) {
             ]);
             if v >= MIN_ADDR && img.section_at(v).is_some() {
                 if let Some(src) = sec.addr.checked_add(i as u64) {
-                    c.push(v, src, Kind::Ptr);
+                    if !c.push(v, src, Kind::Ptr) {
+                        return;
+                    }
                 }
             }
             i += 8;
         }
     }
     for &(slot, value) in &img.rel_ptrs {
-        if value >= MIN_ADDR && img.section_at(value).is_some() {
-            c.push(value, slot, Kind::Ptr);
+        if value >= MIN_ADDR && img.section_at(value).is_some() && !c.push(value, slot, Kind::Ptr) {
+            return;
         }
     }
 }
@@ -266,9 +308,9 @@ fn holder(funcs: &[Func], addr: u64) -> Option<u64> {
 
 /// Finish: data pointers, drop jumps that stay in their function, sort, build the source view.
 pub(crate) fn build(img: &Image, mut c: Collector, t0: Instant) -> Refs {
-    data_pointers(img, &mut c);
     let funcs = img.funcs();
-    let mut list = c.list;
+    // code references first: data pointers only take the room they leave
+    let mut list = std::mem::take(&mut c.list);
     list.retain(|r| {
         if r.kind != Kind::Jump {
             return true;
@@ -276,11 +318,9 @@ pub(crate) fn build(img: &Image, mut c: Collector, t0: Instant) -> Refs {
         let s = holder(funcs, r.src);
         s.is_none() || s != holder(funcs, r.target)
     });
-    let mut capped = c.capped;
-    if list.len() > MAX_REFS {
-        list.truncate(MAX_REFS);
-        capped = true;
-    }
+    c.list = list;
+    data_pointers(img, &mut c);
+    let (mut list, capped) = (c.list, c.capped);
     list.sort_unstable_by_key(|r| (r.target, r.src, r.kind));
     list.dedup();
     // the cap keeps the index inside u32
@@ -289,5 +329,42 @@ pub(crate) fn build(img: &Image, mut c: Collector, t0: Instant) -> Refs {
         let r = &list[i as usize];
         (r.src, r.target, r.kind)
     });
-    Refs { by_target: list, by_src, capped, indirect_jumps: c.indirect_jumps, build: t0.elapsed() }
+    Refs {
+        by_target: list,
+        by_src,
+        capped,
+        capped_code: c.capped_code,
+        indirect_calls: c.indirect_calls,
+        indirect_jumps: c.indirect_jumps,
+        build: t0.elapsed(),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Words of the data sections looked at by the last pointer scans of this thread.
+    pub(crate) static SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Refs {
+    /// A list made by hand, for tests of answers over long lists.
+    pub(crate) fn for_test(mut list: Vec<Ref>) -> Refs {
+        list.sort_unstable_by_key(|r| (r.target, r.src, r.kind));
+        list.dedup();
+        let mut by_src: Vec<u32> = (0..list.len() as u32).collect();
+        by_src.sort_unstable_by_key(|&i| {
+            let r = &list[i as usize];
+            (r.src, r.target, r.kind)
+        });
+        Refs {
+            by_target: list,
+            by_src,
+            capped: false,
+            capped_code: false,
+            indirect_calls: 0,
+            indirect_jumps: 0,
+            build: Duration::ZERO,
+        }
+    }
 }

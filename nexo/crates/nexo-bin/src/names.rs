@@ -181,6 +181,11 @@ fn check_addr(img: &Image, addr: u64) -> Result<()> {
 /// Give `addr` a name (or replace it). Returns the previous name.
 pub fn set_name(img: &Image, data_dir: &Path, addr: u64, name: &str) -> Result<Option<String>> {
     check_name_syntax(name).map_err(Error::Bad)?;
+    if crate::ops::numeric(name) {
+        return Err(Error::Bad(format!(
+            "{name:?} would be read as an address, not a name; use a name with a letter in front, like n_{name}"
+        )));
+    }
     check_clash(img, name).map_err(Error::Bad)?;
     check_addr(img, addr)?;
     edit(data_dir, &img.sha256, |n| {
