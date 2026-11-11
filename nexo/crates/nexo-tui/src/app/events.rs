@@ -916,7 +916,7 @@ impl App {
                     let cost_usd = (self.cost - self.turn_cost_start).max(0.0);
                     let tally = std::mem::take(&mut self.turn_tally);
                     let plan = self.on_plan();
-                    self.push(Block::Usage { usage, cost_usd, elapsed_ms, tally, plan });
+                    self.push(Block::Usage { usage, cost_usd, elapsed_ms, tally, plan, folded: true });
                 }
                 match reason {
                     TurnEnd::Done => {}

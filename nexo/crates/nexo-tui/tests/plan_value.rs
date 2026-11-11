@@ -54,7 +54,7 @@ fn screen(a: &mut App) -> String {
 fn turn(a: &mut App) {
     let usage = Usage { input: 1800, output: 412, ..Default::default() };
     let plan = a.on_plan();
-    a.push(Block::Usage { usage, cost_usd: 0.0042, elapsed_ms: 9000, tally: Default::default(), plan });
+    a.push(Block::Usage { usage, cost_usd: 0.0042, elapsed_ms: 9000, tally: Default::default(), plan, folded: true });
 }
 
 #[test]

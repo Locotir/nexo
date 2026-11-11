@@ -99,13 +99,13 @@ impl DiffView {
     }
 
     /// Starts the collection on a thread; the view shows "Reading changes" until it answers.
-    pub fn spawn(cwd: PathBuf, session: Vec<FileDiff>) -> DiffView {
+    pub fn spawn(cwd: PathBuf, session: Vec<FileDiff>, detail: nexo_core::config::Detail) -> DiffView {
         let (tx, rx) = channel();
         let mut v = DiffView::empty();
         v.loading = true;
         v.rx = Some(rx);
         std::thread::spawn(move || {
-            let _ = tx.send(collect::collect(&cwd, session));
+            let _ = tx.send(collect::collect_for(&cwd, session, detail));
         });
         v
     }
@@ -341,7 +341,7 @@ impl App {
                 _ => None,
             })
             .collect();
-        self.diffview = Some(DiffView::spawn(self.cwd.clone(), collect::session_files(&edits)));
+        self.diffview = Some(DiffView::spawn(self.cwd.clone(), collect::session_files(&edits), self.opts.detail));
         self.dirty = true;
     }
 

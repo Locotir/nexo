@@ -79,6 +79,17 @@ impl App {
             Command::Goal(GoalArg::Pause) => self.send(AgentCommand::PauseGoal),
             Command::Goal(GoalArg::Resume) => self.send(AgentCommand::ResumeGoal),
             Command::Goal(GoalArg::Show) => match &self.goal {
+                // quiet: one short line, no lesson in keys; the chip and its window have the goal
+                Some(g) if self.quiet() => {
+                    let text = match &g.state {
+                        GoalState::Active => "goal set",
+                        GoalState::Waiting => "goal set · waiting for your answer",
+                        GoalState::Paused(_) => "goal paused",
+                        GoalState::Done => "goal met",
+                    };
+                    self.notice(Level::Info, text)
+                }
+                None if self.quiet() => self.notice(Level::Info, "goal off"),
                 Some(g) => {
                     let t = &g.text;
                     let text = match &g.state {

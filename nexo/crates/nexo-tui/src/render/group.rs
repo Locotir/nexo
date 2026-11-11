@@ -18,6 +18,8 @@ use crate::theme::Theme;
 /// One phrase of the line: all the calls that do the same thing.
 struct Row {
     what: What,
+    /// The kind word the turn's summary counts it under (`read`, `edit`, `run`...).
+    kind: &'static str,
     /// What an `Other` call is named by (the server of an MCP tool, else the tool).
     name: String,
     n: usize,
@@ -56,12 +58,22 @@ fn rows(members: &[Block]) -> Vec<Row> {
     let mut out: Vec<Row> = Vec::new();
     for b in members {
         let Block::Tool { id, name, status, output, .. } = b else { continue };
-        let what = classify(name).what;
+        let class = classify(name);
+        let what = class.what;
         let label = if what == What::Other { call_name(name) } else { String::new() };
         let at = match out.iter().position(|r| r.what == what && r.name == label) {
             Some(i) => i,
             None => {
-                out.push(Row { what, name: label, n: 0, live: false, added: 0, removed: 0, diffs: false });
+                out.push(Row {
+                    what,
+                    kind: class.kind,
+                    name: label,
+                    n: 0,
+                    live: false,
+                    added: 0,
+                    removed: 0,
+                    diffs: false,
+                });
                 out.len() - 1
             }
         };
@@ -127,6 +139,35 @@ pub fn sentence(members: &[Block]) -> String {
     s
 }
 
+/// The quiet sentence: counts only, `todo, 1 read, 1 edit +1 -1, 1 run`. Calls of one kind are one
+/// count (a file and a page are both a read); a tool with no kind of its own is named, not counted.
+pub fn sentence_quiet(members: &[Block]) -> String {
+    // (is a named tool, the kind word or the name, calls, lines added, lines removed, has a diff)
+    let mut parts: Vec<(bool, String, usize, usize, usize, bool)> = Vec::new();
+    for r in rows(members) {
+        let named = r.what == What::Other;
+        let word = if named { r.name.clone() } else { r.kind.to_string() };
+        match parts.iter_mut().find(|p| p.0 == named && p.1 == word) {
+            Some(p) => {
+                p.2 += r.n;
+                p.3 += r.added;
+                p.4 += r.removed;
+                p.5 |= r.diffs;
+            }
+            None => parts.push((named, word, r.n, r.added, r.removed, r.diffs)),
+        }
+    }
+    let mut out = Vec::new();
+    for (named, word, n, added, removed, diffs) in parts {
+        let mut s = if named { word } else { format!("{n} {word}") };
+        if diffs {
+            s.push_str(&format!(" +{added} -{removed}"));
+        }
+        out.push(s);
+    }
+    out.join(", ")
+}
+
 /// The time the calls took, as the span of the wall clock they cover (parallel calls are not added
 /// up): from the first start to now while one runs, to the last end when all are done. None when
 /// no call carries a time (a replayed session).
@@ -158,6 +199,19 @@ pub fn elapsed_ms(members: &[Block]) -> Option<u64> {
 
 /// The head line of a group of `members`, `w` cells wide.
 pub fn header(members: &[Block], folded: bool, spinner: usize, w: usize, theme: &Theme) -> Line<'static> {
+    header_for(members, folded, spinner, w, theme, nexo_core::config::Detail::Full)
+}
+
+/// The same line; quiet says the calls as counts (`1 read, 1 run`), not as a sentence.
+pub fn header_for(
+    members: &[Block],
+    folded: bool,
+    spinner: usize,
+    w: usize,
+    theme: &Theme,
+    detail: nexo_core::config::Detail,
+) -> Line<'static> {
+    let quiet = detail == nexo_core::config::Detail::Quiet;
     let (mut failed, mut denied, mut live) = (0usize, 0usize, false);
     for b in members {
         if let Block::Tool { status, .. } = b {
@@ -178,7 +232,7 @@ pub fn header(members: &[Block], folded: bool, spinner: usize, w: usize, theme: 
     } else {
         ("✓", theme.style(theme.success))
     };
-    let text = sentence(members);
+    let text = if quiet { sentence_quiet(members) } else { sentence(members) };
     let chevron = if folded { " ▸" } else { " ▾" };
     let long = |f: usize, d: usize| {
         (
@@ -192,7 +246,8 @@ pub fn header(members: &[Block], folded: bool, spinner: usize, w: usize, theme: 
         fails = if failed > 0 { format!(" ✗{failed}") } else { String::new() };
         denies = if denied > 0 { format!(" ⊘{denied}") } else { String::new() };
     }
-    let stamp = elapsed_ms(members).map(|ms| format!("  {}", fmt_ms(ms))).unwrap_or_default();
+    let gap = if quiet { " · " } else { "  " };
+    let stamp = elapsed_ms(members).map(|ms| format!("{gap}{}", fmt_ms(ms))).unwrap_or_default();
     let fixed = |stamp: &str| 2 + width(&fails) + width(&denies) + width(stamp) + width(chevron);
     // the failures and the chevron are the last to go; the time goes first when the line is tight
     let stamp = if w.saturating_sub(fixed(&stamp)) < width(&text).min(24) { String::new() } else { stamp };

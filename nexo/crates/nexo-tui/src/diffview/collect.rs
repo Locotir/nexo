@@ -479,12 +479,23 @@ fn diff_text(root: &Path, cached: bool) -> Result<String, String> {
 /// Reads staged, unstaged and untracked changes of the repository around `cwd`; outside one,
 /// `session` (this session's edits) with a note. Meant for a thread of its own.
 pub fn collect(cwd: &Path, session: Vec<FileDiff>) -> Collected {
+    collect_for(cwd, session, nexo_core::config::Detail::Full)
+}
+
+/// The same; outside a repository quiet says it in fewer words.
+pub fn collect_for(cwd: &Path, session: Vec<FileDiff>, detail: nexo_core::config::Detail) -> Collected {
     let top = match git(cwd, &["rev-parse", "--show-toplevel"]) {
         Ok(t) => PathBuf::from(String::from_utf8_lossy(&t).trim()),
         Err(_) => {
             return Collected {
                 files: session,
-                note: Some("not a git repo: showing this session's edits".to_string()),
+                note: Some(
+                    match detail {
+                        nexo_core::config::Detail::Quiet => "no git: session edits",
+                        nexo_core::config::Detail::Full => "not a git repo: showing this session's edits",
+                    }
+                    .to_string(),
+                ),
                 error: None,
                 root: cwd.to_path_buf(),
             };

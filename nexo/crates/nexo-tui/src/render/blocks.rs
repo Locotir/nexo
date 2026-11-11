@@ -135,6 +135,8 @@ pub enum Block {
         tally: super::summary::TurnTally,
         /// The provider is a subscription: the cost is API value, included in the plan.
         plan: bool,
+        /// `[ui] detail = "quiet"`: only the time and the cost show; open, the whole line does.
+        folded: bool,
     },
     Shell {
         command: String,
@@ -202,6 +204,7 @@ impl Block {
             | Block::Reasoning { folded, .. }
             | Block::Group { folded, .. }
             | Block::Added { folded, .. }
+            | Block::Usage { folded, .. }
             | Block::Problem { folded, .. } => {
                 *folded = !*folded;
                 true
@@ -338,16 +341,17 @@ impl Block {
                 let style = theme.dim();
                 let head_style =
                     if *streaming && o.fx { theme.style(crate::fx_stream::think_active(theme)) } else { style };
+                // quiet: the line count is left out, the time stays
+                let lines_said = match o.detail {
+                    nexo_core::config::Detail::Quiet => String::new(),
+                    nexo_core::config::Detail::Full => format!(" · {}", nexo_core::count(n, "line")),
+                };
                 let head_text = if *streaming {
-                    format!(
-                        "{} thinking · {}{elapsed}",
-                        SPINNER[o.spinner % SPINNER.len()],
-                        nexo_core::count(n, "line")
-                    )
+                    format!("{} thinking{lines_said}{elapsed}", SPINNER[o.spinner % SPINNER.len()])
                 } else if *folded {
-                    format!("▸ thinking · {}{elapsed}", nexo_core::count(n, "line"))
+                    format!("▸ thinking{lines_said}{elapsed}")
                 } else {
-                    format!("▾ thinking · {}{elapsed}", nexo_core::count(n, "line"))
+                    format!("▾ thinking{lines_said}{elapsed}")
                 };
                 let mut lines = vec![Line::from(Span::styled(head_text, head_style))];
                 if !*folded || *streaming {
@@ -535,6 +539,14 @@ impl Block {
             // drawn by the app, which has the blocks it summarises
             Block::Group { .. } => Vec::new(),
             Block::Notice { level, text } => {
+                // quiet: the curator's note on the trimmed context is left out (the gauge shows the load);
+                // only this info note, never a warning or an error
+                if o.detail == nexo_core::config::Detail::Quiet
+                    && matches!(level, Level::Info)
+                    && text.starts_with(CURATOR_PREFIX)
+                {
+                    return (Vec::new(), meta);
+                }
                 let (icon, style) = match level {
                     Level::Info => ("◇ ", theme.style(theme.info)),
                     Level::Warn => ("▲ ", theme.style(theme.warn)),
@@ -572,8 +584,13 @@ impl Block {
                 lines
             }
             Block::Update { behind } => update_card(*behind, theme, w),
-            Block::Usage { usage, cost_usd, elapsed_ms, tally, plan } => {
-                let line = super::summary::summary_line_for(theme, usage, *cost_usd, *elapsed_ms, tally, w, *plan);
+            Block::Usage { usage, cost_usd, elapsed_ms, tally, plan, folded } => {
+                // quiet: time and cost; the whole line opens with the block's fold
+                let line = if *folded && o.detail == nexo_core::config::Detail::Quiet {
+                    super::summary::short_line(theme, *cost_usd, *elapsed_ms, *plan)
+                } else {
+                    super::summary::summary_line_for(theme, usage, *cost_usd, *elapsed_ms, tally, w, *plan)
+                };
                 let text = super::summary::plain(&line);
                 if width(&text) <= w {
                     vec![line]
@@ -1314,8 +1331,11 @@ fn update_card(behind: u32, theme: &Theme, w: usize) -> Vec<Line<'static>> {
     ]
 }
 
+/// How the agent starts its note that the curator trimmed the context.
+const CURATOR_PREFIX: &str = "the curator kept the view at ";
+
 fn user_notice(text: &str) -> std::borrow::Cow<'_, str> {
-    match text.strip_prefix("the curator kept the view at ") {
+    match text.strip_prefix(CURATOR_PREFIX) {
         Some(rest) => format!("context trimmed to {rest}").into(),
         None => text.into(),
     }
@@ -1410,7 +1430,14 @@ mod tests {
     #[test]
     fn the_usage_line_never_cuts_a_figure_in_a_narrow_pane() {
         let usage = nexo_core::stream::Usage { input: 1800, output: 412, cache_read: 12300, ..Default::default() };
-        let b = Block::Usage { usage, cost_usd: 0.0042, elapsed_ms: 14300, tally: Default::default(), plan: false };
+        let b = Block::Usage {
+            usage,
+            cost_usd: 0.0042,
+            elapsed_ms: 14300,
+            tally: Default::default(),
+            plan: false,
+            folded: true,
+        };
         // the line drops its least useful pieces first and stays on one row
         let rows = texts(&b.render(28, &Theme::dark(), opts()));
         assert!(rows.len() == 1 && width(&rows[0]) <= 28, "{rows:?}");

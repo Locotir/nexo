@@ -156,6 +156,17 @@ pub fn summary_line_for(
     Line::from(spans)
 }
 
+/// The quiet line of a finished turn, all in the dim colour: `14.4s · $0.0042`. The time alone when no
+/// cost is known; on a plan the cost reads as API value, as in the full line.
+pub fn short_line(theme: &Theme, cost: f64, ms: u64, plan: bool) -> Line<'static> {
+    let mut s = format!("  {}", fmt_ms(ms));
+    if cost > 0.0 {
+        let money = if plan { crate::app::plan_value(cost) } else { format!("${:.4}", cost.min(99.0)) };
+        s.push_str(&format!(" · {money}"));
+    }
+    Line::from(Span::styled(s, theme.dim()))
+}
+
 /// The line as plain text (tests, captures).
 pub fn plain(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()

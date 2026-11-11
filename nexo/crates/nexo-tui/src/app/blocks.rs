@@ -191,12 +191,13 @@ impl App {
                 // a group's line is made from the calls it stands for
                 Block::Group { folded, len } => {
                     let end = (i + 1 + len).min(self.blocks.len());
-                    let head = crate::render::group::header(
+                    let head = crate::render::group::header_for(
                         &self.blocks[i + 1..end],
                         *folded,
                         self.spinner,
                         (width - indent).max(8),
                         &self.theme,
+                        self.opts.detail,
                     );
                     vec![head]
                 }
@@ -409,6 +410,10 @@ impl App {
             return true;
         }
         let Some(b) = self.blocks.get(i) else { return false };
+        // the turn's line opens to the whole figures in quiet; in full it is whole already
+        if matches!(b, Block::Usage { .. }) {
+            return self.quiet();
+        }
         if b.is_foldable() {
             return true;
         }
@@ -624,6 +629,7 @@ impl App {
                 | Block::Reasoning { folded, .. }
                 | Block::Group { folded, .. }
                 | Block::Added { folded, .. }
+                | Block::Usage { folded, .. }
                 | Block::Problem { folded, .. },
             ) => *folded,
             Some(_) => self.looks.get(i).is_some_and(|l| l.folded),
