@@ -31,7 +31,7 @@ It runs as a full-screen TUI, headless for scripts and CI, or inside editors ove
 
 <p align="center"><img src="docs/img/demo.svg" width="880" alt="nexo fixing a failing test in the terminal"></p>
 
-<sub>Recorded from the real TUI. The model replies are scripted, and the curator limits are lowered so it acts in a session this short.</sub>
+<sub>Recorded from the real TUI playing a scripted session: the replies, tool results and figures on screen are sample data.</sub>
 
 | | An agent that compacts | nexo |
 | --- | --- | --- |
