@@ -726,6 +726,9 @@ mod step_check_tests {
     async fn a_skipped_check_still_carries_the_compiler_diagnostics() {
         let (d, f) = crate_with_error();
         let check = nexo_tools::project::check_command_within(d.path(), Some(d.path())).unwrap();
+        // cargo's first run in a new crate (lock file, build folder) is not what this test is about, and on
+        // a busy machine it can use up the compiler check's 20 s
+        let _ = std::process::Command::new("cargo").args(["check", "-q", "--offline"]).current_dir(d.path()).output();
         let cap = Duration::from_secs(45);
         let g = Guard::new();
         g.record_run(&check.command, &check.dir, true);
