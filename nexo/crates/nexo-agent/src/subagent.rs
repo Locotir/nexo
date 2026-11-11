@@ -207,10 +207,11 @@ pub fn parse(text: &str, fallback_name: &str) -> Option<Profile> {
                     .trim_matches(|c| c == '[' || c == ']')
                     .split(',')
                     .map(|t| t.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
-                    .filter(|t| !t.is_empty() && t != "task" && t != "workflow")
+                    .filter(|t| !t.is_empty())
                     .collect();
+                // a list that names only `task` and `workflow` leaves the sub-agent no tool, not every tool
                 if !list.is_empty() {
-                    p.tools = Some(list);
+                    p.tools = Some(list.into_iter().filter(|t| t != "task" && t != "workflow").collect());
                 }
             }
             _ => {}
@@ -404,6 +405,18 @@ impl SubAgent {
             .filter_map(|n| set.get(n))
             .any(|t| !matches!(t.kind(), ToolKind::Read | ToolKind::Search | ToolKind::Network));
         writes
+    }
+
+    /// How a call for the sub-agent kind `name` is scheduled: a kind that can change files is a write (it runs
+    /// on its own) unless `parallel` is on. The `task` tool and the workflow runner both ask this.
+    pub(crate) fn kind_of(&self, name: &str) -> ToolKind {
+        match self.profiles.iter().find(|p| p.name == name) {
+            // with `parallel` they run beside each other too: the claims keep their files apart
+            Some(p) if !self.can_write(p) || self.parallel => ToolKind::Search,
+            // an unknown kind is refused at once: nothing to keep apart
+            None => ToolKind::Search,
+            Some(_) => ToolKind::Write,
+        }
     }
 
     /// The tools a sub-agent of `p` gets.
@@ -1239,13 +1252,7 @@ impl Tool for SubAgent {
     /// does, each file held by the first one that changes it.
     fn call_kind(&self, args: &Value) -> ToolKind {
         let name = args.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).unwrap_or(DEFAULT);
-        match self.profiles.iter().find(|p| p.name == name) {
-            // with `parallel` they run beside each other too: the claims keep their files apart
-            Some(p) if !self.can_write(p) || self.parallel => ToolKind::Search,
-            // an unknown kind is refused at once: nothing to keep apart
-            None => ToolKind::Search,
-            Some(_) => ToolKind::Write,
-        }
+        self.kind_of(name)
     }
 
     fn handles_cancel(&self) -> bool {
@@ -1491,6 +1498,19 @@ mod tests {
         assert_eq!(get("odd").tools, Some(vec!["read".into(), "grep".into(), "glob".into(), "ls".into()]));
         assert_eq!(get("odd").model, None);
         assert_eq!(get("docs").prompt, "nexo docs");
+    }
+
+    #[test]
+    fn a_tool_list_that_names_only_task_and_workflow_gives_no_tool_not_all() {
+        for list in ["task", "workflow", "[task, workflow]", "\"task\", 'workflow'"] {
+            let p = parse(&format!("---\nname: x\ntools: {list}\n---\nB"), "x").unwrap();
+            assert_eq!(p.tools, Some(vec![]), "{list}");
+        }
+        // the two names are dropped from a longer list, and an empty list still means every tool
+        let p = parse("---\nname: x\ntools: [read, task, workflow, grep]\n---\nB", "x").unwrap();
+        assert_eq!(p.tools, Some(vec!["read".to_string(), "grep".to_string()]));
+        assert_eq!(parse("---\nname: x\ntools:\n---\nB", "x").unwrap().tools, None);
+        assert_eq!(parse("---\nname: x\ntools: []\n---\nB", "x").unwrap().tools, None);
     }
 }
 

@@ -50,6 +50,10 @@ pub(super) async fn run_tools(
         if let Some(u) = o.updated_input {
             *args = u;
         }
+        // what the question and a saved rule are about is the file as it is now; `run` refuses a changed one
+        if name == "workflow" {
+            crate::workflow::tool::pin(args, &cwd);
+        }
         pre.push((o.blocked, o.decision));
     }
     for (id, name, args) in &calls {

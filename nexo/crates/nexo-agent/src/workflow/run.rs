@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use nexo_core::subs::SubMeter;
-use nexo_core::tool::ToolContext;
+use nexo_core::tool::{ToolContext, ToolKind};
 use serde_json::Value;
 
 use super::file::{expand, pieces, Piece, Step, Workflow, MAX_ITEMS};
@@ -15,6 +15,12 @@ use crate::subagent::{Ended, Launch, SubAgent, DEFAULT};
 
 /// Seconds the sub-agents of a stopped run get to finish their cleanup.
 const CLEANUP: Duration = Duration::from_secs(5);
+
+/// Characters of one report, of a group of reports, and of an `{{item}}`, wherever they go: into the answer or
+/// into a later prompt.
+pub const REPORT_CAP: usize = 6000;
+pub const GROUP_CAP: usize = 24000;
+pub const ITEM_CAP: usize = 2000;
 
 const LIST_LINE: &str = "End your report with one JSON array of strings, one string per item, and nothing after it.";
 
@@ -62,14 +68,72 @@ pub struct StepOutcome {
     pub agents: usize,
     pub tokens: u64,
     pub secs: u64,
-    /// Its reports: one report as it is, several joined each under a header.
-    pub report: String,
-    /// How many reports `report` holds.
-    pub parts: usize,
+    /// Its reports: one as it is, or several each under a header.
+    pub parts: Vec<Part>,
     /// The list it returned (`returns = "list"`), at most `MAX_ITEMS`.
     pub items: Vec<String>,
     /// Things worth a line in the result: items left out, an empty list.
     pub notes: Vec<String>,
+}
+
+/// One report of a step, with what is printed before it. The header and the count line are never cut; the text is.
+#[derive(Debug, Clone)]
+pub struct Part {
+    /// `item 2: REAL 2 of 3`, on the first report of an item whose copies all gave one of the `answers`.
+    pub count: Option<String>,
+    /// `--- check #3 (item 1: a) (copy 3) ---`; empty for the one report of a plain step.
+    pub head: String,
+    pub text: String,
+}
+
+/// Characters one report gets when `parts` reports share the group cap.
+pub fn share(parts: usize) -> usize {
+    (GROUP_CAP / parts.max(1)).min(REPORT_CAP)
+}
+
+/// `text` as it is, or its first `max` characters and a line saying how many were cut.
+pub fn cut(text: &str, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max).collect();
+    if head.is_empty() {
+        format!("[cut: {n} more characters]")
+    } else {
+        format!("{head}\n[cut: {} more characters]", n - max)
+    }
+}
+
+impl StepOutcome {
+    /// Whether it has anything to show as a report.
+    pub fn has_report(&self) -> bool {
+        self.parts.iter().any(|p| !p.text.is_empty() || !p.head.is_empty())
+    }
+
+    /// Its reports as one text, each report cut to `share` characters.
+    pub fn report(&self, share: usize) -> String {
+        let mut out = String::new();
+        for p in &self.parts {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            if let Some(c) = &p.count {
+                out.push_str(&format!("=> {c}\n"));
+            }
+            if !p.head.is_empty() {
+                out.push_str(&p.head);
+                out.push('\n');
+            }
+            out.push_str(&cut(&p.text, share));
+        }
+        out
+    }
+
+    /// What `{{steps.<id>.report}}` brings into a later prompt: the same cap as in the answer.
+    pub fn text(&self) -> String {
+        self.report(share(self.parts.len()))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -111,6 +175,8 @@ struct Done {
 }
 
 struct Live {
+    /// A sub-agent that can change files: it runs on its own, as the `task` tool runs one.
+    writer: bool,
     job: u32,
     meter: SubMeter,
     at: Instant,
@@ -186,8 +252,7 @@ fn unrun(step: &Step, phase: usize, state: State) -> StepOutcome {
         agents: 0,
         tokens: 0,
         secs: 0,
-        report: String::new(),
-        parts: 0,
+        parts: Vec::new(),
         items: Vec::new(),
         notes: Vec::new(),
     }
@@ -222,7 +287,7 @@ fn plan_step(
             State::NotRun(_) | State::Ok | State::Partial { .. } => return Err(format!("step `{id}` did not run")),
         }
     }
-    let report = |id: &str| by_id.get(id).map(|i| before[*i].report.clone()).unwrap_or_default();
+    let report = |id: &str| by_id.get(id).map(|i| before[*i].text()).unwrap_or_default();
     let label = |n: usize, many: bool| {
         let phase = wf.phases.iter().find(|p| p.steps.iter().any(|s| s.id == step.id)).map_or("", |p| p.title.as_str());
         let mut l = format!("{} · {} · {}", wf.name, phase, step.id);
@@ -242,7 +307,8 @@ fn plan_step(
     let many = step.each.is_some() || step.votes > 1;
     let mut units = Vec::new();
     for item in items {
-        let prompt = closing(expand(&step.prompt, args, item.as_ref().map(|(_, t)| t.as_str()), &report));
+        let shown = item.as_ref().map(|(_, t)| cut(t, ITEM_CAP));
+        let prompt = closing(expand(&step.prompt, args, shown.as_deref(), &report));
         for copy in 1..=step.votes {
             let number = units.len() + 1;
             units.push(Unit {
@@ -279,6 +345,12 @@ async fn schedule(
                 cancelled = true;
                 break;
             }
+            // the rule of the `task` tool: a kind that can change files runs alone, nothing else at work and
+            // nothing started until it ends (unless `parallel_tasks` lets them run side by side)
+            let writer = sub.kind_of(steps[units[next].step].agent.as_deref().unwrap_or(DEFAULT)) == ToolKind::Write;
+            if !live.is_empty() && (writer || live.values().any(|l| l.writer)) {
+                break;
+            }
             if counters.started >= wf.max_agents {
                 *stop = Some(Stop::Agents(wf.max_agents));
                 break;
@@ -305,7 +377,7 @@ async fn schedule(
                 Err(refused) => res[i] = Some(refused_unit(refused)),
                 Ok(s) => {
                     counters.started += 1;
-                    live.insert(i, Live { job: s.id, meter: s.meter.clone(), at: Instant::now() });
+                    live.insert(i, Live { writer, job: s.id, meter: s.meter.clone(), at: Instant::now() });
                     let rx = s.rx;
                     running.push(async move { (i, rx.await) });
                 }
@@ -405,31 +477,36 @@ pub fn parse_list(report: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// The first word of a report, as a verdict: letters and digits, upper case.
-fn verdict(report: &str) -> String {
-    let w = report.split_whitespace().next().unwrap_or("");
-    w.trim_matches(|c: char| !c.is_alphanumeric()).to_uppercase()
+/// Which of `answers` a report begins with: ignoring case and the characters before its first letter or digit; the
+/// longest entry wins when one begins with another.
+fn answer_of(report: &str, answers: &[String]) -> Option<usize> {
+    let norm = |s: &str| s.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    let rest = norm(report);
+    answers
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (i, norm(a)))
+        .filter(|(_, a)| !a.is_empty() && rest.starts_with(a.as_str()))
+        .max_by_key(|(_, a)| a.chars().count())
+        .map(|(i, _)| i)
 }
 
-/// `REAL 2 of 3` for the copies of one item, when every copy ended with a report and they begin with no more
-/// than two different words; none otherwise.
-fn count_line(copies: &[&str]) -> Option<String> {
-    if copies.len() < 2 {
+/// `REAL 2 of 3, NOT REAL 1 of 3` for the copies of one item, only when every copy began with one of `answers`.
+fn count_line(copies: &[&str], answers: &[String]) -> Option<String> {
+    if copies.len() < 2 || answers.is_empty() {
         return None;
     }
-    let words: Vec<String> = copies.iter().map(|r| verdict(r)).collect();
-    let mut tally: Vec<(String, usize)> = Vec::new();
-    for w in &words {
-        match tally.iter_mut().find(|(t, _)| t == w) {
-            Some((_, n)) => *n += 1,
-            None => tally.push((w.clone(), 1)),
-        }
+    let mut counts = vec![0usize; answers.len()];
+    for r in copies {
+        counts[answer_of(r, answers)?] += 1;
     }
-    if tally.len() > 2 || tally.iter().any(|(w, _)| w.is_empty()) {
-        return None;
-    }
-    let (top, n) = tally.iter().fold(&tally[0], |best, t| if t.1 > best.1 { t } else { best });
-    Some(format!("{top} {n} of {}", copies.len()))
+    let parts: Vec<String> = answers
+        .iter()
+        .zip(&counts)
+        .filter(|(_, n)| **n > 0)
+        .map(|(a, n)| format!("{a} {n} of {}", copies.len()))
+        .collect();
+    Some(parts.join(", "))
 }
 
 /// One line of an item, for a header.
@@ -450,6 +527,7 @@ fn finish_step(step: &Step, phase: usize, mine: &[(&Unit, &Option<Done>)], stop:
     let (mut first, mut last): (Option<Instant>, Option<Instant>) = (None, None);
     let mut seen = std::collections::HashSet::new();
     let mut all_items: Vec<String> = Vec::new();
+    let (mut merged, mut unmetered) = (0usize, 0usize);
     for (_, d) in mine {
         let Some(d) = d else {
             unrun_n += 1;
@@ -459,6 +537,10 @@ fn finish_step(step: &Step, phase: usize, mine: &[(&Unit, &Option<Done>)], stop:
             o.agents += 1;
         }
         o.tokens += d.tokens;
+        // a sub-agent that did work and reported no usage: it counts as 0 tokens, and the result says so
+        if d.ran && d.tokens == 0 {
+            unmetered += 1;
+        }
         first = first.into_iter().chain(d.started).min();
         last = last.into_iter().chain(d.ended).max();
         match &d.result {
@@ -467,6 +549,8 @@ fn finish_step(step: &Step, phase: usize, mine: &[(&Unit, &Option<Done>)], stop:
                 for i in &d.items {
                     if seen.insert(i.clone()) {
                         all_items.push(i.clone());
+                    } else {
+                        merged += 1;
                     }
                 }
             }
@@ -480,6 +564,16 @@ fn finish_step(step: &Step, phase: usize, mine: &[(&Unit, &Option<Done>)], stop:
         (Some(a), Some(b)) => b.duration_since(a).as_secs(),
         _ => 0,
     };
+    if merged > 0 {
+        o.notes.push(format!("{merged} equal item{} merged", if merged == 1 { "" } else { "s" }));
+    }
+    if unmetered > 0 {
+        o.notes.push(format!(
+            "token use was not reported for {unmetered} sub-agent{}; {} counted as 0 tokens",
+            if unmetered == 1 { "" } else { "s" },
+            if unmetered == 1 { "it is" } else { "they are" }
+        ));
+    }
     if all_items.len() > MAX_ITEMS {
         o.notes.push(format!(
             "it returned {} items; the first {MAX_ITEMS} are used and the rest are left out",
@@ -491,8 +585,7 @@ fn finish_step(step: &Step, phase: usize, mine: &[(&Unit, &Option<Done>)], stop:
         o.notes.push("there was nothing to run it on".into());
     }
     o.items = all_items;
-    o.report = join(step, mine);
-    o.parts = ok;
+    o.parts = join(step, mine);
     o.state = if ok == mine.len() {
         State::Ok
     } else if ok > 0 {
@@ -505,9 +598,9 @@ fn finish_step(step: &Step, phase: usize, mine: &[(&Unit, &Option<Done>)], stop:
     o
 }
 
-/// The reports of a step as one text: a step with one sub-agent gives its report as it is; with several, each
-/// is under a header, and the copies of an item that agree get a count line first.
-fn join(step: &Step, mine: &[(&Unit, &Option<Done>)]) -> String {
+/// The reports of a step: a step with one sub-agent gives its report as it is; with several, each has a header, and
+/// the copies of an item that all gave one of `answers` get a count line first.
+fn join(step: &Step, mine: &[(&Unit, &Option<Done>)]) -> Vec<Part> {
     let reports: Vec<(&Unit, &str)> = mine
         .iter()
         .filter_map(|(u, d)| match d.as_ref().map(|d| &d.result) {
@@ -516,21 +609,25 @@ fn join(step: &Step, mine: &[(&Unit, &Option<Done>)]) -> String {
         })
         .collect();
     if step.each.is_none() && step.votes == 1 {
-        return reports.first().map(|(_, r)| r.to_string()).unwrap_or_default();
+        return reports
+            .first()
+            .map(|(_, r)| Part { count: None, head: String::new(), text: r.to_string() })
+            .into_iter()
+            .collect();
     }
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut last: Option<Option<usize>> = None;
     for (u, r) in &reports {
         let item = u.item.as_ref().map(|(n, _)| *n);
+        let mut count = None;
         if step.votes > 1 && last != Some(item) {
             // a new item: the count of its copies, when every copy ended with a report
             let copies: Vec<&str> =
                 reports.iter().filter(|(o, _)| o.item.as_ref().map(|(n, _)| *n) == item).map(|(_, r)| *r).collect();
             let all = mine.iter().filter(|(o, _)| o.item.as_ref().map(|(n, _)| *n) == item).count();
             if copies.len() == all {
-                if let Some(line) = count_line(&copies) {
-                    out.push_str(&format!("=> {}{line}\n", item.map_or(String::new(), |n| format!("item {n}: "))));
-                }
+                count = count_line(&copies, &step.answers)
+                    .map(|line| format!("{}{line}", item.map_or(String::new(), |n| format!("item {n}: "))));
             }
         }
         last = Some(item);
@@ -541,12 +638,10 @@ fn join(step: &Step, mine: &[(&Unit, &Option<Done>)]) -> String {
         if let Some(c) = u.copy {
             head.push_str(&format!(" (copy {c})"));
         }
-        head.push_str(" ---\n");
-        out.push_str(&head);
-        out.push_str(r.trim_end());
-        out.push_str("\n\n");
+        head.push_str(" ---");
+        out.push(Part { count, head, text: r.trim_end().to_string() });
     }
-    out.trim_end().to_string()
+    out
 }
 
 #[cfg(test)]
@@ -568,12 +663,42 @@ mod tests {
         assert!(parse_list("broken [\"a\", ").unwrap_err().contains("no JSON array"));
     }
 
+    fn words(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
-    fn a_count_line_needs_one_or_two_first_words_and_two_copies() {
-        assert_eq!(count_line(&["REAL: a", "real. b", "NOT REAL"]).as_deref(), Some("REAL 2 of 3"));
-        assert_eq!(count_line(&["Yes", "Yes"]).as_deref(), Some("YES 2 of 2"));
-        assert_eq!(count_line(&["A", "B", "C"]), None);
-        assert_eq!(count_line(&["only one"]), None);
-        assert_eq!(count_line(&["", "x"]), None);
+    fn a_count_line_needs_every_copy_to_begin_with_one_of_the_answers() {
+        let yn = words(&["REAL", "NOT REAL"]);
+        assert_eq!(
+            count_line(&["REAL: a", "real. b", "NOT REAL"], &yn).as_deref(),
+            Some("REAL 2 of 3, NOT REAL 1 of 3")
+        );
+        assert_eq!(count_line(&["Real", "**real**"], &yn).as_deref(), Some("REAL 2 of 2"));
+        // an answer that is not in the list: no line
+        assert_eq!(count_line(&["REAL", "Verdict: REAL"], &yn), None);
+        assert_eq!(count_line(&["REAL", ""], &yn), None);
+        // the first-word guess is gone: no `answers`, no line
+        assert_eq!(count_line(&["Yes", "Yes"], &[]), None);
+        assert_eq!(count_line(&["REAL"], &yn), None);
+        // the longest entry wins when one begins with another
+        assert_eq!(answer_of("not real at all", &words(&["NOT", "NOT REAL"])), Some(1));
+        assert_eq!(answer_of("Not sure", &words(&["NOT", "NOT REAL"])), Some(0));
+        assert_eq!(
+            count_line(&["NOT REAL", "NOT REAL"], &words(&["NOT", "NOT REAL"])).as_deref(),
+            Some("NOT REAL 2 of 2")
+        );
+    }
+
+    #[test]
+    fn a_cut_says_how_much_and_keeps_whole_characters() {
+        assert_eq!(cut("abc", 3), "abc");
+        assert_eq!(cut("abcd", 3), "abc\n[cut: 1 more characters]");
+        assert_eq!(cut("abcd", 0), "[cut: 4 more characters]");
+        assert_eq!(cut("ééééé", 2), "éé\n[cut: 3 more characters]");
+        assert_eq!(share(1), REPORT_CAP);
+        assert_eq!(share(4), 6000);
+        assert_eq!(share(5), 4800);
+        assert_eq!(share(9), 2666);
     }
 }

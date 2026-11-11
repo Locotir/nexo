@@ -405,10 +405,16 @@ pub fn rule_matches_as(rule: &str, tool: &str, kind: ToolKind, args: &Value, cwd
     }
     let Some(pattern) = pattern else { return true };
     let pattern = pattern.trim();
-    // `workflow(find-bugs)`: the saved workflow by name
+    // `workflow(find-bugs@1a2b3c4d)`: one saved workflow as its file is now. The turn put that subject in the call
+    // before asking; a call without one (the file does not load) matches no pattern but `*`.
     if tool == "workflow" {
-        let named = args.get("name").and_then(Value::as_str).unwrap_or("");
-        return pattern == "*" || pattern.is_empty() || glob(pattern).is_some_and(|g| g.is_match(named));
+        let subject = args.get(crate::workflow::tool::PIN).and_then(Value::as_str);
+        let hit = |c: &str| glob(pattern).is_some_and(|g| g.is_match(c));
+        // a rule that denies also covers the name alone
+        return pattern == "*"
+            || pattern.is_empty()
+            || subject.is_some_and(hit)
+            || (deny && hit(args.get("name").and_then(Value::as_str).unwrap_or("")));
     }
     if pattern == "*" || pattern.is_empty() {
         return true;
@@ -875,10 +881,11 @@ fn runs_code(part: &str) -> bool {
 pub fn suggested_rules(tool: &str, kind: ToolKind, args: &Value, cwd: &Path) -> Vec<String> {
     let mut out = Vec::new();
     if tool == "workflow" {
-        // by name for a saved one; none for text the model wrote
-        return match args.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) {
-            Some(n) if args.get("inline").and_then(Value::as_str).is_none_or(|t| t.trim().is_empty()) => {
-                vec![format!("workflow({n})")]
+        // for one saved file as it is now (name and hash); none for text the model wrote, and none when the
+        // name does not load
+        return match args.get(crate::workflow::tool::PIN).and_then(Value::as_str) {
+            Some(s) if args.get("inline").and_then(Value::as_str).is_none_or(|t| t.trim().is_empty()) => {
+                vec![format!("workflow({s})")]
             }
             _ => out,
         };
@@ -1431,8 +1438,13 @@ mod note_scope_tests {
     fn a_workflow_rule_covers_saved_names_never_text_the_model_wrote() {
         let d = tempfile::tempdir().unwrap();
         let c = d.path();
-        let (saved, other, inline) =
-            (json!({"name": "bugs"}), json!({"name": "other"}), json!({"inline": "[[phase]]", "name": ""}));
+        // the turn puts the subject of the file as it is now in a call that names a saved workflow
+        let (saved, other, inline) = (
+            json!({"name": "bugs", "pinned": "bugs@1a2b3c4d"}),
+            json!({"name": "other", "pinned": "other@00000000"}),
+            json!({"inline": "[[phase]]", "name": "", "pinned": "bugs@1a2b3c4d"}),
+        );
+        let unpinned = json!({"name": "bugs"});
         let decide = |p: &Policy, a: &Value| p.decide("workflow", ToolKind::Other, a, c);
         let with = |allow: &[&str]| Policy {
             allow: allow.iter().map(|r| r.to_string()).collect(),
@@ -1445,21 +1457,35 @@ mod note_scope_tests {
             assert_eq!(decide(&policy(PermissionMode::ReadOnly), a), Decision::Ask);
             assert_eq!(decide(&policy(PermissionMode::Auto), a), Decision::Allow);
         }
-        assert_eq!(decide(&with(&["workflow(bugs)"]), &saved), Decision::Allow);
-        assert_eq!(decide(&with(&["workflow(bugs)"]), &other), Decision::Ask);
+        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d)"]), &saved), Decision::Allow);
+        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d)"]), &other), Decision::Ask);
+        // the file changed since the rule was made (another hash), or the rule holds the name alone: asks again
+        assert_eq!(decide(&with(&["workflow(bugs@ffffffff)"]), &saved), Decision::Ask);
+        assert_eq!(decide(&with(&["workflow(bugs)"]), &saved), Decision::Ask);
+        // a name that does not load has no subject: only the whole-tool rules cover it
+        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d)"]), &unpinned), Decision::Ask);
         assert_eq!(decide(&with(&["workflow(b*)"]), &saved), Decision::Allow);
         assert_eq!(decide(&with(&["workflow"]), &saved), Decision::Allow);
         assert_eq!(decide(&with(&["workflow(*)"]), &saved), Decision::Allow);
-        for rule in ["workflow", "workflow(*)", "workflow(bugs)", "work*"] {
+        for rule in ["workflow", "workflow(*)", "workflow(bugs@1a2b3c4d)", "work*"] {
             assert_eq!(decide(&with(&[rule]), &inline), Decision::Ask, "{rule}");
         }
         // a deny rule covers both
         let denied = Policy { deny: vec!["workflow".into()], ..policy(PermissionMode::Auto) };
         assert!(matches!(decide(&denied, &saved), Decision::Deny(_)));
         assert!(matches!(decide(&denied, &inline), Decision::Deny(_)));
-        // what is offered to remember: the name, nothing for inline text
-        assert_eq!(suggested_rules("workflow", ToolKind::Other, &saved, c), vec!["workflow(bugs)".to_string()]);
+        // a deny rule by name holds whatever the file says, and also when it does not load
+        let by_name = Policy { deny: vec!["workflow(bugs)".into()], ..policy(PermissionMode::Auto) };
+        assert!(matches!(decide(&by_name, &saved), Decision::Deny(_)));
+        assert!(matches!(decide(&by_name, &unpinned), Decision::Deny(_)));
+        assert_eq!(decide(&by_name, &other), Decision::Allow);
+        // what is offered to remember: the name and the hash, nothing for inline text or a name that does not load
+        assert_eq!(
+            suggested_rules("workflow", ToolKind::Other, &saved, c),
+            vec!["workflow(bugs@1a2b3c4d)".to_string()]
+        );
         assert!(suggested_rules("workflow", ToolKind::Other, &inline, c).is_empty());
+        assert!(suggested_rules("workflow", ToolKind::Other, &unpinned, c).is_empty());
     }
 }
 

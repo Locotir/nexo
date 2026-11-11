@@ -8,16 +8,18 @@ use nexo_core::provider::ToolSpec;
 use nexo_core::tool::{Compact, Tool, ToolContext, ToolKind, ToolOutput};
 use serde_json::{json, Value};
 
-use super::file::{self, parse, problem_lines, saved, Workflow as Wf, MAX_PROMPT};
-use super::run::{self, Outcome, State, StepOutcome};
+use super::file::{self, parse, problem_lines, saved, subject, valid_id, Workflow as Wf, MAX_PROMPT};
+use super::run::{self, share, Outcome, State, StepOutcome};
 use crate::subagent::SubAgent;
 
 /// Names listed in the tool's description, and the characters of each line.
 const LISTED: usize = 20;
 const LINE: usize = 80;
-/// Characters of one report in the answer, and of all of them.
-const REPORT: usize = 6000;
-const ALL: usize = 24000;
+/// Phase lines the question shows.
+const PHASES_SHOWN: usize = 12;
+/// What the turn puts in the call before it asks: the subject (`name@hash`) of the saved workflow the question is
+/// about. A rule is matched against it, and `run` refuses when the file is no longer that one.
+pub const PIN: &str = "pinned";
 
 pub struct Workflow {
     sub: Arc<SubAgent>,
@@ -45,6 +47,13 @@ fn load(args: &Value, cwd: &Path) -> Result<(Wf, bool), String> {
         Some(_) => Err(format!("`{k}` must be text")),
     };
     let (name, inline) = (text("name")?, text("inline")?);
+    // before anything else: a name that cannot be a file name is not looked up
+    if let Some(n) = name.filter(|n| !valid_id(n)) {
+        return Err(format!(
+            "`{}` is not a workflow name; names use 1 to 32 characters of a-z, 0-9, - and _",
+            cut_line(&n.escape_debug().to_string(), 40)
+        ));
+    }
     let list = || saved(cwd).iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", ");
     match (name, inline) {
         (Some(_), Some(_)) => Err("give `name` or `inline`, not both".into()),
@@ -55,8 +64,29 @@ fn load(args: &Value, cwd: &Path) -> Result<(Wf, bool), String> {
             let Some(s) = all.iter().find(|s| s.name == n) else {
                 return Err(format!("no saved workflow `{n}`; there are: {}", list()));
             };
+            if args.get(PIN).and_then(Value::as_str).is_some_and(|p| p != subject(&s.name, &s.text)) {
+                return Err(format!(
+                    "workflow `{n}` changed after you were asked about it, so nothing was started; ask again to run the new file."
+                ));
+            }
             parse(&s.name, &s.text).map(|w| (w, false)).map_err(|p| refused(n, &p))
         }
+    }
+}
+
+/// Sets (or clears) [`PIN`] in the arguments of a `workflow` call, before the person is asked: the subject of the
+/// saved workflow the name points to now, or nothing when it does not load, is inline text or is no valid name.
+/// Whatever the model put there is dropped.
+pub fn pin(args: &mut Value, cwd: &Path) {
+    let Some(obj) = args.as_object_mut() else { return };
+    obj.remove(PIN);
+    let on = |k: &str| obj.get(k).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_string);
+    let (Some(name), None) = (on("name"), on("inline")) else { return };
+    if !valid_id(&name) {
+        return;
+    }
+    if let Some(s) = saved(cwd).into_iter().find(|s| s.name == name).filter(|s| parse(&s.name, &s.text).is_ok()) {
+        obj.insert(PIN.into(), Value::String(subject(&s.name, &s.text)));
     }
 }
 
@@ -108,6 +138,11 @@ pub fn question(args: &Value, cwd: &Path) -> (String, Vec<String>) {
                         })
                         .collect();
                     detail.push(format!("{}: {}", p.title, ids.join(", ")));
+                }
+                if detail.len() > PHASES_SHOWN {
+                    let more = detail.len() - PHASES_SHOWN;
+                    detail.truncate(PHASES_SHOWN);
+                    detail.push(format!("+{more} more"));
                 }
             }
             (summary, detail)
@@ -222,15 +257,6 @@ fn state_text(s: &StepOutcome) -> String {
     }
 }
 
-fn cut(text: &str, max: usize) -> String {
-    let n = text.chars().count();
-    if n <= max {
-        return text.to_string();
-    }
-    let head: String = text.chars().take(max).collect();
-    format!("{head}\n[cut: {} more characters]", n - max)
-}
-
 /// The one answer: a line per step, the notes, and the reports of the last phase that ran.
 fn render(wf: &Wf, out: &Outcome) -> String {
     let mut t =
@@ -265,7 +291,7 @@ fn render(wf: &Wf, out: &Outcome) -> String {
     let last = wf.phases.len().saturating_sub(1);
     let shown = (0..wf.phases.len())
         .rev()
-        .find(|i| out.steps.iter().any(|s| s.phase == *i && s.state.usable() && !s.report.is_empty()));
+        .find(|i| out.steps.iter().any(|s| s.phase == *i && s.state.usable() && s.has_report()));
     if let Some(i) = shown {
         if i != last {
             t.push_str(&format!(
@@ -273,20 +299,12 @@ fn render(wf: &Wf, out: &Outcome) -> String {
                 wf.phases[i].title
             ));
         }
-        let mut left = ALL;
-        let mut dropped = 0;
-        for s in out.steps.iter().filter(|s| s.phase == i && s.state.usable() && !s.report.is_empty()) {
-            if left == 0 {
-                dropped += 1;
-                continue;
-            }
-            let take = (REPORT * s.parts.max(1)).min(left);
-            let body = cut(&s.report, take);
-            left -= s.report.chars().count().min(take);
-            t.push_str(&format!("\n\n== {} ==\n{body}", s.id));
-        }
-        if dropped > 0 {
-            t.push_str(&format!("\n\n[{dropped} more report(s) left out: {ALL} characters is the most]"));
+        // every report of the phase has a share of the group cap: none comes first, none vanishes
+        let steps: Vec<&StepOutcome> =
+            out.steps.iter().filter(|s| s.phase == i && s.state.usable() && s.has_report()).collect();
+        let each = share(steps.iter().map(|s| s.parts.len()).sum());
+        for s in steps {
+            t.push_str(&format!("\n\n== {} ==\n{}", s.id, s.report(each)));
         }
     }
     t

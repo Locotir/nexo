@@ -21,10 +21,19 @@ pub const MAX_ITEMS: usize = 50;
 pub const MAX_PROMPT: usize = 16 * 1024;
 /// The most a workflow file (or the inline text of one) may hold.
 pub const MAX_FILE: usize = 64 * 1024;
+/// Characters of a phase title and of a description; they reach the question the person answers.
+pub const MAX_TITLE: usize = 80;
+pub const MAX_DESCRIPTION: usize = 200;
+/// How many entries `answers` holds, and the characters of each.
+pub const MIN_ANSWERS: usize = 2;
+pub const MAX_ANSWERS: usize = 5;
+pub const MAX_ANSWER: usize = 24;
+/// Problems that are written out; the rest are counted.
+pub const MAX_PROBLEMS: usize = 20;
 
 const ROOT_KEYS: &[&str] = &["description", "max_parallel", "max_agents", "max_tokens", "phase"];
 const PHASE_KEYS: &[&str] = &["title", "step"];
-const STEP_KEYS: &[&str] = &["id", "agent", "model", "prompt", "returns", "each", "votes"];
+const STEP_KEYS: &[&str] = &["id", "agent", "model", "prompt", "returns", "each", "votes", "answers"];
 
 /// A workflow, checked.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +64,8 @@ pub struct Step {
     /// The step whose list this one runs once per item of.
     pub each: Option<String>,
     pub votes: usize,
+    /// The answers a copy may begin its report with (`votes` above 1); empty: no count line.
+    pub answers: Vec<String>,
     /// Where the step starts in the file.
     pub line: Option<usize>,
 }
@@ -152,6 +163,22 @@ fn text_of(p: &mut Problems, t: &Table, key: &str) -> Option<String> {
     }
 }
 
+/// Text for a person that has no control character (an escape sequence could overwrite what the question shows),
+/// and at most `max` characters when a limit is given.
+fn plain_text(p: &mut Problems, t: &Table, key: &str, what: &str, max: Option<usize>) -> Option<String> {
+    let s = text_of(p, t, key)?;
+    let at = t.get_key_value(key).and_then(|(k, _)| k.span());
+    if s.chars().any(char::is_control) {
+        p.add(at, format!("{what} has a control character; use plain text"));
+        return None;
+    }
+    if let Some(max) = max.filter(|m| s.chars().count() > *m) {
+        p.add(at, format!("{what} is {} characters; the most is {max}", s.chars().count()));
+        return None;
+    }
+    Some(s)
+}
+
 /// A key's value as a whole number within `min..=max`, or a problem.
 fn number_of(p: &mut Problems, t: &Table, key: &str, min: i64, max: Option<i64>, what: &str) -> Option<i64> {
     let (k, item) = t.get_key_value(key)?;
@@ -195,7 +222,8 @@ pub fn parse(name: &str, raw: &str) -> Result<Workflow, Vec<Problem>> {
     };
     let root = doc.as_table();
     unknown_keys(&mut p, root, ROOT_KEYS, "in the workflow");
-    let description = text_of(&mut p, root, "description").unwrap_or_default();
+    let description =
+        plain_text(&mut p, root, "description", "`description`", Some(MAX_DESCRIPTION)).unwrap_or_default();
     let max_parallel = number_of(&mut p, root, "max_parallel", 1, Some(MAX_PARALLEL as i64), "it must be at least 1")
         .map_or(DEFAULT_PARALLEL, |n| n as usize);
     let max_agents = number_of(&mut p, root, "max_agents", 1, Some(MAX_AGENTS as i64), "it must be at least 1")
@@ -237,7 +265,9 @@ pub fn parse(name: &str, raw: &str) -> Result<Workflow, Vec<Problem>> {
 
 fn read_phase(p: &mut Problems, t: &Table, number: usize) -> Phase {
     unknown_keys(p, t, PHASE_KEYS, "in a phase");
-    let title = text_of(p, t, "title").filter(|s| !s.trim().is_empty()).unwrap_or_else(|| format!("Phase {number}"));
+    let title = plain_text(p, t, "title", "`title`", Some(MAX_TITLE))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("Phase {number}"));
     let mut steps = Vec::new();
     match t.get_key_value("step") {
         None => p.add(t.span(), format!("phase \"{title}\" has no step; add one with `[[phase.step]]`")),
@@ -265,11 +295,11 @@ fn read_step(p: &mut Problems, t: &Table) -> Option<Step> {
         Some("") => p.add(t.get_key_value("id").and_then(|(k, _)| k.span()), "a step has an empty `id`"),
         Some(i) if !valid_id(i) => p.add(
             t.get_key_value("id").and_then(|(k, _)| k.span()),
-            format!("`id` \"{i}\" is not allowed; use 1 to 32 characters of a-z, 0-9, - and _"),
+            format!("`id` \"{}\" is not allowed; use 1 to 32 characters of a-z, 0-9, - and _", i.escape_debug()),
         ),
         _ => {}
     }
-    let named = id.clone().unwrap_or_else(|| "?".into());
+    let named = id.as_deref().map_or_else(|| "?".to_string(), |i| i.escape_debug().to_string());
     let prompt = text_of(p, t, "prompt");
     match prompt.as_deref() {
         None if t.get("prompt").is_none() => p.add(t.span(), format!("step `{named}` has no `prompt`")),
@@ -294,13 +324,61 @@ fn read_step(p: &mut Problems, t: &Table) -> Option<Step> {
             false
         }
     };
-    let agent = text_of(p, t, "agent").filter(|s| !s.trim().is_empty());
-    let model = text_of(p, t, "model").filter(|s| !s.trim().is_empty());
+    let agent = plain_text(p, t, "agent", "`agent`", None).filter(|s| !s.trim().is_empty());
+    let model = plain_text(p, t, "model", "`model`", None).filter(|s| !s.trim().is_empty());
     let each = text_of(p, t, "each");
     let votes = number_of(p, t, "votes", 1, Some(MAX_VOTES as i64), "it must be at least 1").map_or(1, |n| n as usize);
+    let answers = read_answers(p, t, &named, votes);
     let (id, prompt) = (id?, prompt?);
     // kept even with problems of its own: the other steps are still checked against it
-    Some(Step { id, agent, model, prompt, list, each, votes, line })
+    Some(Step { id, agent, model, prompt, list, each, votes, answers, line })
+}
+
+/// `answers = ["REAL", "NOT REAL"]`: 2 to 5 entries of 1 to 24 characters, only for a step with `votes` above 1.
+fn read_answers(p: &mut Problems, t: &Table, named: &str, votes: usize) -> Vec<String> {
+    let Some((k, item)) = t.get_key_value("answers") else { return Vec::new() };
+    let at = k.span();
+    let Some(list) = item.as_array() else {
+        p.add(at.clone(), format!("step `{named}`: `answers` must be a list of text, like [\"REAL\", \"NOT REAL\"]"));
+        return Vec::new();
+    };
+    let entries: Option<Vec<String>> = list.iter().map(|v| v.as_str().map(str::to_string)).collect();
+    let Some(entries) = entries else {
+        p.add(at.clone(), format!("step `{named}`: every entry of `answers` must be text in quotes"));
+        return Vec::new();
+    };
+    let mut ok = true;
+    if votes < 2 {
+        p.add(at.clone(), format!("step `{named}`: `answers` needs `votes` above 1, since it counts the copies"));
+        ok = false;
+    }
+    if !(MIN_ANSWERS..=MAX_ANSWERS).contains(&entries.len()) {
+        p.add(
+            at.clone(),
+            format!("step `{named}`: `answers` has {} entries; use {MIN_ANSWERS} to {MAX_ANSWERS}", entries.len()),
+        );
+        ok = false;
+    }
+    for e in &entries {
+        if e.chars().any(char::is_control) {
+            p.add(at.clone(), format!("step `{named}`: an entry of `answers` has a control character"));
+            ok = false;
+        } else if e.is_empty() || e.chars().count() > MAX_ANSWER {
+            p.add(
+                at.clone(),
+                format!(
+                    "step `{named}`: the entry \"{e}\" of `answers` has {} characters; use 1 to {MAX_ANSWER}",
+                    e.chars().count()
+                ),
+            );
+            ok = false;
+        }
+    }
+    if ok {
+        entries
+    } else {
+        Vec::new()
+    }
 }
 
 /// The checks that look across steps: duplicate ids, `each`, and the placeholders of every prompt.
@@ -454,9 +532,23 @@ pub fn saved_from(cwd: &Path, config_dir: &Path, trust_file: &Path) -> Vec<Saved
     out
 }
 
-/// The text of the lines of `Problem`s, one per line.
+/// The text of the lines of `Problem`s, one per line: the first `MAX_PROBLEMS`, then how many more there are.
 pub fn problem_lines(list: &[Problem]) -> String {
-    list.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
+    let mut lines: Vec<String> = list.iter().take(MAX_PROBLEMS).map(|p| format!("- {p}")).collect();
+    if list.len() > MAX_PROBLEMS {
+        lines.push(format!("+{} more", list.len() - MAX_PROBLEMS));
+    }
+    lines.join("\n")
+}
+
+/// What a saved workflow is called in a permission rule: its name and the first 8 hex characters of the SHA-256
+/// of its bytes (`bugs@1a2b3c4d`). A changed file, or a project file that replaces the person's own, is
+/// another subject, so a rule made for one does not cover the other.
+pub fn subject(name: &str, text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(text.as_bytes());
+    let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("{name}@{hex}")
 }
 
 #[cfg(test)]
@@ -595,6 +687,64 @@ title = "Check"
         assert_eq!(p.len(), 1);
         assert!(p[0].text.contains("no sub-agent kind `nobody`") && p[0].line.is_some(), "{p:?}");
         assert!(parse("t", &one("agent = \"general\"")).unwrap().check_agents(&kinds).is_empty());
+    }
+
+    #[test]
+    fn text_for_the_person_is_short_and_has_no_control_character() {
+        let top = |extra: &str| format!("{extra}\n{}", one(""));
+        assert!(parse("t", &top(&format!("description = \"{}\"", "d".repeat(MAX_DESCRIPTION)))).is_ok());
+        says(
+            &top(&format!("description = \"{}\"", "d".repeat(MAX_DESCRIPTION + 1))),
+            "`description` is 201 characters",
+        );
+        says(&top("description = \"a\\u001b[2Jb\""), "`description` has a control character");
+        let titled = |t: &str| one("").replace("title = \"A\"", &format!("title = \"{t}\""));
+        assert!(parse("t", &titled(&"t".repeat(MAX_TITLE))).is_ok());
+        says(&titled(&"t".repeat(MAX_TITLE + 1)), "`title` is 81 characters");
+        says(&titled("a\\u001bb"), "`title` has a control character");
+        says(&one("agent = \"a\\u0007b\""), "`agent` has a control character");
+        says(&one("model = \"a\\u0007b\""), "`model` has a control character");
+        // the id has its own rule, and the problem shows it escaped
+        says(&one("").replace("id = \"a\"", "id = \"a\\u001bb\""), "not allowed");
+        assert!(!problems(&one("").replace("id = \"a\"", "id = \"a\\u001bb\""))
+            .iter()
+            .any(|p| p.text.contains('\u{1b}')));
+    }
+
+    #[test]
+    fn load_problems_are_listed_up_to_twenty_then_how_many_more() {
+        let steps: String =
+            (0..30).map(|n| format!("[[phase.step]]\nid = \"s{n}\"\nprompt = \"p\"\nvotes = 9\n")).collect();
+        let p = problems(&format!("max_agents = 50\n[[phase]]\ntitle = \"A\"\n{steps}"));
+        assert_eq!(p.len(), 30, "{p:?}");
+        let lines = problem_lines(&p);
+        assert_eq!(lines.lines().count(), MAX_PROBLEMS + 1, "{lines}");
+        assert!(lines.ends_with("+10 more"), "{lines}");
+        assert!(!problem_lines(&p[..20]).contains("more"));
+    }
+
+    #[test]
+    fn answers_are_two_to_five_short_entries_and_only_with_votes() {
+        let ok = |extra: &str| parse("t", &one(extra)).unwrap().phases[0].steps[0].answers.clone();
+        assert_eq!(ok("votes = 3\nanswers = [\"REAL\", \"NOT REAL\"]"), ["REAL", "NOT REAL"]);
+        assert!(ok("votes = 3").is_empty());
+        says(&one("votes = 3\nanswers = [\"A\"]"), "has 1 entries; use 2 to 5");
+        says(&one("votes = 3\nanswers = [\"a\",\"b\",\"c\",\"d\",\"e\",\"f\"]"), "has 6 entries");
+        says(&one("votes = 3\nanswers = [\"a\", \"\"]"), "has 0 characters; use 1 to 24");
+        says(&one(&format!("votes = 3\nanswers = [\"a\", \"{}\"]", "x".repeat(25))), "has 25 characters; use 1 to 24");
+        says(&one("votes = 3\nanswers = [\"a\", \"b\\u001bc\"]"), "control character");
+        says(&one("votes = 3\nanswers = [\"a\", 1]"), "must be text in quotes");
+        says(&one("votes = 3\nanswers = \"a\""), "must be a list of text");
+        says(&one("answers = [\"a\", \"b\"]"), "needs `votes` above 1");
+        says(&one("votes = 1\nanswers = [\"a\", \"b\"]"), "needs `votes` above 1");
+    }
+
+    #[test]
+    fn the_subject_of_a_saved_file_is_its_name_and_the_start_of_its_hash() {
+        // SHA-256 of "abc" begins ba7816bf
+        assert_eq!(subject("bugs", "abc"), "bugs@ba7816bf");
+        assert_ne!(subject("bugs", "abc"), subject("bugs", "abd"));
+        assert_ne!(subject("bugs", "abc"), subject("other", "abc"));
     }
 
     #[test]
