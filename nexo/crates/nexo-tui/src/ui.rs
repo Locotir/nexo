@@ -1435,8 +1435,10 @@ fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
         },
     };
     f.render_widget(Paragraph::new(line), area);
-    // the hardest reasoning level was just set: a crest runs along the rule once (colour only)
-    app.paint_crest(f.buffer_mut(), area);
+    // the hardest reasoning level: a comet runs the rule into the tag once when it is set, a band drifts
+    // along it while the model works (colour only, the comet's head heavy)
+    let edge = (!(app.locked && app.input.is_empty())).then(|| rule_tag(app, area.width)).flatten().map(|t| t.0);
+    app.paint_crest(f.buffer_mut(), area, edge);
     // a rejected draft flashes the rule once (colour only)
     let k = if on { crate::motion::hump(app.fx.reject_at, now, crate::fx_chrome::REJECT_MS) } else { 0.0 };
     if k > 0.0 {
@@ -1645,6 +1647,28 @@ pub fn comet(theme: &Theme, n: usize, frame: usize) -> Vec<Span<'static>> {
     out
 }
 
+/// The tag on the rule above the box, at the right: the reasoning level and, for a long or multiline draft,
+/// its size. Where it starts, counted from the left of a row `width` wide, and its text (blanks at both
+/// ends). A narrow row drops the level first, then the size.
+fn rule_tag(app: &App, width: u16) -> Option<(u16, String)> {
+    let mut tags: Vec<String> = Vec::new();
+    if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {
+        tags.push(format!("◆ {e}"));
+    }
+    if let Some(c) = crate::input::counter(&app.input) {
+        tags.push(c);
+    }
+    while !tags.is_empty() {
+        let label = format!(" {} ", tags.join(" · "));
+        let w = crate::render::wrap::width(&label) as u16;
+        if width > w + 6 {
+            return Some((width - w - 1, label));
+        }
+        tags.remove(0);
+    }
+    None
+}
+
 fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 || area.width < 3 {
         return;
@@ -1674,22 +1698,15 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     paint_complete(f, app, editor);
     // on the rule above the box, at the right: the reasoning level and, for a long or
     // multiline draft, its size; never over the text
-    let mut tags: Vec<String> = Vec::new();
-    if let Some(e) = app.effort.as_deref().filter(|e| !e.is_empty()) {
-        tags.push(format!("◆ {e}"));
-    }
-    if let Some(c) = crate::input::counter(&app.input) {
-        tags.push(c);
-    }
-    while !tags.is_empty() {
-        let label = format!(" {} ", tags.join(" · "));
+    if let Some((x, label)) = rule_tag(app, area.width).filter(|_| area.y > 0) {
         let w = crate::render::wrap::width(&label) as u16;
-        if area.y > 0 && area.width > w + 6 {
-            let r = Rect { x: area.x + area.width - w - 1, y: area.y - 1, width: w, height: 1 };
-            f.render_widget(Paragraph::new(Span::styled(label, theme.dim2())), r);
-            break;
-        }
-        tags.remove(0);
+        let r = Rect { x: area.x + x, y: area.y - 1, width: w, height: 1 };
+        // at the top level the letters wear a gradient (see `fx_effort`); otherwise the tag is dim
+        let tag = match app.effort_tag_spans(&label, theme.dim2()) {
+            Some(spans) => Paragraph::new(Line::from(spans)),
+            None => Paragraph::new(Span::styled(label, theme.dim2())),
+        };
+        f.render_widget(tag, r);
     }
     // an empty box says what it takes, or shows the suggested next message (Tab or → takes it whole)
     if app.input.is_empty() && app.palette.is_none() && editor.width > 4 {

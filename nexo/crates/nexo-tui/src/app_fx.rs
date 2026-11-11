@@ -23,12 +23,15 @@ pub struct Fx {
     /// from the old colour to the new one.
     pub mode_at: Option<Instant>,
     pub mode_from: Option<nexo_core::permission::PermissionMode>,
-    /// When the reasoning level last became the top one: a crest runs along the rule and the `◆` pops
-    /// (see `fx_effort`). The breath of the `◆` while a turn runs at that level: since when, and the
-    /// time the work stopped (the breath finishes its cycle).
+    /// When the reasoning level last became the top one: a comet runs the rule into the level's tag, which
+    /// lights up, and the `◆` pops (see `fx_effort`). The breath of the `◆` while a turn runs at that level:
+    /// since when, and the time the work stopped (the breath finishes its cycle).
     pub effort_at: Option<Instant>,
     pub breath_from: Option<Instant>,
     pub breath_stop: Option<Instant>,
+    /// The band along the rule while a turn runs at that level: since when, and when the work stopped.
+    pub band_from: Option<Instant>,
+    pub band_stop: Option<Instant>,
     /// The slash command the draft starts with, once it names a real one, and since when: it
     /// lights up once.
     pub cmd_lit: Option<(String, Instant)>,
