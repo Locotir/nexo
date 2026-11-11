@@ -136,6 +136,9 @@ impl App {
 
     /// Enter on the draft.
     pub fn submit(&mut self) {
+        if self.in_sub() {
+            return self.submit_sub();
+        }
         let text = self.input.full_text();
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -371,7 +374,9 @@ impl App {
 
     /// `/jobs`, a click on `⚙ N jobs`: the window with every background job and its output.
     pub fn open_jobs(&mut self) {
-        self.modal = Some(Modal::Jobs(Box::new(crate::jobs_view::JobsView::new(self.jobs.clone()))));
+        let mut view = crate::jobs_view::JobsView::new(self.jobs.clone());
+        view.set_runs(self.sub_job_runs());
+        self.modal = Some(Modal::Jobs(Box::new(view)));
         self.send(AgentCommand::JobTails);
     }
 
@@ -415,7 +420,11 @@ impl App {
     pub fn open_hint(&mut self, hit: HintHit) {
         match hit {
             HintHit::Todo => self.open_todo(),
-            HintHit::Jobs => self.run_command(Command::Jobs(None)),
+            HintHit::Jobs => match self.sub_chip_target() {
+                // the one job running is a sub-agent: its conversation, not a list of one
+                Some(id) => self.open_sub(&id),
+                None => self.run_command(Command::Jobs(None)),
+            },
             HintHit::Mem => self.open_shared(),
             HintHit::Queued => self.open_queue(),
             HintHit::Session => self.run_command(Command::Sessions),

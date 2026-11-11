@@ -65,6 +65,8 @@ async fn main() -> anyhow::Result<()> {
         if play(&events, &mut ends.commands).await {
             history.push(Message::assistant(REPLY));
         }
+        // NEXO_DEMO_SUB: one background sub-agent run the person can open from /jobs and write to
+        let mut sub = std::env::var_os("NEXO_DEMO_SUB").map(|_| demo_sub(&events));
         let mut forks = 0;
         let mut goal_round = 0;
         let mut tree: Vec<(usize, String, String)> = vec![(0, "demo-session".into(), "fix the failing test".into())];
@@ -191,6 +193,25 @@ async fn main() -> anyhow::Result<()> {
                         text: "compacted: 4 messages became a summary".into(),
                         problem: None,
                     });
+                }
+                Some(AgentCommand::SubTranscript { id }) => {
+                    let transcript =
+                        sub.as_ref().map(|s| nexo_core::subs::SubTranscript { items: s.clone(), dropped: 0 });
+                    let _ = events.send(AgentEvent::SubTranscript { id, transcript });
+                }
+                Some(AgentCommand::SubSubmit { id, text }) => {
+                    let Some(items) = sub.as_mut() else { continue };
+                    let person = nexo_core::subs::SubItem::Person { text: text.clone() };
+                    items.push(person.clone());
+                    let _ = events.send(AgentEvent::Sub { id: id.clone(), item: person });
+                    let words = format!("Noted, I will also look at: {text}");
+                    for chunk in words.split_inclusive(' ') {
+                        tokio::time::sleep(Duration::from_millis(60)).await;
+                        let _ = events.send(AgentEvent::SubDelta { id: id.clone(), text: chunk.into() });
+                    }
+                    let done = nexo_core::subs::SubItem::Text { text: words };
+                    items.push(done.clone());
+                    let _ = events.send(AgentEvent::Sub { id, item: done });
                 }
                 Some(AgentCommand::Shutdown) | None => {
                     let _ = events.send(AgentEvent::Shutdown);
@@ -418,4 +439,44 @@ async fn play(events: &nexo_core::agent::EventTx, commands: &mut nexo_core::agen
     let _ = events.send(AgentEvent::Queued { pending: 0 });
     let _ = events.send(AgentEvent::TurnEnd { reason: TurnEnd::Done });
     true
+}
+
+/// The scripted run: its state, the job that carries it, and what it has done so far.
+fn demo_sub(events: &tokio::sync::mpsc::UnboundedSender<AgentEvent>) -> Vec<nexo_core::subs::SubItem> {
+    use nexo_core::jobs::{JobInfo, JobKind, JobStatus};
+    use nexo_core::subs::{SubInfo, SubItem, SubState};
+    let id = "demo_call#1".to_string();
+    let _ = events.send(AgentEvent::SubState {
+        info: SubInfo {
+            id: id.clone(),
+            profile: "explore".into(),
+            title: "survey how weights are parsed".into(),
+            state: SubState::Background,
+            started_ms: 1,
+            ended_ms: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+        },
+    });
+    let _ = events.send(AgentEvent::Jobs {
+        jobs: vec![JobInfo {
+            id: 1,
+            kind: JobKind::Agent,
+            label: "survey how weights are parsed".into(),
+            status: JobStatus::Running,
+            elapsed_ms: 0,
+            lines: 0,
+        }],
+    });
+    let items = vec![
+        SubItem::Task { text: "survey how weights are parsed".into() },
+        SubItem::Call { id: "t1".into(), name: "grep".into(), summary: "parse_weight in src/".into() },
+        SubItem::Result { id: "t1".into(), ok: true, bytes: 412 },
+        SubItem::Text { text: "`parse_weight` lives in `src/units.rs` and is called from two places.".into() },
+    ];
+    for item in &items {
+        let _ = events.send(AgentEvent::Sub { id: id.clone(), item: item.clone() });
+    }
+    items
 }

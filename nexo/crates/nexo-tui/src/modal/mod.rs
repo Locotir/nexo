@@ -359,6 +359,8 @@ pub enum ModalOut {
     SendAndClose(nexo_core::agent::AgentCommand),
     /// Text for the clipboard; the modal stays.
     Copy(String),
+    /// Open the conversation of the sub-agent run with this id; the modal closes.
+    OpenSub(String),
     /// The answer to the trust question; the modal closes.
     Trust(bool),
 }
@@ -725,7 +727,7 @@ impl Modal {
             Modal::Agents(a) => a.click(x, y),
             Modal::Jobs(j) => {
                 if let Some((_, i)) = rows.iter().find(|(r, _)| contains(*r, x, y)) {
-                    j.click_row(*i);
+                    return j.click_row(*i);
                 }
                 ModalOut::Nothing
             }

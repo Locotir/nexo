@@ -28,11 +28,21 @@ pub struct JobsView {
     pub detail: bool,
     pub scroll: usize,
     asked: Instant,
+    /// The jobs that are sub-agent runs the app can open: (job number, run id).
+    runs: Vec<(u32, String)>,
 }
 
 impl JobsView {
     pub fn new(jobs: Vec<JobInfo>) -> JobsView {
-        JobsView { jobs, tails: Vec::new(), selected: 0, detail: false, scroll: 0, asked: Instant::now() }
+        JobsView {
+            jobs,
+            tails: Vec::new(),
+            selected: 0,
+            detail: false,
+            scroll: 0,
+            asked: Instant::now(),
+            runs: Vec::new(),
+        }
     }
 
     /// The jobs in the order shown: running first, then ended, the newest first.
@@ -63,6 +73,16 @@ impl JobsView {
         self.selected = self.selected.min(self.len().saturating_sub(1));
     }
 
+    pub fn set_runs(&mut self, runs: Vec<(u32, String)>) {
+        self.runs = runs;
+    }
+
+    /// The run the job under the cursor is, when it is a sub-agent run that can be opened.
+    fn current_run(&self) -> Option<String> {
+        let id = self.current()?.id;
+        self.runs.iter().find(|(job, _)| *job == id).map(|(_, run)| run.clone())
+    }
+
     pub fn set_tails(&mut self, tails: Vec<JobTail>) {
         self.tails = tails;
     }
@@ -88,6 +108,10 @@ impl JobsView {
                 self.scroll = 0;
             }
             KeyCode::Esc | KeyCode::Char('q') => return ModalOut::Close,
+            // a sub-agent opens its conversation; the job's own output is behind →
+            KeyCode::Enter if !self.detail && self.current_run().is_some() => {
+                return ModalOut::OpenSub(self.current_run().unwrap_or_default());
+            }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') if !self.detail && !self.is_empty() => {
                 self.detail = true;
                 self.scroll = usize::MAX;
@@ -111,12 +135,16 @@ impl JobsView {
     }
 
     /// A click on the list row `i`: it opens.
-    pub fn click_row(&mut self, i: usize) {
+    pub fn click_row(&mut self, i: usize) -> ModalOut {
         if !self.detail && i < self.len() {
             self.selected = i;
+            if let Some(run) = self.current_run() {
+                return ModalOut::OpenSub(run);
+            }
             self.detail = true;
             self.scroll = usize::MAX;
         }
+        ModalOut::Nothing
     }
 
     pub fn scroll_by(&mut self, delta: i32) {

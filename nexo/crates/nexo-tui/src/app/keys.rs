@@ -233,6 +233,10 @@ impl App {
             self.dirty = true;
             return;
         }
+        // in a sub-agent's conversation Esc only clears the box, then goes back: it interrupts nothing
+        if self.in_sub() {
+            return self.esc_sub();
+        }
         let now = self.now();
         let again = self.last_esc.is_some_and(|t| now.duration_since(t).as_secs_f32() < 1.5);
         self.last_esc = Some(now);
@@ -269,20 +273,28 @@ impl App {
     pub fn modal_out(&mut self, out: ModalOut) {
         match out {
             ModalOut::Nothing => self.sync_theme_preview(),
+            ModalOut::OpenSub(id) => {
+                self.modal = None;
+                self.open_sub(&id);
+                self.next_permission();
+            }
             ModalOut::Close => {
                 self.end_theme_preview(false);
                 self.modal = None;
                 self.next_permission();
             }
             ModalOut::Permission { id, decision } => {
-                if let Some(i) = self.tool_index(&id) {
-                    if matches!(decision, PermissionDecision::Deny { .. }) {
-                        if let Block::Tool { status, .. } = &mut self.blocks[i] {
-                            *status = ToolStatus::Denied;
+                // the card is in the main chat, whichever view the person is in
+                self.on_main(|a| {
+                    if let Some(i) = a.tool_index(&id) {
+                        if matches!(decision, PermissionDecision::Deny { .. }) {
+                            if let Block::Tool { status, .. } = &mut a.blocks[i] {
+                                *status = ToolStatus::Denied;
+                            }
+                            a.invalidate(i);
                         }
-                        self.invalidate(i);
                     }
-                }
+                });
                 self.send(AgentCommand::Permission { id, decision });
                 self.modal = None;
                 self.next_permission();

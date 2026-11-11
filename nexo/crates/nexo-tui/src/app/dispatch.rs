@@ -4,6 +4,10 @@ use super::*;
 
 impl App {
     pub fn run_command(&mut self, cmd: Command) {
+        // commands belong to the main chat: they act on it, whichever view is open
+        if self.in_sub() {
+            return self.on_main(|a| a.run_command(cmd));
+        }
         // the first screen runs what needs no model; the rest asks for one
         if self.locked && !cmd.works_without_model() {
             return self.open_setup();

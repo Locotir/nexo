@@ -1388,6 +1388,8 @@ fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(" ".to_string() + &"─".repeat(rest), theme.style(theme.border)),
             ])
         }
+        // a sub-agent's conversation names itself where the mode is named
+        None if app.in_sub() => sub_rule(app, w),
         None => match app.activity() {
             Some(verb) => {
                 let line = activity_line(app, &verb, w);
@@ -1449,6 +1451,32 @@ fn rule_colour(theme: &Theme, mode: PermissionMode) -> ratatui::style::Color {
         Some((c, _)) => crate::motion::fade(theme, theme.border, c, 0.55),
         None => theme.border,
     }
+}
+
+/// The rule over the draft in a sub-agent's conversation: `─ sub · title ────`, the title cut to fit, `· ended`
+/// when the run is over.
+fn sub_rule(app: &App, w: usize) -> Line<'static> {
+    let theme = &app.theme;
+    let (title, ended) = app.sub_label().unwrap_or_default();
+    let (head, tail) = ("sub · ", if ended { " · ended" } else { "" });
+    // the rule keeps a dash and a space on each side
+    let room = w.saturating_sub(4);
+    let budget = room.saturating_sub(width(head) + width(tail));
+    let label = if budget >= 2 || title.is_empty() {
+        format!("{head}{}{tail}", truncate(&title, budget))
+    } else {
+        truncate(&format!("{head}{title}{tail}"), room)
+    };
+    let line = theme.style(rule_colour(theme, app.permission_mode));
+    if room == 0 {
+        return Line::from(Span::styled("─".repeat(w), line));
+    }
+    let dashes = w.saturating_sub(3 + width(&label));
+    Line::from(vec![
+        Span::styled("─ ", line),
+        Span::styled(label, theme.bold(theme.accent)),
+        Span::styled(format!(" {}", "─".repeat(dashes)), line),
+    ])
 }
 
 /// The rule over the draft in `mode`, one styled cell per column: `─ ◇ plan ─────`.
@@ -1648,7 +1676,13 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     // an empty box says what it takes, or shows the suggested next message (Tab or → takes it whole)
     if app.input.is_empty() && app.palette.is_none() && editor.width > 4 {
         let shared;
-        let text = if let Some(s) = app.suggestion_shown() {
+        let text = if let Some((_, ended)) = app.sub_label() {
+            if ended {
+                "ended · Esc back"
+            } else {
+                "message this sub-agent · Esc back"
+            }
+        } else if let Some(s) = app.suggestion_shown() {
             s
         } else if app.busy {
             if app.quiet() {

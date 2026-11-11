@@ -7,6 +7,11 @@ impl App {
 
     /// After the draft changed: open, update or close the palette.
     pub fn refresh_palette(&mut self) {
+        // no commands from a sub-agent's conversation
+        if self.in_sub() {
+            self.palette = None;
+            return;
+        }
         // a draft that has text is no longer the empty box the suggestion belongs to
         if !self.input.is_empty() {
             self.suggestion = None;

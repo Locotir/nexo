@@ -34,6 +34,7 @@ mod events;
 mod keys;
 mod palette_ui;
 mod pointer;
+mod sub;
 mod submit;
 #[cfg(test)]
 mod tests;
@@ -376,6 +377,9 @@ pub struct App {
     pub modal_was: bool,
     /// The size each dialog took when it opened, and the rectangle it was drawn at.
     pub dialog_size: crate::dialog_size::DialogSize,
+    /// The sub-agent runs of the session as the agent last told them, and the one whose conversation is open.
+    pub sub_runs: Vec<sub::RunRec>,
+    pub sub_view: Option<sub::SubView>,
 }
 
 /// A piece of the status bar that answers a click.
@@ -602,6 +606,8 @@ impl App {
             dialog_size: Default::default(),
             kept_draft: None,
             modal_was: false,
+            sub_runs: Vec::new(),
+            sub_view: None,
             opts,
         };
         let found = std::mem::take(&mut app.opts.skills);

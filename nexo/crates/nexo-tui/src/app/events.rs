@@ -484,6 +484,22 @@ impl App {
     // ------------------------------------------------------------ agent events
 
     pub fn handle_agent(&mut self, ev: AgentEvent) {
+        // the conversations of sub-agents draw nothing, and cause no redraw, unless one is open
+        if ev.is_sub() {
+            return self.handle_sub(ev);
+        }
+        // a cleared session has no runs; anything else is the main chat's, whichever view is open
+        if matches!(ev, AgentEvent::HistoryCleared) {
+            self.close_sub();
+            self.sub_runs.clear();
+        }
+        if self.in_sub() {
+            return self.on_main(|a| a.handle_main(ev));
+        }
+        self.handle_main(ev)
+    }
+
+    fn handle_main(&mut self, ev: AgentEvent) {
         self.dirty = true;
         // the work a "…" flash announced is over (or told its result in the transcript): drop it
         if matches!(
@@ -1086,7 +1102,7 @@ impl App {
                 self.dirty = true;
             }
             AgentEvent::Compacted { .. } | AgentEvent::Retrying { .. } | AgentEvent::TodoChanged { .. } => {}
-            // the view of a sub-agent's conversation comes later; until then these change nothing on screen
+            // handled before this match (see `handle_sub`)
             AgentEvent::Sub { .. }
             | AgentEvent::SubDelta { .. }
             | AgentEvent::SubState { .. }
