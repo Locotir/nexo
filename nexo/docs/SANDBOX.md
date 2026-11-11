@@ -54,7 +54,9 @@ In the `ask` and `accept-edits` modes a bash call inside a working sandbox runs 
 rule still wins; read-only and plan modes still refuse commands). When a command fails with a message the
 sandbox can cause (permission denied, read-only file system, network unreachable, connection refused, name
 resolution), the tool result ends with a short `[sandbox: ...]` note. The model can then call `bash` again
-with `unsandboxed: true`; that call goes through the normal permission prompt.
+with `unsandboxed: true`; that call always asks, and the request says it runs outside the sandbox. No allow
+rule and no remembered "always" answer covers it (the same holds for `detach: true`); only yolo, or a hook
+of yours that answers allow, skips the question, and a deny rule still refuses it.
 
 ## Limits
 
