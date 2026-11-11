@@ -1002,6 +1002,10 @@ struct Look {
     /// When a tool card stopped running, and whether it was running at the last tick.
     done_at: Option<Instant>,
     was_live: bool,
+    /// When the thinking of a reasoning block closed (its header settles), and when a turn was interrupted
+    /// at this block (its rail warms).
+    ended: Option<Instant>,
+    stopped: Option<Instant>,
     /// How far back the group block of a call is (None: not in a group).
     group_back: Option<u32>,
 }

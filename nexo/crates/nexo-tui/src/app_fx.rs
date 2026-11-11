@@ -70,6 +70,8 @@ pub struct Fx {
     pub goal: crate::fx_goal::GoalFx,
     /// The constellation above the welcome card (see `fx_stars`).
     pub stars: crate::fx_stars::StarsFx,
+    /// The letters of the reply that arrived lately, drawn dimmer while they settle (see `fx_stream`).
+    pub ink: crate::fx_stream::Ink,
 }
 
 impl App {
@@ -137,6 +139,7 @@ impl App {
                 || motion::within(fx.reject_at, now, fx_chrome::REJECT_MS)
                 || fx.chip_seen.iter().any(|(_, t)| motion::within(Some(*t), now, fx_chrome::CHIP_MS))
                 || fx.goal.alive(now)
+                || fx.ink.alive(now)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
         t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)
     }

@@ -295,6 +295,8 @@ impl App {
         if self.stars_alive(self.now()) {
             self.dirty = true;
         }
+        // the thinking header settles when the reasoning closes, and the rail of an interrupted block warms
+        any |= self.stream_tick();
         // tool cards: a finished one pops and eases its rail
         {
             let now = self.now();
@@ -506,6 +508,10 @@ impl App {
             AgentEvent::AssistantStart => {}
             AgentEvent::TextDelta { text } => {
                 self.streamed_chars += text.len();
+                if self.fx_on() {
+                    let now = self.now();
+                    self.fx.ink.note(now, text.chars().filter(|c| *c != '\n').count());
+                }
                 self.close_reasoning();
                 match self.blocks.last_mut() {
                     Some(Block::Assistant { text: t, streaming: true, .. }) => {
@@ -893,6 +899,7 @@ impl App {
                         if self.status.as_ref().is_some_and(|(t, _)| t.starts_with("interrupting…")) {
                             self.status = None;
                         }
+                        self.stop_rail();
                         self.notice(Level::Warn, "interrupted")
                     }
                     TurnEnd::Error => {}
@@ -1281,5 +1288,60 @@ impl App {
         }
         self.changed.insert(0, ChangedFile { path, added: a, removed: d });
         self.dirty = true;
+    }
+}
+
+impl App {
+    /// Notices a reasoning block that just closed and keeps the blocks that are still moving fresh
+    /// (`fx_stream`); true while one is.
+    fn stream_tick(&mut self) -> bool {
+        use crate::fx_stream as fx;
+        let (now, on) = (self.now(), self.fx_on());
+        if !self.blocks.iter().any(|b| matches!(b, Block::Assistant { streaming: true, .. })) {
+            self.fx.ink.clear();
+        }
+        let mut any = false;
+        for i in 0..self.blocks.len() {
+            if let Block::Reasoning { streaming, .. } = &self.blocks[i] {
+                let look = &mut self.looks[i];
+                if look.was_live && !*streaming && on {
+                    look.ended = Some(now);
+                }
+                look.was_live = *streaming;
+            }
+            let look = self.looks[i];
+            let moving = on
+                && (crate::motion::within(look.ended, now, fx::THINK_MS)
+                    || crate::motion::within(look.stopped, now, fx::STOP_MS));
+            if moving {
+                self.cache[i] = None;
+                any = true;
+            } else if look.ended.is_some() || look.stopped.is_some() {
+                // the last frame is the settled one
+                let look = &mut self.looks[i];
+                look.ended = None;
+                look.stopped = None;
+                self.cache[i] = None;
+            }
+        }
+        any
+    }
+
+    /// A turn was interrupted: the rail of the block it stopped in warms once.
+    fn stop_rail(&mut self) {
+        if !self.fx_on() {
+            return;
+        }
+        let now = self.now();
+        let from = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).unwrap_or(0);
+        // a tool after the text means the turn stopped inside that tool, not in the text
+        if let Some(i) = (from..self.blocks.len())
+            .rev()
+            .find(|i| matches!(self.blocks[*i], Block::Assistant { .. } | Block::Reasoning { .. }))
+            .filter(|i| !self.blocks[*i + 1..].iter().any(|b| matches!(b, Block::Tool { .. })))
+        {
+            self.looks[i].stopped = Some(now);
+            self.cache[i] = None;
+        }
     }
 }

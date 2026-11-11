@@ -1089,6 +1089,9 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         let t = app.fade(bi);
         if t < 1.0 {
             l = fade_in(l, &theme, t);
+            if on && matches!(app.blocks[bi], crate::render::blocks::Block::User { .. }) {
+                l = crate::fx_stream::band_in(l, &theme, t);
+            }
         }
         // the selected block: a bar down its margin, the whole height of it, and its head lit
         let lvl = glide.level(bi, now);

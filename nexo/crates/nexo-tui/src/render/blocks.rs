@@ -177,6 +177,8 @@ pub struct RenderOpts {
     pub interpreted: bool,
     /// The `HH:MM` (and a reply's duration) at the right of a head line, when the block has them.
     pub timestamps: bool,
+    /// Colour motion is on: the caret breathes and the thinking header is in its active colour.
+    pub fx: bool,
 }
 
 impl Block {
@@ -267,9 +269,19 @@ impl Block {
                 // a blinking caret where the next words will land
                 if *streaming {
                     let on = (o.spinner / 4).is_multiple_of(2);
-                    let caret = if on { theme.style(theme.accent) } else { theme.style(theme.dim2) };
+                    let caret = if o.fx {
+                        crate::fx_stream::caret_style(theme, o.spinner)
+                    } else if on {
+                        theme.style(theme.accent)
+                    } else {
+                        theme.style(theme.dim2)
+                    };
+                    // with motion on, a caret that would not fit on the line is left out: it never wraps
                     if let Some(last) = lines.last_mut() {
-                        last.spans.push(Span::styled("▍", caret));
+                        let used: usize = last.spans.iter().map(|s| width(&s.content)).sum();
+                        if !o.fx || used < w.saturating_sub(2) {
+                            last.spans.push(Span::styled("▍", caret));
+                        }
                     }
                 }
                 if let Some(sig) = signal {
@@ -295,7 +307,7 @@ impl Block {
                         Some(ms) => format!("{at} · {}", fmt_ms(*ms)),
                         None => at.clone(),
                     };
-                    stamp_right(first, w, &label, theme);
+                    meta.stamped = stamp_right(first, w, &label, theme);
                 }
                 lines
             }
@@ -311,6 +323,8 @@ impl Block {
                     _ => String::new(),
                 };
                 let style = theme.dim();
+                let head_style =
+                    if *streaming && o.fx { theme.style(crate::fx_stream::think_active(theme)) } else { style };
                 let head_text = if *streaming {
                     format!(
                         "{} thinking · {}{elapsed}",
@@ -322,7 +336,7 @@ impl Block {
                 } else {
                     format!("▾ thinking · {}{elapsed}", nexo_core::count(n, "line"))
                 };
-                let mut lines = vec![Line::from(Span::styled(head_text, style))];
+                let mut lines = vec![Line::from(Span::styled(head_text, head_style))];
                 if !*folded || *streaming {
                     let body = if *streaming && *folded { tail(text, 3) } else { text.clone() };
                     let guide = [Span::styled(GUIDE, theme.dim2())];
@@ -1093,13 +1107,16 @@ fn tail(text: &str, n: usize) -> String {
 }
 
 /// Right-aligns a dim `label` on the head `line` of a block `w` wide; dropped when it would touch the text.
-fn stamp_right(line: &mut Line<'static>, w: usize, label: &str, theme: &Theme) {
+/// True when the stamp was added (two spans at the end: padding, then the label).
+fn stamp_right(line: &mut Line<'static>, w: usize, label: &str, theme: &Theme) -> bool {
     let used: usize = line.spans.iter().map(|s| width(&s.content)).sum();
     let need = width(label) + 2;
     if used + need <= w {
         line.spans.push(Span::raw(" ".repeat(w - used - width(label))));
         line.spans.push(Span::styled(label.to_string(), theme.dim2()));
+        return true;
     }
+    false
 }
 
 pub fn fmt_ms(ms: u64) -> String {
@@ -1391,6 +1408,7 @@ mod tests {
             intro_ms: None,
             interpreted: false,
             timestamps: true,
+            fx: false,
         }
     }
 

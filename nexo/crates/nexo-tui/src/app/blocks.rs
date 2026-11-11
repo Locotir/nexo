@@ -143,6 +143,7 @@ impl App {
             intro_ms: (self.opts.animations && since < crate::render::blocks::INTRO_MS).then_some(since),
             interpreted: self.interpreted,
             timestamps: self.timestamps,
+            fx: self.fx_on(),
         }
     }
 
@@ -225,6 +226,9 @@ impl App {
                 if let Some(card) = card {
                     crate::motion::card_fx(&mut lines, card, &self.theme);
                 }
+            }
+            if self.fx_on() {
+                self.stream_fx(i, &mut lines, meta.stamped);
             }
             if self.looks.get(i).is_some_and(|l| l.folded) && folds_alone(&self.blocks[i]) && lines.len() > 1 {
                 let hidden = lines.len() - 1;
@@ -779,4 +783,65 @@ impl App {
     }
 
     // ------------------------------------------------------------ status
+}
+
+impl App {
+    /// The motion of the streaming reply and of the blocks around it, applied to freshly rendered lines (see
+    /// `fx_stream`): colour only, never a line more or less.
+    fn stream_fx(&self, i: usize, lines: &mut [Line<'static>], stamped: bool) {
+        use crate::fx_stream as fx;
+        let now = self.now();
+        let since = |t: Instant| now.saturating_duration_since(t).as_millis() as u64;
+        let look = self.looks.get(i).copied().unwrap_or_default();
+        match &self.blocks[i] {
+            Block::Assistant { streaming: true, .. } => {
+                let segs = self.fx.ink.segments(now);
+                if segs.is_empty() {
+                    return;
+                }
+                // the last line with letters on it, and only that one
+                if let Some(at) =
+                    lines.iter().rposition(|l| l.spans.iter().skip(1).any(|s| !s.content.trim().is_empty()))
+                {
+                    fx::ink_tail(&mut lines[at], &segs, &self.theme, 1, stamped && at == 0);
+                }
+            }
+            Block::Assistant { .. } | Block::Reasoning { .. } => {
+                if let Some(t) = look.stopped.filter(|t| since(*t) < fx::STOP_MS) {
+                    let level = fx::hump(since(t), fx::STOP_MS);
+                    for l in lines.iter_mut() {
+                        if let Some(s) = l.spans.first_mut().filter(|s| s.content.starts_with(['◆', '│'])) {
+                            fx::warm(s, &self.theme, level);
+                        }
+                    }
+                }
+                if let (Block::Reasoning { .. }, Some(t)) =
+                    (&self.blocks[i], look.ended.filter(|t| since(*t) < fx::THINK_MS))
+                {
+                    if let Some(s) = lines.first_mut().and_then(|l| l.spans.first_mut()) {
+                        s.style = s.style.fg(fx::think_colour(&self.theme, since(t)));
+                    }
+                }
+            }
+            Block::Tool { status, .. } => {
+                let Some(t) = look.done_at else { return };
+                match status {
+                    ToolStatus::Failed => {
+                        if since(t) < fx::FAIL_MS {
+                            if let Some(s) = lines.first_mut().and_then(|l| l.spans.first_mut()) {
+                                s.style = s.style.fg(fx::fail_colour(&self.theme, since(t)));
+                            }
+                        }
+                    }
+                    ToolStatus::Done => {
+                        if let Some(head) = lines.first_mut() {
+                            fx::light_note(head, &self.theme, since(t));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
 }

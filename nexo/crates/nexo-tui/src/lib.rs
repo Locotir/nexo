@@ -30,6 +30,7 @@ pub mod fx_chrome;
 pub mod fx_diff;
 pub mod fx_goal;
 pub mod fx_stars;
+pub mod fx_stream;
 pub mod goal_view;
 pub mod inline;
 pub mod input;

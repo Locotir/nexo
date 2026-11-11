@@ -51,6 +51,8 @@ pub struct Meta {
     pub conts: Vec<Cont>,
     /// Columns of blank margin before every row.
     pub margin: u16,
+    /// The first row ends with a right-aligned time stamp span.
+    pub stamped: bool,
 }
 
 impl Meta {
