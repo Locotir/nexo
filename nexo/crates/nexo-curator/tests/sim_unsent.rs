@@ -79,3 +79,11 @@ fn a_tool_name_written_as_an_argument_still_counts() {
     assert_eq!(n, 1);
     assert_eq!(lost, vec!["stock_level_check".to_string()]);
 }
+
+#[test]
+fn the_words_a_reply_says_leave_out_the_tools_it_calls_but_keep_their_arguments() {
+    let reply = assistant(vec![call("edit_file", json!({"path": "warehouse_ledger_total.py"}))]);
+    let words = nexo_curator::sim::input::said_words(&reply);
+    assert!(!words.iter().any(|w| w == "edit_file"), "{words:?}");
+    assert!(words.iter().any(|w| w.contains("warehouse_ledger_total")), "{words:?}");
+}

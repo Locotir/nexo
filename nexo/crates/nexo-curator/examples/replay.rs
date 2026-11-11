@@ -64,7 +64,9 @@ use std::collections::{HashMap, HashSet};
 
 use nexo_curator::optimum::{optimum, Cost, Piece};
 use nexo_curator::sim::events::{denied, forgotten, latest_request, segments, wrote};
-use nexo_curator::sim::input::{fixture_requests, names, reply_to, said_of, text_of, transcript_requests, Request};
+use nexo_curator::sim::input::{
+    fixture_requests, names, reply_to, said_of, said_words, text_of, transcript_requests, Request,
+};
 use nexo_curator::sim::price::{blocks_of, cached, grown, tokens_of, Cache};
 use nexo_curator::{distinctive_words, Curator};
 use serde_json::{json, Value};
@@ -171,9 +173,7 @@ fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
 /// listing) copy few of its words, so without this the floor leaves the material out.
 fn bound(requests: &[Request], once: bool) -> (i64, i64) {
     let said: Vec<HashSet<String>> = (0..requests.len())
-        .map(|i| {
-            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
-        })
+        .map(|i| reply_to(requests, i).map(|m| said_words(m).into_iter().collect()).unwrap_or_default())
         .collect();
     let mut ahead: Vec<HashSet<String>> = vec![HashSet::new(); requests.len() + 1];
     for i in (0..requests.len()).rev() {
@@ -269,9 +269,7 @@ struct Loss {
 /// whole (a run stays when one of its lines is used later); 0 keeps nothing of a result it cuts.
 fn oracle(requests: &[Request], batched: bool, chunk: usize, digest: Digest) -> (i64, i64, Vec<(i64, i64)>, Loss) {
     let said: Vec<HashSet<String>> = (0..requests.len())
-        .map(|i| {
-            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
-        })
+        .map(|i| reply_to(requests, i).map(|m| said_words(m).into_iter().collect()).unwrap_or_default())
         .collect();
     let mut ahead: Vec<HashSet<String>> = vec![HashSet::new(); requests.len() + 1];
     for i in (0..requests.len()).rev() {
@@ -427,9 +425,7 @@ fn chunk_rows(requests: &[Request]) -> (Vec<String>, Vec<(u64, String)>) {
     };
     let mut texts: HashMap<u64, String> = HashMap::new();
     let said: Vec<HashSet<String>> = (0..requests.len())
-        .map(|i| {
-            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
-        })
+        .map(|i| reply_to(requests, i).map(|m| said_words(m).into_iter().collect()).unwrap_or_default())
         .collect();
     let mut ahead: Vec<HashSet<String>> = vec![HashSet::new(); requests.len() + 1];
     for i in (0..requests.len()).rev() {
@@ -572,9 +568,7 @@ fn optimum_pieces(requests: &[Request], chunk: usize, digest: Digest) -> Option<
         return None;
     }
     let said: Vec<HashSet<String>> = (0..n)
-        .map(|i| {
-            reply_to(requests, i).map(|m| distinctive_words(&said_of(m)).into_iter().collect()).unwrap_or_default()
-        })
+        .map(|i| reply_to(requests, i).map(|m| said_words(m).into_iter().collect()).unwrap_or_default())
         .collect();
     // ahead[i] holds w exactly while i <= last_say[w]
     let mut last_say: HashMap<&str, usize> = HashMap::new();
@@ -1557,8 +1551,7 @@ fn bank(path: &str, spec: &str, recall: bool, oracle: bool, dump: Option<&str>) 
         }
         // the reply to the request before, when this one goes on from it
         if requests > 0 && base == whole.msgs.len() && new.first().is_some_and(|m| m["role"] == "assistant") {
-            let said: Vec<String> =
-                distinctive_words(&said_of(&new[0])).into_iter().filter(|w| whole.bag.has(w)).collect();
+            let said: Vec<String> = said_words(&new[0]).into_iter().filter(|w| whole.bag.has(w)).collect();
             replies += 1;
             copied += said.len();
             for (way, sending) in [(&mut agent, &sent), (&mut curated, &view)] {

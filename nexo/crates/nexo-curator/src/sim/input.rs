@@ -21,6 +21,19 @@ pub fn text_of(v: &Value) -> String {
     flatten(v, false)
 }
 
+/// The distinctive words a reply says (`said_of`), less the names of the tools it calls: a called tool's
+/// name comes from the tool list sent with every request, so no view forgets it.
+pub fn said_words(reply: &Value) -> Vec<String> {
+    let called: std::collections::HashSet<&str> = reply["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["type"] == "tool_use")
+        .filter_map(|b| b["name"].as_str())
+        .collect();
+    crate::distinctive_words(&said_of(reply)).into_iter().filter(|w| !called.contains(w.as_str())).collect()
+}
+
 /// What a reply says: `text_of` plus its reasoning, as plain text (no signature, no model).
 pub fn said_of(v: &Value) -> String {
     flatten(v, true)
