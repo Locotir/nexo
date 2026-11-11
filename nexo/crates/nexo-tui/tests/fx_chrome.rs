@@ -162,14 +162,16 @@ fn the_scrollbar_thumb_lights_while_the_view_scrolls_and_fades_back() {
     let rest_c = thumb(&rest);
     assert!(!rest_c.is_empty(), "the bar is drawn");
     a.scroll_by(-6);
-    let mut lit = false;
-    for n in [1000, 1060, 1120, 1200, 1300] {
-        let b = draw_at(&mut a, t0, n, 80);
-        lit |= thumb(&b).first() != rest_c.first();
-    }
-    assert!(lit, "the thumb is lit while the view moves");
+    let lit = draw_at(&mut a, t0, 1100, 80);
+    let faded = draw_at(&mut a, t0, 1700, 80);
     let after = draw_at(&mut a, t0, 3000, 80);
-    assert_eq!(thumb(&after).first(), thumb(&after).last());
+    assert_ne!(
+        thumb(&lit).first(),
+        thumb(&faded).first(),
+        "the thumb is lit while the view moves and plain 600 ms later"
+    );
+    assert_eq!(faded, after, "and the faded frame is the resting frame");
+    assert_eq!(thumb(&faded).first(), rest_c.first(), "the thumb fades back to its resting colour");
     assert!(!a.tick_fx(), "it rests");
     let mut off = app(false);
     long_chat(&mut off);
@@ -233,4 +235,145 @@ fn a_new_branch_is_lit_but_one_found_after_the_start_is_not() {
     assert_ne!(mid[(x + 3, y)].fg, done[(x + 3, y)].fg, "the new branch is lit");
     assert_eq!(symbols(&mid), symbols(&done));
     assert!(!a.tick_fx(), "it rests");
+}
+
+fn press(a: &mut App, c: char) {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    a.input.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+}
+
+#[test]
+fn a_pasted_path_is_lit_once_then_rests_equal_to_the_still_frame() {
+    let t0 = Instant::now();
+    let mut a = app(true);
+    draw_at(&mut a, t0, 0, 80);
+    a.input.insert_paste("@src/main.rs");
+    let mid = draw_at(&mut a, t0, 100, 80);
+    let done = draw_at(&mut a, t0, 600, 80);
+    let (x, y) = find(&done, "@src/main.rs").expect("the path is in the draft");
+    assert_eq!(symbols(&mid), symbols(&done), "colour only");
+    assert_ne!(mid[(x + 2, y)].fg, done[(x + 2, y)].fg, "the chip is lit");
+    assert!(!a.tick_fx(), "it rests");
+    let mut off = app(false);
+    draw_at(&mut off, t0, 0, 80);
+    off.input.insert_paste("@src/main.rs");
+    assert_eq!(foot(&draw_at(&mut off, t0, 100, 80)), foot(&done), "settled equals animations off");
+}
+
+#[test]
+fn a_path_pasted_again_after_it_was_deleted_is_lit_again() {
+    let t0 = Instant::now();
+    let mut a = app(true);
+    draw_at(&mut a, t0, 0, 80);
+    a.input.insert_paste("@a.png");
+    let first = draw_at(&mut a, t0, 100, 80);
+    let rest = draw_at(&mut a, t0, 1000, 80);
+    let (x, y) = find(&rest, "@a.png").unwrap();
+    assert_ne!(first[(x + 1, y)].fg, rest[(x + 1, y)].fg, "lit the first time");
+    a.input.set_text("");
+    draw_at(&mut a, t0, 2000, 80);
+    a.input.insert_paste("@a.png");
+    let again = draw_at(&mut a, t0, 2100, 80);
+    assert_ne!(again[(x + 1, y)].fg, rest[(x + 1, y)].fg, "lit again");
+    assert!(a.tick_fx(), "the loop wakes for it");
+    let end = draw_at(&mut a, t0, 3000, 80);
+    assert_eq!(end, rest);
+    assert!(!a.tick_fx(), "it rests");
+}
+
+#[test]
+fn the_same_path_pasted_twice_is_one_chip_label() {
+    let mut a = app(true);
+    a.input.insert_paste("@a.png");
+    a.input.insert_paste("@a.png");
+    assert_eq!(a.input.chip_labels(), vec!["@a.png".to_string()]);
+    a.input.set_text("");
+    assert!(a.input.chip_labels().is_empty(), "a deleted path is no chip");
+    a.input.insert_paste("@a.png");
+    assert_eq!(a.input.chip_labels(), vec!["@a.png".to_string()]);
+}
+
+#[test]
+fn a_word_typed_by_hand_that_equals_a_pasted_path_is_not_lit() {
+    let t0 = Instant::now();
+    let mut a = app(true);
+    draw_at(&mut a, t0, 0, 80);
+    a.input.insert_paste("@a.png");
+    draw_at(&mut a, t0, 100, 80);
+    press(&mut a, ' ');
+    for c in "@a.png".chars() {
+        press(&mut a, c);
+    }
+    let mid = draw_at(&mut a, t0, 150, 80);
+    let done = draw_at(&mut a, t0, 1000, 80);
+    let (x, y) = find(&done, "@a.png @a.png").expect("both words are in the draft");
+    let typed = x + 7;
+    assert_eq!(mid[(typed + 1, y)].fg, done[(typed + 1, y)].fg, "the typed word is plain text");
+}
+
+#[test]
+fn a_new_folder_is_lit_once_and_the_first_look_is_not() {
+    let t0 = Instant::now();
+    let mut a = app(true);
+    let first = draw_at(&mut a, t0, 0, 160);
+    let (x, y) = find(&first, "/tmp/project").expect("the folder shows");
+    let settled = draw_at(&mut a, t0, 5000, 160);
+    assert_eq!(first[(x + 2, y)].fg, settled[(x + 2, y)].fg, "a first draw is not a change");
+    a.cwd = PathBuf::from("/tmp/other");
+    let mid = draw_at(&mut a, t0, 5100, 160);
+    let done = draw_at(&mut a, t0, 9000, 160);
+    let (x, y) = find(&done, "/tmp/other").expect("the new folder shows");
+    assert_ne!(mid[(x + 2, y)].fg, done[(x + 2, y)].fg, "the new folder is lit");
+    assert_eq!(symbols(&mid), symbols(&done), "colour only");
+    assert!(!a.tick_fx(), "it rests");
+    let rest = draw_at(&mut a, t0, 12000, 160);
+    assert_eq!(rest, done);
+}
+
+#[test]
+fn the_welcome_card_ends_when_a_key_is_typed() {
+    let t0 = Instant::now();
+    let mut a = locked(true);
+    let first = draw_at(&mut a, t0, 0, 80);
+    let (x, y) = find(&first, "Set up a model").unwrap();
+    let mid = draw_at(&mut a, t0, 250, 80);
+    assert_ne!(first[(x, y)].fg, mid[(x, y)].fg, "it is on its way");
+    press(&mut a, 'h');
+    let typed = draw_at(&mut a, t0, 260, 80);
+    let late = draw_at(&mut a, t0, 2000, 80);
+    assert_eq!(typed[(x, y)].fg, late[(x, y)].fg, "the card is whole the moment a key is typed");
+    assert!(!a.tick_fx(), "and the loop rests");
+}
+
+/// The bar of the context gauge in the status row: its row, and how many cells are filled (not the track).
+fn gauge_fill(b: &Buffer) -> usize {
+    let row = (0..b.area.height).find(|y| (0..b.area.width).any(|x| b[(x, *y)].symbol() == "━")).expect("a gauge");
+    let cells: Vec<_> = (0..b.area.width).filter(|x| b[(*x, row)].symbol() == "━").map(|x| b[(x, row)].fg).collect();
+    let track = *cells.last().unwrap();
+    cells.iter().filter(|c| **c != track).count()
+}
+
+fn gauge_text(b: &Buffer) -> String {
+    rows_of(b).into_iter().find(|r| r.contains('%')).expect("the figure shows")
+}
+
+#[test]
+fn the_gauge_figure_is_true_at_once_and_only_the_bar_eases() {
+    let t0 = Instant::now();
+    let (mut a, _) = gauge_app(true, t0);
+    a.last_call_input = 800;
+    a.last_call_cached = 100;
+    let start = draw_at(&mut a, t0, 1000, 120);
+    let mid = draw_at(&mut a, t0, 1120, 120);
+    let done = draw_at(&mut a, t0, 1500, 120);
+    let figure = |b: &Buffer| {
+        let t: Vec<char> = gauge_text(b).chars().collect();
+        let at = t.iter().position(|c| *c == '%').unwrap();
+        t[at.saturating_sub(4)..].iter().collect::<String>()
+    };
+    assert!(gauge_text(&start).contains("80%"), "the number is the true one from the first frame");
+    assert_eq!(figure(&start), figure(&done), "the number and the counts do not ease");
+    assert_eq!(figure(&mid), figure(&done));
+    let (s, m, d) = (gauge_fill(&start), gauge_fill(&mid), gauge_fill(&done));
+    assert!(s < m && m < d, "the bar eases: {s} {m} {d}");
 }

@@ -3358,6 +3358,10 @@ fn paint_chips(f: &mut Frame, app: &mut App, editor: Rect, rows: &[String]) {
     let theme = &app.theme;
     let from = theme.base().fg.unwrap_or(theme.fg);
     for (label, at) in &app.fx.chip_seen {
+        // a pasted path is lit only until the next key: the same word typed by hand is not a chip
+        if label.starts_with('@') && !app.input.just_pasted() {
+            continue;
+        }
         let k = crate::fx_chrome::fade_out(Some(*at), now, crate::fx_chrome::CHIP_MS);
         if k <= 0.0 {
             continue;

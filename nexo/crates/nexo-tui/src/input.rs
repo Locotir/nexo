@@ -371,7 +371,12 @@ impl Input {
             // a pasted attachment is a chip too
             let word = text.trim();
             if word.starts_with('@') && !word.contains(char::is_whitespace) {
-                self.lit_words.push(word.to_string());
+                // words deleted since are forgotten, so a path pasted again is a new chip
+                let text = self.editor.lines().join("\n");
+                self.lit_words.retain(|w| text.contains(w.as_str()));
+                if !self.lit_words.iter().any(|w| w == word) {
+                    self.lit_words.push(word.to_string());
+                }
             }
             self.editor.insert_str(text);
             return;
@@ -394,7 +399,19 @@ impl Input {
 
     /// The texts of the draft that are chips: folded pastes and pasted attachments.
     pub fn chip_labels(&self) -> Vec<String> {
-        self.pastes.iter().map(|(l, _)| l.clone()).chain(self.lit_words.iter().cloned()).collect()
+        let text = self.editor.lines().join("\n");
+        let mut out: Vec<String> = self.pastes.iter().map(|(l, _)| l.clone()).collect();
+        for w in &self.lit_words {
+            if text.contains(w.as_str()) && !out.contains(w) {
+                out.push(w.clone());
+            }
+        }
+        out
+    }
+
+    /// The last change to the draft was a paste (the next key ends it).
+    pub fn just_pasted(&self) -> bool {
+        self.after_paste
     }
 
     /// Where each folded paste sits in the draft: `(line, first character, end)`.
