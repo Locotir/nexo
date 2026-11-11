@@ -304,9 +304,19 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
         ui.end(Kind::Ok, "a newer release is out");
     }
     // the ready-built release first: seconds, and no compiler needed
-    let stage = std::env::temp_dir().join(format!("nexo-build-{}", std::process::id()));
+    let stage_dir = match private_stage() {
+        Ok(d) => d,
+        Err(e) => anyhow::bail!(
+            "cannot make a private work folder ({e}); check that the temp folder is writable and has free space"
+        ),
+    };
+    let stage = stage_dir.path().to_path_buf();
     ui.on_interrupt(&stage);
-    match download(&ui, &stage).await {
+    let got = match ASSET {
+        Some(name) => download(&ui, &Sources::live(), name, &stage, Caps::LIVE).await,
+        None => Err("none is published for this system".to_string()),
+    };
+    match got {
         Ok((file, tag)) => {
             ui.begin("installing", false);
             let placed = place(&file, &exe);
@@ -357,21 +367,44 @@ pub async fn run(check_only: bool) -> anyhow::Result<i32> {
     }
 }
 
-/// Downloads this machine's file from the latest release into `stage` and checks it against the
+/// A new work folder with a random name, made exclusively and readable by this user alone (0700 on Unix),
+/// so no other local user can guess it or plant something in it. It is removed when dropped.
+fn private_stage() -> std::io::Result<tempfile::TempDir> {
+    let d = tempfile::Builder::new().prefix("nexo-build-").tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(d)
+}
+
+/// The most bytes read for each download: the release file (about 35 MB today, so several times that) and
+/// the SHA-256 list (a few lines).
+#[derive(Clone, Copy)]
+struct Caps {
+    file: u64,
+    sums: u64,
+}
+
+impl Caps {
+    const LIVE: Caps = Caps { file: 256 << 20, sums: 1 << 20 };
+}
+
+/// Downloads `name` from the latest release into `stage` and checks it against the
 /// release's SHA-256 list: the file and the release tag, or why not.
-async fn download(ui: &Ui, stage: &Path) -> Result<(PathBuf, String), String> {
-    let name = ASSET.ok_or("none is published for this system")?;
+async fn download(ui: &Ui, src: &Sources, name: &str, stage: &Path, caps: Caps) -> Result<(PathBuf, String), String> {
     let client = client(300).ok_or("no HTTP client")?;
     let probe = probe(30).ok_or("no HTTP client")?;
-    let rel = latest_release(&client, &probe, &Sources::live(), &[name, SUMS]).await?;
+    let rel = latest_release(&client, &probe, src, &[name, SUMS]).await?;
     let url = |n: &str| rel.files.iter().find(|(f, _)| f == n).map(|(_, u)| u.clone());
     let (bin_url, sums_url) =
         (url(name).ok_or(format!("{} has no {name}", rel.tag))?, url(SUMS).ok_or("no SHA256SUMS")?);
     ui.begin(&format!("downloading {name}"), false);
-    let sums = with_retry(ui, || fetch(&client, &sums_url, None)).await?;
+    let sums = with_retry(ui, || fetch(&client, &sums_url, None, caps.sums, SUMS)).await?;
     let sums = String::from_utf8_lossy(&sums).into_owned();
     let t = Instant::now();
-    let bytes = with_retry(ui, || fetch(&client, &bin_url, Some(ui))).await?;
+    let bytes = with_retry(ui, || fetch(&client, &bin_url, Some(ui), caps.file, name)).await?;
     let t =
         format!("downloaded {name} ({}) from {} in {}", megabytes(bytes.len() as u64), rel.tag, secs_text(t.elapsed()));
     ui.end(Kind::Ok, &t);
@@ -380,9 +413,9 @@ async fn download(ui: &Ui, stage: &Path) -> Result<(PathBuf, String), String> {
     if sha256_hex(&bytes) != want {
         return Err(format!("{name} does not match its SHA-256: not used"));
     }
-    std::fs::create_dir_all(stage).map_err(|e| e.to_string())?;
     let file = stage.join(name);
-    std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+    write_new(&file, &bytes)
+        .map_err(|e| format!("cannot write {}: {e}; check free space in the temp folder", file.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -390,6 +423,16 @@ async fn download(ui: &Ui, stage: &Path) -> Result<(PathBuf, String), String> {
     }
     ui.end(Kind::Ok, "verified SHA-256");
     Ok((file, rel.tag))
+}
+
+/// Writes `bytes` to a file that must not exist yet (never follows a planted link), private to this user.
+fn write_new(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(file)?.write_all(bytes)
 }
 
 /// A failed download: what to tell, and whether trying again can help.
@@ -447,14 +490,36 @@ where
 }
 
 /// Gets one file; with a `ui`, redraws the progress line as the body arrives.
-async fn fetch(client: &reqwest::Client, url: &str, ui: Option<&Ui>) -> Result<Vec<u8>, FetchError> {
+/// Stops with an error as soon as more than `cap` bytes are announced or have arrived, whatever the server says.
+async fn fetch(
+    client: &reqwest::Client,
+    url: &str,
+    ui: Option<&Ui>,
+    cap: u64,
+    what: &str,
+) -> Result<Vec<u8>, FetchError> {
+    let too_big = || {
+        FetchError {
+        text: format!(
+            "{what} is larger than {} and was not downloaded; try again later, or build from source if it keeps happening",
+            megabytes(cap)
+        ),
+        retry: false,
+    }
+    };
     let mut r = client.get(url).send().await.and_then(|r| r.error_for_status())?;
     let total = r.content_length();
-    let mut body = Vec::with_capacity(total.unwrap_or(0).min(256 << 20) as usize);
+    if total.is_some_and(|t| t > cap) {
+        return Err(too_big());
+    }
+    let mut body = Vec::with_capacity(total.unwrap_or(0).min(cap).min(64 << 20) as usize);
     if let Some(ui) = ui {
         ui.progress(0, total);
     }
     while let Some(chunk) = r.chunk().await? {
+        if body.len() as u64 + chunk.len() as u64 > cap {
+            return Err(too_big());
+        }
         body.extend_from_slice(&chunk);
         if let Some(ui) = ui {
             ui.progress(body.len() as u64, total);
@@ -1228,6 +1293,87 @@ mod tests {
                 .await;
         let got = status("abc1234", &m.sources()).await;
         assert_eq!(got, Some(Some(Newer { tag: "build-def5678".into(), count: Some(3) })));
+    }
+
+    fn route(tag: &str, file: &str, reply: String) -> (String, String) {
+        (format!("/releases/download/{tag}/{file}"), reply)
+    }
+
+    /// A release with `bin` as the file `nexo-test` and a SHA-256 list that is right for it.
+    fn release(bin_reply: impl Fn(&str) -> String, bin: &str) -> impl FnOnce(&str) -> Vec<(String, String)> {
+        let sums = format!("{}  nexo-test\n", sha256_hex(bin.as_bytes()));
+        let bin_reply = bin_reply(bin);
+        move |b| {
+            vec![
+                redirect(b, "build-t1"),
+                route("build-t1", SUMS, reply_with("200 OK", &[], &sums)),
+                route("build-t1", "nexo-test", bin_reply),
+            ]
+        }
+    }
+
+    const SMALL: Caps = Caps { file: 1000, sums: 1000 };
+
+    fn left_in(d: &Path) -> usize {
+        std::fs::read_dir(d).unwrap().count()
+    }
+
+    #[tokio::test]
+    async fn a_normal_download_is_verified_and_kept_in_a_private_folder() {
+        let m = Mock::start(release(|b| reply_with("200 OK", &[], b), "binary")).await;
+        let stage = private_stage().unwrap();
+        let (file, tag) = download(&Ui::new(false), &m.sources(), "nexo-test", stage.path(), SMALL).await.unwrap();
+        assert_eq!(tag, "build-t1");
+        assert_eq!(std::fs::read(&file).unwrap(), b"binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(stage.path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_cap_is_refused_and_leaves_nothing() {
+        let big = "x".repeat(2000);
+        let m = Mock::start(release(|b| reply_with("200 OK", &[], b), &big)).await;
+        let stage = private_stage().unwrap();
+        let e = download(&Ui::new(false), &m.sources(), "nexo-test", stage.path(), SMALL).await.unwrap_err();
+        assert!(e.contains("nexo-test is larger than") && !e.contains('\n'), "{e}");
+        assert_eq!(left_in(stage.path()), 0);
+    }
+
+    #[tokio::test]
+    async fn the_cap_holds_with_no_length_or_a_false_one() {
+        let big = "x".repeat(5000);
+        let none = |b: &str| format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{b}");
+        let lie = |b: &str| format!("HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n{b}");
+        for reply in [&none as &dyn Fn(&str) -> String, &lie] {
+            let m = Mock::start(release(|b| reply(b), &big)).await;
+            let stage = private_stage().unwrap();
+            let r = download(&Ui::new(false), &m.sources(), "nexo-test", stage.path(), SMALL).await;
+            assert!(r.is_err(), "{r:?}");
+            assert_eq!(left_in(stage.path()), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_checksum_list_over_its_cap_is_refused() {
+        let m = Mock::start(|b| {
+            vec![redirect(b, "build-t1"), route("build-t1", SUMS, reply_with("200 OK", &[], &"y".repeat(3000)))]
+        })
+        .await;
+        let stage = private_stage().unwrap();
+        let e = download(&Ui::new(false), &m.sources(), "nexo-test", stage.path(), SMALL).await.unwrap_err();
+        assert!(e.starts_with("SHA256SUMS is larger than"), "{e}");
+    }
+
+    #[test]
+    fn the_work_folder_name_is_different_each_run() {
+        let (a, b) = (private_stage().unwrap(), private_stage().unwrap());
+        assert_ne!(a.path(), b.path());
+        let name = a.path().file_name().unwrap().to_string_lossy().into_owned();
+        assert_ne!(name, format!("nexo-build-{}", std::process::id()));
     }
 
     #[test]
