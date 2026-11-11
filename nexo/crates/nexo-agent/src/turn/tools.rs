@@ -533,6 +533,13 @@ pub(super) async fn run_call(
             };
             drop(ctx);
             let _ = forwarder.await;
+            if name == "bash" {
+                // a sandboxed command changed a path that runs outside the sandbox later: the person is told too
+                if let Some(note) = nexo_tools::guarded::note_in(&out.content) {
+                    let st = state.lock().await;
+                    notice(&st.events, Level::Warn, note.trim_matches(['[', ']']).to_string());
+                }
+            }
             if name == "exit_plan" {
                 let mut st = state.lock().await;
                 let switch = st.plan.lock().unwrap_or_else(|e| e.into_inner()).switch.take();

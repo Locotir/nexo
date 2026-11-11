@@ -141,6 +141,7 @@ impl Tool for Bash {
         }
         let mut output = Capture::new();
         let tmp = tmp_dir(&ctx.session_id);
+        let guard = crate::guarded::before(&sandbox, &ctx.cwd);
         let end = run_command(command, &ctx.cwd, &sandbox, Some(timeout), &ctx.cancel, Some(&tmp), |l| {
             ctx.report(l);
             output.push(l);
@@ -191,6 +192,10 @@ impl Tool for Bash {
                 content.push_str("\n\n");
                 content.push_str(&note);
             }
+        }
+        if let Some(note) = guard.and_then(|g| crate::guarded::after(g, &sandbox, &ctx.cwd)) {
+            content.push_str("\n\n");
+            content.push_str(&note);
         }
         let exit_code = match outcome.end {
             End::Exited(c) => Some(c),
@@ -487,9 +492,13 @@ fn background(command: &str, ctx: &ToolContext, sandbox: nexo_core::sandbox::San
     let id = job.id();
     let (line, cwd) = (command.to_string(), ctx.cwd.clone());
     let tmp = tmp_dir(&ctx.session_id);
+    let guard = crate::guarded::before(&sandbox, &cwd);
     tokio::spawn(async move {
         let cancel = job.cancel();
         let end = run_command(&line, &cwd, &sandbox, None, &cancel, Some(&tmp), |l| job.line(l)).await;
+        if let Some(note) = guard.and_then(|g| crate::guarded::after(g, &sandbox, &cwd)) {
+            job.line(&note);
+        }
         match end {
             End::Exited(c) => job.finish(c == 0, format!("exit {c}")),
             End::Signalled => job.finish(false, "killed by a signal"),

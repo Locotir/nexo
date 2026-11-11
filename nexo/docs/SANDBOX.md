@@ -58,10 +58,30 @@ with `unsandboxed: true`; that call always asks, and the request says it runs ou
 rule and no remembered "always" answer covers it (the same holds for `detach: true`); only yolo, or a hook
 of yours that answers allow, skips the question, and a deny rule still refuses it.
 
+## What the sandbox does not stop
+
+The sandbox keeps a command from writing outside the project and from using the network. It does not make
+the command harmless.
+
+- It reads the whole disk and the whole environment, API keys and `~/.ssh` included. What it reads can end
+  up in the output the model sees and in the session file.
+- It writes anything in the project, including paths that run later outside the sandbox or change what nexo
+  may do: `.git/hooks`, `.git/config`, `.nexo`, `.mcp.json`, `.claude`, `.codex`, `.envrc`, `.vscode`,
+  `.husky`. nexo does not block this. When a foreground command changes one of them (created, removed,
+  or a new size or time; only `stat` is used, no file is read), the result ends with a line such as
+  `[sandbox: this command changed .git/hooks/pre-commit, which runs outside the sandbox later]` and you get a
+  warning. In a git worktree the hooks and config of the real git directory count too, where the sandbox can
+  write them. A background job gets the same line in its output when it ends, but no warning.
+  A command that runs for a while and also touches those paths may be a false alarm if you edited them yourself.
+- Unix sockets on disk (for example the Docker socket) stay reachable even with the network off: Landlock does
+  not govern `connect` to a path, and the macOS profile allows them. A command that can reach one can ask
+  that program to act outside the sandbox. Do not use the sandbox as a boundary against a hostile command.
+
+For more safety: turn the sandbox off for the project (`/sandbox off`, or `sandbox = "off"`), so every `bash`
+call asks first; add deny rules for what must never run; keep keys out of the environment you start nexo from.
+
 ## Limits
 
-- Unix sockets on disk (for example the Docker socket) are still reachable: Landlock does not govern
-  `connect` to a path. Do not run the sandbox as a boundary against a hostile command that can reach one.
 - The sandbox covers the `bash` tool, its background jobs and what they start. The `!cmd` shell escape,
   MCP servers, hooks and language-server tools run as before.
 - `read-only` keeps temp directories writable, so tools that need scratch space still start.

@@ -14,6 +14,7 @@ pub mod edit;
 pub mod edit_check;
 pub mod glob;
 pub mod grep;
+pub mod guarded;
 pub mod jobs;
 pub mod ls;
 pub mod lsp;

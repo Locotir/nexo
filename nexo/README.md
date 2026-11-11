@@ -331,7 +331,7 @@ cannot be set up, the command is refused, never run unsandboxed. In the default 
 sandbox runs without asking; a failure the sandbox may have caused carries a short note, and the model can
 rerun it with `unsandboxed: true`. That call always asks and says it runs outside the sandbox: no allow
 rule and no remembered answer covers it, and the same holds for `detach: true`. Only yolo, or a hook of
-yours that answers allow, skips the question. `/status` shows the mode and the backend. Details and limits: [docs/SANDBOX.md](docs/SANDBOX.md).
+yours that answers allow, skips the question. A command can still change `.git/hooks`, `.nexo` or `.mcp.json` in the project, and nexo says so when it does. `/status` shows the mode and the backend. Details and limits: [docs/SANDBOX.md](docs/SANDBOX.md).
 
 `read` returns at most 64,000 characters per call (`offset` and `limit` page through a file). Reading and searching are not asked about, except for files that hold keys or credentials: `.env` and
 `.env.*`, anything under `.ssh`, `.gnupg`, `.aws`, `.kube` or `.docker`, private keys and certificates
