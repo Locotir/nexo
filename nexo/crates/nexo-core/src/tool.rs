@@ -209,8 +209,9 @@ impl ToolContext {
     }
 }
 
-/// The text of a tool for a model with a small window: one or two sentences, and a short phrase for the
-/// parameters worth one (`(name, phrase)`; a parameter left out keeps its name and type only).
+/// The text of a tool for a model with a small window, and in any window for a tool seldom called
+/// ([`Tool::rare`]): one or two sentences, and a short phrase for the parameters worth one (`(name, phrase)`;
+/// a parameter left out keeps its name and type only).
 #[derive(Debug, Clone, Copy)]
 pub struct Compact {
     pub description: &'static str,
@@ -257,6 +258,11 @@ pub trait Tool: Send + Sync {
     /// The short text for a window of 32k tokens or less; `None` keeps the full one.
     fn compact(&self) -> Option<Compact> {
         None
+    }
+    /// A tool the model seldom calls: it is offered with its short text ([`Tool::compact`]) in every window,
+    /// as the full one would take its place in every request for a call in a few hundred.
+    fn rare(&self) -> bool {
+        false
     }
     fn kind(&self) -> ToolKind;
     /// The kind of this call, where `args` change it (a sub-agent that may write is a write);
@@ -313,7 +319,19 @@ impl ToolSet {
 
     /// The specs with each tool's [`Compact`] text where it has one.
     pub fn compact_specs(&self) -> Vec<ToolSpec> {
-        self.tools.values().map(|t| t.compact().map_or_else(|| t.spec(), |c| c.apply(t.spec()))).collect()
+        self.specs_for(true)
+    }
+
+    /// The specs as a model is offered them: the [`Compact`] text of every tool that has one when `compact`
+    /// (a small window), else only of the tools seldom called ([`Tool::rare`]).
+    pub fn specs_for(&self, compact: bool) -> Vec<ToolSpec> {
+        self.tools
+            .values()
+            .map(|t| match t.compact() {
+                Some(c) if compact || t.rare() => c.apply(t.spec()),
+                _ => t.spec(),
+            })
+            .collect()
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -372,6 +390,58 @@ pub fn paths_label(paths: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tool with a long text and a short one, seldom called or not.
+    struct Wordy(&'static str, bool);
+
+    #[async_trait]
+    impl Tool for Wordy {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: self.0.into(),
+                description: "The long text.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "description": "Long."}},
+                    "required": ["path"]
+                }),
+            }
+        }
+        fn compact(&self) -> Option<Compact> {
+            Some(Compact { description: "Short.", params: &[] })
+        }
+        fn rare(&self) -> bool {
+            self.1
+        }
+        fn kind(&self) -> ToolKind {
+            ToolKind::Read
+        }
+        fn summary(&self, _: &Value) -> String {
+            self.0.into()
+        }
+        async fn run(&self, _: Value, _: &ToolContext) -> ToolOutput {
+            ToolOutput::ok("")
+        }
+    }
+
+    #[test]
+    fn a_rare_tool_is_offered_with_its_short_text_in_every_window() {
+        let set = ToolSet::new().with(Arc::new(Wordy("often", false))).with(Arc::new(Wordy("seldom", true)));
+        let texts = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.description).collect::<Vec<_>>();
+        assert_eq!(texts(set.specs()), ["The long text.", "The long text."]);
+        assert_eq!(texts(set.specs_for(false)), ["The long text.", "Short."]);
+        assert_eq!(texts(set.specs_for(true)), ["Short.", "Short."]);
+        assert_eq!(texts(set.compact_specs()), ["Short.", "Short."]);
+        // the short text keeps the call as it is: same parameters, same required ones
+        let seldom = &set.specs_for(false)[1];
+        assert_eq!(
+            seldom.parameters,
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]})
+        );
+    }
 
     #[test]
     fn a_diff_saved_without_start_line_still_loads_and_one_with_it_keeps_it() {

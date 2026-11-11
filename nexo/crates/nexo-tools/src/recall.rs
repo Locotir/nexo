@@ -40,6 +40,10 @@ impl Tool for Recall {
         })
     }
 
+    fn rare(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Other
     }

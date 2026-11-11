@@ -884,7 +884,7 @@ impl Run {
             None => Message::user(prompt),
         };
         let mut messages = vec![first];
-        let specs = self.tools.specs();
+        let specs = self.tools.specs_for(false);
         // one id for every round of this run: its own prefix, apart from the parent's and the other runs'
         let cache_id = format!("{}-sub-{}", ctx.session_id, &uuid::Uuid::new_v4().simple().to_string()[..8]);
         for round in 0..=rounds {
@@ -1200,7 +1200,7 @@ impl Tool for SubAgent {
             "Several task calls in one message run at the same time when none of them can change files; \
              ones that can run one after another."
         };
-        let (main_provider, _, main_model) = self.target.get();
+        let (main_provider, _, _) = self.target.get();
         let mut params = json!({
             "type": "object",
             "properties": {
@@ -1208,14 +1208,14 @@ impl Tool for SubAgent {
                 "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."},
                 "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
                 "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
-                "model": {"type": "string", "description": format!("Another model for this sub-agent, only when the person asks for one; the conversation's ({main_model}) otherwise. Write it as its provider names it; a model of another provider set up here runs there.")}
+                "model": {"type": "string", "description": "Another model for this sub-agent, only when the person asks for one."}
             },
             "required": ["prompt"]
         });
-        // another provider only when there is one to go to
+        // another provider only when there is one to go to; its name is checked when the call runs, and a
+        // wrong one is answered with the names there are: the list is not paid for in every request
         if self.providers.keys().any(|n| *n != main_provider) {
-            let names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
-            params["properties"]["provider"] = json!({"type": "string", "enum": names, "description": format!("Another provider for this sub-agent, only when the person asks for one; the conversation's ({main_provider}) otherwise. Without `model` it runs the same model there.")});
+            params["properties"]["provider"] = json!({"type": "string", "description": "Another provider for this sub-agent, by name, only when the person asks for one."});
         }
         ToolSpec {
             name: "task".into(),
@@ -1233,7 +1233,7 @@ impl Tool for SubAgent {
 
     fn compact(&self) -> Option<Compact> {
         Some(Compact {
-            description: "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` is read-only; `general` can edit.",
+            description: "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
             params: &[
                 ("prompt", "The whole task, naming files and symbols"),
                 ("background", "Run as a job"),
@@ -1241,6 +1241,12 @@ impl Tool for SubAgent {
                 ("provider", "Only if the person asks"),
             ],
         })
+    }
+
+    /// Seldom called, so the short text goes out in every window. That text tells the two built-in kinds
+    /// apart and no other: with kinds of the person's own the full text goes out, which describes each.
+    fn rare(&self) -> bool {
+        self.profiles == builtin()
     }
 
     fn kind(&self) -> ToolKind {
@@ -1550,6 +1556,9 @@ mod provider_tests {
         }
     }
 
+    /// The most characters the tools of a new session may take in a request (see the test that reads it).
+    const SCHEMA_CEILING: usize = 11_472;
+
     fn map(list: &[(&str, ProviderConfig)]) -> BTreeMap<String, ProviderConfig> {
         list.iter().map(|(n, c)| (n.to_string(), c.clone())).collect()
     }
@@ -1613,5 +1622,105 @@ mod provider_tests {
         assert!(desc.len() < 260, "{} chars: {desc}", desc.len());
         assert!(!desc.contains("model-"), "{desc}");
         assert!(!desc.contains("Set up"), "{desc}");
+    }
+
+    #[tokio::test]
+    async fn any_provider_name_is_offered_and_an_unknown_one_is_answered_with_the_names_there_are() {
+        let all = map(&[("alpha", cfg("a1", &[])), ("beta", cfg("b1", &[])), ("gamma", cfg("g1", &[]))]);
+        let target = Target::new("alpha", all["alpha"].clone(), "a1");
+        let sub =
+            SubAgent::new(Arc::new(Mute), target, &ToolSet::new(), Vec::new(), Default::default()).with_providers(all);
+        // the schema takes a name as it is written: the list of them is not sent with every request
+        let spec = sub.spec();
+        let offered = &spec.parameters["properties"]["provider"];
+        assert_eq!(offered["type"], "string");
+        assert!(offered.get("enum").is_none(), "{offered}");
+        assert!(!spec.description.contains("beta") && !offered.to_string().contains("beta"), "{spec:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let out = sub.run(json!({"prompt": "look", "provider": "nope"}), &ToolContext::new(dir.path().into())).await;
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.content, "no provider `nope` is set up; there are: alpha, beta, gamma");
+    }
+
+    /// What a new session offers in an empty folder: the built-in tools and `task`, every preset provider set up.
+    fn default_tools() -> ToolSet {
+        let providers = nexo_providers::presets::presets();
+        let (name, main) = providers.iter().next().map(|(n, c)| (n.clone(), c.clone())).unwrap();
+        let mut tools = nexo_tools::builtin();
+        let sub = SubAgent::new(Arc::new(Mute), Target::new(name, main, "m"), &tools, Vec::new(), Default::default())
+            .with_providers(providers);
+        tools.add(Arc::new(sub));
+        tools
+    }
+
+    /// The characters `specs` take as the `tools` of a chat request.
+    fn wire_chars(specs: &[ToolSpec]) -> usize {
+        specs.iter().map(|s| json!({"type": "function", "function": s}).to_string().len()).sum()
+    }
+
+    #[test]
+    fn the_default_tools_keep_under_their_schema_ceiling_with_the_rare_ones_still_offered() {
+        let tools = default_tools();
+        let specs = tools.specs_for(false);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "bash",
+                "diagnostics",
+                "edit",
+                "glob",
+                "grep",
+                "jobs",
+                "ls",
+                "note",
+                "read",
+                "recall",
+                "task",
+                "todo",
+                "web_fetch",
+                "web_search",
+                "write"
+            ]
+        );
+        // every request of a session carries these characters. 13619 before the tools seldom called went out
+        // with their short text; the ceiling is what they take now, so a text that grows is seen here.
+        // `bash` names the shell, and the Windows ones take up to 43 characters more than `sh -c`.
+        let ceiling = SCHEMA_CEILING + if cfg!(windows) { 43 } else { 0 };
+        let chars = wire_chars(&specs);
+        let each: Vec<String> =
+            specs.iter().map(|s| format!("{} {}", s.name, wire_chars(std::slice::from_ref(s)))).collect();
+        assert!(chars <= ceiling, "the default tools take {chars} characters, over {ceiling}: {}", each.join(", "));
+        // the rare ones: the short text, and every parameter of the full one with its type
+        for name in ["task", "diagnostics", "recall"] {
+            let tool = tools.get(name).unwrap();
+            let (short, full) = (specs.iter().find(|s| s.name == name).unwrap(), tool.spec());
+            assert!(tool.rare(), "{name}");
+            assert_eq!(short.description, tool.compact().unwrap().description, "{name}");
+            assert!(wire_chars(std::slice::from_ref(short)) < wire_chars(std::slice::from_ref(&full)), "{name}");
+            assert_eq!(short.parameters["required"], full.parameters["required"], "{name}");
+            let (got, want) = (&short.parameters["properties"], full.parameters["properties"].as_object().unwrap());
+            assert_eq!(got.as_object().unwrap().len(), want.len(), "{name}");
+            for (param, schema) in want {
+                assert_eq!(got[param]["type"], schema["type"], "{name}.{param}");
+            }
+        }
+        assert_eq!(
+            specs.iter().find(|s| s.name == "task").unwrap().parameters["properties"]["agent"]["enum"],
+            json!(["explore", "general"])
+        );
+    }
+
+    #[test]
+    fn task_goes_out_whole_when_the_person_has_kinds_of_their_own() {
+        let mut kinds = builtin();
+        kinds.push(Profile { name: "docs".into(), description: "writes the manual".into(), ..kinds[0].clone() });
+        let target = Target::new("a", cfg("a1", &[]), "a1");
+        let sub = SubAgent::new(Arc::new(Mute), target, &ToolSet::new(), kinds, Default::default());
+        assert!(!sub.rare());
+        let tools = ToolSet::new().with(Arc::new(sub));
+        let spec = &tools.specs_for(false)[0];
+        assert!(spec.description.contains("`docs`: writes the manual"), "{}", spec.description);
+        assert_eq!(spec.parameters["properties"]["agent"]["enum"], json!(["explore", "general", "docs"]));
     }
 }

@@ -85,7 +85,8 @@ fn window_selects_the_compact_text_for_a_small_model() {
     let tools = run(&["prompt", "--tools", "--window", "8000"]);
     // tools that bring their own text (skills, servers) keep it, so the size is checked on the built-in ones
     assert!(tools.contains("=== bash ===\nRun a shell command") && !tools.contains("description:\n"), "{tools}");
-    assert!(tools.len() < run(&["prompt", "--tools"]).len() / 2, "{tools}");
+    // the tools seldom called are short in every window, so the rest is what a small one saves
+    assert!(tools.len() * 5 < run(&["prompt", "--tools"]).len() * 3, "{tools}");
     // above 32k, or without the flag: today's text
     assert_eq!(run(&["prompt", "--builtin", "--window", "200000"]), run(&["prompt", "--builtin"]));
     assert_eq!(run(&["prompt", "--tools", "--window", "32001"]), run(&["prompt", "--tools"]));

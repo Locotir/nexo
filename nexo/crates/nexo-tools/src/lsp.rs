@@ -611,6 +611,10 @@ impl Tool for Diagnostics {
         Some(Compact { description: "Language-server errors and warnings of a file; call after editing.", params: &[] })
     }
 
+    fn rare(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Read
     }

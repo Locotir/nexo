@@ -68,33 +68,31 @@
       },
       {
         "name": "task",
-        "description": "Hand a self-contained piece of work to a sub-agent that works on its own and answers with a short report; only the report enters the conversation. Several task calls in one message run at the same time, also ones that change files: give each its own files, as a file one of them is changing is closed to the others until it ends. With `background: true` a sub-agent that changes nothing runs as a job while you go on (one that can change files runs in the foreground): you are told when it ends and read its report with the `jobs` tool. Kinds (explore when not given): `explore`: read-only: wide searches (where is X handled, what calls Y, how does Z work); `general`: can edit files and run commands: a self-contained change or check (fix this test, port that module); its calls are asked for like yours.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
           "type": "object",
           "properties": {
             "description": {
-              "type": "string",
-              "description": "Three to six words saying what the task is."
+              "type": "string"
             },
             "prompt": {
               "type": "string",
-              "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."
+              "description": "The whole task, naming files and symbols"
             },
             "agent": {
               "type": "string",
               "enum": [
                 "explore",
                 "general"
-              ],
-              "description": "The kind of sub-agent."
+              ]
             },
             "background": {
               "type": "boolean",
-              "description": "Run it as a background job and go on at once."
+              "description": "Run as a job"
             },
             "model": {
               "type": "string",
-              "description": "Another model for this sub-agent, only when the person asks for one; the conversation's (m1) otherwise. Write it as its provider names it; a model of another provider set up here runs there."
+              "description": "Only if the person asks"
             }
           },
           "required": [
@@ -222,33 +220,31 @@
       },
       {
         "name": "task",
-        "description": "Hand a self-contained piece of work to a sub-agent that works on its own and answers with a short report; only the report enters the conversation. Several task calls in one message run at the same time, also ones that change files: give each its own files, as a file one of them is changing is closed to the others until it ends. With `background: true` a sub-agent that changes nothing runs as a job while you go on (one that can change files runs in the foreground): you are told when it ends and read its report with the `jobs` tool. Kinds (explore when not given): `explore`: read-only: wide searches (where is X handled, what calls Y, how does Z work); `general`: can edit files and run commands: a self-contained change or check (fix this test, port that module); its calls are asked for like yours.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
           "type": "object",
           "properties": {
             "description": {
-              "type": "string",
-              "description": "Three to six words saying what the task is."
+              "type": "string"
             },
             "prompt": {
               "type": "string",
-              "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."
+              "description": "The whole task, naming files and symbols"
             },
             "agent": {
               "type": "string",
               "enum": [
                 "explore",
                 "general"
-              ],
-              "description": "The kind of sub-agent."
+              ]
             },
             "background": {
               "type": "boolean",
-              "description": "Run it as a background job and go on at once."
+              "description": "Run as a job"
             },
             "model": {
               "type": "string",
-              "description": "Another model for this sub-agent, only when the person asks for one; the conversation's (m1) otherwise. Write it as its provider names it; a model of another provider set up here runs there."
+              "description": "Only if the person asks"
             }
           },
           "required": [
@@ -407,33 +403,31 @@
       },
       {
         "name": "task",
-        "description": "Hand a self-contained piece of work to a sub-agent that works on its own and answers with a short report; only the report enters the conversation. Several task calls in one message run at the same time, also ones that change files: give each its own files, as a file one of them is changing is closed to the others until it ends. With `background: true` a sub-agent that changes nothing runs as a job while you go on (one that can change files runs in the foreground): you are told when it ends and read its report with the `jobs` tool. Kinds (explore when not given): `explore`: read-only: wide searches (where is X handled, what calls Y, how does Z work); `general`: can edit files and run commands: a self-contained change or check (fix this test, port that module); its calls are asked for like yours.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
           "type": "object",
           "properties": {
             "description": {
-              "type": "string",
-              "description": "Three to six words saying what the task is."
+              "type": "string"
             },
             "prompt": {
               "type": "string",
-              "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."
+              "description": "The whole task, naming files and symbols"
             },
             "agent": {
               "type": "string",
               "enum": [
                 "explore",
                 "general"
-              ],
-              "description": "The kind of sub-agent."
+              ]
             },
             "background": {
               "type": "boolean",
-              "description": "Run it as a background job and go on at once."
+              "description": "Run as a job"
             },
             "model": {
               "type": "string",
-              "description": "Another model for this sub-agent, only when the person asks for one; the conversation's (m1) otherwise. Write it as its provider names it; a model of another provider set up here runs there."
+              "description": "Only if the person asks"
             }
           },
           "required": [
@@ -610,33 +604,31 @@
       },
       {
         "name": "task",
-        "description": "Hand a self-contained piece of work to a sub-agent that works on its own and answers with a short report; only the report enters the conversation. Several task calls in one message run at the same time, also ones that change files: give each its own files, as a file one of them is changing is closed to the others until it ends. With `background: true` a sub-agent that changes nothing runs as a job while you go on (one that can change files runs in the foreground): you are told when it ends and read its report with the `jobs` tool. Kinds (explore when not given): `explore`: read-only: wide searches (where is X handled, what calls Y, how does Z work); `general`: can edit files and run commands: a self-contained change or check (fix this test, port that module); its calls are asked for like yours.",
+        "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
           "type": "object",
           "properties": {
             "description": {
-              "type": "string",
-              "description": "Three to six words saying what the task is."
+              "type": "string"
             },
             "prompt": {
               "type": "string",
-              "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."
+              "description": "The whole task, naming files and symbols"
             },
             "agent": {
               "type": "string",
               "enum": [
                 "explore",
                 "general"
-              ],
-              "description": "The kind of sub-agent."
+              ]
             },
             "background": {
               "type": "boolean",
-              "description": "Run it as a background job and go on at once."
+              "description": "Run as a job"
             },
             "model": {
               "type": "string",
-              "description": "Another model for this sub-agent, only when the person asks for one; the conversation's (m1) otherwise. Write it as its provider names it; a model of another provider set up here runs there."
+              "description": "Only if the person asks"
             }
           },
           "required": [

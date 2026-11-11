@@ -536,7 +536,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Prompt { edit: false, tools: show_tools, builtin, window }) => {
             let tools = setup::prompt_tools(&config, &cwd);
             // what the session would get: `auto` is the built-in curator, told which tools there are
-            let specs = if nexo_agent::prompt::is_compact(*window) { tools.compact_specs() } else { tools.specs() };
+            let specs = tools.specs_for(nexo_agent::prompt::is_compact(*window));
             let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
             let policy = nexo_agent::context::from_config(&config.context);
             let directives = policy.directives(&names);

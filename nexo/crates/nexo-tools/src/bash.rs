@@ -143,12 +143,12 @@ impl Tool for Bash {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The command line to run."},
-                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds before the command is killed. Default 120."},
-                    "description": {"type": "string", "description": "A few words on what it does, shown to the person."},
-                    "wait_until": {"type": "string", "description": "Shell condition polled every 0.5 s up to `timeout`; then `command` runs."},
-                    "background": {"type": "boolean", "description": "Run it as a background job and return at once."},
-                    "detach": {"type": "boolean", "description": "With `background`: own session, output to a log file, survives nexo exiting. Stop it by pid."},
-                    "unsandboxed": {"type": "boolean", "description": "After a command failed because of the OS sandbox: run this one outside it. The person is asked first."}
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds, default 120."},
+                    "description": {"type": "string", "description": "A few words on what it does, for the person."},
+                    "wait_until": {"type": "string", "description": "Shell condition polled up to `timeout`; then `command` runs."},
+                    "background": {"type": "boolean", "description": "Run as a job, return at once."},
+                    "detach": {"type": "boolean", "description": "With `background`: outlives nexo, logs to a file; stop it by pid."},
+                    "unsandboxed": {"type": "boolean", "description": "Only after the OS sandbox blocked a command: run outside it; the person is asked."}
                 },
                 "required": ["command"]
             }),
