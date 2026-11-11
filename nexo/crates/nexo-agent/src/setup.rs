@@ -165,6 +165,23 @@ pub fn keep_key(name: &str, key: &str, cfg: &mut ProviderConfig) -> anyhow::Resu
     keep_key_at(key_file(name), key, cfg)
 }
 
+/// Writes a typed key to a file that lasts only for the test request (`drop_trial_key` removes it): the
+/// key's own file is not touched until the model is saved, so a key that fails leaves nothing behind.
+pub fn trial_key(name: &str, key: &str, cfg: &mut ProviderConfig) -> anyhow::Result<PathBuf> {
+    keep_key_at(trial_file(name), key, cfg)
+}
+
+fn trial_file(name: &str) -> PathBuf {
+    let f = key_file(name);
+    let own = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    f.with_file_name(format!(".trying-{own}"))
+}
+
+/// Removes the file `trial_key` wrote.
+pub fn drop_trial_key(name: &str) {
+    let _ = std::fs::remove_file(trial_file(name));
+}
+
 fn keep_key_at(f: PathBuf, key: &str, cfg: &mut ProviderConfig) -> anyhow::Result<PathBuf> {
     if let Some(d) = f.parent() {
         let mut b = std::fs::DirBuilder::new();
@@ -267,6 +284,14 @@ mod tests {
         std::fs::set_permissions(old.join("k"), std::fs::Permissions::from_mode(0o644)).unwrap();
         keep_key_at(old.join("k"), "sk-2", &mut cfg).unwrap();
         assert_eq!((mode(&old), mode(&old.join("k"))), (0o700, 0o600));
+    }
+
+    #[test]
+    fn a_key_tried_goes_to_a_file_beside_its_own_never_to_its_own() {
+        let (own, trial) = (key_file("deepseek"), trial_file("deepseek"));
+        assert_ne!(own, trial, "the key's own file waits for the save");
+        assert_eq!(own.parent(), trial.parent());
+        assert!(trial.file_name().unwrap().to_string_lossy().starts_with(".trying-"));
     }
 
     #[test]

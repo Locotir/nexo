@@ -606,7 +606,7 @@ fn commands_and_submissions_reach_the_agent() {
     });
     let Some(Modal::Setup(st)) = &a.modal else { panic!("the setup stays open") };
     assert_eq!(st.step, crate::modal::setup::Step::Model);
-    key(&mut a, KeyCode::Esc);
+    // a server found running is asked at once: no address step to walk back through
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Esc);
     assert!(a.modal.is_none(), "Esc walks back and out");

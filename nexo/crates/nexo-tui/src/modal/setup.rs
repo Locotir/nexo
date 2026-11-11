@@ -8,7 +8,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nexo_core::agent::AgentCommand;
 use nexo_core::provider::{kind_label, normalize_url, LOCAL};
-use nexo_core::{ModelCheck, Pricing, ProviderConfig, ServerProbe};
+use nexo_core::{ErrorKind, ModelCheck, Pricing, Problem, ProviderConfig, ProviderError, ServerProbe};
+use nexo_providers::keys;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -18,8 +19,13 @@ use crate::render::blocks::{fmt_k, fmt_price, SPINNER};
 use crate::render::wrap::{truncate, wrap_plain};
 use crate::theme::Theme;
 
+mod start;
+use start::{error_of, Again, Done};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
+    /// The first screen of someone with no model: a few ways in, one suggested.
+    Start,
     Provider,
     /// How to sign in to a subscription provider.
     Login,
@@ -27,22 +33,19 @@ pub enum Step {
     Key,
     Model,
     Review,
+    /// A key, a server or a test request that did not work: the card of why, and a way on.
+    Trouble,
+    /// What was saved and where.
+    Done,
 }
 
 impl Step {
-    fn number(self) -> usize {
-        match self {
-            Step::Provider => 1,
-            Step::Login | Step::Address => 2,
-            Step::Key => 3,
-            Step::Model => 4,
-            Step::Review => 5,
-        }
-    }
-
     fn name(self) -> &'static str {
         match self {
-            Step::Provider => "provider",
+            Step::Start => "",
+            Step::Trouble => "problem",
+            Step::Done => "ready",
+            Step::Provider => "providers",
             Step::Login => "sign in",
             Step::Address => "address",
             Step::Key => "key",
@@ -113,6 +116,21 @@ pub struct Setup {
     providers: Vec<(String, ProviderConfig)>,
     models: Vec<(String, String)>,
     current: String,
+    /// The long list was reached from the first choices (Esc goes back to them).
+    from_start: bool,
+    /// The list a provider was picked from; Esc from its screens goes back there.
+    origin: Step,
+    /// A key pasted before a provider was picked: it waits for the pick.
+    pending_key: Option<String>,
+    /// The row of the first screen the person came from, so Esc lands on it again.
+    came_from: Option<String>,
+    /// What went wrong (the card of the `Trouble` step), and what Enter does about it.
+    pub problem: Option<Problem>,
+    again: Again,
+    /// The card or the review shows everything (the raw text, the facts to edit).
+    pub details: bool,
+    /// What the last screen will say, once the save is confirmed.
+    done: Option<Done>,
 }
 
 /// Whether a provider can be used as it is: a login saved, a key found, a local server that
@@ -194,8 +212,20 @@ impl Setup {
             providers,
             models,
             current: current.to_string(),
+            from_start: false,
+            origin: Step::Provider,
+            pending_key: None,
+            came_from: None,
+            problem: None,
+            again: Again::Probe,
+            details: false,
+            done: None,
         };
         s.fill_providers();
+        // nothing to switch to yet: the first run starts with a few clear choices
+        if s.models.is_empty() {
+            s.fill_start();
+        }
         s
     }
 
@@ -225,16 +255,17 @@ impl Setup {
             };
             let need = match &c.api_key_env {
                 _ if !key.is_empty() => key.to_string(),
-                Some(v) if c.login.is_none() => format!("needs {v}"),
+                Some(_) if c.login.is_none() => "needs a key".to_string(),
                 _ => String::new(),
             };
-            // what the person must do comes first: a narrow window cuts the end, and the address is the part to lose
+            // what the person must do comes first, and no address unless it is all there is
             let hint = match (&running, need.is_empty()) {
                 (Some(w), true) => format!("● running · {w}"),
                 (Some(w), false) => format!("● running · {w} · {need}"),
+                (None, true) if LOCAL.iter().any(|(l, _)| *l == name) => "on this computer".to_string(),
                 (None, true) => c.base_url.clone(),
-                (None, false) if need.starts_with("needs") => format!("{need} · {}", c.base_url),
-                (None, false) => format!("{} · {need}", c.base_url),
+                // the address is for the one who chose to type it: a person is told what to do
+                (None, false) => need.clone(),
             };
             let status = if running.is_some() {
                 "running"
@@ -351,11 +382,7 @@ impl Setup {
                 }
             }
         }
-        let own = PickItem {
-            label: "set up your own server".into(),
-            value: CUSTOM.into(),
-            hint: "OpenAI-compatible (Ollama, vLLM, LM Studio)".into(),
-        };
+        let own = PickItem { label: "set up your own server".into(), value: CUSTOM.into(), hint: "own server".into() };
         if !filtering || !fuzzy::rank(&q, &[format!("{} {}", own.label, own.hint)]).is_empty() {
             items.push(own);
             owner.push(None);
@@ -410,7 +437,9 @@ impl Setup {
     pub fn found_local(&mut self, found: Vec<(String, String)>) {
         self.local = found;
         self.scanned = true;
-        if self.step == Step::Provider {
+        if self.step == Step::Start {
+            self.fill_start();
+        } else if self.step == Step::Provider {
             let sel = self.list.current().map(|i| i.value.clone());
             self.fill_providers();
             if let Some(v) = sel {
@@ -423,7 +452,7 @@ impl Setup {
 
     fn probe_cmd(&mut self) -> SetupOut {
         self.error = None;
-        self.busy = Some(format!("asking {}", self.cfg.base_url));
+        self.busy = Some(self.wait_text());
         SetupOut::Send(AgentCommand::Probe { name: self.name.clone(), cfg: self.cfg.clone(), key: self.key.clone() })
     }
 
@@ -484,27 +513,28 @@ impl Setup {
         }
         self.busy = None;
         match result {
-            Err(e) => {
+            Err(e) if self.cfg.login.is_some() => {
+                self.fill_login();
                 self.error = Some(e);
-                self.step = match self.step {
-                    Step::Key => Step::Key,
-                    _ if self.cfg.login.is_some() => {
-                        self.fill_login();
-                        Step::Login
-                    }
-                    _ => Step::Address,
-                };
+            }
+            Err(e) => {
+                let again = if self.step == Step::Address { Again::Address } else { Again::Probe };
+                self.trouble(ProviderError::new(ErrorKind::Network, e), again);
             }
             Ok(p) => {
                 self.cfg.protocol = p.protocol.clone();
                 self.cfg.base_url = p.base_url.clone();
                 if p.needs_key && p.models.is_empty() {
-                    if self.step == Step::Key {
-                        self.error = Some("the server refused that key".into());
-                    }
-                    self.field.clear();
-                    self.step = Step::Key;
+                    let refused = self.has_key();
                     self.probe = Some(p);
+                    if refused {
+                        // the key that was sent did not open it: nothing is kept
+                        let e = ProviderError::new(ErrorKind::Auth, "the key was refused").with_status(401);
+                        self.trouble(e, Again::Key);
+                    } else {
+                        self.field.clear();
+                        self.step = Step::Key;
+                    }
                     return;
                 }
                 let items: Vec<PickItem> = p
@@ -569,8 +599,14 @@ impl Setup {
         self.efforts = i.efforts.clone();
         self.effort = None;
         self.selected = 0;
+        self.details = false;
+        let failed = check.error.clone();
         self.check = Some(check);
         self.step = Step::Review;
+        // the request failed: why, in plain words; the facts stay behind it for `S`
+        if let Some(e) = failed {
+            self.trouble(error_of(&e), Again::Check);
+        }
     }
 
     /// The configuration the review describes, ready to save.
@@ -614,25 +650,32 @@ impl Setup {
             }
             return SetupOut::Nothing;
         }
-        self.step = match self.step {
+        match self.step {
+            Step::Start | Step::Done => return SetupOut::Close,
+            Step::Provider if self.from_start => {
+                self.pending_key = None;
+                self.fill_start();
+            }
             Step::Provider => return SetupOut::Close,
-            Step::Login | Step::Address => {
-                self.fill_providers();
-                Step::Provider
+            Step::Login | Step::Address | Step::Key => self.go_origin(),
+            Step::Trouble if self.again == Again::Check => {
+                self.problem = None;
+                self.step = Step::Model;
             }
-            Step::Key | Step::Model if self.cfg.login.is_some() => {
-                self.fill_login();
-                Step::Login
+            Step::Trouble => self.go_origin(),
+            Step::Model if self.cfg.login.is_some() => self.fill_login(),
+            // the key was typed on the step before: it is asked for again, the old one is dropped
+            Step::Model if self.key.is_some() && self.cfg.api_key_env.is_some() => {
+                self.key = None;
+                self.field.clear();
+                self.step = Step::Key;
             }
-            Step::Key | Step::Model => {
-                self.field = self.cfg.base_url.clone();
-                Step::Address
-            }
+            Step::Model => self.go_origin(),
             Step::Review => {
                 self.check = None;
-                Step::Model
+                self.step = Step::Model;
             }
-        };
+        }
         SetupOut::Nothing
     }
 
@@ -651,6 +694,12 @@ impl Setup {
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match self.step {
+            Step::Start => self.start_key(key),
+            Step::Trouble => self.trouble_key(key.code),
+            Step::Done => match key.code {
+                KeyCode::Enter => SetupOut::Close,
+                _ => SetupOut::Nothing,
+            },
             Step::Provider | Step::Model | Step::Login => match key.code {
                 KeyCode::Enter | KeyCode::Tab => self.pick(),
                 KeyCode::Up => {
@@ -713,6 +762,13 @@ impl Setup {
             },
             Step::Address | Step::Key => match key.code {
                 KeyCode::Enter => self.submit_field(),
+                // the page where the key is made
+                KeyCode::Char('o') if ctrl && self.step == Step::Key => {
+                    if let Some(url) = keys::page(&self.name) {
+                        crate::links::open(url);
+                    }
+                    SetupOut::Nothing
+                }
                 KeyCode::Backspace => {
                     self.field.pop();
                     SetupOut::Nothing
@@ -731,23 +787,33 @@ impl Setup {
         }
     }
 
-    /// Typed text pasted in one go.
-    pub fn paste(&mut self, text: &str) {
-        // escapes and control characters out; a key wrapped over lines is joined back
+    /// Typed text pasted in one go (a key, an address, a search).
+    pub fn paste(&mut self, text: &str) -> SetupOut {
+        // escapes and control characters out; a key wrapped over lines is joined back; spaces and quotes trimmed
         let text = crate::render::wrap::clean(&text.replace('\r', "\n")).replace('\n', "");
-        let text = text.trim();
+        let text = keys::clean(&text);
         match self.step {
-            Step::Address | Step::Key => self.field.push_str(text),
+            // a key pasted before any provider was picked: the service is read from its start
+            Step::Start | Step::Provider if keys::looks_like_key(&text) && self.busy.is_none() => {
+                return self.key_pasted(text)
+            }
+            Step::Start => {
+                self.error = None;
+                self.field.push_str(&text);
+            }
+            Step::Address | Step::Key => self.field.push_str(&text),
             Step::Provider | Step::Model | Step::Login => {
-                self.list.query.push_str(text);
+                self.list.query.push_str(&text);
                 self.refilter();
             }
             Step::Review => {
                 if let Some(f) = self.fields.get_mut(self.selected) {
-                    f.value.push_str(text);
+                    f.value.push_str(&text);
                 }
             }
+            Step::Trouble | Step::Done => {}
         }
+        SetupOut::Nothing
     }
 
     fn move_list(&mut self, d: i32) {
@@ -786,38 +852,16 @@ impl Setup {
                     };
                     return SetupOut::SendAndClose(AgentCommand::SetModel { provider, model });
                 }
-                self.signed = None;
-                let name = it.value.trim_start_matches("new:").to_string();
-                self.cfg = self
-                    .providers
-                    .iter()
-                    .find(|(n, _)| *n == name)
-                    .map(|(_, c)| c.clone())
-                    .unwrap_or_else(|| ProviderConfig::new("openai-chat", "", None));
-                self.name = if name.is_empty() { "custom".into() } else { name };
-                self.key = None;
-                // a subscription: the login first, kept under the provider's name
-                if self.cfg.login.is_some() {
-                    let own = self.name.clone();
-                    self.cfg.auth.get_or_insert(own);
-                    self.fill_login();
+                self.choose(&it.value)
+            }
+            Step::Start => {
+                let Some(it) = self.list.current().cloned() else { return SetupOut::Nothing };
+                if it.value == "more" {
+                    self.came_from = Some(it.value.clone());
+                    self.show_providers();
                     return SetupOut::Nothing;
                 }
-                // a server found running here is asked at once
-                if let Some(root) = LOCAL
-                    .iter()
-                    .find(|(p, _)| *p == self.name && self.local.iter().any(|(l, _)| l == p))
-                    .map(|(_, r)| r.to_string())
-                {
-                    if self.cfg.base_url.starts_with(&root) || self.cfg.base_url.is_empty() {
-                        self.field = self.cfg.base_url.clone();
-                        self.step = Step::Address;
-                        return self.probe_cmd();
-                    }
-                }
-                self.field = self.cfg.base_url.clone();
-                self.step = Step::Address;
-                SetupOut::Nothing
+                self.choose(&it.value)
             }
             Step::Login => {
                 let Some(it) = self.list.current().cloned() else { return SetupOut::Nothing };
@@ -842,7 +886,7 @@ impl Setup {
                 };
                 self.model = model.clone();
                 self.error = None;
-                self.busy = Some(format!("trying {model} with a real request"));
+                self.busy = Some(format!("testing {model}"));
                 let Some(probe) = self.probe.clone() else { return SetupOut::Nothing };
                 SetupOut::Send(AgentCommand::CheckModel {
                     name: self.name.clone(),
@@ -857,12 +901,11 @@ impl Setup {
     }
 
     fn submit_field(&mut self) -> SetupOut {
-        let text = self.field.trim().to_string();
+        let text = keys::clean(&self.field);
         match self.step {
             Step::Address => {
                 if text.is_empty() {
-                    self.error =
-                        Some("type the server's address, e.g. localhost:11434 or https://api.example.com/v1".into());
+                    self.error = Some("type its address, e.g. localhost:11434".into());
                     return SetupOut::Nothing;
                 }
                 self.cfg.base_url = normalize_url(&text);
@@ -883,7 +926,7 @@ impl Setup {
                 } else if !text.is_empty() {
                     self.key = Some(text);
                 } else if self.cfg.resolve_key().is_none() {
-                    self.error = Some("paste the key, or $VARIABLE that holds it, or !command that prints it".into());
+                    self.error = Some("paste the key first".into());
                     return SetupOut::Nothing;
                 }
                 self.field.clear();
@@ -899,13 +942,16 @@ impl Setup {
         match key.code {
             KeyCode::Enter => {
                 let (name, cfg) = self.result();
-                SetupOut::SendAndClose(AgentCommand::SaveModel {
-                    name,
-                    cfg,
-                    model: self.model.clone(),
-                    key: self.key.clone(),
-                })
+                // the setup stays open on the last screen until the save is confirmed
+                self.expect_done(&name);
+                SetupOut::Send(AgentCommand::SaveModel { name, cfg, model: self.model.clone(), key: self.key.clone() })
             }
+            // the facts the test found, to change before saving
+            KeyCode::Tab if !self.details => {
+                self.details = true;
+                SetupOut::Nothing
+            }
+            _ if !self.details => SetupOut::Nothing,
             KeyCode::Up | KeyCode::BackTab => {
                 self.selected = (self.selected + rows - 1) % rows.max(1);
                 SetupOut::Nothing
@@ -945,7 +991,10 @@ impl Setup {
     }
 
     pub fn title(&self) -> String {
-        format!(" set up a model · {}/5 {} ", self.step.number(), self.step.name())
+        match self.step.name() {
+            "" => " set up a model ".to_string(),
+            n => format!(" set up a model · {n} "),
+        }
     }
 
     /// The row of the text being typed, if the step has one: it stays in view when the body scrolls.
@@ -961,13 +1010,30 @@ impl Setup {
     }
 
     pub fn hints(&self) -> &'static str {
+        if self.busy.is_some() && self.step != Step::Login {
+            return " Esc cancel";
+        }
         match self.step {
+            Step::Start => " ↑↓ choose · Enter pick · paste a key · Esc close",
+            Step::Provider if self.from_start => " type to search · ↑↓ choose · Enter pick · Esc back to the choices",
             Step::Provider => " type to filter · ↑↓ choose · ←→ fold · Enter open or pick · Esc close",
             Step::Login if self.busy.is_some() => " finish in the browser · Esc cancel",
             Step::Login => " ↑↓ choose · Enter sign in · Esc back",
-            Step::Model => " type to filter (or a name not listed) · ↑↓ choose · Enter try it · Esc back",
-            Step::Address | Step::Key => " type · Enter check · Ctrl+U clear · Esc back",
+            Step::Model => " type to filter (or a name not listed) · ↑↓ choose · Enter test it · Esc back",
+            Step::Address => " type · Enter check · Ctrl+U clear · Esc back",
+            Step::Key if keys::page(&self.name).is_some() => {
+                " paste the key · Enter test it · Ctrl+O open the page · Esc back"
+            }
+            Step::Key => " paste the key · Enter test it · Esc back",
+            Step::Review if !self.details => " Enter save and use · Tab change details · Esc back",
             Step::Review => " ↑↓ field · type to change · ←→ effort · Enter save and use · Esc back",
+            Step::Trouble => match self.again {
+                Again::Key => " Enter paste the key again · Tab details · Esc pick another provider",
+                Again::Address => " Enter edit the address · Tab details · Esc pick another provider",
+                Again::Probe => " Enter try again · Tab details · Esc pick another provider",
+                Again::Check => " Enter try again · S save anyway · Tab details · Esc pick another model",
+            },
+            Step::Done => " Enter or Esc to start",
         }
     }
 
@@ -977,7 +1043,7 @@ impl Setup {
         let dim = theme.dim();
         let mut lines: Vec<Line<'static>> = Vec::new();
         let prompt = |text: String, masked: bool| {
-            let shown = if masked { "•".repeat(text.chars().count()) } else { text };
+            let shown = if masked { keys::mask(&text) } else { text };
             Line::from(vec![
                 Span::styled("› ", theme.style(theme.accent)),
                 Span::raw(shown),
@@ -988,12 +1054,31 @@ impl Setup {
             lines.extend(wrap_plain(text, w, style, &[]));
         };
         match self.step {
+            Step::Start => {
+                lines.push(self.head_line(
+                    "nexo needs a model to talk to. Choose where to get one.",
+                    w,
+                    theme,
+                    spinner,
+                ));
+                if !self.scanned && self.busy.is_none() && self.error.is_none() {
+                    say(&mut lines, "Looking for local models…", dim);
+                }
+                if !self.field.is_empty() {
+                    lines.push(prompt(self.field.clone(), true));
+                }
+            }
             // on a short screen the list comes first: the intro is dropped
-            Step::Provider if short => {}
+            Step::Provider if short && self.busy.is_none() && self.error.is_none() => {}
             Step::Provider => {
-                say(&mut lines, "Switch to a model you have, or set up a provider: nexo asks the server what it is and what it serves.", dim);
-                if !self.scanned {
-                    say(&mut lines, "Looking for Ollama, LM Studio, vLLM and llama.cpp on this machine…", dim);
+                let ask = match (self.pending_key.is_some(), self.from_start) {
+                    (true, _) => "Which service is this key from? Type to search.",
+                    (false, true) => "Choose a provider. Type to search.",
+                    (false, false) => "Pick a model, or set up a provider. Type to search.",
+                };
+                lines.push(self.head_line(ask, w, theme, spinner));
+                if !self.scanned && !self.from_start && self.busy.is_none() && self.error.is_none() {
+                    say(&mut lines, "Looking for local models…", dim);
                 }
             }
             Step::Login => {
@@ -1001,11 +1086,9 @@ impl Setup {
                     Span::styled(format!("{} ", self.name), theme.bold(theme.accent)),
                     Span::styled("sign in with your subscription", dim),
                 ]));
-                say(
-                    &mut lines,
-                    "The login is kept in a file only you can read; it is never shown and never put in the config.",
-                    dim,
-                );
+                if let Some(cost) = self.cost_line() {
+                    say(&mut lines, cost, dim);
+                }
                 if let Some((url, code)) = &self.prompt {
                     lines.push(Line::default());
                     // the host only; the whole link is long, and `c` copies it
@@ -1032,48 +1115,73 @@ impl Setup {
                 if let Some(s) = &self.signed {
                     lines.push(Line::from(Span::styled(format!("✓ {s}"), theme.style(theme.success))));
                 }
-                say(
-                    &mut lines,
-                    "e.g. localhost:11434 (Ollama), localhost:8000/v1 (vLLM), https://api.deepseek.com",
-                    dim,
-                );
+                // the reason it failed takes the place of the example, so the dialog does not grow
+                match &self.error {
+                    Some(e) => lines.push(Line::from(Span::styled(
+                        truncate(&format!("✗ {e}"), w.max(8)),
+                        theme.style(theme.error),
+                    ))),
+                    None => say(&mut lines, "e.g. localhost:11434 (Ollama) or localhost:8000/v1 (vLLM)", dim),
+                }
                 lines.push(prompt(self.field.clone(), false));
             }
-            Step::Key => {
-                let p = self.probe.as_ref();
-                let what = p.map(|p| kind_label(&p.kind).to_string()).unwrap_or_default();
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{} ", self.name), theme.bold(theme.accent)),
-                    Span::styled(format!("{what} at {} wants a key", self.cfg.base_url), dim),
-                ]));
-                if let Some(v) = &self.cfg.api_key_env {
-                    let set = std::env::var(v).is_ok_and(|k| !k.trim().is_empty());
-                    say(
-                        &mut lines,
-                        &if set { format!("${v} is set · Enter try it") } else { format!("${v} is not set") },
-                        dim,
-                    );
-                }
-                say(&mut lines, "Paste the key (kept in a file only you can read, never in the config), or $VARIABLE, or !command that prints it.", dim);
-                let masked = !self.field.starts_with('$') && !self.field.starts_with('!');
-                lines.push(prompt(self.field.clone(), masked));
-            }
+            Step::Key => lines.extend(self.key_lines(w, theme)),
+            Step::Trouble => lines.extend(self.trouble_lines(w, theme)),
+            Step::Done => lines.extend(self.done_lines(w, theme)),
             Step::Model => {
                 if let Some(s) = &self.signed {
                     lines.push(Line::from(Span::styled(format!("✓ {s}"), theme.style(theme.success))));
                 }
                 if let Some(p) = &self.probe {
-                    let mut head = format!("✓ {}", kind_label(&p.kind));
-                    if let Some(v) = &p.version {
-                        head.push_str(&format!(" {v}"));
-                    }
-                    head.push_str(&format!(" at {} · {} models", p.base_url, p.models.len()));
-                    lines.push(Line::from(Span::styled(head, theme.style(theme.success))));
-                    for t in &p.trail {
-                        say(&mut lines, &format!("  {t}"), dim);
+                    let n = p.models.len();
+                    let on_this_computer = LOCAL.iter().any(|(l, _)| *l == self.name);
+                    let mut head = if on_this_computer {
+                        let mut h = format!("✓ {}", kind_label(&p.kind));
+                        if let Some(v) = &p.version {
+                            h.push_str(&format!(" {v}"));
+                        }
+                        h.push_str(" on this computer");
+                        h
+                    } else if self.name == "custom" {
+                        format!("✓ {} at {}", kind_label(&p.kind), p.base_url)
+                    } else if self.has_key() && self.cfg.login.is_none() {
+                        "✓ The key works".to_string()
+                    } else {
+                        format!("✓ Connected to {}", self.name)
+                    };
+                    head.push_str(&match n {
+                        0 => String::new(),
+                        1 => " · 1 model".to_string(),
+                        n => format!(" · {n} models"),
+                    });
+                    lines.push(Line::from(Span::styled(truncate(&head, w.max(8)), theme.style(theme.success))));
+                    if n == 0 {
+                        lines.extend(self.empty_note(w, theme));
+                    } else if let Some(about) = self.model_line() {
+                        say(&mut lines, &about, dim);
                     }
                 }
                 lines.push(prompt(self.list.query.clone(), false));
+            }
+            Step::Review if !self.details => {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("{}/{}", self.name, self.model),
+                    theme.bold(theme.accent),
+                )]));
+                if let Some(c) = &self.check {
+                    let ms = c.latency_ms.map(crate::render::blocks::fmt_ms).unwrap_or_default();
+                    lines.push(Line::from(Span::styled(
+                        format!("✓ Works: {} answered in {ms}", self.model),
+                        theme.style(theme.success),
+                    )));
+                    if !c.called_tool {
+                        say(
+                            &mut lines,
+                            "It did not use the test tool, so tools may not work.",
+                            theme.style(theme.warn),
+                        );
+                    }
+                }
             }
             Step::Review => {
                 lines.push(Line::from(vec![Span::styled(
@@ -1119,14 +1227,16 @@ impl Setup {
                 }
             }
         }
-        if let Some(b) = &self.busy {
+        let in_head = matches!(self.step, Step::Start | Step::Provider);
+        if let (Some(b), false) = (&self.busy, in_head) {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
                 format!("{} {b}…", SPINNER[spinner % SPINNER.len()]),
                 theme.style(theme.accent),
             )));
         }
-        if let Some(e) = &self.error {
+        let own_line = in_head || matches!(self.step, Step::Address | Step::Key);
+        if let (Some(e), false) = (&self.error, own_line) {
             lines.push(Line::default());
             if self.step == Step::Login {
                 // the sign-in failed: one line for the reason, then what the keys do
@@ -1137,10 +1247,14 @@ impl Setup {
                 say(&mut lines, &format!("✗ {e}"), theme.style(theme.error));
             }
         }
-        let list_at = matches!(self.step, Step::Provider | Step::Model | Step::Login).then(|| {
-            lines.push(Line::default());
-            lines.len()
-        });
+        // a server with no models yet has said so above: no "no match" under an empty prompt, no list to follow
+        let nothing_listed = self.step == Step::Model && self.list.items.is_empty() && self.list.query.is_empty();
+        let list_at = (matches!(self.step, Step::Start | Step::Provider | Step::Model | Step::Login)
+            && !nothing_listed)
+            .then(|| {
+                lines.push(Line::default());
+                lines.len()
+            });
         if list_at.is_some() {
             if self.list.ranked.is_empty() {
                 let none = if self.step == Step::Model && !self.list.query.trim().is_empty() {
@@ -1200,7 +1314,7 @@ impl Setup {
 
     /// The list row under a click, when the list is shown.
     pub fn click_row(&mut self, i: usize) -> SetupOut {
-        if matches!(self.step, Step::Provider | Step::Model | Step::Login) && i < self.list.ranked.len() {
+        if matches!(self.step, Step::Start | Step::Provider | Step::Model | Step::Login) && i < self.list.ranked.len() {
             self.list.selected = i;
             return self.pick();
         }
@@ -1209,8 +1323,8 @@ impl Setup {
 
     pub fn scroll_by(&mut self, d: i32) {
         match self.step {
-            Step::Provider | Step::Model | Step::Login => self.move_list(d),
-            Step::Review => {
+            Step::Start | Step::Provider | Step::Model | Step::Login => self.move_list(d),
+            Step::Review if self.details => {
                 let rows = (self.fields.len() + usize::from(!self.efforts.is_empty())) as i32;
                 if rows > 0 {
                     self.selected = (self.selected as i32 + d).rem_euclid(rows) as usize;
@@ -1264,17 +1378,26 @@ mod tests {
         assert!(provider_ready("mock", &m, &[]));
     }
 
+    /// Every test of the setup reads a login store that is not there, not the person's own.
+    fn no_auth() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json"));
+    }
+
     #[test]
     fn a_key_kept_with_auth_login_counts_as_found() {
+        no_auth();
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("auth.json");
         let mut map = std::collections::BTreeMap::new();
-        map.insert("deepseek".to_string(), nexo_core::auth::Credential::Api { key: "stored".into() });
+        map.insert("acme-auth".to_string(), nexo_core::auth::Credential::Api { key: "stored".into() });
         nexo_core::auth::write_to(&f, &map).unwrap();
         std::env::set_var("NEXO_AUTH_FILE", &f);
-        let s = setup();
-        std::env::remove_var("NEXO_AUTH_FILE");
-        let row = s.list.items.iter().find(|i| i.value == "new:deepseek").unwrap();
+        let acme = ProviderConfig::new("openai-chat", "https://acme.example", Some("NEXO_TEST_NO_SUCH_KEY"));
+        let s = Setup::new(vec![("acme-auth".into(), acme)], vec![("acme-auth".into(), "m".into())], "acme-auth/m");
+        // a store that is not there, not the person's own, for the tests that run beside this one
+        std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json");
+        let row = s.list.items.iter().find(|i| i.value == "new:acme-auth").unwrap();
         assert!(row.hint.ends_with("key ✓"), "{}", row.hint);
     }
 
@@ -1323,19 +1446,9 @@ mod tests {
     fn the_whole_setup_of_a_keyed_provider() {
         let mut s = setup();
         typing(&mut s, "set up deep");
+        // a named provider goes straight to its key: no address to type
         assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing);
-        assert_eq!((s.step, s.field.as_str()), (Step::Address, "https://api.deepseek.com"));
-        let out = press(&mut s, KeyCode::Enter);
-        assert!(matches!(out, SetupOut::Send(AgentCommand::Probe { key: None, .. })));
-        // the server wants a key
-        s.probed(Ok(ServerProbe {
-            kind: "openai-compatible".into(),
-            protocol: "openai-chat".into(),
-            base_url: "https://api.deepseek.com".into(),
-            needs_key: true,
-            ..Default::default()
-        }));
-        assert_eq!(s.step, Step::Key);
+        assert_eq!((s.step, s.field.as_str()), (Step::Key, ""));
         typing(&mut s, "sk-secret");
         let rendered: String = s
             .lines(80, &Theme::nexo(), 0, false)
@@ -1380,7 +1493,8 @@ mod tests {
         assert_eq!(s.step, Step::Review);
         assert_eq!(s.fields[1].value, "128000");
         assert_eq!(s.fields[1].source, "the models.dev catalogue");
-        // a price typed in, the effort set to high
+        // the facts wait behind Tab; a price typed in, the effort set to high
+        press(&mut s, KeyCode::Tab);
         for _ in 0..3 {
             press(&mut s, KeyCode::Down);
         }
@@ -1392,7 +1506,7 @@ mod tests {
         press(&mut s, KeyCode::Left);
         assert_eq!(s.effort, Some(1));
         let out = press(&mut s, KeyCode::Enter);
-        let SetupOut::SendAndClose(AgentCommand::SaveModel { name, cfg, model, key }) = out else { panic!("{out:?}") };
+        let SetupOut::Send(AgentCommand::SaveModel { name, cfg, model, key }) = out else { panic!("{out:?}") };
         assert_eq!(
             (name.as_str(), model.as_str(), key.as_deref()),
             ("deepseek", "deepseek-reasoner", Some("sk-secret"))
@@ -1400,6 +1514,11 @@ mod tests {
         assert_eq!(cfg.context_window["deepseek-reasoner"], 128_000);
         assert_eq!(cfg.pricing["deepseek-reasoner"].output, 0.42);
         assert_eq!(cfg.effort["deepseek-reasoner"], "high");
+        // the last screen waits for the save to be confirmed
+        assert_eq!(s.step, Step::Review);
+        s.saved("deepseek", "deepseek-reasoner");
+        assert_eq!(s.step, Step::Done);
+        assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Close);
     }
 
     #[test]
@@ -1412,8 +1531,15 @@ mod tests {
         press(&mut s, KeyCode::Enter);
         assert_eq!(s.cfg.base_url, "http://localhost:9");
         s.probed(Err("nothing answers at http://localhost:9: connection refused".into()));
-        assert_eq!(s.step, Step::Address);
-        assert!(s.error.as_deref().unwrap().contains("nothing answers"));
+        // the reason is a card, with a way on: Enter edits the address, kept as typed
+        assert_eq!(s.step, Step::Trouble);
+        assert!(s.problem.as_ref().unwrap().title.contains("localhost"), "{:?}", s.problem);
+        assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing);
+        assert_eq!((s.step, s.field.as_str()), (Step::Address, "localhost:9"));
+        s.probed(Err("x".into()));
+        assert_eq!(s.step, Step::Address, "nothing is waiting: the answer is ignored");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Err("nothing answers at http://localhost:9: connection refused".into()));
         assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
         assert_eq!(s.step, Step::Provider);
         assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Close);
@@ -1440,7 +1566,8 @@ mod tests {
     #[test]
     fn a_subscription_provider_asks_how_to_sign_in_before_its_address() {
         let mut s = subscription();
-        typing(&mut s, "codex");
+        // the first choices offer the sign-in; the row is on the cursor
+        assert_eq!((s.step, s.list.current().unwrap().value.as_str()), (Step::Start, "new:codex"));
         assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing);
         assert_eq!(s.step, Step::Login);
         assert_eq!(s.cfg.auth.as_deref(), Some("codex"), "the login is kept under the provider's name");
@@ -1489,7 +1616,7 @@ mod tests {
         press(&mut s, KeyCode::Esc);
         assert_eq!(s.step, Step::Login);
         assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
-        assert_eq!(s.step, Step::Provider);
+        assert_eq!(s.step, Step::Start);
     }
 
     #[test]
@@ -1498,6 +1625,387 @@ mod tests {
         assert_eq!(s.logged_in(Ok(())), SetupOut::Nothing);
         s.login_prompt("https://x".into(), String::new());
         assert!(s.prompt.is_none());
+        assert_eq!(s.step, Step::Start);
+    }
+
+    // ---- the first run: a few choices, a pasted key tested before it is kept ----
+
+    /// A first run: nothing set up, a keyed provider for each of two services, a subscription, a local server.
+    fn first_run() -> Setup {
+        no_auth();
+        let mut ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_T_FIRST_DS"));
+        ds.default_model = Some("deepseek-chat".into());
+        let an = ProviderConfig::new("anthropic", "https://api.anthropic.com", Some("NEXO_T_FIRST_AN"));
+        let ol = ProviderConfig::new("openai-chat", "http://localhost:11434/v1", None);
+        let mut cx = ProviderConfig::new("openai-responses", "https://chatgpt.example/backend-api/codex", None);
+        cx.login = Some("codex".into());
+        Setup::new(
+            vec![("deepseek".into(), ds), ("anthropic".into(), an), ("codex".into(), cx), ("ollama".into(), ol)],
+            Vec::new(),
+            "",
+        )
+    }
+
+    fn row_text(s: &Setup, w: usize) -> String {
+        s.lines(w, &Theme::nexo(), 0, false)
+            .0
+            .iter()
+            .map(|l| l.spans.iter().map(|x| x.content.to_string()).collect::<String>() + "\n")
+            .collect()
+    }
+
+    fn deepseek_probe() -> ServerProbe {
+        ServerProbe {
+            kind: "openai-compatible".into(),
+            protocol: "openai-chat".into(),
+            base_url: "https://api.deepseek.com".into(),
+            models: vec![ModelInfo { id: "deepseek-chat".into(), context_window: Some(128_000), ..Default::default() }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_first_screen_has_a_few_choices_and_one_is_recommended() {
+        let s = first_run();
+        assert_eq!(s.step, Step::Start);
+        let labels: Vec<&str> = s.list.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["Use deepseek", "Sign in with your ChatGPT plan", "More providers"], "{labels:?}");
+        assert_eq!(s.list.items.iter().filter(|i| i.hint.contains("recommended")).count(), 1);
+        assert!(s.list.items[0].hint.starts_with("recommended"), "{}", s.list.items[0].hint);
+        // nothing a newcomer has not met
+        let t = row_text(&s, 80);
+        for word in ["endpoint", "token", "slug", "base URL"] {
+            assert!(!t.contains(word), "{word}: {t}");
+        }
+        assert!(
+            t.lines().filter(|l| !l.trim().is_empty()).count() <= 5,
+            "one sentence, the scan note, three choices: {t}"
+        );
+    }
+
+    #[test]
+    fn models_on_this_computer_come_first_and_ask_for_no_key() {
+        let mut s = first_run();
+        s.found_local(vec![("ollama".into(), "Ollama 0.12.6".into())]);
+        assert_eq!(s.step, Step::Start);
+        let first = s.list.current().unwrap();
+        assert_eq!(
+            (first.label.as_str(), first.value.as_str()),
+            ("Use the models on this computer (free)", "local:ollama")
+        );
+        assert!(first.hint.starts_with("recommended"), "{}", first.hint);
+        assert!(s.list.items.len() <= 4);
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(
+            matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, key: None, .. }) if name == "ollama"),
+            "{out:?}"
+        );
+        assert_ne!(s.step, Step::Key);
+    }
+
+    #[test]
+    fn a_key_found_in_the_environment_is_offered_and_used_as_it_is() {
+        no_auth();
+        // its own variable, so no other test sees it
+        std::env::set_var("NEXO_T_ENV_OFFER_AN", "made-up-key-for-the-test-0000");
+        let an = ProviderConfig::new("anthropic", "https://api.anthropic.com", Some("NEXO_T_ENV_OFFER_AN"));
+        let ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_T_ENV_OFFER_DS"));
+        let mut s = Setup::new(vec![("deepseek".into(), ds), ("anthropic".into(), an)], Vec::new(), "");
+        let first = s.list.current().unwrap();
+        assert_eq!(first.label, "Found a key for anthropic, use it?");
+        assert_eq!(first.value, "env:anthropic");
+        assert!(s.list.items.len() <= 4);
+        // the offered row is the one that is recommended; deepseek is still one row down
+        assert!(first.hint.starts_with("recommended"), "{}", first.hint);
+        assert!(s.list.items.iter().any(|i| i.label == "Use deepseek" && !i.hint.contains("recommended")));
+        let out = press(&mut s, KeyCode::Enter);
+        std::env::remove_var("NEXO_T_ENV_OFFER_AN");
+        assert!(
+            matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, key: None, .. }) if name == "anthropic"),
+            "the key is read from where it is, not copied: {out:?}"
+        );
+        assert_eq!(s.name, "anthropic");
+    }
+
+    #[test]
+    fn a_pasted_key_names_its_service_when_only_that_service_starts_so() {
+        let mut s = first_run();
+        // quotes, spaces and a line break come with a paste; none of them is the key
+        let out = s.paste("  \"sk-ant-api03-madeupmadeupmade\"  \r\n");
+        assert_eq!(s.name, "anthropic");
+        assert!(
+            matches!(out, SetupOut::Send(AgentCommand::Probe { key: Some(ref k), .. }) if k == "sk-ant-api03-madeupmadeupmade"),
+            "{out:?}"
+        );
+        assert_eq!(s.busy.as_deref(), Some("testing the key"));
+    }
+
+    #[test]
+    fn a_pasted_key_with_a_start_two_services_share_asks_which_one() {
+        let mut s = first_run();
+        let out = s.paste("sk-0123456789abcdef0123456789abcdef");
+        assert_eq!(out, SetupOut::Nothing);
+        assert_eq!(s.step, Step::Provider, "the person is asked");
+        assert!(row_text(&s, 80).contains("deepseek"));
+        typing(&mut s, "set up deep");
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(
+            matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, key: Some(ref k), .. }) if name == "deepseek" && k == "sk-0123456789abcdef0123456789abcdef"),
+            "the pasted key goes with the choice: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_on_the_key_screen_shows_dots_and_its_last_four_and_the_page_to_get_one() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        assert_eq!((s.step, s.name.as_str()), (Step::Key, "deepseek"));
+        s.paste(" 'abcdefgh12345678' ");
+        assert_eq!(s.field, "abcdefgh12345678");
+        let t = row_text(&s, 80);
+        assert!(
+            t.contains(
+                "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}5678"
+            ),
+            "{t}"
+        );
+        assert!(!t.contains("abcdefgh"), "{t}");
+        assert!(t.contains("https://platform.deepseek.com/api_keys"), "{t}");
+        for word in ["endpoint", "token", "slug", "base URL"] {
+            assert!(!t.contains(word), "{word}: {t}");
+        }
+        let _ = crate::links::take_opened();
+        press_ctrl(&mut s, 'o');
+        assert_eq!(crate::links::take_opened(), ["https://platform.deepseek.com/api_keys"]);
+        // a provider whose key page is not known shows no link
+        s.name = "ollama".into();
+        assert!(!row_text(&s, 80).contains("Get one at"));
+    }
+
+    fn press_ctrl(s: &mut Setup, c: char) -> SetupOut {
+        s.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    #[test]
+    fn a_refused_key_is_a_card_with_a_way_back_and_nothing_is_kept() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-wrong-key-0000");
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(matches!(out, SetupOut::Send(AgentCommand::Probe { key: Some(_), .. })), "{out:?}");
+        s.probed(Ok(ServerProbe { needs_key: true, ..Default::default() }));
+        assert_eq!(s.step, Step::Trouble);
+        let t = row_text(&s, 80);
+        assert!(t.contains("401") || t.to_lowercase().contains("key"), "{t}");
+        assert!(t.contains("paste the key again"), "{t}");
+        assert!(t.lines().filter(|l| !l.trim().is_empty()).count() <= 4, "a card of 3 lines and a hint: {t}");
+        assert!(t.lines().all(|l| l.chars().count() < 72), "{t}");
+        assert!(s.key.is_some(), "the wrong key is in memory only, never written");
+        // Enter: the key is asked again, empty
+        assert_eq!(press(&mut s, KeyCode::Enter), SetupOut::Nothing);
+        assert_eq!((s.step, s.field.as_str(), s.key.is_none()), (Step::Key, "", true));
+        // Esc: back to the first choices, with the key forgotten
+        s.probed(Ok(ServerProbe { needs_key: true, ..Default::default() }));
+        typing(&mut s, "x");
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Start);
+        assert!(s.pending_key.is_none() && s.field.is_empty());
+    }
+
+    #[test]
+    fn a_server_that_does_not_answer_is_a_card_with_retry() {
+        let mut s = first_run();
+        s.found_local(vec![("ollama".into(), "Ollama 0.12.6".into())]);
+        press(&mut s, KeyCode::Enter);
+        s.probed(Err("nothing answers at http://localhost:11434/v1: connection refused".into()));
+        assert_eq!(s.step, Step::Trouble);
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(
+            matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, .. }) if name == "ollama"),
+            "retry asks again: {out:?}"
+        );
+        s.probed(Err("nothing answers".into()));
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Start, "or another way in");
+    }
+
+    #[test]
+    fn a_local_server_with_no_models_says_what_to_do_instead_of_an_empty_list() {
+        let mut s = first_run();
+        s.found_local(vec![("ollama".into(), "Ollama 0.12.6".into())]);
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(ServerProbe {
+            kind: "ollama".into(),
+            protocol: "openai-chat".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            ..Default::default()
+        }));
+        assert_eq!(s.step, Step::Model);
+        let t = row_text(&s, 80);
+        assert!(t.contains("ollama pull") && !t.contains("no match"), "{t}");
+    }
+
+    #[test]
+    fn a_default_model_is_chosen_with_a_line_on_what_it_is_for() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        assert_eq!(s.step, Step::Model);
+        assert_eq!(s.list.current().unwrap().value, "deepseek-chat");
+        assert!(row_text(&s, 80).contains("suggests for everyday work"), "{}", row_text(&s, 80));
+    }
+
+    #[test]
+    fn the_key_is_tested_with_a_model_then_saved_then_the_last_screen_says_where() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(matches!(out, SetupOut::Send(AgentCommand::CheckModel { .. })), "{out:?}");
+        assert_eq!(s.busy.as_deref(), Some("testing deepseek-chat"));
+        s.checked(ModelCheck {
+            info: ModelInfo { id: "deepseek-chat".into(), context_window: Some(128_000), ..Default::default() },
+            latency_ms: Some(640),
+            ..Default::default()
+        });
+        assert_eq!(s.step, Step::Review);
+        let t = row_text(&s, 80);
+        assert!(t.contains("Works") && t.contains("deepseek-chat"), "{t}");
+        // saving is asked of the agent; the last screen waits for its word
+        let out = press(&mut s, KeyCode::Enter);
+        assert!(matches!(out, SetupOut::Send(AgentCommand::SaveModel { .. })), "{out:?}");
+        assert_eq!(s.step, Step::Review);
+        s.saved("other", "model");
+        assert_eq!(s.step, Step::Review, "a model changed that is not this one is not our save");
+        s.saved("deepseek", "deepseek-chat");
+        assert_eq!(s.step, Step::Done);
+        let t = row_text(&s, 80);
+        assert!(t.contains("deepseek/deepseek-chat is ready"), "{t}");
+        assert!(t.contains("Saved in") && t.contains("The key is in"), "{t}");
+        assert!(t.contains("/model") && t.contains("/help") && t.contains("Enter"), "three things to try: {t}");
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Close);
+    }
+
+    #[test]
+    fn a_failed_check_is_a_card_and_esc_returns_to_the_models() {
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        press(&mut s, KeyCode::Enter);
+        s.checked(ModelCheck { error: Some("HTTP 402: insufficient balance".into()), ..Default::default() });
+        assert_eq!(s.step, Step::Trouble);
+        assert!(s.problem.is_some());
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Model);
+    }
+
+    #[test]
+    fn esc_goes_back_one_step_at_every_step_and_closes_from_the_first() {
+        let mut s = first_run();
+        // Start -> More providers -> Key -> (typed) back -> Provider -> Start -> closed
+        press(&mut s, KeyCode::Down);
+        press(&mut s, KeyCode::Down);
+        press(&mut s, KeyCode::Enter);
         assert_eq!(s.step, Step::Provider);
+        typing(&mut s, "set up deep");
+        press(&mut s, KeyCode::Enter);
+        assert_eq!(s.step, Step::Key);
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Provider);
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert_eq!(s.step, Step::Start);
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Close);
+        // Key -> Model -> Review: each Esc is one step
+        let mut s = first_run();
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        s.probed(Ok(deepseek_probe()));
+        press(&mut s, KeyCode::Enter);
+        s.checked(ModelCheck {
+            info: ModelInfo { id: "deepseek-chat".into(), ..Default::default() },
+            ..Default::default()
+        });
+        assert_eq!(s.step, Step::Review);
+        press(&mut s, KeyCode::Esc);
+        assert_eq!(s.step, Step::Model);
+        press(&mut s, KeyCode::Esc);
+        assert_eq!(s.step, Step::Key, "the key typed is asked for again");
+        press(&mut s, KeyCode::Esc);
+        assert_eq!(s.step, Step::Start);
+        // while a request is out, Esc cancels it and stays
+        press(&mut s, KeyCode::Enter);
+        typing(&mut s, "sk-good-key-0000");
+        press(&mut s, KeyCode::Enter);
+        assert!(s.busy.is_some());
+        assert_eq!(press(&mut s, KeyCode::Esc), SetupOut::Nothing);
+        assert!(s.busy.is_none() && s.step == Step::Key);
+    }
+
+    #[test]
+    fn the_list_of_providers_says_what_to_do_not_where_they_live() {
+        let mut s = first_run();
+        s.show_providers();
+        let hint = |v: &str| {
+            s.list.items.iter().find(|i| i.value == v).map(|i| i.hint.clone()).unwrap_or_else(|| panic!("{v}"))
+        };
+        assert_eq!(hint("new:deepseek"), "needs a key");
+        assert_eq!(hint("new:codex"), "sign in");
+        assert_eq!(hint("new:ollama"), "on this computer");
+        assert!(s.list.items.iter().all(|i| !i.hint.contains("://")), "no address in a row");
+    }
+
+    #[test]
+    fn the_key_line_of_every_step_says_what_esc_does() {
+        let mut s = first_run();
+        for step in [
+            Step::Start,
+            Step::Provider,
+            Step::Login,
+            Step::Model,
+            Step::Address,
+            Step::Key,
+            Step::Review,
+            Step::Trouble,
+            Step::Done,
+        ] {
+            s.step = step;
+            s.from_start = false;
+            let h = s.hints();
+            assert!(h.contains("Esc") || step == Step::Done, "{step:?}: {h}");
+            if !matches!(step, Step::Start | Step::Provider | Step::Done) {
+                assert!(h.contains("Esc back") || h.contains("Esc pick another"), "{step:?}: {h}");
+            }
+        }
+        s.step = Step::Provider;
+        s.from_start = true;
+        assert!(s.hints().contains("Esc back to the choices"));
+        s.busy = Some("testing the key".into());
+        assert_eq!(s.hints(), " Esc cancel");
+    }
+
+    #[test]
+    fn esc_from_a_provider_screen_lands_on_the_row_it_came_from() {
+        let mut s = first_run();
+        s.fill_start();
+        press(&mut s, KeyCode::Down);
+        let want = s.list.current().map(|i| i.value.clone()).unwrap_or_default();
+        press(&mut s, KeyCode::Enter);
+        press(&mut s, KeyCode::Esc);
+        assert_eq!(s.step, Step::Start);
+        assert_eq!(s.list.current().map(|i| i.value.clone()).unwrap_or_default(), want);
+        // and from the whole list of providers it lands on "More providers"
+        press(&mut s, KeyCode::Down);
+        press(&mut s, KeyCode::Enter);
+        assert_eq!(s.step, Step::Provider);
+        press(&mut s, KeyCode::Esc);
+        assert_eq!(s.step, Step::Start);
+        assert_eq!(s.list.current().map(|i| i.value.as_str()), Some("more"));
     }
 }

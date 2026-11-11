@@ -935,11 +935,13 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             cfg.protocol = probe.protocol.clone();
                             cfg.base_url = probe.base_url.clone();
                             if let Some(k) = key.as_deref().filter(|k| !k.trim().is_empty()) {
-                                if let Err(e) = setup::keep_key(&name, k, &mut cfg) {
-                                    notice(&events, Level::Warn, format!("the key could not be kept: {e}"));
+                                // only for the test request: the key's own file waits for the save
+                                if let Err(e) = setup::trial_key(&name, k, &mut cfg) {
+                                    notice(&events, Level::Warn, format!("the key could not be tried: {e}"));
                                 }
                             }
                             let check = setup::check(client, &name, &probe, &cfg, &model).await;
+                            setup::drop_trial_key(&name);
                             emit(&events, AgentEvent::ModelChecked { name, model, check });
                         });
                     }

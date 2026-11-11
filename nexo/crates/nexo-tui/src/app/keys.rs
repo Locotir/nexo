@@ -303,7 +303,16 @@ impl App {
                 self.modal = None;
                 self.trust_answer = Some(yes);
             }
-            ModalOut::Send(cmd) => self.send(cmd),
+            ModalOut::Send(cmd) => {
+                // the setup saves and stays open on its last screen: the switcher offers the model all the same
+                if let AgentCommand::SaveModel { name, model, .. } = &cmd {
+                    let pair = (name.clone(), model.clone());
+                    if !self.opts.models.contains(&pair) {
+                        self.opts.models.push(pair);
+                    }
+                }
+                self.send(cmd)
+            }
             ModalOut::Copy(text) => match crate::clipboard::copy(&text) {
                 Ok(how) => self.flash_toast(&format!("copied ({how})")),
                 Err(e) => self.notice(Level::Warn, format!("copy failed: {e}")),

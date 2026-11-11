@@ -106,8 +106,11 @@ pub fn handle(app: &mut App, ev: Event) {
                 }
                 // a key or an address pasted into the model setup
                 Some(crate::modal::Modal::Setup(st)) => {
-                    st.paste(&s);
+                    let out = st.paste(&s);
                     app.dirty = true;
+                    if let crate::modal::SetupOut::Send(cmd) = out {
+                        app.send(cmd);
+                    }
                 }
                 // a message to a session is one line: breaks in what is pasted become spaces
                 Some(crate::modal::Modal::Agents(v)) => {

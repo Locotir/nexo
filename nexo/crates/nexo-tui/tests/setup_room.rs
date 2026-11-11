@@ -53,21 +53,26 @@ fn the_dialog_takes_the_height_the_screen_gives_it() {
     for (w, h) in [(100u16, 30u16), (120, 40)] {
         let mut a = clean();
         press(&mut a, KeyCode::Enter);
+        // the first screen offers a few choices; the long list is behind "More providers"
+        press(&mut a, KeyCode::Enter);
         let rows = screen(&mut a, w, h);
         let top = rows.iter().position(|r| r.contains("set up a model")).expect("title");
         let bottom = rows.iter().rposition(|r| r.contains('╰')).expect("bottom edge");
         assert!(
-            bottom - top + 1 >= (h as usize) * 3 / 4 - 1,
+            // the room it is given, or all 21 rows and the frame when they fit in less
+            bottom - top + 1 >= ((h as usize) * 3 / 4 - 1).min(26),
             "{w}x{h}: dialog only {} rows\n{}",
             bottom - top + 1,
             rows.join("\n")
         );
-        // closed group: the own server row is in view, not behind a scrollbar
+        // the list scrolls inside the dialog: the last row is one End away
+        press(&mut a, KeyCode::End);
+        let rows = screen(&mut a, w, h);
         let own = rows
             .iter()
             .find(|r| r.contains("set up your own server"))
             .unwrap_or_else(|| panic!("{w}x{h}\n{}", rows.join("\n")));
-        assert!(own.trim_end().ends_with("│") && !own.contains('█'), "{own}");
+        assert!(own.trim_end().ends_with("│") || own.contains('┃'), "{own}");
     }
 }
 
@@ -75,6 +80,7 @@ fn the_dialog_takes_the_height_the_screen_gives_it() {
 fn the_open_group_of_others_shows_its_rows_or_scrolls_to_them() {
     for (w, h, all) in [(120u16, 40u16, true), (100, 30, false)] {
         let mut a = clean();
+        press(&mut a, KeyCode::Enter);
         press(&mut a, KeyCode::Enter);
         // the group of the others is the first row; open it
         press(&mut a, KeyCode::Right);
@@ -96,7 +102,7 @@ fn the_open_group_of_others_shows_its_rows_or_scrolls_to_them() {
 fn the_scan_note_goes_when_nothing_was_found() {
     let mut a = clean();
     press(&mut a, KeyCode::Enter);
-    let note = "Looking for Ollama";
+    let note = "Looking for local models";
     assert!(count(&screen(&mut a, 120, 40), note) == 1);
     a.handle_agent(AgentEvent::LocalServers { found: vec![] });
     assert!(matches!(a.modal, Some(Modal::Setup(_))));
@@ -109,16 +115,11 @@ fn every_row_of_the_first_setup_screen_fits_80_columns_and_60_degrade_cleanly() 
         let mut a = clean();
         press(&mut a, KeyCode::Enter);
         let rows = screen(&mut a, w, 24);
-        let all = rows.join("\n");
-        let own = rows.iter().find(|r| r.contains("set up your own server")).expect(&all);
-        assert!(own.chars().count() <= w as usize, "{w}: {own:?}");
-        if w == 80 {
-            // the whole row, nothing cut by an ellipsis
-            assert!(own.contains("LM Studio)") && !own.contains('…'), "{own:?}");
-        } else {
-            // narrower: the row ends in one ellipsis inside the frame, and nothing runs past the right edge
-            assert!(own.contains('…') && own.trim_end().ends_with('│'), "{own:?}");
-        }
+        let more = rows.iter().find(|r| r.contains("More providers")).unwrap_or_else(|| panic!("{}", rows.join("\n")));
+        // the whole row, nothing cut by an ellipsis, even at 60 columns
+        assert!(!more.contains('…') && more.trim_end().ends_with('│'), "{more:?}");
+        press(&mut a, KeyCode::Enter);
+        let rows = screen(&mut a, w, 24);
         for r in &rows {
             assert!(r.chars().count() <= w as usize, "{w}: {r:?}");
         }

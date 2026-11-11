@@ -797,6 +797,9 @@ impl App {
             AgentEvent::ModelChanged { provider, model } => {
                 // a model was chosen in the setup: the home opens
                 self.unlock();
+                if let Some(Modal::Setup(s)) = &mut self.modal {
+                    s.saved(&provider, &model);
+                }
                 self.flash(&format!("model: {provider}/{model}"));
                 self.provider = provider;
                 self.model = model;

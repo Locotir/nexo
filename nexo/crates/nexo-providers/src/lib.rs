@@ -16,6 +16,7 @@ pub mod directory;
 pub mod gemini;
 pub mod hints;
 mod http;
+pub mod keys;
 pub mod login;
 pub mod mock;
 pub mod openai_chat;

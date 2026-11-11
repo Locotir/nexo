@@ -1360,3 +1360,48 @@ fn a_new_model_or_mode_in_the_status_bar_lights_up_once_and_the_first_look_does_
     a.fx.clock = Some(t0 + std::time::Duration::from_millis(crate::motion::CUT_MS + 400));
     assert!(!a.tick_fx());
 }
+
+#[test]
+fn a_model_saved_from_the_setup_leaves_it_open_on_its_last_screen_until_the_agent_confirms() {
+    use crate::modal::setup::{Setup, Step};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use nexo_core::{ModelCheck, ModelInfo, ProviderConfig, ServerProbe};
+    std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json");
+    let (mut a, mut rx) = app();
+    let mut ds = ProviderConfig::new("openai-chat", "https://api.deepseek.com", Some("NEXO_T_APP_SETUP_DS"));
+    ds.default_model = Some("m1".into());
+    let mut s = Setup::new(vec![("deepseek".into(), ds)], Vec::new(), "");
+    let press = |s: &mut Setup, code: KeyCode| s.key(KeyEvent::new(code, KeyModifiers::NONE));
+    press(&mut s, KeyCode::Enter);
+    for c in "sk-made-up-key-0000".chars() {
+        press(&mut s, KeyCode::Char(c));
+    }
+    press(&mut s, KeyCode::Enter);
+    s.probed(Ok(ServerProbe {
+        protocol: "openai-chat".into(),
+        base_url: "https://api.deepseek.com".into(),
+        models: vec![ModelInfo { id: "m1".into(), ..Default::default() }],
+        ..Default::default()
+    }));
+    press(&mut s, KeyCode::Enter);
+    s.checked(ModelCheck { info: ModelInfo { id: "m1".into(), ..Default::default() }, ..Default::default() });
+    a.modal = Some(Modal::Setup(Box::new(s)));
+    let out = a.modal.as_mut().unwrap().key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    a.modal_out(out);
+    // sent, offered by the switcher, and the setup is still there
+    assert!(
+        matches!(rx.try_recv(), Ok(AgentCommand::SaveModel { ref name, ref model, .. }) if name == "deepseek" && model == "m1")
+    );
+    assert!(a.opts.models.contains(&("deepseek".to_string(), "m1".to_string())));
+    let Some(Modal::Setup(st)) = &a.modal else { panic!("the setup stays open") };
+    assert_eq!(st.step, Step::Review);
+    // another model changing is not our save
+    a.handle_agent(AgentEvent::ModelChanged { provider: "other".into(), model: "x".into() });
+    let Some(Modal::Setup(st)) = &a.modal else { panic!("still open") };
+    assert_eq!(st.step, Step::Review);
+    // the agent's word: the last screen
+    a.handle_agent(AgentEvent::ModelChanged { provider: "deepseek".into(), model: "m1".into() });
+    let Some(Modal::Setup(st)) = &a.modal else { panic!("the last screen") };
+    assert_eq!(st.step, Step::Done);
+    assert_eq!((a.provider.as_str(), a.model.as_str()), ("deepseek", "m1"));
+}

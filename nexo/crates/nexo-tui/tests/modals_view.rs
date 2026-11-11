@@ -148,11 +148,7 @@ fn the_setup_keeps_the_line_being_typed_in_view_under_a_long_error() {
                 "{step:?} {w}x{h}\n{}",
                 rows.join("\n")
             );
-            assert!(
-                rows.iter().any(|r| r.contains("5") || r.contains("/5")),
-                "{step:?} {w}x{h}: title\n{}",
-                rows.join("\n")
-            );
+            assert!(rows.iter().any(|r| r.contains("set up a model")), "{step:?} {w}x{h}: title\n{}", rows.join("\n"));
         }
     }
 }
@@ -336,7 +332,7 @@ fn the_provider_list_comes_before_the_intro_on_a_short_screen() {
         a.modal = Some(Modal::Setup(Box::new(s)));
         let rows = draw(&mut a, w, h);
         let dump = rows.join("\n");
-        let intro = rows.iter().position(|r| r.contains("Switch to a model"));
+        let intro = rows.iter().position(|r| r.contains("Pick a model"));
         let first = rows.iter().position(|r| r.contains("switch"));
         assert!(first.is_some(), "{w}x{h}: no model listed\n{dump}");
         if h <= 12 {
@@ -365,6 +361,7 @@ fn the_review_keeps_the_chosen_field_in_view_under_a_long_error() {
                 .map(|l| Field { label: l, value: "128000".into(), source: "from the server".into() })
                 .collect();
             s.selected = sel;
+            s.details = true;
             s.error = Some("could not save: the config file is read-only and nexo could not write to it".into());
             a.modal = Some(Modal::Setup(Box::new(s)));
             let rows = draw(&mut a, w, h);
