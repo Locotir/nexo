@@ -165,9 +165,14 @@ fn stress_cited_events_are_the_planted_cut_dependencies() {
     let s = load(out.to_str().unwrap()).unwrap();
     assert_eq!(s.requests.len(), 400);
     let spec = "directives=0;nudge=0";
-    let t0 = std::time::Instant::now();
+    let (t0, c0) = (std::time::Instant::now(), thread_cpu_secs());
     let r = run(&s.requests, spec, Prices::LEGACY, 0.0, 0).unwrap();
-    let secs = t0.elapsed().as_secs_f64();
+    // the replay runs on this thread: its CPU time is the curator's cost, and other work on a busy
+    // machine does not count; without a CPU clock, wall time
+    let secs = match (c0, thread_cpu_secs()) {
+        (Some(a), Some(b)) => b - a,
+        _ => t0.elapsed().as_secs_f64(),
+    };
     assert!(secs < 60.0, "{secs} s");
     // which planted chunks the curator cut, from the views themselves
     let mut cur = nexo_curator::Curator::new(spec).unwrap();
@@ -182,4 +187,28 @@ fn stress_cited_events_are_the_planted_cut_dependencies() {
     let cited = r.events.iter().filter(|e| e.kind == Kind::Cited).count();
     eprintln!("{secs:.1} s, {} deps, {cut} cut, {cited} cited events", g.deps.len());
     assert_eq!(cited, cut, "cited events vs planted dependencies cut");
+}
+
+/// CPU seconds this thread has used, from /proc (Linux); `None` elsewhere.
+fn thread_cpu_secs() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
+    // fields after the command name in parentheses: state is the first, utime the 12th, stime the 13th
+    let f: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
+    let ticks = f.get(11)?.parse::<f64>().ok()? + f.get(12)?.parse::<f64>().ok()?;
+    Some(ticks / 100.0)
+}
+
+#[test]
+fn the_thread_cpu_clock_counts_work_and_not_sleep() {
+    let Some(a) = thread_cpu_secs() else { return };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let b = thread_cpu_secs().unwrap();
+    assert!(b - a < 0.1, "sleep counted: {}", b - a);
+    // a fixed amount of work (some tenths of a second), however busy the machine is
+    let mut x = 0u64;
+    for i in 0..400_000_000u64 {
+        x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(i));
+    }
+    let c = thread_cpu_secs().unwrap();
+    assert!(c - b > 0.05, "work not counted: {}", c - b);
 }
