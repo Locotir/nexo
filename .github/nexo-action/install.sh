@@ -25,18 +25,26 @@ asset_name() {
   if [ "$os" = windows ]; then echo "nexo-$os-$arch.exe"; else echo "nexo-$os-$arch"; fi
 }
 
+# https only, bounded time, a few retries; every download goes through this
+fetch_url() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 "$@"; }
+
+# a release tag is data that ends up in a URL and in $GITHUB_OUTPUT: one safe word, nothing else
+valid_tag() { case "$1" in build-* ) ;; *) return 1 ;; esac; case "${1#build-}" in '' | *[!A-Za-z0-9._-]*) return 1 ;; esac; }
+
 resolve() {
+  local tag
   case "$version" in
     latest)
       # the latest release redirects to /releases/tag/<tag>
       local url
-      url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$NEXO_REPO/releases/latest")" ||
+      url="$(fetch_url -o /dev/null -w '%{url_effective}' "https://github.com/$NEXO_REPO/releases/latest")" ||
         die "cannot reach the nexo releases"
-      printf '%s\n' "${url##*/}"
+      tag="${url##*/}"
       ;;
-    build-*) printf '%s\n' "$version" ;;
-    *) die "nexo_version must be 'latest' or a release tag such as build-1a2b3c4" ;;
+    *) tag="$version" ;;
   esac
+  valid_tag "$tag" || die "nexo_version must be 'latest' or a release tag such as build-1a2b3c4"
+  printf '%s\n' "$tag"
 }
 
 fetch() {
@@ -57,8 +65,8 @@ fetch() {
   trap "rm -rf \"$stage\"" EXIT
   local base="https://github.com/$NEXO_REPO/releases/download/$tag"
   log "downloading $name from $tag"
-  curl -fsSL "$base/SHA256SUMS" -o "$stage/SHA256SUMS" || die "no SHA256SUMS in release $tag"
-  curl -fsSL "$base/$name" -o "$stage/$name" || die "no $name in release $tag"
+  fetch_url "$base/SHA256SUMS" -o "$stage/SHA256SUMS" || die "no SHA256SUMS in release $tag"
+  fetch_url "$base/$name" -o "$stage/$name" || die "no $name in release $tag"
   grep " \*\{0,1\}$name\$" "$stage/SHA256SUMS" >"$stage/want" || die "$name is not in SHA256SUMS"
   (cd "$stage" && sha256sum -c --status want) || die "$name does not match its SHA-256"
   chmod 755 "$stage/$name"

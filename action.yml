@@ -85,7 +85,10 @@ runs:
       shell: bash
       env:
         NEXO_VERSION: ${{ inputs.nexo_version }}
-      run: echo "tag=$("$GITHUB_ACTION_PATH/.github/nexo-action/install.sh" resolve)" >>"$GITHUB_OUTPUT"
+      run: |
+        # assign first: a failed resolve must stop the step, not write an empty tag
+        tag="$("$GITHUB_ACTION_PATH/.github/nexo-action/install.sh" resolve)"
+        echo "tag=$tag" >>"$GITHUB_OUTPUT"
 
     - name: cache nexo
       id: cache
@@ -116,7 +119,7 @@ runs:
         NEXO_BASE: ${{ inputs.base }}
         NEXO_FAIL_ON_HIGH: ${{ inputs.fail_on_high }}
       run: |
-        export PATH="${{ runner.temp }}/nexo-bin:$PATH"
+        export PATH="$RUNNER_TEMP/nexo-bin:$PATH"
         "$GITHUB_ACTION_PATH/.github/nexo-action/review.sh"
 
     - name: comment
@@ -132,7 +135,7 @@ runs:
         NEXO_MAX_TURNS: ${{ inputs.max_turns }}
         NEXO_ALLOWED_TOOLS: ${{ inputs.allowed_tools }}
       run: |
-        export PATH="${{ runner.temp }}/nexo-bin:$PATH"
+        export PATH="$RUNNER_TEMP/nexo-bin:$PATH"
         "$GITHUB_ACTION_PATH/.github/nexo-action/comment.sh"
 
     - name: prompt
@@ -149,5 +152,5 @@ runs:
         NEXO_MAX_TURNS: ${{ inputs.max_turns }}
         NEXO_ALLOWED_TOOLS: ${{ inputs.allowed_tools }}
       run: |
-        export PATH="${{ runner.temp }}/nexo-bin:$PATH"
+        export PATH="$RUNNER_TEMP/nexo-bin:$PATH"
         "$GITHUB_ACTION_PATH/.github/nexo-action/prompt.sh"

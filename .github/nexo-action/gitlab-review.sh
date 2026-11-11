@@ -13,7 +13,7 @@ case "$base" in *[!A-Za-z0-9._/-]* | '' | -*) echo "unusable base branch" >&2; e
 if [ -n "${NEXO_GITLAB_TOKEN:-}" ]; then hdr="PRIVATE-TOKEN: $NEXO_GITLAB_TOKEN"; else hdr="JOB-TOKEN: ${CI_JOB_TOKEN:?}"; fi
 gl() { # gl METHOD PATH [curl args]
   local m="$1" p="$2"; shift 2
-  printf 'header = "%s"\n' "$hdr" | curl -fsS -K - -X "$m" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/$p" "$@"
+  printf 'header = "%s"\n' "$hdr" | curl -fsS --retry 2 --connect-timeout 15 --max-time 120 -K - -X "$m" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/$p" "$@"
 }
 
 if [ -n "${NEXO_API_KEY:-}" ]; then
@@ -32,11 +32,13 @@ gargs=()
 [ -z "${NEXO_PROVIDER:-}" ] || gargs+=(--provider "$NEXO_PROVIDER")
 [ -z "${NEXO_MODEL:-}" ] || gargs+=(--model "$NEXO_MODEL")
 out="$(mktemp)"; err="$(mktemp)"
+trap 'rm -f "$out" "$err"' EXIT
 set +e
-nexo "${gargs[@]}" review --base "origin/$base" --json >"$out" 2>"$err"
+# the model run needs neither GitLab token
+env -u NEXO_GITLAB_TOKEN -u CI_JOB_TOKEN nexo "${gargs[@]}" review --base "origin/$base" --json >"$out" 2>"$err"
 code=$?
 set -e
-cat "$err" >&2
+sed -u "s/^[[:space:]]*::/ _::/" <"$err" >&2
 if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
   grep -q 'nothing to review' "$err" && { echo "nothing to review"; exit 0; }
   echo "nexo review failed with exit code $code" >&2; exit 1

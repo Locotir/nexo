@@ -89,10 +89,14 @@ args+=("${g[@]}")
 args+=(--max-turns "${NEXO_MAX_TURNS:-30}")
 args+=(--allowed-tools "${NEXO_ALLOWED_TOOLS:-read,ls,glob,grep,edit,write,todo,bash(git *)}")
 
+# after the model ran, its git config edits (hooks, fsmonitor) must not run code in this script
+sgit() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgsign=false "$@"; }
 before="$(git rev-parse HEAD)"
 out="$(mktemp)"
+trap 'rm -f "$out"' EXIT
 set +e
-nexo "${args[@]}" >"$out"
+# the model run does not need the GitHub token: keep it out of its environment
+env -u GH_TOKEN nexo "${args[@]}" >"$out" 2> >(scrub >&2)
 code=$?
 set -e
 
@@ -106,20 +110,20 @@ set_output result "$result"
 set_output exit_code "$code"
 
 # commit what is left in the tree, then push if anything is new
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(sgit status --porcelain)" ]; then
   first="$(printf '%s' "$task" | tr '\n\r' '  ' | sed -E 's/^ +//; s/ +$//' | cut -c1-60)"
-  git add -A
-  git -c user.name=nexo -c user.email=nexo@users.noreply.github.com commit -q -m "nexo: ${first:-requested change}"
+  sgit add -A
+  sgit -c user.name=nexo -c user.email=nexo@users.noreply.github.com commit -q -m "nexo: ${first:-requested change}"
 fi
-after="$(git rev-parse HEAD)"
+after="$(sgit rev-parse HEAD)"
 
 link=""
-if [ "$before" != "$after" ] || { [ "$is_pr" = false ] && ! git diff --quiet "origin/$default_branch" HEAD 2>/dev/null; }; then
+if [ "$before" != "$after" ] || { [ "$is_pr" = false ] && ! sgit diff --quiet "origin/$default_branch" HEAD 2>/dev/null; }; then
   if [ "$is_pr" = true ]; then
-    git push -q origin "HEAD:refs/heads/$work_branch"
-    link="Pushed $(git rev-parse --short HEAD): $server/$repo/commit/$after"
+    sgit push -q origin "HEAD:refs/heads/$work_branch"
+    link="Pushed $(sgit rev-parse --short HEAD): $server/$repo/commit/$after"
   else
-    git push -q origin "HEAD:refs/heads/$work_branch"
+    sgit push -q origin "HEAD:refs/heads/$work_branch"
     pr_url="$(jq -n --arg t "nexo: issue #$num" --arg h "$work_branch" --arg b "$default_branch" --arg body "Requested by @$who in #$num. Closes #$num." \
       '{title: $t, head: $h, base: $b, body: $body}' | gh api -X POST "repos/$repo/pulls" --input - --jq .html_url)" || pr_url=""
     link="Opened ${pr_url:-a branch \`$work_branch\` (the pull request could not be created)}"

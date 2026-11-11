@@ -2,15 +2,22 @@
 # Shared helpers for the nexo action scripts. Sourced, never run alone.
 
 NEXO_REPO="${NEXO_REPO:-Locotir/nexo}"
+case "$NEXO_REPO" in */*/* | */ | /* | *[!A-Za-z0-9._/-]* | "") printf "::error::nexo-action: invalid NEXO_REPO\n" >&2; exit 1 ;; esac
 
 log() { printf 'nexo-action: %s\n' "$*" >&2; }
 die() { printf '::error::nexo-action: %s\n' "$*" >&2; exit 1; }
+# scrub: nexo output goes to the job log; a line that starts with "::" would be read as a workflow command
+scrub() { sed -u "s/^[[:space:]]*::/ _::/"; }
 
 # set_output NAME VALUE: writes one action output (multi-line safe)
 set_output() {
   local name="$1" value="$2" delim
   [ -n "${GITHUB_OUTPUT:-}" ] || return 0
-  delim="NEXO_EOF_$RANDOM$RANDOM"
+  # the value may be model text: pick a delimiter that does not occur in it
+  while :; do
+    delim="NEXO_EOF_$RANDOM$RANDOM$RANDOM$$"
+    case "$value" in *"$delim"*) ;; *) break ;; esac
+  done
   { printf '%s<<%s\n' "$name" "$delim"; printf '%s\n' "$value"; printf '%s\n' "$delim"; } >>"$GITHUB_OUTPUT"
 }
 
@@ -40,6 +47,7 @@ global_args() {
 # write_access LOGIN: succeeds when the user has write, maintain or admin on the repository
 write_access() {
   local perm
+  case "$1" in '' | *[!A-Za-z0-9-]*) return 1 ;; esac  # a login is letters, digits and dashes: nothing else goes into the API path
   perm="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$1/permission" --jq .permission 2>/dev/null)" || return 1
   case "$perm" in admin | maintain | write) return 0 ;; *) return 1 ;; esac
 }

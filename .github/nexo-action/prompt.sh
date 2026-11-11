@@ -15,8 +15,9 @@ args+=("${g[@]}")
 [ -z "${NEXO_ALLOWED_TOOLS:-}" ] || args+=(--allowed-tools "$NEXO_ALLOWED_TOOLS")
 
 out="$(mktemp)"
+trap 'rm -f "$out"' EXIT
 set +e
-nexo "${args[@]}" >"$out"
+nexo "${args[@]}" >"$out" 2> >(scrub >&2)
 code=$?
 set -e
 

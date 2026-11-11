@@ -24,11 +24,13 @@ git fetch --no-tags -q origin "+refs/heads/$base:refs/remotes/origin/$base" ||
 mapfile -t gargs < <(global_args)
 out="$(mktemp)"
 err="$(mktemp)"
+trap 'rm -f "$out" "$err"' EXIT
 set +e
-nexo "${gargs[@]}" review --base "origin/$base" --json >"$out" 2>"$err"
+# the model run does not need the GitHub token: keep it out of its environment
+env -u GH_TOKEN nexo "${gargs[@]}" review --base "origin/$base" --json >"$out" 2>"$err"
 code=$?
 set -e
-cat "$err" >&2
+scrub <"$err" >&2
 # exit 1 only means "a high finding exists"; the JSON is still valid
 if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
   if grep -q 'nothing to review' "$err"; then
