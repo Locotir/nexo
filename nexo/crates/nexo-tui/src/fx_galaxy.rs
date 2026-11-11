@@ -333,6 +333,26 @@ mod tests {
         let ys: Vec<usize> = (0..h).filter(|&y| (0..w).any(|x| lit(x, y))).collect();
         let (bw, bh) = (xs.last().unwrap() - xs[0] + 1, ys.last().unwrap() - ys[0] + 1);
         assert!(bw as f32 >= 1.6 * bh as f32, "lit cells {bw} wide, {bh} tall");
+        // the canvas itself is wider than tall (80 x 48 dots), so a face-on disc would pass that: the arms
+        // alone, placed as `grid` places them at the still phase, are flatter than a circle can be
+        let (dw, dh) = Canvas::new(FULL.0, FULL.1, false).dots();
+        let s = (0.455 * dw).min(0.82 * dh);
+        let turn = ((NICE_MS % TURN_MS) / TURN_MS) as f32 * TAU;
+        let breath = ((NICE_MS % BREATH_MS) / BREATH_MS) as f32 * TAU;
+        let alpha = PI / 2.0 - FACE_TILT + BREATH * sin(breath);
+        let (ca, sa, cl, sl) = (cos(alpha), sin(alpha), cos(LEAN), sin(LEAN));
+        let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for q in points().iter().filter(|q| matches!(q.kind, Kind::Arm | Kind::Knot) && q.r <= 1.0) {
+            let (r, th) = polar(q, 1.0);
+            let (xd, zd) = (r * cos(th - turn), r * sin(th - turn));
+            let (y1d, z1) = (ca * q.y - sa * zd, sa * q.y + ca * zd);
+            let (px, py) = (cl * xd - sl * y1d, sl * xd + cl * y1d);
+            let f = 1.0 / (1.0 - 0.12 * z1);
+            (x0, x1, y0, y1) = (x0.min(px * s * f), x1.max(px * s * f), y0.min(py * s * f), y1.max(py * s * f));
+        }
+        let (ew, eh) = (x1 - x0, y1 - y0);
+        // a disc 62 degrees from face-on is about 0.55 as tall as wide, a face-on one 1.0
+        assert!(eh < 0.7 * ew, "the arms span {ew} dots across and {eh} up");
         // the densest 3 x 3 block of cells holds the centre
         let weight = |x: usize, y: usize| (g.cells[y * w + x].ch as u32).saturating_sub(0x2800);
         let mut best = (0, 0, 0);
@@ -442,18 +462,39 @@ mod tests {
         // after whole turns the knots twinkle as before (13 turns are 70 twinkles), so only the tilt differs
         assert_ne!(frame(500, 40, 12), frame(500 + 13 * turn, 40, 12));
         assert_ne!(frame(500, 40, 12), frame(500 + 26 * turn, 40, 12));
+        // and inside the first minute: the same turn angle one turn apart is not the same frame (the
+        // braille does not follow the twinkle, so what moved is the tilt)
+        let f: Vec<Vec<String>> = (0..4).map(|i| frame(500 + i * turn, 40, 12)).collect();
+        assert_ne!(f[0], f[1], "one turn later the figure is the same");
+        for i in 0..4 {
+            for j in i + 1..4 {
+                assert_ne!(f[i], f[j], "frames {i} and {j} turns apart are the same");
+            }
+        }
     }
 
     #[test]
     fn the_knots_twinkle() {
-        let node_levels = |t: f64| {
-            let g = grid(t, 1.0, 40, 12, false);
-            g.cells.iter().filter(|c| c.node).map(|c| c.level).sum::<f32>()
-        };
-        let a: Vec<f32> = (0..10).map(|i| node_levels(i as f64 * 260.0)).collect();
-        assert!(a.iter().any(|&x| (x - a[0]).abs() > 0.05), "the knots never change: {a:?}");
-        let knots = points().iter().filter(|q| q.kind == Kind::Knot).count();
-        assert_eq!(knots, 10);
+        let knots: Vec<&Pt> = points().iter().filter(|q| q.kind == Kind::Knot).collect();
+        assert_eq!(knots.len(), 10);
+        // one knot over one period: it dips and flares, inside the range the level code expects, and repeats
+        let k = knots[0];
+        let v: Vec<f32> = (0..26).map(|i| twinkle(i as f64 * 100.0, k)).collect();
+        assert!(v.iter().all(|&x| (0.6..=1.0 + 1e-4).contains(&x)), "{v:?}");
+        let (lo, hi) = v.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+        assert!(hi > 0.95 && lo < 0.7 && hi - lo > 0.3, "{lo}..{hi}");
+        for t in [0.0, 300.0, 1234.0] {
+            assert!((twinkle(t, k) - twinkle(t + TWINKLE_MS, k)).abs() < 1e-3, "not periodic at {t}");
+        }
+        // two knots with different phase offsets do not twinkle together: when one is at its flare the
+        // other is at rest
+        let (a, b) = knots
+            .iter()
+            .flat_map(|a| knots.iter().map(move |b| (*a, *b)))
+            .find(|(a, b)| (0.15..0.85).contains(&(b.phase - a.phase).rem_euclid(1.0)))
+            .expect("two knots with different offsets");
+        let t = ((0.1 - a.phase as f64).rem_euclid(1.0)) * TWINKLE_MS;
+        assert!(twinkle(t, a) > 0.99 && twinkle(t, b) < 0.7, "{} against {}", twinkle(t, a), twinkle(t, b));
     }
 
     #[test]
