@@ -1316,7 +1316,7 @@ fn update_card(behind: u32, theme: &Theme, w: usize) -> Vec<Line<'static>> {
 
 fn user_notice(text: &str) -> std::borrow::Cow<'_, str> {
     match text.strip_prefix("the curator kept the view at ") {
-        Some(rest) => format!("context compacted to {rest}").into(),
+        Some(rest) => format!("context trimmed to {rest}").into(),
         None => text.into(),
     }
 }
@@ -1394,15 +1394,15 @@ mod tests {
     #[test]
     fn the_compaction_notice_does_not_name_the_curator_at_80x24() {
         let rows = notice_rows(CURATOR_NOTICE, 78);
-        assert_eq!(rows, ["◇ context compacted to 7.4k tokens (history 14.9k)"]);
+        assert_eq!(rows, ["◇ context trimmed to 7.4k tokens (history 14.9k)"]);
     }
 
     #[test]
     fn the_compaction_notice_does_not_name_the_curator_at_40x12() {
         let rows = notice_rows(CURATOR_NOTICE, 38);
         assert!(rows.len() > 1 && rows.iter().all(|r| !r.contains("curator") && width(r) <= 38), "{rows:?}");
-        assert_eq!(rows[0], "◇ context compacted to 7.4k tokens");
-        assert_eq!(rows.join(" ").replace("   ", " "), "◇ context compacted to 7.4k tokens (history 14.9k)");
+        assert_eq!(rows[0], "◇ context trimmed to 7.4k tokens");
+        assert_eq!(rows.join(" ").replace("   ", " "), "◇ context trimmed to 7.4k tokens (history 14.9k)");
         // other notices pass through untouched
         assert_eq!(notice_rows("hello", 38), ["◇ hello"]);
     }
