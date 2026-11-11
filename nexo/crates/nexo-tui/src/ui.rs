@@ -778,6 +778,7 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let now = app.now();
     app.note_gauge(now);
+    app.note_effort(now);
     let theme = &app.theme.clone();
     let hover = app.hover;
     let lit = |hit: StatusHit| match hover {
@@ -984,9 +985,17 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             }
             used += sw;
             let m = h.map(lit).unwrap_or_else(Modifier::empty);
+            // the top reasoning level's `◆` pops and breathes: its own span, the same cells
+            let mark = if is_effort_seg(s) { app.effort_mark(s.style.fg.unwrap_or(theme.accent2)) } else { None };
             // the line under a hovered piece starts at its first mark, not under the blank before it
             let lead = shown.len() - shown.trim_start().len();
-            if !m.is_empty() && lead > 0 && lead < shown.len() {
+            if let Some(c) = mark {
+                let (blank, rest) = shown.split_at(lead);
+                let (glyph, rest) = rest.split_at('◆'.len_utf8());
+                spans.push(Span::styled(blank.to_string(), s.style));
+                spans.push(Span::styled(glyph.to_string(), s.style.fg(c).add_modifier(m)));
+                spans.push(Span::styled(rest.to_string(), s.style.add_modifier(m)));
+            } else if !m.is_empty() && lead > 0 && lead < shown.len() {
                 spans.push(Span::styled(shown[..lead].to_string(), s.style));
                 spans.push(Span::styled(shown[lead..].to_string(), s.style.add_modifier(m)));
             } else {
@@ -1426,6 +1435,8 @@ fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
         },
     };
     f.render_widget(Paragraph::new(line), area);
+    // the hardest reasoning level was just set: a crest runs along the rule once (colour only)
+    app.paint_crest(f.buffer_mut(), area);
     // a rejected draft flashes the rule once (colour only)
     let k = if on { crate::motion::hump(app.fx.reject_at, now, crate::fx_chrome::REJECT_MS) } else { 0.0 };
     if k > 0.0 {

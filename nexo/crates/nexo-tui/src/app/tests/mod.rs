@@ -208,5 +208,6 @@ fn docs_server() -> nexo_core::agent::McpServerInfo {
 mod agent_a;
 mod agent_b;
 mod agent_c;
+mod effort_fx;
 mod outside_click;
 mod sub;

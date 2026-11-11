@@ -23,6 +23,12 @@ pub struct Fx {
     /// from the old colour to the new one.
     pub mode_at: Option<Instant>,
     pub mode_from: Option<nexo_core::permission::PermissionMode>,
+    /// When the reasoning level last became the top one: a crest runs along the rule and the `◆` pops
+    /// (see `fx_effort`). The breath of the `◆` while a turn runs at that level: since when, and the
+    /// time the work stopped (the breath finishes its cycle).
+    pub effort_at: Option<Instant>,
+    pub breath_from: Option<Instant>,
+    pub breath_stop: Option<Instant>,
     /// The slash command the draft starts with, once it names a real one, and since when: it
     /// lights up once.
     pub cmd_lit: Option<(String, Instant)>,
@@ -119,6 +125,7 @@ impl App {
         let cut = motion::within(self.fx.cut.map(|c| c.1), now, motion::CUT_MS + 100);
         let changed = self.note_bar_changes(now);
         self.note_goal_fx(now);
+        self.note_effort(now);
         let fx = &self.fx;
         let still = on
             && !self.theme.mono
@@ -139,6 +146,7 @@ impl App {
                 || motion::within(fx.reject_at, now, fx_chrome::REJECT_MS)
                 || fx.chip_seen.iter().any(|(_, t)| motion::within(Some(*t), now, fx_chrome::CHIP_MS))
                 || fx.goal.alive(now)
+                || self.effort_moving(now)
                 || fx.ink.alive(now)
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
         t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)

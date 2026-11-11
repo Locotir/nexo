@@ -892,8 +892,10 @@ impl App {
                 if self.effort != current && current.is_some() && self.effort_levels == levels {
                     self.flash(&format!("effort: {}", current.as_deref().unwrap_or("default")));
                 }
+                let (was_top, same_list) = (self.effort_top(), self.effort_levels == levels);
                 self.effort = current;
                 self.effort_levels = levels;
+                self.note_effort_event(was_top, same_list);
             }
             AgentEvent::Fast { on } => {
                 if self.fast != on {
