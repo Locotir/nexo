@@ -693,21 +693,71 @@ pub fn with_rule(text: &str, rule: &str, date: &str) -> Option<String> {
     Some(format!("{}{lead}{item}{}", &text[..cut], &text[cut..]))
 }
 
-/// Saves `rule` into `file` (see `with_rule`, dated today), starting from `seed` when the file is
-/// new. `Ok(false)` when it was there already.
-pub fn save_rule(file: &Path, seed: Option<&str>, rule: &str) -> std::io::Result<bool> {
+/// What `save_rule` did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Saved {
+    /// Written as a new line.
+    New,
+    /// A line with the same words was there: nothing written.
+    There,
+    /// Nothing written: this line under `## Remembered by nexo` (without its list marker) says nearly the same.
+    Near(String),
+}
+
+/// Shared words a rule and a saved line need at least before they can count as nearly the same.
+const NEAR_WORDS: usize = 4;
+
+/// The line under `## Remembered by nexo` that says nearly what `rule` says, without its list marker: at
+/// least `NEAR_WORDS` words in common, and six in ten of the words of the shorter of the two. A model saves
+/// a fact again in other words once the message that showed the first save has left its context, and the
+/// section grows with the same fact over and over. Only nexo's own section is compared: what the person
+/// wrote elsewhere in the file is theirs, and saying it again as a rule is the caller's choice. Two different
+/// facts in like words match too, so this is a question for the caller (`save_rule` with `anyway`), not a verdict.
+pub fn near_rule(text: &str, rule: &str) -> Option<String> {
+    let words = |l: &str| rule_key(l).split(' ').map(str::to_string).collect::<std::collections::BTreeSet<_>>();
+    let mine = words(rule);
+    let mut inside = false;
+    let mut best: Option<(usize, &str)> = None;
+    for line in text.lines() {
+        if !inside {
+            inside = line.trim().eq_ignore_ascii_case(REMEMBERED);
+            continue;
+        }
+        if line.starts_with('#') {
+            break;
+        }
+        let theirs = words(line);
+        let shared = mine.intersection(&theirs).count();
+        if shared >= NEAR_WORDS
+            && shared * 10 >= mine.len().min(theirs.len()) * 6
+            && best.is_none_or(|(n, _)| shared > n)
+        {
+            best = Some((shared, line));
+        }
+    }
+    best.map(|(_, l)| l.trim().trim_start_matches(['-', '*']).trim().to_string())
+}
+
+/// Saves `rule` into `file` (see `with_rule`, dated today), starting from `seed` when the file is new.
+/// A rule the remembered section nearly says already (`near_rule`) is not written unless `anyway`.
+pub fn save_rule(file: &Path, seed: Option<&str>, rule: &str, anyway: bool) -> std::io::Result<Saved> {
     let old = match std::fs::read_to_string(file) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => seed.unwrap_or("").to_string(),
         Err(e) => return Err(e),
     };
     let today = time::OffsetDateTime::now_utc().date();
-    let Some(new) = with_rule(&old, rule, &today.to_string()) else { return Ok(false) };
+    let Some(new) = with_rule(&old, rule, &today.to_string()) else { return Ok(Saved::There) };
+    if !anyway {
+        if let Some(line) = near_rule(&old, rule) {
+            return Ok(Saved::Near(line));
+        }
+    }
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(file, new)?;
-    Ok(true)
+    Ok(Saved::New)
 }
 
 #[cfg(test)]
@@ -1036,14 +1086,40 @@ mod rule_tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("AGENTS.md");
         std::fs::write(&f, "# Project\n\nBuild with make.\n").unwrap();
-        assert!(save_rule(&f, None, "Run `make fmt` first.").unwrap());
-        assert!(!save_rule(&f, None, "run `make fmt`  first.").unwrap());
-        let t = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(save_rule(&f, None, "Run `make fmt` first.", false).unwrap(), Saved::New);
+        assert_eq!(save_rule(&f, None, "run `make fmt`  first.", false).unwrap(), Saved::There);
         let today = time::OffsetDateTime::now_utc().date();
+        let one = format!("# Project\n\nBuild with make.\n\n## Remembered by nexo\n- {today}: Run `make fmt` first.\n");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), one);
+        // nearly the same words: nothing is written and the line that is there comes back
+        let near = save_rule(&f, None, "Always run `make fmt` first, before a commit.", false).unwrap();
+        assert_eq!(near, Saved::Near(format!("{today}: Run `make fmt` first.")));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), one);
+        // the caller can insist; the very same words stay once all the same
+        assert_eq!(save_rule(&f, None, "Always run `make fmt` first, before a commit.", true).unwrap(), Saved::New);
+        assert_eq!(save_rule(&f, None, "Run `make fmt` first.", true).unwrap(), Saved::There);
         assert_eq!(
-            t,
-            format!("# Project\n\nBuild with make.\n\n## Remembered by nexo\n- {today}: Run `make fmt` first.\n")
+            std::fs::read_to_string(&f).unwrap(),
+            format!("{one}- {today}: Always run `make fmt` first, before a commit.\n")
         );
+    }
+
+    #[test]
+    fn a_rule_the_remembered_section_nearly_says_is_found_and_the_persons_own_text_is_not_compared() {
+        let a = r"Acme install folder is always %LOCALAPPDATA%\Acme; if it already exists, only the config file is overwritten (Launch.c:50 APP_DIRECTORY, :1349 installed flag, :1519 returns TRUE). No per-game names.";
+        let b = r"Acme install folder always %LOCALAPPDATA%\Acme; if it already exists only config.json is rewritten (Launch.c:50 APP_DIRECTORY, :1519 installed branch), confirmed 2026-11-10.";
+        let text = format!(
+            "# Project\n\nThe wallet binary lives in /opt/acme/bin and is owned by root.\n\n## Remembered by nexo\n- 2026-11-11: {a}\n- 2026-11-11: tests run with `make test`\n\n## Other\n- deploys always go through the ship script on fridays\n"
+        );
+        assert_eq!(near_rule(&text, b), Some(format!("2026-11-11: {a}")));
+        // a short rule the section holds whole
+        assert_eq!(near_rule(&text, "Tests run with make").as_deref(), Some("2026-11-11: tests run with `make test`"));
+        // another fact, a rule too short to judge, and lines outside nexo's own section
+        assert_eq!(near_rule(&text, "the relay keeps events for seven days"), None);
+        assert_eq!(near_rule(&text, "run make"), None);
+        assert_eq!(near_rule(&text, "the wallet binary lives in /opt/acme/bin, owned by root"), None);
+        assert_eq!(near_rule(&text, "deploys always go through the ship script"), None);
+        assert_eq!(near_rule("", b), None);
     }
 
     #[test]
@@ -1054,14 +1130,14 @@ mod rule_tests {
         std::fs::create_dir_all(proj.join("src/deep")).unwrap();
         let (f, seed) = rules_file("global", &proj, &cfg, None).unwrap();
         assert_eq!(f, cfg.join("prompt.md"));
-        assert!(save_rule(&f, seed.as_deref(), "Answer in English.").unwrap());
+        assert_eq!(save_rule(&f, seed.as_deref(), "Answer in English.", false).unwrap(), Saved::New);
         let text = std::fs::read_to_string(&f).unwrap();
         assert!(text.starts_with(crate::paths::PREFS_TEMPLATE), "{text}");
         assert!(text.contains("## Remembered by nexo\n- "), "{text}");
         // from a sub-folder the project file is at the repository root, created when missing
         let (p, _) = rules_file("project", &proj.join("src/deep"), &cfg, None).unwrap();
         assert_eq!(p, proj.join("AGENTS.md"));
-        assert!(save_rule(&p, None, "Never edit vendor/.").unwrap());
+        assert_eq!(save_rule(&p, None, "Never edit vendor/.", false).unwrap(), Saved::New);
         let all = instructions(&proj, &cfg, None);
         assert!(all.iter().any(|i| i.text.contains("Never edit vendor/.")), "{all:?}");
         // an instructions file nexo already reads is the one that grows

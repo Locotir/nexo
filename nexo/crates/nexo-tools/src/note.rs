@@ -6,6 +6,7 @@
 //! person's `~/.nexo/prompt.md` or to the project's instructions file, dated, under `## Remembered by nexo`.
 
 use async_trait::async_trait;
+use nexo_core::compat::Saved;
 use nexo_core::{Compact, Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
@@ -18,6 +19,10 @@ pub const MAX_RULE: usize = 200;
 /// The end of the result when a rule was saved for later sessions.
 pub const SAVED_TAIL: &str =
     ". This is for later sessions and the person sees it on screen: no reply about it is needed, go on.";
+
+/// What the model is told after the line the file already has: the choice is its own, it knows the two facts.
+const NEAR_HINT: &str = "if that covers yours there is nothing to do, and if yours says something it does not, \
+                         send the rule again with `anyway` true";
 
 pub struct Note;
 
@@ -61,21 +66,22 @@ impl Tool for Note {
                           `Rule: ...` an instruction the user gave. Kept with the first message, in your words, for the \
                           session. Send it in the same response as your next tool call after a result settles something, \
                           or when the context asks; never as a response of its own, never after your final result. \
-                          With `scope` `global` or `project`, `Rule:` lines are also saved for later sessions (dated, \
-                          duplicates skipped, secrets refused)."
+                          With `scope` `global` or `project`, `Rule:` lines are also saved for later sessions \
+                          (secrets refused; a near-repeat is skipped unless `anyway`)."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "text": {
                         "type": "string",
-                        "description": "The note lines, each beginning with `Finding:`, `Plan:` or `Rule:`."
+                        "description": "The note lines."
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["session", "project", "global"],
                         "description": "Where `Rule:` lines last: this session (default), this project (AGENTS.md) or all projects (~/.nexo/prompt.md)."
-                    }
+                    },
+                    "anyway": { "type": "boolean" }
                 },
                 "required": ["text"]
             }),
@@ -85,7 +91,11 @@ impl Tool for Note {
     fn compact(&self) -> Option<Compact> {
         Some(Compact {
             description: "Keep lines for the session; send with your next tool call, never alone.",
-            params: &[("text", "Lines starting `Finding:`, `Plan:` or `Rule:`"), ("scope", "Where `Rule:` lines last")],
+            params: &[
+                ("text", "Lines starting `Finding:`, `Plan:` or `Rule:`"),
+                ("scope", "Where `Rule:` lines last"),
+                ("anyway", "Save a near-repeat too"),
+            ],
         })
     }
 
@@ -130,34 +140,40 @@ impl Tool for Note {
             else {
                 return ToolOutput::error("`scope` is session, project or global");
             };
+            let anyway = args.get("anyway").and_then(Value::as_bool).unwrap_or(false);
             let mut fresh = Vec::new();
             let mut refused = Vec::new();
+            let mut near = Vec::new();
             for r in text.lines().filter_map(rule_text) {
                 if let Some(why) = unfit(&r) {
                     refused.push(why);
                     continue;
                 }
-                match nexo_core::compat::save_rule(&file, seed.as_deref(), &r) {
-                    Ok(true) => fresh.push(r.split_whitespace().collect::<Vec<_>>().join(" ")),
-                    Ok(false) => {}
+                match nexo_core::compat::save_rule(&file, seed.as_deref(), &r, anyway) {
+                    Ok(Saved::New) => fresh.push(r.split_whitespace().collect::<Vec<_>>().join(" ")),
+                    Ok(Saved::There) => {}
+                    Ok(Saved::Near(line)) => near.push(line),
                     Err(e) => return ToolOutput::error(format!("cannot save to {}: {e}", file.display())),
                 }
             }
             if !refused.is_empty() && fresh.is_empty() {
                 return ToolOutput::error(format!("not saved: {}", refused.join("; ")));
             }
-            saved = Some((fresh, refused, file, if scope == "project" { "project" } else { "global" }));
+            saved = Some((fresh, refused, near, file, if scope == "project" { "project" } else { "global" }));
         }
         let mut out = format!("noted {n} line{}", if n == 1 { "" } else { "s" });
         if other > 0 {
             out += &format!(" ({other} without a Finding:/Plan:/Rule: prefix left out)");
         }
         let mut display = ToolDisplay::Plain;
-        if let Some((fresh, refused, file, scope)) = saved {
+        if let Some((fresh, refused, near, file, scope)) = saved {
             let n = fresh.len();
             out += &format!("; {n} new rule{} saved to {}", if n == 1 { "" } else { "s" }, file.display());
             if !refused.is_empty() {
                 out += &format!(" (not saved: {})", refused.join("; "));
+            }
+            for line in &near {
+                out += &format!(" (the file already says nearly this: \"{line}\"; {NEAR_HINT})");
             }
             if n > 0 {
                 // the model goes on with the task: the card on screen already tells the person
@@ -289,6 +305,31 @@ mod tests {
         assert!(!d.path().join("AGENTS.md").exists());
         assert!(matches!(&out.display, ToolDisplay::Remembered { scope, path, .. }
             if scope == "global" && path == &f.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_rule_the_file_nearly_says_is_not_saved_again_and_the_result_shows_the_line_that_is_there() {
+        let d = repo();
+        let cx = ToolContext::new(d.path().to_path_buf());
+        let first = json!({"text": "Rule: the staging database is on port 5433 of db-stage", "scope": "project"});
+        assert!(Note.run(first, &cx).await.content.contains("1 new rule saved"));
+        let f = d.path().join("AGENTS.md");
+        let one = std::fs::read_to_string(&f).unwrap();
+        let again = json!({"text": "Rule: staging database listens on port 5433 on host db-stage", "scope": "project"});
+        let out = Note.run(again.clone(), &cx).await;
+        assert!(!out.is_error && out.content.contains("0 new rules saved"), "{}", out.content);
+        assert!(out.content.contains("the file already says nearly this"), "{}", out.content);
+        assert!(out.content.contains(": the staging database is on port 5433 of db-stage\""), "{}", out.content);
+        assert!(out.content.contains("`anyway`") && !out.content.contains(SAVED_TAIL), "{}", out.content);
+        assert!(matches!(out.display, ToolDisplay::Plain), "nothing was saved, so no card");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), one);
+        // the model can insist when its line says something the other does not
+        let mut anyway = again;
+        anyway["anyway"] = json!(true);
+        let out = Note.run(anyway, &cx).await;
+        assert!(out.content.contains("1 new rule saved") && out.content.ends_with(SAVED_TAIL), "{}", out.content);
+        let two = std::fs::read_to_string(&f).unwrap();
+        assert!(two.starts_with(&one) && two.contains("listens on port 5433"), "{two}");
     }
 
     #[tokio::test]
