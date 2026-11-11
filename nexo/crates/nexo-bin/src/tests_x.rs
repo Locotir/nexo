@@ -758,6 +758,10 @@ fn the_test_binary_shows_who_calls_a_marker_function_and_loads_a_marker_string()
     let sum = xref_marker_caller_one(n).wrapping_add(xref_marker_caller_two(n));
     std::hint::black_box(sum);
     assert_eq!(xref_marker_string_user(), XREF_STRING.len());
+    // an MSVC build keeps its names in a .pdb beside the binary, not in it: there is no name to ask by
+    if cfg!(target_env = "msvc") {
+        return;
+    }
     let o = xref(&img, "xref_marker_target").unwrap();
     let calls_n = o.meta["counts"]["call"].as_u64().unwrap();
     assert!(calls_n >= 2, "{}", whole(&o));
@@ -798,11 +802,14 @@ fn fn_at_an_address_opens_eight_instructions_before_and_marks_it() {
     let mut starts = Vec::new();
     crate::disasm::walk(img.read_at(start, 40_000).unwrap(), start, |ins, _| starts.push(ins.ip()));
     assert!(count >= 2000);
-    for k in [0usize, 3, 8, 9, 20, 1500, 1999] {
-        let asked = starts[k];
+    // a one-byte instruction too (a `push`, a `ret`): one byte past it is the next instruction, not inside it
+    let short = (30..1400).find(|&i| starts[i + 1] - starts[i] == 1);
+    for k in [0usize, 3, 8, 9, 20, 1500, 1999].into_iter().chain(short) {
         // an address inside the instruction is the instruction
         for (budget, shift) in [(120usize, 0u64), (120, 1), (12, 0), (10, 0)] {
-            let asked_addr = asked + shift.min(1);
+            let asked_addr = starts[k] + shift.min(1);
+            let at = starts.iter().rposition(|&a| a <= asked_addr).unwrap();
+            let asked = starts[at];
             let target = hex(asked_addr);
             let o = func_window(&img, &target, false, None, budget).unwrap();
             let p = o.page(None, budget);
@@ -821,18 +828,17 @@ fn fn_at_an_address_opens_eight_instructions_before_and_marks_it() {
             let head = &p.lines[0];
             assert!(head.starts_with("fn ") && head.contains("; refs "), "{head}");
             let lead = LEAD_IN.min(budget.saturating_sub(4));
-            if k > lead {
+            if at > lead {
                 // the page opens eight instructions before (fewer when the budget is small)
                 let first = &p.lines[2];
                 let first_addr = parse_addr(first.trim_start_matches(['>', ' ']).split("  ").next().unwrap()).unwrap();
-                let before = starts.iter().position(|&a| a == asked).unwrap()
-                    - starts.iter().position(|&a| a == first_addr).unwrap();
+                let before = at - starts.iter().position(|&a| a == first_addr).unwrap();
                 assert_eq!(before, lead, "k={k} budget={budget}");
                 assert!(head.contains(&format!("; showing from {first_addr:#x}")), "{head}");
                 let earlier = &p.lines[1];
-                assert!(earlier.starts_with(&format!("... {} earlier lines: nexo bin fn ", k - before)), "{earlier}");
+                assert!(earlier.starts_with(&format!("... {} earlier lines: nexo bin fn ", at - before)), "{earlier}");
                 assert!(earlier.contains(&format!("--from {start:#x}")), "{earlier}");
-                assert_eq!(o.meta["earlier_lines"].as_u64().unwrap() as usize, k - before);
+                assert_eq!(o.meta["earlier_lines"].as_u64().unwrap() as usize, at - before);
             } else {
                 assert!(!p.lines[1].starts_with("..."), "k={k}: {}", p.lines[1]);
             }
