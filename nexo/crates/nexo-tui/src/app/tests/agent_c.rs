@@ -1519,3 +1519,29 @@ fn the_last_screen_says_only_you_can_read_it_where_the_file_mode_is_set() {
     assert_eq!(t.contains("only you can read it"), cfg!(unix), "{t}");
     assert!(t.contains("key is in") || t.contains("Key is in") || t.contains("The key is in"), "{t}");
 }
+
+#[test]
+fn opening_a_block_while_scrolled_up_is_not_news() {
+    let (mut a, _rx) = app();
+    a.opts.animations = false;
+    long_answer(&mut a, 0);
+    a.push(card("c1", 30));
+    long_answer(&mut a, 100);
+    frame(&mut a, 60, 20);
+    a.toggle_block(1);
+    frame(&mut a, 60, 20);
+    a.scroll_to_line(0, false);
+    frame(&mut a, 60, 20);
+    assert_eq!(a.unseen(), 0);
+    {
+        let before = a.total_lines;
+        a.toggle_block(1);
+        frame(&mut a, 60, 20);
+        assert_ne!(a.total_lines, before, "the fold changed the height");
+        assert!(!a.follow);
+        assert_eq!(a.unseen(), 0, "the rows a fold shows were not sent by anyone");
+    }
+    long_answer(&mut a, 200);
+    frame(&mut a, 60, 20);
+    assert!(a.unseen() > 0, "a real arrival still counts");
+}

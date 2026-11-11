@@ -125,7 +125,10 @@ pub struct App {
     looks: Vec<Look>,
     pub offsets: Vec<usize>,
     pub total_lines: usize,
-    seen_lines: usize,
+    seen_tail: usize,
+    seen_blocks: usize,
+    /// A fold the person made: the next layout must not count its rows as new.
+    folded_by_hand: bool,
     pub scroll: usize,
     pub follow: bool,
     pub selected: Option<usize>,
@@ -453,7 +456,9 @@ impl App {
             looks: Vec::new(),
             offsets: Vec::new(),
             total_lines: 0,
-            seen_lines: 0,
+            seen_tail: 0,
+            seen_blocks: 0,
+            folded_by_hand: false,
             scroll: 0,
             follow: true,
             selected: None,
@@ -756,7 +761,8 @@ impl App {
         self.pending_stamps.clear();
         self.offsets.clear();
         self.total_lines = 0;
-        self.seen_lines = 0;
+        self.seen_tail = 0;
+        self.seen_blocks = 0;
         self.scroll = 0;
         self.follow = true;
         self.selected = None;

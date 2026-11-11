@@ -265,6 +265,7 @@ impl App {
             };
             (bi, self.scroll.saturating_sub(self.offsets[bi]))
         });
+        let kept = std::mem::take(&mut self.folded_by_hand).then(|| self.unseen());
         self.last_width = width;
         // a call that finished inside a folded group leaves the view: its group takes the selection
         if let Some(m) = self.selected.filter(|s| self.hidden(*s)).and_then(|s| self.group_of(s)) {
@@ -281,6 +282,10 @@ impl App {
             off += n + self.gap_after(i, n);
         }
         self.total_lines = off;
+        if let Some(u) = kept {
+            let from = self.offsets.get(self.seen_blocks.wrapping_sub(1)).copied().unwrap_or(0);
+            self.seen_tail = self.total_lines.saturating_sub(from + u);
+        }
         if let Some((bi, j)) = anchor.filter(|(bi, _)| *bi < self.offsets.len()) {
             let end = self.offsets.get(bi + 1).copied().unwrap_or(self.total_lines);
             let top = self.offsets[bi];
@@ -319,18 +324,27 @@ impl App {
     pub fn settle(&mut self, height: usize) {
         if self.follow {
             self.scroll = self.max_scroll(height);
-            self.seen_lines = self.total_lines;
+            self.mark_seen();
         } else {
             self.scroll = self.scroll.min(self.max_scroll(height));
         }
     }
 
+    /// Notes that the end of the transcript is in view: what comes after counts as new.
+    pub(super) fn mark_seen(&mut self) {
+        self.seen_blocks = self.blocks.len();
+        let from = self.offsets.get(self.blocks.len().wrapping_sub(1)).copied().unwrap_or(0);
+        self.seen_tail = self.total_lines.saturating_sub(from);
+    }
+
+    /// Rows that arrived since the end was last in view: opening or folding a block above does
+    /// not count, only the growth of the last block seen and the blocks after it.
     pub fn unseen(&self) -> usize {
         if self.follow {
-            0
-        } else {
-            self.total_lines.saturating_sub(self.seen_lines)
+            return 0;
         }
+        let from = self.offsets.get(self.seen_blocks.wrapping_sub(1)).copied().unwrap_or(0);
+        self.total_lines.saturating_sub(from + self.seen_tail)
     }
 
     pub fn scroll_by(&mut self, delta: i32) {
@@ -340,7 +354,7 @@ impl App {
         self.scroll = next;
         self.follow = next >= max;
         if self.follow {
-            self.seen_lines = self.total_lines;
+            self.mark_seen();
         }
         self.wished = true;
         self.dirty = true;
@@ -355,7 +369,7 @@ impl App {
 
     pub fn scroll_to_end(&mut self) {
         self.follow = true;
-        self.seen_lines = self.total_lines;
+        self.mark_seen();
         self.wished = true;
         self.dirty = true;
     }
@@ -431,6 +445,7 @@ impl App {
     }
 
     pub fn toggle_block(&mut self, i: usize) {
+        self.folded_by_hand = true;
         // a message opens to what nexo added to it, and folds back; a long one with it
         if let Some(c) = self.companion(i) {
             let open = self.is_folded(c);
@@ -461,6 +476,7 @@ impl App {
     /// A group of calls opens, or folds back to its line. Opening shows the calls it had left out,
     /// growing in; folding keeps the view inside the transcript and the selection on the group.
     pub(super) fn toggle_group(&mut self, m: usize) {
+        self.folded_by_hand = true;
         let Block::Group { folded, len } = self.blocks[m] else { return };
         let end = (m + len + 1).min(self.blocks.len());
         let top = self.offsets.get(m).copied();

@@ -491,7 +491,7 @@ impl App {
         self.scroll = off;
         self.follow = off >= max;
         if self.follow {
-            self.seen_lines = self.total_lines;
+            self.mark_seen();
         }
         if glide {
             self.wished = true;
