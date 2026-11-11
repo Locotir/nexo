@@ -557,7 +557,11 @@ impl App {
     }
 
     /// A block the keys stop at: one that folds and shows something.
+    /// The turn's time line opens by a click, but is no stop: it would cost one more press per turn.
     pub fn navigable(&mut self, i: usize) -> bool {
+        if matches!(self.blocks.get(i), Some(Block::Usage { .. })) {
+            return false;
+        }
         !self.hidden(i) && self.foldable(i) && !self.lines(i, self.last_width).is_empty()
     }
 

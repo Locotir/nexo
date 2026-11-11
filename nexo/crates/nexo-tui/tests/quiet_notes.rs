@@ -41,10 +41,29 @@ fn app(detail: Detail) -> App {
     a
 }
 
+/// The turn starts 14 s before it ends on the real clock, so the tenths of its time depend on how fast the
+/// machine is: `14.0s` and `14.1s` both read `14.Ns` here, and everything else is compared exactly.
+fn steady(s: &str) -> String {
+    let mut out = String::new();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if s[i..].starts_with("14.") && b.get(i + 3).is_some_and(u8::is_ascii_digit) && b.get(i + 4) == Some(&b's') {
+            out.push_str("14.Ns");
+            i += 5;
+        } else {
+            let c = s[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
 fn screen(a: &mut App, w: u16, h: u16) -> String {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     draw_frame(&mut t, a).unwrap();
-    rows_of(t.backend().buffer()).join("\n")
+    steady(&rows_of(t.backend().buffer()).join("\n"))
 }
 
 /// Rows the transcript takes at 100 columns.
@@ -113,7 +132,7 @@ fn item2_the_turn_ends_with_time_and_cost_and_the_whole_line_opens_on_demand() {
     let mut q = app(Detail::Quiet);
     turn(&mut q, &[("bash", "cargo test")]);
     let s = screen(&mut q, 100, 30);
-    assert!(s.contains("  14.0s · $0.0042"), "{s}");
+    assert!(s.lines().any(|l| l.trim() == "14.Ns · $0.0042"), "{s}");
     assert!(!s.contains("hit") && !s.contains("step") && !s.contains('↑'), "{s}");
     // a click or the expand key goes through toggle_block
     let i = usage_index(&q);
@@ -140,7 +159,7 @@ fn item2_without_a_cost_the_line_is_the_time_only() {
     q.handle_agent(AgentEvent::Usage { turn: used, call: used, session: used, cost_usd: 0.0 });
     q.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
     let s = screen(&mut q, 100, 30);
-    assert!(s.lines().any(|l| l.trim() == "14.0s"), "{s}");
+    assert!(s.lines().any(|l| l.trim() == "14.Ns"), "{s}");
 }
 
 #[test]
@@ -206,7 +225,16 @@ fn item5_the_tool_group_line_is_counts_only() {
 #[test]
 fn item6_diff_outside_git_says_no_git_session_edits() {
     let dir = tempfile::tempdir().unwrap();
-    // a folder outside any repository (the temp folder of the machine is not inside one)
+    // the folder must be outside any repository; a temp folder inside one cannot show what this checks
+    let inside = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir.path())
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if inside {
+        eprintln!("skipped: the temp folder {} is inside a git repository", dir.path().display());
+        return;
+    }
     let q = nexo_tui::diffview::collect::collect_for(dir.path(), Vec::new(), Detail::Quiet);
     assert_eq!(q.note.as_deref(), Some("no git: session edits"));
     let f = nexo_tui::diffview::collect::collect_for(dir.path(), Vec::new(), Detail::Full);
@@ -225,4 +253,99 @@ fn a_plain_one_tool_turn_takes_fewer_rows_in_quiet() {
     let (quiet, full) = (rows(Detail::Quiet), rows(Detail::Full));
     eprintln!("one-tool turn rows: full {full}, quiet {quiet}");
     assert!(quiet < full, "quiet {quiet} full {full}");
+}
+
+/// The block's rows as text, at `w` columns.
+fn usage_rows(plan: bool, cost: f64, w: usize) -> Vec<String> {
+    let b = Block::Usage {
+        usage: Usage { input: 2000, output: 412, ..Default::default() },
+        cost_usd: cost,
+        elapsed_ms: 14_400,
+        tally: Default::default(),
+        plan,
+        folded: true,
+    };
+    let opts = nexo_tui::render::blocks::RenderOpts {
+        show_reasoning: true,
+        fold_after: 3,
+        spinner: 0,
+        intro_ms: None,
+        interpreted: false,
+        timestamps: false,
+        fx: false,
+        detail: Detail::Quiet,
+    };
+    b.render(w, &nexo_tui::theme::Theme::dark(), opts)
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect()
+}
+
+#[test]
+fn the_quiet_turn_line_of_a_plan_user_is_one_row_at_any_width() {
+    let cases: [(usize, &str); 5] = [
+        (60, "  14.4s · ≈$0.0042 API value · included in plan"),
+        (40, "  14.4s · ≈$0.0042"),
+        (36, "  14.4s · ≈$0.0042"),
+        (20, "  14.4s · ≈$0.0042"),
+        (12, "  14.4s"),
+    ];
+    for (w, want) in cases {
+        assert_eq!(usage_rows(true, 0.0042, w), [want], "plan user at {w} columns");
+    }
+}
+
+#[test]
+fn the_quiet_turn_line_of_an_api_key_user_is_one_row_at_any_width() {
+    let cases: [(usize, &str); 3] = [(60, "  14.4s · $0.0042"), (20, "  14.4s · $0.0042"), (12, "  14.4s")];
+    for (w, want) in cases {
+        assert_eq!(usage_rows(false, 0.0042, w), [want], "API key user at {w} columns");
+    }
+}
+
+#[test]
+fn under_the_time_itself_the_quiet_turn_line_is_cut_with_an_ellipsis_never_wrapped() {
+    let theme = nexo_tui::theme::Theme::dark();
+    let line = |plan, w| {
+        nexo_tui::render::summary::plain(&nexo_tui::render::summary::short_line(&theme, 0.0042, 14_400, plan, w))
+    };
+    assert_eq!(line(true, 5), "  14…");
+    assert_eq!(line(false, 5), "  14…");
+    assert_eq!(line(true, 0), "");
+    assert_eq!(line(false, 7), "  14.4s");
+}
+
+#[test]
+fn shift_up_skips_the_time_line_and_a_click_still_opens_it() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let mut q = app(Detail::Quiet);
+    turn(&mut q, &[("bash", "cargo test"), ("read", "a.rs")]);
+    let s = screen(&mut q, 100, 30);
+    nexo_tui::event::key(&mut q, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    let sel = q.selected.expect("a block is selected");
+    assert!(matches!(q.blocks[sel], Block::Group { .. }), "the tool group, not the time line: {:?}", q.blocks[sel]);
+    // Tab from there goes round without stopping on the time line either
+    nexo_tui::event::key(&mut q, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(!matches!(q.blocks[q.selected.unwrap()], Block::Usage { .. }));
+
+    // two clicks on the time line, as on any block: the first selects, the second opens
+    let row = s.lines().position(|l| l.trim() == "14.Ns · $0.0042").expect("the time line is drawn") as u16;
+    for _ in 0..2 {
+        let ev = |kind| MouseEvent { kind, column: 4, row, modifiers: KeyModifiers::NONE };
+        nexo_tui::event::mouse(&mut q, ev(MouseEventKind::Down(MouseButton::Left)));
+        nexo_tui::event::mouse(&mut q, ev(MouseEventKind::Up(MouseButton::Left)));
+        screen(&mut q, 100, 30);
+    }
+    let s = screen(&mut q, 100, 30);
+    assert!(s.contains("1 step") && s.contains("hit"), "the click opened the whole line:\n{s}");
+}
+
+#[test]
+fn item3_goal_waiting_and_done_in_quiet() {
+    let mut q = app(Detail::Quiet);
+    for state in [GoalState::Waiting, GoalState::Done] {
+        q.goal = Some(Goal { text: "make the tests pass".into(), round: 0, max: 5, state });
+        q.run_command(Command::Goal(GoalArg::Show));
+    }
+    assert_eq!(notices(&q), ["goal set · waiting for your answer", "goal met"]);
 }

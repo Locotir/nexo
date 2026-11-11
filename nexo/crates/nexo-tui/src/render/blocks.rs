@@ -587,7 +587,7 @@ impl Block {
             Block::Usage { usage, cost_usd, elapsed_ms, tally, plan, folded } => {
                 // quiet: time and cost; the whole line opens with the block's fold
                 let line = if *folded && o.detail == nexo_core::config::Detail::Quiet {
-                    super::summary::short_line(theme, *cost_usd, *elapsed_ms, *plan)
+                    super::summary::short_line(theme, *cost_usd, *elapsed_ms, *plan, w)
                 } else {
                     super::summary::summary_line_for(theme, usage, *cost_usd, *elapsed_ms, tally, w, *plan)
                 };

@@ -156,15 +156,28 @@ pub fn summary_line_for(
     Line::from(spans)
 }
 
-/// The quiet line of a finished turn, all in the dim colour: `14.4s · $0.0042`. The time alone when no
-/// cost is known; on a plan the cost reads as API value, as in the full line.
-pub fn short_line(theme: &Theme, cost: f64, ms: u64, plan: bool) -> Line<'static> {
-    let mut s = format!("  {}", fmt_ms(ms));
+/// The quiet line of a finished turn, all in the dim colour: `14.4s · $0.0042`, never more than one row of
+/// `w` cells. On a plan the cost reads as API value (`≈$0.0042 API value · included in plan`). What does not
+/// fit goes in this order: the words after the plan's figure, the cost (the time alone), then the cut with `…`.
+pub fn short_line(theme: &Theme, cost: f64, ms: u64, plan: bool, w: usize) -> Line<'static> {
+    let time = format!("  {}", fmt_ms(ms));
+    let mut forms = Vec::new();
     if cost > 0.0 {
-        let money = if plan { crate::app::plan_value(cost) } else { format!("${:.4}", cost.min(99.0)) };
-        s.push_str(&format!(" · {money}"));
+        if plan {
+            let said = crate::app::plan_value(cost);
+            forms.push(format!("{time} · {said}"));
+            forms.push(format!("{time} · {}", said.split_once(' ').map_or(said.as_str(), |(figure, _)| figure)));
+        } else {
+            forms.push(format!("{time} · ${:.4}", cost.min(99.0)));
+        }
     }
-    Line::from(Span::styled(s, theme.dim()))
+    forms.push(time);
+    let last = forms.len() - 1;
+    let text = match forms.iter().position(|f| super::wrap::width(f) <= w) {
+        Some(i) => forms.swap_remove(i),
+        None => super::wrap::truncate(&forms[last], w),
+    };
+    Line::from(Span::styled(text, theme.dim()))
 }
 
 /// The line as plain text (tests, captures).
