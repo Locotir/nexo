@@ -1,6 +1,6 @@
 //! Replays a recorded conversation through the curator, offline, and shows what it keeps and cuts.
 //!
-//! `cargo run --release -p nexo-curator --features sim --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--window N] [--save N FILE]
+//! `cargo run --release -p nexo-curator --features sim --example replay -- FILE [--spec SPEC] [--every N] [--quiet] [--census] [--window N] [--save N FILE]
 //!  [--life S] [--gap S] [--pause N:S]`
 //!
 //! `FILE` is either a golden fixture (`tests/fixtures/*.jsonl`, lines `{"now", "req", "reply"}`) or a
@@ -1666,6 +1666,7 @@ fn main() {
     let mut spec = String::new();
     let mut every = 1usize;
     let mut quiet = false;
+    let mut census = false;
     let mut window = 0u64;
     let mut save: Option<(usize, String)> = None;
     let (mut life, mut gap, mut pause): (f64, Option<f64>, Option<(usize, f64)>) = (0.0, None, None);
@@ -1675,6 +1676,7 @@ fn main() {
             "--spec" => spec = it.next().cloned().unwrap_or_default(),
             "--every" => every = it.next().and_then(|n| n.parse().ok()).unwrap_or(1).max(1),
             "--quiet" => quiet = true,
+            "--census" => census = true,
             "--window" => window = it.next().and_then(|n| n.parse().ok()).unwrap_or(0),
             "--save" => {
                 let n = it.next().and_then(|n| n.parse().ok()).unwrap_or(0);
@@ -1692,7 +1694,7 @@ fn main() {
         }
     }
     let Some(path) = path else {
-        eprintln!("usage: replay FILE.jsonl [--spec SPEC] [--every N] [--quiet] [--window N] [--save N FILE] [--life S] [--gap S] [--pause N:S]");
+        eprintln!("usage: replay FILE.jsonl [--spec SPEC] [--every N] [--quiet] [--census] [--window N] [--save N FILE] [--life S] [--gap S] [--pause N:S]");
         std::process::exit(2);
     };
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -1739,6 +1741,7 @@ fn main() {
     let (mut plain_miss, mut plain_hit) = (0i64, 0i64);
     // requests whose view changed a message the previous view had sent: each one pays the rest of the view again
     let mut rewrites = 0usize;
+    let (mut census_view, mut census_plain) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
     for (i, r) in requests.iter().enumerate() {
         if let Some(t) = &r.tools {
             cur.tools(t);
@@ -1856,8 +1859,16 @@ fn main() {
                 changed.join(", ")
             );
         }
+        if census {
+            nexo_curator::sim::census::add(&mut census_view, &reply.view);
+            nexo_curator::sim::census::add(&mut census_plain, &r.messages);
+        }
         last_view = reply.view;
         last_msgs = r.messages.clone();
+    }
+    if census {
+        let file = std::path::Path::new(&path).file_name().map_or(path.clone(), |f| f.to_string_lossy().into_owned());
+        println!("{}", json!({"file": file, "requests": requests.len(), "view": census_view, "plain": census_plain}));
     }
     println!();
     println!(

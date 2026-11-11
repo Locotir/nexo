@@ -1,6 +1,7 @@
 //! The session simulator's core: requests, events and prices, on the same measures the replay prints.
 
 pub mod behave;
+pub mod census;
 pub mod events;
 pub mod family;
 pub mod fit;
