@@ -146,6 +146,8 @@ pub fn after(before: Snapshot, s: &SandboxSettings, cwd: &Path) -> Option<String
     }
     let show = |p: &Path| {
         let rel = p.strip_prefix(cwd).unwrap_or(p).display().to_string();
+        // one form on every system: Windows lists entries with a backslash
+        let rel = if cfg!(windows) { rel.replace('\\', "/") } else { rel };
         rel.replace(['\n', '\r', ']'], "?")
     };
     let mut names: Vec<String> = named.iter().take(NAMED).map(|p| show(p)).collect();
