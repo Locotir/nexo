@@ -92,7 +92,12 @@ pub(super) async fn compact_locked(st: &mut State, keep_from: usize, cancel: &Ca
             true
         }
         Err(e) => {
-            notice(&events, Level::Error, format!("compaction failed: {e}"));
+            notice_failure(
+                &events,
+                "Could not compact the conversation",
+                e,
+                &["Try `/compact` again in a moment.", "Or start fresh with `/clear`."],
+            );
             false
         }
     }

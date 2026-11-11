@@ -116,14 +116,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     if compact_now(&state, &events, Some(()), &cancel).await {
                         continue;
                     }
-                    notice(
-                        &events,
-                        Level::Error,
-                        format!(
-                            "the request does not fit the model's window and could not be compacted: {}",
-                            e.human()
-                        ),
-                    );
+                    let p = problem_of(&state, &e).await.after_compaction_failed();
+                    notice_problem(&events, p);
                     return TurnEnd::Error;
                 }
                 Lesson::Output if !capped => {
@@ -131,7 +125,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     continue;
                 }
                 _ => {
-                    notice(&events, Level::Error, explain(&e));
+                    notice_problem(&events, problem_of(&state, &e).await);
                     return TurnEnd::Error;
                 }
             },
@@ -286,7 +280,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let calls: Vec<(String, String, Value)> =
             msg.tool_calls().map(|(i, n, a)| (i.to_string(), n.to_string(), a.clone())).collect();
         if let Some(e) = c.error {
-            notice(&events, Level::Error, explain(&e));
+            notice_problem(&events, problem_of(&state, &e).await);
             if !calls.is_empty() {
                 push_results(&state, cancelled_results(&calls, "the model call failed before the tools ran")).await;
             }

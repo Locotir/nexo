@@ -89,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
                     let _ = events.send(AgentEvent::Notice {
                         level: Level::Info,
                         text: format!("rewound to {} messages", history.len()),
+                        problem: None,
                     });
                 }
                 Some(AgentCommand::Resume { id }) => {
@@ -120,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
                     let _ = events.send(AgentEvent::Notice {
                         level: Level::Info,
                         text: format!("forked demo-session into {id} (/tree to jump back)"),
+                        problem: None,
                     });
                 }
                 Some(AgentCommand::ShowTree) => {
@@ -129,8 +131,11 @@ async fn main() -> anyhow::Result<()> {
                     let where_ = path
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "~/.nexo/sessions/demo-session.md".into());
-                    let _ =
-                        events.send(AgentEvent::Notice { level: Level::Info, text: format!("exported to {where_}") });
+                    let _ = events.send(AgentEvent::Notice {
+                        level: Level::Info,
+                        text: format!("exported to {where_}"),
+                        problem: None,
+                    });
                 }
                 Some(AgentCommand::Clear) => {
                     history.clear();
@@ -184,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
                     let _ = events.send(AgentEvent::Notice {
                         level: Level::Info,
                         text: "compacted: 4 messages became a summary".into(),
+                        problem: None,
                     });
                 }
                 Some(AgentCommand::Shutdown) | None => {
@@ -407,6 +413,7 @@ async fn play(events: &nexo_core::agent::EventTx, commands: &mut nexo_core::agen
     let _ = events.send(AgentEvent::Notice {
         level: Level::Info,
         text: "the curator kept the view at 7.4k tokens (history 14.9k)".into(),
+        problem: None,
     });
     let _ = events.send(AgentEvent::Queued { pending: 0 });
     let _ = events.send(AgentEvent::TurnEnd { reason: TurnEnd::Done });

@@ -126,7 +126,7 @@ fn fill(a: &mut App) {
         label: "curator +1 in".into(),
         detail: None,
     });
-    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "compacted 2 messages".into() });
+    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "compacted 2 messages".into(), problem: None });
     a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });
 }
 

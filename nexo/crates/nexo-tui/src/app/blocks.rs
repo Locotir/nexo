@@ -623,7 +623,8 @@ impl App {
                 Block::Tool { folded, .. }
                 | Block::Reasoning { folded, .. }
                 | Block::Group { folded, .. }
-                | Block::Added { folded, .. },
+                | Block::Added { folded, .. }
+                | Block::Problem { folded, .. },
             ) => *folded,
             Some(_) => self.looks.get(i).is_some_and(|l| l.folded),
             None => false,

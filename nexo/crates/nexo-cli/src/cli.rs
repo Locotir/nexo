@@ -752,7 +752,11 @@ async fn interactive(
                         None if told.as_ref() != Some(&n.tag) => {
                             told = Some(n.tag);
                             let text = "A newer nexo release is out. Run `nexo update`, then restart nexo.".to_string();
-                            events.send(AgentEvent::Notice { level: nexo_core::agent::Level::Info, text })
+                            events.send(AgentEvent::Notice {
+                                level: nexo_core::agent::Level::Info,
+                                text,
+                                problem: None,
+                            })
                         }
                         None => Ok(()),
                     };

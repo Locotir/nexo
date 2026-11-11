@@ -119,7 +119,7 @@ fn conversation(a: &mut App) {
         session: Usage { input: 1200, output: 340, cache_read: 5000, ..Default::default() },
         cost_usd: 0.0031,
     });
-    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "compacted 2 messages".into() });
+    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "compacted 2 messages".into(), problem: None });
     // the wall clock never reaches a capture
     a.turn_started = None;
     a.handle_agent(AgentEvent::TurnEnd { reason: TurnEnd::Done });

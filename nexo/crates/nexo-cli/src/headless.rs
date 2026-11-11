@@ -164,6 +164,29 @@ fn unreachable_note(provider: &str, base_url: &str) -> String {
     }
 }
 
+/// A notice as printed on stderr. A failure card (`card`) is its plain form, the title first and in red when
+/// `color`; any other notice is `level: text`.
+fn notice_line(level: Level, text: &str, card: bool, color: bool) -> String {
+    // what a provider or a tool said never reaches the terminal with its escape sequences or control bytes
+    let text = &nexo_core::problem::tidy(text);
+    if !card {
+        return format!("{}: {text}", format!("{level:?}").to_lowercase());
+    }
+    match (color, text.split_once('\n')) {
+        (true, Some((title, rest))) => format!("\x1b[1;31m{title}\x1b[0m\n{rest}"),
+        (true, None) => format!("\x1b[1;31m{text}\x1b[0m"),
+        (false, _) => text.to_string(),
+    }
+}
+
+/// Stderr is a terminal that takes colours.
+fn color_ok() -> bool {
+    let tty = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    #[cfg(windows)]
+    let tty = tty && crossterm::ansi_support::supports_ansi();
+    tty
+}
+
 /// The stdin of a run: what was piped in.
 fn read_stdin() -> String {
     let mut s = String::new();
@@ -341,10 +364,10 @@ impl Run {
                 self.t.usage = *session;
                 self.t.cost = *cost_usd;
             }
-            AgentEvent::Notice { level, text } => {
+            AgentEvent::Notice { level, text, problem } => {
                 let hinted;
                 let text = match (&self.reach, text.strip_prefix("Could not reach the provider")) {
-                    (Some(note), Some(rest)) if *level == Level::Error => {
+                    (Some(note), Some(rest)) if *level == Level::Error && problem.is_none() => {
                         // the note names the address; for Ollama it replaces the raw transport detail
                         hinted = if note.contains("Ollama") {
                             format!("Could not reach the provider{note}")
@@ -355,13 +378,20 @@ impl Run {
                     }
                     _ => text,
                 };
+                // a failure card has several lines; the result's `error` and the stream's `text` stay the one
+                // line a script reads (the card itself is the `problem` of the stream, and stderr's text)
+                let said = problem.as_ref().map_or_else(|| text.clone(), |p| p.one_line());
                 if *level == Level::Error {
-                    self.r.error = Some(text.clone());
+                    self.r.error = Some(said.clone());
                 }
                 if stream {
-                    line(&json!({"type": "notice", "level": format!("{level:?}").to_lowercase(), "text": text}));
+                    let mut v = json!({"type": "notice", "level": format!("{level:?}").to_lowercase(), "text": said});
+                    if let Some(p) = problem {
+                        v["problem"] = json!(p);
+                    }
+                    line(&v);
                 } else if self.fmt != Fmt::Legacy {
-                    eprintln!("{}: {text}", format!("{level:?}").to_lowercase());
+                    eprintln!("{}", notice_line(*level, text, problem.is_some(), color_ok()));
                 }
             }
             AgentEvent::TurnEnd { reason } => {
@@ -717,7 +747,24 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::user_text;
+    use super::{notice_line, user_text};
+    use nexo_core::{Level, Problem, ProblemCtx, ProviderError};
+
+    #[test]
+    fn a_failure_prints_as_its_plain_card_title_first_and_red_only_on_a_terminal() {
+        let e = ProviderError::from_http(401, r#"{"error":{"message":"bad key"}}"#);
+        let p = Problem::of(&e, &ProblemCtx { provider: "openai".into(), ..Default::default() });
+        let plain = notice_line(Level::Error, &p.plain(), true, false);
+        assert_eq!(plain, p.plain());
+        assert!(plain.starts_with("openai rejected the key\n"), "{plain}");
+        assert!(plain.contains("1. ") && plain.contains("HTTP 401"), "{plain}");
+        assert!(!plain.contains('\x1b'), "no colour off a terminal");
+        let red = notice_line(Level::Error, &p.plain(), true, true);
+        assert!(red.starts_with("\x1b[1;31mopenai rejected the key\x1b[0m\n"), "{red:?}");
+        assert!(red.ends_with(&plain[plain.find('\n').unwrap() + 1..]), "only the title is coloured");
+        // any other notice keeps its `level: text` line
+        assert_eq!(notice_line(Level::Warn, "careful", false, true), "warn: careful");
+    }
 
     #[test]
     fn reads_the_shapes_of_a_user_message() {

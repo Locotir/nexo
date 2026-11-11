@@ -8,6 +8,7 @@ pub mod gauge;
 pub mod group;
 pub mod markdown;
 pub mod phase;
+pub mod problem;
 pub mod summary;
 pub mod todo;
 pub mod wrap;

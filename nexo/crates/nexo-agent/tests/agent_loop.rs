@@ -1507,7 +1507,9 @@ async fn resume_in_place_replaces_the_conversation_and_its_file() {
     r.send(AgentCommand::Submit { text: "in b".into(), attachments: vec![] });
     r.turn().await;
     r.send(AgentCommand::Resume { id: "nope".into() });
-    assert!(matches!(r.next().await, AgentEvent::Notice { text, .. } if text.contains("cannot resume session nope")));
+    assert!(
+        matches!(r.next().await, AgentEvent::Notice { text, .. } if text.contains("Could not resume session nope"))
+    );
     r.send(AgentCommand::Resume { id: a.clone() });
     let evs = r.until(|e| matches!(e, AgentEvent::Context { .. })).await;
     assert!(matches!(evs.last(), Some(AgentEvent::Context { messages_total: 4, policy, .. }) if policy == "plain"));
@@ -2004,6 +2006,40 @@ async fn an_unknown_model_is_reported_with_the_closest_names() {
     );
     assert_eq!(client.requests().len(), 1, "no retry");
     r.stop().await;
+}
+
+#[tokio::test]
+async fn a_failed_request_comes_as_a_notice_with_a_problem_that_says_what_to_do() {
+    for (status, body, title, step) in [
+        (
+            401,
+            r#"{"error":{"message":"Incorrect API key provided: sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4"}}"#,
+            "rejected the key",
+            "nexo auth login",
+        ),
+        (402, r#"{"error":{"message":"Insufficient Balance"}}"#, "has no credit left", "billing page"),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let client = Scripted::new(vec![Reply::Err(ProviderError::from_http(status, body))]);
+        let mut r = start(client, config(PermissionMode::Ask), None, d.path()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Error);
+        let (text, p) = evs
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Notice { level: Level::Error, text, problem: Some(p) } => Some((text.clone(), p.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{status}: an error notice with a problem: {evs:?}"));
+        assert!(p.title.contains(title), "{p:?}");
+        assert!(p.steps[0].contains(step), "{p:?}");
+        assert!(p.detail.as_deref().is_some_and(|d| d.contains(&status.to_string())), "{p:?}");
+        assert_eq!(text, p.plain(), "the text stays the full plain form for readers that know no card");
+        assert!(!text.contains("a1B2c3D4"), "no key in the text: {text}");
+        r.stop().await;
+    }
 }
 
 // ------------------------------------------------------------ goals and todo
@@ -4076,7 +4112,9 @@ fn writing_script(chunks: usize, last: Vec<StreamEvent>) -> Vec<Reply> {
 
 fn ck_notices(evs: &[AgentEvent]) -> Vec<(Level, String)> {
     evs.iter()
-        .filter_map(|e| if let AgentEvent::Notice { level, text } = e { Some((*level, text.clone())) } else { None })
+        .filter_map(
+            |e| if let AgentEvent::Notice { level, text, .. } = e { Some((*level, text.clone())) } else { None },
+        )
         .collect()
 }
 
@@ -5815,7 +5853,7 @@ async fn a_model_gone_from_the_list_keeps_the_current_one_and_says_so() {
     let line = evs
         .iter()
         .find_map(|e| match e {
-            AgentEvent::Notice { text, level } if text.contains("not available") => Some((text.clone(), *level)),
+            AgentEvent::Notice { text, level, .. } if text.contains("not available") => Some((text.clone(), *level)),
             _ => None,
         })
         .expect("one plain line");

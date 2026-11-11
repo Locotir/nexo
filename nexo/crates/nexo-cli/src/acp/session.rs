@@ -260,7 +260,7 @@ impl Sess {
                 }
                 AgentEvent::Question { question } => self.spawn_question(rpc, question),
                 AgentEvent::PermissionModeChanged { mode } => self.update(rpc, convert::mode_update(mode)),
-                AgentEvent::Notice { level, text } => {
+                AgentEvent::Notice { level, text, .. } => {
                     eprintln!("nexo acp: [{level:?}] {text}");
                     if level == Level::Error {
                         last_error = Some(text);

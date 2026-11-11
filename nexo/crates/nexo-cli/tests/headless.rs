@@ -582,3 +582,51 @@ fn add_dir_is_taken_without_print_too() {
     assert_eq!(out.status.code(), Some(2));
     assert!(err(&out).contains("need --print"), "{}", err(&out));
 }
+
+/// A server that is off: the request fails with the transport's own words.
+fn off_server(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let cfg = format!(
+        "provider = \"local\"\nmodel = \"m\"\n[providers.local]\nprotocol = \"openai-chat\"\nmodels = [\"m\"]\n\
+         base_url = \"http://user:hunter2@127.0.0.1:{port}/v1?key=zzz9\"\n[agent]\nretries = 0\n\
+         [context]\npolicy = \"plain\"\n"
+    );
+    std::fs::write(dir.join("config.toml"), cfg).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_nexo"))
+        .args(args)
+        .current_dir(dir)
+        .env("NEXO_CONFIG_DIR", dir)
+        .env("NEXO_DATA_DIR", dir.join("data"))
+        .env("NEXO_CACHE_DIR", dir.join("cache"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("nexo runs")
+}
+
+/// A failed request is a card on stderr; the `error` of the result stays the one line a script reads, and
+/// neither shows the credentials of the address.
+#[test]
+fn a_failed_request_prints_a_card_on_stderr_and_keeps_a_one_line_error_in_the_result() {
+    let d = tempfile::tempdir().unwrap();
+    let out = off_server(d.path(), &["-p", "go", "--output-format", "json"]);
+    assert_ne!(out.status.code(), Some(0));
+    let r = &lines(&out)[0];
+    assert_eq!(r["is_error"], true);
+    let e = r["error"].as_str().expect("an error field");
+    assert!(!e.contains('\n') && e.starts_with("Nothing answers at http://127.0.0.1:"), "{e:?}");
+    let s = err(&out);
+    assert!(s.starts_with("Nothing answers at http://127.0.0.1:"), "the card, title first: {s:?}");
+    assert!(s.contains("\n1. ") && !s.contains('\x1b'), "{s:?}");
+    for secret in ["hunter2", "zzz9"] {
+        assert!(!s.contains(secret) && !String::from_utf8_lossy(&out.stdout).contains(secret), "{secret}");
+    }
+    // the stream carries the card as `problem` and keeps `text` on one line
+    let out = off_server(d.path(), &["-p", "go", "--output-format", "stream-json"]);
+    let notice = lines(&out).into_iter().find(|v| v["type"] == "notice" && v["level"] == "error").expect("a notice");
+    assert!(!notice["text"].as_str().unwrap().contains('\n'), "{notice}");
+    assert!(notice["problem"]["title"].as_str().unwrap().starts_with("Nothing answers"), "{notice}");
+    assert!(!notice.to_string().contains("hunter2"), "{notice}");
+}

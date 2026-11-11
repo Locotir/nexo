@@ -123,7 +123,23 @@ pub fn net_error(e: reqwest::Error) -> ProviderError {
     } else {
         ErrorKind::Other
     };
-    ProviderError::new(kind, e.to_string())
+    ProviderError::new(kind, with_causes(&e))
+}
+
+/// An error with the causes under it (`a: b: c`). reqwest says only "error sending request" and keeps
+/// the reason (no such host, connection refused, a certificate) in its source chain.
+fn with_causes(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut next = e.source();
+    while let Some(cause) = next {
+        let said = cause.to_string();
+        if !out.contains(&said) {
+            out.push_str(": ");
+            out.push_str(&said);
+        }
+        next = cause.source();
+    }
+    out
 }
 
 fn retry_after(h: &HeaderMap) -> Option<Duration> {
@@ -199,6 +215,43 @@ pub fn body_from(chunks: Vec<ByteResult>) -> BodyStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|l| l as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn the_causes_of_an_error_are_kept_once_each() {
+        let e = Layer(
+            "error sending request",
+            Some(Box::new(Layer("connect error", Some(Box::new(Layer("Connection refused (os error 111)", None)))))),
+        );
+        assert_eq!(with_causes(&e), "error sending request: connect error: Connection refused (os error 111)");
+        let e = Layer("outer: inner", Some(Box::new(Layer("inner", None))));
+        assert_eq!(with_causes(&e), "outer: inner", "a cause the message already carries is not said twice");
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_says_why_in_the_message() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let e = reqwest::Client::new().get(format!("http://127.0.0.1:{port}/")).send().await.unwrap_err();
+        let p = net_error(e);
+        assert_eq!(p.kind, ErrorKind::Network);
+        let m = p.message.to_ascii_lowercase();
+        assert!(m.contains("refused") || m.contains("os error 111") || m.contains("10061"), "{m}");
+    }
 
     #[test]
     fn joins_with_or_without_the_version() {

@@ -104,6 +104,13 @@ pub enum Block {
         level: Level,
         text: String,
     },
+    /// A failure as a card of three rows: what failed, the likely cause, what to do first. The rest
+    /// (other steps, the provider's own text) opens on demand; `count` is how often it came in a turn.
+    Problem {
+        problem: Box<nexo_core::Problem>,
+        count: u32,
+        folded: bool,
+    },
     /// A message between sessions, as the person sees it: `✉ -> name: text` with how far it got.
     Mail {
         id: String,
@@ -186,6 +193,7 @@ pub struct RenderOpts {
 impl Block {
     pub fn is_foldable(&self) -> bool {
         matches!(self, Block::Tool { .. } | Block::Reasoning { .. } | Block::Group { .. } | Block::Added { .. })
+            || matches!(self, Block::Problem { problem, .. } if problem.detail.is_some() || problem.steps.len() > 1)
     }
 
     pub fn toggle_fold(&mut self) -> bool {
@@ -193,7 +201,8 @@ impl Block {
             Block::Tool { folded, .. }
             | Block::Reasoning { folded, .. }
             | Block::Group { folded, .. }
-            | Block::Added { folded, .. } => {
+            | Block::Added { folded, .. }
+            | Block::Problem { folded, .. } => {
                 *folded = !*folded;
                 true
             }
@@ -205,7 +214,8 @@ impl Block {
         if let Block::Tool { folded, .. }
         | Block::Reasoning { folded, .. }
         | Block::Group { folded, .. }
-        | Block::Added { folded, .. } = self
+        | Block::Added { folded, .. }
+        | Block::Problem { folded, .. } = self
         {
             *folded = v;
         }
@@ -227,6 +237,7 @@ impl Block {
             Block::User { text, .. } => Some(text.clone()),
             Block::Tool { output: Some(o), .. } => Some(o.content.clone()),
             Block::Shell { output, .. } => Some(output.clone()),
+            Block::Problem { problem, .. } => Some(problem.plain()),
             _ => None,
         }
     }
@@ -541,6 +552,11 @@ impl Block {
                     let runs = super::markdown::inline_runs(rest, theme, Style::default().fg(theme.fg));
                     lines.extend(crate::render::wrap::wrap_runs(&runs, w, &[Span::raw("  ")], &[Span::raw("  ")]));
                 }
+                lines
+            }
+            Block::Problem { problem, count, folded } => {
+                let (lines, conts) = super::problem::card(problem, *count, !*folded, w, theme);
+                meta.conts = conts;
                 lines
             }
             Block::Mail { outgoing, peer, text, stage, .. } => {

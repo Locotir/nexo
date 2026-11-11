@@ -11,6 +11,7 @@ use crate::config::ProviderConfig;
 use crate::message::Message;
 use crate::permission::{PermissionDecision, PermissionMode, PermissionRequest, Question};
 use crate::pricing::Pricing;
+use crate::problem::Problem;
 use crate::provider::{ModelCheck, ServerProbe};
 use crate::stream::Usage;
 use crate::tool::ToolOutput;
@@ -690,6 +691,9 @@ pub enum AgentEvent {
     Notice {
         level: Level,
         text: String,
+        /// The same failure as a card (title, cause, steps, raw text); `text` is its plain form.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<Box<Problem>>,
     },
     /// A newer nexo is on `main`: how many commits ahead.
     UpdateAvailable {

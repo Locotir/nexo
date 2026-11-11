@@ -676,7 +676,7 @@ impl App {
     /// Nothing said yet: only the banner, and maybe notices under it. The banner itself
     /// stays at the top of the transcript and scrolls away with it.
     pub fn fresh(&self) -> bool {
-        self.blocks.iter().all(|b| matches!(b, Block::Welcome { .. } | Block::Notice { .. }))
+        self.blocks.iter().all(|b| matches!(b, Block::Welcome { .. } | Block::Notice { .. } | Block::Problem { .. }))
     }
 
     /// The banner is still coming in (its intro is drawn on the frame clock).
@@ -1095,7 +1095,11 @@ fn indent_of(b: &Block, width: usize) -> usize {
 fn folds_alone(b: &Block) -> bool {
     matches!(
         b,
-        Block::User { .. } | Block::Assistant { streaming: false, .. } | Block::Shell { .. } | Block::Notice { .. }
+        Block::User { .. }
+            | Block::Assistant { streaming: false, .. }
+            | Block::Shell { .. }
+            | Block::Notice { .. }
+            | Block::Problem { .. }
     )
 }
 

@@ -126,7 +126,7 @@ impl LoopStats {
                     self.hit_max_steps = true;
                 }
             }
-            AgentEvent::Notice { level: nexo_core::Level::Error, text } => self.errors.push(text.clone()),
+            AgentEvent::Notice { level: nexo_core::Level::Error, text, .. } => self.errors.push(text.clone()),
             _ => {}
         }
     }

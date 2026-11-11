@@ -121,7 +121,12 @@ pub(super) async fn resume_session(state: &Shared, id: &str) {
             drop(st);
             restore_model(state, false).await;
         }
-        Err(e) => notice(&st.events, Level::Error, format!("cannot resume session {id}: {e}")),
+        Err(e) => notice_failure(
+            &st.events,
+            format!("Could not resume session {id}"),
+            e,
+            &["See your sessions with `/resume`."],
+        ),
     }
 }
 

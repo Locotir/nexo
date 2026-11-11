@@ -28,6 +28,7 @@ pub mod paths;
 pub mod permission;
 pub mod plugins;
 pub mod pricing;
+pub mod problem;
 pub mod provider;
 pub mod redact;
 pub mod sandbox;
@@ -60,6 +61,7 @@ pub use jobs::{JobInfo, JobKind, JobStatus, Jobs};
 pub use message::{ImageSource, Message, Part, Role};
 pub use permission::{PermissionDecision, PermissionGate, PermissionMode, PermissionRequest, Question, QuestionOption};
 pub use pricing::Pricing;
+pub use problem::{Problem, ProblemCtx};
 pub use provider::{
     Effort, EventStream, ModelCheck, ModelInfo, ModelRequest, Protocol, ReasoningConfig, ServerProbe, ToolSpec,
 };

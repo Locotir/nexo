@@ -330,7 +330,7 @@ fn the_steps_of_a_turn_sit_under_the_reply_and_one_line_steps_read_as_a_list() {
 fn the_banner_stays_on_top_of_the_transcript_and_facts_follow_the_agent() {
     let (mut a, _rx) = app();
     assert!(a.has_welcome());
-    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "hello".into() });
+    a.handle_agent(AgentEvent::Notice { level: Level::Info, text: "hello".into(), problem: None });
     assert!(a.has_welcome(), "a notice sits under the banner");
     a.handle_agent(AgentEvent::PermissionModeChanged { mode: PermissionMode::Auto });
     assert!(matches!(&a.blocks[0], Block::Welcome { permission_mode, .. } if permission_mode == "yolo"));
@@ -1050,4 +1050,57 @@ fn ctrl_click_on_a_link_opens_it_and_a_plain_click_does_not() {
     // Ctrl+click on it opens it
     click(&mut a, col + 3, 1, KeyModifiers::CONTROL);
     assert_eq!(crate::links::take_opened(), vec!["https://example.com/a".to_string()]);
+}
+
+#[test]
+fn the_same_error_twice_in_a_turn_is_one_card_with_a_count_and_the_raw_text_opens_on_demand() {
+    use nexo_core::{ErrorKind, Problem, ProblemCtx, ProviderError};
+    let (mut a, _rx) = app();
+    let e = ProviderError::from_http(429, r#"{"error":{"message":"Rate limit reached"}}"#);
+    let p = Problem::of(&e, &ProblemCtx { provider: "openai".into(), ..Default::default() });
+    let send = |a: &mut App, p: &Problem| {
+        a.handle_agent(AgentEvent::Notice { level: Level::Error, text: p.plain(), problem: Some(Box::new(p.clone())) })
+    };
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user("go") });
+    send(&mut a, &p);
+    send(&mut a, &p);
+    send(&mut a, &p);
+    let cards: Vec<usize> = (0..a.blocks.len()).filter(|i| matches!(a.blocks[*i], Block::Problem { .. })).collect();
+    assert_eq!(cards.len(), 1, "three of the same are one card");
+    assert!(matches!(&a.blocks[cards[0]], Block::Problem { count: 3, folded: true, .. }));
+    let closed: Vec<String> = a.lines(cards[0], 100).iter().map(crate::render::markdown::text_of).collect();
+    assert!(closed.len() <= 3 && closed[0].contains("×3"), "{closed:?}");
+    // another error is its own card
+    let other = Problem::of(&ProviderError::new(ErrorKind::Overloaded, "busy"), &ProblemCtx::default());
+    send(&mut a, &other);
+    assert_eq!(a.blocks.iter().filter(|b| matches!(b, Block::Problem { .. })).count(), 2);
+    // a new turn starts a new card for the same error
+    a.handle_agent(AgentEvent::History { index: 1, message: Message::user("again") });
+    send(&mut a, &p);
+    assert_eq!(a.blocks.iter().filter(|b| matches!(b, Block::Problem { .. })).count(), 3);
+    // the card opens to the raw text and folds back
+    assert!(a.foldable(cards[0]));
+    a.toggle_block(cards[0]);
+    let open: Vec<String> = a.lines(cards[0], 100).iter().map(crate::render::markdown::text_of).collect();
+    assert!(open.iter().any(|l| l.contains("HTTP 429")), "{open:?}");
+    a.toggle_block(cards[0]);
+    assert_eq!(a.lines(cards[0], 100).len(), closed.len());
+}
+
+#[test]
+fn an_error_saved_by_an_older_nexo_loads_as_a_card_that_opens_to_all_of_its_text() {
+    // the shape an old session holds: no `problem`, the whole text in one string
+    let json = r#"{"event":"notice","level":"error","text":"mcp server `files` failed: could not start\nspawn error: No such file or directory\nPATH was /usr/bin:/bin"}"#;
+    let ev: AgentEvent = serde_json::from_str(json).unwrap();
+    let (mut a, _rx) = app();
+    a.handle_agent(ev);
+    let i = a.blocks.iter().position(|b| matches!(b, Block::Problem { .. })).expect("a card");
+    let closed: Vec<String> = a.lines(i, 100).iter().map(crate::render::markdown::text_of).collect();
+    assert!(closed.len() <= 3 && closed[0].contains("mcp server `files` failed"), "{closed:?}");
+    assert!(a.foldable(i), "the text behind the first line opens");
+    a.toggle_block(i);
+    let open: Vec<String> = a.lines(i, 100).iter().map(crate::render::markdown::text_of).collect();
+    let all = open.join("\n");
+    assert!(all.contains("No such file or directory") && all.contains("PATH was /usr/bin:/bin"), "{open:?}");
+    assert_eq!(a.blocks[i].copy_text().unwrap().lines().count(), 3, "copy gets the text once");
 }

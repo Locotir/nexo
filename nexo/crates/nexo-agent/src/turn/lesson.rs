@@ -95,10 +95,12 @@ pub(super) fn remember(st: &mut State, provider: &str, cfg: &mut ProviderConfig,
     }
 }
 
-/// The error as shown, with the wait a rate limit asked for.
-pub(super) fn explain(e: &ProviderError) -> String {
-    match hints::wait_hint(e) {
-        Some(h) => format!("{} ({h})", e.human()),
-        None => e.human(),
-    }
+/// The error as a card: what failed, the likely cause and what to do, made concrete with the provider,
+/// model, address and key source of the call, and the window the session knows.
+pub(super) async fn problem_of(state: &Shared, e: &ProviderError) -> Problem {
+    let st = state.lock().await;
+    let (provider, cfg, model) = st.target.get();
+    let mut ctx = ProblemCtx::from_config(&provider, &model, &cfg);
+    ctx.window = st.limits.context_window.or_else(|| hints::context_window(&e.message)).or(ctx.window);
+    Problem::of(e, &ctx)
 }

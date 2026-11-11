@@ -86,8 +86,33 @@ impl App {
         }
     }
 
+    /// A failure as a card. The same one again in the same turn is counted on the card it repeats.
+    fn push_problem(&mut self, problem: Box<nexo_core::Problem>) {
+        let turn = self.blocks.iter().rposition(|b| matches!(b, Block::User { .. })).map_or(0, |i| i + 1);
+        let same = (turn..self.blocks.len())
+            .rev()
+            .find(|&i| matches!(&self.blocks[i], Block::Problem { problem: p, .. } if **p == *problem));
+        match same {
+            Some(i) => {
+                if let Block::Problem { count, .. } = &mut self.blocks[i] {
+                    *count += 1;
+                }
+                self.invalidate(i);
+            }
+            None => {
+                self.push(Block::Problem { problem, count: 1, folded: true });
+            }
+        }
+    }
+
     pub fn notice(&mut self, level: Level, text: impl Into<String>) {
-        self.push(Block::Notice { level, text: text.into() });
+        let text = text.into();
+        // an error is a card; one with no cause of its own (an old session) has its text as the title
+        if level == Level::Error {
+            self.push_problem(Box::new(nexo_core::Problem::from_text(&text)));
+        } else {
+            self.push(Block::Notice { level, text });
+        }
     }
 
     /// Reads the sessions for the usage window's insights when its tab is on show, and takes the result.
@@ -750,7 +775,8 @@ impl App {
                 self.map_at = Some(self.now());
             }
             AgentEvent::Curated { items } => self.note_curated(items),
-            AgentEvent::Notice { level, text } => self.notice(level, text),
+            AgentEvent::Notice { problem: Some(problem), .. } => self.push_problem(problem),
+            AgentEvent::Notice { level, text, .. } => self.notice(level, text),
             AgentEvent::UpdateAvailable { behind } => self.update_ready(behind),
             AgentEvent::ModelChanged { provider, model } => {
                 // a model was chosen in the setup: the home opens

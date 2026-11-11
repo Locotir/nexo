@@ -112,8 +112,8 @@ fn hostile(a: &mut App) {
     });
     a.handle_agent(AgentEvent::ToolStart { id: "p1".into() });
     a.handle_agent(AgentEvent::ToolProgress { id: "p1".into(), line: format!("\x1b[2K\r{HOSTILE}") });
-    a.handle_agent(AgentEvent::Notice { level: Level::Warn, text: format!("notice\t{HOSTILE}") });
-    a.handle_agent(AgentEvent::Notice { level: Level::Error, text: long_word() });
+    a.handle_agent(AgentEvent::Notice { level: Level::Warn, text: format!("notice\t{HOSTILE}"), problem: None });
+    a.handle_agent(AgentEvent::Notice { level: Level::Error, text: long_word(), problem: None });
     a.handle_agent(AgentEvent::Usage {
         turn: Usage { input: u64::MAX / 4, output: 9_999_999_999, cache_read: 1, ..Default::default() },
         call: Usage { input: u64::MAX / 4, output: 9_999_999_999, cache_read: 1, ..Default::default() },
@@ -298,7 +298,7 @@ fn a_storm_of_events_and_resizes_keeps_every_frame_whole() {
                 detail: None,
             }),
             7 => a.tick(),
-            _ => a.handle_agent(AgentEvent::Notice { level: Level::Info, text: format!("note {step}") }),
+            _ => a.handle_agent(AgentEvent::Notice { level: Level::Info, text: format!("note {step}"), problem: None }),
         }
         let (w, h) = (1 + rnd(180) as u16, 1 + rnd(55) as u16);
         check(&mut a, w, h, &format!("storm step {step}"));

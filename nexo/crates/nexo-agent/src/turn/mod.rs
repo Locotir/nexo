@@ -21,6 +21,7 @@ use nexo_core::mailbox::Mailbox;
 use nexo_core::message::{ImageSource, Message, Part, Role};
 use nexo_core::permission::{PermissionDecision, PermissionGate, PermissionMode, PermissionRequest};
 use nexo_core::pricing::Pricing;
+use nexo_core::problem::{Problem, ProblemCtx};
 use nexo_core::provider::{Effort, ModelRequest, ReasoningConfig};
 use nexo_core::stream::{Collector, FinishReason, StreamEvent, Usage};
 use nexo_core::tool::{Tool, ToolContext, ToolDisplay, ToolKind, ToolOutput, ToolProgress, ToolSet};
@@ -217,7 +218,26 @@ fn emit(events: &EventTx, ev: AgentEvent) {
 }
 
 fn notice(events: &EventTx, level: Level, text: impl Into<String>) {
-    emit(events, AgentEvent::Notice { level, text: text.into() });
+    emit(events, AgentEvent::Notice { level, text: text.into(), problem: None });
+}
+
+/// Tells the person about a failure as a card; the plain text of it rides along for the old readers.
+fn notice_problem(events: &EventTx, problem: Problem) {
+    emit(events, AgentEvent::Notice { level: Level::Error, text: problem.plain(), problem: Some(Box::new(problem)) });
+}
+
+/// Tells the person an operation failed: the title says what, `cause` why; each step is something to do next.
+fn notice_failure(events: &EventTx, title: impl Into<String>, cause: impl std::fmt::Display, steps: &[&str]) {
+    let cause = cause.to_string();
+    let mut p = Problem::new(title, cause.lines().next().unwrap_or("").trim().to_string());
+    for s in steps {
+        p = p.step(*s);
+    }
+    // a cause that is long or has more lines than the row shows opens in full
+    if cause.lines().count() > 1 || cause.chars().count() > 69 {
+        p = p.detail(cause);
+    }
+    notice_problem(events, p);
 }
 
 /// Tells the person how an MCP control ended.

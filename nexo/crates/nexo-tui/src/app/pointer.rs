@@ -199,7 +199,10 @@ impl App {
         let free = self.press_free;
         let region = if free { None } else { self.region_at(pos.line) };
         let Some(block) = self.block_at_line(pos.line) else { return };
-        let prose = matches!(self.blocks[block], Block::User { .. } | Block::Assistant { .. } | Block::Notice { .. });
+        let prose = matches!(
+            self.blocks[block],
+            Block::User { .. } | Block::Assistant { .. } | Block::Notice { .. } | Block::Problem { .. }
+        );
         if region.is_none() && !prose {
             return;
         }
