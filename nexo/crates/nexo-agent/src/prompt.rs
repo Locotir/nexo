@@ -256,6 +256,11 @@ pub fn project_tree(cwd: &Path) -> String {
 
 fn project_block_head(cwd: &Path, missing: &str, head: &str) -> String {
     use std::collections::BTreeMap;
+    // the person's home is no project: its map would change with every file anything writes under it,
+    // and each change would come back as a note in the middle of the session
+    if compat::no_project(cwd) {
+        return String::new();
+    }
     let mut top: BTreeMap<String, (bool, usize)> = BTreeMap::new();
     let mut second: BTreeMap<String, (bool, usize)> = BTreeMap::new();
     let mut manifests = Vec::new();

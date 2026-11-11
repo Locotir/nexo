@@ -166,8 +166,8 @@ Other `[agent]` keys:
 
 **Coming from another coding agent.** What a team already keeps for Claude Code or Codex CLI works on day one:
 
-- Instructions: `AGENTS.md`, `CLAUDE.md` (also `.claude/CLAUDE.md`) and `CLAUDE.local.md` in the project folders, nearest
-  first; `AGENTS.md` wins over `CLAUDE.md` in the same folder, `NEXO.md` comes before both. A word like `@docs/style.md`
+- Instructions: `AGENTS.md`, `CLAUDE.md` (also `.claude/CLAUDE.md`) and `CLAUDE.local.md` in the project folders (from
+  where you are up to the repository root, never your home folder unless it is a repository itself), nearest first; `AGENTS.md` wins over `CLAUDE.md` in the same folder, `NEXO.md` comes before both. A word like `@docs/style.md`
   places that file (relative path, up to 5 levels, no cycles, never a key file) after its line. Instruction files in
   folders you are not working in are listed, to be read when you work there. For you: `~/.nexo/NEXO.md` or `AGENTS.md`,
   and only when neither exists `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`.
@@ -361,7 +361,8 @@ and it comes back on resume. With the `note` tool it keeps what it learnt
 policy keeps the lines with the first message once their message leaves. With `scope` `global` or `project`, its `Rule:` lines are
 also saved for later sessions: the model does it when you state something lasting ("always...", "in this repo we...") or finds
 a fact that will matter again (a non-default path or port). `global` goes to `~/.nexo/prompt.md`, `project` to the
-project's `AGENTS.md` (the instructions file nexo already reads there, else a new one at the repository root), one dated line
+project's `AGENTS.md` (the instructions file nexo already reads there, else a new one at the repository root; in your
+home folder, which is no project, your own `~/.nexo/AGENTS.md`), one dated line
 under `## Remembered by nexo`; a line already there is skipped, a key or password is refused, and your own text is never
 touched. The transcript shows a `✦ remembered` card (scope, the line, the file as a link you can Ctrl+click) and the status
 bar flashes it. The running session keeps its prompt (the cached prefix does not change); the next session reads the file. `/goal <text>` pins a goal and starts working on
