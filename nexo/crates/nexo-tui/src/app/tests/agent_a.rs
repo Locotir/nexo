@@ -55,6 +55,25 @@ fn a_long_command_is_cut_so_the_cache_mark_and_price_still_show() {
 }
 
 #[test]
+fn a_failed_call_card_carries_no_cache_tag() {
+    let (mut a, _rx) = app();
+    a.handle_agent(AgentEvent::ToolCall {
+        id: "c1".into(),
+        name: "read".into(),
+        args: serde_json::json!({"path":"missing.rs"}),
+        summary: "missing.rs".into(),
+    });
+    a.handle_agent(AgentEvent::ToolStart { id: "c1".into() });
+    a.handle_agent(AgentEvent::ToolDone { id: "c1".into(), output: ToolOutput::error("no such file"), elapsed_ms: 5 });
+    a.marks.insert("c1".into(), CallMark::Sent);
+    let i = a.blocks.iter().position(|b| matches!(b, Block::Tool { .. })).unwrap();
+    let head: String =
+        a.lines(i, 80).iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect::<Vec<_>>().join("|");
+    assert!(matches!(a.blocks[i], Block::Tool { status: ToolStatus::Failed, .. }), "{head}");
+    assert!(!head.contains("full price"), "{head}");
+}
+
+#[test]
 fn a_head_never_ends_in_a_separator_and_an_ellipsis_or_a_cut_figure() {
     use crate::render::wrap::width;
     let theme = Theme::dark();

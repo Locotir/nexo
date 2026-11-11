@@ -42,7 +42,7 @@
 
  common ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  /model        [name]                             switch model, or set one up step by step (checked against the server)
- /permissions  [ask|accept-edits|plan|yolo|read…  set the permission mode
+ /permissions  [ask|accept-edits|plan|yolo…       set the permission mode
  /resume       [session|tree|undelete]            pick a session to resume; with an id or a title: that one; `tree` shows the forks, `unde…
  /plan         [text|off]                         plan mode: reads only, then a plan to approve; with text: sends it
  /compact                                         replace the history with a summary

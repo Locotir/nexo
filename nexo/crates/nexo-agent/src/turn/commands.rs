@@ -262,11 +262,13 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
             format!("; {n} file{} put back as they were: {}{more}", if n == 1 { "" } else { "s" }, names.join(", "))
         }
     };
-    notice(
-        &st.events,
-        Level::Info,
-        format!("rewound: {} dropped, {keep} kept{files}", nexo_core::count(dropped, "message")),
-    );
+    notice(&st.events, Level::Info, rewound_text(dropped, keep, &files));
+}
+
+/// The notice after a rewind; "kept" is said only when something was kept.
+fn rewound_text(dropped: usize, keep: usize, files: &str) -> String {
+    let kept = if keep == 0 { String::new() } else { format!(", {keep} kept") };
+    format!("rewound: {} dropped{kept}{files}", nexo_core::count(dropped, "message"))
 }
 
 /// A file as it is before a write, for a rewind: `Some(None)` when it did not exist, `Some(Some(bytes))`
@@ -420,4 +422,15 @@ pub(super) fn run_shell(cwd: PathBuf, command: String, events: EventTx) {
         };
         emit(&events, AgentEvent::ShellOutput { command, output, exit_code });
     });
+}
+
+#[cfg(test)]
+mod rewound_tests {
+    use super::rewound_text;
+
+    #[test]
+    fn a_rewind_to_nothing_does_not_say_zero_kept() {
+        assert_eq!(rewound_text(2, 0, ""), "rewound: 2 messages dropped");
+        assert_eq!(rewound_text(3, 1, ""), "rewound: 3 messages dropped, 1 kept");
+    }
 }

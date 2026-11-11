@@ -208,8 +208,10 @@ impl App {
                 }
             };
             crate::render::wrap::clean_lines(&mut lines);
-            if let Block::Tool { id, output: Some(_), .. } = &self.blocks[i] {
-                if let (Some(m), Some(head)) = (self.marks.get(id), lines.first_mut()) {
+            if let Block::Tool { id, output: Some(_), status, .. } = &self.blocks[i] {
+                // a failed or refused call has no price to tag
+                let tagged = !matches!(status, ToolStatus::Failed | ToolStatus::Denied);
+                if let (true, Some(m), Some(head)) = (tagged, self.marks.get(id), lines.first_mut()) {
                     let cost = self.call_cost(id, *m);
                     mark_head(head, *m, cost, width - indent, &self.theme);
                 }

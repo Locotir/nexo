@@ -2645,7 +2645,7 @@ fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
         spans.push(Span::styled(" ".repeat(pad), style));
         used += pad;
         if args_w > 0 {
-            let a = truncate(&row.args, args_w.saturating_sub(2));
+            let a = cut_args(&row.args, args_w.saturating_sub(2));
             let pad = args_w.saturating_sub(width(&a));
             spans.push(Span::styled(a, style.patch(theme.dim2())));
             spans.push(Span::styled(" ".repeat(pad), style));
@@ -2684,6 +2684,21 @@ fn draw_palette(f: &mut Frame, app: &mut App, transcript: Rect) {
     }
     app.palette_rows =
         rows.into_iter().filter(|(y, _)| *y < h).map(|(y, abs)| (Rect::new(r.x, r.y + y, list_w, 1), abs)).collect();
+}
+
+/// An argument hint cut to `max` cells at a `|` boundary, never mid-word: `[ask|accept-edits…`.
+/// When not even the first choice fits, the hint is left out.
+fn cut_args(args: &str, max: usize) -> String {
+    if width(args) <= max {
+        return args.to_string();
+    }
+    let mut end = None;
+    for (i, c) in args.char_indices() {
+        if c == '|' && width(&args[..i]) < max {
+            end = Some(i);
+        }
+    }
+    end.map_or_else(String::new, |i| format!("{}…", &args[..i]))
 }
 
 /// A path that does not fit, as `name  folder`: the file name stays whole and the folder is what is
@@ -3804,6 +3819,16 @@ mod tests {
         let l = super::highlight(Line::from("año ÑU"), "ñ", Style::default(), false);
         let parts: Vec<&str> = l.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(parts, ["a", "ñ", "o ", "Ñ", "U"]);
+    }
+
+    #[test]
+    fn an_argument_hint_is_cut_at_a_bar_never_mid_word() {
+        use super::cut_args;
+        let h = "[ask|accept-edits|plan|yolo]";
+        assert_eq!(cut_args(h, 28), h);
+        assert_eq!(cut_args(h, 24), "[ask|accept-edits|plan…");
+        assert_eq!(cut_args(h, 20), "[ask|accept-edits…");
+        assert_eq!(cut_args(h, 3), "", "not even the first choice fits: no hint");
     }
 
     #[test]
