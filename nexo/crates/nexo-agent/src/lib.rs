@@ -9,6 +9,7 @@
 
 pub mod ask;
 pub mod audit;
+mod bin_hint;
 pub mod brief;
 pub mod budget;
 pub mod checkpoint;

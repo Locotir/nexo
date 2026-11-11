@@ -1622,6 +1622,7 @@ dependencies = [
  "futures",
  "globset",
  "ignore",
+ "nexo-bin",
  "nexo-core",
  "nexo-curator",
  "nexo-providers",
@@ -1673,6 +1674,7 @@ dependencies = [
  "rustc-demangle",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

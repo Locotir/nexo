@@ -757,14 +757,39 @@ fn build_command(
     } else {
         crate::sandbox::wrap(sandbox, cwd, &shell.program, &args)
     };
-    Ok(match wrapped? {
+    let mut cmd = match wrapped? {
         Some(c) => c,
         None => {
             let mut c = tokio::process::Command::new(&shell.program);
             c.args(&args);
             c
         }
-    })
+    };
+    // `nexo bin` is part of nexo: with no `nexo` on the PATH, the folder of the running one is added at its end
+    add_nexo_path(&mut cmd, std::env::var_os("PATH").as_deref(), std::env::current_exe().ok().as_deref());
+    Ok(cmd)
+}
+
+fn add_nexo_path(cmd: &mut tokio::process::Command, path: Option<&std::ffi::OsStr>, exe: Option<&std::path::Path>) {
+    if let Some(path) = nexo_on_path(path, exe) {
+        cmd.env("PATH", path);
+    }
+}
+
+/// The PATH for a command so that `nexo` is found: `path` with the folder of the running nexo (`exe`) added at the
+/// END, never in front of anything. `None` (leave the PATH alone) when a `nexo` is already found on it, when the
+/// running program is not called `nexo`, or when there is no PATH to add to (the shell then uses its own default).
+pub fn nexo_on_path(path: Option<&std::ffi::OsStr>, exe: Option<&std::path::Path>) -> Option<std::ffi::OsString> {
+    let name = if cfg!(windows) { "nexo.exe" } else { "nexo" };
+    let exe = exe?;
+    if exe.file_name()? != std::ffi::OsStr::new(name) {
+        return None;
+    }
+    let (path, dir) = (path.filter(|p| !p.is_empty())?, exe.parent()?);
+    if std::env::split_paths(path).any(|d| d.join(name).is_file()) {
+        return None;
+    }
+    std::env::join_paths(std::env::split_paths(path).chain(std::iter::once(dir.to_path_buf()))).ok()
 }
 
 /// Runs `command` in `cwd`, each line of its output (stdout and stderr) to
@@ -923,6 +948,13 @@ pub(crate) fn kill_group(pid: Option<u32>) {
 /// reading programs, and nothing writes (no redirection to a file, no `sed -i`, no `find -delete`,
 /// no substitution that could run something else). Such a command may run beside reads.
 fn only_looks(command: &str) -> bool {
+    command_words(command).is_some_and(|segs| !segs.is_empty() && segs.iter().all(|s| reads_only(s)))
+}
+
+/// The words of each part of the pipeline or list of `command`, split the way a shell would for plain
+/// text, and nothing run or expanded. `None` for a command that redirects to a file, groups, or
+/// substitutes (`$(...)`, backticks), or leaves a quote open: its words say too little to judge.
+pub fn command_words(command: &str) -> Option<Vec<Vec<String>>> {
     let cleaned = command.replace("2>&1", " ").replace("&>/dev/null", " ").replace(">/dev/null", " ");
     let mut segments: Vec<Vec<String>> = vec![Vec::new()];
     let mut word = String::new();
@@ -943,7 +975,7 @@ fn only_looks(command: &str) -> bool {
                 if c == q {
                     quote = None;
                 } else if q == '"' && (c == '`' || (c == '$' && chars.peek() == Some(&'('))) {
-                    return false;
+                    return None;
                 } else if q == '"' && c == '\\' {
                     word.extend(chars.next());
                 } else {
@@ -959,8 +991,8 @@ fn only_looks(command: &str) -> bool {
                     has_word = true;
                     word.extend(chars.next());
                 }
-                '>' | '<' | '`' | '(' | ')' | '{' | '}' => return false,
-                '$' if chars.peek() == Some(&'(') => return false,
+                '>' | '<' | '`' | '(' | ')' | '{' | '}' => return None,
+                '$' if chars.peek() == Some(&'(') => return None,
                 '|' | ';' | '\n' => {
                     end_word!();
                     if c == '|' && chars.peek() == Some(&'|') {
@@ -970,7 +1002,7 @@ fn only_looks(command: &str) -> bool {
                 }
                 '&' => {
                     if chars.next() != Some('&') {
-                        return false;
+                        return None;
                     }
                     end_word!();
                     segments.push(Vec::new());
@@ -984,19 +1016,12 @@ fn only_looks(command: &str) -> bool {
         }
     }
     if quote.is_some() {
-        return false;
+        return None;
     }
     if has_word {
         segments.last_mut().unwrap().push(word);
     }
-    let mut any = false;
-    for seg in segments.iter().filter(|s| !s.is_empty()) {
-        if !reads_only(seg) {
-            return false;
-        }
-        any = true;
-    }
-    any
+    Some(segments.into_iter().filter(|s| !s.is_empty()).collect())
 }
 
 /// One command (its words) of the reading kind.
@@ -1004,6 +1029,14 @@ fn reads_only(words: &[String]) -> bool {
     let flags = || words[1..].iter().filter(|w| w.starts_with('-'));
     match words[0].as_str() {
         "cat" | "head" | "tail" | "grep" | "egrep" | "fgrep" | "rg" | "ls" | "wc" | "stat" | "file" => true,
+        // `nexo bin` reads a file as bytes and prints. `name` and `note` also save into nexo's data folder, so they ask
+        "nexo" => {
+            words.get(1).map(String::as_str) == Some("bin")
+                && matches!(
+                    words.get(2).map(String::as_str),
+                    Some("info" | "funcs" | "fn" | "xref" | "calls" | "strings" | "find" | "names" | "bytes")
+                )
+        }
         "sed" => {
             flags().any(|w| w == "-n" || w == "--quiet" || w == "--silent")
                 && !flags().any(|w| w.starts_with("--in-place") || (!w.starts_with("--") && w.contains('i')))
@@ -1115,6 +1148,114 @@ mod tests {
             assert_eq!(kind(c), want, "{c}");
         }
         assert_eq!(Bash.call_kind(&json!({"command": "cat x", "background": true})), ToolKind::Exec);
+    }
+
+    #[test]
+    fn nexo_bin_reads_are_read_kind_and_what_saves_or_follows_is_judged_as_before() {
+        let kind = |c: &str| Bash.call_kind(&json!({"command": c}));
+        for c in [
+            "nexo bin info a.out",
+            "nexo bin funcs a.out --sort size --lines 20",
+            "nexo bin fn a.out main --bytes",
+            "nexo bin xref a.out 0x401a30 --json",
+            "nexo bin calls a.out main",
+            "nexo bin strings a.out --grep 'http' --sort refs",
+            "nexo bin find a.out 48 8d 05",
+            "nexo bin names a.out",
+            "nexo bin bytes a.out 0x402000 64 --as u32",
+            "nexo bin fn a.out main 2>&1 | head -40",
+            "cd src && nexo bin info a.out",
+        ] {
+            let want = if c.starts_with("cd ") { ToolKind::Exec } else { ToolKind::Read };
+            assert_eq!(kind(c), want, "{c}");
+        }
+        for c in [
+            // saves into nexo's data folder: asks, as a command that writes does
+            "nexo bin name a.out main entry",
+            "nexo bin note a.out main starts here",
+            "nexo bin name a.out main --clear",
+            // not a read, or not a form that is known
+            "nexo bin",
+            "nexo bin --help",
+            "nexo bin nope a.out",
+            "nexo info a.out",
+            "nexo bin fn a.out main | tee out.txt",
+            "nexo bin fn a.out main > out.txt",
+            "nexo bin fn a.out main; rm x",
+            "nexo bin fn a.out main && touch x",
+            "nexo bin fn $(touch x) main",
+            "nexo bin fn `touch x` main",
+            "nexo bin fn a.out main &",
+        ] {
+            assert_eq!(kind(c), ToolKind::Exec, "{c}");
+        }
+        // a name with a quote or a dash is only text: the judgment reads it and runs nothing
+        assert_eq!(kind("nexo bin info '$(touch x)'"), ToolKind::Read);
+        assert_eq!(kind("nexo bin info -- -weird"), ToolKind::Read);
+        assert_eq!(kind("nexo bin info \"$(touch x)\""), ToolKind::Exec);
+        assert_eq!(kind("nexo bin info a.out\ntouch x"), ToolKind::Exec);
+        assert_eq!(Bash.call_kind(&json!({"command": "nexo bin info a", "background": true})), ToolKind::Exec);
+    }
+
+    #[test]
+    fn command_words_splits_without_running_or_expanding() {
+        let w = |c: &str| command_words(c);
+        assert_eq!(
+            w("objdump -d 'my file' | head -5; strings x"),
+            Some(vec![
+                vec!["objdump".into(), "-d".into(), "my file".into()],
+                vec!["head".into(), "-5".into()],
+                vec!["strings".into(), "x".into()],
+            ])
+        );
+        assert_eq!(
+            w("objdump -d a 2>&1 | head"),
+            Some(vec![vec!["objdump".into(), "-d".into(), "a".into()], vec!["head".into()]])
+        );
+        assert_eq!(w("'$(x)' a"), Some(vec![vec!["$(x)".into(), "a".into()]]));
+        for c in ["objdump -d $(x)", "objdump -d `x`", "objdump -d a > b", "objdump -d 'a", "objdump (a)", "x &"] {
+            assert_eq!(w(c), None, "{c}");
+        }
+        assert_eq!(w(""), Some(vec![]));
+    }
+
+    #[test]
+    fn nexo_is_added_at_the_end_of_the_path_only_when_none_is_found() {
+        use std::ffi::OsString;
+        let name = if cfg!(windows) { "nexo.exe" } else { "nexo" };
+        let home = tempfile::tempdir().unwrap();
+        let (bin, other, with) = (home.path().join("app"), home.path().join("other"), home.path().join("with"));
+        for d in [&bin, &other, &with] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(bin.join(name), "x").unwrap();
+        std::fs::write(with.join(name), "x").unwrap();
+        let exe = bin.join(name);
+        let join = |ds: &[&std::path::Path]| std::env::join_paths(ds).unwrap();
+        // absent: the folder of the running nexo comes last, what was there stays in order
+        let path = join(&[home.path(), &other]);
+        let got = nexo_on_path(Some(&path), Some(&exe)).expect("added");
+        let parts: Vec<_> = std::env::split_paths(&got).collect();
+        assert_eq!(parts, [home.path().to_path_buf(), other.clone(), bin.clone()]);
+        // present anywhere on it: untouched
+        for ds in [vec![&with as &std::path::Path, &other], vec![&other, &with]] {
+            assert_eq!(nexo_on_path(Some(&join(&ds)), Some(&exe)), None);
+        }
+        // the folder of the running one is already there: untouched
+        assert_eq!(nexo_on_path(Some(&join(&[&bin, &other])), Some(&exe)), None);
+        // a program not called nexo, no path to add to, no known program: untouched
+        assert_eq!(nexo_on_path(Some(&path), Some(&bin.join("nexo-test-binary"))), None);
+        assert_eq!(nexo_on_path(None, Some(&exe)), None);
+        assert_eq!(nexo_on_path(Some(&OsString::new()), Some(&exe)), None);
+        assert_eq!(nexo_on_path(Some(&path), None), None);
+        // and the command that is built carries it, or carries nothing of its own
+        let env_of = |p: Option<&std::ffi::OsStr>| {
+            let mut c = tokio::process::Command::new("x");
+            add_nexo_path(&mut c, p, Some(&exe));
+            c.as_std().get_envs().find(|(k, _)| *k == "PATH").map(|(_, v)| v.map(OsString::from))
+        };
+        assert_eq!(env_of(Some(&path)), Some(Some(got)));
+        assert_eq!(env_of(Some(&join(&[&with]))), None);
     }
 
     #[tokio::test]

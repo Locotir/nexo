@@ -24,7 +24,7 @@ mod tests;
 mod tests_x;
 
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
-pub use image::{Export, Format, Hardening, Image, Import, Section, Symbol};
+pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
 pub use names::{attach as attach_names, file_path as names_path, MAX_ENTRIES as MAX_NAMES};
 pub use ops::{bytes, find_bytes, find_imm, func, func_window, info, strings, strings_window, ElemType, StrSort};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};

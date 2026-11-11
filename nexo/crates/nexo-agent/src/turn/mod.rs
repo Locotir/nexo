@@ -172,6 +172,9 @@ struct State {
     post: Arc<nexo_tools::postcheck::Guard>,
     /// Failures of the session kept by what they were on, to say when one comes back.
     repeats: crate::repeat::Repeats,
+    /// Whether the line about `nexo bin` is in this session (see `bin_hint.rs`): kept through a compaction, worked
+    /// out again from the history when it is replaced, rewound or cleared.
+    bin_told: bool,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
     epoch: u64,
     /// Plan mode: the mode to go back to and the switch an approved plan asks for.
@@ -361,6 +364,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             }
         },
     };
+    let bin_told = crate::bin_hint::told(&history);
     let prefix = prefix::settle(&mut session, &cwd, &config.agent, &mut tools);
     let system = prompt::system_prompt_with(&cwd, &config.agent, &tools, window_of(&limits), &prefix.volatile);
     let policy = context::from_config(&config.context);
@@ -476,6 +480,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         seen: Default::default(),
         post: Default::default(),
         repeats: Default::default(),
+        bin_told,
         epoch: 0,
         plan,
         last_prompt: None,

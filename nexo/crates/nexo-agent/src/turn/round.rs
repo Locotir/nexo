@@ -431,6 +431,12 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             let mut st = state.lock().await;
             st.repeats.round(&kept, results)
         };
+        // and, once in the session, the line that says `nexo bin` exists, when a command read a compiled program by hand
+        let results = {
+            let mut st = state.lock().await;
+            let cwd = st.cwd.clone();
+            crate::bin_hint::round(&mut st.bin_told, &kept, results, &cwd)
+        };
         if stale_guard > 0 {
             let wrote = {
                 let st = state.lock().await;

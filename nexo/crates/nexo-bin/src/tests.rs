@@ -661,3 +661,35 @@ fn find_imm_sees_code_before_the_first_function() {
     let t = text(&find_imm(&img, 0x2a).unwrap());
     assert!(t.contains("0x00400100"), "{t}");
 }
+
+#[test]
+fn opens_says_yes_only_for_files_open_takes_and_reads_only_the_start() {
+    let d = tempfile::tempdir().unwrap();
+    let put = |name: &str, bytes: &[u8]| {
+        let p = d.path().join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    };
+    for f in [fixtures::elf64(false), fixtures::pe64(false)] {
+        let p = put("prog", &f.bytes);
+        assert!(opens(&p) && Image::open(&p).is_ok());
+        // the headers are enough: the sections and symbols after them are never read
+        assert!(opens(&put("head", &f.bytes[..512.min(f.bytes.len())])), "only the headers count");
+    }
+    let mut arm = fixtures::elf64(false).bytes;
+    arm[18] = 0xb7; // e_machine: AArch64
+    arm[19] = 0;
+    assert!(!opens(&put("arm", &arm)) && Image::open(&put("arm", &arm)).is_err());
+    let mut rel = fixtures::elf64(false).bytes;
+    rel[16] = 1; // e_type: ET_REL
+    assert!(!opens(&put("rel", &rel)));
+    let mut pe32 = fixtures::pe64(false).bytes;
+    let at = u32::from_le_bytes(pe32[0x3c..0x40].try_into().unwrap()) as usize;
+    pe32[at + 4] = 0x4c; // machine: i386
+    pe32[at + 5] = 0x01;
+    assert!(!opens(&put("pe32", &pe32)));
+    assert!(!opens(&put("notes.txt", b"hello\nworld\n")));
+    assert!(!opens(&put("empty", b"")));
+    assert!(!opens(&d.path().join("missing")));
+    assert!(!opens(d.path()), "a folder is not a file");
+}
