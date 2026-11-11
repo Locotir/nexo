@@ -515,7 +515,7 @@ impl Tool for ResourceTool {
             r = self.hub.read_resource(server, uri) => r,
         };
         match r {
-            Ok(t) => ToolOutput::ok(t),
+            Ok(t) => ToolOutput::ok(crate::util::cap_text(&t, crate::mcp::MAX_RESULT_CHARS)),
             Err(e) => ToolOutput::error(format!("mcp {server}:{uri}: {e}")),
         }
     }

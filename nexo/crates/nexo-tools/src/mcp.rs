@@ -22,6 +22,10 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest line a server may send; past it the connection ends.
 const MAX_LINE: usize = 16 << 20;
+/// The most characters of one tool result that go back to the model (the same as `bash`).
+pub const MAX_RESULT_CHARS: usize = crate::bash::MAX_OUTPUT_CHARS;
+/// The longest tool name the provider APIs take.
+const MAX_NAME: usize = 64;
 
 /// The variables of nexo's environment a server gets (with its own `env`): what a process needs
 /// to run, and never another service's keys.
@@ -72,6 +76,8 @@ struct Inner {
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
     /// What the server advertised in `initialize`.
     caps: std::sync::OnceLock<Value>,
+    /// Why the server's output ended (set once, before the waiting requests are failed).
+    gone: std::sync::OnceLock<String>,
     /// The lists the server offers, kept up to date by the `list_changed` notifications.
     lists: Mutex<Lists>,
     /// Counts every change of the lists; the hub and the interface wait on it.
@@ -160,7 +166,8 @@ impl McpClient {
                     Err(e) => tracing::debug!(server = %reader.name, "mcp: not json: {e}"),
                 }
             }
-            // the server went away: fail what is still waiting
+            // the server went away: later requests fail at once, and so does what is still waiting
+            let _ = reader.gone.set(why.clone());
             let pending: Vec<_> = reader.pending.lock().map(|mut p| p.drain().collect()).unwrap_or_default();
             for (_, tx) in pending {
                 let _ = tx.send(Err(why.clone()));
@@ -243,15 +250,20 @@ impl McpClient {
 
     /// The server's tools as nexo tools (they keep the connection alive through a shared handle).
     pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        let mut taken = std::collections::HashSet::new();
         self.defs()
             .into_iter()
             .map(|d| {
-                Arc::new(McpTool {
-                    server: self.name.clone(),
-                    full_name: full_name(&self.name, &d.name),
-                    def: d,
-                    inner: self.inner.clone(),
-                }) as Arc<dyn Tool>
+                // two names that end up the same (`a b`, `a_b`) get a number
+                let mut full_name = full_name(&self.name, &d.name);
+                let mut n = 1;
+                while !taken.insert(full_name.clone()) {
+                    n += 1;
+                    let tail = format!("_{n}");
+                    full_name = format!("{}{tail}", &full_name[..full_name.len().min(MAX_NAME - tail.len())]);
+                }
+                Arc::new(McpTool { server: self.name.clone(), full_name, def: d, inner: self.inner.clone() })
+                    as Arc<dyn Tool>
             })
             .collect()
     }
@@ -503,10 +515,18 @@ async fn list_tools(inner: &Arc<Inner>) -> anyhow::Result<Vec<ToolDef>> {
     let mut out = Vec::new();
     for t in items {
         let Some(name) = t.get("name").and_then(Value::as_str) else { continue };
+        if out.iter().any(|d: &ToolDef| d.name == name) {
+            tracing::warn!(server = %inner.name, "mcp: tool `{name}` is listed twice; the second is ignored");
+            continue;
+        }
         out.push(ToolDef {
             name: name.to_string(),
             description: text_of(&t, "description").to_string(),
-            input_schema: t.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+            input_schema: t
+                .get("inputSchema")
+                .filter(|s| s.is_object())
+                .cloned()
+                .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
             read_only: t.pointer("/annotations/readOnlyHint").and_then(Value::as_bool).unwrap_or(false),
         });
     }
@@ -544,6 +564,7 @@ impl Inner {
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
             caps: std::sync::OnceLock::new(),
+            gone: std::sync::OnceLock::new(),
             lists: Mutex::new(Lists::default()),
             changes: tokio::sync::watch::channel(0).0,
         })
@@ -673,7 +694,14 @@ impl Inner {
             if let Ok(mut p) = self.pending.lock() {
                 p.remove(&id);
             }
-            return Err(format!("cannot write to the server: {e}"));
+            return Err(format!("cannot write to the server (it has probably exited): {e}"));
+        }
+        // the server's output may have ended just before the request was filed
+        if let Some(why) = self.gone.get() {
+            if let Ok(mut p) = self.pending.lock() {
+                p.remove(&id);
+            }
+            return Err(why.clone());
         }
         match rx.await {
             Ok(r) => r,
@@ -787,7 +815,8 @@ impl Tool for McpTool {
                         text = serde_json::to_string_pretty(s).unwrap_or_default();
                     }
                 }
-                let text = text.trim_end().to_string();
+                // a server may send megabytes; the model gets the head and the tail
+                let text = crate::util::cap_text(text.trim_end(), MAX_RESULT_CHARS);
                 let text = if text.is_empty() { "(no content)".to_string() } else { text };
                 ToolOutput { content: text, is_error, display: nexo_core::ToolDisplay::Plain, images: Vec::new() }
             }
@@ -795,9 +824,18 @@ impl Tool for McpTool {
     }
 }
 
-/// `mcp__<server>__<tool>`.
+/// `mcp__<server>__<tool>`, as a provider API accepts it: letters, digits, `_` and `-` (anything
+/// else becomes `_`), at most 64 characters (a longer name is cut and ends in a hash of the whole).
 pub fn full_name(server: &str, tool: &str) -> String {
-    format!("mcp__{server}__{tool}")
+    let raw = format!("mcp__{server}__{tool}");
+    let mut name: String =
+        raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+    if name.len() > MAX_NAME {
+        let h = raw.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        name.truncate(MAX_NAME - 9);
+        name.push_str(&format!("_{:08x}", h as u32));
+    }
+    name
 }
 
 #[cfg(test)]
