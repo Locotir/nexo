@@ -334,6 +334,12 @@ fn read_step(p: &mut Problems, t: &Table) -> Option<Step> {
     Some(Step { id, agent, model, prompt, list, each, votes, answers, line })
 }
 
+/// What an answer and a report are compared as: lower case, from the first letter or digit on. The runner reads a
+/// report with it, and the file is checked with it, so an entry that could never match is refused at load.
+pub(super) fn answer_key(s: &str) -> String {
+    s.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
 /// `answers = ["REAL", "NOT REAL"]`: 2 to 5 entries of 1 to 24 characters, only for a step with `votes` above 1.
 fn read_answers(p: &mut Problems, t: &Table, named: &str, votes: usize) -> Vec<String> {
     let Some((k, item)) = t.get_key_value("answers") else { return Vec::new() };
@@ -372,6 +378,31 @@ fn read_answers(p: &mut Problems, t: &Table, named: &str, votes: usize) -> Vec<S
                 ),
             );
             ok = false;
+        } else if answer_key(e).is_empty() {
+            p.add(
+                at.clone(),
+                format!("step `{named}`: the entry \"{e}\" of `answers` has no letter or digit, so no report can begin with it"),
+            );
+            ok = false;
+        }
+    }
+    // case and the characters before the first letter or digit do not tell two answers apart when a report is read
+    let mut keys: Vec<(String, &String)> = Vec::new();
+    for e in &entries {
+        let key = answer_key(e);
+        if key.is_empty() {
+            continue;
+        }
+        if let Some((_, first)) = keys.iter().find(|(k, _)| *k == key) {
+            p.add(
+                at.clone(),
+                format!(
+                    "step `{named}`: the entries \"{first}\" and \"{e}\" of `answers` read the same; keep one of them"
+                ),
+            );
+            ok = false;
+        } else {
+            keys.push((key, e));
         }
     }
     if ok {
@@ -541,13 +572,14 @@ pub fn problem_lines(list: &[Problem]) -> String {
     lines.join("\n")
 }
 
-/// What a saved workflow is called in a permission rule: its name and the first 8 hex characters of the SHA-256
-/// of its bytes (`bugs@1a2b3c4d`). A changed file, or a project file that replaces the person's own, is
-/// another subject, so a rule made for one does not cover the other.
+/// What a saved workflow is called in a permission rule: its name and the first 16 bytes (32 hex characters) of
+/// the SHA-256 of its bytes (`bugs@<32 hex>`). That is long enough that a project file cannot be padded until its
+/// start equals the one in a rule. A changed file, or a project file that replaces the person's own, is another
+/// subject, so a rule made for one does not cover the other; a rule with the old 8 hex matches nothing.
 pub fn subject(name: &str, text: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(text.as_bytes());
-    let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
     format!("{name}@{hex}")
 }
 
@@ -740,9 +772,21 @@ title = "Check"
     }
 
     #[test]
+    fn an_answer_with_no_letter_or_digit_and_two_that_read_the_same_are_refused_at_load() {
+        // no report can begin with "???": the first letter or digit is where the comparison starts
+        says(&one("votes = 3\nanswers = [\"???\", \"REAL\"]"), "no letter or digit");
+        // case and leading symbols do not tell answers apart, as the count reads them
+        says(&one("votes = 3\nanswers = [\"REAL\", \"real\"]"), "read the same");
+        says(&one("votes = 3\nanswers = [\"- REAL\", \"Real\"]"), "read the same");
+        // different words are fine, and so is one that only begins with another
+        assert!(parse("t", &one("votes = 3\nanswers = [\"REAL\", \"REAL ESTATE\", \"NOT REAL\"]")).is_ok());
+    }
+
+    #[test]
     fn the_subject_of_a_saved_file_is_its_name_and_the_start_of_its_hash() {
-        // SHA-256 of "abc" begins ba7816bf
-        assert_eq!(subject("bugs", "abc"), "bugs@ba7816bf");
+        // SHA-256 of "abc" begins ba7816bf8f01cfea414140de5dae2223: 16 bytes, 32 hex, so padding a file to match a
+        // rule is out of reach
+        assert_eq!(subject("bugs", "abc"), "bugs@ba7816bf8f01cfea414140de5dae2223");
         assert_ne!(subject("bugs", "abc"), subject("bugs", "abd"));
         assert_ne!(subject("bugs", "abc"), subject("other", "abc"));
     }

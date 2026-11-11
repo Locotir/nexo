@@ -405,7 +405,7 @@ pub fn rule_matches_as(rule: &str, tool: &str, kind: ToolKind, args: &Value, cwd
     }
     let Some(pattern) = pattern else { return true };
     let pattern = pattern.trim();
-    // `workflow(find-bugs@1a2b3c4d)`: one saved workflow as its file is now. The turn put that subject in the call
+    // `workflow(find-bugs@<32 hex>)`: one saved workflow as its file is now. The turn put that subject in the call
     // before asking; a call without one (the file does not load) matches no pattern but `*`.
     if tool == "workflow" {
         let subject = args.get(crate::workflow::tool::PIN).and_then(Value::as_str);
@@ -1440,9 +1440,9 @@ mod note_scope_tests {
         let c = d.path();
         // the turn puts the subject of the file as it is now in a call that names a saved workflow
         let (saved, other, inline) = (
-            json!({"name": "bugs", "pinned": "bugs@1a2b3c4d"}),
-            json!({"name": "other", "pinned": "other@00000000"}),
-            json!({"inline": "[[phase]]", "name": "", "pinned": "bugs@1a2b3c4d"}),
+            json!({"name": "bugs", "pinned": "bugs@1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d"}),
+            json!({"name": "other", "pinned": "other@00000000000000000000000000000000"}),
+            json!({"inline": "[[phase]]", "name": "", "pinned": "bugs@1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d"}),
         );
         let unpinned = json!({"name": "bugs"});
         let decide = |p: &Policy, a: &Value| p.decide("workflow", ToolKind::Other, a, c);
@@ -1457,17 +1457,17 @@ mod note_scope_tests {
             assert_eq!(decide(&policy(PermissionMode::ReadOnly), a), Decision::Ask);
             assert_eq!(decide(&policy(PermissionMode::Auto), a), Decision::Allow);
         }
-        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d)"]), &saved), Decision::Allow);
-        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d)"]), &other), Decision::Ask);
+        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d)"]), &saved), Decision::Allow);
+        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d)"]), &other), Decision::Ask);
         // the file changed since the rule was made (another hash), or the rule holds the name alone: asks again
-        assert_eq!(decide(&with(&["workflow(bugs@ffffffff)"]), &saved), Decision::Ask);
+        assert_eq!(decide(&with(&["workflow(bugs@ffffffffffffffffffffffffffffffff)"]), &saved), Decision::Ask);
         assert_eq!(decide(&with(&["workflow(bugs)"]), &saved), Decision::Ask);
         // a name that does not load has no subject: only the whole-tool rules cover it
-        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d)"]), &unpinned), Decision::Ask);
+        assert_eq!(decide(&with(&["workflow(bugs@1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d)"]), &unpinned), Decision::Ask);
         assert_eq!(decide(&with(&["workflow(b*)"]), &saved), Decision::Allow);
         assert_eq!(decide(&with(&["workflow"]), &saved), Decision::Allow);
         assert_eq!(decide(&with(&["workflow(*)"]), &saved), Decision::Allow);
-        for rule in ["workflow", "workflow(*)", "workflow(bugs@1a2b3c4d)", "work*"] {
+        for rule in ["workflow", "workflow(*)", "workflow(bugs@1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d)", "work*"] {
             assert_eq!(decide(&with(&[rule]), &inline), Decision::Ask, "{rule}");
         }
         // a deny rule covers both
@@ -1482,10 +1482,27 @@ mod note_scope_tests {
         // what is offered to remember: the name and the hash, nothing for inline text or a name that does not load
         assert_eq!(
             suggested_rules("workflow", ToolKind::Other, &saved, c),
-            vec!["workflow(bugs@1a2b3c4d)".to_string()]
+            vec!["workflow(bugs@1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d)".to_string()]
         );
         assert!(suggested_rules("workflow", ToolKind::Other, &inline, c).is_empty());
         assert!(suggested_rules("workflow", ToolKind::Other, &unpinned, c).is_empty());
+    }
+
+    #[test]
+    fn a_workflow_rule_made_with_the_old_short_hash_no_longer_matches_and_the_question_is_asked_again() {
+        let d = tempfile::tempdir().unwrap();
+        let c = d.path();
+        let subject = crate::workflow::file::subject("bugs", "abc");
+        let hex = subject.split_once('@').unwrap().1;
+        assert_eq!(hex.len(), 32);
+        let call = json!({"name": "bugs", "pinned": subject});
+        let with = |rule: &str| Policy { allow: vec![rule.to_string()], ..policy(PermissionMode::Ask) };
+        let decide = |p: &Policy| p.decide("workflow", ToolKind::Other, &call, c);
+        assert_eq!(decide(&with(&format!("workflow({subject})"))), Decision::Allow);
+        // the first 8 hex, as rules were saved before the pin grew: it asks again
+        assert_eq!(decide(&with(&format!("workflow(bugs@{})", &hex[..8]))), Decision::Ask);
+        // and the rule it then offers is the long one
+        assert_eq!(suggested_rules("workflow", ToolKind::Other, &call, c), vec![format!("workflow({subject})")]);
     }
 }
 

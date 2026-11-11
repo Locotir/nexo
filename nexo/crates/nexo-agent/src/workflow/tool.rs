@@ -17,7 +17,7 @@ const LISTED: usize = 20;
 const LINE: usize = 80;
 /// Phase lines the question shows.
 const PHASES_SHOWN: usize = 12;
-/// What the turn puts in the call before it asks: the subject (`name@hash`) of the saved workflow the question is
+/// What the turn puts in the call before it asks: the subject (`name@<32 hex>`) of the saved workflow the question is
 /// about. A rule is matched against it, and `run` refuses when the file is no longer that one.
 pub const PIN: &str = "pinned";
 

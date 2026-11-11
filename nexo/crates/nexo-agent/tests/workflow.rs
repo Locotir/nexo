@@ -847,7 +847,7 @@ async fn leave_is_asked_once_a_denial_starts_nothing_and_always_allow_holds_for_
     // the rule that is offered holds the name and the start of the hash of the file
     let rule = format!("workflow({})", subject("saved", saved));
     assert_eq!(req.suggested_rules, vec![rule.clone()]);
-    assert!(rule.len() == "workflow(saved@12345678)".len(), "{rule}");
+    assert!(rule.len() == "workflow(saved@".len() + 32 + 1, "the pin is 32 hex: {rule}");
     r.send(AgentCommand::Permission {
         id: "w1".into(),
         decision: PermissionDecision::Deny { reason: Some("no".into()) },
@@ -1179,7 +1179,7 @@ async fn a_saved_file_changed_after_the_question_is_refused_and_nothing_starts()
     let client = Mock::new(vec![]);
     let wf = tool(&client, d.path());
     // the turn stamps the subject of the file as it is when the person is asked
-    let mut args = json!({"name": "saved", "pinned": "saved@00000000"});
+    let mut args = json!({"name": "saved", "pinned": "saved@00000000000000000000000000000000"});
     nexo_agent::workflow::tool::pin(&mut args, d.path());
     assert_eq!(args["pinned"], json!(subject("saved", text)), "what the model put there is replaced");
     // the file is swapped between the question and the run
@@ -1196,6 +1196,21 @@ async fn a_saved_file_changed_after_the_question_is_refused_and_nothing_starts()
 }
 
 #[tokio::test]
+async fn a_pin_made_with_the_old_short_hash_is_refused_so_nothing_starts_on_it() {
+    let text = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"P\"\n";
+    let d = project_with("saved", text);
+    let client = Mock::new(vec![]);
+    let wf = tool(&client, d.path());
+    let long = subject("saved", text);
+    let short = long[.."saved@".len() + 8].to_string();
+    let out = wf.run(json!({"name": "saved", "pinned": short}), &ctx(d.path())).await;
+    assert!(out.is_error && out.content.contains("changed after you were asked about it"), "{}", out.content);
+    assert!(client.tasks().is_empty());
+    let out = wf.run(json!({"name": "saved", "pinned": long}), &ctx(d.path())).await;
+    assert!(!out.is_error, "{}", out.content);
+}
+
+#[tokio::test]
 async fn no_subject_for_inline_text_or_a_name_that_does_not_load_and_a_bad_name_is_refused_first() {
     let text = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"P\"\n";
     let d = project_with("saved", text);
@@ -1205,7 +1220,7 @@ async fn no_subject_for_inline_text_or_a_name_that_does_not_load_and_a_bad_name_
         a.get("pinned").cloned()
     };
     assert_eq!(pinned(json!({"name": "saved"})), Some(json!(subject("saved", text))));
-    assert_eq!(pinned(json!({"inline": text, "pinned": "saved@00000000"})), None);
+    assert_eq!(pinned(json!({"inline": text, "pinned": "saved@00000000000000000000000000000000"})), None);
     assert_eq!(pinned(json!({"name": "broken", "pinned": "x"})), None);
     assert_eq!(pinned(json!({"name": "ghost"})), None);
     assert_eq!(pinned(json!({"name": "../saved"})), None);
@@ -1213,4 +1228,86 @@ async fn no_subject_for_inline_text_or_a_name_that_does_not_load_and_a_bad_name_
     let out = tool(&client, d.path()).run(json!({"name": "../../etc/passwd"}), &ctx(d.path())).await;
     assert!(out.is_error && out.content.contains("is not a workflow name"), "{}", out.content);
     assert!(client.tasks().is_empty());
+}
+
+#[tokio::test]
+async fn the_unreported_note_counts_only_sub_agents_that_reported_without_usage() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Mock::new(vec![
+        ("BOOM", Say::Fail),
+        ("CUT", Say::Hang),
+        ("BARE", Say::Bare("no meter".into())),
+        ("FINE", says("fine")),
+    ]);
+    let wf = tool(&client, d.path());
+    // a sub-agent whose first call fails, and one the person stops: neither had a report to give usage with
+    let toml = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"boom\"\nprompt = \"BOOM\"\n[[phase.step]]\nid = \"cutoff\"\nprompt = \"CUT\"\n[[phase.step]]\nid = \"bare\"\nprompt = \"BARE\"\n[[phase.step]]\nid = \"fine\"\nprompt = \"FINE\"\n";
+    let c = ctx(d.path());
+    let cutter = async {
+        client.until_started(2).await;
+        let job = loop {
+            if let Some(j) = c.jobs.list().into_iter().find(|j| j.label.contains("cutoff")) {
+                break j;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert!(c.jobs.kill(job.id));
+    };
+    let (out, ()) = tokio::join!(wf.run(json!({"inline": toml}), &c), cutter);
+    assert!(steps_line(&out, "boom").contains("failed"), "{}", out.content);
+    assert!(steps_line(&out, "cutoff").contains("failed"), "{}", out.content);
+    // only the one that reported with no usage is named
+    assert_eq!(out.content.matches("token use was not reported").count(), 1, "{}", out.content);
+    let note_after = |id: &str| {
+        let at = out.content.find(&format!("- {id}:")).unwrap();
+        let rest = &out.content[at..];
+        let end = rest[1..].find("\n- ").map_or(rest.len(), |i| i + 1);
+        rest[..end].contains("token use was not reported")
+    };
+    assert!(note_after("bare"), "{}", out.content);
+    for id in ["boom", "cutoff", "fine"] {
+        assert!(!note_after(id), "{id}: {}", out.content);
+    }
+}
+
+#[tokio::test]
+async fn a_step_report_of_five_or_more_parts_in_a_later_prompt_holds_to_the_group_cap_part_by_part() {
+    let d = tempfile::tempdir().unwrap();
+    let items = (1..=6).map(|n| format!("\"i{n}\"")).collect::<Vec<_>>().join(", ");
+    let client = Mock::new(vec![
+        ("FIND", says(&format!("[{items}]"))),
+        ("AFTER", says("done")),
+        ("BIG", says(&"x".repeat(7000))),
+    ]);
+    let toml = "[[phase]]\ntitle = \"Find\"\n[[phase.step]]\nid = \"find\"\nprompt = \"FIND\"\nreturns = \"list\"\n[[phase]]\ntitle = \"Work\"\n[[phase.step]]\nid = \"work\"\neach = \"find\"\nprompt = \"BIG {{item}}\"\n[[phase]]\ntitle = \"Last\"\n[[phase.step]]\nid = \"last\"\nprompt = \"AFTER {{steps.work.report}}\"\n";
+    let (out, _) = go(&client, d.path(), toml, "").await;
+    assert!(!out.is_error, "{}", out.content);
+    let after = client.tasks().into_iter().find(|t| t.starts_with("AFTER")).expect("the last step started");
+    // 6 parts share 24000: 4000 each (the per-report cap of 6000 alone would let 36000 in)
+    assert_eq!(after.matches('x').count(), 24000);
+    assert_eq!(after.matches("[cut: 3000 more characters]").count(), 6, "{after}");
+    for n in 1..=6 {
+        assert!(after.contains(&format!("i{n}")), "part {n} vanished");
+    }
+}
+
+#[tokio::test]
+async fn text_of_many_bytes_per_character_is_cut_in_the_answer_on_a_character_boundary_with_the_cut_line() {
+    let d = tempfile::tempdir().unwrap();
+    // a sub-agent's own report is held to about 8 KB, so the 6000-character cap is reached only by text that is
+    // mostly one byte per character: ASCII first, then characters of 2 and 3 bytes where the cut falls
+    for (ch, ascii, multi, kept) in [("é", 5200, 1000, 800), ("日", 5300, 800, 700)] {
+        let text = format!("{}{}", "x".repeat(ascii), ch.repeat(multi));
+        let client = Mock::new(vec![("BIG", says(&text))]);
+        let one = "[[phase]]\ntitle = \"Only\"\n[[phase.step]]\nid = \"s1\"\nprompt = \"BIG 1\"\n";
+        let (out, _) = go(&client, d.path(), one, "").await;
+        let head: String = out.content.chars().take(300).collect();
+        assert_eq!(out.content.matches(ch).count(), kept, "{ch}: {head}");
+        assert_eq!(out.content.matches('x').count(), ascii, "{ch}");
+        assert!(
+            out.content.contains(&format!("{}\n[cut: {} more characters]", ch.repeat(kept), ascii + multi - 6000)),
+            "{ch}"
+        );
+        assert!(!out.content.contains('\u{fffd}'), "{ch}");
+    }
 }

@@ -1512,6 +1512,16 @@ mod tests {
         assert_eq!(parse("---\nname: x\ntools:\n---\nB", "x").unwrap().tools, None);
         assert_eq!(parse("---\nname: x\ntools: []\n---\nB", "x").unwrap().tools, None);
     }
+
+    #[test]
+    fn a_foreign_agent_whose_tools_name_only_task_or_workflow_ends_with_the_four_read_tools() {
+        // read-only on purpose: the two names are dropped, and what is left is not every tool
+        for list in ["task", "workflow"] {
+            let mut p = parse(&format!("---\nname: x\ntools: {list}\n---\nB"), "x").unwrap();
+            adopt_foreign(&mut p);
+            assert_eq!(p.tools, Some(["read", "grep", "glob", "ls"].map(String::from).to_vec()), "{list}");
+        }
+    }
 }
 
 #[cfg(test)]

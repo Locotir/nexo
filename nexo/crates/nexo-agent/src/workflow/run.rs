@@ -10,7 +10,7 @@ use nexo_core::subs::SubMeter;
 use nexo_core::tool::{ToolContext, ToolKind};
 use serde_json::Value;
 
-use super::file::{expand, pieces, Piece, Step, Workflow, MAX_ITEMS};
+use super::file::{answer_key, expand, pieces, Piece, Step, Workflow, MAX_ITEMS};
 use crate::subagent::{Ended, Launch, SubAgent, DEFAULT};
 
 /// Seconds the sub-agents of a stopped run get to finish their cleanup.
@@ -480,12 +480,11 @@ pub fn parse_list(report: &str) -> Result<Vec<String>, String> {
 /// Which of `answers` a report begins with: ignoring case and the characters before its first letter or digit; the
 /// longest entry wins when one begins with another.
 fn answer_of(report: &str, answers: &[String]) -> Option<usize> {
-    let norm = |s: &str| s.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-    let rest = norm(report);
+    let rest = answer_key(report);
     answers
         .iter()
         .enumerate()
-        .map(|(i, a)| (i, norm(a)))
+        .map(|(i, a)| (i, answer_key(a)))
         .filter(|(_, a)| !a.is_empty() && rest.starts_with(a.as_str()))
         .max_by_key(|(_, a)| a.chars().count())
         .map(|(i, _)| i)
@@ -537,8 +536,9 @@ fn finish_step(step: &Step, phase: usize, mine: &[(&Unit, &Option<Done>)], stop:
             o.agents += 1;
         }
         o.tokens += d.tokens;
-        // a sub-agent that did work and reported no usage: it counts as 0 tokens, and the result says so
-        if d.ran && d.tokens == 0 {
+        // a sub-agent that reported and gave no usage: it counts as 0 tokens, and the result says so. One that
+        // failed, was stopped or errored before any usage had nothing to report it with.
+        if d.ran && d.tokens == 0 && d.result.is_ok() {
             unmetered += 1;
         }
         first = first.into_iter().chain(d.started).min();
