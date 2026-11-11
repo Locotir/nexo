@@ -52,6 +52,7 @@ mod approval;
 mod background;
 mod commands;
 mod compaction;
+mod flow;
 mod goal;
 mod guards;
 mod host;
@@ -223,7 +224,8 @@ fn emit(events: &EventTx, ev: AgentEvent) {
 /// What a view that lost some sub-agent events is sent so it can catch up: the state of every run the
 /// registry lists.
 fn sub_resync(subs: &nexo_core::subs::Subs) -> Vec<AgentEvent> {
-    subs.list().into_iter().map(|info| AgentEvent::SubState { info }).collect()
+    let runs = subs.list().into_iter().map(|info| AgentEvent::SubState { info });
+    runs.chain(subs.flows().into_iter().map(|info| AgentEvent::FlowRun { info })).collect()
 }
 
 fn notice(events: &EventTx, level: Level, text: impl Into<String>) {
@@ -325,6 +327,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let target = Target::new(&provider, pcfg, &model);
     // the sub-agents, when there are tools to give them; they reach the state once it exists
     let host: crate::subagent::HostCell = Arc::new(OnceLock::new());
+    // what a workflow the person starts by name runs its sub-agents with
+    let mut flow_sub: Option<Arc<crate::subagent::SubAgent>> = None;
     if config.agent.subagents && tools.specs().iter().any(|s| s.name == "read" || s.name == "grep") {
         let profiles = crate::subagent::load(&cwd);
         let sub = crate::subagent::SubAgent::new(client.clone(), target.clone(), &tools, profiles, host.clone())
@@ -335,6 +339,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             .with_worktree_setup(config.agent.worktree_setup.clone());
         let sub = Arc::new(sub);
         tools.add(sub.clone());
+        flow_sub = Some(sub.clone());
         // offered only where a workflow is saved: it costs a description in every request
         if crate::workflow::Workflow::any_saved(&cwd) {
             tools.add(Arc::new(crate::workflow::Workflow::new(sub, cwd.clone())));
@@ -674,6 +679,13 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                                 emit(&events, AgentEvent::Queued { pending: 0 });
                             }
                         }
+                        // nothing of the old conversation's workflow runs reaches the new one: the registry starts over
+                        // first (what a run still sends is dropped at the source), and what it sent already is dropped here
+                        jobs.subs().clear();
+                        while !matches!(
+                            sub_changes.try_recv(),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Empty | tokio::sync::broadcast::error::TryRecvError::Closed)
+                        ) {}
                         jobs.kill_all();
                         clear(&state).await;
                         // the killed jobs are not news for the new conversation
@@ -1012,6 +1024,11 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         let transcript = jobs.subs().transcript(&id);
                         emit(&events, AgentEvent::SubTranscript { id, transcript });
                     }
+                    AgentCommand::FlowStart { name, args } => flow::start(&state, flow_sub.clone(), name, args).await,
+                    AgentCommand::FlowStopStep { run, step } => {
+                        flow::stop(&state, jobs.subs().stop_flow_step(&run, &step)).await
+                    }
+                    AgentCommand::FlowStop { run } => flow::stop(&state, jobs.subs().stop_flow(&run)).await,
                     AgentCommand::ShowJobs => {
                         notice(&events, Level::Info, jobs_text(&jobs));
                         emit(&events, AgentEvent::Jobs { jobs: jobs.list() });

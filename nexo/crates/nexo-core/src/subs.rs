@@ -16,6 +16,9 @@ use tokio::sync::broadcast;
 
 use crate::stream::Usage;
 
+mod flow;
+pub use flow::{FlowInfo, FlowPhase, FlowRun, FlowState, FlowStep, StepState};
+
 /// Items one sub-agent keeps; older ones go first.
 pub const KEEP_ITEMS: usize = 200;
 /// Bytes of text one sub-agent keeps (and the most one item may hold).
@@ -136,6 +139,8 @@ pub enum SubChange {
     Delta { id: String, text: String },
     /// A message to a run could not be delivered.
     NotDelivered { id: String, why: String },
+    /// A workflow run began, or something in it changed.
+    Flow(FlowInfo),
 }
 
 struct Data {
@@ -180,6 +185,9 @@ fn now_ms() -> u64 {
 
 struct Inner {
     runs: Mutex<Vec<Arc<Entry>>>,
+    /// The workflow runs ([`flow`]), and how many began (the next one is `wf#` of that plus one).
+    flows: Mutex<Vec<Arc<flow::Entry>>>,
+    flow_seq: AtomicU64,
     /// Counts the times the registry was cleared; a run of an older count sends nothing.
     generation: AtomicU64,
     changes: broadcast::Sender<SubChange>,
@@ -204,7 +212,13 @@ impl std::fmt::Debug for Subs {
 impl Subs {
     pub fn new() -> Subs {
         let (changes, _) = broadcast::channel(CHANGES);
-        Subs(Arc::new(Inner { runs: Mutex::new(Vec::new()), generation: AtomicU64::new(0), changes }))
+        Subs(Arc::new(Inner {
+            runs: Mutex::new(Vec::new()),
+            flows: Mutex::new(Vec::new()),
+            flow_seq: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
+            changes,
+        }))
     }
 
     /// Every change from now on. A receiver that falls behind loses the oldest ones (`Lagged`): the
@@ -313,6 +327,9 @@ impl Subs {
         let mut runs = self.0.runs.lock().unwrap();
         self.0.generation.fetch_add(1, Ordering::SeqCst);
         runs.clear();
+        let mut flows = self.0.flows.lock().unwrap();
+        flows.clear();
+        self.0.flow_seq.store(0, Ordering::SeqCst);
     }
 
     /// Drops the ended runs beyond [`KEEP_RUNS`], the one that ended longest ago first. Run `keep` (the one

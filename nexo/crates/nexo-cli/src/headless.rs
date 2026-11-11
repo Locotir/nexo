@@ -812,6 +812,16 @@ mod tests {
             AgentEvent::SubState { info },
             AgentEvent::SubNotDelivered { id: "a#1".into(), why: "w".into() },
             AgentEvent::SubTranscript { id: "a#1".into(), transcript: None },
+            AgentEvent::FlowRun {
+                info: nexo_core::subs::FlowInfo {
+                    id: "wf#1".into(),
+                    name: "w".into(),
+                    started_ms: 0,
+                    ended_ms: None,
+                    state: nexo_core::subs::FlowState::Running,
+                    phases: vec![],
+                },
+            },
         ];
         for e in &subs {
             assert_eq!(legacy_line(e), None, "{e:?}");

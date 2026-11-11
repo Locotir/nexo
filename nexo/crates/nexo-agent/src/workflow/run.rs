@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use nexo_core::subs::SubMeter;
+use nexo_core::subs::{FlowRun, FlowState, StepState, SubMeter};
 use nexo_core::tool::{ToolContext, ToolKind};
 use serde_json::Value;
 
@@ -15,6 +15,12 @@ use crate::subagent::{Ended, Launch, SubAgent, DEFAULT};
 
 /// Seconds the sub-agents of a stopped run get to finish their cleanup.
 const CLEANUP: Duration = Duration::from_secs(5);
+
+/// The most often the tokens spent so far are sent while sub-agents work.
+const TICK: Duration = Duration::from_secs(1);
+
+/// Why a step the person stopped failed.
+pub const STOPPED: &str = "stopped by the person";
 
 /// Characters of one report, of a group of reports, and of an `{{item}}`, wherever they go: into the answer or
 /// into a later prompt.
@@ -143,6 +149,8 @@ pub struct Outcome {
     pub stop: Option<Stop>,
     /// The person interrupted the run.
     pub cancelled: bool,
+    /// The person stopped the run (or one step of it) from the view: not the interrupt of the turn.
+    pub stopped: bool,
     /// The run ended early for a reason other than a ceiling (a phase where every step failed).
     pub ended: Option<String>,
     pub agents: usize,
@@ -188,7 +196,7 @@ struct Counters {
 }
 
 /// Runs `wf` with `args`. Nothing here starts unless the checks of the file passed.
-pub async fn run(sub: &SubAgent, wf: &Workflow, args: &str, ctx: &ToolContext) -> Outcome {
+pub async fn run(sub: &SubAgent, wf: &Workflow, args: &str, ctx: &ToolContext, flow: &FlowRun) -> Outcome {
     let t0 = Instant::now();
     let mut out = Outcome::default();
     let mut counters = Counters { started: 0, tokens: 0 };
@@ -196,7 +204,9 @@ pub async fn run(sub: &SubAgent, wf: &Workflow, args: &str, ctx: &ToolContext) -
     for (pi, phase) in wf.phases.iter().enumerate() {
         if let Some(why) = &halt {
             for s in &phase.steps {
-                out.steps.push(unrun(s, pi, State::NotRun(why.clone())));
+                let o = unrun(s, pi, State::NotRun(why.clone()));
+                tell(flow, &o);
+                out.steps.push(o);
             }
             continue;
         }
@@ -213,18 +223,23 @@ pub async fn run(sub: &SubAgent, wf: &Workflow, args: &str, ctx: &ToolContext) -
             }
         }
         let steps: Vec<&Step> = phase.steps.iter().collect();
-        let (done, cancelled) = schedule(sub, wf, ctx, &units, &steps, &mut counters, &mut out.stop).await;
+        let (done, cancelled) = schedule(sub, wf, ctx, flow, pi, &units, &steps, &mut counters, &mut out.stop).await;
         for (si, step) in phase.steps.iter().enumerate() {
-            if let Some(why) = skipped.get(&si) {
-                out.steps.push(unrun(step, pi, State::Skipped(why.clone())));
-                continue;
-            }
-            let mine: Vec<(&Unit, &Option<Done>)> = units.iter().zip(&done).filter(|(u, _)| u.step == si).collect();
-            out.steps.push(finish_step(step, pi, &mine, out.stop));
+            let o = match skipped.get(&si) {
+                Some(why) => unrun(step, pi, State::Skipped(why.clone())),
+                None => step_outcome(step, pi, si, &units, &done, out.stop, flow),
+            };
+            tell(flow, &o);
+            out.steps.push(o);
         }
         if cancelled {
             out.cancelled = true;
             halt = Some("the person interrupted the run".into());
+            continue;
+        }
+        if flow.run_stopped() {
+            out.stopped = true;
+            halt = Some("the person stopped the run".into());
             continue;
         }
         if let Some(stop) = out.stop {
@@ -241,6 +256,13 @@ pub async fn run(sub: &SubAgent, wf: &Workflow, args: &str, ctx: &ToolContext) -
     out.agents = counters.started;
     out.tokens = counters.tokens;
     out.secs = t0.elapsed().as_secs();
+    flow.end(if out.cancelled || out.stopped {
+        FlowState::Stopped
+    } else if out.stop.is_some() || out.ended.is_some() || out.steps.iter().any(|s| s.state != State::Ok) {
+        FlowState::Problems
+    } else {
+        FlowState::Ok
+    });
     out
 }
 
@@ -325,11 +347,15 @@ fn plan_step(
 }
 
 /// Starts the units of a phase, never more than `max_parallel` at work over the whole run (a phase starts
-/// when the one before it has ended), and waits for them. `None` for a unit that never started.
+/// when the one before it has ended), and waits for them. `None` for a unit that never started. Everything the
+/// person watching should see goes to `flow` as it happens.
+#[allow(clippy::too_many_arguments)]
 async fn schedule(
     sub: &SubAgent,
     wf: &Workflow,
     ctx: &ToolContext,
+    flow: &FlowRun,
+    pi: usize,
     units: &[Unit],
     steps: &[&Step],
     counters: &mut Counters,
@@ -339,11 +365,22 @@ async fn schedule(
     let mut live: HashMap<usize, Live> = HashMap::new();
     let mut running = FuturesUnordered::new();
     let (mut next, mut cancelled) = (0, false);
+    // the tokens spent so far go out at most once a second
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        while next < units.len() && live.len() < wf.max_parallel && stop.is_none() && !cancelled {
+        while next < units.len() && live.len() < wf.max_parallel && stop.is_none() && !cancelled && !flow.run_stopped()
+        {
             if ctx.cancel.is_cancelled() {
                 cancelled = true;
                 break;
+            }
+            // a step the person stopped starts nothing more
+            if flow.step_stopped(&steps[units[next].step].id) {
+                res[next] = Some(refused_unit(STOPPED.into()));
+                next += 1;
+                step_done(flow, pi, units, steps, &res, *stop, units[next - 1].step);
+                continue;
             }
             // the rule of the `task` tool: a kind that can change files runs alone, nothing else at work and
             // nothing started until it ends (unless `parallel_tasks` lets them run side by side)
@@ -374,9 +411,21 @@ async fn schedule(
                 detachable: false,
             };
             match sub.launch(launch, ctx).await {
-                Err(refused) => res[i] = Some(refused_unit(refused)),
+                Err(refused) => {
+                    res[i] = Some(refused_unit(refused));
+                    step_done(flow, pi, units, steps, &res, *stop, u.step);
+                }
                 Ok(s) => {
                     counters.started += 1;
+                    flow.agent_started(&step.id, &s.run_id, s.id);
+                    // the outcome is in the result of the run: the main agent is never told of this job on its own, not
+                    // even in the moment between its end and the run settling it (a run the person started by name
+                    // finds the main agent idle, and a note would start a turn)
+                    ctx.jobs.tell(s.id);
+                    // a stop that came while it was starting could not reach it yet
+                    if flow.step_stopped(&step.id) || flow.run_stopped() {
+                        ctx.jobs.kill(s.id);
+                    }
                     live.insert(i, Live { writer, job: s.id, meter: s.meter.clone(), at: Instant::now() });
                     let rx = s.rx;
                     running.push(async move { (i, rx.await) });
@@ -393,7 +442,8 @@ async fn schedule(
             }
             let drain = async {
                 while let Some((i, ended)) = running.next().await {
-                    settle(&mut res, &mut live, counters, ctx, steps[units[i].step].list, i, ended);
+                    settle(&mut res, &mut live, counters, ctx, flow, steps[units[i].step], i, ended);
+                    step_done(flow, pi, units, steps, &res, *stop, units[i].step);
                 }
             };
             let _ = tokio::time::timeout(CLEANUP, drain).await;
@@ -403,8 +453,10 @@ async fn schedule(
             biased;
             _ = ctx.cancel.cancelled() => cancelled = true,
             Some((i, ended)) = running.next() => {
-                settle(&mut res, &mut live, counters, ctx, steps[units[i].step].list, i, ended);
+                settle(&mut res, &mut live, counters, ctx, flow, steps[units[i].step], i, ended);
+                step_done(flow, pi, units, steps, &res, *stop, units[i].step);
             }
+            _ = tick.tick() => spent_so_far(flow, units, steps, &res, &live),
         }
     }
     (res, cancelled)
@@ -415,21 +467,86 @@ fn sum(m: &SubMeter) -> u64 {
     i + o
 }
 
+/// The tokens each step of the phase has spent so far, ended sub-agents and those still at work.
+fn spent_so_far(flow: &FlowRun, units: &[Unit], steps: &[&Step], res: &[Option<Done>], live: &HashMap<usize, Live>) {
+    let mut per: Vec<u64> = vec![0; steps.len()];
+    for (i, u) in units.iter().enumerate() {
+        per[u.step] += match (&res[i], live.get(&i)) {
+            (Some(d), _) => d.tokens,
+            (None, Some(l)) => sum(&l.meter),
+            (None, None) => 0,
+        };
+    }
+    let spent: Vec<(&str, u64)> = steps.iter().zip(per).map(|(s, n)| (s.id.as_str(), n)).collect();
+    flow.tokens(&spent);
+}
+
+/// The outcome of step `si` of phase `pi`, from what its units did; a step the person stopped is failed, with
+/// that reason, whatever its units had done.
+fn step_outcome(
+    step: &Step,
+    pi: usize,
+    si: usize,
+    units: &[Unit],
+    done: &[Option<Done>],
+    stop: Option<Stop>,
+    flow: &FlowRun,
+) -> StepOutcome {
+    let mine: Vec<(&Unit, &Option<Done>)> = units.iter().zip(done).filter(|(u, _)| u.step == si).collect();
+    let mut o = finish_step(step, pi, &mine, stop);
+    if flow.step_stopped(&step.id) {
+        o.state = State::Failed(STOPPED.into());
+    }
+    o
+}
+
+/// When the last unit of step `si` has ended, the step has: say so now, not at the end of the phase.
+fn step_done(
+    flow: &FlowRun,
+    pi: usize,
+    units: &[Unit],
+    steps: &[&Step],
+    res: &[Option<Done>],
+    stop: Option<Stop>,
+    si: usize,
+) {
+    if units.iter().zip(res).any(|(u, r)| u.step == si && r.is_none()) {
+        return;
+    }
+    tell(flow, &step_outcome(steps[si], pi, si, units, res, stop, flow));
+}
+
+/// A step's end, as the view has it.
+fn tell(flow: &FlowRun, o: &StepOutcome) {
+    let (state, why) = match &o.state {
+        State::Ok => (StepState::Ok, None),
+        State::Partial { missing } => (StepState::Partial, Some(format!("{missing} without a report"))),
+        State::Failed(e) => (StepState::Failed, Some(e.clone())),
+        State::Skipped(e) => (StepState::Skipped, Some(e.clone())),
+        State::NotRun(e) => (StepState::NotRun, Some(e.clone())),
+    };
+    flow.step_ended(&o.id, state, why.as_deref(), o.tokens);
+}
+
 fn refused_unit(why: String) -> Done {
     Done { ran: false, result: Err(why), items: Vec::new(), tokens: 0, started: None, ended: None }
 }
 
 /// A sub-agent ended: its report (and its list, for a step that returns one), or why there is none.
+#[allow(clippy::too_many_arguments)]
 fn settle(
     res: &mut [Option<Done>],
     live: &mut HashMap<usize, Live>,
     counters: &mut Counters,
     ctx: &ToolContext,
-    list: bool,
+    flow: &FlowRun,
+    step: &Step,
     i: usize,
     ended: Result<Ended, tokio::sync::oneshot::error::RecvError>,
 ) {
     let Some(l) = live.remove(&i) else { return };
+    flow.agent_ended(&step.id, l.job);
+    let list = step.list;
     let tokens = sum(&l.meter);
     counters.tokens += tokens;
     // the outcome is in the result the main agent gets: no ended note for the job
@@ -443,6 +560,9 @@ fn settle(
         Ok(Ended::Failed(e, _)) => (Err(e), Vec::new()),
         Ok(Ended::Stopped(e, _)) if ctx.cancel.is_cancelled() => {
             (Err(format!("stopped by the person ({e})")), Vec::new())
+        }
+        Ok(Ended::Stopped(..)) if flow.step_stopped(&step.id) || flow.run_stopped() => {
+            (Err(STOPPED.into()), Vec::new())
         }
         Ok(Ended::Stopped(e, _)) => (Err(format!("the sub-agent was stopped ({e})")), Vec::new()),
         Err(_) => (Err("the sub-agent ended without a report".into()), Vec::new()),

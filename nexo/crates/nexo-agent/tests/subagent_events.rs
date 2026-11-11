@@ -666,6 +666,7 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
             }
             SubChange::Delta { text, .. } => format!("delta {text}"),
             SubChange::NotDelivered { .. } => "not delivered".into(),
+            SubChange::Flow(_) => "flow".into(),
         })
         .collect();
     assert_eq!(

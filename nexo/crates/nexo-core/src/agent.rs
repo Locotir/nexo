@@ -46,6 +46,25 @@ pub enum AgentCommand {
     SubTranscript {
         id: String,
     },
+    /// Run the saved workflow `name` with `args` as its `{{args}}` (`/workflow <name> [args]`). It asks the same
+    /// question the `workflow` tool asks, about the same pinned file, and runs in the background: the main agent
+    /// gets the result as a note from nexo when it ends. A refusal (one run at a time, no such workflow, a denial)
+    /// comes back as a `Notice`.
+    FlowStart {
+        name: String,
+        #[serde(default)]
+        args: String,
+    },
+    /// Stop step `step` of workflow run `run`: its sub-agents are cancelled, it ends as failed, what needs it is
+    /// skipped, the other steps go on.
+    FlowStopStep {
+        run: String,
+        step: String,
+    },
+    /// Stop workflow run `run`: every sub-agent of it is cancelled and nothing new starts.
+    FlowStop {
+        run: String,
+    },
     /// Stop the running turn and run the queued request at once (Enter on an empty draft). With
     /// nothing queued it is an `Interrupt`.
     InterruptRun,
@@ -800,6 +819,12 @@ pub enum AgentEvent {
     SubState {
         info: crate::subs::SubInfo,
     },
+    /// A workflow run began, or something in it changed (a step, a sub-agent, the tokens spent, the end); the
+    /// whole run as it stands. Like the `Sub` events it is for the interface only: never written to the session
+    /// and never printed by the headless mode. No report text is in it.
+    FlowRun {
+        info: crate::subs::FlowInfo,
+    },
     /// A message sent with `SubSubmit` was not delivered.
     SubNotDelivered {
         id: String,
@@ -954,6 +979,7 @@ impl AgentEvent {
         matches!(
             self,
             AgentEvent::Sub { .. }
+                | AgentEvent::FlowRun { .. }
                 | AgentEvent::SubDelta { .. }
                 | AgentEvent::SubState { .. }
                 | AgentEvent::SubNotDelivered { .. }
@@ -970,6 +996,7 @@ impl From<crate::subs::SubChange> for AgentEvent {
             SubChange::Item { id, item } => AgentEvent::Sub { id, item },
             SubChange::Delta { id, text } => AgentEvent::SubDelta { id, text },
             SubChange::NotDelivered { id, why } => AgentEvent::SubNotDelivered { id, why },
+            SubChange::Flow(info) => AgentEvent::FlowRun { info },
         }
     }
 }
@@ -1010,6 +1037,16 @@ mod tests {
             AgentEvent::Sub { id: "a#1".into(), item },
             AgentEvent::SubDelta { id: "a#1".into(), text: "x".into() },
             AgentEvent::SubNotDelivered { id: "a#1".into(), why: "it ended".into() },
+            AgentEvent::FlowRun {
+                info: crate::subs::FlowInfo {
+                    id: "wf#1".into(),
+                    name: "w".into(),
+                    started_ms: 0,
+                    ended_ms: None,
+                    state: crate::subs::FlowState::Running,
+                    phases: vec![],
+                },
+            },
         ];
         assert!(subs.iter().all(AgentEvent::is_sub));
         assert!(!AgentEvent::Shutdown.is_sub());

@@ -19,7 +19,7 @@ use nexo_core::error::{ErrorKind, ProviderError};
 use nexo_core::permission::{PermissionDecision, PermissionMode};
 use nexo_core::provider::{EventStream, ModelRequest, ToolSpec};
 use nexo_core::stream::{FinishReason, StreamEvent, Usage};
-use nexo_core::subs::SubState;
+use nexo_core::subs::{FlowInfo, FlowState, StepState, SubChange, SubState};
 use nexo_core::tool::{Tool, ToolContext, ToolKind, ToolOutput, ToolSet};
 use serde_json::{json, Value};
 
@@ -84,6 +84,8 @@ struct Mock {
     main: Mutex<VecDeque<Vec<StreamEvent>>>,
     turns: AtomicUsize,
     st: Arc<State>,
+    /// The last message of every request the main agent made.
+    main_msgs: Mutex<Vec<String>>,
 }
 
 impl Mock {
@@ -97,6 +99,7 @@ impl Mock {
             main: Mutex::new(main.into()),
             turns: AtomicUsize::new(0),
             st: Arc::new(State::default()),
+            main_msgs: Mutex::default(),
         })
     }
 
@@ -159,6 +162,7 @@ impl ModelClient for Mock {
         let names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
         // the main agent is the one that has the workflow tool
         if names.iter().any(|n| n == "workflow") {
+            self.main_msgs.lock().unwrap().push(req.messages.last().map(|m| m.text()).unwrap_or_default());
             let evs = self.main.lock().unwrap().pop_front().unwrap_or_else(|| text_events("ok", 1, 1));
             return Ok(Box::pin(futures::stream::iter(evs)));
         }
@@ -771,6 +775,23 @@ impl Running {
         }
     }
 
+    /// Events until both of two have come, in either order.
+    async fn until_both(
+        &mut self,
+        a: impl Fn(&AgentEvent) -> bool,
+        b: impl Fn(&AgentEvent) -> bool,
+    ) -> Vec<AgentEvent> {
+        let (mut got_a, mut got_b) = (false, false);
+        let mut out = Vec::new();
+        while !(got_a && got_b) {
+            let e = self.next().await;
+            got_a |= a(&e);
+            got_b |= b(&e);
+            out.push(e);
+        }
+        out
+    }
+
     async fn turn(&mut self) -> Vec<AgentEvent> {
         self.until(|e| matches!(e, AgentEvent::TurnEnd { .. })).await
     }
@@ -1310,4 +1331,548 @@ async fn text_of_many_bytes_per_character_is_cut_in_the_answer_on_a_character_bo
         );
         assert!(!out.content.contains('\u{fffd}'), "{ch}");
     }
+}
+
+// ---- live state, stops, a run started by name ----
+
+type Changes = tokio::sync::broadcast::Receiver<SubChange>;
+
+/// The workflow snapshots the registry has sent so far.
+fn flow_events(rx: &mut Changes) -> Vec<FlowInfo> {
+    let mut out = Vec::new();
+    loop {
+        match rx.try_recv() {
+            Ok(SubChange::Flow(i)) => out.push(i),
+            Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(_) => return out,
+        }
+    }
+}
+
+/// Waits for a snapshot that `f` accepts.
+async fn until_flow(rx: &mut Changes, f: impl Fn(&FlowInfo) -> bool) -> FlowInfo {
+    loop {
+        match tokio::time::timeout(PATIENCE, rx.recv()).await.expect("a snapshot in time") {
+            Ok(SubChange::Flow(i)) if f(&i) => return i,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => panic!("the registry is gone"),
+            _ => {}
+        }
+    }
+}
+
+fn fstep<'a>(i: &'a FlowInfo, id: &str) -> &'a nexo_core::subs::FlowStep {
+    i.phases.iter().flat_map(|p| &p.steps).find(|s| s.id == id).unwrap_or_else(|| panic!("no step {id}"))
+}
+
+/// The states a step went through, a repeat of the one before left out.
+fn path_of(seen: &[FlowInfo], id: &str) -> Vec<StepState> {
+    let mut out: Vec<StepState> = Vec::new();
+    for i in seen {
+        let s = fstep(i, id).state;
+        if out.last() != Some(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+fn running(i: &FlowInfo, id: &str) -> bool {
+    fstep(i, id).state == StepState::Running
+}
+
+const THREE: &str = r#"
+[[phase]]
+title = "Look"
+  [[phase.step]]
+  id = "a"
+  prompt = "ONE"
+  [[phase.step]]
+  id = "b"
+  prompt = "TWO"
+[[phase]]
+title = "Join"
+  [[phase.step]]
+  id = "c"
+  prompt = "THREE {{steps.a.report}}"
+"#;
+
+#[tokio::test]
+async fn a_run_reports_each_step_going_waiting_running_ok_in_order_with_its_sub_agents_and_ends() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Mock::new(vec![("ONE", says("one")), ("TWO", says("two")), ("THREE", says("three"))]);
+    let c = ctx(d.path());
+    let mut rx = c.jobs.subs().changes();
+    let out = tool(&client, d.path()).run(json!({"inline": THREE}), &c).await;
+    assert!(!out.is_error, "{}", out.content);
+    let seen = flow_events(&mut rx);
+
+    // the first snapshot: every step waits
+    let first = &seen[0];
+    assert_eq!((first.id.as_str(), first.name.as_str(), first.state), ("wf#1", "inline", FlowState::Running));
+    assert_eq!(first.phases.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(), ["Look", "Join"]);
+    assert!(first.phases.iter().flat_map(|p| &p.steps).all(|s| s.state == StepState::Waiting && s.subs.is_empty()));
+    for id in ["a", "b", "c"] {
+        assert_eq!(path_of(&seen, id), [StepState::Waiting, StepState::Running, StepState::Ok], "step {id}");
+    }
+    // the second phase begins only once the first has ended
+    let at = |f: &dyn Fn(&FlowInfo) -> bool| seen.iter().position(f).unwrap();
+    let c_runs = at(&|i| running(i, "c"));
+    assert!(c_runs > at(&|i| fstep(i, "a").state == StepState::Ok), "c started before a ended");
+    assert!(c_runs > at(&|i| fstep(i, "b").state == StepState::Ok), "c started before b ended");
+    // a sub-agent's id is in the snapshot that says its step runs, and it is the id the registry lists
+    let listed: Vec<String> = c.jobs.subs().list().into_iter().map(|i| i.id).collect();
+    for id in ["a", "b", "c"] {
+        let s = seen.iter().map(|i| fstep(i, id)).find(|s| s.state == StepState::Running).unwrap();
+        assert_eq!(s.subs.len(), 1, "step {id}");
+        assert!(listed.contains(&s.subs[0]), "{} is not in {listed:?}", s.subs[0]);
+        assert!(s.started_ms.is_some() && s.ended_ms.is_none());
+    }
+    // the last snapshot says the run ended, and what each step spent
+    let last = seen.last().unwrap();
+    assert_eq!(last.state, FlowState::Ok);
+    assert!(last.ended_ms.is_some());
+    assert!(last
+        .phases
+        .iter()
+        .flat_map(|p| &p.steps)
+        .all(|s| s.tokens == 15 && s.ended_ms.is_some() && s.why.is_none()));
+    assert_eq!(c.jobs.subs().flows(), vec![last.clone()], "the registry keeps the last snapshot");
+}
+
+fn files_under(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            files_under(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+#[tokio::test]
+async fn snapshots_reach_the_interface_but_are_not_in_the_session_file() {
+    let saved = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"SAVED a\"\n";
+    let d = project_with("saved", saved);
+    let client = Mock::with_main(
+        vec![],
+        vec![call("w1", "workflow", json!({"name": "saved"})), text_events("all done qzx", 1, 1)],
+    );
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.submit("run it qzx");
+    r.ask().await;
+    r.send(AgentCommand::Permission { id: "w1".into(), decision: PermissionDecision::Allow });
+    let evs = r.turn().await;
+    let flows: Vec<&FlowInfo> = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::FlowRun { info } => Some(info),
+            _ => None,
+        })
+        .collect();
+    assert!(flows.len() >= 3, "the interface heard {} snapshots", flows.len());
+    assert_eq!(flows.last().unwrap().state, FlowState::Ok);
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+
+    // nothing of it was written down
+    let mut files = Vec::new();
+    files_under(&nexo_core::paths::sessions_dir(), &mut files);
+    let texts: Vec<String> = files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).collect();
+    assert!(texts.iter().any(|t| t.contains("run it qzx")), "the session file was not found");
+    for t in &texts {
+        assert!(!t.contains("flow_run") && !t.contains("wf#1"), "a snapshot was written to a session file");
+    }
+}
+
+#[tokio::test]
+async fn stopping_a_step_cancels_its_agent_fails_it_with_the_reason_skips_what_needs_it_and_the_rest_goes_on() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Mock::new(vec![("HANG", Say::Hang)]);
+    let toml = r#"
+[[phase]]
+title = "One"
+  [[phase.step]]
+  id = "a"
+  prompt = "HANG a"
+  [[phase.step]]
+  id = "b"
+  prompt = "B works"
+[[phase]]
+title = "Two"
+  [[phase.step]]
+  id = "dep"
+  prompt = "DEP {{steps.a.report}}"
+  [[phase.step]]
+  id = "free"
+  prompt = "FREE {{steps.b.report}}"
+"#;
+    let c = ctx(d.path());
+    let mut rx = c.jobs.subs().changes();
+    let mut all = c.jobs.subs().changes();
+    let wf = tool(&client, d.path());
+    let stopper = async {
+        let i = until_flow(&mut rx, |i| running(i, "a")).await;
+        // what the agent does with `FlowStopStep`: the registry names the jobs, and each is cancelled
+        let jobs = c.jobs.subs().stop_flow_step(&i.id, "a").unwrap();
+        assert_eq!(jobs.len(), 1);
+        for j in jobs {
+            assert!(c.jobs.kill(j));
+        }
+    };
+    let (out, ()) = tokio::join!(wf.run(json!({"inline": toml}), &c), stopper);
+    assert!(!out.is_error, "{}", out.content);
+    assert!(steps_line(&out, "a").contains("failed: stopped by the person"), "{}", out.content);
+    assert!(steps_line(&out, "b").contains(": ok"), "{}", out.content);
+    assert!(steps_line(&out, "dep").contains("skipped: step `a` failed: stopped by the person"), "{}", out.content);
+    assert!(steps_line(&out, "free").contains(": ok"), "{}", out.content);
+    assert_eq!((client.count("DEP"), client.count("FREE")), (0, 1));
+    let last = flow_events(&mut all).pop().unwrap();
+    assert_eq!(last.state, FlowState::Problems);
+    assert_eq!(fstep(&last, "a").state, StepState::Failed);
+    assert_eq!(fstep(&last, "a").why.as_deref(), Some("stopped by the person"));
+    assert_eq!(fstep(&last, "dep").state, StepState::Skipped);
+    assert_eq!(fstep(&last, "free").state, StepState::Ok);
+    // the sub-agent was cancelled, not left at work
+    assert!(c.jobs.subs().list().iter().any(|i| i.state == SubState::Killed));
+    assert_eq!(c.jobs.running(), 0);
+    // a step that ended cannot be stopped, and neither can an unknown one
+    assert!(c.jobs.subs().stop_flow_step("wf#1", "b").is_err());
+    assert!(c.jobs.subs().stop_flow_step("wf#1", "nope").is_err());
+}
+
+#[tokio::test]
+async fn stopping_the_run_starts_nothing_more_and_the_result_lists_what_ended_and_what_was_stopped() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Mock::new(vec![("HANG", Say::Hang), ("DONE", says("finished"))]);
+    let toml = r#"
+max_parallel = 2
+[[phase]]
+title = "One"
+  [[phase.step]]
+  id = "done"
+  prompt = "DONE first"
+  [[phase.step]]
+  id = "a"
+  prompt = "HANG a"
+  [[phase.step]]
+  id = "b"
+  prompt = "HANG b"
+  [[phase.step]]
+  id = "c"
+  prompt = "HANG c"
+[[phase]]
+title = "Two"
+  [[phase.step]]
+  id = "z"
+  prompt = "AFTER"
+"#;
+    let c = ctx(d.path());
+    let mut rx = c.jobs.subs().changes();
+    let mut all = c.jobs.subs().changes();
+    let wf = tool(&client, d.path());
+    let stopper = async {
+        let i = until_flow(&mut rx, |i| running(i, "a") && running(i, "b") && fstep(i, "done").state == StepState::Ok)
+            .await;
+        let jobs = c.jobs.subs().stop_flow(&i.id).unwrap();
+        assert_eq!(jobs.len(), 2, "a and b are at work");
+        for j in jobs {
+            c.jobs.kill(j);
+        }
+    };
+    let (out, ()) = tokio::join!(wf.run(json!({"inline": toml}), &c), stopper);
+    assert!(out.content.contains("Stopped by the person"), "{}", out.content);
+    assert!(out.content.contains("Ended: done. Stopped: a, b. Not started: c, z."), "{}", out.content);
+    assert_eq!(client.tasks().len(), 3, "something started after the stop: {:?}", client.tasks());
+    assert!(steps_line(&out, "z").contains("not run"), "{}", out.content);
+    let last = flow_events(&mut all).pop().unwrap();
+    assert_eq!(last.state, FlowState::Stopped);
+    assert_eq!(c.jobs.running(), 0);
+}
+
+#[tokio::test]
+async fn one_run_at_a_time_a_second_is_refused_in_one_sentence_by_the_tool_too_and_allowed_once_the_first_ends() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let first = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"GATE a\"\n";
+    let c = ctx(d.path());
+    let wf = tool(&client, d.path());
+    let second = async {
+        client.until_started(1).await;
+        let refused = wf.run(json!({"inline": first}), &c).await;
+        client.st.gate.add_permits(1);
+        refused
+    };
+    let (out, refused) = tokio::join!(wf.run(json!({"inline": first}), &c), second);
+    assert!(!out.is_error, "{}", out.content);
+    assert!(refused.is_error);
+    assert_eq!(refused.content, "A workflow is already running (wf#1); wait for it to end or stop it first.");
+    assert_eq!(client.tasks().len(), 1, "the refused one started a sub-agent");
+    // once the first has ended, the next goes
+    client.st.gate.add_permits(1);
+    let again = wf.run(json!({"inline": first}), &c).await;
+    assert!(!again.is_error, "{}", again.content);
+    assert_eq!(c.jobs.subs().flows().iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["wf#1", "wf#2"]);
+}
+
+/// A saved workflow with one step that holds at the gate.
+const BYNAME: &str = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"GATE {{args}}\"\n";
+
+fn notice_has(e: &AgentEvent, word: &str) -> bool {
+    matches!(e, AgentEvent::Notice { text, .. } if text.contains(word))
+}
+
+#[tokio::test]
+async fn a_workflow_started_by_name_asks_with_the_pinned_subject_and_a_denial_runs_nothing() {
+    let d = project_with("saved", BYNAME);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "x".into() });
+    let req = r.ask().await;
+    assert_eq!((req.tool.as_str(), req.kind), ("workflow", ToolKind::Other));
+    assert!(req.id.starts_with("workflow-start-"), "{}", req.id);
+    assert_eq!(req.suggested_rules, vec![format!("workflow({})", subject("saved", BYNAME))]);
+    r.send(AgentCommand::Permission {
+        id: req.id.clone(),
+        decision: PermissionDecision::Deny { reason: Some("no".into()) },
+    });
+    let evs = r.until(|e| notice_has(e, "was not started")).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::FlowRun { .. })), "a denied run reported itself");
+    assert!(client.tasks().is_empty());
+    // a name that is not saved is refused with no question
+    r.send(AgentCommand::FlowStart { name: "nope".into(), args: String::new() });
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { text, .. } if text.starts_with("workflow:"))).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })));
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn an_allowed_start_by_name_runs_in_the_background_the_person_keeps_talking_and_nexo_writes_the_result() {
+    let d = project_with("saved", BYNAME);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "hello".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    client.until_started(1).await;
+    assert_eq!(client.count("GATE hello"), 1, "the argument text reached the step");
+
+    // the main agent is not busy with it: a turn starts and ends while the sub-agent is held
+    r.submit("meanwhile qzx");
+    let evs = r.turn().await;
+    assert!(evs.iter().all(|e| !matches!(e, AgentEvent::FlowRun { info } if info.state != FlowState::Running)));
+    assert_eq!(client.st.ended.load(Ordering::SeqCst), 0, "the run ended before it was let through");
+    assert_eq!(client.main_msgs.lock().unwrap().len(), 1);
+
+    // let it end: the result arrives as a turn the note starts
+    client.st.gate.add_permits(1);
+    let ended = |e: &AgentEvent| matches!(e, AgentEvent::FlowRun { info } if info.state == FlowState::Ok);
+    r.until_both(ended, |e| matches!(e, AgentEvent::TurnEnd { .. })).await;
+    let note = client.main_msgs.lock().unwrap().last().cloned().unwrap();
+    assert!(note.contains("nexo ran the saved workflow `saved`"), "{note}");
+    assert!(note.contains("not from the person"), "{note}");
+    assert!(note.contains("- a: ok"), "the report is in the note: {note}");
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_second_start_by_name_while_one_runs_is_refused_before_any_question() {
+    let d = project_with("saved", BYNAME);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "one".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    client.until_started(1).await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "two".into() });
+    let evs = r.until(|e| notice_has(e, "already running")).await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })), "asked about the second");
+    client.st.gate.add_permits(1);
+    r.turn().await;
+    assert_eq!(client.tasks().len(), 1);
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_file_swapped_between_the_question_and_the_answer_is_refused_and_nothing_starts() {
+    let d = project_with("saved", BYNAME);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "x".into() });
+    let req = r.ask().await;
+    std::fs::write(d.path().join(".nexo/workflows/saved.toml"), BYNAME.replace("GATE", "GATE swapped")).unwrap();
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    r.until(|e| notice_has(e, "changed after you were asked about it, so nothing was started")).await;
+    assert!(client.tasks().is_empty(), "{:?}", client.tasks());
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn read_only_and_plan_mode_treat_a_start_by_name_as_the_tool_does() {
+    for mode in [PermissionMode::ReadOnly, PermissionMode::Plan] {
+        let text = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"look\"\nprompt = \"LOOK\"\n[[phase.step]]\nid = \"change\"\nagent = \"general\"\nprompt = \"CHANGE\"\n";
+        let d = project_with("saved", text);
+        let client =
+            Mock::new(vec![("LOOK", says("looked")), ("CHANGE", Say::CallThen("edit", "the mode said no".into()))]);
+        let tools = ToolSet::new().with(Arc::new(Read)).with(Arc::new(Named("edit")));
+        let mut r = start(&client, d.path(), mode, tools);
+        r.next().await;
+        r.send(AgentCommand::FlowStart { name: "saved".into(), args: String::new() });
+        let req = r.ask().await;
+        assert_eq!(req.tool, "workflow", "{mode:?}: asked as the tool is");
+        r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+        r.until(|e| matches!(e, AgentEvent::FlowRun { info } if info.state != FlowState::Running)).await;
+        assert_eq!((client.count("LOOK"), client.count("CHANGE")), (1, 1), "{mode:?}");
+        let log = client.st.log.lock().unwrap().clone();
+        let result = log.iter().find(|(_, t)| t.starts_with("RESULT")).expect("a result came back");
+        assert!(result.1.contains("Permission denied") && result.1.contains(mode.as_str()), "{mode:?}: {}", result.1);
+        r.send(AgentCommand::Shutdown);
+        r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+        r.task.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn the_commands_stop_a_step_and_the_run_through_the_agent_and_the_interrupt_key_is_unchanged() {
+    let d = project_with("saved", BYNAME.replace("GATE", "HANG").as_str());
+    let client = Mock::with_main(
+        vec![("HANG", Say::Hang)],
+        vec![
+            text_events("noted", 1, 1),
+            call("w1", "workflow", json!({"name": "saved", "args": "t"})),
+            text_events("after", 1, 1),
+        ],
+    );
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+
+    // 1: by name, then stop the step: the run ends with the step failed
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "s".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    r.until(|e| matches!(e, AgentEvent::FlowRun { info } if info.phases[0].steps[0].state == StepState::Running)).await;
+    r.send(AgentCommand::FlowStopStep { run: "wf#1".into(), step: "a".into() });
+    let evs = r
+        .until_both(
+            |e| matches!(e, AgentEvent::FlowRun { info } if info.state != FlowState::Running),
+            |e| matches!(e, AgentEvent::TurnEnd { .. }),
+        )
+        .await;
+    let end = evs.iter().rev().find_map(|e| match e {
+        AgentEvent::FlowRun { info } => Some(info.clone()),
+        _ => None,
+    });
+    let end = end.unwrap();
+    assert_eq!((end.state, end.phases[0].steps[0].state), (FlowState::Problems, StepState::Failed));
+    assert_eq!(end.phases[0].steps[0].why.as_deref(), Some("stopped by the person"));
+
+    // 2: an unknown run is said to the person in one sentence
+    r.send(AgentCommand::FlowStop { run: "wf#9".into() });
+    r.until(|e| notice_has(e, "there is no workflow run wf#9")).await;
+
+    // 3: Esc (the interrupt) in a turn that waits for a workflow ends the turn and the run, as before
+    r.submit("run it");
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    r.until(|e| matches!(e, AgentEvent::FlowRun { info } if info.id == "wf#2" && running(info, "a"))).await;
+    r.send(AgentCommand::Interrupt);
+    let evs = r.turn().await;
+    let end = evs.iter().rev().find_map(|e| match e {
+        AgentEvent::FlowRun { info } => Some(info.clone()),
+        _ => None,
+    });
+    assert_eq!(end.unwrap().state, FlowState::Stopped);
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn clear_during_a_run_stops_it_and_none_of_its_events_reach_the_new_conversation() {
+    let d = project_with("saved", BYNAME.replace("GATE", "HANG").as_str());
+    let client = Mock::new(vec![("HANG", Say::Hang)]);
+    let mut r = start(&client, d.path(), PermissionMode::Ask, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "s".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    r.until(|e| matches!(e, AgentEvent::FlowRun { info } if running(info, "a"))).await;
+    r.send(AgentCommand::Clear);
+    r.until(|e| matches!(e, AgentEvent::HistoryCleared)).await;
+    // the new conversation starts its own count, and the old run says nothing more: the first snapshot it
+    // hears is the new run beginning
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: "again".into() });
+    let req = r.ask().await;
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    let evs = r.until(|e| matches!(e, AgentEvent::FlowRun { info } if running(info, "a"))).await;
+    let flows: Vec<&FlowInfo> = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::FlowRun { info } => Some(info),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flows[0].id, "wf#1", "{flows:?}");
+    assert_eq!(flows[0].state, FlowState::Running);
+    assert!(flows[0].phases[0].steps.iter().all(|s| s.state == StepState::Waiting), "{:?}", flows[0]);
+    assert!(flows.iter().all(|i| i.state == FlowState::Running), "an old end reached the new one: {flows:?}");
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_session_with_no_saved_workflow_sends_a_request_that_says_nothing_of_workflows() {
+    #[derive(Default)]
+    struct Record(Mutex<Vec<String>>);
+    #[async_trait]
+    impl ModelClient for Record {
+        async fn stream(&self, _: &ProviderConfig, req: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+            self.0.lock().unwrap().push(format!("{req:?}").to_lowercase());
+            Ok(Box::pin(futures::stream::iter(text_events("hi", 1, 1))))
+        }
+    }
+    data_dir();
+    let d = tempfile::tempdir().unwrap();
+    let rec = Arc::new(Record::default());
+    let (handle, ends) = channels();
+    let setup = AgentSetup {
+        config: config(PermissionMode::Ask),
+        cwd: d.path().to_path_buf(),
+        provider: "mock".into(),
+        model: "m1".into(),
+        tools: ToolSet::new().with(Arc::new(Read)),
+        client: rec.clone(),
+        resume: None,
+        gate: None,
+        mail: None,
+        mcp: None,
+        model_pinned: false,
+    };
+    let mut r = Running { handle, task: tokio::spawn(nexo_agent::run(ends, setup)) };
+    r.next().await;
+    r.submit("hello");
+    r.turn().await;
+    let sent = rec.0.lock().unwrap().clone();
+    assert!(!sent.is_empty());
+    for req in &sent {
+        assert!(!req.contains("workflow") && !req.contains("flow_"), "the request names workflows: {req}");
+    }
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
 }

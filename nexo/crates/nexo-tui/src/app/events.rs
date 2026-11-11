@@ -1135,7 +1135,8 @@ impl App {
             | AgentEvent::SubDelta { .. }
             | AgentEvent::SubState { .. }
             | AgentEvent::SubNotDelivered { .. }
-            | AgentEvent::SubTranscript { .. } => {}
+            | AgentEvent::SubTranscript { .. }
+            | AgentEvent::FlowRun { .. } => {}
 
             AgentEvent::Shutdown => self.should_quit = true,
         }

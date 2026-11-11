@@ -237,7 +237,14 @@ impl Tool for Workflow {
         if !problems.is_empty() {
             return ToolOutput::error(refused(&wf.name, &problems));
         }
-        let out = run::run(&self.sub, &wf, given, ctx).await;
+        let phases: Vec<(String, Vec<String>)> =
+            wf.phases.iter().map(|p| (p.title.clone(), p.steps.iter().map(|s| s.id.clone()).collect())).collect();
+        // one run at a time in a session, whoever started it
+        let flow = match ctx.jobs.subs().begin_flow(&wf.name, &phases) {
+            Ok(f) => f,
+            Err(e) => return ToolOutput::error(e),
+        };
+        let out = run::run(&self.sub, &wf, given, ctx, &flow).await;
         let text = render(&wf, &out);
         if out.steps.iter().any(|s| s.state.usable()) {
             ToolOutput::ok(text)
@@ -267,8 +274,28 @@ fn render(wf: &Wf, out: &Outcome) -> String {
     if out.cancelled {
         t.push_str(" Interrupted by the person.");
     }
+    if out.stopped {
+        t.push_str(" Stopped by the person.");
+    }
     if let Some(why) = &out.ended {
         t.push_str(&format!(" Ended early: {why}."));
+    }
+    if out.stopped {
+        let names = |f: &dyn Fn(&StepOutcome) -> bool| {
+            let n: Vec<&str> = out.steps.iter().filter(|s| f(s)).map(|s| s.id.as_str()).collect();
+            if n.is_empty() {
+                "none".to_string()
+            } else {
+                n.join(", ")
+            }
+        };
+        let was_stopped = |s: &StepOutcome| matches!(&s.state, State::Failed(e) if e == run::STOPPED);
+        t.push_str(&format!(
+            "\nEnded: {}. Stopped: {}. Not started: {}.",
+            names(&|s| s.state.usable() || (matches!(s.state, State::Failed(_)) && !was_stopped(s))),
+            names(&was_stopped),
+            names(&|s| matches!(s.state, State::NotRun(_))),
+        ));
     }
     t.push_str("\n\nSteps:");
     for s in &out.steps {
