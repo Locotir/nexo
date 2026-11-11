@@ -796,14 +796,15 @@ mod size_budget {
     }
 
     /// 10565 characters (about 2600 tokens) when this budget was set; it may grow 10% and no more
-    /// (11620), 100 more went to the sequence sentence of the strands line, and 380 more went to the one line that tells the model what to save with `note` and where.
+    /// (11620), 100 more went to the sequence sentence of the strands line, and 380 more went to the one line that tells the model what to save with `note` and where,
+    /// and 50 more to `replaces`, the way a model corrects a line it saved instead of adding a second one.
     /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
     /// model already knows about shells and search tools.
     #[test]
     fn the_tool_text_stays_within_its_budget() {
         let n = tool_text_chars();
         // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
-        let budget = if cfg!(windows) { 12_150 } else { 12_100 };
+        let budget = if cfg!(windows) { 12_200 } else { 12_150 };
         assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
     }
 

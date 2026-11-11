@@ -21,8 +21,20 @@ pub const SAVED_TAIL: &str =
     ". This is for later sessions and the person sees it on screen: no reply about it is needed, go on.";
 
 /// What the model is told after the line the file already has: the choice is its own, it knows the two facts.
-const NEAR_HINT: &str = "if that covers yours there is nothing to do, and if yours says something it does not, \
-                         send the rule again with `anyway` true";
+const NEAR_HINT: &str = "if that covers yours there is nothing to do; if yours corrects it, send the rule again with \
+                         `replaces` set to that line; if it is another fact, with `anyway` true";
+
+/// Characters of a line of the file shown back in a result at most.
+const SHOWN: usize = 240;
+
+/// A line of the person's file as a result may show it: no secret in it, and not longer than `SHOWN`.
+fn shown(line: &str) -> String {
+    let safe = nexo_core::redact::redact(line);
+    match safe.char_indices().nth(SHOWN) {
+        Some((at, _)) => format!("{}…", &safe[..at]),
+        None => safe.into_owned(),
+    }
+}
 
 pub struct Note;
 
@@ -67,7 +79,7 @@ impl Tool for Note {
                           session. Send it in the same response as your next tool call after a result settles something, \
                           or when the context asks; never as a response of its own, never after your final result. \
                           With `scope` `global` or `project`, `Rule:` lines are also saved for later sessions \
-                          (secrets refused; a near-repeat is skipped unless `anyway`)."
+                          (a near-repeat is skipped unless `anyway`; `replaces`: the saved line a rule corrects)."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -81,7 +93,8 @@ impl Tool for Note {
                         "enum": ["session", "project", "global"],
                         "description": "Where `Rule:` lines last: this session (default), this project (AGENTS.md) or all projects (~/.nexo/prompt.md)."
                     },
-                    "anyway": { "type": "boolean" }
+                    "anyway": { "type": "boolean" },
+                    "replaces": { "type": "string" }
                 },
                 "required": ["text"]
             }),
@@ -95,6 +108,7 @@ impl Tool for Note {
                 ("text", "Lines starting `Finding:`, `Plan:` or `Rule:`"),
                 ("scope", "Where `Rule:` lines last"),
                 ("anyway", "Save a near-repeat too"),
+                ("replaces", "The saved line this rule corrects"),
             ],
         })
     }
@@ -132,6 +146,13 @@ impl Tool for Note {
         }
         let other = text.lines().filter(|l| !l.trim().is_empty() && !is_note_line(l)).count();
         let scope = args.get("scope").and_then(Value::as_str).unwrap_or("session");
+        let replaces = args.get("replaces").and_then(Value::as_str).map(str::trim).filter(|o| !o.is_empty());
+        if replaces.is_some() && (scope == "session" || text.lines().filter_map(rule_text).count() != 1) {
+            return ToolOutput::error(
+                "`replaces` corrects one saved line: send exactly one `Rule:` line, with `scope` `project` or `global`",
+            );
+        }
+        let (mut replaced, mut unmatched) = (None, false);
         let mut saved = None;
         if scope != "session" {
             let home = nexo_core::compat::foreign_home();
@@ -149,6 +170,18 @@ impl Tool for Note {
                     refused.push(why);
                     continue;
                 }
+                if let Some(old) = replaces {
+                    match nexo_core::compat::replace_rule(&file, old, &r) {
+                        Ok(Some(was)) => {
+                            fresh.push(r.split_whitespace().collect::<Vec<_>>().join(" "));
+                            replaced = Some(was);
+                            continue;
+                        }
+                        // no line is named: the rule is saved as any other, and the result says so
+                        Ok(None) => unmatched = true,
+                        Err(e) => return ToolOutput::error(format!("cannot save to {}: {e}", file.display())),
+                    }
+                }
                 match nexo_core::compat::save_rule(&file, seed.as_deref(), &r, anyway) {
                     Ok(Saved::New) => fresh.push(r.split_whitespace().collect::<Vec<_>>().join(" ")),
                     Ok(Saved::There) => {}
@@ -156,7 +189,7 @@ impl Tool for Note {
                     Err(e) => return ToolOutput::error(format!("cannot save to {}: {e}", file.display())),
                 }
             }
-            if !refused.is_empty() && fresh.is_empty() {
+            if !refused.is_empty() && fresh.is_empty() && near.is_empty() {
                 return ToolOutput::error(format!("not saved: {}", refused.join("; ")));
             }
             saved = Some((fresh, refused, near, file, if scope == "project" { "project" } else { "global" }));
@@ -168,16 +201,27 @@ impl Tool for Note {
         let mut display = ToolDisplay::Plain;
         if let Some((fresh, refused, near, file, scope)) = saved {
             let n = fresh.len();
-            out += &format!("; {n} new rule{} saved to {}", if n == 1 { "" } else { "s" }, file.display());
+            match &replaced {
+                Some(was) => {
+                    out += &format!("; 1 saved rule corrected in {} (it said: \"{}\")", file.display(), shown(was))
+                }
+                None => out += &format!("; {n} new rule{} saved to {}", if n == 1 { "" } else { "s" }, file.display()),
+            }
+            if unmatched {
+                out += " (no saved line is what `replaces` says, so nothing was replaced)";
+            }
             if !refused.is_empty() {
                 out += &format!(" (not saved: {})", refused.join("; "));
             }
             for line in &near {
-                out += &format!(" (the file already says nearly this: \"{line}\"; {NEAR_HINT})");
+                out += &format!(" (the file already says nearly this: \"{}\"; {NEAR_HINT})", shown(line));
             }
             if n > 0 {
-                // the model goes on with the task: the card on screen already tells the person
-                out += SAVED_TAIL;
+                // the model goes on with the task: the card on screen already tells the person. With a
+                // near-repeat left to settle it has a choice to make first, so it is not told to go on.
+                if near.is_empty() {
+                    out += SAVED_TAIL;
+                }
                 display = ToolDisplay::Remembered {
                     scope: scope.to_string(),
                     items: fresh,
@@ -330,6 +374,84 @@ mod tests {
         assert!(out.content.contains("1 new rule saved") && out.content.ends_with(SAVED_TAIL), "{}", out.content);
         let two = std::fs::read_to_string(&f).unwrap();
         assert!(two.starts_with(&one) && two.contains("listens on port 5433"), "{two}");
+    }
+
+    #[tokio::test]
+    async fn a_saved_rule_is_corrected_in_place_with_replaces_and_the_result_says_what_it_said() {
+        let d = repo();
+        let cx = ToolContext::new(d.path().to_path_buf());
+        let first = json!({"text": "Rule: the staging database is on port 5433 of db-stage\nRule: never touch vendor/", "scope": "project"});
+        assert!(Note.run(first, &cx).await.content.contains("2 new rules saved"));
+        let f = d.path().join("AGENTS.md");
+        let before = std::fs::read_to_string(&f).unwrap();
+        // a correction in like words is a near-repeat: the answer names `replaces`, and nothing is written
+        let fix = json!({"text": "Rule: the staging database is on port 5434 of db-stage", "scope": "project"});
+        let out = Note.run(fix.clone(), &cx).await;
+        assert!(out.content.contains("0 new rules saved") && out.content.contains("`replaces`"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), before);
+        // with the old line named, that line is rewritten where it was and the other one stays
+        let mut with = fix.clone();
+        with["replaces"] = json!("the staging database is on port 5433 of db-stage");
+        let out = Note.run(with.clone(), &cx).await;
+        assert!(!out.is_error && out.content.contains("1 saved rule corrected in"), "{}", out.content);
+        assert!(out.content.contains(": the staging database is on port 5433 of db-stage\")"), "{}", out.content);
+        assert!(out.content.ends_with(SAVED_TAIL) && !out.content.contains("new rule"), "{}", out.content);
+        assert!(
+            matches!(&out.display, ToolDisplay::Remembered { items, .. } if items == &["the staging database is on port 5434 of db-stage"]),
+            "{:?}",
+            out.display
+        );
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(after, before.replace("port 5433", "port 5434"));
+        assert_eq!(after.lines().filter(|l| l.starts_with("- ")).count(), 2, "{after}");
+        // a line that is not there: said, and the rule is treated as any other (here the file has it already)
+        with["replaces"] = json!("the relay keeps events for seven days");
+        let out = Note.run(with.clone(), &cx).await;
+        assert!(
+            out.content.contains("0 new rules saved") && out.content.contains("nothing was replaced"),
+            "{}",
+            out.content
+        );
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), after);
+        // one rule at a time, and only for a saved scope; a secret is refused as ever
+        for bad in [
+            json!({"text": "Rule: a\nRule: b", "scope": "project", "replaces": "never touch vendor/"}),
+            json!({"text": "Rule: never touch vendor or third_party", "replaces": "never touch vendor/"}),
+            json!({"text": "Finding: x", "scope": "project", "replaces": "never touch vendor/"}),
+        ] {
+            let out = Note.run(bad, &cx).await;
+            assert!(out.is_error && out.content.contains("exactly one `Rule:` line"), "{}", out.content);
+        }
+        let secret = json!({"text": "Rule: the deploy token is ghp_0123456789abcdefghijklmnopqrstuvwxyzAB", "scope": "project", "replaces": "never touch vendor/"});
+        let out = Note.run(secret, &cx).await;
+        assert!(out.is_error && out.content.contains("secret"), "{}", out.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), after);
+    }
+
+    #[tokio::test]
+    async fn a_near_repeat_is_still_shown_when_another_rule_of_the_call_is_refused_and_a_long_or_secret_line_is_not_echoed_whole(
+    ) {
+        let d = repo();
+        let cx = ToolContext::new(d.path().to_path_buf());
+        let long = format!("the staging database is on port 5433 of db-stage {}", "and so on ".repeat(40));
+        let f = d.path().join("AGENTS.md");
+        std::fs::write(&f, format!("## Remembered by nexo\n- 2026-11-01: {long}\n- 2026-11-01: deploy key ghp_0123456789abcdefghijklmnopqrstuvwxyzAB opens the staging gate\n")).unwrap();
+        let both = json!({"text": format!("Rule: staging database listens on port 5433 on host db-stage\nRule: {}", "x".repeat(MAX_RULE + 1)), "scope": "project"});
+        let out = Note.run(both, &cx).await;
+        assert!(
+            !out.is_error && out.content.contains("nearly this") && out.content.contains("not saved: too long"),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains('…') && !out.content.contains(&long), "{}", out.content);
+        let key = json!({"text": "Rule: the deploy key opens the staging gate and the prod gate", "scope": "project"});
+        let out = Note.run(key, &cx).await;
+        assert!(out.content.contains("nearly this") && !out.content.contains("ghp_0123456789"), "{}", out.content);
+        // a new rule saved beside a near-repeat: the card is there, and the model is not told to go on yet
+        let two = json!({"text": "Rule: staging database listens on port 5433 on host db-stage\nRule: never touch vendor/", "scope": "project"});
+        let out = Note.run(two, &cx).await;
+        assert!(out.content.contains("1 new rule saved") && !out.content.contains(SAVED_TAIL), "{}", out.content);
+        assert!(matches!(out.display, ToolDisplay::Remembered { .. }));
     }
 
     #[tokio::test]

@@ -704,38 +704,98 @@ pub enum Saved {
     Near(String),
 }
 
-/// Shared words a rule and a saved line need at least before they can count as nearly the same.
-const NEAR_WORDS: usize = 4;
+/// Telling words a rule and a saved line need to share at least before they can count as nearly the same.
+const NEAR_WORDS: usize = 3;
 
-/// The line under `## Remembered by nexo` that says nearly what `rule` says, without its list marker: at
-/// least `NEAR_WORDS` words in common, and six in ten of the words of the shorter of the two. A model saves
-/// a fact again in other words once the message that showed the first save has left its context, and the
-/// section grows with the same fact over and over. Only nexo's own section is compared: what the person
-/// wrote elsewhere in the file is theirs, and saying it again as a rule is the caller's choice. Two different
-/// facts in like words match too, so this is a question for the caller (`save_rule` with `anyway`), not a verdict.
-pub fn near_rule(text: &str, rule: &str) -> Option<String> {
-    let words = |l: &str| rule_key(l).split(' ').map(str::to_string).collect::<std::collections::BTreeSet<_>>();
-    let mine = words(rule);
-    let mut inside = false;
-    let mut best: Option<(usize, &str)> = None;
-    for line in text.lines() {
+/// Words that join a sentence and are in every line, so two different facts share them.
+const JOINING: &[&str] = &[
+    "a", "an", "the", "is", "are", "was", "be", "it", "its", "on", "in", "of", "to", "at", "by", "as", "for", "and",
+    "or", "with", "that", "this", "if",
+];
+
+/// The words of a line that tell what it says: all but the joining ones.
+fn telling(line: &str) -> std::collections::BTreeSet<String> {
+    rule_key(line).split(' ').filter(|w| !JOINING.contains(w)).map(str::to_string).collect()
+}
+
+/// The lines of the `## Remembered by nexo` section of `text` (up to the next heading), each with the byte
+/// where it starts and its line end.
+fn remembered_lines(text: &str) -> Vec<(usize, &str)> {
+    let (mut at, mut inside, mut out) = (0, false, Vec::new());
+    for line in text.split_inclusive('\n') {
         if !inside {
             inside = line.trim().eq_ignore_ascii_case(REMEMBERED);
-            continue;
-        }
-        if line.starts_with('#') {
+        } else if line.starts_with('#') {
             break;
+        } else {
+            out.push((at, line));
         }
-        let theirs = words(line);
+        at += line.len();
+    }
+    out
+}
+
+/// The one of `lines` that says nearly what `rule` says (see `near_rule`).
+fn nearest<'a>(lines: &[(usize, &'a str)], rule: &str) -> Option<(usize, &'a str)> {
+    let mine = telling(rule);
+    let mut best: Option<(usize, (usize, &str))> = None;
+    for l in lines {
+        let theirs = telling(l.1);
         let shared = mine.intersection(&theirs).count();
         if shared >= NEAR_WORDS
             && shared * 10 >= mine.len().min(theirs.len()) * 6
             && best.is_none_or(|(n, _)| shared > n)
         {
-            best = Some((shared, line));
+            best = Some((shared, *l));
         }
     }
-    best.map(|(_, l)| l.trim().trim_start_matches(['-', '*']).trim().to_string())
+    best.map(|(_, l)| l)
+}
+
+/// A saved line as it is shown: without its line end and its list marker.
+fn bare(line: &str) -> String {
+    line.trim().trim_start_matches(['-', '*']).trim().to_string()
+}
+
+/// The line under `## Remembered by nexo` that says nearly what `rule` says, without its list marker: at
+/// least `NEAR_WORDS` telling words in common, and six in ten of those of the shorter of the two. A model saves
+/// a fact again in other words once the message that showed the first save has left its context, and the
+/// section grows with the same fact over and over. Only nexo's own section is compared: what the person
+/// wrote elsewhere in the file is theirs, and saying it again as a rule is the caller's choice. Two different
+/// facts in like words can match too, so this is a question for the caller (`save_rule` with `anyway`), not a verdict.
+pub fn near_rule(text: &str, rule: &str) -> Option<String> {
+    nearest(&remembered_lines(text), rule).map(|(_, l)| bare(l))
+}
+
+/// `text` with the line of its `## Remembered by nexo` section that `old` names put as `rule`, dated `date`,
+/// in the same place; and that line as it was, without its list marker. `old` names a line by having its
+/// words (the list marker and the date do not count), else by saying nearly the same (`near_rule`). `None`
+/// when the section has no such line, or when a line of `text` already says `rule`. Every other byte of
+/// `text` stays: the person's own lines are never the ones changed.
+pub fn with_replaced(text: &str, old: &str, rule: &str, date: &str) -> Option<(String, String)> {
+    let rule = rule.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (key, want) = (rule_key(&rule), rule_key(old));
+    if key.is_empty() || want.is_empty() || text.lines().any(|l| rule_key(l) == key) {
+        return None;
+    }
+    let lines = remembered_lines(text);
+    let (at, line) = lines.iter().copied().find(|(_, l)| rule_key(l) == want).or_else(|| nearest(&lines, old))?;
+    let end = &line[line.trim_end_matches(['\r', '\n']).len()..];
+    Some((format!("{}- {date}: {rule}{end}{}", &text[..at], &text[at + line.len()..]), bare(line)))
+}
+
+/// Puts `rule` in the place of the saved line of `file` that `old` names (see `with_replaced`, dated today)
+/// and gives that line as it was; `None`, and nothing written, when no line is named.
+pub fn replace_rule(file: &Path, old: &str, rule: &str) -> std::io::Result<Option<String>> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let today = time::OffsetDateTime::now_utc().date();
+    let Some((new, was)) = with_replaced(&text, old, rule, &today.to_string()) else { return Ok(None) };
+    std::fs::write(file, new)?;
+    Ok(Some(was))
 }
 
 /// Saves `rule` into `file` (see `with_rule`, dated today), starting from `seed` when the file is new.
@@ -1120,6 +1180,65 @@ mod rule_tests {
         assert_eq!(near_rule(&text, "the wallet binary lives in /opt/acme/bin, owned by root"), None);
         assert_eq!(near_rule(&text, "deploys always go through the ship script"), None);
         assert_eq!(near_rule("", b), None);
+        // two facts that share their joining words and one noun are two facts; the same one in more words is not
+        let ports = "## Remembered by nexo\n- 2026-11-11: the production database is on port 5432\n";
+        assert_eq!(near_rule(ports, "the staging database is on port 5433"), None);
+        assert_eq!(
+            near_rule(ports, "production database listens on port 5432 (not the default)").as_deref(),
+            Some("2026-11-11: the production database is on port 5432")
+        );
+    }
+
+    #[test]
+    fn a_saved_line_is_corrected_in_place_and_nothing_else_in_the_file_changes() {
+        const D: &str = "2026-11-12";
+        let text = "# Project\r\n\r\n- the staging database is on port 5433\r\n\r\n## Remembered by nexo\r\n- 2026-11-01: tests run with `make test`\r\n* 2026-11-02: the staging database is on port 5433 of db-stage\r\n- 2026-11-03: never touch vendor/\r\n\r\n## Other\r\n- 2026-11-02: the staging database is on port 5433 of db-stage\r\n";
+        let fixed = "the staging database is on port 5434 of db-stage";
+        let want = text.replacen(
+            "* 2026-11-02: the staging database is on port 5433 of db-stage",
+            "- 2026-11-12: the staging database is on port 5434 of db-stage",
+            1,
+        );
+        let was = "2026-11-02: the staging database is on port 5433 of db-stage".to_string();
+        // named by its words, with or without the date and the marker, or nearly
+        for old in [
+            "the staging database is on port 5433 of db-stage",
+            "- 2026-11-02: The staging database is on port 5433 of db-stage.",
+            "staging database, port 5433 on db-stage",
+        ] {
+            assert_eq!(with_replaced(text, old, fixed, D), Some((want.clone(), was.clone())), "{old}");
+        }
+        // no such line in nexo's section (the person's own line above it is not a candidate), nothing to name,
+        // no section at all, and a rule the file already has
+        assert_eq!(with_replaced(text, "the relay keeps events for seven days", fixed, D), None);
+        assert_eq!(with_replaced(text, "", fixed, D), None);
+        assert_eq!(with_replaced("- the staging database is on port 5433 of db-stage\n", fixed, fixed, D), None);
+        assert_eq!(with_replaced(text, "tests run with make test", "Never touch vendor", D), None);
+        // the last line of a file without a final line end
+        assert_eq!(
+            with_replaced("## Remembered by nexo\n- 2026-11-01: port is 5433", "port is 5433", "port is 5434", D),
+            Some((
+                "## Remembered by nexo\n- 2026-11-12: port is 5434".to_string(),
+                "2026-11-01: port is 5433".to_string()
+            ))
+        );
+        // on disk: the file changes only when a line is named, and a missing file is not made
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("AGENTS.md");
+        assert_eq!(replace_rule(&f, "port is 5433", "port is 5434").unwrap(), None);
+        assert!(!f.exists());
+        std::fs::write(&f, "## Remembered by nexo\n- 2026-11-01: port is 5433\n").unwrap();
+        assert_eq!(replace_rule(&f, "something else entirely", "port is 5434").unwrap(), None);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "## Remembered by nexo\n- 2026-11-01: port is 5433\n");
+        assert_eq!(
+            replace_rule(&f, "port is 5433", "port is 5434").unwrap().as_deref(),
+            Some("2026-11-01: port is 5433")
+        );
+        let now = std::fs::read_to_string(&f).unwrap();
+        assert!(
+            now.starts_with("## Remembered by nexo\n- ") && now.ends_with(": port is 5434\n") && !now.contains("5433"),
+            "{now}"
+        );
     }
 
     #[test]
