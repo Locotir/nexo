@@ -68,6 +68,8 @@ pub struct Fx {
     pub reject_at: Option<Instant>,
     /// The goal and to-do views: the panel opening, the bar, the marks and the rows (see `fx_goal`).
     pub goal: crate::fx_goal::GoalFx,
+    /// The constellation above the welcome card (see `fx_stars`).
+    pub stars: crate::fx_stars::StarsFx,
 }
 
 impl App {
@@ -95,6 +97,11 @@ impl App {
 
     /// Advances the rolling figures, the toasts and the turn-end glow; true while anything moves.
     pub fn tick_fx(&mut self) -> bool {
+        self.tick_fx_with(true)
+    }
+
+    /// `tick_fx`; without `stars` the turn of the welcome figure is left out (the loop gives it the beat, not a frame rate).
+    pub(crate) fn tick_fx_with(&mut self, stars: bool) -> bool {
         let now = self.now();
         let on = self.opts.animations;
         let tokens = (self.session_usage.total_input() + self.session_usage.output) as f64;
@@ -124,6 +131,7 @@ impl App {
                 || fx.diff.moving(now)
                 || self.diffview.as_ref().is_some_and(|d| d.fx.moving(now))
                 || fx.gauge.moving(now)
+                || self.stars_moving(now, stars)
                 || self.welcome_at(now).is_some()
                 || motion::within(fx.bar_lit, now, fx_chrome::BAR_MS)
                 || motion::within(fx.reject_at, now, fx_chrome::REJECT_MS)
@@ -271,6 +279,7 @@ impl App {
     pub(crate) fn note_welcome(&mut self, now: Instant) {
         if self.locked && !self.fx.welcome_seen {
             self.fx.welcome_seen = true;
+            self.fx.stars.begin(now);
             self.fx.welcome_at = self.fx_on().then_some(now);
         }
     }

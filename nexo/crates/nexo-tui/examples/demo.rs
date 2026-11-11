@@ -24,6 +24,16 @@ async fn main() -> anyhow::Result<()> {
     let events = ends.events.clone();
     let cwd2 = cwd.clone();
     tokio::spawn(async move {
+        // DEMO_LOCKED=1: no model answers, so the welcome screen stays up (the constellation, the card)
+        if std::env::var_os("DEMO_LOCKED").is_some() {
+            while let Some(c) = ends.commands.recv().await {
+                if matches!(c, AgentCommand::Shutdown) {
+                    break;
+                }
+            }
+            let _ = events.send(AgentEvent::Shutdown);
+            return;
+        }
         let _ = events.send(AgentEvent::Ready {
             session_id: "demo-session".into(),
             provider: "mock".into(),
@@ -186,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
     });
     let opts = TuiOptions {
         cwd,
-        provider: "mock".into(),
+        provider: if std::env::var_os("DEMO_LOCKED").is_some() { String::new() } else { "mock".into() },
         model: "scripted".into(),
         models: vec![
             ("mock".into(), "scripted".into()),

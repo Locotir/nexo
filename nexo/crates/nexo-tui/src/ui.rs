@@ -668,6 +668,7 @@ fn draw_lock(f: &mut Frame, app: &App, area: Rect, away: f64) {
     let came = if away == 0.0 { app.welcome_at(app.now()) } else { None };
     let slide = (away * 4.0).round() as u16;
     let top = area.y + area.height.saturating_sub(h) / 2;
+    crate::fx_stars::draw(f, app, area, top, slide, away);
     for (i, (text, style)) in lines.iter().enumerate() {
         let Some(y) = (top + i as u16).checked_sub(slide) else { continue };
         if y < area.y || y >= area.bottom() || text.is_empty() {

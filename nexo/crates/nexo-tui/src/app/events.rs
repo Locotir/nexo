@@ -288,8 +288,12 @@ impl App {
         }
         // the cost rolls up to what was spent, like a meter
         // (and the tokens, the toasts and the turn-end glow)
-        if self.tick_fx() {
+        if self.tick_fx_with(false) {
             any = true;
+        }
+        // the welcome figure turns on the beat: a frame per tick, not 60 a second
+        if self.stars_alive(self.now()) {
+            self.dirty = true;
         }
         // tool cards: a finished one pops and eases its rail
         {
@@ -405,6 +409,8 @@ impl App {
             Load::Motion
         } else if self.busy
             || self.status.is_some()
+            // the welcome figure turns on the beat
+            || self.stars_alive(self.now())
             // the memory figure waits on the curator: its spinner needs the beat
             || self.context_wait
             // the answer of the /diff collection is taken on a tick: an idle clock would hold it for seconds

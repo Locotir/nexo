@@ -81,10 +81,12 @@ pub const PASTE_GAP: std::time::Duration = std::time::Duration::from_millis(150)
 pub fn handle(app: &mut App, ev: Event) {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => {
+            app.stars_input();
             key(app, k);
             app.draft_check();
         }
         Event::Mouse(m) => {
+            app.stars_input();
             mouse(app, m);
             app.draft_check();
         }
