@@ -445,6 +445,10 @@ fn units(history: &[Message]) -> Vec<Unit> {
                     });
                 }
                 Part::ToolResult { call_id, name, content, is_error } => {
+                    // a read stub points at lines the sub-agent never saw
+                    if crate::reads::is_unchanged_note(&result_text(content)) {
+                        continue;
+                    }
                     let (tool, args) = match calls.get(call_id.as_str()) {
                         Some((n, a)) => (n.to_string(), Some(*a)),
                         None => (name.clone().unwrap_or_default(), None),
@@ -735,12 +739,30 @@ fn trim<'a>(lines: &[&'a str], idf: &BTreeMap<String, f64>) -> Vec<&'a str> {
 
 // ------------------------------------------------------------ the curator's selection
 
-/// The messages as the curator reads them (images left out: they only weigh).
+/// The messages as the curator reads them (images left out: they only weigh; a read stub is
+/// emptied: it points at lines the sub-agent never saw).
 fn wire(history: &[Message]) -> Vec<Value> {
     history
         .iter()
         .map(|m| {
-            let parts: Vec<&Part> = m.content.iter().filter(|p| !matches!(p, Part::Image { .. })).collect();
+            let parts: Vec<Part> = m
+                .content
+                .iter()
+                .filter(|p| !matches!(p, Part::Image { .. }))
+                .map(|p| match p {
+                    Part::ToolResult { call_id, name, content, is_error }
+                        if crate::reads::is_unchanged_note(&result_text(content)) =>
+                    {
+                        Part::ToolResult {
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            content: vec![],
+                            is_error: *is_error,
+                        }
+                    }
+                    p => p.clone(),
+                })
+                .collect();
             json!({"role": m.role, "content": parts})
         })
         .collect()
@@ -1270,6 +1292,32 @@ mod tests {
         assert!(l.files.iter().any(|f| f == "- src/parser.rs: read lines 1-60 (current)"), "{:?}", l.files);
         let l = Ledger::of(&done, d.path(), true, task);
         assert!(l.files.iter().any(|f| f.contains("(changed after)") && f.contains("edited 1x")), "{:?}", l.files);
+    }
+
+    #[test]
+    fn a_read_stub_is_never_an_excerpt() {
+        let d = tempfile::tempdir().unwrap();
+        let (parser, _, mut h) = session(d.path());
+        h.truncate(3);
+        let stub = "src/parser.rs: unchanged since shown above (60 lines); not repeated: lines 1-60 are inside your \
+                    earlier output of lines 1-60 above. If that is no longer in the conversation, ask again and you \
+                    get it in full. parse_line_7";
+        assert!(crate::reads::is_unchanged_note(stub));
+        h.extend([
+            Message::new(Role::Assistant, vec![Part::tool_call("r9", "read", json!({"path": "src/parser.rs"}))]),
+            Message::tool_results(vec![Part::tool_result("r9", stub, false)]),
+        ]);
+        let task = "Fix parse_line_7 in src/parser.rs";
+        let line = parser[7].as_str();
+        let join = |spans: &[Span]| spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
+        for (name, spans) in [("lexical", lexical(task, &h, 2000)), ("curator", curator(task, &h, 2000))] {
+            let all = join(&spans);
+            assert!(!all.contains("unchanged since shown above"), "{name}: {all}");
+            assert!(all.contains(line), "{name}: {all}");
+        }
+        let l = Ledger::of(&h, d.path(), true, task);
+        assert!(!format!("{l:?}").contains("unchanged since"), "{l:?}");
+        assert!(l.files.iter().any(|f| f.starts_with("- src/parser.rs: read lines 1-60")), "{:?}", l.files);
     }
 
     #[test]

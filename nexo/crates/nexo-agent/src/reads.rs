@@ -16,6 +16,14 @@ use nexo_core::tool::{ToolDisplay, ToolOutput};
 const OMITTED: &str = "[curator]";
 /// The end of the line that heads a file attached whole.
 pub(crate) const ATTACHED: &str = "(attached in full, as it is now):";
+/// The fixed phrases of the note a repeated read gets (see `is_unchanged_note`).
+const UNCHANGED: &str = ": unchanged since shown above";
+const ASK_AGAIN: &str = "If that is no longer in the conversation, ask again and you get it in full.";
+
+/// Whether `text` is the note a repeated read gets: it points at lines shown earlier, holds none.
+pub(crate) fn is_unchanged_note(text: &str) -> bool {
+    text.contains(UNCHANGED) && text.contains(ASK_AGAIN)
+}
 
 /// The line that heads a file attached whole to a request.
 pub fn attached_header(shown: &str) -> String {
@@ -193,8 +201,7 @@ impl Reads {
             };
             seen.noted = true;
             return Some(format!(
-                "{shown}: unchanged since shown above ({}); not repeated: {whence}. \
-                 If that is no longer in the conversation, ask again and you get it in full.",
+                "{shown}{UNCHANGED} ({}); not repeated: {whence}. {ASK_AGAIN}",
                 nexo_core::count(end + 1 - start, "line")
             ));
         }
