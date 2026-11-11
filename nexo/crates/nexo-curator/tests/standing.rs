@@ -68,6 +68,23 @@ fn curator() -> Curator {
 
 const RC: &str = "My shell rc lives at /etc/skel-77/rc, not ~/.bashrc.";
 
+/// What nexo put before the person's words (a file attached, its notes) is not something the person said: a
+/// "not X" or a "never" in it is no standing fact of theirs, brought back on every request. The same words
+/// typed by the person are.
+#[test]
+fn only_the_persons_own_words_give_standing_facts_not_a_file_attached_before_them() {
+    let file = format!("@notes.md (attached in full, as it is now):\n```md\n{RC}\n```");
+    let mark = nexo_curator::PERSON_MARK;
+    for (typed, words) in [(false, "Look at my notes."), (true, RC)] {
+        let mut cur = curator();
+        let msg = format!("{file}\n\n{mark}\n{words}");
+        let opening = [user("Fix the overflow in the parser."), said("On it."), user(&msg), said("Understood.")];
+        let msgs = work(&mut cur, &opening, 250, "");
+        let (_, standing) = ask(&mut cur, msgs, "Add an alias to my shell.");
+        assert_eq!(standing.iter().any(|l| l.contains(RC)), typed, "typed {typed}: {standing:?}");
+    }
+}
+
 #[test]
 fn the_five_forms_come_back_for_a_task_that_supposes_the_default() {
     // (what the session learnt, how, the task that supposes the default, the line that must come back)

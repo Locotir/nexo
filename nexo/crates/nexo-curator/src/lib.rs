@@ -34,6 +34,7 @@ pub use engine::{keywords, label, Added, AddedKind, AddedState};
 use engine::{Engine, Params};
 use mechanical::MARK;
 pub use memory::{Cell, Memory, State, Zone};
+pub use msg::PERSON_MARK;
 
 /// Names any model knows without reading them in the conversation, one per line.
 pub const GENERAL_WORDS: &str = include_str!("../data/general.txt");

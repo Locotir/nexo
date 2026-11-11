@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::hindsight::UKind;
 use crate::json::{est, est_str};
-use crate::msg::{blocks, get_str, text_block, text_of};
+use crate::msg::{blocks, get_str, person_words, text_block, text_of};
 use crate::standing::CALL_KEYS;
 
 use super::notes::note_text;
@@ -59,7 +59,11 @@ impl Engine {
     pub(super) fn take_standing(&mut self, m: &Value) {
         let mi = self.tr.msgs.len();
         let bs = blocks(m.get("content"));
-        let texts: Vec<String> = bs.iter().filter_map(note_text).collect();
+        let user = m.get("role").and_then(Value::as_str) == Some("user");
+        // of the person's message only their own words: the files and notes the harness put before them are not
+        // something the person said, and a "never" or an "always" in them is not a rule of theirs
+        let texts: Vec<String> =
+            bs.iter().filter_map(note_text).map(|t| if user { person_words(&t).to_string() } else { t }).collect();
         let results: Vec<String> = bs
             .iter()
             .filter(|b| get_str(b, "type") == "tool_result")
@@ -73,7 +77,6 @@ impl Engine {
             })
             .map(str::to_string)
             .collect();
-        let user = m.get("role").and_then(Value::as_str) == Some("user");
         self.standing.see(mi, user, &texts, &results, &calls);
     }
 
@@ -87,8 +90,9 @@ impl Engine {
             }
             let text = self.tr.unit_text(i);
             self.index.mt().add(i, &text);
-            if kind == UKind::User && !text.trim().is_empty() {
-                self.index.mt().want(i, &text);
+            let words = person_words(&text);
+            if kind == UKind::User && !words.trim().is_empty() {
+                self.index.mt().want(i, words);
             }
         }
     }

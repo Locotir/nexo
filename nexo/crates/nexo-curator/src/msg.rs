@@ -8,6 +8,19 @@ use crate::json::float_repr;
 use crate::textops::repr_str;
 
 /// `{"type": "text", "text": s}`
+/// The line before the person's own words when the harness put anything in their message (`nexo_core::agent::PERSON_MARK`).
+pub const PERSON_MARK: &str = "[the person's message]";
+
+/// The person's own words in the text of a message they sent: what follows the last [`PERSON_MARK`] line, else the
+/// whole text.
+pub fn person_words(text: &str) -> &str {
+    let line = format!("\n{PERSON_MARK}\n");
+    match text.rfind(&line) {
+        Some(i) => &text[i + line.len()..],
+        None => text.strip_prefix(PERSON_MARK).and_then(|r| r.strip_prefix('\n')).unwrap_or(text),
+    }
+}
+
 pub fn text_block(s: &str) -> Value {
     let mut m = Map::new();
     m.insert("type".into(), Value::String("text".into()));

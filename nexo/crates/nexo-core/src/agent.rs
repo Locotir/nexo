@@ -358,6 +358,20 @@ pub enum Level {
 /// Around what hooks added for the model in front of a request: the screen shows it as a line, not as
 /// the person's words.
 pub const HOOK_CONTEXT_START: &str = "<hook-context>";
+/// The line before the person's own words when nexo put anything in their message (notes, hook context, files
+/// attached): what nexo adds goes first, and the request is the last thing the model reads. The curator has the same
+/// line (`nexo_curator::PERSON_MARK`).
+pub const PERSON_MARK: &str = "[the person's message]";
+
+/// The person's own words in the text of a message they sent: what follows the last [`PERSON_MARK`] line, else the
+/// whole text (a message nexo added nothing to, or one saved before the line existed).
+pub fn person_words(text: &str) -> &str {
+    let line = format!("\n{PERSON_MARK}\n");
+    match text.rfind(&line) {
+        Some(i) => &text[i + line.len()..],
+        None => text.strip_prefix(PERSON_MARK).and_then(|r| r.strip_prefix('\n')).unwrap_or(text),
+    }
+}
 pub const HOOK_CONTEXT_END: &str = "</hook-context>";
 
 /// What the loop sends in the person's place to start a goal; the person's words follow it.

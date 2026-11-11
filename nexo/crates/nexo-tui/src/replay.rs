@@ -10,7 +10,7 @@ const START_NOTE: &str = "[project at the start of this request]";
 const ATTACHED: &str = "(attached in full, as it is now):";
 use nexo_core::agent::{AddedKind, AddedPart};
 use nexo_core::agent::{
-    GOAL_CONTINUE_MARK, GOAL_SET_MARK, HOOK_CONTEXT_END, HOOK_CONTEXT_START, SUPERVISOR_RESUME_MARK,
+    GOAL_CONTINUE_MARK, GOAL_SET_MARK, HOOK_CONTEXT_END, HOOK_CONTEXT_START, PERSON_MARK, SUPERVISOR_RESUME_MARK,
 };
 
 /// One part of a user message, as the screen shows it.
@@ -32,6 +32,35 @@ pub enum Piece {
 /// Splits a user message into what the harness put in front of the person's own words and the words.
 pub fn split_user(text: &str) -> Vec<Piece> {
     let mut out = Vec::new();
+    let words = nexo_core::agent::person_words(text);
+    if words.len() < text.len() {
+        // all nexo added is before the mark, the words after it
+        let before = text[..text.len() - words.len()].trim_end();
+        let before = before.strip_suffix(PERSON_MARK).unwrap_or(before);
+        let rest = front(before, &mut out);
+        out.extend(parts_of(rest).into_iter().map(Piece::Added));
+        out.push(Piece::Text(words.to_string()));
+        return out;
+    }
+    let t = front(text, &mut out);
+    if t.starts_with("[summary]") {
+        out.push(Piece::Summary(t.lines().count()));
+    } else if let Some(words) = t.strip_prefix(GOAL_SET_MARK) {
+        out.push(Piece::Goal(Some(words.trim().to_string())));
+    } else if t.trim_end() == GOAL_CONTINUE_MARK {
+        out.push(Piece::Goal(None));
+    } else if t.trim_end() == SUPERVISOR_RESUME_MARK {
+        out.push(Piece::JobNote("supervisor: continuing after a check-in".into()));
+    } else if !t.is_empty() {
+        let (typed, parts) = split_added(t);
+        out.push(Piece::Text(typed));
+        out.extend(parts.into_iter().map(Piece::Added));
+    }
+    out
+}
+
+/// Takes the job notes, hook context and shared memory at the start of ``text`` into ``out``; the rest.
+fn front<'a>(text: &'a str, out: &mut Vec<Piece>) -> &'a str {
     let mut t = text.trim_start();
     loop {
         if t.starts_with(JOBS_NOTE) {
@@ -60,20 +89,50 @@ pub fn split_user(text: &str) -> Vec<Piece> {
             break;
         }
     }
-    if t.starts_with("[summary]") {
-        out.push(Piece::Summary(t.lines().count()));
-    } else if let Some(words) = t.strip_prefix(GOAL_SET_MARK) {
-        out.push(Piece::Goal(Some(words.trim().to_string())));
-    } else if t.trim_end() == GOAL_CONTINUE_MARK {
-        out.push(Piece::Goal(None));
-    } else if t.trim_end() == SUPERVISOR_RESUME_MARK {
-        out.push(Piece::JobNote("supervisor: continuing after a check-in".into()));
-    } else if !t.is_empty() {
-        let (typed, parts) = split_added(t);
-        out.push(Piece::Text(typed));
-        out.extend(parts.into_iter().map(Piece::Added));
+    t
+}
+
+/// The path of a file nexo named without its text (`@path: attached as an image`, `@path: not attached ...`).
+fn file_line(line: &str) -> Option<&str> {
+    let (path, what) = line.strip_prefix('@')?.split_once(": ")?;
+    (what.starts_with("attached as an image") || what.starts_with("not attached")).then_some(path)
+}
+
+/// What nexo put before the mark after the notes: MCP resources, the start note, the files attached (whole, as
+/// images, or not), each a part.
+fn parts_of(text: &str) -> Vec<AddedPart> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut parts = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some((path, end)) = attached_at(&lines, i) {
+            parts.push(AddedPart::new(AddedKind::File, path, lines[i..end].join("\n")));
+            i = end;
+            continue;
+        }
+        if lines[i].trim().is_empty() {
+            i += 1;
+            continue;
+        }
+        if let Some(path) = file_line(lines[i]) {
+            parts.push(AddedPart::new(AddedKind::File, path, lines[i]));
+            i += 1;
+            continue;
+        }
+        let stop = |k: usize| {
+            lines[k].trim_end() == START_NOTE || attached_at(&lines, k).is_some() || file_line(lines[k]).is_some()
+        };
+        let end = (i + 1..lines.len()).find(|&k| stop(k)).unwrap_or(lines.len());
+        let body = lines[i..end].join("\n").trim_end().to_string();
+        let part = if lines[i].trim_end() == START_NOTE {
+            AddedPart::new(AddedKind::StartNote, "project at the start of the request", body)
+        } else {
+            AddedPart::new(AddedKind::Mention, "MCP resources", body)
+        };
+        parts.push(part);
+        i = end;
     }
-    out
+    parts
 }
 
 /// The start of an attached file at line `i`: its path and the line after its closing fence.
@@ -227,6 +286,37 @@ mod tests {
         // words after a file: not what nexo appends, kept whole
         let after = "look\n\n@a.md (attached in full, as it is now):\n```md\nx\n```\n\nthanks";
         assert_eq!(split_added(after), ("look\n\n@a.md · 1 line\n\nthanks".to_string(), Vec::new()));
+    }
+
+    #[test]
+    fn a_message_with_the_persons_words_last_shows_only_the_words_and_folds_all_before_them() {
+        let t = format!(
+            "<hook-context>\nLocal time: 22:51.\n</hook-context>\n\n{NOTE}\n\n\
+             [project at the start of this request]\nattached: 1 files, 9 tokens\n\n\
+             @AGENTS.md (attached in full, as it is now):\n```md\nRead this first. Always update the date.\n```\n\n\
+             @shot.png: attached as an image\n\n{PERSON_MARK}\nwhat does HTTP 418 mean?"
+        );
+        let p = split_user(&t);
+        let words: Vec<&str> =
+            p.iter().filter_map(|x| if let Piece::Text(t) = x { Some(t.as_str()) } else { None }).collect();
+        assert_eq!(words, ["what does HTTP 418 mean?"], "{p:?}");
+        assert_eq!(p.iter().filter(|x| matches!(x, Piece::JobNote(n) if n == NOTE)).count(), 1, "{p:?}");
+        let parts: Vec<(AddedKind, &str)> = p
+            .iter()
+            .filter_map(|x| if let Piece::Added(a) = x { Some((a.kind, a.label.as_str())) } else { None })
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                (AddedKind::Hook, "hook context"),
+                (AddedKind::StartNote, "project at the start of the request"),
+                (AddedKind::File, "AGENTS.md"),
+                (AddedKind::File, "shot.png"),
+            ]
+        );
+        // the person may type the mark: the last one is the one nexo put
+        let quoted = format!("{PERSON_MARK}\nx\n\n{PERSON_MARK}\nsay what {PERSON_MARK} means");
+        assert_eq!(split_user(&quoted).last(), Some(&Piece::Text(format!("say what {PERSON_MARK} means"))));
     }
 
     #[test]

@@ -231,6 +231,17 @@ fn person_text(text: &str, attached: &mut Vec<String>) -> Option<String> {
     if text == crate::turn::GOAL_CONTINUE {
         return None;
     }
+    // what nexo added went before the words, under the mark: the words are what follows it
+    let words = nexo_core::agent::person_words(text);
+    if words.len() < text.len() {
+        for line in text[..text.len() - words.len()].lines() {
+            if let Some(path) = line.strip_suffix(crate::reads::ATTACHED).and_then(|l| l.strip_prefix('@')) {
+                push_new(attached, path.trim_end());
+            }
+        }
+        let t = words.trim();
+        return (!t.is_empty()).then(|| t.to_string());
+    }
     let mut t = text.trim_start();
     loop {
         if t.starts_with(JOBS_NOTE) {
@@ -535,6 +546,15 @@ mod tests {
         let k = kept(&h);
         assert_eq!(k.requests, ["Sum the totals per month."]);
         assert_eq!(k.read, ["data/sales.csv"], "a file attached whole was seen");
+        // as nexo writes them now: all it adds first, the words last under the mark
+        let start = "[project at the start of this request]\nattached: 1 files, 9 tokens";
+        let now = format!(
+            "{shared}\n\n{jobs}\n\n{start}{attached}\n\n{}\nSum the totals per month.",
+            nexo_core::agent::PERSON_MARK
+        );
+        let k = kept(&[Message::user(now), Message::assistant("ok")]);
+        assert_eq!(k.requests, ["Sum the totals per month."]);
+        assert_eq!(k.read, ["data/sales.csv"]);
     }
 
     #[test]

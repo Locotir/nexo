@@ -127,8 +127,10 @@ fn echo(req: &ModelRequest) -> Vec<StreamEvent> {
         }
         Some(m) => {
             let full = m.text();
-            // the agent's own note about the project is not part of what the user typed
-            let text = full.split("\n\n[project at the start of this request]").next().unwrap_or(&full).to_string();
+            // what nexo put before the typed words, and its note about the project after a message that is
+            // not the person's, are not part of what the user typed
+            let typed = nexo_core::agent::person_words(&full);
+            let text = typed.split("\n\n[project at the start of this request]").next().unwrap_or(typed).to_string();
             if let Some(rest) = text.strip_prefix("tool:") {
                 let (name, args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "{}"));
                 let args: Value = serde_json::from_str(args.trim()).unwrap_or(Value::Object(Default::default()));

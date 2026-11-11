@@ -69,13 +69,28 @@ pub(super) async fn start_prompt(
         return None;
     }
     state.lock().await.hook_context.extend(o.context);
-    Some(start_turn(state, text, attachments, cancel).await)
+    Some(begin_turn(state, text, attachments, true, cancel).await)
 }
 
+/// Starts a turn on a message that is not the person's own words (mail, the goal loop, a job note, the
+/// supervisor's resume): what nexo adds follows the text, as it always did.
 pub(super) async fn start_turn(
     state: &Shared,
     text: String,
     attachments: Vec<Attachment>,
+    cancel: CancellationToken,
+) -> JoinHandle<TurnEnd> {
+    begin_turn(state, text, attachments, false, cancel).await
+}
+
+/// Starts a turn on ``text``. When the person wrote it (``person``), everything nexo adds (shared memory, hook
+/// context, ended jobs, MCP resources, the start note, the files attached) goes first and their words come last,
+/// under `PERSON_MARK`: the request is the last thing the model reads, and nothing a file says comes after it.
+async fn begin_turn(
+    state: &Shared,
+    text: String,
+    attachments: Vec<Attachment>,
+    person: bool,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
     let mut attachments = attachments;
@@ -89,9 +104,15 @@ pub(super) async fn start_turn(
     // the expansion only appends: what follows the typed words is what nexo added
     let mut added: Vec<AddedPart> = Vec::new();
     let mut after = Vec::new();
+    // what nexo adds to the person's words, in the order the message gives it, before them
+    let mut first: Vec<String> = Vec::new();
     if let Some(extra) = text.strip_prefix(typed.as_str()).map(|e| e.trim_matches('\n')).filter(|e| !e.is_empty()) {
         after.push(AddedPart::new(AddedKind::Mention, "MCP resources", extra));
+        if person {
+            first.push(extra.to_string());
+        }
     }
+    let text = if person { typed.clone() } else { text };
     // the project's check runs once, before the request is built, so its result comes with it
     let check = orient::start_check(state, &cancel).await;
     {
@@ -122,7 +143,12 @@ pub(super) async fn start_turn(
         } else {
             let note = st.jobs.note_ended(&ended);
             added.push(AddedPart::new(AddedKind::Jobs, "background jobs that ended", note.clone()));
-            format!("{note}\n\n{text}")
+            if person {
+                first.insert(0, note);
+                text
+            } else {
+                format!("{note}\n\n{text}")
+            }
         };
         // what other sessions shared goes first, once: it is part of this request from now on
         let text = if st.hook_context.is_empty() {
@@ -135,7 +161,12 @@ pub(super) async fn start_turn(
                 nexo_core::agent::HOOK_CONTEXT_END
             );
             added.insert(0, AddedPart::new(AddedKind::Hook, "hook context", block.clone()));
-            format!("{block}\n\n{text}")
+            if person {
+                first.insert(0, block);
+                text
+            } else {
+                format!("{block}\n\n{text}")
+            }
         };
         let text = if st.shared.is_empty() {
             text
@@ -150,7 +181,12 @@ pub(super) async fn start_turn(
                 added.insert(i, part);
             }
             let blocks: Vec<String> = shared.into_iter().map(|(_, _, b)| b).collect();
-            format!("{}\n\n{text}", blocks.join("\n\n"))
+            if person {
+                first.splice(0..0, blocks);
+                text
+            } else {
+                format!("{}\n\n{text}", blocks.join("\n\n"))
+            }
         };
         // the typed words sit between what comes before them (shared memory, hooks, jobs) and what follows
         added.append(&mut after);
@@ -161,9 +197,18 @@ pub(super) async fn start_turn(
             text
         } else {
             added.push(AddedPart::new(AddedKind::StartNote, "project at the start of the request", note.clone()));
-            format!("{text}\n\n{note}")
+            if person {
+                first.push(note);
+                text
+            } else {
+                format!("{text}\n\n{note}")
+            }
         };
-        push_user(&mut st, text, &attachments, added);
+        if person {
+            push_user(&mut st, first.join("\n\n"), Some(text), &attachments, added);
+        } else {
+            push_user(&mut st, text, None, &attachments, added);
+        }
     }
     let state = state.clone();
     tokio::spawn(async move {
@@ -180,11 +225,24 @@ pub(super) fn reply_tokens(st: &State) -> u32 {
     st.limits.reply_room(st.config.agent.max_tokens, st.reply_boost)
 }
 
-/// Adds a request of the person to the conversation, its attachments expanded. `added` is what nexo put in
-/// the message besides the person's words, in the order of the message; the files it expands now are told
-/// after it, and the interface hears of all (`AgentEvent::Added`) right after the message.
-pub(super) fn push_user(st: &mut State, text: String, attachments: &[Attachment], mut added: Vec<AddedPart>) {
+/// Adds a user message to the conversation, its attachments expanded after ``text``. With ``typed`` (the words the
+/// person wrote) ``text`` is what nexo adds to them, and the words come after it and after the files, under
+/// `PERSON_MARK` (alone when nothing was added). `added` is what nexo put in the message besides the person's
+/// words, in the order of the message; the files it expands now are told after it, and the interface hears of all
+/// (`AgentEvent::Added`) right after the message.
+pub(super) fn push_user(
+    st: &mut State,
+    text: String,
+    typed: Option<String>,
+    attachments: &[Attachment],
+    mut added: Vec<AddedPart>,
+) {
     let (text, images, whole) = expand_attachments(text, attachments, &st.cwd, &mut added);
+    let text = match typed {
+        Some(words) if text.trim().is_empty() => words,
+        Some(words) => format!("{}\n\n{}\n{words}", text.trim_matches('\n'), nexo_core::agent::PERSON_MARK),
+        None => text,
+    };
     for (path, bytes, header) in whole {
         st.reads.attached(path, &bytes, header);
     }
@@ -222,7 +280,7 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     let ended = st.jobs.take_ended();
     if !ended.is_empty() {
         let note = st.jobs.note_ended(&ended);
-        push_user(&mut st, note, &[], Vec::new());
+        push_user(&mut st, note, None, &[], Vec::new());
     }
     if st.inbox.is_empty() {
         return false;
@@ -230,7 +288,7 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     while let Some((text, mut attachments)) = st.inbox.pop_front() {
         let named = named_files(&st, &text, &attachments);
         attachments.extend(named);
-        push_user(&mut st, text, &attachments, Vec::new());
+        push_user(&mut st, String::new(), Some(text), &attachments, Vec::new());
     }
     person_spoke(&mut st);
     // the message shows in the transcript where it joined: nothing else to say

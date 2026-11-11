@@ -887,6 +887,11 @@ mod size_budget {
         }
         assert!(full.contains("do not reply to them as if the person had just said them"), "{full}");
         // the compact text has 2 600 characters in all: it names the kinds, not each label
+        // and both say where the person's own words are
+        assert!(
+            full.contains(nexo_core::agent::PERSON_MARK)
+                && line(BUILT_IN_COMPACT).contains(nexo_core::agent::PERSON_MARK)
+        );
         let compact = line(BUILT_IN_COMPACT);
         for m in ["`[label]`", nexo_core::agent::HOOK_CONTEXT_START, "`@path (attached", "`Standing:`", "`Recall`"] {
             assert!(compact.contains(m), "{m} is not named in: {compact}");

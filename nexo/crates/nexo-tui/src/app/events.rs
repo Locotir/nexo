@@ -1249,9 +1249,11 @@ impl App {
                         && text.trim() != nexo_core::agent::GOAL_CONTINUE_MARK
                         && text.trim() != nexo_core::agent::SUPERVISOR_RESUME_MARK
                     {
-                        self.user_messages.push((index, text.clone()));
+                        // /undo puts back, and the pickers list, what the person wrote, not what nexo put with it
+                        self.user_messages.push((index, nexo_core::agent::person_words(&text).to_string()));
                     }
-                    let at = match self.pending_stamps.iter().position(|t| *t == text) {
+                    let words = nexo_core::agent::person_words(&text);
+                    let at = match self.pending_stamps.iter().position(|t| t == words) {
                         Some(i) => {
                             self.pending_stamps.remove(i);
                             Some(self.stamp_now())
