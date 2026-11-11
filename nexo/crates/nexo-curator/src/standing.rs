@@ -311,7 +311,8 @@ impl Standing {
 
     /// The facts due now, as lines for the tail: those with a target the person's request, the agent's last
     /// text or the inputs of its last calls hold, the most targets first, the newest first among equals.
-    /// ``skip`` says which are already in the view (their message is whole in it, or the rules block has them).
+    /// ``skip`` says which are already in the view (their message is whole in it, the rules block has them, or
+    /// another message shows their words).
     pub fn due(&self, limit: usize, skip: &dyn Fn(Option<usize>, &str) -> bool) -> Vec<String> {
         if self.facts.is_empty() || limit == 0 {
             return Vec::new();
@@ -325,11 +326,12 @@ impl Standing {
             .facts
             .iter()
             .enumerate()
-            .filter(|(_, f)| !skip(f.src, &f.line))
             .filter_map(|(k, f)| {
                 let n = f.targets.iter().filter(|t| trigger.contains(*t)).count();
                 (n > 0).then_some((n, k, f))
             })
+            // (asked last: it may read the whole view)
+            .filter(|(_, _, f)| !skip(f.src, &f.line))
             .collect();
         hit.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
         hit.into_iter()

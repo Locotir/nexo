@@ -166,6 +166,32 @@ fn a_fact_still_whole_in_the_view_is_not_sent_twice() {
     assert_eq!(text.matches(RC).count(), 1);
 }
 
+/// The message a fact came from has left the view, but a later one that is in it holds the same words (the
+/// agent quoted them back, a file that was read shows them): the model is already reading the fact.
+#[test]
+fn a_fact_whose_words_are_in_the_view_in_another_message_is_not_sent_again() {
+    for quoting in [
+        said(&format!("Before I go on, what you told me still holds: {RC}")),
+        json!({"role": "user", "content": [{"type": "text", "text": format!("From my notes file:\n- {RC}\n- nothing else")}]}),
+    ] {
+        let opening = [user("Fix the overflow in the parser."), said("On it."), user(RC), said("Understood.")];
+        // without the later message the fact has left the view and comes back
+        let mut cur = curator();
+        let msgs = work(&mut cur, &opening, 250, "");
+        let (_, standing) = ask(&mut cur, msgs, "Add an alias to my shell.");
+        assert_eq!(standing, [format!("Standing: {RC}")]);
+        let mut cur = curator();
+        let mut msgs = work(&mut cur, &opening, 250, "");
+        msgs.push(quoting);
+        if msgs.last().unwrap()["role"] == "user" {
+            msgs.push(said("Noted."));
+        }
+        let (text, standing) = ask(&mut cur, msgs, "Add an alias to my shell.");
+        assert!(standing.is_empty(), "{standing:?}");
+        assert!(!text.contains("Standing:"), "{text}");
+    }
+}
+
 #[test]
 fn a_later_fact_about_the_same_subject_replaces_the_old_one() {
     let old = "The staging server is at stage1.internal:8797, not localhost:8080.";

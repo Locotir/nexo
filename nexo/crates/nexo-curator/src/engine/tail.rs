@@ -41,6 +41,19 @@ const INFLATE_TO: f64 = 0.99;
 /// Characters of a line shown.
 const SHOWN: usize = 300;
 
+/// Whether the text or the tool results of a message's ``content`` hold ``line`` as it is.
+fn holds(content: Option<&Value>, line: &str) -> bool {
+    match content {
+        Some(Value::String(s)) => s.contains(line),
+        Some(Value::Array(bs)) => bs.iter().any(|b| match get_str(b, "type") {
+            "text" => get_str(b, "text").contains(line),
+            "tool_result" => holds(b.get("content"), line),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
 impl Engine {
     /// The standing facts in message ``m`` as it arrives (see `standing.rs`).
     pub(super) fn take_standing(&mut self, m: &Value) {
@@ -170,12 +183,15 @@ impl Engine {
         if self.p.rules == 0 {
             return;
         }
-        let Some(last) = view.last_mut().filter(|m| m.get("role").and_then(Value::as_str) == Some("user")) else {
+        if view.last().and_then(|m| m.get("role")).and_then(Value::as_str) != Some("user") {
             return;
-        };
+        }
         let mut lines: Vec<String> = Vec::new();
         if !self.standing.is_empty() {
-            // a fact whose message is whole in the view is there already
+            // a fact is there already when its message is whole in the view, when the rules block has it, or
+            // when another message of the view shows its words (the agent quoted it, a file that was read holds
+            // it). The first message does not count: its card of the folded turns lists what the person asked, the
+            // whole view away from the action about to be made, and bringing the fact next to it is what the tail is for
             let vis = self.visible();
             let hide0 = self.m0_card(self.apart());
             let whole: rustc_hash::FxHashSet<usize> = self
@@ -185,8 +201,10 @@ impl Engine {
                 .filter(|&s| vis.binary_search(&s).is_ok() && if s == 0 { !hide0 } else { self.message(s).0.is_none() })
                 .collect();
             let rules = &self.rules_shown;
-            let due =
-                self.standing.due(FACTS, &|src, line| src.is_some_and(|s| whole.contains(&s)) || rules.contains(line));
+            let shows = |line: &str| view.iter().skip(1).any(|m| holds(m.get("content"), line));
+            let due = self.standing.due(FACTS, &|src, line| {
+                src.is_some_and(|s| whole.contains(&s)) || rules.contains(line) || shows(line)
+            });
             if !due.is_empty() {
                 self.bump("standing", due.len() as i64);
                 lines.push(FACTS_HEAD.to_string());
@@ -195,6 +213,7 @@ impl Engine {
         }
         // the lines the request names go with the request, not with every step it takes after: the answers the
         // agent has by then carry what it made of them
+        let Some(last) = view.last_mut() else { return };
         let step = blocks(last.get("content")).iter().any(|b| get_str(b, "type") == "tool_result");
         let found = if step { Vec::new() } else { self.index_lines() };
         if !found.is_empty() {
