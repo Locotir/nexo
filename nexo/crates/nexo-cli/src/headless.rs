@@ -478,6 +478,15 @@ fn stdin_lines() -> tokio::sync::mpsc::UnboundedReceiver<String> {
     rx
 }
 
+/// What the run sends in the person's place when the answer did not fit `--json-schema`. It says who writes it:
+/// taken as the person's words, a model apologises or explains before the value, and the value is all that counts.
+fn schema_retry(errors: &str) -> String {
+    format!(
+        "Automatic check by nexo, not a message from the person: your answer did not validate against the schema: \
+         {errors}. Reply again with only the corrected JSON value."
+    )
+}
+
 fn usage(msg: &str) -> anyhow::Result<i32> {
     eprintln!("nexo: {msg}");
     Ok(EXIT_USAGE)
@@ -664,9 +673,7 @@ pub async fn run(
                         Err(e) if attempt == 0 => {
                             // one more try, in the same session, told what was wrong
                             attempt = 1;
-                            inbox.push_back(format!(
-                                "Your answer did not validate against the schema: {e}. Reply again with only the corrected JSON value."
-                            ));
+                            inbox.push_back(schema_retry(&e));
                             continue;
                         }
                         Err(e) => {
@@ -756,6 +763,14 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_schema_retry_says_it_is_not_the_person_and_asks_for_the_value_alone() {
+        let t = super::schema_retry("/name: missing");
+        assert!(t.starts_with("Automatic check by nexo, not a message from the person:"), "{t}");
+        assert!(t.contains("/name: missing") && t.ends_with("Reply again with only the corrected JSON value."), "{t}");
+        assert!(!t.contains('\n'), "{t}");
+    }
+
     use super::legacy_line;
     use super::{notice_line, user_text};
     use nexo_core::agent::AgentEvent;

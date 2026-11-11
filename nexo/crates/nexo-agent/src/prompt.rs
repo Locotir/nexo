@@ -807,6 +807,37 @@ mod size_budget {
         assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
     }
 
+    /// nexo writes parts of its own into the person's messages (ended jobs, the project note, hook output, files
+    /// it attached, facts and lines it brought back, the supervisor's mark). Bare, a model answers them as if the
+    /// person had just said them; the full prompt names each one as nexo's and the compact one names the kinds.
+    #[test]
+    fn both_prompts_name_every_part_nexo_adds_to_the_persons_messages() {
+        let attached = crate::reads::ATTACHED.trim_end_matches(':');
+        let marks = [
+            "[background jobs ended]",
+            "[project at the start of this request]",
+            nexo_core::agent::SUPERVISOR_RESUME_MARK,
+            nexo_core::agent::HOOK_CONTEXT_START,
+            attached,
+            "`Standing:`",
+            "`Recall`",
+        ];
+        let line = |text: &'static str| {
+            text.lines().find(|l| l.contains("the person did not type them")).unwrap_or_else(|| panic!("{text}"))
+        };
+        let full = line(BUILT_IN);
+        for m in marks {
+            assert!(full.contains(m), "{m} is not named in: {full}");
+        }
+        assert!(full.contains("do not reply to them as if the person had just said them"), "{full}");
+        // the compact text has 2 600 characters in all: it names the kinds, not each label
+        let compact = line(BUILT_IN_COMPACT);
+        for m in ["`[label]`", nexo_core::agent::HOOK_CONTEXT_START, "`@path (attached", "`Standing:`", "`Recall`"] {
+            assert!(compact.contains(m), "{m} is not named in: {compact}");
+        }
+        assert!(compact.contains("do not reply to them"), "{compact}");
+    }
+
     #[test]
     fn both_prompts_say_to_answer_at_once_when_the_proving_check_passes() {
         for text in [BUILT_IN, BUILT_IN_COMPACT] {
