@@ -403,6 +403,16 @@ fn cfg(base: &str) -> ProviderConfig {
     c
 }
 
+/// The provider client is shared by the process and keeps idle connections, each test has a runtime of
+/// its own, and the mock pool hands a port to the next test: a send can meet a pooled connection whose
+/// runtime ended with the last test. That is the test harness, not the reply under test, so these
+/// helpers send again on a network error that got no answer.
+const STALE_TRIES: usize = 3;
+
+fn stale(e: &nexo_core::ProviderError) -> bool {
+    e.kind == ErrorKind::Network && e.status.is_none()
+}
+
 async fn http_error(status: u16, headers: &[(&str, &str)], body: &str) -> nexo_core::ProviderError {
     let server = MockServer::start_async().await;
     server
@@ -416,10 +426,14 @@ async fn http_error(status: u16, headers: &[(&str, &str)], body: &str) -> nexo_c
         })
         .await;
     let req = ModelRequest::new("m", "", vec![Message::user("hi")]);
-    match Client::new(registry()).stream(&cfg(&server.base_url()), &req, 0).await {
-        Err(e) => e,
-        Ok(_) => panic!("an HTTP {status} is an error"),
+    for _ in 0..STALE_TRIES {
+        match Client::new(registry()).stream(&cfg(&server.base_url()), &req, 0).await {
+            Err(e) if stale(&e) => continue,
+            Err(e) => return e,
+            Ok(_) => panic!("an HTTP {status} is an error"),
+        }
     }
+    panic!("the mock server was never reached")
 }
 
 async fn stream_of(body: &str) -> Collector {
@@ -431,7 +445,13 @@ async fn stream_of(body: &str) -> Collector {
         })
         .await;
     let req = ModelRequest::new("m", "", vec![Message::user("hi")]);
-    let mut s = Client::new(registry()).stream(&cfg(&server.base_url()), &req, 0).await.unwrap();
+    let mut tries = 0;
+    let mut s = loop {
+        match Client::new(registry()).stream(&cfg(&server.base_url()), &req, 0).await {
+            Err(e) if stale(&e) && tries + 1 < STALE_TRIES => tries += 1,
+            r => break r.unwrap(),
+        }
+    };
     let mut c = Collector::new();
     while let Some(e) = s.next().await {
         c.push(e);
