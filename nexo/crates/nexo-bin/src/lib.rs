@@ -18,7 +18,7 @@ pub mod fixtures;
 mod tests;
 
 pub use image::{Export, Format, Hardening, Image, Import, Section, Symbol};
-pub use ops::{bytes, find_bytes, find_imm, func, info, strings, ElemType};
+pub use ops::{bytes, find_bytes, find_imm, func, func_window, info, strings, ElemType};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
 
 use std::fmt;
@@ -35,11 +35,12 @@ pub enum Error {
 }
 
 impl Error {
-    /// The exit code `nexo bin` ends with: 2 for a file that is not read, 1 for the rest.
+    /// The exit code `nexo bin` ends with: 2 for a file that is not read (or cannot be opened), 1 for a
+    /// question that has no answer.
     pub fn exit_code(&self) -> i32 {
         match self {
-            Error::NotRead(_) => 2,
-            Error::Io(_) | Error::Bad(_) => 1,
+            Error::NotRead(_) | Error::Io(_) => 2,
+            Error::Bad(_) => 1,
         }
     }
 }
@@ -56,7 +57,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// A number written as `0x401000`, `401000h` is not accepted; plain digits are decimal.
+/// A number written as `0x401000` (hex) or plain digits (decimal); `_` may separate digits. A trailing `h` is not accepted.
 pub fn parse_number(s: &str) -> Result<i128> {
     let t = s.trim();
     let (neg, t) = match t.strip_prefix('-') {

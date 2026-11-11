@@ -1,5 +1,6 @@
 //! Opening a file: headers, sections, symbols, imports, exports, hardening. Bytes only.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -21,6 +22,8 @@ const MAX_SECTIONS: usize = 4096;
 const MAX_SYMBOLS: usize = 500_000;
 const MAX_IMPORTS: usize = 200_000;
 const MAX_NAME: usize = 256;
+/// Longest raw (mangled) name that is demangled.
+const MAX_NAME_IN: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -118,6 +121,8 @@ pub struct Image {
     pub(crate) data: Vec<u8>,
     /// Exact-address names: function symbols, exports, then data symbols.
     pub(crate) names: BTreeMap<u64, String>,
+    /// Size of the symbol each entry of `names` came from (0 for an export).
+    sizes: HashMap<u64, u64>,
     /// Import slot address to index in `imports`.
     pub(crate) slots: HashMap<u64, usize>,
     /// PE exception directory (RVA, size).
@@ -163,16 +168,25 @@ impl Image {
     fn finish(&mut self) {
         // function names win over exports, exports over data names
         let mut names: BTreeMap<u64, String> = BTreeMap::new();
+        // the size of the symbol that gave each name, so `symbol_covering` is a lookup
+        let mut sizes: HashMap<u64, u64> = HashMap::new();
         for s in self.symbols.iter().filter(|s| s.func) {
-            names.entry(s.addr).or_insert_with(|| s.name.clone());
+            if let Entry::Vacant(v) = names.entry(s.addr) {
+                v.insert(s.name.clone());
+                sizes.insert(s.addr, s.size);
+            }
         }
         for e in &self.exports {
             names.entry(e.addr).or_insert_with(|| e.name.clone());
         }
         for s in self.symbols.iter().filter(|s| !s.func) {
-            names.entry(s.addr).or_insert_with(|| s.name.clone());
+            if let Entry::Vacant(v) = names.entry(s.addr) {
+                v.insert(s.name.clone());
+                sizes.insert(s.addr, s.size);
+            }
         }
         self.names = names;
+        self.sizes = sizes;
         self.slots = self.imports.iter().enumerate().filter_map(|(i, im)| im.slot.map(|s| (s, i))).collect();
         let mut sorted: Vec<usize> =
             (0..self.sections.len()).filter(|&i| self.sections[i].alloc && self.sections[i].size > 0).collect();
@@ -232,7 +246,7 @@ impl Image {
     /// The nearest named data or code symbol at or below `addr` and inside its size.
     pub(crate) fn symbol_covering(&self, addr: u64) -> Option<(&str, u64)> {
         let (a, n) = self.names.range(..=addr).next_back()?;
-        let size = self.symbols.iter().find(|s| s.addr == *a && &s.name == n).map_or(0, |s| s.size);
+        let size = self.sizes.get(a).copied().unwrap_or(0);
         (addr == *a || addr - a < size).then(|| (n.as_str(), addr - a))
     }
 
@@ -327,6 +341,7 @@ fn blank(format: Format) -> Image {
         sha256: String::new(),
         data: Vec::new(),
         names: BTreeMap::new(),
+        sizes: HashMap::new(),
         slots: HashMap::new(),
         exception_dir: None,
         sorted: Vec::new(),
@@ -335,22 +350,24 @@ fn blank(format: Format) -> Image {
     }
 }
 
-/// Demangle Rust and C++ names; anything else stays as written. Long names are cut.
+/// Demangle Rust and C++ names; anything else stays as written. The whole name is demangled (up to
+/// `MAX_NAME_IN` characters) and then the result is cut to `MAX_NAME`.
 pub(crate) fn demangle(raw: &str) -> String {
-    let raw: String = raw.chars().take(MAX_NAME).collect();
+    let cut = |t: &str| t.chars().take(MAX_NAME).collect::<String>();
+    let raw: String = raw.chars().take(MAX_NAME_IN).collect();
     if raw.starts_with("_Z") || raw.starts_with("_R") {
         if let Ok(d) = rustc_demangle::try_demangle(&raw) {
-            return format!("{d:#}");
+            return cut(&format!("{d:#}"));
         }
         if raw.starts_with("_Z") {
             if let Ok(s) = cpp_demangle::Symbol::new(raw.as_bytes()) {
                 if let Ok(t) = s.demangle() {
-                    return t.chars().take(MAX_NAME).collect();
+                    return cut(&t);
                 }
             }
         }
     }
-    raw
+    cut(&raw)
 }
 
 /// Sections, symbols and exports: what ELF and PE have in common.
@@ -408,6 +425,11 @@ fn common<'d, O: Object<'d>>(o: &O, img: &mut Image) {
             });
         }
     }
+    // a hostile header can put a section at the very top of the address space: keep `addr + size`
+    // inside u64 so that no address sum below can overflow
+    for s in &mut img.sections {
+        s.size = s.size.min(u64::MAX - s.addr);
+    }
     for s in o.symbols().chain(o.dynamic_symbols()).take(MAX_SYMBOLS) {
         if !s.is_definition() || s.address() == 0 {
             continue;
@@ -434,7 +456,7 @@ fn common<'d, O: Object<'d>>(o: &O, img: &mut Image) {
             else {
                 continue;
             };
-            let name = String::from_utf8_lossy(n).chars().take(MAX_NAME).collect::<String>();
+            let name = String::from_utf8_lossy(n).chars().take(MAX_NAME_IN).collect::<String>();
             if !name.is_empty() {
                 img.exports.push(Export { name: demangle(&name), addr: address });
             }
@@ -451,6 +473,11 @@ fn load_elf(data: &[u8]) -> Result<Image> {
             "ELF64 {} is not read yet (only x86-64 is)",
             arch_word(elf.architecture())
         )));
+    }
+    if elf.elf_header().e_type.get(elf.endian()) == object::elf::ET_REL {
+        return Err(Error::NotRead(
+            "ELF relocatable object is not read yet (a .o or .ko file has no addresses)".into(),
+        ));
     }
     let mut img = blank(Format::Elf);
     common(&elf, &mut img);
@@ -537,6 +564,19 @@ fn load_pe(data: &[u8]) -> Result<Image> {
     }
     let mut img = blank(Format::Pe);
     common(&pe, &mut img);
+    // the loader maps a section whose virtual size is 0 with the size of its raw data; the generic
+    // reader reports 0 bytes for it, so read the raw header
+    for (i, h) in pe.section_table().iter().enumerate().take(MAX_SECTIONS) {
+        if h.virtual_size.get(LE) != 0 {
+            continue;
+        }
+        let raw = u64::from(h.size_of_raw_data.get(LE));
+        if let Some(s) = img.sections.iter_mut().find(|s| s.index == i + 1) {
+            s.file_off = u64::from(h.pointer_to_raw_data.get(LE));
+            s.file_size = raw;
+            s.size = raw.min(u64::MAX - s.addr);
+        }
+    }
     let oh = pe.nt_headers().optional_header();
     img.image_base = oh.image_base();
     if let Some(d) = pe.data_directory(pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION) {

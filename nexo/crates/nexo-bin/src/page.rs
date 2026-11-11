@@ -23,6 +23,8 @@ pub struct Output {
     /// Facts about the answer as a whole (JSON object).
     pub meta: Value,
     pub rows: Vec<Row>,
+    /// Rows after the last one in `rows` that were counted but not built (see `func_window`).
+    pub tail: usize,
     /// The command that asked, without `--from` and `--lines`; the cut line adds them.
     pub command: String,
 }
@@ -54,12 +56,17 @@ impl Output {
     /// Take at most `budget` lines (cut line included) starting at the first row whose key is `from`
     /// or more.
     pub fn page(&self, from: Option<u64>, budget: usize) -> Page {
+        self.page_as(from, budget, false)
+    }
+
+    /// Like [`Output::page`]; `json` makes the resume command ask for JSON again.
+    pub fn page_as(&self, from: Option<u64>, budget: usize, json: bool) -> Page {
         let budget = budget.max(MIN_LINES);
         let start = match from {
             Some(k) => self.rows.partition_point(|r| r.key < k),
             None => 0,
         };
-        let avail = self.rows.len() - start;
+        let avail = self.rows.len() - start + self.tail;
         let cut = avail > budget;
         let shown = if cut { budget - 1 } else { avail };
         let left = avail - shown;
@@ -67,7 +74,8 @@ impl Output {
         let next = if cut {
             let key = self.rows[start + shown].key;
             let lines_flag = if budget == DEFAULT_LINES { String::new() } else { format!(" --lines {budget}") };
-            Some(format!("{} --from {key:#x}{lines_flag}", self.command))
+            let json_flag = if json { " --json" } else { "" };
+            Some(format!("{}{json_flag} --from {key:#x}{lines_flag}", self.command))
         } else {
             None
         };

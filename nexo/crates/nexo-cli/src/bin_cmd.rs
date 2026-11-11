@@ -113,7 +113,9 @@ pub fn execute(a: &BinArgs) -> Result<String, Error> {
     let img = Image::open(a.op.file())?;
     let out: Output = match &a.op {
         BinOp::Info { .. } => nexo_bin::info(&img),
-        BinOp::Fn { target, bytes, .. } => nexo_bin::func(&img, target, *bytes)?,
+        BinOp::Fn { target, bytes, common, .. } => {
+            nexo_bin::func_window(&img, target, *bytes, common.from, common.lines.max(MIN_LINES))?
+        }
         BinOp::Bytes { addr, len, ty, .. } => nexo_bin::bytes(&img, *addr, *len, ElemType::parse(ty)?)?,
         BinOp::Strings { grep, .. } => nexo_bin::strings(&img, grep.as_deref())?,
         BinOp::Find { pattern, imm, .. } => match imm {
@@ -122,7 +124,7 @@ pub fn execute(a: &BinArgs) -> Result<String, Error> {
         },
     };
     let c = a.op.common();
-    let page = out.page(c.from, c.lines.max(MIN_LINES));
+    let page = out.page_as(c.from, c.lines.max(MIN_LINES), c.json);
     if c.json {
         serde_json::to_string_pretty(&page.value).map_err(|e| Error::Bad(e.to_string()))
     } else {
@@ -209,7 +211,10 @@ mod tests {
         assert_eq!(j["op"], "info");
         assert_eq!(j["left"], 4);
         assert_eq!(j["items"].as_array().unwrap().len(), 2);
-        assert_eq!(j["next"].as_str().unwrap(), last.split(": ").nth(1).unwrap());
+        // the JSON resume command asks for JSON again; apart from that it is the text one
+        let next = j["next"].as_str().unwrap();
+        assert!(next.contains(" --json --from "), "{next}");
+        assert_eq!(next.replace(" --json", ""), last.split(": ").nth(1).unwrap());
     }
 
     #[test]
@@ -219,7 +224,8 @@ mod tests {
         let e = ask(&["fn", &path, "0x10"]).unwrap_err();
         assert_eq!(e.exit_code(), 1);
         assert!(e.to_string().contains("not inside any section"), "{e}");
+        // a file that cannot be opened is a file problem: exit 2 like a file that is not read
         let e = ask(&["info", &dir.path().join("missing").display().to_string()]).unwrap_err();
-        assert_eq!(e.exit_code(), 1);
+        assert_eq!(e.exit_code(), 2);
     }
 }

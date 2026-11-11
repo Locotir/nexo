@@ -265,7 +265,8 @@ fn a_cut_says_what_is_left_and_the_pieces_join_to_the_whole() {
     let rows: Vec<Row> = (0..300u64)
         .map(|i| Row { key: 0x1000 + i * 3, text: format!("line {i}"), json: Some(serde_json::json!(i)) })
         .collect();
-    let o = Output { op: "fn", meta: serde_json::json!({}), rows, command: "nexo bin fn /x/prog 0x1000".into() };
+    let o =
+        Output { op: "fn", meta: serde_json::json!({}), rows, tail: 0, command: "nexo bin fn /x/prog 0x1000".into() };
     let whole = o.text_all();
     for budget in [10usize, 25, 120, 299, 300, 301] {
         let mut joined: Vec<String> = Vec::new();
@@ -343,6 +344,10 @@ fn this_binary() -> Option<Image> {
     match Image::open(&exe) {
         Ok(img) => Some(img),
         Err(e @ Error::NotRead(_)) => {
+            // where the test binary must be an x86-64 ELF or PE, a refusal is a parser bug, not a skip
+            if cfg!(all(target_arch = "x86_64", any(target_os = "linux", target_os = "windows"))) {
+                panic!("the test binary should be read: {e}");
+            }
             eprintln!("skipped: the test binary is not an x86-64 ELF or PE ({e})");
             None
         }
@@ -468,4 +473,164 @@ fn numbers_and_addresses_parse() {
     assert!(parse_number("0x1ffffffffffffffff").is_err());
     assert_eq!(parse_addr("0x400000").unwrap(), 0x40_0000);
     assert!(parse_addr("-1").is_err());
+}
+
+#[test]
+fn the_real_test_binary_cut_short_gives_ok_or_err_never_a_panic() {
+    let exe = std::env::current_exe().expect("current exe");
+    let data = std::fs::read(exe).expect("read the test binary");
+    let n = data.len();
+    let mut asked = 0;
+    for i in 0..64 {
+        let cut = n * i / 63;
+        if let Ok(img) = Image::from_bytes(data[..cut].to_vec(), "/x".into()) {
+            let _ = info(&img).page(None, 50);
+            // the full set of questions is slow on a big image: every eighth cut gets it
+            if i % 8 == 7 && asked < 8 {
+                asked += 1;
+                ask_everything(&img);
+            }
+        }
+    }
+}
+
+/// A legacy Rust symbol name that is longer than 256 characters once demangled or not.
+fn long_legacy_name(tail: &str) -> String {
+    // _ZN + (len)(ident) pairs + 17h<16 hex>E
+    let seg = "a_long_module_name_for_this_test_";
+    let mut m = String::from("_ZN");
+    for _ in 0..12 {
+        m.push_str(&format!("{}{seg}", seg.len()));
+    }
+    m.push_str(&format!("{}{tail}17h0123456789abcdefE", tail.len()));
+    m
+}
+
+#[test]
+fn a_long_rust_symbol_is_demangled_whole_then_cut() {
+    let raw = long_legacy_name("last_part");
+    assert!(raw.len() > 256);
+    let d = crate::image::demangle(&raw);
+    assert!(!d.starts_with("_ZN"), "still mangled: {d}");
+    assert!(d.starts_with("a_long_module_name_for_this_test_::"), "{d}");
+    assert!(d.chars().count() <= 256);
+    // two names that differ only after the 256th character of the raw text stay two names
+    let one = crate::image::demangle(&long_legacy_name("part_one"));
+    let two = crate::image::demangle(&long_legacy_name("part_two"));
+    assert_eq!(one.chars().count(), 256);
+    assert_eq!(one, two, "both are cut to the same 256 characters of the demangled path");
+    let short = crate::image::demangle("_ZN3foo3bar17h0123456789abcdefE");
+    assert_eq!(short, "foo::bar");
+}
+
+#[test]
+fn an_elf_relocatable_object_is_not_read() {
+    let mut elf = fixtures::elf64(false).bytes;
+    elf[16] = 1; // e_type = ET_REL
+    let e = Image::from_bytes(elf, "/x".into()).err().expect("refused");
+    assert!(matches!(e, Error::NotRead(_)) && e.exit_code() == 2);
+    assert!(e.to_string().starts_with("ELF relocatable object is not read yet"), "{e}");
+}
+
+#[test]
+fn the_resume_command_of_a_cut_json_answer_keeps_json() {
+    let rows: Vec<Row> =
+        (0..40u64).map(|i| Row { key: i, text: format!("l{i}"), json: Some(serde_json::json!(i)) }).collect();
+    let o = Output { op: "x", meta: serde_json::json!({}), rows, tail: 0, command: "nexo bin x /f".into() };
+    let p = o.page_as(None, 10, true);
+    assert!(p.next.as_ref().unwrap().contains(" --json "), "{:?}", p.next);
+    assert!(p.value["next"].as_str().unwrap().contains("--json"));
+    assert!(p.lines.last().unwrap().contains("--json"));
+    assert!(!o.page(None, 10).next.unwrap().contains("--json"));
+}
+
+#[test]
+fn fn_builds_only_the_rows_a_page_shows_and_counts_the_rest() {
+    let Some(img) = this_binary() else { return };
+    let f = img.funcs().iter().filter(|f| f.size() < 200_000).max_by_key(|f| f.size()).expect("functions");
+    let target = format!("{:#x}", f.start);
+    let whole = func(&img, &target, false).unwrap();
+    assert!(whole.rows.len() > 100, "{} rows", whole.rows.len());
+    let small = func_window(&img, &target, false, None, 10).unwrap();
+    assert!(small.rows.len() <= 10, "{} rows built for a page of 10", small.rows.len());
+    assert_eq!(small.rows.len() + small.tail, whole.rows.len());
+    // the pieces made from windows join to the whole answer
+    let mut joined = Vec::new();
+    let mut from = None;
+    for _ in 0..10_000 {
+        let o = func_window(&img, &target, false, from, 25).unwrap();
+        assert!(o.rows.len() <= 25);
+        let p = o.page(from, 25);
+        match p.next {
+            Some(cmd) => {
+                joined.extend(p.lines[..p.lines.len() - 1].iter().cloned());
+                from = Some(parse_addr(cmd.split("--from ").nth(1).unwrap().split(' ').next().unwrap()).unwrap());
+            }
+            None => {
+                joined.extend(p.lines);
+                break;
+            }
+        }
+    }
+    assert_eq!(joined.join("\n"), whole.text_all());
+}
+
+/// A section at the very top of the address space must not overflow an address sum.
+#[test]
+fn a_section_at_the_top_of_the_address_space_does_not_overflow() {
+    let mut elf = fixtures::elf64(false);
+    // section header 1 is .text: sh_addr is 16 bytes into the 64-byte header
+    let shoff = u64::from_le_bytes(elf.bytes[0x28..0x30].try_into().unwrap()) as usize;
+    let at = shoff + 64 + 16;
+    elf.bytes[at..at + 8].copy_from_slice(&0xffff_ffff_ffff_f000u64.to_le_bytes());
+    let img = Image::from_bytes(elf.bytes, "/x".into()).expect("still opens");
+    let _ = img.funcs();
+    ask_everything(&img);
+    let s = img.sections.iter().find(|s| s.name == ".text").unwrap();
+    assert!(s.addr.checked_add(s.size).is_some());
+}
+
+/// A PE section whose VirtualSize is 0 is mapped with the size of its raw data.
+#[test]
+fn a_pe_section_with_virtual_size_zero_is_mapped() {
+    let mut pe = fixtures::pe64(false).bytes;
+    let name = pe.windows(6).position(|w| w == b".rdata").expect(".rdata header");
+    pe[name + 8..name + 12].copy_from_slice(&0u32.to_le_bytes());
+    let img = Image::from_bytes(pe, "/x".into()).unwrap();
+    let s = img.sections.iter().find(|s| s.name == ".rdata").unwrap();
+    assert!(s.size > 0, "size {}", s.size);
+    assert!(img.strings().iter().any(|t| t.text == STRING));
+}
+
+#[test]
+fn bytes_as_str_escapes_once() {
+    let mut elf = fixtures::elf64(false);
+    let a = elf.string;
+    let off = elf.bytes.windows(STRING.len()).position(|w| w == STRING.as_bytes()).unwrap();
+    elf.bytes[off] = 0x0a; // a control byte
+    elf.bytes[off + 1] = b'\\';
+    let img = Image::from_bytes(elf.bytes, "/x".into()).unwrap();
+    let t = text(&bytes(&img, a, 8, ElemType::Str).unwrap());
+    assert!(t.contains(r#""\x0a\\"#), "{t}");
+}
+
+#[test]
+fn find_imm_sees_code_before_the_first_function() {
+    let f = fixtures::elf64(false);
+    let mut d = f.bytes.clone();
+    // A starts with `push 0x2a` now (the 55 48 bytes become 6a 2a)
+    d[0x100] = 0x6a;
+    d[0x101] = 0x2a;
+    // no entry, no exception data, both symbols at B: the first function found is B, so A is
+    // code before the first function
+    d[0x18..0x20].copy_from_slice(&0u64.to_le_bytes());
+    let eh = d.windows(9).position(|w| w == b".eh_frame").unwrap();
+    d[eh + 1] = b'x';
+    for sym in [0x240 + 24, 0x240 + 48] {
+        d[sym + 8..sym + 16].copy_from_slice(&f.b.to_le_bytes());
+    }
+    let img = Image::from_bytes(d, "/x".into()).unwrap();
+    assert_eq!(img.funcs()[0].start, f.b, "{:?}", spans(&img));
+    let t = text(&find_imm(&img, 0x2a).unwrap());
+    assert!(t.contains("0x00400100"), "{t}");
 }

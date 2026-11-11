@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::disasm::{comment, describe, formatter, walk};
 use crate::image::Section;
-use crate::page::{shell_word, Output, Row};
+use crate::page::{shell_word, Output, Row, MIN_LINES};
 use crate::strings::shorten;
 use crate::{parse_addr, Error, Image, Result};
 
@@ -100,7 +100,7 @@ pub fn info(img: &Image) -> Output {
         },
         "hardening": hardening,
     });
-    Output { op: "info", meta, rows: l.0, command: command(img, "info", "") }
+    Output { op: "info", meta, rows: l.0, tail: 0, command: command(img, "info", "") }
 }
 
 fn section_json(s: &Section) -> Value {
@@ -150,12 +150,31 @@ fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::funcs::Func> {
 
 /// The whole function that holds the address (or has the name), one line per instruction.
 pub fn func(img: &Image, target: &str, with_bytes: bool) -> Result<Output> {
+    func_window(img, target, with_bytes, None, usize::MAX)
+}
+
+/// Like [`func`], but only the rows a page of `budget` lines starting at `from` can show are built.
+/// The rest are counted (`Output::tail`), so the "more lines" figure stays exact.
+pub fn func_window(img: &Image, target: &str, with_bytes: bool, from: Option<u64>, budget: usize) -> Result<Output> {
     let f = resolve(img, target)?;
     let bytes = img.read_at(f.start, (f.end - f.start) as usize).unwrap_or(&[]);
     let mut fmt = formatter();
     let mut rows: Vec<Row> = Vec::new();
     let mut line = String::new();
+    // the heading row is the first row of the answer and counts against the budget
+    let heading = from.is_none_or(|k| f.start >= k);
+    let room = budget.max(MIN_LINES).saturating_sub(usize::from(heading));
+    let mut total = 0usize;
+    let mut wanted = 0usize;
     walk(bytes, f.start, |ins, raw| {
+        total += 1;
+        if from.is_some_and(|k| ins.ip() < k) {
+            return;
+        }
+        wanted += 1;
+        if rows.len() >= room {
+            return;
+        }
         line.clear();
         fmt.format(ins, &mut line);
         let note = comment(img, ins);
@@ -174,23 +193,31 @@ pub fn func(img: &Image, target: &str, with_bytes: bool) -> Result<Output> {
             json: Some(json!({"addr": ins.ip(), "bytes": hex(raw), "text": line, "comment": note})),
         });
     });
-    let header = Row {
-        key: f.start,
-        text: format!(
-            "fn {} {:#x}..{:#x} ({} bytes, {} instructions)",
-            f.name,
-            f.start,
-            f.end,
-            f.end - f.start,
-            rows.len()
-        ),
-        json: None,
-    };
-    let meta =
-        json!({"name": f.name, "start": f.start, "end": f.end, "size": f.end - f.start, "instructions": rows.len()});
-    rows.insert(0, header);
+    let tail = wanted - rows.len();
+    if heading {
+        let header = Row {
+            key: f.start,
+            text: format!(
+                "fn {} {:#x}..{:#x} ({} bytes, {} instructions)",
+                f.name,
+                f.start,
+                f.end,
+                f.end - f.start,
+                total
+            ),
+            json: None,
+        };
+        rows.insert(0, header);
+    }
+    let meta = json!({"name": f.name, "start": f.start, "end": f.end, "size": f.end - f.start, "instructions": total});
     let extra = if with_bytes { " --bytes" } else { "" };
-    Ok(Output { op: "fn", meta, rows, command: command(img, "fn", &format!("{}{extra}", shell_word(target.trim()))) })
+    Ok(Output {
+        op: "fn",
+        meta,
+        rows,
+        tail,
+        command: command(img, "fn", &format!("{}{extra}", shell_word(target.trim()))),
+    })
 }
 
 /// How `bytes` reads memory.
@@ -270,14 +297,25 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
         let mut pos = 0usize;
         while pos < data.len() {
             let end = data[pos..].iter().position(|&b| b == 0).map_or(data.len(), |n| pos + n);
+            // escape here, once: `shorten` would escape the backslash of a `\x0a` a second time
             let text: String = data[pos..end]
                 .iter()
-                .map(|&b| if (0x20..0x7f).contains(&b) { (b as char).to_string() } else { format!("\\x{b:02x}") })
+                .map(|&b| match b {
+                    b'"' => "\\\"".to_string(),
+                    b'\\' => "\\\\".to_string(),
+                    0x20..=0x7e => (b as char).to_string(),
+                    _ => format!("\\x{b:02x}"),
+                })
                 .collect();
+            let shown = if text.chars().count() > 200 {
+                format!("{}...", text.chars().take(200).collect::<String>())
+            } else {
+                text.clone()
+            };
             let a = addr + pos as u64;
             rows.push(Row {
                 key: a,
-                text: format!("{a:#010x}  \"{}\"", shorten(&text, 200)),
+                text: format!("{a:#010x}  \"{shown}\""),
                 json: Some(json!({"addr": a, "text": text})),
             });
             pos = end + 1;
@@ -374,6 +412,7 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
         op: "bytes",
         meta,
         rows,
+        tail: 0,
         command: command(img, "bytes", &format!("{addr:#x} {len} --as {}", ty.name())),
     })
 }
@@ -402,6 +441,7 @@ pub fn strings(img: &Image, grep: Option<&str>) -> Result<Output> {
         op: "strings",
         meta: json!({"total": all.len(), "matched": matched, "grep": grep}),
         rows,
+        tail: 0,
         command: command(img, "strings", &rest),
     })
 }
@@ -479,7 +519,7 @@ fn finish_hits(
     } else if rows.is_empty() {
         rows.push(Row { key: 0, text: "no match in the mapped sections".into(), json: None });
     }
-    Output { op, meta, rows, command: command(img, "find", &rest) }
+    Output { op, meta, rows, tail: 0, command: command(img, "find", &rest) }
 }
 
 /// Every place the byte pattern occurs in the mapped sections.
@@ -534,10 +574,21 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
     let mut capped = false;
     let mut fmt = formatter();
     let mut line = String::new();
-    'code: for f in img.funcs() {
-        let Some(code) = img.read_at(f.start, (f.end - f.start) as usize) else { continue };
+    // every function found, plus the part of each code section before its first function
+    // (or all of it when no function was found there)
+    let funcs = img.funcs();
+    let mut ranges: Vec<(u64, u64)> = funcs.iter().map(|f| (f.start, f.end)).collect();
+    for sec in img.code_sections() {
+        let first = funcs.iter().map(|f| f.start).filter(|&a| sec.contains(a)).min();
+        let head_end = first.unwrap_or(sec.addr.saturating_add(sec.backed_len()));
+        if head_end > sec.addr {
+            ranges.push((sec.addr, head_end));
+        }
+    }
+    'code: for (start, end) in ranges {
+        let Some(code) = img.read_at(start, (end - start) as usize) else { continue };
         let mut full = false;
-        walk(code, f.start, |ins, _| {
+        walk(code, start, |ins, _| {
             if full || !imm_matches(ins, value) {
                 return;
             }
