@@ -190,6 +190,7 @@ impl App {
             if let Some(cmd) = commands::parse(trimmed) {
                 if let Command::Unknown(_) = cmd {
                     // warn, but the draft stays to be fixed
+                    self.fx.reject_at = self.fx_on().then(|| self.now());
                     self.run_command(cmd);
                     return;
                 }

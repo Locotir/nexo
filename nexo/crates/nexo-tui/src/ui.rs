@@ -124,6 +124,9 @@ fn draw_all(f: &mut Frame, app: &mut App) {
     draw_title(f, app, title);
     if app.locked {
         app.transcript_area = transcript;
+        // the card comes in once per start
+        let now = app.now();
+        app.note_welcome(now);
         draw_lock(f, app, transcript, 0.0);
     } else {
         draw_transcript(f, app, transcript);
@@ -258,11 +261,19 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     let gauge = {
         let (num, den, guessed) = app.gauge_view();
         let pct = share(num, den);
-        // drawn at the eased share: a new value slides in rather than jumps
-        let shown = if app.gauge_shown > 0.0 { app.gauge_shown } else { num as f64 / den.max(1) as f64 };
-        let colour = theme.level_color(pct);
+        // drawn at the eased share and colour: a new value slides in rather than jumps
+        let now = app.now();
+        let shown = app.fx.gauge.frac_at(now, (num as f64 / den.max(1) as f64).min(1.0));
+        let colour = app.fx.gauge.colour_at(theme, now, theme.level_color(pct));
         let mut cells = if let Some(split) = app.gauge_split().filter(|_| !guessed) {
-            crate::render::gauge::stacked(theme, split, den, GAUGE_CELLS, colour)
+            let [cached, fresh, out] = app.fx.gauge.parts_at(now, [split.cached, split.fresh, split.out]);
+            crate::render::gauge::stacked(
+                theme,
+                crate::render::gauge::Split { cached, fresh, out },
+                den,
+                GAUGE_CELLS,
+                colour,
+            )
         } else {
             gauge_segs(theme, shown, GAUGE_CELLS, colour, pct >= 90 && (app.spinner / 3).is_multiple_of(2))
         };
@@ -291,8 +302,17 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
                 .then(|| Seg { text: mem_waiting(app.spinner), style: base.fg(theme.dim) })
         });
     // a glyph every common font has, not an icon font's
-    let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: base });
-    let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: base.fg(theme.dim) };
+    // a new branch or folder is lit like a new model; at rest the branch keeps the bar's own colour
+    let lit_if = |i: usize, own: Color, st: Style| {
+        let c = lit(i, own);
+        if c == own {
+            st
+        } else {
+            st.fg(c)
+        }
+    };
+    let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: lit_if(3, theme.bar_fg, base) });
+    let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: lit_if(4, theme.dim, base.fg(theme.dim)) };
     // what the curator just let go is in its label: green for a moment, then its own colour
     let policy_seg = policy.map(|p| {
         let now = app.now();
@@ -612,6 +632,7 @@ fn draw_lock(f: &mut Frame, app: &App, area: Rect, away: f64) {
     lines.push((String::new(), Style::default()));
     lines.push(("Enter setup · /help commands · Ctrl+D quit".to_string(), theme.dim()));
     let h = lines.len() as u16;
+    let came = if away == 0.0 { app.welcome_at(app.now()) } else { None };
     let slide = (away * 4.0).round() as u16;
     let top = area.y + area.height.saturating_sub(h) / 2;
     for (i, (text, style)) in lines.iter().enumerate() {
@@ -621,7 +642,16 @@ fn draw_lock(f: &mut Frame, app: &App, area: Rect, away: f64) {
         }
         let w = (crate::render::wrap::width(text) as u16).min(area.width);
         let r = Rect { x: area.x + (area.width - w) / 2, y, width: w, height: 1 };
-        f.render_widget(Paragraph::new(Line::from(Span::styled(truncate(text, w as usize), *style))), r);
+        // each line fades in from the ground, a little after the one above
+        let style = match came {
+            Some(at) => {
+                let k = crate::fx_chrome::welcome_level(i, h as usize, at, app.now());
+                let to = style.fg.unwrap_or(theme.fg);
+                style.fg(crate::motion::fade(theme, theme.bg, to, k))
+            }
+            None => *style,
+        };
+        f.render_widget(Paragraph::new(Line::from(Span::styled(truncate(text, w as usize), style))), r);
     }
 }
 
@@ -630,6 +660,8 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
     }
+    let now = app.now();
+    app.note_gauge(now);
     let theme = &app.theme.clone();
     let lit = |hit: StatusHit| match app.hover {
         Hover::Status(h) if h == hit => Modifier::UNDERLINED,
@@ -1056,7 +1088,13 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(Text::from(out)), Rect { width: text_w as u16, ..area });
     app.transcript_bar = None;
     let now = std::time::Instant::now();
-    let pulse = anim::pulse(app.unseen_at, now);
+    let mut pulse = anim::pulse(app.unseen_at, now);
+    // the thumb is lit while the view scrolls, then fades back
+    if app.fx_on() {
+        let at = app.now();
+        app.note_bar(at);
+        pulse = pulse.max(crate::fx_chrome::fade_out(app.fx.bar_lit, at, crate::fx_chrome::BAR_MS));
+    }
     if app.total_lines > height && area.width > 1 {
         let bar = Bar {
             target: Target::Transcript,
@@ -1240,6 +1278,18 @@ fn draw_separator(f: &mut Frame, app: &mut App, area: Rect) {
         },
     };
     f.render_widget(Paragraph::new(line), area);
+    // a rejected draft flashes the rule once (colour only)
+    let k = if on { crate::motion::hump(app.fx.reject_at, now, crate::fx_chrome::REJECT_MS) } else { 0.0 };
+    if k > 0.0 {
+        let theme = &app.theme;
+        for x in area.x..area.right() {
+            if let Some(c) = f.buffer_mut().cell_mut((x, area.y)) {
+                if c.symbol() == "─" {
+                    c.fg = crate::motion::fade(theme, c.fg, theme.error, k);
+                }
+            }
+        }
+    }
 }
 
 /// The colour and the name a permission mode wears on the rule over the draft; none for the
@@ -1431,6 +1481,11 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let editor = Rect { x: area.x + 2, width: area.width - 2, ..area };
     draw_draft(f, app, editor);
     f.render_widget(Box_::default().style(theme.base()), editor);
+    if !app.input.is_empty() {
+        let (rows, _) = crate::input::wrapped_rows(&app.input, editor.width as usize);
+        let top = app.editor_top.min(rows.len());
+        paint_chips(f, app, editor, &rows[top..]);
+    }
     paint_complete(f, app, editor);
     // on the rule above the box, at the right: the reasoning level and, for a long or
     // multiline draft, its size; never over the text
@@ -3289,6 +3344,35 @@ fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
         let x = editor.x + (ccol as u16).min(editor.width.saturating_sub(1));
         if let Some(c) = f.buffer_mut().cell_mut((x, editor.y + (crow - top) as u16)) {
             c.set_style(Style::default().add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
+/// A chip that was just added to the draft (a folded paste, a pasted attachment) is lit once, then rests.
+fn paint_chips(f: &mut Frame, app: &mut App, editor: Rect, rows: &[String]) {
+    if !app.fx_on() {
+        return;
+    }
+    let now = app.now();
+    app.note_chips(now);
+    let theme = &app.theme;
+    let from = theme.base().fg.unwrap_or(theme.fg);
+    for (label, at) in &app.fx.chip_seen {
+        let k = crate::fx_chrome::fade_out(Some(*at), now, crate::fx_chrome::CHIP_MS);
+        if k <= 0.0 {
+            continue;
+        }
+        let colour = crate::motion::fade(theme, from, theme.accent, k);
+        let w = width(label);
+        for (i, row) in rows.iter().take(editor.height as usize).enumerate() {
+            for (b, _) in row.match_indices(label.as_str()) {
+                let x0 = width(&row[..b]);
+                for x in x0..(x0 + w).min(editor.width as usize) {
+                    if let Some(c) = f.buffer_mut().cell_mut((editor.x + x as u16, editor.y + i as u16)) {
+                        c.set_style(Style::default().fg(colour));
+                    }
+                }
+            }
         }
     }
 }

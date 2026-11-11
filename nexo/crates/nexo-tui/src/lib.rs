@@ -27,6 +27,7 @@ pub mod frame;
 pub mod frame_stats;
 pub mod fuzzy;
 pub mod fx_diff;
+pub mod fx_chrome;
 pub mod goal_view;
 pub mod inline;
 pub mod input;

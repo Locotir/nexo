@@ -3,6 +3,7 @@
 use std::time::Instant;
 
 use crate::app::App;
+use crate::fx_chrome;
 use crate::motion::{self, Counter};
 use crate::toast::Kind;
 
@@ -46,12 +47,25 @@ pub struct Fx {
     pub ghost_at: Option<Instant>,
     /// The model, the reasoning level and the permission mode in the status bar: what each was at the last
     /// tick (hashed) and when it last changed, so a new one shows in the curator label's highlight.
-    pub chg_key: [Option<u64>; 3],
-    pub chg_at: [Option<Instant>; 3],
+    /// Index 3 is the git branch and 4 the folder.
+    pub chg_key: [Option<u64>; 5],
+    pub chg_at: [Option<Instant>; 5],
     /// When the locked home opened: the welcome card slides away.
     pub unlock_at: Option<Instant>,
     /// The diff side panel: its open fade and its changed files (see `fx_diff`).
     pub diff: crate::fx_diff::PanelFx,
+    /// The welcome card has been drawn once this start, and when its lines began to come in.
+    pub welcome_seen: bool,
+    pub welcome_at: Option<Instant>,
+    /// The context gauge easing (fill, parts, colour band).
+    pub gauge: crate::fx_chrome::GaugeFx,
+    /// The transcript offset last drawn and since when the view last scrolled: the thumb is lit.
+    pub bar_off: Option<Option<usize>>,
+    pub bar_lit: Option<Instant>,
+    /// The chips of the draft (folded pastes, pasted attachments) and when each was first drawn.
+    pub chip_seen: Vec<(String, Instant)>,
+    /// When a draft was last rejected (a command that does not exist): the rule flashes.
+    pub reject_at: Option<Instant>,
 }
 
 impl App {
@@ -106,6 +120,11 @@ impl App {
                 || motion::within(fx.unlock_at, now, crate::ui::UNLOCK_MS)
                 || fx.diff.moving(now)
                 || self.diffview.as_ref().is_some_and(|d| d.fx.moving(now))
+                || fx.gauge.moving(now)
+                || self.welcome_at(now).is_some()
+                || motion::within(fx.bar_lit, now, fx_chrome::BAR_MS)
+                || motion::within(fx.reject_at, now, fx_chrome::REJECT_MS)
+                || fx.chip_seen.iter().any(|(_, t)| motion::within(Some(*t), now, fx_chrome::CHIP_MS))
                 || fx.queue_seen.iter().any(|(_, t)| motion::within(Some(*t), now, motion::LIT_MS)));
         t_moving || c_moving || glow || mode || cmd || cut || changed || still || self.toasts.alive(now)
     }
@@ -123,13 +142,22 @@ impl App {
             hash(&format!("{}/{}{}", self.provider, self.model, self.fast)),
             hash(self.effort.as_deref().unwrap_or("")),
             hash(self.permission_mode.as_str()),
+            hash(self.branch.as_deref().unwrap_or("")),
+            hash(&self.cwd.to_string_lossy()),
         ];
+        let no_branch = hash("");
         for (i, k) in keys.into_iter().enumerate() {
-            if self.fx.chg_key[i].is_some_and(|old| old != k) && self.fx_on() {
+            // a branch found after the start is not a change
+            let found = i == 3 && self.fx.chg_key[i] == Some(no_branch);
+            if self.fx.chg_key[i].is_some_and(|old| old != k) && !found && self.fx_on() {
                 self.fx.chg_at[i] = Some(now);
             }
             self.fx.chg_key[i] = Some(k);
         }
+        self.note_gauge(now);
+        self.note_chips(now);
+        self.note_bar(now);
+        self.note_welcome(now);
         self.fx.chg_at.iter().any(|t| motion::within(*t, now, motion::CUT_MS + 100))
     }
 
@@ -195,5 +223,62 @@ impl App {
                 live.bg = bg;
             }
         }
+    }
+}
+
+impl App {
+    /// Tells the gauge's easing what the context is now (the draw and the tick both do, once is enough).
+    pub(crate) fn note_gauge(&mut self, now: Instant) {
+        let (num, den, guessed) = self.gauge_view();
+        let frac = (num as f64 / den.max(1) as f64).min(1.0);
+        let colour = self.theme.level_color((frac * 100.0).round() as u64);
+        let parts = self.gauge_split().filter(|_| !guessed).map(|s| [s.cached, s.fresh, s.out]);
+        let on = self.fx_on();
+        self.fx.gauge.note(&self.theme, parts, frac, colour, now, on);
+    }
+
+    /// A chip new in the draft is lit from now (the tick sees it before the draw does, so the loop wakes for it).
+    pub(crate) fn note_chips(&mut self, now: Instant) {
+        if !self.fx_on() {
+            return;
+        }
+        let labels = self.input.chip_labels();
+        self.fx.chip_seen.retain(|(l, _)| labels.contains(l));
+        for l in labels {
+            if !self.fx.chip_seen.iter().any(|(s, _)| *s == l) {
+                self.fx.chip_seen.push((l, now));
+            }
+        }
+    }
+
+    /// The view was scrolled (by hand: following the end is not a scroll): the thumb is lit from now.
+    pub(crate) fn note_bar(&mut self, now: Instant) {
+        if !self.fx_on() {
+            return;
+        }
+        let key = (!self.follow).then_some(self.scroll);
+        if self.fx.bar_off.is_some_and(|o| o != key) {
+            self.fx.bar_lit = Some(now);
+        }
+        self.fx.bar_off = Some(key);
+    }
+
+    /// The welcome card comes in once per start.
+    pub(crate) fn note_welcome(&mut self, now: Instant) {
+        if self.locked && !self.fx.welcome_seen {
+            self.fx.welcome_seen = true;
+            self.fx.welcome_at = self.fx_on().then_some(now);
+        }
+    }
+
+    /// When the welcome card's lines began to come in, while they still do. A key typed ends it.
+    pub(crate) fn welcome_at(&self, now: Instant) -> Option<Instant> {
+        let at = self.fx.welcome_at?;
+        let live = self.fx_on()
+            && self.locked
+            && self.input.is_empty()
+            && self.modal.is_none()
+            && motion::within(Some(at), now, fx_chrome::WELCOME_MS);
+        live.then_some(at)
     }
 }

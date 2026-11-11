@@ -28,6 +28,8 @@ pub struct Input {
     history_file: Option<std::path::PathBuf>,
     /// Long pastes, shown in the draft as `[Pasted text #n +L lines]` and sent whole.
     pastes: Vec<(String, String)>,
+    /// Pasted attachments (`@path` of a pasted image) that the draft lights once, as it does a folded paste.
+    lit_words: Vec<String>,
     /// The last change to the draft was a paste: no ghost completion until the next key.
     after_paste: bool,
     /// The text width of the box at the last draw (0: not drawn yet); ↑ ↓ Home End follow its rows.
@@ -216,6 +218,7 @@ impl Input {
             placeholder: placeholder.to_string(),
             history_file: None,
             pastes: Vec::new(),
+            lit_words: Vec::new(),
             after_paste: false,
             wrap_width: 0,
             press: None,
@@ -274,6 +277,7 @@ impl Input {
         self.set_text("");
         self.hist = None;
         self.pastes.clear();
+        self.lit_words.clear();
     }
 
     /// Takes the draft out whole (text, cursor, undo, folded pastes) and leaves the box empty.
@@ -364,6 +368,11 @@ impl Input {
         let text = crate::render::wrap::clean(&text).into_owned();
         let lines = text.trim_end_matches('\n').lines().count();
         if lines <= PASTE_LINES && text.chars().count() <= PASTE_CHARS {
+            // a pasted attachment is a chip too
+            let word = text.trim();
+            if word.starts_with('@') && !word.contains(char::is_whitespace) {
+                self.lit_words.push(word.to_string());
+            }
             self.editor.insert_str(text);
             return;
         }
@@ -381,6 +390,11 @@ impl Input {
         };
         self.editor.insert_str(&label);
         self.pastes.push((label, text));
+    }
+
+    /// The texts of the draft that are chips: folded pastes and pasted attachments.
+    pub fn chip_labels(&self) -> Vec<String> {
+        self.pastes.iter().map(|(l, _)| l.clone()).chain(self.lit_words.iter().cloned()).collect()
     }
 
     /// Where each folded paste sits in the draft: `(line, first character, end)`.
