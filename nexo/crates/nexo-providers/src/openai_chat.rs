@@ -221,7 +221,8 @@ impl Feed for ChatParser {
             });
         }
         if let Some(choice) = v["choices"].as_array().and_then(|c| c.first()) {
-            let delta = &choice["delta"];
+            // a server that ignores `stream: true` answers with one body whose `message` is the whole reply
+            let delta = if choice["delta"].is_object() { &choice["delta"] } else { &choice["message"] };
             if let Some(r) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
                 if !r.is_empty() {
                     self.prog.content = true;
@@ -261,7 +262,8 @@ impl Feed for ChatParser {
                 for c in calls {
                     let id = c["id"].as_str().unwrap_or("");
                     let name = c["function"]["name"].as_str().unwrap_or("");
-                    let args = c["function"]["arguments"].as_str().unwrap_or("");
+                    let args = args_text(&c["function"]["arguments"]);
+                    let args = args.as_str();
                     let idx = match c["index"].as_u64() {
                         Some(i) => i as usize,
                         // no index (some servers): a known id continues its call, a new id or
@@ -307,7 +309,7 @@ impl Feed for ChatParser {
                     self.prog.finished = true;
                     out.push(StreamEvent::Finish(match reason {
                         "length" => FinishReason::Length,
-                        "tool_calls" | "function_call" => FinishReason::ToolUse,
+                        "tool_calls" | "function_call" if self.prog.saw_tool => FinishReason::ToolUse,
                         "content_filter" => FinishReason::ContentFilter,
                         _ if self.prog.saw_tool => FinishReason::ToolUse,
                         _ => FinishReason::Stop,
@@ -379,19 +381,32 @@ pub(crate) fn parse_args(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or_else(|_| json!({"_raw": s}))
 }
 
+/// A token count, whether the server sent `12` or `12.0`.
+fn count(v: &Value) -> Option<u64> {
+    v.as_u64().or_else(|| v.as_f64().filter(|f| *f >= 0.0).map(|f| f.round() as u64))
+}
+
+/// Arguments of a call as text: a string as is, a JSON object (some local servers) serialised.
+fn args_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Object(_) | Value::Array(_) => v.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Usage from the protocol's counts, with every vendor's cache field.
 pub fn usage(u: &Value) -> Usage {
-    let prompt = u["prompt_tokens"].as_u64().unwrap_or(0);
-    let cached = u["prompt_tokens_details"]["cached_tokens"]
-        .as_u64()
-        .or_else(|| u["prompt_cache_hit_tokens"].as_u64())
+    let prompt = count(&u["prompt_tokens"]).unwrap_or(0);
+    let cached = count(&u["prompt_tokens_details"]["cached_tokens"])
+        .or_else(|| count(&u["prompt_cache_hit_tokens"]))
         .unwrap_or(0);
     Usage {
         input: prompt.saturating_sub(cached),
-        output: u["completion_tokens"].as_u64().unwrap_or(0),
+        output: count(&u["completion_tokens"]).unwrap_or(0),
         cache_read: cached,
         cache_write: 0,
-        reasoning: u["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0),
+        reasoning: count(&u["completion_tokens_details"]["reasoning_tokens"]).unwrap_or(0),
     }
 }
 

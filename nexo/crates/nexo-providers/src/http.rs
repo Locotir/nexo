@@ -171,6 +171,11 @@ pub fn parse_retry_after(v: &str, now: time::OffsetDateTime) -> Option<Duration>
     Some(if wait.is_positive() { Duration::from_secs(wait.whole_seconds().min(86_400) as u64) } else { Duration::ZERO })
 }
 
+fn looks_like_html(t: &str) -> bool {
+    let h = t.trim_start().get(..200.min(t.trim_start().len())).unwrap_or("").to_ascii_lowercase();
+    h.starts_with("<!doctype html") || h.starts_with("<html") || h.contains("<html") || h.contains("<head>")
+}
+
 /// The message inside `{"error": {"message": ...}}` when the body is that shape.
 pub fn pretty_error(text: &str) -> String {
     if let Ok(v) = serde_json::from_str::<Value>(text) {
@@ -179,6 +184,9 @@ pub fn pretty_error(text: &str) -> String {
             let t = e["type"].as_str().or_else(|| e["code"].as_str()).unwrap_or("");
             return if t.is_empty() { m.to_string() } else { format!("{t}: {m}") };
         }
+    }
+    if looks_like_html(text) {
+        return "the server answered with a web page, not an API reply (check the base URL, and that the server is up and serves the OpenAI-compatible API)".into();
     }
     text.to_string()
 }
