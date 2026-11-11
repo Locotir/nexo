@@ -29,11 +29,20 @@ const STARTS: &[(&str, &str)] = &[
     ("csk-", "cerebras"),
 ];
 
-/// Whether a text, as it is typed, starts like the key of a known service and has `more` characters
-/// after that start. Nothing else is taken for a key: a model name or a search never is.
+/// The start several services share (OpenAI's older keys, DeepSeek and others): it marks a key, but names
+/// no service.
+const SHARED_START: &str = "sk-";
+
+/// Whether a text, as it is typed, starts like a key (a known service's start, or the one several share)
+/// and has `more` characters after that start. Nothing else is taken for a key: a model name or a search
+/// never is.
 pub fn starts_like_key(text: &str, more: usize) -> bool {
     let t = text.trim();
-    STARTS.iter().any(|(p, _)| t.starts_with(p) && t.chars().count() >= p.chars().count() + more)
+    STARTS
+        .iter()
+        .map(|(p, _)| *p)
+        .chain([SHARED_START])
+        .any(|p| t.starts_with(p) && t.chars().count() >= p.chars().count() + more)
 }
 
 /// The preset a key belongs to, from a start that only that service uses. A start that two services
@@ -100,7 +109,7 @@ mod tests {
         assert_eq!(recognise("gsk_madeupmadeupmadeup"), Some("groq"));
         assert_eq!(recognise("AIzaMadeUpMadeUpMadeUp"), Some("gemini"));
         // a bare `sk-` is shared (OpenAI, DeepSeek and others): ask
-        assert_eq!(recognise("sk-0123456789abcdef0123456789abcdef"), None);
+        assert_eq!(recognise("sk-made-up-0123-made-up-4567-abcd"), None);
         assert_eq!(recognise("sk-ant-"), None, "a start with nothing after it names nothing");
         assert_eq!(recognise("hello"), None);
     }
@@ -110,12 +119,12 @@ mod tests {
         assert_eq!(mask("abcdefghijklmnop"), "\u{2022}".repeat(12) + "mnop");
         assert_eq!(mask("abc"), "\u{2022}\u{2022}\u{2022}");
         assert_eq!(mask(""), "");
-        assert!(!mask("sk-secretsecretsecret1234").contains("secret"));
+        assert!(!mask("sk-secret-secret-secret-1234").contains("secret"));
     }
 
     #[test]
     fn a_text_is_taken_for_a_key_only_when_it_looks_like_one() {
-        assert!(looks_like_key("sk-0123456789abcdef0123"));
+        assert!(looks_like_key("sk-0123-4567-89ab-cdef-0123"));
         assert!(!looks_like_key("hello there"));
         assert!(!looks_like_key("localhost:11434"));
         assert!(!looks_like_key("https://api.example.com/v1"));

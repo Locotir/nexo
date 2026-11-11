@@ -1817,14 +1817,14 @@ mod tests {
     #[test]
     fn a_pasted_key_with_a_start_two_services_share_asks_which_one() {
         let mut s = first_run();
-        let out = s.paste("sk-0123456789abcdef0123456789abcdef");
+        let out = s.paste("sk-made-up-0123-made-up-4567-abcd");
         assert_eq!(out, SetupOut::Nothing);
         assert_eq!(s.step, Step::Provider, "the person is asked");
         assert!(row_text(&s, 80).contains("deepseek"));
         typing(&mut s, "set up deep");
         let out = press(&mut s, KeyCode::Enter);
         assert!(
-            matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, key: Some(ref k), .. }) if name == "deepseek" && k == "sk-0123456789abcdef0123456789abcdef"),
+            matches!(out, SetupOut::Send(AgentCommand::Probe { ref name, key: Some(ref k), .. }) if name == "deepseek" && k == "sk-made-up-0123-made-up-4567-abcd"),
             "the pasted key goes with the choice: {out:?}"
         );
     }
@@ -2085,7 +2085,7 @@ mod tests {
 
     // ---- the key leaves no residue, and the screens claim only what happened ----
 
-    const HELD: &str = "sk-0123456789abcdef0123456789abcdef";
+    const HELD: &str = "sk-made-up-0123-made-up-4567-abcd";
 
     /// A paste of unknown kind, the person on the list of providers.
     fn holding() -> Setup {
@@ -2300,6 +2300,18 @@ mod tests {
         typing(&mut s, "cdefghijklmnop");
         press(&mut s, KeyCode::Enter);
         assert_eq!(s.pending_key.as_deref(), Some("gsk_abcdefghijklmnop"), "a known start and long enough: a key");
+        // the start several services share (`sk-`): a terminal that hands a paste over as typed keys must
+        // not draw such a key in clear, and Enter keeps it like a pasted one
+        let mut s = first_run();
+        s.paste("a");
+        s.step = Step::Provider;
+        s.fill_providers();
+        typing(&mut s, "sk-m");
+        assert!(looks_like_secret(&s.list.query), "masked from the first character after sk-");
+        assert!(!looks_like_secret("sk-") && !looks_like_secret("sky-model"), "a start alone, or another word");
+        typing(&mut s, "0-made-up-0123-made-up-4567-abcd");
+        press(&mut s, KeyCode::Enter);
+        assert_eq!(s.pending_key.as_deref(), Some("sk-m0-made-up-0123-made-up-4567-abcd"));
     }
 
     #[test]
