@@ -3,7 +3,10 @@
 use super::*;
 
 /// What the permission dialog shows for a call.
-pub(super) fn detail_of(kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay {
+pub(super) fn detail_of(name: &str, kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay {
+    if let Some(items) = mcp_items(name, args) {
+        return ToolDisplay::List { items };
+    }
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     match kind {
         ToolKind::Exec => ToolDisplay::Shell {
@@ -51,6 +54,36 @@ pub(super) fn detail_of(kind: ToolKind, args: &Value, cwd: &Path) -> ToolDisplay
         },
         _ => ToolDisplay::Plain,
     }
+}
+
+/// Longest value of one argument the dialog shows; the rest is counted.
+const MCP_ARG_MAX: usize = 4000;
+
+/// An MCP tool call for the dialog: the server and tool, then every argument as `name: value`
+/// (nested values as indented JSON). One value over `MCP_ARG_MAX` characters ends with how many are hidden.
+fn mcp_items(name: &str, args: &Value) -> Option<Vec<String>> {
+    let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+    let show = |v: &Value| {
+        let t = match v {
+            Value::String(s) => s.clone(),
+            Value::Object(_) | Value::Array(_) => serde_json::to_string_pretty(v).unwrap_or_default(),
+            other => other.to_string(),
+        };
+        let n = t.chars().count();
+        if n > MCP_ARG_MAX {
+            let head: String = t.chars().take(MCP_ARG_MAX).collect();
+            format!("{head}... ({} more characters not shown)", n - MCP_ARG_MAX)
+        } else {
+            t
+        }
+    };
+    let mut items = vec![format!("server: {server}"), format!("tool: {tool}")];
+    match args {
+        Value::Object(m) => items.extend(m.iter().map(|(k, v)| format!("{k}: {}", show(v)))),
+        Value::Null => {}
+        other => items.push(format!("arguments: {}", show(other))),
+    }
+    Some(items)
 }
 
 /// Replacements the permission dialog spells out; the rest are counted.
@@ -195,7 +228,7 @@ pub(super) async fn permit_why(
                 tool: name.to_string(),
                 kind,
                 summary,
-                detail: detail_of(kind, args, cwd),
+                detail: detail_of(name, kind, args, cwd),
                 // a flagged call asks every time: no rule is offered for it
                 suggested_rules: if words.is_empty() {
                     permission::suggested_rules(name, kind, args, cwd)
@@ -262,28 +295,68 @@ mod detail_tests {
         }
     }
 
+    fn mcp(args: Value) -> Vec<String> {
+        items_of(detail_of("mcp__files__put", ToolKind::Other, &args, Path::new("/")))
+    }
+
+    #[test]
+    fn an_mcp_call_shows_server_tool_and_each_argument() {
+        let items = mcp(json!({"path": "a.txt", "n": 3, "on": true}));
+        assert_eq!(items, ["server: files", "tool: put", "path: a.txt", "n: 3", "on: true"]);
+        assert_eq!(mcp(Value::Null), ["server: files", "tool: put"]);
+    }
+
+    #[test]
+    fn an_mcp_value_of_500_characters_is_whole() {
+        let long = "x".repeat(500);
+        let items = mcp(json!({ "body": long }));
+        assert_eq!(items[2], format!("body: {long}"));
+    }
+
+    #[test]
+    fn an_mcp_nested_object_is_indented_json() {
+        let items = mcp(json!({"opts": {"a": [1, 2], "b": "c"}}));
+        assert!(items[2].starts_with("opts: {\n  \"a\": ["), "{}", items[2]);
+        assert!(items[2].contains("\"b\": \"c\""));
+    }
+
+    #[test]
+    fn an_mcp_value_over_the_limit_says_how_much_is_hidden() {
+        let items = mcp(json!({ "body": "z".repeat(MCP_ARG_MAX + 123) }));
+        assert!(items[2].ends_with("... (123 more characters not shown)"), "{}", &items[2][items[2].len() - 50..]);
+        assert_eq!(items[2].chars().filter(|c| *c == 'z').count(), MCP_ARG_MAX);
+        let exact = mcp(json!({ "body": "z".repeat(MCP_ARG_MAX) }));
+        assert!(!exact[2].contains("not shown"));
+    }
+
+    #[test]
+    fn a_tool_that_is_not_mcp_keeps_its_detail() {
+        let d = detail_of("mcp_fake", ToolKind::Other, &json!({"a": 1}), Path::new("/"));
+        assert_eq!(d, ToolDisplay::Plain);
+    }
+
     #[test]
     fn an_edit_preview_starts_at_the_line_of_the_text_it_replaces() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("a.rs"), "one\ntwo\r\nthree\nfour\n").unwrap();
         let call = |old: &str| json!({"path": "a.rs", "old_string": old, "new_string": "x"});
-        assert_eq!(start_of(&detail_of(ToolKind::Write, &call("three\nfour"), d.path())), 3);
-        assert_eq!(start_of(&detail_of(ToolKind::Write, &call("two\r\nthree"), d.path())), 2);
+        assert_eq!(start_of(&detail_of("write", ToolKind::Write, &call("three\nfour"), d.path())), 3);
+        assert_eq!(start_of(&detail_of("write", ToolKind::Write, &call("two\r\nthree"), d.path())), 2);
         // a text the file does not hold, or a file that is not there: from the top
-        assert_eq!(start_of(&detail_of(ToolKind::Write, &call("zzz"), d.path())), 1);
+        assert_eq!(start_of(&detail_of("write", ToolKind::Write, &call("zzz"), d.path())), 1);
         let gone = json!({"path": "nope.rs", "old_string": "a", "new_string": "b"});
-        assert_eq!(start_of(&detail_of(ToolKind::Write, &gone, d.path())), 1);
+        assert_eq!(start_of(&detail_of("write", ToolKind::Write, &gone, d.path())), 1);
         // what is not a plain file, or is past the size the edit tool takes, is not read
         let dir = json!({"path": ".", "old_string": "a", "new_string": "b"});
-        assert_eq!(start_of(&detail_of(ToolKind::Write, &dir, d.path())), 1);
+        assert_eq!(start_of(&detail_of("write", ToolKind::Write, &dir, d.path())), 1);
         let mut big = std::fs::File::create(d.path().join("big.log")).unwrap();
         std::io::Write::write_all(&mut big, b"a\nb\nTARGET\n").unwrap();
         big.set_len(LINE_LOOKUP_MAX + 1).unwrap(); // sparse
         let target = json!({"path": "big.log", "old_string": "TARGET", "new_string": "b"});
-        assert_eq!(start_of(&detail_of(ToolKind::Write, &target, d.path())), 1);
+        assert_eq!(start_of(&detail_of("write", ToolKind::Write, &target, d.path())), 1);
         // a whole file written over another is shown whole
         let whole = json!({"path": "a.rs", "content": "new"});
-        assert_eq!(start_of(&detail_of(ToolKind::Write, &whole, d.path())), 1);
+        assert_eq!(start_of(&detail_of("write", ToolKind::Write, &whole, d.path())), 1);
     }
     fn items_of(d: ToolDisplay) -> Vec<String> {
         match d {
@@ -304,7 +377,7 @@ mod detail_tests {
                 {"old_string": "five", "new_string": "5"},
             ]},
         ]});
-        let items = items_of(detail_of(ToolKind::Write, &files, d.path()));
+        let items = items_of(detail_of("write", ToolKind::Write, &files, d.path()));
         assert_eq!(
             items,
             [
@@ -323,7 +396,7 @@ mod detail_tests {
         );
         // a call with nothing readable still lists its paths
         let bad = json!({"files": [{"path": "a.rs"}, {"path": "b.rs"}]});
-        assert_eq!(items_of(detail_of(ToolKind::Write, &bad, d.path())), ["a.rs", "b.rs"]);
+        assert_eq!(items_of(detail_of("write", ToolKind::Write, &bad, d.path())), ["a.rs", "b.rs"]);
     }
 
     #[test]
@@ -334,7 +407,7 @@ mod detail_tests {
             {"old_string": "x", "new_string": "y"},
             {"old_string": "z", "new_string": "w"},
         ]});
-        let items = items_of(detail_of(ToolKind::Write, &call, d.path()));
+        let items = items_of(detail_of("write", ToolKind::Write, &call, d.path()));
         assert_eq!(items, ["a.rs (2 changes)", "- x", "+ y", "- z", "+ w"]);
     }
 }
