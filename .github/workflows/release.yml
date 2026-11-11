@@ -46,20 +46,26 @@ jobs:
           targets: ${{ matrix.target }}
       - name: musl compiler
         if: contains(matrix.target, 'musl')
-        # the runner's name lookups fail now and then: try again for a few minutes before giving up
+        # the runner's name lookups fail now and then: try Ubuntu's musl-gcc for a few minutes, then
+        # build with zig, which comes from PyPI and needs nothing from Ubuntu's servers
         run: |
-          for n in 1 2 3 4 5 6; do
-            sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools && exit 0
+          for n in 1 2 3 4; do
+            if sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools; then
+              t=$(echo "${{ matrix.target }}" | tr - _)
+              echo "CC_$t=musl-gcc" >> "$GITHUB_ENV"
+              exit 0
+            fi
             echo "attempt $n failed, waiting"
             sleep $((n * 20))
           done
-          exit 1
+          echo "Ubuntu's servers do not answer: building with zig"
+          python3 -m venv "$HOME/zig" && "$HOME/zig/bin/pip" install --quiet ziglang cargo-zigbuild
+          echo "$HOME/zig/bin" >> "$GITHUB_PATH"
+          echo "BUILD=zigbuild" >> "$GITHUB_ENV"
       - name: build
         env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
           RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
-        run: cargo build --release --locked -p nexo-cli --target ${{ matrix.target }}
+        run: cargo ${BUILD:-build} --release --locked -p nexo-cli --target ${{ matrix.target }}
       - name: collect
         run: |
           src="target/${{ matrix.target }}/release/nexo"
