@@ -8,7 +8,7 @@
 
 **No compaction. No summaries. The whole history stays on disk.**
 
-<a href="#proof"><img src="docs/img/hero.svg" width="880" alt="Measured on the same model, 2026-11-10. Against Claude Code, 5 tasks, 3 runs each: 40% fewer tokens (3.65M against 6.04M), cheaper in 15 of 15 runs (2.48 dollars against 3.97), solved 15 of 15 against 14 of 15. Against Codex CLI, one 10-turn session, one run: 41% fewer input tokens (3.86M against 6.53M), 0 compactions, 27 calls against 42; Codex CLI compacted twice and did not solve it"></a>
+<a href="#proof"><img src="docs/img/hero.svg" width="880" alt="Measured on the same model, 2026-11-10. Against Claude Code, 5 tasks, 3 runs each: 40% fewer tokens (3.65M against 6.04M), every task completed (100% of runs against 93%), lower cost in every run (2.48 dollars against 3.97 in total). Against Codex CLI, one 10-turn session, one run: 41% fewer input tokens (3.86M against 6.53M), 0 compactions, 27 calls against 42; Codex CLI compacted twice and did not solve it"></a>
 
 [**Install**](#install) · [**Proof**](#proof) · [**How it works**](#how-it-works) · [**Providers**](#providers) · [**Full guide**](nexo/README.md)
 
@@ -71,42 +71,63 @@ nexo doctor                      # checks files, provider, model and key with on
 nexo --provider ollama --model qwen3:8b       # no key: a local model
 ```
 
-The status bar shows context use and cost, and you can click it: model, effort, mode, `/context`, `/usage`.
-After the curator trims the window it shows `curator -12k tok`. Each session reopens on its own provider and model.
+The status bar shows context use and cost, and you can click it. The screen stays quiet by default;
+`[ui] detail = "full"` brings back every figure and key hint. Each session reopens on its own provider and model.
 Pick a policy in `~/.nexo/config.toml`: `[context] policy = "curator"` (`auto | plain | compact | curator`).
 
 ## Proof
 
-Each result keeps its date and its limit. The curator is held to not forgetting a fact the next call needs; cost comes second.
+Same model, same tasks. Each chart has its date, and what it does not show is one click under it.
 
-**Against other harnesses** (2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task, 16 Terminal-Bench tasks). On the tasks all five harnesses solved, nexo has the lowest combined index of steps, tokens and dollars: 1.05 and 1.04, where 1.00 would mean best on all three. It is not the lowest in every column: in round A dsh costs less in dollars.
+### vs Claude Code
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/race-dark.svg">
-  <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.05, Codex 1.15, dsh 1.30, Claude Code 1.88, Hermes 2.88. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
-</picture>
-
-Names and logos belong to their owners and are used only to identify the tools.
-
-Limits: every harness solved 11 to 14 of 16 tasks, a tie within noise, and in round B the curator never acted. Tasks where any agent downloaded the benchmark's own solutions are left out for all. Correction 2026-11-10: the Hermes run of circuit-fibsqrt in round A ended with an error and recorded no usage, so it was counted as zero; its usage is now read from the agent's own log. Details: [`docs/results.md`](docs/results.md#harness-race-2026-11-09). Measure your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).
-
-**Against Claude Code on the same model** (2026-11-10, `claude-sonnet-5-5`, nexo `bf57ed4`, 5 tasks, 3 runs each, plan published before the run).
+**40% fewer tokens. Every task completed. Lower cost in every run.**
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-claude-code-dark.svg">
   <img alt="Index of calls, tokens and cost, 1.00 is best: nexo 1.00, Claude Code 1.47. Calls 126 against 164, tokens 3.65M against 6.04M, cost 2.48 dollars against 3.97 dollars" src="docs/img/bench-claude-code.svg" width="760">
 </picture>
 
-nexo was cheaper in 15 of 15 pairs and solved 15 of 15 runs against 14 of 15. Limits: the sessions were short, so this does not measure eviction against compaction; the blind vote on page quality was not held. [Plan](docs/bench/PLAN.md), [results](docs/bench/RESULTS.md).
+<details>
+<summary>Setup and limits</summary>
 
-**Against Codex CLI on the same model** (2026-11-10, `gpt-5.6-luna`, one long session of 10 turns).
+2026-11-10, `claude-sonnet-5-5`, nexo `bf57ed4`, 5 tasks, 3 runs each, plan published before the run. nexo completed all of its runs; Claude Code missed one. The sessions were short, so this does not measure eviction against compaction, and the blind vote on page quality was not held. [Plan](docs/bench/PLAN.md), [results](docs/bench/RESULTS.md).
+
+</details>
+
+### vs Codex CLI
+
+**One long session, one run each: nexo solved it with 41% fewer input tokens and no compaction. Codex CLI did not solve it.**
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-codex-dark.svg">
   <img alt="Long session, nexo against Codex CLI: nexo solved it, Codex CLI did not. Calls 27 against 42, input tokens 3.86M against 6.53M, list price 0.204 dollars against 0.272 dollars" src="docs/img/bench-codex.svg" width="760">
 </picture>
 
-Codex CLI compacted twice, lost five values the user had given early on, and did not solve the task. nexo did not compact and solved it in 27 model calls against 42. Limits: one run per tool, a demonstration and not a statistic; on short tasks the two tie. [Results](docs/bench/CODEX.md).
+<details>
+<summary>Setup and limits</summary>
+
+2026-11-10, `gpt-5.6-luna`, one session of 10 turns. Codex CLI compacted twice and lost five values the user had given early on. nexo took 27 model calls against 42. One run per tool is a demonstration, not a statistic, and on short tasks the two tie. [Results](docs/bench/CODEX.md).
+
+</details>
+
+### vs four other harnesses
+
+**On the tasks all five solved, nexo needed the least steps, tokens and dollars combined.**
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/race-dark.svg">
+  <img alt="Five harnesses on the tasks all of them solved, leaving out tasks where an agent downloaded the benchmark's own solutions, index of steps, tokens and cost, 1.00 is best. Round A, 5 tasks: nexo 1.05, Codex 1.15, dsh 1.30, Claude Code 1.88, Hermes 2.88. Round B, 131k window, 6 tasks: nexo 1.04, Codex 1.12, Claude Code 1.72, Hermes 1.75, dsh 1.97" src="docs/img/race.svg" width="760">
+</picture>
+
+<details>
+<summary>Setup and limits</summary>
+
+2026-11-09, `deepseek-flash`, nexo `b99d96c`, one attempt per task, 16 Terminal-Bench tasks. The combined index is 1.05 and 1.04, where 1.00 would mean best on all three. nexo is not the lowest in every column: in round A dsh costs less in dollars. Every harness solved 11 to 14 of 16 tasks, a tie within noise, and in round B the curator never acted. Tasks where any agent downloaded the benchmark's own solutions are left out for all. Correction 2026-11-10: the Hermes run of circuit-fibsqrt in round A ended with an error and recorded no usage, so it was counted as zero; its usage is now read from the agent's own log. [Details](docs/results.md#harness-race-2026-11-09).
+
+</details>
+
+<sub>Names and logos belong to their owners and are used only to identify the tools. Measure your own tasks with [`nexo bench`](docs/usage.md#the-benchmark-nexo-bench).</sub>
 
 ## How it works
 

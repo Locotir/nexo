@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" role="img" aria-label="Measured on the same model. Against Claude Code: 40% fewer tokens, 15 of 15 runs cheaper. Against Codex CLI in one long session: 41% fewer input tokens, 0 compactions.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" role="img" aria-label="Measured on the same model. Against Claude Code: 40% fewer tokens, every task completed. Against Codex CLI in one long session: 41% fewer input tokens, 0 compactions.">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0a0e14"/><stop offset="1" stop-color="#11141d"/>
@@ -65,21 +65,13 @@
   <text x="50" y="292" class="dim">3.65M against 6.04M</text>
 
   <g class="up d2">
-    <text x="246" y="186" class="big" font-size="64" fill="url(#g2)">15/15</text>
-    <text x="248" y="216" class="lab">runs cheaper</text>
+    <text x="246" y="186" class="big" font-size="64" fill="url(#g2)">100%</text>
+    <text x="248" y="216" class="lab">tasks completed</text>
   </g>
-  <g fill="url(#g2)">
-    <circle class="dot" cx="253" cy="250" r="4.5" style="animation-delay:.60s"/><circle class="dot" cx="264" cy="250" r="4.5" style="animation-delay:.68s"/>
-    <circle class="dot" cx="275" cy="250" r="4.5" style="animation-delay:.76s"/><circle class="dot" cx="286" cy="250" r="4.5" style="animation-delay:.84s"/>
-    <circle class="dot" cx="297" cy="250" r="4.5" style="animation-delay:.92s"/><circle class="dot" cx="308" cy="250" r="4.5" style="animation-delay:1.00s"/>
-    <circle class="dot" cx="319" cy="250" r="4.5" style="animation-delay:1.08s"/><circle class="dot" cx="330" cy="250" r="4.5" style="animation-delay:1.16s"/>
-    <circle class="dot" cx="341" cy="250" r="4.5" style="animation-delay:1.24s"/><circle class="dot" cx="352" cy="250" r="4.5" style="animation-delay:1.32s"/>
-    <circle class="dot" cx="363" cy="250" r="4.5" style="animation-delay:1.40s"/><circle class="dot" cx="374" cy="250" r="4.5" style="animation-delay:1.48s"/>
-    <circle class="dot" cx="385" cy="250" r="4.5" style="animation-delay:1.56s"/><circle class="dot" cx="396" cy="250" r="4.5" style="animation-delay:1.64s"/>
-    <circle class="dot" cx="407" cy="250" r="4.5" style="animation-delay:1.72s"/>
-  </g>
-  <text x="248" y="292" class="dim">$2.48 against $3.97</text>
-  <text x="50" y="326" class="dim">Solved 15 of 15 runs, against 14 of 15.</text>
+  <rect x="250" y="238" width="140" height="8" rx="4" fill="#3a424d"/>
+  <rect class="bar b2" x="250" y="254" width="150" height="8" rx="4" fill="url(#g2)"/>
+  <text x="248" y="292" class="dim">100% against 93%</text>
+  <text x="50" y="326" class="dim">Lower cost in every run: $2.48 against $3.97 in total.</text>
 
   <!-- against Codex CLI -->
   <rect x="448" y="62" width="404" height="284" rx="14" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.09"/>

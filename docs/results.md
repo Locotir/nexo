@@ -221,7 +221,7 @@ log-summary-date-ranges, db-wal-recovery, build-pmars, adaptive-rejection-sample
 ## Against Claude Code on the same model (2026-11-10)
 
 `claude-sonnet-5-5` on both sides, nexo `bf57ed4`, 5 tasks, 3 runs each. Index of calls, tokens and dollars, 1.00 is best:
-nexo 1.00, Claude Code 1.47; nexo cheaper in 15 of 15 pairs. Short sessions: the curator's eviction is not measured there.
+nexo 1.00, Claude Code 1.47; nexo completed every task and cost less in every run. Short sessions: the curator's eviction is not measured there.
 Plan, tables, checks and limits: [`bench/RESULTS.md`](bench/RESULTS.md).
 
 ## Against Codex CLI on the same model (2026-11-10)
