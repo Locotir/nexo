@@ -46,7 +46,14 @@ jobs:
           targets: ${{ matrix.target }}
       - name: musl compiler
         if: contains(matrix.target, 'musl')
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+        # the runner's name lookups fail now and then: try again for a few minutes before giving up
+        run: |
+          for n in 1 2 3 4 5 6; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools && exit 0
+            echo "attempt $n failed, waiting"
+            sleep $((n * 20))
+          done
+          exit 1
       - name: build
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
