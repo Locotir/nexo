@@ -17,6 +17,9 @@ use super::Engine;
 
 /// Standing facts in one tail.
 const FACTS: usize = 12;
+/// The line above the standing facts of a tail. They ride on the person's own message: bare, a model reads them
+/// as something the person just said and answers them before the task.
+pub(crate) const FACTS_HEAD: &str = "Facts from earlier in this session that bear on this step (apply them; the person is not saying them now, so do not answer them):";
 
 /// Lines of the history one tail brings back, at most for each key of the request and in all, and the tokens they
 /// may take (the standing facts count apart).
@@ -157,7 +160,8 @@ impl Engine {
 
     /// Puts the standing facts due, and the lines of the history the person's request names, on the last message
     /// of ``view`` (when it is the person's, or carries tool results) as one text block, and counts its tokens
-    /// for `tokens`. The standing facts go first, as `Standing:` lines, and do not count against the lines.
+    /// for `tokens`. The standing facts go first, under `FACTS_HEAD`, as `Standing:` lines, and do not count
+    /// against the lines.
     pub(super) fn add_tail(&mut self, view: &mut [Value]) {
         self.tail_tokens = 0;
         if self.p.rules == 0 {
@@ -182,6 +186,7 @@ impl Engine {
                 self.standing.due(FACTS, &|src, line| src.is_some_and(|s| whole.contains(&s)) || rules.contains(line));
             if !due.is_empty() {
                 self.bump("standing", due.len() as i64);
+                lines.push(FACTS_HEAD.to_string());
             }
             lines.extend(due.iter().map(|l| format!("Standing: {l}")));
         }

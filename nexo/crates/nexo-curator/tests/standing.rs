@@ -113,6 +113,30 @@ fn the_five_forms_come_back_for_a_task_that_supposes_the_default() {
     }
 }
 
+/// The facts ride on the person's own message. Bare, a model reads them as something the person just said and
+/// answers them ("yes, it is at ...") before the task; the line above them says what they are.
+#[test]
+fn the_facts_in_the_tail_come_under_a_line_that_says_the_person_is_not_saying_them_now() {
+    let mut cur = curator();
+    let opening = [user("Fix the overflow in the parser."), said("On it."), user(RC), said("Understood.")];
+    let msgs = work(&mut cur, &opening, 250, "");
+    let (text, standing) = ask(&mut cur, msgs, "Add an alias to my shell.");
+    assert_eq!(standing.len(), 1, "{standing:?}");
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines.iter().position(|l| *l == standing[0]).unwrap();
+    let head = lines[at - 1];
+    assert!(head.starts_with("Facts from earlier in this session"), "{head}");
+    assert!(head.contains("not saying them now") && head.contains("do not answer them"), "{head}");
+    assert!(head.ends_with(':'), "{head}");
+    // once per tail, however many facts
+    assert_eq!(text.matches("Facts from earlier in this session").count(), 1, "{text}");
+    // and none when no fact is due
+    let mut cur = curator();
+    let msgs = work(&mut cur, &opening, 250, "");
+    let (text, standing) = ask(&mut cur, msgs, "What is 2 + 2?");
+    assert!(standing.is_empty() && !text.contains("Facts from earlier in this session"), "{standing:?}");
+}
+
 #[test]
 fn a_path_is_the_same_target_however_it_is_written() {
     let opening = [user("Fix the overflow in the parser."), said("On it."), user(RC), said("Understood.")];

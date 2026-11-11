@@ -557,6 +557,8 @@ impl Rules {
     pub fn add(&mut self, msg: usize, text: String, restated: bool) {
         let k = key(&text);
         if let Some(i) = self.list.iter().position(|r| r.key == k) {
+            // said by the person as well, it is the person's: never shown as the agent's own note
+            self.list[i].restated &= restated;
             let last = i + 1 == self.list.len();
             let was = self.list[i].msg;
             if last || was == Some(msg) || (was.is_none() && self.replay) {
@@ -747,6 +749,27 @@ mod tests {
         rs.add(9, "Nunca uses unwrap".into(), false);
         assert_eq!(rs.list.len(), 2);
         assert_eq!((rs.list[0].turn, rs.list[0].msg), (1, Some(0)));
+    }
+
+    #[test]
+    fn a_rule_the_person_gives_after_the_agent_noted_it_is_the_persons() {
+        // in place (it is the last one) and moved to the end (another rule came in between)
+        for between in [false, true] {
+            let mut rs = Rules { turn: 1, ..Default::default() };
+            rs.add(1, "Use four spaces.".into(), true);
+            assert!(rs.text(|_| true).contains(&format!("turn 1, {OWN_NOTE}: Use four spaces.")));
+            if between {
+                rs.add(2, "Never delete the logs.".into(), false);
+            }
+            rs.turn = 3;
+            rs.add(5, "use four spaces".into(), false);
+            let t = rs.text(|_| true);
+            assert!(!t.contains(OWN_NOTE), "{t}");
+            assert!(t.contains(&format!("turn {}: Use four spaces.", if between { 3 } else { 1 })), "{t}");
+            // and the agent noting it again does not take it back
+            rs.add(7, "Use four spaces.".into(), true);
+            assert!(!rs.text(|_| true).contains(OWN_NOTE));
+        }
     }
 
     #[test]
