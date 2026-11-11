@@ -2178,4 +2178,148 @@ mod tests {
         assert!(msg.contains("paused nexo") && msg.contains("`fg`") && msg.contains(&format!("kill {pid}")), "{msg}");
         assert!(msg.contains("20260101-000000-abcd"), "{msg}");
     }
+
+    /// A session with several turns, tool calls and results, usage, a model, a prefix: returns its path.
+    fn busy_session(dir: &Path) -> PathBuf {
+        let mut s = Session::create_in(dir, Path::new("/p"), "mock", "m1").unwrap();
+        for n in 0..3 {
+            s.append(&Message::user(format!("turn {n}: please look at the file héllo ✓"))).unwrap();
+            let id = format!("c{n}");
+            s.append(&Message::new(
+                Role::Assistant,
+                vec![Part::text("reading"), Part::tool_call(&id, "read", serde_json::json!({"path": "a"}))],
+            ))
+            .unwrap();
+            s.record_output(&id, &ToolOutput::ok("text of a")).unwrap();
+            s.append(&Message::tool_results(vec![Part::tool_result(&id, "text of a", false)])).unwrap();
+            s.append(&Message::assistant(format!("done {n}"))).unwrap();
+            s.record_usage(Usage { input: 7, output: 3, ..Default::default() }, 0.002).unwrap();
+            if n == 0 {
+                s.record_prefix(&Prefix { tools: vec!["read".into()], ..Default::default() }).unwrap();
+            }
+        }
+        s.record_model("mock", "m2").unwrap();
+        let p = s.path().to_path_buf();
+        drop(s);
+        p
+    }
+
+    #[test]
+    fn a_file_cut_at_any_byte_loads_every_whole_record_before_the_cut() {
+        let d = tempfile::tempdir().unwrap();
+        let full = std::fs::read(busy_session(d.path())).unwrap();
+        // end offset (without the newline) of each line, and whether it is a message
+        let (mut ends, mut at) = (Vec::new(), 0usize);
+        for l in full.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+            let start = full[at..].windows(l.len()).position(|w| w == l).unwrap() + at;
+            at = start + l.len();
+            let is_msg = String::from_utf8_lossy(l).starts_with("{\"type\":\"message\"");
+            ends.push((at, is_msg));
+        }
+        let meta_end = ends[0].0;
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("cut.jsonl");
+        for len in 0..=full.len() {
+            std::fs::write(&p, &full[..len]).unwrap();
+            let r = std::panic::catch_unwind(|| Session::open_path(&p));
+            let r = r.unwrap_or_else(|_| panic!("panic at {len} bytes"));
+            if len < meta_end {
+                // not even the first line is whole: there is nothing to load, and it says so
+                assert!(r.is_err(), "{len}");
+                continue;
+            }
+            let s = r.unwrap_or_else(|e| panic!("unusable at {len} bytes: {e}"));
+            let want = ends.iter().filter(|(e, m)| *m && *e <= len).count();
+            assert_eq!(s.messages().len(), want, "at {len} bytes");
+        }
+        let s = Session::open_path(&{
+            std::fs::write(&p, &full).unwrap();
+            p.clone()
+        })
+        .unwrap();
+        assert_eq!(s.messages().len(), 12);
+        assert_eq!(s.usage().input, 21);
+        assert!(s.prefix().is_some());
+        assert_eq!(s.meta().model, "m2");
+    }
+
+    #[test]
+    fn a_session_cut_between_a_call_and_its_result_is_sent_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+        s.append(&Message::user("go")).unwrap();
+        s.append(&Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", serde_json::json!({}))])).unwrap();
+        let p = s.path().to_path_buf();
+        drop(s);
+        let mut s = Session::open_path(&p).unwrap();
+        assert!(!nexo_core::message::is_well_formed(s.messages()), "the file itself ends on a bare call");
+        // what the next request carries: the person writes again after the cut
+        s.append(&Message::user("again")).unwrap();
+        let (sent, mends) = nexo_core::message::well_formed(s.messages().to_vec());
+        assert!(nexo_core::message::is_well_formed(&sent), "{sent:?}");
+        assert_eq!(mends.len(), 1, "{mends:?}");
+        // and with nothing written after it
+        let (sent, _) = nexo_core::message::well_formed(s.messages()[..2].to_vec());
+        assert!(nexo_core::message::is_well_formed(&sent));
+    }
+
+    #[test]
+    fn garbage_lines_are_skipped_and_the_rest_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let p = busy_session(d.path());
+        let good = std::fs::read(&p).unwrap();
+        let mut lines: Vec<&[u8]> = good.split(|b| *b == b'\n').filter(|l| !l.is_empty()).collect();
+        let nul = vec![0u8; 64];
+        let unknown = br#"{"type":"from_the_future","x":[1,2,3]}"#.to_vec();
+        let bad_utf8 = b"{\"type\":\"title\",\"title\":\"\xff\xfe\xc3\"}".to_vec();
+        lines.insert(3, &nul);
+        lines.insert(5, &unknown);
+        lines.insert(7, &bad_utf8);
+        let mut bytes = lines.join(&b'\n');
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&nul); // a NUL tail with no newline, as after a power cut
+        std::fs::write(&p, &bytes).unwrap();
+        let s = Session::open_path(&p).unwrap();
+        assert_eq!(s.messages().len(), 12);
+        assert_eq!(s.usage().input, 21);
+        // the list reads it too
+        let l = list_in(d.path());
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].messages, 12);
+    }
+
+    #[test]
+    fn a_write_after_a_cut_line_starts_on_a_line_of_its_own() {
+        let d = tempfile::tempdir().unwrap();
+        let p = busy_session(d.path());
+        let mut b = std::fs::read(&p).unwrap();
+        b.truncate(b.len() - 20); // the last line (the model record) is cut
+        std::fs::write(&p, &b).unwrap();
+        let mut s = Session::open_path(&p).unwrap();
+        s.append(&Message::user("after the cut")).unwrap();
+        s.record_usage(Usage { input: 1, ..Default::default() }, 0.0).unwrap();
+        drop(s);
+        let text = String::from_utf8(std::fs::read(&p).unwrap()).unwrap();
+        let bad = text.lines().filter(|l| serde_json::from_str::<Line>(l).is_err()).count();
+        assert_eq!(bad, 1, "only the cut line is lost, nothing is glued to it");
+        let s = Session::open_path(&p).unwrap();
+        assert_eq!(s.messages().len(), 13);
+        assert_eq!(s.messages()[12].text(), "after the cut");
+        assert_eq!(s.usage().input, 22);
+    }
+
+    #[test]
+    fn one_empty_or_damaged_file_does_not_hide_the_good_sessions() {
+        let d = tempfile::tempdir().unwrap();
+        busy_session(d.path());
+        std::fs::write(d.path().join("empty.jsonl"), b"").unwrap();
+        std::fs::write(d.path().join("nul.jsonl"), vec![0u8; 100]).unwrap();
+        std::fs::write(d.path().join("cutmeta.jsonl"), b"{\"type\":\"meta\",\"id\":\"x").unwrap();
+        std::fs::write(d.path().join("utf8.jsonl"), b"\xff\xfe\xfd\n").unwrap();
+        std::fs::write(d.path().join("noop.jsonl"), b"{\"type\":\"reset\"}\n").unwrap();
+        std::fs::create_dir(d.path().join("dir.jsonl")).unwrap();
+        let l = list_in(d.path());
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].messages, 12);
+    }
 }
