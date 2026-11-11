@@ -245,6 +245,12 @@ impl Input {
         self.editor.lines().iter().all(|l| l.trim().is_empty())
     }
 
+    /// Nothing typed at all: one empty line. A draft of only blanks or new lines is "empty" for
+    /// sending, but it is on screen (the caret has moved), so the box must not show its placeholder.
+    pub fn is_untouched(&self) -> bool {
+        self.editor.lines().len() == 1 && self.editor.lines()[0].is_empty()
+    }
+
     pub fn line_count(&self) -> usize {
         self.editor.lines().len()
     }

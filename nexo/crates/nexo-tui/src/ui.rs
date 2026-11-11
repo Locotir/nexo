@@ -1716,7 +1716,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(tag, r);
     }
     // an empty box says what it takes, or shows the suggested next message (Tab or → takes it whole)
-    if app.input.is_empty() && app.palette.is_none() && editor.width > 4 {
+    if app.input.is_untouched() && app.palette.is_none() && editor.width > 4 {
         let shared;
         let pend;
         let text = if let Some((_, ended)) = app.sub_label() {
@@ -3585,7 +3585,7 @@ fn paint_complete(f: &mut Frame, app: &App, editor: Rect) {
 fn draw_draft(f: &mut Frame, app: &mut App, editor: Rect) {
     app.editor_area = editor;
     app.input.wrap_width = editor.width as usize;
-    if app.input.is_empty() {
+    if app.input.is_untouched() {
         // the placeholder (or a suggested message) takes the box; the caret sits on its first cell
         let cell = f.buffer_mut().cell_mut((editor.x, editor.y));
         if let Some(c) = cell {

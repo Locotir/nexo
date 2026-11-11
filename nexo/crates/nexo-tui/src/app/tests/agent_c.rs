@@ -1545,3 +1545,17 @@ fn opening_a_block_while_scrolled_up_is_not_news() {
     frame(&mut a, 60, 20);
     assert!(a.unseen() > 0, "a real arrival still counts");
 }
+
+#[test]
+fn a_new_line_in_an_empty_box_takes_the_placeholder_away() {
+    let (mut a, _rx) = bare();
+    a.opts.animations = false;
+    assert!(screen(&mut a, 80, 24).iter().any(|r| r.contains("ask anything")), "an untouched box says what it takes");
+    crate::event::key(&mut a, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    assert_eq!(a.input.line_count(), 2);
+    let rows = screen(&mut a, 80, 24);
+    assert!(
+        !rows.iter().any(|r| r.contains("ask anything")),
+        "the caret is on line 2, not on the placeholder: {rows:?}"
+    );
+}
