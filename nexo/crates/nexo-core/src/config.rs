@@ -449,6 +449,25 @@ pub struct McpServerConfig {
     pub trust_read_only: bool,
 }
 
+/// How much the interface says by itself (`[ui] detail`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Detail {
+    /// The least that works: no key hints, no doubled figures; the rest sits behind a key or a click.
+    #[default]
+    Quiet,
+    /// Every hint and figure on screen.
+    Full,
+}
+
+impl<'de> Deserialize<'de> for Detail {
+    /// An unknown word reads as the default.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Detail, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(if s.trim().eq_ignore_ascii_case("full") { Detail::Full } else { Detail::Quiet })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -469,6 +488,9 @@ pub struct UiConfig {
     /// Smooth scrolling, fades and the other motion of the interface (off: every
     /// change shows at once).
     pub animations: bool,
+    /// `quiet` (default): the screen drops the key hints, the doubled figures and the sentences nobody needs to act on;
+    /// detail sits behind a key or a click. `full`: all of it on screen, as before.
+    pub detail: Detail,
     /// The open to-do list as rows above the draft (the old strip). Off: a done/total count in the status bar instead
     /// (a click opens `/todo`).
     pub todo_strip: bool,
@@ -508,6 +530,7 @@ impl Default for UiConfig {
             vim: false,
             notify_after: 15,
             animations: true,
+            detail: Detail::Quiet,
             todo_strip: false,
             keys: BTreeMap::new(),
             status_line: Vec::new(),
@@ -1396,6 +1419,19 @@ mod ui_tests {
         let c: Config = toml::from_str("[ui]\nretired_key = true\ntheme = \"nord\"\n").unwrap();
         assert_eq!(c.ui.theme, "nord");
         assert_eq!(c.ui.notify_after, 15);
+    }
+
+    #[test]
+    fn the_screen_is_quiet_unless_detail_is_full() {
+        let c: Config = toml::from_str("[ui]\ntheme = \"nord\"\n").unwrap();
+        assert_eq!(c.ui.detail, Detail::Quiet);
+        let c: Config = toml::from_str("[ui]\ndetail = \"full\"\n").unwrap();
+        assert_eq!(c.ui.detail, Detail::Full);
+        let c: Config = toml::from_str("[ui]\ndetail = \"Quiet\"\n").unwrap();
+        assert_eq!(c.ui.detail, Detail::Quiet);
+        // an unknown word reads as the default
+        let c: Config = toml::from_str("[ui]\ndetail = \"loud\"\n").unwrap();
+        assert_eq!(c.ui.detail, Detail::Quiet);
     }
 
     #[test]

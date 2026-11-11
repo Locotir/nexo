@@ -72,7 +72,7 @@ pub struct DialogSize {
 pub fn modal_key(m: &Modal) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     match m {
-        Modal::Permission(p) => (0u8, &p.req.id).hash(&mut h),
+        Modal::Permission(p) => (0u8, &p.req.id, p.rules_open).hash(&mut h),
         Modal::Question(a) => (1u8, &a.q.id, a.q.plan.is_some()).hash(&mut h),
         Modal::Picker(p) => (2u8, &p.title, format!("{:?}", p.kind)).hash(&mut h),
         Modal::Help { .. } => 3u8.hash(&mut h),

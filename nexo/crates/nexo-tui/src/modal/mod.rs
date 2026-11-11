@@ -120,6 +120,11 @@ pub struct Permission {
     pub buttons: Vec<(Rect, char)>,
     /// How many of the suggested rules the last draw showed (the digit keys only take those).
     pub rules_shown: usize,
+    /// Quiet: the list of rules for "allow always" waits behind the first `a`. Set by the draw (the keys do not know
+    /// the detail setting); until then, and in full, `a` allows always at once.
+    pub rules_gated: bool,
+    /// The first `a` was pressed and the list shows.
+    pub rules_open: bool,
 }
 
 /// A question from the model (`ask_user`), or a plan waiting for approval (`exit_plan`):
@@ -468,7 +473,14 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
 
 impl Modal {
     pub fn permission(req: PermissionRequest) -> Modal {
-        Modal::Permission(Permission { req, scroll: 0, buttons: Vec::new(), rules_shown: usize::MAX })
+        Modal::Permission(Permission {
+            req,
+            scroll: 0,
+            buttons: Vec::new(),
+            rules_shown: usize::MAX,
+            rules_gated: false,
+            rules_open: false,
+        })
     }
 
     pub fn id(&self) -> Option<&str> {
@@ -493,6 +505,11 @@ impl Modal {
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => answer(PermissionDecision::Allow),
                     KeyCode::Char('a') => {
+                        // quiet: the first `a` shows the rules, the next `a` (or a digit) picks one
+                        if p.rules_gated && !p.rules_open && !rules.is_empty() {
+                            p.rules_open = true;
+                            return ModalOut::Nothing;
+                        }
                         let rule = rules.first().cloned().unwrap_or_else(|| p.req.tool.clone());
                         answer(PermissionDecision::AllowAlways { rule, persist: false })
                     }

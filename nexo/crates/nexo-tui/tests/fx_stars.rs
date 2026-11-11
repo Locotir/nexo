@@ -83,13 +83,24 @@ fn small_rooms_look_as_before() {
     }
 }
 
-#[test]
-fn the_figure_shows_from_29_rows_up_and_not_at_28() {
+/// The shortest window, 120 columns wide, in which the figure is drawn.
+fn first_height_with_the_figure(detail: nexo_core::config::Detail) -> u16 {
     let t0 = Instant::now();
-    let mut a = locked(true, "dark");
-    assert!(braille_rows(&draw_at(&mut a, t0, 3000, 120, 28)).is_empty(), "28 rows: no figure");
-    let mut a = locked(true, "dark");
-    assert!(!braille_rows(&draw_at(&mut a, t0, 3000, 120, 29)).is_empty(), "29 rows: the figure");
+    (16..=40)
+        .find(|&h| {
+            let mut a = locked(true, "dark");
+            a.opts.detail = detail;
+            !braille_rows(&draw_at(&mut a, t0, 3000, 120, h)).is_empty()
+        })
+        .expect("the figure shows at some height up to 40 rows")
+}
+
+#[test]
+fn the_figure_needs_29_rows_on_the_full_screen_and_fewer_on_the_quiet_one() {
+    use nexo_core::config::Detail;
+    assert_eq!(first_height_with_the_figure(Detail::Full), 29, "full: as before the quiet screen");
+    // the quiet screen has one fixed row less and a shorter welcome box, so the figure fits sooner
+    assert_eq!(first_height_with_the_figure(Detail::Quiet), 28, "quiet (the default)");
 }
 
 #[test]

@@ -25,6 +25,7 @@ fn app() -> App {
         model: "deepseek-chat".into(),
         theme: "dark".into(),
         animations: false,
+        detail: nexo_core::config::Detail::Full,
         ..TuiOptions::default()
     };
     let mut a = App::new(opts, tx);

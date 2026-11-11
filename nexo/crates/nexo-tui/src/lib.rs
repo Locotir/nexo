@@ -99,6 +99,8 @@ pub struct TuiOptions {
     pub keys: std::collections::BTreeMap<String, String>,
     /// Smooth scrolling, fades, pulses and the other motion (`[ui] animations`).
     pub animations: bool,
+    /// How much the screen says by itself: `quiet` drops the key hints and the doubled figures (`[ui] detail`).
+    pub detail: nexo_core::config::Detail,
     /// The to-do list as rows above the draft; off: a count in the status bar (`[ui] todo_strip`).
     pub todo_strip: bool,
     /// Pieces of the status bar and their order (`[ui] status_line`); empty: all, default order.
@@ -134,6 +136,7 @@ impl Default for TuiOptions {
             suggest: true,
             keys: Default::default(),
             animations: true,
+            detail: nexo_core::config::Detail::Quiet,
             todo_strip: false,
             status_line: Vec::new(),
             status_command: String::new(),

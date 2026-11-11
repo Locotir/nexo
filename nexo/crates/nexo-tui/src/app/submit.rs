@@ -271,6 +271,11 @@ impl App {
         self.opts.todo_strip && self.todo_strip_on()
     }
 
+    /// `[ui] detail = "quiet"` (the default): the screen leaves out the key hints and the doubled figures.
+    pub fn quiet(&self) -> bool {
+        self.opts.detail == nexo_core::config::Detail::Quiet
+    }
+
     /// The list as a count in the status bar (the default): one place only, never beside the rows.
     pub fn todo_chip_on(&self) -> bool {
         !self.opts.todo_strip && self.todo_strip_on()

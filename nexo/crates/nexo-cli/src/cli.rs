@@ -417,6 +417,7 @@ async fn trust_asked(args: &Args, cwd: &std::path::Path, config: &nexo_core::Con
         theme: args.theme.clone().unwrap_or_else(|| config.ui.theme.clone()),
         mouse: config.ui.mouse && !args.no_mouse,
         animations: config.ui.animations,
+        detail: config.ui.detail,
         ..Default::default()
     };
     match nexo_tui::ask_trust(ask, opts).await {
@@ -726,6 +727,7 @@ async fn interactive(
         suggest: config.ui.suggest,
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,
+        detail: config.ui.detail,
         todo_strip: config.ui.todo_strip,
         status_line: config.ui.status_line.clone(),
         status_command: config.ui.status_command.clone(),

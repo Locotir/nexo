@@ -144,6 +144,7 @@ impl App {
             interpreted: self.interpreted,
             timestamps: self.timestamps,
             fx: self.fx_on(),
+            detail: self.opts.detail,
         }
     }
 

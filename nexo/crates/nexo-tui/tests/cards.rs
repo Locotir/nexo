@@ -37,6 +37,7 @@ fn app_with(group_tools: bool) -> App {
         status_command: String::new(),
         notify_after: 15,
         animations: false,
+        detail: nexo_core::config::Detail::Full,
         todo_strip: false,
         vim: false,
         prompt: None,
@@ -157,7 +158,10 @@ fn the_blocks_hint_shows_only_when_there_is_a_block_to_step_into() {
     for (w, h) in [(120u16, 40u16), (200, 40)] {
         // an empty transcript: Shift+↑ would only say "nothing to select yet"
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut empty = App::new(TuiOptions { animations: false, ..TuiOptions::default() }, tx);
+        let mut empty = App::new(
+            TuiOptions { animations: false, detail: nexo_core::config::Detail::Full, ..TuiOptions::default() },
+            tx,
+        );
         empty.root = false;
         empty.unlock();
         let line = hints(&mut empty, w, h);

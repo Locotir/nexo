@@ -85,6 +85,7 @@ mod tests {
             suggest: false,
             notify_after: 15,
             animations: false,
+            detail: nexo_core::config::Detail::Full,
             todo_strip: false,
             vim: false,
             prompt: None,

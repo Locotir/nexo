@@ -25,6 +25,7 @@ fn app(strip: bool, animations: bool) -> App {
         timestamps: false,
         suggest: false,
         animations,
+        detail: nexo_core::config::Detail::Full,
         todo_strip: strip,
         session_id: Some("20261027-120000-ab12".into()),
         ..TuiOptions::default()

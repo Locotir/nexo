@@ -209,6 +209,12 @@ async fn main() -> anyhow::Result<()> {
         ],
         // DEMO_STILL=1 (or NEXO_DEMO_STILL=1) runs with the animations off, to compare the settled frame
         animations: std::env::var_os("DEMO_STILL").is_none() && std::env::var_os("NEXO_DEMO_STILL").is_none(),
+        // DEMO_FULL=1 shows the screen with every hint and figure (`[ui] detail = "full"`)
+        detail: if std::env::var_os("DEMO_FULL").is_some() {
+            nexo_core::config::Detail::Full
+        } else {
+            nexo_core::config::Detail::Quiet
+        },
         ..Default::default()
     };
     nexo_tui::run(handle, opts).await

@@ -40,6 +40,7 @@ fn app(animations: bool, theme: &str) -> App {
         status_command: String::new(),
         notify_after: 15,
         animations,
+        detail: nexo_core::config::Detail::Full,
         todo_strip: true,
         vim: false,
         prompt: None,

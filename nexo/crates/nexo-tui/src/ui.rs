@@ -81,7 +81,14 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         .clamp(1, MAX_INPUT_LINES);
     // a short window gives its keys line to the text, unless a window or the commands list is open
     // the keys row keeps its line while a draft is typed (blank then), so the text above never jumps
-    let hints_h = if area.height <= SHORT_H && app.modal.is_none() && app.palette.is_none() { 0 } else { 1 };
+    // quiet: the row exists only while a list, a window or a mode needs its keys said
+    let hints_h = if area.height <= SHORT_H && app.modal.is_none() && app.palette.is_none() {
+        0
+    } else if app.quiet() {
+        u16::from(quiet_hints_on(app))
+    } else {
+        1
+    };
     // the requests waiting behind the turn, a dim row each, right above the draft
     let queue_h = if app.queued_msgs.is_empty() || area.height <= SHORT_H {
         0
@@ -226,7 +233,18 @@ pub struct Seg {
 /// bar does not fit, the directory goes first, then the branch, then the
 /// memory, then the gauge's counts, then the model is shortened.
 pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
+    let mut groups = title_core(app, avail);
+    // quiet: `? help` ends the bar, the first piece to go when it is tight
+    let help = "? help";
+    if app.quiet() && segs_width(app, &groups) + 3 + width(help) <= avail {
+        groups.push(vec![Seg { text: help.to_string(), style: app.theme.bar().fg(app.theme.dim) }]);
+    }
+    groups
+}
+
+fn title_core(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     let theme = &app.theme;
+    let lean = app.quiet() && app.opts.status_line.is_empty();
     let base = theme.bar();
     // a piece that just changed is green for a moment, then its own colour (the curator label's highlight)
     let lit = |i: usize, own: Color| {
@@ -306,7 +324,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
         .map(|c| Seg { text: format!("session {} tok", fmt_k(c.history_tokens)), style: base.fg(theme.warn2) })
         // a loaded conversation the curator is still counting
         .or_else(|| {
-            (app.context.is_none() && app.context_wait)
+            (app.context.is_none() && app.context_wait && !lean)
                 .then(|| Seg { text: mem_waiting(app.spinner), style: base.fg(theme.dim) })
         });
     // a glyph every common font has, not an icon font's
@@ -322,7 +340,7 @@ pub fn title_segments(app: &App, avail: usize) -> Vec<Vec<Seg>> {
     let branch = app.branch.as_ref().map(|b| Seg { text: format!("⎇ {b}"), style: lit_if(3, theme.bar_fg, base) });
     let dir = Seg { text: short_path(&app.cwd.to_string_lossy()), style: lit_if(4, theme.dim, base.fg(theme.dim)) };
     // what the curator just let go is in its label: green for a moment, then its own colour
-    let policy_seg = policy.map(|p| {
+    let policy_seg = policy.filter(|_| !lean).map(|p| {
         let now = app.now();
         match app.fx.cut.filter(|c| crate::motion::within(Some(c.1), now, crate::motion::CUT_MS)) {
             Some((_, at)) => {
@@ -689,6 +707,70 @@ fn draw_lock(f: &mut Frame, app: &App, area: Rect, away: f64) {
     }
 }
 
+/// Columns kept clear between the bar's pieces and the notes at its right.
+const NOTE_GAP: usize = 2;
+
+/// Quiet: what the keys row carried at its right (a message, queued requests, running jobs, shared notes) rides
+/// in the free space of the status bar instead, so the row can go. Returns the pieces that fit `w / 2` of what
+/// the clock and the cost leave, and the columns they take with the gap. The session name stays out.
+fn quiet_notes(app: &mut App, w: usize, right_w: usize) -> (Vec<Piece>, usize) {
+    let room = w.saturating_sub(right_w) / 2;
+    if !app.quiet() {
+        return (Vec::new(), 0);
+    }
+    // a warning or an error clipped to the room (or with no room at all) is not lost: the whole of it goes to
+    // a toast, once
+    if let Some((msg, _)) = app.status.clone() {
+        if width(&msg) > room.saturating_sub(2) && !app.status_toasted && app.status_level != Level::Info {
+            app.status_toasted = true;
+            let kind = match app.status_level {
+                Level::Error => crate::toast::Kind::Error,
+                _ => crate::toast::Kind::Info,
+            };
+            app.toast(kind, &msg);
+        }
+    }
+    if room < 8 {
+        return (Vec::new(), 0);
+    }
+    let mut pieces = hint_pieces(app, room);
+    pieces.retain(|p| !matches!(p.1, Some(HintHit::Session | HintHit::Todo)));
+    let span_w = |ps: &[Piece]| -> usize { join_pieces(app, ps).iter().map(|s| width(&s.content)).sum() };
+    while !pieces.is_empty() && span_w(&pieces) > room {
+        let low = pieces.iter().enumerate().min_by_key(|(_, p)| p.0).map(|(i, _)| i).unwrap_or(0);
+        pieces.remove(low);
+    }
+    let total = if pieces.is_empty() { 0 } else { span_w(&pieces) + NOTE_GAP };
+    (pieces, total)
+}
+
+/// The spans of the notes, after the gap that sets them apart from the bar's pieces.
+fn note_spans(app: &App, notes: &[Piece], notes_w: usize) -> Vec<Span<'static>> {
+    if notes_w == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![Span::styled(" ".repeat(NOTE_GAP), app.theme.bar())];
+    out.extend(join_pieces(app, notes));
+    out
+}
+
+/// Where each clickable note sits when they start at column `x`.
+fn note_hits(notes: &[Piece], x: usize, area: Rect) -> Vec<(Rect, HintHit)> {
+    let mut at = x;
+    let mut hits = Vec::new();
+    for (i, (_, hit, parts)) in notes.iter().enumerate() {
+        if i > 0 {
+            at += width(" ·");
+        }
+        let w: usize = parts.iter().map(|s| width(&s.content)).sum();
+        if let Some(h) = hit {
+            hits.push((Rect::new(area.x + at as u16, area.y, w as u16, 1), *h));
+        }
+        at += w;
+    }
+    hits
+}
+
 fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     app.status_hits.clear();
     if area.height == 0 {
@@ -697,11 +779,14 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     let now = app.now();
     app.note_gauge(now);
     let theme = &app.theme.clone();
-    let lit = |hit: StatusHit| match app.hover {
+    let hover = app.hover;
+    let lit = |hit: StatusHit| match hover {
         Hover::Status(h) if h == hit => Modifier::UNDERLINED,
         _ => Modifier::empty(),
     };
     let base = theme.bar();
+    // quiet, with the bar's pieces not listed by hand: no billed-token total, no curator figures
+    let lean = app.quiet() && app.opts.status_line.is_empty();
     let tok_real = fmt_k(app.session_usage.total_input() + app.session_usage.output);
     let tok = if app.opts.animations { crate::motion::fixed(&fmt_k(app.tok_shown), &tok_real) } else { tok_real };
     let glow = if app.opts.animations {
@@ -724,11 +809,13 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
         clock = true;
     }
     // `[ui] status_command`: the person's script draws the bar; the turn's clock stays at the end
-    if let Some(line) = app.status_cmd.as_ref().and_then(|s| s.line.as_deref()) {
+    if let Some(line) = app.status_cmd.as_ref().and_then(|s| s.line.clone()) {
         right.push(Seg { text: " ".to_string(), style: base });
         let w = area.width as usize;
         let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
-        let mut pieces = crate::status_cmd::spans(line, base);
+        // quiet: the message, queued requests and jobs ride at the right of the script's line
+        let (notes, notes_w) = quiet_notes(app, w, right_w);
+        let mut pieces = crate::status_cmd::spans(&line, base);
         // the script's colours are checked against nothing: only a 24-bit theme keeps them; on 256
         // or 16 colours and in mono the bar's own colours stand in. Italics never reach the screen.
         let own_colours = theme.mono || theme.degraded;
@@ -738,11 +825,13 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             }
             *s = s.remove_modifier(Modifier::ITALIC);
         });
-        let pieces = crate::status_cmd::fit(pieces, w.saturating_sub(right_w + 1));
+        let pieces = crate::status_cmd::fit(pieces, w.saturating_sub(right_w + notes_w + 1));
         let used = 1 + pieces.iter().map(|(t, _)| width(t)).sum::<usize>();
         let mut spans = vec![Span::styled(" ", base)];
         spans.extend(pieces.into_iter().map(|(t, s)| Span::styled(t, s)));
-        spans.push(Span::styled(" ".repeat(w.saturating_sub(used + right_w)), base));
+        spans.push(Span::styled(" ".repeat(w.saturating_sub(used + notes_w + right_w)), base));
+        app.hint_hits.extend(note_hits(&notes, used + w.saturating_sub(used + notes_w + right_w) + NOTE_GAP, area));
+        spans.extend(note_spans(app, &notes, notes_w));
         spans.extend(right.into_iter().map(|s| Span::styled(s.text, s.style)));
         f.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
@@ -765,7 +854,7 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             right.push(Seg { text: format!(" {}", it.text), style: base.fg(colour) });
         }
     }
-    if pieces.contains(&"tokens") && (area.width >= 80 || app.cost <= 0.0 || !pieces.contains(&"cost")) {
+    if pieces.contains(&"tokens") && !lean && (area.width >= 80 || app.cost <= 0.0 || !pieces.contains(&"cost")) {
         // a separator only between two pieces, never one left alone
         if !right.is_empty() {
             right.push(Seg { text: " ·".to_string(), style: base.fg(theme.border) });
@@ -811,7 +900,8 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
     right.push(Seg { text: " ".to_string(), style: base });
     let w = area.width as usize;
     let right_w: usize = right.iter().map(|s| width(&s.text)).sum();
-    let avail = w.saturating_sub(right_w);
+    let (notes, notes_w) = quiet_notes(app, w, right_w);
+    let avail = w.saturating_sub(right_w + notes_w);
     let groups = title_segments(app, avail);
     let mut spans = vec![Span::styled(" nexo", base.add_modifier(Modifier::BOLD))];
     if app.root {
@@ -900,12 +990,14 @@ fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
             hits.push((Rect::new(area.x + st as u16, area.y, rw as u16, 1), rh));
         }
     }
-    let pad = w.saturating_sub(used + right_w);
+    let pad = w.saturating_sub(used + notes_w + right_w);
     spans.push(Span::styled(" ".repeat(pad), base));
+    app.hint_hits.extend(note_hits(&notes, used + pad + NOTE_GAP, area));
+    spans.extend(note_spans(app, &notes, notes_w));
     // the billed tokens and the cost open the usage (the trailing pad is not part of it)
     // (nor is the turn's clock in front of it)
     let lead = if clock { right.iter().take(2).map(|s| width(&s.text)).sum() } else { 0 };
-    let start = used + pad + lead;
+    let start = used + pad + notes_w + lead;
     let cost_w = right_w.saturating_sub(lead + 1);
     if cost_w > 0 && start < w {
         hits.push((Rect::new(area.x + start as u16, area.y, cost_w.min(w - start) as u16, 1), StatusHit::Cost));
@@ -1559,7 +1651,11 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         let text = if let Some(s) = app.suggestion_shown() {
             s
         } else if app.busy {
-            "type a message: it joins the turn at its next step"
+            if app.quiet() {
+                "add a message"
+            } else {
+                "type a message: it joins the turn at its next step"
+            }
         } else if let Some((id, title, _)) = app.shared.last() {
             let name = if title.is_empty() { id } else { title };
             shared = format!("⊕ what «{name}» knows goes with your next message · /memory share off drops it");
@@ -1680,7 +1776,11 @@ fn hint_pieces(app: &App, status_room: usize) -> Vec<Piece> {
             4,
             Some(HintHit::Queued),
             vec![Span::styled(
-                format!(" ◷ {} queued · Enter send now", app.queued),
+                if app.quiet() {
+                    format!(" ◷ {} queued", app.queued)
+                } else {
+                    format!(" ◷ {} queued · Enter send now", app.queued)
+                },
                 base.fg(theme.warn).add_modifier(lit(HintHit::Queued)),
             )],
         ));
@@ -1731,6 +1831,19 @@ fn join_pieces(app: &App, pieces: &[Piece]) -> Vec<Span<'static>> {
         out.push(Span::styled(" ".to_string(), base));
     }
     out
+}
+
+/// Quiet: whether a list, a window or a mode has keys worth a row. The idle and busy lines never do (`? help` is in
+/// the status bar), and a dialog that shows its own keys (the permission buttons, a window with its key line) needs none.
+fn quiet_hints_on(app: &App) -> bool {
+    app.input.vim.is_some()
+        || app.palette.is_some()
+        || app.search.as_ref().is_some_and(|s| s.focused)
+        || (app.selected.is_some() && app.input.is_empty())
+        || matches!(
+            app.modal,
+            Some(Modal::Question(_) | Modal::Trust(_) | Modal::Picker(_) | Modal::Setup(_) | Modal::Help { .. })
+        )
 }
 
 /// The keys row is for a moment of doubt: while a draft is being typed it stays blank (its line kept,
@@ -1808,6 +1921,8 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
         let key = app.keymap.label(crate::keymap::Action::Diff).to_uppercase();
         let dk = if app.selected_is_edit() { format!(" {key} diff · ") } else { " ".to_string() };
         format!("{dk}↑↓ move · → open · ← fold · Enter toggle · Esc or typing back to the draft")
+    } else if app.quiet() {
+        String::new()
     } else if app.busy {
         // the blocks key is said only once there is a block to step into
         let blocks = if app.has_navigable() { " · Shift+↑ blocks" } else { "" };
@@ -1816,23 +1931,29 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
         let blocks = if app.has_navigable() { " · Shift+↑ blocks" } else { "" };
         format!(" Enter send · Ctrl+J newline · / commands · @ files · ! shell{blocks} · ? help")
     };
-    let suffix = if app.mouse_on { "" } else { " · mouse off · /settings mouse to enable" };
+    let quiet = app.quiet();
+    let suffix = if app.mouse_on || quiet { "" } else { " · mouse off · /settings mouse to enable" };
     let mut prefix = match (app.input.vim, app.modal.is_some()) {
         (Some(crate::input::VimMode::Normal), false) => " NORMAL · i insert ·".to_string(),
         (Some(crate::input::VimMode::Insert), false) => " INSERT · Esc normal ·".to_string(),
         _ => String::new(),
     };
     // scrolled up: say first how to get back down
-    if !app.follow && app.modal.is_none() && app.palette.is_none() && app.input.is_empty() {
+    if !quiet && !app.follow && app.modal.is_none() && app.palette.is_none() && app.input.is_empty() {
         prefix = format!(" End bottom ·{prefix}");
+    }
+    // quiet, nothing to list: the vim mode alone, without a dot hanging at its end
+    if quiet && left.is_empty() {
+        prefix = prefix.trim_end_matches('·').trim_end().to_string();
     }
     let full = format!("{prefix}{left}{suffix}");
     let w = area.width as usize;
     // the keys come first, and the right side is whole pieces: the one that matters least goes first
     let keys_min = if app.status.is_some() { width(&full).min(w / 2) } else { width(&full).min(w) };
-    let mut pieces = hint_pieces(app, w.saturating_sub(keys_min));
+    // quiet: the message, queued requests and jobs ride in the status bar
+    let mut pieces = if quiet { Vec::new() } else { hint_pieces(app, w.saturating_sub(keys_min)) };
     // a warning or an error clipped to the room is not lost: the whole of it goes to a toast, once
-    if let Some((msg, _)) = app.status.clone() {
+    if let Some((msg, _)) = app.status.clone().filter(|_| !quiet) {
         let room = w.saturating_sub(keys_min).saturating_sub(2).max(1);
         if width(&msg) > room && !app.status_toasted && app.status_level != Level::Info {
             app.status_toasted = true;
@@ -1914,7 +2035,7 @@ fn draw_hints(f: &mut Frame, app: &mut App, area: Rect) {
     spans.push(Span::styled(" ".repeat(pad), base));
     spans.extend(right);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
-    app.hint_hits = hits;
+    app.hint_hits.extend(hits);
 }
 
 /// Whole hints are dropped until the rest fits, so a key is never cut from its word: first the
@@ -2596,6 +2717,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
     let glide = app.fx.pick_sel;
     let key = app.modal.as_ref().map_or(0, crate::dialog_size::modal_key);
     let gfx = matches!(app.modal, Some(Modal::Goal(_))).then(|| app.fx.goal.clone()).unwrap_or_default();
+    let quiet = app.quiet();
     let card = card_rect(app);
     let Some(modal) = &mut app.modal else { return };
     if area.width < 12 || area.height < 5 {
@@ -2629,7 +2751,12 @@ fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             let room = max_h.saturating_sub(2 + btn_h + 2) as usize;
             let all = Modal::permission_rules(&p.req, &theme, true);
             let n_rules = all.len().saturating_sub(1);
-            pinned = if all.len() < room {
+            // quiet: the rules wait behind the first `a`; the first screen is the question and the three keys
+            // with no room to show a rule there is nothing to open: `a` then answers at once, as in full
+            p.rules_gated = quiet && room > 0;
+            pinned = if quiet && !p.rules_open {
+                Vec::new()
+            } else if all.len() < room {
                 // a blank line sets the rules apart from the command when there is room for it
                 std::iter::once(Line::default()).chain(all).collect()
             } else if all.len() == room {

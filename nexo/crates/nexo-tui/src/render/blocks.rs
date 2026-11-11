@@ -179,6 +179,8 @@ pub struct RenderOpts {
     pub timestamps: bool,
     /// Colour motion is on: the caret breathes and the thinking header is in its active colour.
     pub fx: bool,
+    /// `[ui] detail`: `quiet` leaves the sentence of commands out of the welcome box.
+    pub detail: nexo_core::config::Detail,
 }
 
 impl Block {
@@ -601,7 +603,7 @@ impl Block {
                     Some(b) => format!("{cwd} · {b}"),
                     None => cwd.clone(),
                 };
-                welcome(w, theme, &format!("{provider}/{model}"), &place, permission_mode, o.intro_ms)
+                welcome(w, theme, &format!("{provider}/{model}"), &place, permission_mode, o.intro_ms, o.detail)
             }
             Block::Shell { command, output, exit_code } => {
                 let mut lines = vec![Line::from(vec![
@@ -786,6 +788,7 @@ fn welcome(
     place: &str,
     permissions: &str,
     intro_ms: Option<u64>,
+    detail: nexo_core::config::Detail,
 ) -> Vec<Line<'static>> {
     let inner = w.saturating_sub(4).clamp(20, 72);
     let border = match intro_ms {
@@ -850,9 +853,12 @@ fn welcome(
         }
         lines.push(row(v));
     }
-    lines.push(row(vec![]));
-    let hint = "/model sets up a model · /resume picks a session · ? help";
-    lines.push(row(type_in(vec![Span::styled(truncate(hint, inner), theme.dim())], TYPE_HINT)));
+    // quiet: name, model and folder only; the commands are in /help
+    if detail == nexo_core::config::Detail::Full {
+        lines.push(row(vec![]));
+        let hint = "/model sets up a model · /resume picks a session · ? help";
+        lines.push(row(type_in(vec![Span::styled(truncate(hint, inner), theme.dim())], TYPE_HINT)));
+    }
     lines.push(Line::from(Span::styled(format!("╰{}╯", "─".repeat(inner + 2)), border)));
     lines
 }
@@ -1409,6 +1415,7 @@ mod tests {
             interpreted: false,
             timestamps: true,
             fx: false,
+            detail: nexo_core::config::Detail::Full,
         }
     }
 
@@ -1601,7 +1608,17 @@ mod tests {
     fn the_banner_intro_never_jumps_and_ends_on_the_still_banner() {
         for theme in [Theme::nexo(), Theme::mono()] {
             for w in [30, 44, 80, 120] {
-                let at = |ms| welcome(w, &theme, "deepseek/deepseek-flash", "~/work · main", "auto", ms);
+                let at = |ms| {
+                    welcome(
+                        w,
+                        &theme,
+                        "deepseek/deepseek-flash",
+                        "~/work · main",
+                        "auto",
+                        ms,
+                        nexo_core::config::Detail::Full,
+                    )
+                };
                 let still = at(None);
                 let widths: Vec<usize> = still.iter().map(Line::width).collect();
                 let mut ms = 0;
@@ -1615,7 +1632,15 @@ mod tests {
         }
         // halfway the title is being typed with its caret, and the place is not there yet
         let theme = Theme::nexo();
-        let mid = texts(&welcome(80, &theme, "m/m", "~/work", "auto", Some(TYPE_TITLE.0 + 2 * TYPE_TITLE.1)));
+        let mid = texts(&welcome(
+            80,
+            &theme,
+            "m/m",
+            "~/work",
+            "auto",
+            Some(TYPE_TITLE.0 + 2 * TYPE_TITLE.1),
+            nexo_core::config::Detail::Full,
+        ));
         assert!(mid[1].contains("nex▍") && !mid[3].contains("~/work"), "{mid:?}");
     }
 

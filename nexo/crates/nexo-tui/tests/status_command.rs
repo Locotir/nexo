@@ -28,6 +28,7 @@ fn app(command: &str) -> App {
         model: "deepseek-chat".into(),
         models: vec![("deepseek".into(), "deepseek-chat".into())],
         animations: false,
+        detail: nexo_core::config::Detail::Full,
         todo_strip: false,
         status_command: command.to_string(),
         ..Default::default()
