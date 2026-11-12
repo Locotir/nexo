@@ -1,15 +1,12 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 //! The debugger against a real program (examples/dbg_target.rs), in this process.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use nexo_dbg::{open, split_words, Kind, Session, State};
 
-fn target() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent().unwrap().parent().unwrap().join("examples").join("dbg_target")
-}
+mod common;
+use common::target;
 
 fn start(mode: &str) -> (Session, String) {
     let (s, first) = open(&Kind::Run { exe: target(), args: vec![mode.to_string()] }).expect("start");

@@ -3,17 +3,14 @@
 //! the client against gdbserver and the stub against gdb when those are installed.
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use nexo_dbg::{open, serve_gdb, split_words, Kind, Session, State};
 
-fn target() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent().unwrap().parent().unwrap().join("examples").join("dbg_target")
-}
+mod common;
+use common::target;
 
 fn have(tool: &str) -> bool {
     Command::new(tool).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())

@@ -7,10 +7,8 @@ use std::path::PathBuf;
 
 use nexo_dbg::{open, split_words, Kind, Session, State};
 
-fn target() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent().unwrap().parent().unwrap().join("examples").join("dbg_target")
-}
+mod common;
+use common::target;
 
 fn run(s: &mut Session, cmd: &str) -> String {
     s.exec(&split_words(cmd)).unwrap_or_else(|e| panic!("{cmd}: {e}")).text_all()

@@ -3,7 +3,6 @@
 //! program crashes, reads a value, keeps what it learned, and the whole round is five tool calls.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -56,22 +55,10 @@ fn say(s: &str) -> Vec<StreamEvent> {
     ]
 }
 
-/// The program under test: build it where the test binary's own target folder is, when it is not there yet.
-fn target() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let debug = exe.parent().unwrap().parent().unwrap().to_path_buf();
-    let t = debug.join("examples").join("dbg_target");
-    if !t.is_file() {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let st = std::process::Command::new(cargo)
-            .args(["build", "-q", "-p", "nexo-dbg", "--example", "dbg_target", "--target-dir"])
-            .arg(debug.parent().unwrap())
-            .status()
-            .expect("cargo runs");
-        assert!(st.success() && t.is_file(), "dbg_target did not build");
-    }
-    t
-}
+/// The program under test, found next to the test binary's target folder or built.
+#[path = "../../nexo-dbg/tests/common/mod.rs"]
+mod common;
+use common::target;
 
 static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

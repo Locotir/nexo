@@ -2,14 +2,10 @@
 //! The debugger against a real Windows program (examples/dbg_target.rs), through the Win32 Debug API.
 //! The program is built by cargo as an example; a test skips with a message when it is not there.
 
-use std::path::PathBuf;
-
 use nexo_dbg::{open, split_words, Kind, Session, State};
 
-fn target() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent().unwrap().parent().unwrap().join("examples").join("dbg_target.exe")
-}
+mod common;
+use common::target;
 
 /// Start the example in `mode`, or say why the test is skipped.
 fn start(mode: &str) -> Option<(Session, String)> {
