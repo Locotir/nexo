@@ -1697,6 +1697,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "wasmparser",
 ]
 
 [[package]]
@@ -3522,6 +3523,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.228.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4abf1132c1fdf747d56bbc1bb52152400c70f336870f968b85e89ea422198ae3"
+dependencies = [
+ "bitflags",
+ "indexmap",
 ]
 
 [[package]]

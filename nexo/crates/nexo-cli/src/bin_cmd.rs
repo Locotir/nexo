@@ -408,6 +408,9 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     if let BinOp::Sigs { libs, all, out, .. } = &a.op {
         return make_sigs(libs, *all, out.as_deref(), data_dir);
     }
+    if nexo_bin::is_wasm(a.op.file()) {
+        return wasm_in(a);
+    }
     let mut img = Image::open(a.op.file())?;
     let warning = nexo_bin::attach_names(&mut img, data_dir);
     let c = a.op.common();
@@ -521,6 +524,40 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     }
 }
 
+/// The ops that read a WebAssembly module (found by its signature, not its name).
+fn wasm_in(a: &BinArgs) -> Result<String, Error> {
+    let c = a.op.common();
+    let (from, lines) = (c.from, c.lines.max(MIN_LINES));
+    let mut ask = nexo_bin::WasmAsk { from, budget: lines, ..Default::default() };
+    match &a.op {
+        BinOp::Info { .. } => ask.op = "info",
+        BinOp::Overview { .. } => ask.op = "overview",
+        BinOp::Funcs { sort, grep, min_size, .. } => {
+            (ask.op, ask.sort, ask.grep, ask.min_size) = ("funcs", sort.as_str(), grep.as_deref(), *min_size)
+        }
+        BinOp::Fn { target, bytes, .. } => (ask.op, ask.target, ask.with_bytes) = ("fn", Some(target.as_str()), *bytes),
+        BinOp::Calls { target, .. } => (ask.op, ask.target) = ("calls", Some(target.as_str())),
+        BinOp::Xref { target, str_text, insensitive, .. } => {
+            (ask.op, ask.target, ask.str_text, ask.insensitive) =
+                ("xref", target.as_deref(), str_text.as_deref(), *insensitive)
+        }
+        BinOp::Strings { grep, .. } => (ask.op, ask.grep) = ("strings", grep.as_deref()),
+        _ => {
+            return Err(Error::Usage(format!(
+                "this op does not read WebAssembly modules yet; use one of: {}",
+                nexo_bin::WASM_OPS.join(", ")
+            )))
+        }
+    }
+    let out = nexo_bin::wasm_answer(a.op.file(), &ask)?;
+    let page = out.page_as(from, lines, c.json);
+    if c.json {
+        serde_json::to_string_pretty(&page.value).map_err(|e| Error::Bad(e.to_string()))
+    } else {
+        Ok(page.text())
+    }
+}
+
 /// Print the answer; the exit code is 0, 1 for a question that cannot be answered, 2 for a file that is not read.
 pub fn run(a: &BinArgs) -> i32 {
     match execute(a) {
@@ -631,6 +668,24 @@ mod tests {
         // without the file the same functions stay unnamed
         let none = ask(&["funcs", &exe, "--grep", "strlen|memset"]).unwrap();
         assert!(!none.contains("[signature exact"), "{none}");
+    }
+
+    #[test]
+    fn a_wasm_module_is_found_by_its_signature_and_answers_the_same_ops() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("mod.bin");
+        std::fs::write(&p, nexo_bin::wasm_fixture::module()).unwrap();
+        let path = p.display().to_string();
+        let t = ask(&["info", &path]).unwrap();
+        assert!(t.contains("WebAssembly module") && t.contains("3 defined functions"), "{t}");
+        let t = ask(&["fn", &path, "greet"]).unwrap();
+        assert!(t.contains("string? \"hello wasm\"") && t.contains("env.log"), "{t}");
+        let t = ask(&["funcs", &path, "--grep", "add", "--json"]).unwrap();
+        assert!(t.contains("\"name\": \"demo::add\""), "{t}");
+        let t = ask(&["strings", &path, "--grep", "second"]).unwrap();
+        assert!(t.contains("second string") && t.contains("<- func[4]"), "{t}");
+        let e = ask(&["decomp", &path, "greet"]).unwrap_err().to_string();
+        assert!(e.contains("does not read WebAssembly modules yet; use one of: info, overview"), "{e}");
     }
 
     #[test]

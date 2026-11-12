@@ -21,6 +21,7 @@ msvc-demangler = { workspace = true }
 sha2 = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }
+wasmparser = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

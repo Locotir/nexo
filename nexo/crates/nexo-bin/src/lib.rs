@@ -29,6 +29,9 @@ mod refs;
 mod sigs;
 mod slice;
 mod strings;
+mod wasm;
+mod wasm_dis;
+mod wasm_ops;
 mod xops;
 
 #[cfg(any(test, feature = "fixtures"))]
@@ -44,7 +47,11 @@ mod tests_map;
 #[cfg(test)]
 mod tests_sigs;
 #[cfg(test)]
+mod tests_wasm;
+#[cfg(test)]
 mod tests_x;
+#[cfg(any(test, feature = "fixtures"))]
+pub mod wasm_fixture;
 
 pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
@@ -69,6 +76,7 @@ pub use sigs::{
     find_libraries as sig_libraries, generate as sig_generate, Keep as SigKeep, SigHit, SigSet, Strength as SigStrength,
 };
 pub use slice::slice_window;
+pub use wasm_ops::{is_wasm, wasm_answer, wasm_answer_bytes, WasmAsk, WASM_OPS};
 pub use xops::{
     calls, calls_window, func_list, func_list_window, name_clear, name_set, names_list, names_list_window, note_clear,
     note_set, xref, xref_str, xref_str_window, xref_window, FuncSort,

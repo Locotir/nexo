@@ -69,6 +69,8 @@ object = { version = "0.41", default-features = false, features = ["read", "std"
 gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
 iced-x86 = { version = "1.22", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }
 rustc-demangle = "0.1"
+# WebAssembly modules (pure Rust, no validation or component model)
+wasmparser = { version = "0.228", default-features = false, features = ["std", "simd"] }
 cpp_demangle = "0.5"
 msvc-demangler = "0.11"
 
