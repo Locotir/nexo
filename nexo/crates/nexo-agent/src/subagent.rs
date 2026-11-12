@@ -425,7 +425,8 @@ impl SubAgent {
         for spec in self.all.specs() {
             let Some(t) = self.all.get(&spec.name) else { continue };
             let listed = match &p.tools {
-                None => true,
+                // note, todo and recall are the parent's: a kind that does not list them does not get them
+                None => !matches!(spec.name.as_str(), "note" | "todo" | "recall"),
                 Some(l) => l.iter().any(|n| n == &spec.name),
             };
             // `diagnostics` starts language servers, which may run the project's build scripts
@@ -1640,6 +1641,23 @@ mod provider_tests {
         let out = sub.run(json!({"prompt": "look", "provider": "nope"}), &ToolContext::new(dir.path().into())).await;
         assert!(out.is_error, "{out:?}");
         assert_eq!(out.content, "no provider `nope` is set up; there are: alpha, beta, gamma");
+    }
+
+    #[test]
+    fn a_general_sub_agent_leaves_note_todo_and_recall_to_its_parent() {
+        let tools = nexo_tools::builtin();
+        let providers = nexo_providers::presets::presets();
+        let (name, main) = providers.iter().next().map(|(n, c)| (n.clone(), c.clone())).unwrap();
+        let sub = SubAgent::new(Arc::new(Mute), Target::new(name, main, "m"), &tools, Vec::new(), Default::default());
+        let names = |p: &Profile| -> Vec<String> { sub.tools_for(p).specs().iter().map(|s| s.name.clone()).collect() };
+        let general = builtin().into_iter().find(|p| p.name == "general").unwrap();
+        let g = names(&general);
+        for gone in ["note", "todo", "recall"] {
+            assert!(!g.iter().any(|n| n == gone), "{gone} in {g:?}");
+        }
+        assert!(g.iter().any(|n| n == "jobs") && g.iter().any(|n| n == "bash"), "{g:?}");
+        let listed = Profile { tools: Some(vec!["note".into()]), ..general };
+        assert_eq!(names(&listed), vec!["note".to_string()]);
     }
 
     /// What a new session offers in an empty folder: the built-in tools and `task`, every preset provider set up.

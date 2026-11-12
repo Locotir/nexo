@@ -144,11 +144,22 @@ pub fn model_choices(cfg: &Config) -> Vec<(String, String)> {
     cfg.model_choices()
 }
 
+/// The built-in tools of a session. A hermetic one (a benchmark arm) has no web tools: the model could
+/// fetch the task's own solution.
+fn session_builtins(cfg: &Config) -> ToolSet {
+    let mut tools = nexo_tools::builtin_with(&cfg.web);
+    if cfg.agent.hermetic {
+        tools.remove("web_fetch");
+        tools.remove("web_search");
+    }
+    tools
+}
+
 /// The tools a session starts with from `cwd` (what `nexo prompt` describes): the built-in ones, the skill
 /// tool, `task` when sub-agents are on and `ask_user`. MCP servers and mail are not started for it.
 pub fn prompt_tools(cfg: &Config, cwd: &Path) -> ToolSet {
     nexo_tools::edit_check::set_enabled(cfg.tools.edit_diagnostics);
-    let mut tools: ToolSet = nexo_tools::builtin_with(&cfg.web);
+    let mut tools: ToolSet = session_builtins(cfg);
     if !nexo_tools::lsp::available(cwd) {
         tools.remove("diagnostics");
     }
@@ -189,7 +200,7 @@ pub async fn agent_setup(
     let client: Arc<dyn nexo_agent::client::ModelClient> =
         Arc::new(nexo_providers::Client::new(nexo_providers::registry()));
     nexo_tools::edit_check::set_enabled(cfg.tools.edit_diagnostics);
-    let mut tools: ToolSet = nexo_tools::builtin_with(&cfg.web);
+    let mut tools: ToolSet = session_builtins(cfg);
     if !nexo_tools::lsp::available(cwd) {
         tools.remove("diagnostics");
     }
@@ -806,6 +817,20 @@ pub fn trash_sessions(ids: &[String], restore: bool) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hermetic_session_has_no_web_tools() {
+        let mut c = super::Config::default();
+        let names = |c: &super::Config| -> Vec<String> {
+            super::session_builtins(c).specs().iter().map(|s| s.name.clone()).collect()
+        };
+        let normal = names(&c);
+        assert!(normal.iter().any(|n| n == "web_fetch") && normal.iter().any(|n| n == "web_search"), "{normal:?}");
+        c.agent.hermetic = true;
+        let h = names(&c);
+        assert!(!h.iter().any(|n| n.starts_with("web_")), "{h:?}");
+        assert!(h.iter().any(|n| n == "read"));
+    }
+
     use super::*;
 
     #[test]
