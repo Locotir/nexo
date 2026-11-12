@@ -700,3 +700,26 @@ fn with_the_sandbox_on_bash_stays_in_nexo_even_if_the_client_has_a_terminal() {
     assert!(!terminal_shown, "no terminal in the tool call");
     c.finish();
 }
+
+#[test]
+fn the_reasoning_of_a_request_sent_again_is_not_joined_to_the_new_one() {
+    // the first stream is cut inside its reasoning; the agent sends the request again
+    let script =
+        json!([[{"reasoning": "first plan"}, {"error": "cut"}], [{"reasoning": "second plan"}, {"text": "ok"}]]);
+    let d = dirs(Some(&script));
+    let mut c = Client::start(&d);
+    c.initialize(false);
+    let sid = c.new_session(&d.work);
+    let r = c.call("session/prompt", json!({"sessionId": sid, "prompt": [{"type": "text", "text": "go"}]})).unwrap();
+    assert_eq!(r["stopReason"], "end_turn");
+    let thought: String = c
+        .updates()
+        .iter()
+        .filter(|(k, _)| k == "agent_thought_chunk")
+        .filter_map(|(_, u)| u["content"]["text"].as_str().map(String::from))
+        .collect();
+    assert!(thought.contains("first plan") && thought.contains("second plan"), "{thought:?}");
+    assert!(thought.contains("\n\n"), "a break between the cut thought and the new one: {thought:?}");
+    assert!(!thought.contains("plan second"), "{thought:?}");
+    c.finish();
+}

@@ -227,6 +227,8 @@ impl Sess {
 
         let mut calls: HashMap<String, (Option<PathBuf>, Value)> = HashMap::new();
         let (mut mid_line, mut last_error, mut ended) = (false, None::<String>, None::<TurnEnd>);
+        // reasoning streamed with no text or call after it yet
+        let mut mid_thought = false;
         loop {
             let Some(ev) = events.recv().await else {
                 return Err(RpcError::internal(last_error.unwrap_or_else(|| "the agent stopped".into())));
@@ -236,12 +238,23 @@ impl Sess {
                     self.update(rpc, convert::chunk("agent_message_chunk", "\n\n"));
                     mid_line = false;
                 }
+                // a reply that starts while its reasoning is still open: the request was sent again (the stream
+                // was cut inside the reasoning), so the dropped thought is not joined to the new one
+                AgentEvent::AssistantStart if mid_thought => {
+                    self.update(rpc, convert::chunk("agent_thought_chunk", "\n\n"));
+                    mid_thought = false;
+                }
                 AgentEvent::TextDelta { text } => {
                     mid_line = true;
+                    mid_thought = false;
                     self.update(rpc, convert::chunk("agent_message_chunk", &text));
                 }
-                AgentEvent::ReasoningDelta { text } => self.update(rpc, convert::chunk("agent_thought_chunk", &text)),
+                AgentEvent::ReasoningDelta { text } => {
+                    mid_thought = true;
+                    self.update(rpc, convert::chunk("agent_thought_chunk", &text));
+                }
                 AgentEvent::ToolCall { id, name, args, summary } => {
+                    mid_thought = false;
                     calls.insert(id.clone(), (convert::call_path(&self.cwd, &args), args.clone()));
                     self.update(rpc, convert::tool_call(&self.tools, &self.cwd, &id, &name, &args, &summary));
                 }

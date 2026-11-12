@@ -630,3 +630,20 @@ fn a_failed_request_prints_a_card_on_stderr_and_keeps_a_one_line_error_in_the_re
     assert!(notice["problem"]["title"].as_str().unwrap().starts_with("Nothing answers"), "{notice}");
     assert!(!notice.to_string().contains("hunter2"), "{notice}");
 }
+
+#[test]
+fn a_request_sent_again_after_a_cut_in_the_reasoning_starts_a_new_reply_in_the_raw_stream() {
+    let d = tempfile::tempdir().unwrap();
+    let script = r#"[[{"reasoning":"first plan"},{"error":"cut"}],[{"reasoning":"second plan"},{"text":"ok"}]]"#;
+    let out = scripted(d.path(), script, &["-p", "go", "--json"]);
+    let names: Vec<String> = lines(&out).iter().filter_map(|e| e["event"].as_str().map(String::from)).collect();
+    let first_thought = names.iter().position(|n| n == "reasoning_delta").unwrap_or(usize::MAX);
+    let starts: Vec<usize> =
+        names.iter().enumerate().filter(|(_, n)| *n == "assistant_start").map(|(i, _)| i).collect();
+    assert_eq!(starts.len(), 2, "{names:?}");
+    assert!(first_thought > starts[0] && first_thought < starts[1], "{names:?}");
+    // the plain text and stream-json modes never carry reasoning
+    let out = scripted(d.path(), script, &["-p", "go"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("ok") && !text.contains("plan"), "{text}");
+}
