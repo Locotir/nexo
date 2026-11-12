@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use nexo_bin::{Output, Proto};
+use nexo_bin::{Output, Place, Proto};
 use serde_json::json;
 
 use crate::cmds::Args;
@@ -32,6 +32,26 @@ pub struct Lib {
     pub names: Vec<String>,
 }
 
+/// A declared hook.
+#[derive(Debug, Clone)]
+pub struct Hook {
+    pub id: u32,
+    /// Memory address of the entry.
+    pub addr: u64,
+    pub name: String,
+    pub proto: Option<Proto>,
+    /// The hook sits on a `call [slot]` and not on the function.
+    pub call_len: Option<u8>,
+    pub bt: usize,
+    pub stop: bool,
+    /// (argument position, value) set at the entry.
+    pub set: Vec<(usize, u64)>,
+    /// The value the function returns instead of its own.
+    pub ret: Option<u64>,
+    pub hits: u64,
+    pub returns: u64,
+}
+
 /// A call whose entry was seen, waiting for its return.
 #[derive(Debug, Clone)]
 pub struct Pending {
@@ -40,6 +60,7 @@ pub struct Pending {
     /// The stack pointer right after the return.
     pub sp_after: u64,
     pub kind: Kind,
+    pub hook: Option<u32>,
     pub name: String,
     pub text: String,
     pub ret_ty: Option<String>,
@@ -161,21 +182,31 @@ impl Session {
         if let Some(l) = &self.tr.lib {
             v.extend(l.sites.keys());
         }
+        v.extend(self.tr.hooks.iter().map(|h| h.addr));
         v
     }
 
     /// A thread is at an address the trace or a hook watches. `Some`: a hook stops the program.
     pub(crate) fn hook_hit(&mut self, tid: Tid, addr: u64) -> Result<Option<(Tid, Why)>> {
-        let verdict = None;
+        let mut verdict = None;
         // a return first: the same address may also be an entry
         if self.tr.pending.iter().any(|p| p.tid == tid && p.ret_addr == addr) {
-            let r = self.t.regs(tid)?;
+            let mut r = self.t.regs(tid)?;
             let sp = r.rsp();
             if let Some(i) =
                 self.tr.pending.iter().rposition(|p| p.tid == tid && p.ret_addr == addr && p.sp_after == sp)
             {
                 let p = self.tr.pending.remove(i);
-                let ret = self.ret_text(p.ret_ty.as_deref(), r.gp[0]);
+                let mut ret = self.ret_text(p.ret_ty.as_deref(), r.gp[0]);
+                if let Some(h) = p.hook.and_then(|id| self.tr.hooks.iter_mut().find(|h| h.id == id)) {
+                    h.returns += 1;
+                    if let Some(v) = h.ret {
+                        r.gp[0] = v;
+                        self.t.set_regs(tid, &r)?;
+                        let now = self.ret_text(p.ret_ty.as_deref(), v);
+                        ret = format!("{ret}, changed to {now}");
+                    }
+                }
                 self.tr.push(p.kind, &p.name, format!("{} = {ret}", p.text));
             }
         }
@@ -188,7 +219,55 @@ impl Session {
             let r = self.t.regs(tid)?;
             let proto = nexo_bin::libc_proto(&s.name);
             let (text, ret_ty) = self.call_args(&s.name, proto.as_ref(), &r, false);
-            self.pend(tid, &r, s.call_len, Kind::Lib, &s.name, text, ret_ty)?;
+            self.pend(tid, &r, s.call_len, Kind::Lib, None, &s.name, text, ret_ty)?;
+        }
+        let ids: Vec<u32> = self.tr.hooks.iter().filter(|h| h.addr == addr).map(|h| h.id).collect();
+        for id in ids {
+            let Some(i) = self.tr.hooks.iter().position(|h| h.id == id) else { continue };
+            let h = self.tr.hooks[i].clone();
+            self.tr.hooks[i].hits += 1;
+            let mut r = self.t.regs(tid)?;
+            let (mut text, ret_ty) = self.call_args(&h.name, h.proto.as_ref(), &r, true);
+            text = format!("#{id} {text}");
+            if !h.set.is_empty() {
+                let regs = arg_regs(self.t.os());
+                let mut done = Vec::new();
+                for &(n, v) in &h.set {
+                    if let Some(name) = regs.get(n) {
+                        if r.set(name, v) {
+                            done.push(format!("arg{n}={v:#x}"));
+                        }
+                    }
+                }
+                self.t.set_regs(tid, &r)?;
+                if done.len() < h.set.len() {
+                    done.push("(some not set: no such register)".into());
+                }
+                text.push_str(&format!(" [changed {}]", done.join(" ")));
+            }
+            if h.bt > 0 {
+                let frames = {
+                    let Session { t, mods, .. } = self;
+                    let mut rd = |a: u64| {
+                        let mut b = [0u8; 8];
+                        (t.read(a, &mut b) == 8).then(|| u64::from_le_bytes(b))
+                    };
+                    mods.backtrace(&r, &mut rd, h.bt + 1)
+                };
+                let names: Vec<String> = frames
+                    .iter()
+                    .skip(1)
+                    .map(|f| self.mods.label(f.pc.wrapping_sub(1), false).unwrap_or_else(|| format!("{:#x}", f.pc)))
+                    .collect();
+                if !names.is_empty() {
+                    text.push_str(&format!(" from {}", names.join(" <- ")));
+                }
+            }
+            text.push_str(&format!(" [hit {}]", h.hits + 1));
+            self.pend(tid, &r, h.call_len, Kind::Hook, Some(id), &h.name, text.clone(), ret_ty)?;
+            if h.stop && verdict.is_none() {
+                verdict = Some((tid, Why::Hook(id, text)));
+            }
         }
         Ok(verdict)
     }
@@ -200,6 +279,7 @@ impl Session {
         r: &Regs,
         call_len: Option<u8>,
         kind: Kind,
+        hook: Option<u32>,
         name: &str,
         text: String,
         ret_ty: Option<String>,
@@ -219,7 +299,7 @@ impl Session {
             self.tr.push(kind, name, format!("{text} = ? (too many calls in flight to follow this one)"));
             return Ok(());
         }
-        self.tr.pending.push(Pending { tid, ret_addr, sp_after, kind, name: name.into(), text, ret_ty });
+        self.tr.pending.push(Pending { tid, ret_addr, sp_after, kind, hook, name: name.into(), text, ret_ty });
         Ok(())
     }
 
@@ -260,7 +340,7 @@ impl Session {
                 let names: Vec<String> = a.pos.iter().flat_map(|w| w.split(',')).map(str::to_string).collect();
                 let sites = self.lib_sites();
                 if sites.is_empty() {
-                    return fail("this program calls no library function through an import (a static program?): `break <function>` stops in one");
+                    return fail("this program calls no library function through an import (a static program?): `hook <function>` follows one");
                 }
                 let known: Vec<&str> = sites.values().map(|s| s.name.as_str()).collect();
                 if let Some(bad) = names.iter().find(|n| !known.contains(&n.as_str())) {
@@ -281,5 +361,173 @@ impl Session {
                 ))
             }
         }
+    }
+
+    /// `hook <place> [bt N] [stop] [set argN V] [ret V]` | `hook del <id>|all` | `hook show [name]` | `hooks`.
+    pub(crate) fn cmd_hook(&mut self, words: &[String]) -> Result<Output> {
+        let w: Vec<&str> = words.iter().map(String::as_str).collect();
+        match w.first().copied() {
+            None | Some("list") => Ok(self.hook_list()),
+            Some("show") => {
+                let names: Vec<String> = w[1..].iter().map(|s| s.to_string()).collect();
+                Ok(self.show(
+                    Kind::Hook,
+                    &|n: &str| names.is_empty() || names.iter().any(|x| x == n),
+                    "`hook <function>` sets one",
+                ))
+            }
+            Some("del") | Some("delete") => {
+                let before = self.tr.hooks.len();
+                match w.get(1).copied() {
+                    Some("all") => self.tr.hooks.clear(),
+                    Some(x) => {
+                        let id: u32 = x
+                            .trim_start_matches('#')
+                            .parse()
+                            .map_err(|_| crate::Error::Usage("hook del <id>|all".into()))?;
+                        self.tr.hooks.retain(|h| h.id != id);
+                    }
+                    None => return usage("hook del <id>|all"),
+                }
+                let gone = before - self.tr.hooks.len();
+                if gone == 0 {
+                    return fail("no such hook: `hooks` lists them");
+                }
+                self.tr.pending.retain(|p| p.hook.is_none_or(|id| self.tr.hooks.iter().any(|h| h.id == id)));
+                Ok(rows("hook", vec![format!("{gone} hook(s) deleted")], json!({})))
+            }
+            Some(place) => self.hook_add(place, &w[1..]),
+        }
+    }
+
+    fn hook_add(&mut self, place: &str, rest: &[&str]) -> Result<Output> {
+        let (mut bt, mut stop, mut set, mut ret) = (0usize, false, Vec::new(), None);
+        let num = |s: Option<&&str>, what: &str| -> Result<u64> {
+            let s = s.ok_or_else(|| crate::Error::Usage(format!("{what} needs a value")))?;
+            if let Some(n) = s.strip_prefix('-') {
+                let v = nexo_bin::parse_addr(n).map_err(|_| crate::Error::Usage(format!("{s:?} is not a number")))?;
+                return Ok((v as i64).wrapping_neg() as u64);
+            }
+            nexo_bin::parse_addr(s).map_err(|_| crate::Error::Usage(format!("{s:?} is not a number")))
+        };
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i] {
+                "bt" => {
+                    bt = num(rest.get(i + 1), "bt")?.min(16) as usize;
+                    i += 1;
+                }
+                "stop" => stop = true,
+                "set" => {
+                    let which = rest.get(i + 1).copied().unwrap_or("");
+                    let n: usize = which.strip_prefix("arg").and_then(|d| d.parse().ok()).ok_or_else(|| {
+                        crate::Error::Usage(format!("set arg<N> <value>: {which:?} is not arg0..arg5"))
+                    })?;
+                    if n >= arg_regs(self.t.os()).len() {
+                        return usage(format!("arg{n} is not in a register on this system"));
+                    }
+                    set.push((n, num(rest.get(i + 2), "set")?));
+                    i += 2;
+                }
+                "ret" => {
+                    ret = Some(num(rest.get(i + 1), "ret")?);
+                    i += 1;
+                }
+                w => {
+                    return usage(format!(
+                        "unexpected {w:?}: after the place come `bt N`, `stop`, `set argN V`, `ret V`"
+                    ))
+                }
+            }
+            i += 1;
+        }
+        let (addr, call_len, name, file_addr) = self.hook_place(place)?;
+        let proto = file_addr
+            .and_then(|fa| nexo_bin::proto_at(self.mods.main_image(), fa))
+            .or_else(|| nexo_bin::libc_proto(&name));
+        let id = self.new_id();
+        let typed = match &proto {
+            Some(p) => format!(
+                "{} {}({})",
+                p.ret,
+                p.name,
+                p.args.iter().map(|(t, n)| format!("{t} {n}")).collect::<Vec<_>>().join(", ")
+            ),
+            None => "no prototype: raw registers (`nexo bin proto` gives one)".into(),
+        };
+        let mut l = vec![format!("hook #{id} at {addr:#x} {name}: {typed}")];
+        if !set.is_empty() || ret.is_some() {
+            l.push("this hook changes the program: arguments are set at the entry, the result at the return".into());
+        }
+        l.push("`cont`, then `hook show`; `hooks` lists the counters".into());
+        self.tr.hooks.push(Hook { id, addr, name, proto, call_len, bt, stop, set, ret, hits: 0, returns: 0 });
+        Ok(rows("hook", l, json!({"id": id, "addr": addr})))
+    }
+
+    /// Where a hook goes: (memory address, call length when on a `call [slot]`, name, file address in the program).
+    fn hook_place(&mut self, place: &str) -> Result<(u64, Option<u8>, String, Option<u64>)> {
+        let bias = self.mods.main_bias();
+        match self.mods.resolve(place) {
+            Ok(Place::Code(x)) => {
+                let fa = x.wrapping_sub(bias);
+                let in_main = self.mods.main_image().section_at(fa).is_some();
+                let name = self
+                    .mods
+                    .label(x, false)
+                    .map(|l| {
+                        let base = l.split('+').next().unwrap_or(&l);
+                        // a stub is the import itself: `atoi@plt` takes atoi's prototype
+                        base.strip_suffix("@plt").unwrap_or(base).to_string()
+                    })
+                    .unwrap_or_else(|| place.to_string());
+                Ok((x, None, name, in_main.then_some(fa)))
+            }
+            Ok(Place::ImportSlot(_)) => {
+                let bare = place.trim_start_matches('!');
+                // the program's way into the import: its stub, or each `call [slot]`
+                let s = self.lib_sites().into_iter().find(|(_, s)| s.name == bare);
+                match s {
+                    Some((a, s)) if s.call_len.is_none() => Ok((a, None, bare.to_string(), None)),
+                    _ => match self.mods.resolve(&format!("!{bare}")) {
+                        Ok(Place::Code(x)) => Ok((x, None, bare.to_string(), None)),
+                        _ => fail(format!("{bare} is an import with no stub and its library is not loaded yet: `cont` past the entry first")),
+                    },
+                }
+            }
+            Ok(Place::Data(x)) => fail(format!("{place} ({x:#x}) is data, not code")),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn hook_list(&mut self) -> Output {
+        let mut l = Vec::new();
+        for h in &self.tr.hooks {
+            let mut what = Vec::new();
+            if h.bt > 0 {
+                what.push(format!("bt {}", h.bt));
+            }
+            if h.stop {
+                what.push("stop".into());
+            }
+            for (n, v) in &h.set {
+                what.push(format!("set arg{n} {v:#x}"));
+            }
+            if let Some(v) = h.ret {
+                what.push(format!("ret {v:#x}"));
+            }
+            l.push(format!(
+                "hook #{} {:#x} {} entries {} returns {}{}",
+                h.id,
+                h.addr,
+                h.name,
+                h.hits,
+                h.returns,
+                if what.is_empty() { String::new() } else { format!(" [{}]", what.join(", ")) }
+            ));
+        }
+        if l.is_empty() {
+            l.push("no hooks: `hook <function> [bt N] [stop] [set argN V] [ret V]`".into());
+        }
+        rows("hooks", l, json!({}))
     }
 }

@@ -43,6 +43,7 @@ const CONTROL: &[&str] = &[
     "watches", "maps", "modules", "find", "history", "out", "log", "dis", "disasm", "sessions", "help", "catches",
     "break", "b", "tbreak", "delete", "del", "enable", "disable", "cont", "c", "continue", "step", "s", "next", "n",
     "finish", "until", "wait", "stop", "kill", "detach", "end", "stdin", "catch", "watch", "core", "strace", "ltrace",
+    "hooks",
 ];
 
 /// Classify the words after `nexo dbg`. A `do "a; b"` script is as strong as its strongest command.
@@ -63,6 +64,9 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     let Some(cmd) = it.next() else { return DbgClass::Control };
     match cmd.as_str() {
         "attach" | "write" | "setreg" => DbgClass::Change,
+        // a hook that sets an argument or the result changes the program
+        "hook" if it.clone().any(|w| w == "set" || w == "ret") => DbgClass::Change,
+        "hook" => DbgClass::Control,
         "run" | "__serve" => DbgClass::Other,
         "do" => {
             let rest: Vec<&str> = it.filter(|w| !w.starts_with("--")).map(String::as_str).collect();

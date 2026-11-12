@@ -26,6 +26,7 @@ bt [N], args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [
 watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
 ltrace [names], ltrace show [names], ltrace off  library calls with typed args and result, written at return
+hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args, result, counters; set/ret change the program
 do \"c1; c2\"  several commands in one call
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
@@ -282,6 +283,10 @@ mod tests {
         assert_eq!(kind("run ./a.out"), ToolKind::Exec);
         assert_eq!(kind("attach 12"), ToolKind::Exec);
         assert_eq!(kind("write 0x10 90"), ToolKind::Exec);
+        // a hook that only reads is control; one that sets an argument or the result asks
+        assert_eq!(kind("hook check bt 3"), ToolKind::Read);
+        assert_eq!(kind("hook check set arg0 5"), ToolKind::Exec);
+        assert_eq!(kind("hook check ret 0"), ToolKind::Exec);
 
         let first = call(&t, &format!("run {} 30", sleep_bin())).await;
         assert!(!first.is_error, "{}", first.content);
@@ -362,6 +367,8 @@ mod tests {
         let shown = call(&t, "ltrace show").await;
         assert!(shown.content.starts_with("debug "), "{}", shown.content);
         assert!(shown.content.contains("__libc_start_main("), "{}", shown.content);
+        let hooks = call(&t, "hooks").await;
+        assert!(hooks.content.starts_with("debug ") && hooks.content.contains("no hooks"), "{}", hooks.content);
         call(&t, "end").await;
     }
 

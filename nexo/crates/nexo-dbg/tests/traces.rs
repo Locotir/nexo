@@ -125,3 +125,53 @@ fn ltrace_with_names_keeps_only_those_and_refuses_an_unknown_one() {
     assert!(t.contains("strlen(\"") && t.contains("hooks\") = "), "{t}");
     assert!(!t.contains("atoi(") && !t.contains("printf("), "{t}");
 }
+
+#[test]
+fn a_hook_writes_typed_arguments_the_result_a_backtrace_and_counts() {
+    let Some((_d, mut s)) = start(&["12"]) else { return };
+    let h = run(&mut s, "hook check bt 2");
+    assert!(h.contains("hook #") && h.contains("check(i32 x)"), "{h}");
+    let a = run(&mut s, "hook atoi");
+    assert!(a.contains("int atoi(const char * nptr)"), "{a}");
+    let end = run(&mut s, "cont");
+    assert!(end.contains("exited with code 1"), "{end}");
+    assert!(end.contains("hook: ") && end.contains("new lines"), "{end}");
+    let t = run(&mut s, "hook show");
+    assert!(t.contains("check(x=12) from main") && t.contains("[hit 1] = 1"), "{t}");
+    assert!(t.contains("atoi(nptr=\"12\")") && t.contains("= 12"), "{t}");
+    let l = run(&mut s, "hooks");
+    assert!(l.contains("check entries 1 returns 1"), "{l}");
+    assert!(s.exec(&split_words("hook check frobnicate")).is_err());
+}
+
+#[test]
+fn a_hook_can_change_an_argument_and_the_result_and_says_so() {
+    let Some((_d, mut s)) = start(&["3"]) else { return };
+    assert!(nexo_dbg::dbg_class(&split_words("hook check set arg0 50")) == nexo_dbg::DbgClass::Change);
+    assert!(nexo_dbg::dbg_class(&split_words("hook check bt 3")) == nexo_dbg::DbgClass::Control);
+    let h = run(&mut s, "hook check set arg0 50");
+    assert!(h.contains("changes the program"), "{h}");
+    run(&mut s, "hook big ret 42");
+    let end = run(&mut s, "cont");
+    // 3 is not above 10, but the hook made it 50: check said yes and big ran
+    assert!(end.contains("exited with code 1"), "{end}");
+    let t = run(&mut s, "hook show");
+    assert!(t.contains("check(x=3) [changed arg0=0x32]") && t.contains("= 1"), "{t}");
+    assert!(t.contains("big() [hit 1] = 7, changed to 42"), "{t}");
+    let o = run(&mut s, "out");
+    assert!(o.contains("r=1 v=42"), "{o}");
+}
+
+#[test]
+fn a_hook_with_stop_stops_the_program_at_the_entry() {
+    let Some((_d, mut s)) = start(&["12"]) else { return };
+    run(&mut s, "hook check stop");
+    let a = run(&mut s, "cont");
+    assert!(a.contains("hook #") && a.contains("check(x=12)"), "{a}");
+    assert_eq!(s.last_stop.as_ref().map(|x| x.event.as_str()), Some("hook"));
+    let end = run(&mut s, "cont");
+    assert!(end.contains("exited with code 1"), "{end}");
+    assert!(run(&mut s, "hook show").contains("check(x=12) [hit 1] = 1"));
+    run(&mut s, "hook del all");
+    assert!(run(&mut s, "hooks").contains("no hooks"));
+}

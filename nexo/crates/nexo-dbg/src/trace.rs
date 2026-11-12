@@ -65,6 +65,8 @@ pub struct Tracing {
     pub lib: Option<crate::hooks::Lib>,
     /// Library calls and hooks whose entry was seen, waiting for their return.
     pub pending: Vec<crate::hooks::Pending>,
+    /// Declared hooks.
+    pub hooks: Vec<crate::hooks::Hook>,
 }
 
 impl Tracing {

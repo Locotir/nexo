@@ -66,6 +66,8 @@ pub enum Why {
     Exec,
     /// `catch syscall`: the call, as the trace writes it.
     Syscall(String),
+    /// A hook with `stop`: its id and its line.
+    Hook(u32, String),
     Exited(i32),
     Killed(i32),
 }
