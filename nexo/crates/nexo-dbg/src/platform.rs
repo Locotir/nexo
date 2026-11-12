@@ -175,16 +175,26 @@ pub fn attach(pid: u32) -> Result<Box<dyn Target>> {
     Ok(Box::new(crate::linux::Linux::attach(pid)?))
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub fn launch(l: &Launch) -> Result<Box<dyn Target>> {
+    Ok(Box::new(crate::windows::Windows::launch(l)?))
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub fn attach(pid: u32) -> Result<Box<dyn Target>> {
+    Ok(Box::new(crate::windows::Windows::attach(pid)?))
+}
+
+#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))))]
 const ONLY: &str =
     "nexo dbg runs programs on Linux x86-64 and Windows x86-64 only (`nexo dbg core` reads a core file anywhere)";
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))))]
 pub fn launch(_: &Launch) -> Result<Box<dyn Target>> {
     crate::fail(ONLY)
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))))]
 pub fn attach(_: u32) -> Result<Box<dyn Target>> {
     crate::fail(ONLY)
 }

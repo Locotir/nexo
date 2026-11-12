@@ -18,6 +18,8 @@ mod server;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod windows;
 
 pub use client::{dbg_class, execute, header, parse, parse_header, Call, DbgClass, Header, Host};
 pub use cmds::{help, split_words, Args, DEFAULT_WAIT, MAX_WAIT, READ_ONLY};
