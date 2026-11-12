@@ -323,7 +323,7 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
-    /// JVM .class and .jar files: types, members, bytecode with resolved names, strings, call sites.
+    /// JVM .class and .jar files and .NET assemblies (.exe, .dll): types, members, bytecode with resolved names, strings, call sites.
     Managed {
         file: PathBuf,
         /// A type (lists its members) or a method like Type.name or Type.name(II)I (disassembles it).

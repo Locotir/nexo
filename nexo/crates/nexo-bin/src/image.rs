@@ -178,8 +178,10 @@ impl Image {
 
     /// Parse bytes already in memory.
     pub fn from_bytes(data: Vec<u8>, path: PathBuf) -> Result<Image> {
-        if crate::is_managed(&data[..data.len().min(8)]) {
-            return Err(Error::NotRead("this is JVM bytecode or a jar: read it with `nexo bin managed FILE`".into()));
+        if crate::is_managed(&data[..data.len().min(4096)]) {
+            return Err(Error::NotRead(
+                "this is JVM bytecode, a jar or a .NET assembly: read it with `nexo bin managed FILE`".into(),
+            ));
         }
         let kind = FileKind::parse(&data[..]).map_err(|_| not_a_binary(&data))?;
         let mut img = match kind {

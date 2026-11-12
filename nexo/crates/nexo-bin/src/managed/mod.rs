@@ -2,9 +2,13 @@
 //! small model (types, members, methods with disassembly, strings) that the questions below answer
 //! in bounded pieces, in the same page format as the native ops.
 
+mod dotnet;
+mod il;
 mod jvm;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod testkit;
+#[cfg(test)]
+mod tests_dotnet;
 #[cfg(test)]
 mod tests_jvm;
 mod zip;
@@ -90,7 +94,7 @@ pub struct ManagedQuery<'a> {
 
 /// True when the first bytes say the file is managed bytecode this module reads.
 pub fn is_managed(head: &[u8]) -> bool {
-    is_class(head) || zip::looks_like_zip(head)
+    is_class(head) || zip::looks_like_zip(head) || dotnet::is_dotnet(head)
 }
 
 /// A class file and a Mach-O universal binary share the CAFEBABE magic: the next four bytes are the
@@ -114,6 +118,11 @@ pub(crate) fn load(path: &std::path::Path, data: &[u8]) -> Result<Module> {
     }
     if zip::looks_like_zip(data) {
         return load_jar(file, data);
+    }
+    if dotnet::is_dotnet(data) {
+        let p =
+            dotnet::parse(data).map_err(|e| Error::NotRead(format!("{file}: not a readable .NET assembly: {e}")))?;
+        return Ok(Module { kind: ".NET assembly".into(), file, types: p.types, strings: p.strings, facts: p.facts });
     }
     Err(Error::NotRead(format!("{file} is not a .class, .jar or .NET assembly")))
 }
