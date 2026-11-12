@@ -1117,6 +1117,12 @@ struct Scored {
 /// The spans of `msgs` (Messages API shape: `{role, content}`) that bear on
 /// `task`, within `budget` tokens, and the earlier requests it draws on.
 pub fn select(task: &str, msgs: &[Value], budget: i64) -> Reply {
+    select_but(task, msgs, budget, None)
+}
+
+/// Like [`select`], with the person's words of message `skip` left out of the excerpts (the briefing
+/// already states them).
+pub fn select_but(task: &str, msgs: &[Value], budget: i64, skip: Option<usize>) -> Reply {
     let mut lex = Lex::default();
     let mut all: Vec<Cow<Value>> = msgs
         .iter()
@@ -1141,7 +1147,11 @@ pub fn select(task: &str, msgs: &[Value], budget: i64) -> Reply {
     let mut cands: Vec<(usize, usize)> = vec![]; // (unit, chunk)
     let mut df: HashMap<u32, usize> = HashMap::new();
     for (i, u) in tr.units.iter().enumerate() {
-        if u.msg >= upto || u.kind == Kind::Thinking || (u.kind == Kind::Call && (u.tool == "task" || u.tokens < 40)) {
+        if u.msg >= upto
+            || u.kind == Kind::Thinking
+            || (u.kind == Kind::User && Some(u.msg) == skip)
+            || (u.kind == Kind::Call && (u.tool == "task" || u.tokens < 40))
+        {
             continue;
         }
         if let (Kind::Result, Some(Info { kind: ToolKind::Read, path: Some(p), .. })) = (u.kind, &u.info) {

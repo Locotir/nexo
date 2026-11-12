@@ -141,12 +141,14 @@ pub async fn build(task: &str, history: &[Message], cwd: &Path, cfg: &BriefConfi
     }
     let ledger = Ledger::of(history, cwd, cfg.check_disk, task);
     let (head, facts) = ledger.render(cfg.tokens * 2 / 5);
+    // the latest request the ledger states whole is not an excerpt too
+    let skip = ledger.request_at.filter(|_| ledger.request.as_deref().is_some_and(|r| head.contains(r)));
     let mut left = cfg.tokens.saturating_sub(tokens(&render(&head, &[])) + 10);
     let mut tries = 0;
     let (spans, engine, text) = loop {
         let (mut spans, engine) = match cfg.engine {
-            Engine::Lexical => (lexical(task, history, left), "lexical"),
-            Engine::Auto | Engine::Curator => (curator(task, history, left), "curator"),
+            Engine::Lexical => (lexical_but(task, history, left, skip), "lexical"),
+            Engine::Auto | Engine::Curator => (curator_but(task, history, left, skip), "curator"),
         };
         for s in &mut spans {
             annotate(s, cwd, cfg.check_disk);
@@ -549,6 +551,11 @@ struct Cand {
 /// that relevance; reads a later write made stale are left out; long paragraphs
 /// keep the lines around the task's words; the pick is a greedy coverage.
 pub fn lexical(task: &str, history: &[Message], budget: usize) -> Vec<Span> {
+    lexical_but(task, history, budget, None)
+}
+
+/// Like [`lexical`], with the person's words of message `skip` left out of the excerpts.
+fn lexical_but(task: &str, history: &[Message], budget: usize, skip: Option<usize>) -> Vec<Span> {
     let us = units(history);
     let q = terms(task);
     let q_names = names(task);
@@ -593,7 +600,11 @@ pub fn lexical(task: &str, history: &[Message], budget: usize) -> Vec<Span> {
     }
     let mut raws: Vec<Raw> = vec![];
     for (k, u) in us.iter().enumerate() {
-        if u.text.trim().is_empty() || u.tool == "task" || (u.kind == Kind::Call && tokens(&u.text) < 40) {
+        if u.text.trim().is_empty()
+            || u.tool == "task"
+            || (u.kind == Kind::Person && Some(u.msg) == skip)
+            || (u.kind == Kind::Call && tokens(&u.text) < 40)
+        {
             continue;
         }
         if u.kind == Kind::Result && u.tool == "read" {
@@ -771,8 +782,13 @@ fn wire(history: &[Message]) -> Vec<Value> {
 /// The curator's selection, as excerpts.
 /// The selection counts a token per four characters, the briefing per four bytes: text of several bytes
 /// a letter (Cyrillic, CJK) is fitted to `budget` again, the least scored excerpts going first.
+#[cfg(test)]
 fn curator(task: &str, history: &[Message], budget: usize) -> Vec<Span> {
-    let mut spans = curated::select(task, &wire(history), i64::try_from(budget).unwrap_or(i64::MAX)).spans;
+    curator_but(task, history, budget, None)
+}
+
+fn curator_but(task: &str, history: &[Message], budget: usize, skip: Option<usize>) -> Vec<Span> {
+    let mut spans = curated::select_but(task, &wire(history), i64::try_from(budget).unwrap_or(i64::MAX), skip).spans;
     let mut total: usize = spans.iter().map(|s| tokens(&s.text)).sum();
     while total > budget {
         let Some(k) = (0..spans.len()).min_by(|&a, &b| spans[a].score.total_cmp(&spans[b].score)) else { break };
@@ -866,6 +882,8 @@ struct FileNote {
 #[derive(Debug, Default)]
 struct Ledger {
     request: Option<String>,
+    /// The message of the latest request when the ledger states it whole.
+    request_at: Option<usize>,
     constraints: Vec<String>,
     files: Vec<String>,
     failing: Vec<String>,
@@ -909,7 +927,11 @@ impl Ledger {
         let requests: Vec<&Unit> = us.iter().filter(|u| u.kind == Kind::Person).collect();
         if let Some(last) = requests.last() {
             if last.text.trim() != task.trim() {
-                l.request = Some(short(&last.text, 500));
+                let r = short(&last.text, 500);
+                if r == short(&last.text, usize::MAX) {
+                    l.request_at = Some(last.msg);
+                }
+                l.request = Some(r);
             }
         }
         let mut rules: Vec<(usize, String)> = vec![];
@@ -1418,7 +1440,8 @@ mod tests {
             for budget in [600, 1500, 3000] {
                 let cfg = BriefConfig { tokens: budget, engine, check_disk: false };
                 let b = build(task, &h, d.path(), &cfg).await.unwrap();
-                assert!(b.spans > 0, "{}", b.text);
+                // at 600 the ledger (request and files) takes what a read with its long label would need
+                assert!(b.spans > 0 || budget == 600, "{engine:?} {budget}\n{}", b.text);
                 assert!(b.tokens <= budget, "{engine:?} {budget}: {} tokens", b.tokens);
             }
         }
@@ -1436,6 +1459,30 @@ mod tests {
             assert!(b.text.contains("parse_line_7"), "{}", b.text);
             assert!(!b.text.contains("retry_limit_"), "{}", b.text);
         }
+    }
+
+    #[tokio::test]
+    async fn the_latest_request_the_ledger_states_is_not_an_excerpt_too() {
+        let d = tempfile::tempdir().unwrap();
+        let (_, _, mut h) = session(d.path());
+        h.push(Message::user(
+            "Check that every retry_limit in src/config.rs stays under 10 and report the ones over it.",
+        ));
+        let task = "List each retry_limit of src/config.rs with its value";
+        for engine in [Engine::Lexical, Engine::Curator] {
+            let cfg = BriefConfig { tokens: 1500, engine, ..BriefConfig::default() };
+            let b = build(task, &h, d.path(), &cfg).await.unwrap();
+            assert_eq!(b.text.matches("stays under 10").count(), 1, "{engine:?}\n{}", b.text);
+            assert!(b.text.contains("The person's latest request: Check that every retry_limit"), "{}", b.text);
+            assert!(b.text.contains("retry_limit_"), "{engine:?}: the budget goes to the reads\n{}", b.text);
+        }
+        // a request too long for the ledger keeps its excerpt: the ledger holds only its start
+        let long =
+            format!("Check that every retry_limit in src/config.rs stays under 10. {}", "Keep the order. ".repeat(40));
+        h.push(Message::user(long));
+        let cfg = BriefConfig { tokens: 3000, engine: Engine::Lexical, ..BriefConfig::default() };
+        let b = build(task, &h, d.path(), &cfg).await.unwrap();
+        assert!(b.text.matches("stays under 10").count() >= 2, "{}", b.text);
     }
 
     #[test]
