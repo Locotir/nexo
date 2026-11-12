@@ -162,10 +162,82 @@ pub fn signal_name(n: u32) -> &'static str {
     }
 }
 
+/// The name of a Windows exception code (`STATUS_` left off), when it is one a program is likely to die of.
+pub fn exception_name(code: u32) -> Option<&'static str> {
+    Some(match code {
+        0x8000_0002 => "DATATYPE_MISALIGNMENT",
+        0x8000_0003 => "BREAKPOINT",
+        0x8000_0004 => "SINGLE_STEP",
+        0xC000_0005 => "ACCESS_VIOLATION",
+        0xC000_0006 => "IN_PAGE_ERROR",
+        0xC000_0008 => "INVALID_HANDLE",
+        0xC000_000D => "INVALID_PARAMETER",
+        0xC000_0017 => "NO_MEMORY",
+        0xC000_001D => "ILLEGAL_INSTRUCTION",
+        0xC000_0025 => "NONCONTINUABLE_EXCEPTION",
+        0xC000_0026 => "INVALID_DISPOSITION",
+        0xC000_008C => "ARRAY_BOUNDS_EXCEEDED",
+        0xC000_008D => "FLOAT_DENORMAL_OPERAND",
+        0xC000_008E => "FLOAT_DIVIDE_BY_ZERO",
+        0xC000_0090 => "FLOAT_INVALID_OPERATION",
+        0xC000_0091 => "FLOAT_OVERFLOW",
+        0xC000_0094 => "INTEGER_DIVIDE_BY_ZERO",
+        0xC000_0095 => "INTEGER_OVERFLOW",
+        0xC000_0096 => "PRIVILEGED_INSTRUCTION",
+        0xC000_00FD => "STACK_OVERFLOW",
+        0xC000_0135 => "DLL_NOT_FOUND",
+        0xC000_0142 => "DLL_INIT_FAILED",
+        0xC000_0374 => "HEAP_CORRUPTION",
+        0xC000_0409 => "STACK_BUFFER_OVERRUN",
+        0xC000_0417 => "INVALID_CRUNTIME_PARAMETER",
+        0xE06D_7363 => "C++ exception (throw)",
+        0xE24C_4A02 => "Rust panic (unwinding)",
+        _ => return None,
+    })
+}
+
+/// A fault in the words of the platform: `SIGSEGV (signal 11)` or `ACCESS_VIOLATION (exception 0xc0000005)`.
+pub fn fault_text(os: Os, number: u32) -> String {
+    match os {
+        Os::Linux => format!("{} (signal {number})", signal_name(number)),
+        Os::Windows => match exception_name(number) {
+            Some(n) => format!("{n} (exception {number:#010x})"),
+            None => format!("exception {number:#010x}"),
+        },
+    }
+}
+
+/// An exception code from a name (`access_violation`, `STATUS_ACCESS_VIOLATION`) or a number (`0xc0000005`).
+pub fn exception_by(word: &str) -> Option<u32> {
+    if let Some(h) = word.strip_prefix("0x").or_else(|| word.strip_prefix("0X")) {
+        return u32::from_str_radix(h, 16).ok();
+    }
+    let w = word.strip_prefix("STATUS_").or_else(|| word.strip_prefix("status_")).unwrap_or(word);
+    (0x8000_0000u32..=0x8000_0004)
+        .chain(0xC000_0000..=0xC000_0500)
+        .find(|&c| exception_name(c).is_some_and(|n| n.eq_ignore_ascii_case(w)))
+}
+
 pub fn default_catch(os: Os) -> BTreeSet<u32> {
     match os {
         Os::Linux => [4, 5, 6, 7, 8, 11, 31].into_iter().collect(),
-        Os::Windows => BTreeSet::new(),
+        // the faults a program dies of; a first-chance one the program may still handle itself, so it
+        // stops here only for these. Any other exception stops when no handler took it (second chance).
+        Os::Windows => [
+            0xC000_0005u32,
+            0xC000_0006,
+            0xC000_001D,
+            0xC000_008C,
+            0xC000_008E,
+            0xC000_0094,
+            0xC000_0095,
+            0xC000_0096,
+            0xC000_00FD,
+            0xC000_0374,
+            0xC000_0409,
+        ]
+        .into_iter()
+        .collect(),
     }
 }
 
@@ -469,7 +541,7 @@ impl Session {
                         verdict = Some((tid, Why::Watch(ids)));
                     }
                     Stop::Fault(f) => {
-                        if self.catch.contains(&f.number) {
+                        if self.catch.contains(&f.number) || (self.t.os() == Os::Windows && !f.first_chance) {
                             verdict = Some((tid, Why::Signal(f)));
                         }
                     }

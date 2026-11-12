@@ -12,6 +12,7 @@ mod expr;
 mod knowledge;
 mod lines;
 mod modules;
+mod pe_unwind;
 mod places;
 mod platform;
 mod regs;

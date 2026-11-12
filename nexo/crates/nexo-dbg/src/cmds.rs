@@ -902,6 +902,9 @@ impl Session {
     }
 
     fn cmd_catch(&mut self, a: &Args) -> Result<Output> {
+        if self.t.os() == Os::Windows {
+            return self.cmd_catch_windows(a);
+        }
         let names: Vec<(u32, &str)> = (1..32).map(|n| (n, signal_name(n))).filter(|(_, s)| *s != "signal").collect();
         let by = |w: &str| -> Result<u32> {
             names
@@ -927,6 +930,44 @@ impl Session {
         }
         let l: Vec<String> = self.catch.iter().map(|n| signal_name(*n).to_string()).collect();
         Ok(rows("catch", vec![format!("stops on: {}", l.join(" "))], json!({})))
+    }
+
+    /// `catch` on Windows: exceptions by name or code. Besides these, any exception no handler took stops the program.
+    fn cmd_catch_windows(&mut self, a: &Args) -> Result<Output> {
+        let by = |w: &str| -> Result<u32> {
+            crate::engine::exception_by(w).ok_or_else(|| {
+                crate::Error::Usage(format!(
+                    "{w:?} is not an exception: access_violation, integer_divide_by_zero, 0xc0000005 ..."
+                ))
+            })
+        };
+        match a.pos.first().map(String::as_str) {
+            Some("add") | Some("on") => {
+                for w in &a.pos[1..] {
+                    self.catch.insert(by(w)?);
+                }
+            }
+            Some("del") | Some("off") => {
+                for w in &a.pos[1..] {
+                    self.catch.remove(&by(w)?);
+                }
+            }
+            Some("all") => {
+                self.catch =
+                    (0xC000_0000u32..=0xC000_0500).filter(|c| crate::engine::exception_name(*c).is_some()).collect();
+                self.catch.extend([0xE06D_7363u32, 0x8000_0002]);
+            }
+            Some(_) => return usage(
+                "catch [add|del <exception>...] | catch all   (a name like access_violation or a code like 0xc0000005)",
+            ),
+            None => {}
+        }
+        let l: Vec<String> = self.catch.iter().map(|n| crate::engine::fault_text(Os::Windows, *n)).collect();
+        Ok(rows(
+            "catch",
+            vec![format!("stops on: {}; and on any exception the program does not handle", l.join(", "))],
+            json!({}),
+        ))
     }
 
     fn cmd_kill(&mut self) -> Result<Output> {
@@ -1006,7 +1047,13 @@ impl Session {
                 format!("breakpoint {}", ids.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(" "))
             }
             Why::Watch(ids) => format!("watch {}", ids.iter().map(|i| format!("#{i}")).collect::<Vec<_>>().join(" ")),
-            Why::Signal(f) => format!("{} (signal {})", signal_name(f.number), f.number),
+            Why::Signal(f) => {
+                let mut t = crate::engine::fault_text(self.t.os(), f.number);
+                if self.t.os() == Os::Windows && !f.first_chance {
+                    t.push_str(", not handled by the program");
+                }
+                t
+            }
             Why::Int3 => "int3 in the program (not ours)".to_string(),
             Why::Interrupt => "stopped on request".to_string(),
             Why::Exec => "the program started another program (exec): addresses are new".to_string(),
@@ -1190,10 +1237,34 @@ impl Session {
     fn triage(&mut self, f: &Fault, r: &crate::Regs, ins: Option<&LiveIns>) -> Vec<String> {
         let mut l = Vec::new();
         let sp = r.rsp();
-        match f.number {
+        let win = self.t.os() == Os::Windows;
+        // Linux signals and Windows exceptions folded into one number: 11 is a bad memory access,
+        // 1000 + the low byte of the code is any other Windows exception
+        let number = if win && f.number == 0xC000_0005 {
+            11
+        } else if win {
+            1000 + (f.number & 0xff)
+        } else {
+            f.number
+        };
+        match number {
             11 | 7 => {
                 let addr = f.addr.unwrap_or(0);
-                let what = if f.code == 1 { "address not mapped" } else if f.code == 2 { "mapped but not allowed" } else { "bad access" };
+                let what = if win || f.code == 0 {
+                    "bad access"
+                } else if f.code == 1 {
+                    "address not mapped"
+                } else if f.code == 2 {
+                    "mapped but not allowed"
+                } else {
+                    "bad access"
+                };
+                let verb = match f.touch {
+                    Some(crate::platform::Touch::Read) => " while reading",
+                    Some(crate::platform::Touch::Write) => " while writing",
+                    Some(crate::platform::Touch::Exec) => " while running code there",
+                    None => "",
+                };
                 let kind = if addr < 0x1000 {
                     format!("null pointer (offset {addr:#x} into a null object)")
                 } else if addr.abs_diff(sp) < 0x10000 {
@@ -1205,7 +1276,7 @@ impl Session {
                 } else {
                     self.mods.label(addr, true).map_or(what.to_string(), |n| format!("{what}; near {n}"))
                 };
-                l.push(format!("fault address {addr:#x}: {kind}"));
+                l.push(format!("fault address {addr:#x}{verb}: {kind}"));
                 if let Some(i) = ins {
                     for m in &i.mem {
                         if let Some(a) = m.addr {
@@ -1218,7 +1289,16 @@ impl Session {
                     }
                 }
             }
-            6 => l.push("abort(): the program stopped itself (an assert, a panic, a failed check, or a corrupted heap): read the frames below".into()),
+            // Windows exceptions, by the low byte of the code
+            1253 => l.push("stack overflow: the stack is used up (endless recursion or a very large local); the frames below show the repeating call".into()),
+            1148 | 1149 | 1142 => l.push("arithmetic fault: an integer division by zero or an overflow in the instruction above".into()),
+            1029 => l.push("illegal instruction: the code is damaged or the jump went into data".into()),
+            1009 => l.push(format!(
+                "fast-fail: the program stopped itself on purpose (abort, a failed security check or a detected stack smash); reason code {:#x} (rcx)",
+                r.get("rcx").unwrap_or(0)
+            )),
+            1116 => l.push("heap corruption: a block was overrun or freed twice; the frames below show who noticed".into()),
+            6 => l.push("abort():the program stopped itself (an assert, a panic, a failed check, or a corrupted heap): read the frames below".into()),
             8 => l.push("arithmetic fault: an integer division by zero or an overflow in the instruction above".into()),
             4 => l.push("illegal instruction: the code is damaged or the jump went into data".into()),
             _ => {}

@@ -2,11 +2,12 @@
 //! `WaitForDebugEvent`, `ContinueDebugEvent`, thread contexts, `ReadProcessMemory`). It never hides itself
 //! from the program: `IsDebuggerPresent` answers true and the program's own checks are left alone.
 //!
-//! Not run on Windows yet: it builds and passes clippy for `x86_64-pc-windows-gnu` only.
+//! Tested through wine (tests/dbg_windows.rs) and by CI on windows-latest.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -65,6 +66,8 @@ pub struct Windows {
     exited: bool,
     stdin: Option<HANDLE>,
     out: Arc<Mutex<Vec<u8>>>,
+    /// Set by the reader of the output pipe when it has seen the end.
+    out_done: Arc<AtomicBool>,
 }
 
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -177,6 +180,8 @@ impl Windows {
         }
         let out = Arc::new(Mutex::new(Vec::new()));
         let (sink, h) = (out.clone(), Sendable(out_r as usize));
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = done.clone();
         std::thread::spawn(move || {
             let h = h.0 as HANDLE;
             let mut buf = [0u8; 4096];
@@ -196,8 +201,10 @@ impl Windows {
             }
             // SAFETY: the pipe's read end is closed once.
             unsafe { CloseHandle(h) };
+            flag.store(true, Ordering::SeqCst);
         });
         let mut w = Windows::blank(pi.dwProcessId, pi.hProcess, true, out);
+        w.out_done = done;
         w.stdin = Some(in_w);
         w.until_created()?;
         Ok(w)
@@ -251,6 +258,7 @@ impl Windows {
             exited: false,
             stdin: None,
             out,
+            out_done: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -644,6 +652,11 @@ impl Target for Windows {
                     let code = unsafe { ev.u.ExitProcess.dwExitCode } as i32;
                     self.exited = true;
                     self.held.clear();
+                    // what the program wrote last is still on its way through the pipe: give it a moment
+                    let by = Instant::now() + Duration::from_millis(500);
+                    while !self.out_done.load(Ordering::SeqCst) && Instant::now() < by {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                     // SAFETY: the last event of the program is answered.
                     unsafe { ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE) };
                     return Ok(vec![Event::Exited { code }]);

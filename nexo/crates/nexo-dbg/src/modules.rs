@@ -264,6 +264,11 @@ impl Mods {
         let look = if first { pc } else { pc.wrapping_sub(1) };
         if let Some(idx) = self.locate(look) {
             self.ensure(idx);
+            if let Some(img) = self.image(idx).filter(|i| i.format == nexo_bin::Format::Pe) {
+                if let Some(s) = crate::pe_unwind::unwind(img, self.bias(idx), look, gp, rd) {
+                    return Some(s);
+                }
+            }
             if let Some(r) = self.unwind_cfi(idx, look, gp, rd) {
                 return r;
             }
