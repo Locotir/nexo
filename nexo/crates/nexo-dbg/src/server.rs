@@ -307,6 +307,7 @@ fn handle(sess: &mut Session, stream: TcpStream, token: &str, pending: &mut Opti
             .map(|a| a.iter().filter_map(|w| w.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
         let cmd = words.first().map(String::as_str).unwrap_or("");
+        let before = sess.nstop;
         let res: Result<Output> = match cmd {
             "__first" => Ok(pending.take().unwrap_or_else(|| rows("status", vec!["no news".into()], json!({})))),
             "__end" => {
@@ -323,7 +324,13 @@ fn handle(sess: &mut Session, stream: TcpStream, token: &str, pending: &mut Opti
             _ => sess.exec(&words),
         };
         match res {
-            Ok(o) => json!({"ok": true, "out": out_to_json(&o), "state": state_word(sess)}),
+            Ok(o) => {
+                let stop = sess
+                    .last_stop
+                    .as_ref()
+                    .map(|s| json!({"n": s.n, "event": s.event, "place": s.place, "addr": s.addr}));
+                json!({"ok": true, "out": out_to_json(&o), "state": state_word(sess), "stop": stop, "fresh": sess.nstop != before})
+            }
             Err(e) => json!({"ok": false, "error": e.to_string(), "code": e.exit_code(), "state": state_word(sess)}),
         }
     };
@@ -346,6 +353,9 @@ fn state_word(s: &Session) -> &'static str {
 pub struct Reply {
     pub out: Output,
     pub state: String,
+    /// The last stop (its number, event, place and address), and whether this very call produced it.
+    pub stop: Option<crate::engine::StopInfo>,
+    pub fresh: bool,
 }
 
 struct Entry {
@@ -387,7 +397,13 @@ pub fn request(dir: &Path, id: &str, words: &[String]) -> Result<Reply> {
     let v: Value = serde_json::from_str(&line).map_err(|_| Error::Fail("the session did not answer".into()))?;
     let state = v["state"].as_str().unwrap_or("").to_string();
     if v["ok"].as_bool() == Some(true) {
-        Ok(Reply { out: out_from_json(&v["out"]), state })
+        let stop = v["stop"].as_object().map(|_| crate::engine::StopInfo {
+            n: v["stop"]["n"].as_u64().unwrap_or(0),
+            event: v["stop"]["event"].as_str().unwrap_or("").to_string(),
+            place: v["stop"]["place"].as_str().unwrap_or("").to_string(),
+            addr: v["stop"]["addr"].as_u64().unwrap_or(0),
+        });
+        Ok(Reply { out: out_from_json(&v["out"]), state, stop, fresh: v["fresh"].as_bool() == Some(true) })
     } else {
         let msg = v["error"].as_str().unwrap_or("failed").to_string();
         Err(if v["code"].as_i64() == Some(2) { Error::Usage(msg) } else { Error::Fail(msg) })
@@ -463,6 +479,35 @@ pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
                 continue;
             }
             return fail(format!("the debug server ended at once ({st}) without a word"));
+        }
+        if Instant::now() > deadline {
+            return fail("the debug server did not come up in 40 seconds");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Start a server for a new session on a thread of this process; returns the id once the program is
+/// loaded (or the server's own reason for failing). The program ends with the process (it is killed when
+/// nexo exits, by the kernel if need be), so nothing outlives the run.
+pub fn spawn_thread(dir: &Path, kind: &Kind) -> Result<String> {
+    let id = new_id();
+    std::fs::create_dir_all(dir)?;
+    let start = Start { id: id.clone(), dir: dir.to_path_buf(), kind: kind.clone(), owner: None, idle: IDLE };
+    let handle = std::thread::Builder::new()
+        .name(format!("dbg-{id}"))
+        .spawn(move || serve(&start))
+        .map_err(|e| Error::Fail(format!("cannot start the debug server: {e}")))?;
+    let deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        if session_file(dir, &id).exists() {
+            return read_entry(dir, &id).map(|_| id);
+        }
+        if handle.is_finished() {
+            if session_file(dir, &id).exists() {
+                continue;
+            }
+            return fail("the debug server ended at once without a word");
         }
         if Instant::now() > deadline {
             return fail("the debug server did not come up in 40 seconds");

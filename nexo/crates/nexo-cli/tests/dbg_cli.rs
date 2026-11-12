@@ -52,7 +52,10 @@ fn a_session_lives_between_calls_and_end_leaves_nothing() {
     let first = nexo(&tmp, &["run", sleep.to_str().unwrap(), "60"]);
     let text = out(&first);
     assert!(first.status.success(), "{text}");
-    assert!(text.contains("session ") && text.contains("stopped at the program's entry"), "{text}");
+    assert!(
+        text.starts_with("debug ") && text.contains(" stop entry ") && text.contains("stopped at the program's entry"),
+        "{text}"
+    );
     let pid = pid_of(&text);
     assert!(alive(pid));
     // the next calls find the session by themselves (it is the only one)

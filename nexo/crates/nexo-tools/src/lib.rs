@@ -10,6 +10,7 @@
 pub mod bash;
 pub mod checkers;
 pub mod data_check;
+pub mod debug;
 pub mod edit;
 pub mod edit_check;
 pub mod glob;

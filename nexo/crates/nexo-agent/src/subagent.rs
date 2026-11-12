@@ -517,6 +517,9 @@ impl SubAgent {
                 && !matches!(spec.name.as_str(), "jobs" | "diagnostics");
             if listed && (!p.read_only || readable) {
                 set.add(t.clone());
+            } else if listed && spec.name == "debug" {
+                // a read-only kind may look at and steer a session another agent started, nothing more
+                set.add(std::sync::Arc::new(nexo_tools::debug::Debug::steer_only()));
             }
         }
         set

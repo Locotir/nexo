@@ -1803,6 +1803,7 @@ dependencies = [
  "landlock",
  "libc",
  "nexo-core",
+ "nexo-dbg",
  "nexo-providers",
  "regex",
  "reqwest",

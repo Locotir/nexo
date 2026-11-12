@@ -152,6 +152,9 @@ fn session_builtins(cfg: &Config) -> ToolSet {
         tools.remove("web_fetch");
         tools.remove("web_search");
     }
+    if cfg.tools.debug {
+        tools.add(Arc::new(nexo_tools::debug::Debug::new()));
+    }
     tools
 }
 

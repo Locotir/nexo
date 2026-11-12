@@ -114,8 +114,19 @@ pub struct Session {
     pub log: VecDeque<String>,
     pub history: VecDeque<Rec>,
     pub nstop: u64,
+    /// Where the last stop was, for the header of the answer.
+    pub last_stop: Option<StopInfo>,
     pub catch: BTreeSet<u32>,
     pub exit: Option<String>,
+}
+
+/// A stop in the words of the header line of an answer: its number, the event, the place and the address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopInfo {
+    pub n: u64,
+    pub event: String,
+    pub place: String,
+    pub addr: u64,
 }
 
 pub fn signal_name(n: u32) -> &'static str {
@@ -205,6 +216,7 @@ impl Session {
             log: VecDeque::new(),
             history: VecDeque::new(),
             nstop: 0,
+            last_stop: None,
             catch: default_catch(os),
             exit: None,
         };

@@ -1038,64 +1038,23 @@ pub fn command_words(command: &str) -> Option<Vec<Vec<String>>> {
     Some(segments.into_iter().filter(|s| !s.is_empty()).collect())
 }
 
-/// What a `nexo dbg` command does to the world.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DbgClass {
-    /// Looks at, or steers, a program the person already let the debugger start.
-    Control,
-    /// Writes into the program: memory or a register, or attaches to a process that was not started here.
-    Change,
-    /// Starts a program (judged like running it in the shell), or is not a known command.
-    Other,
-}
-
-/// Classify the words after `nexo dbg`. A `do "a; b"` script is as strong as its strongest command.
-pub fn dbg_class(words: &[String]) -> DbgClass {
-    let mut it = words.iter().peekable();
-    while let Some(w) = it.peek() {
-        match w.as_str() {
-            "-s" | "--session" | "--lines" | "--from" => {
-                it.next();
-                it.next();
-            }
-            "--json" => {
-                it.next();
-            }
-            _ => break,
-        }
-    }
-    let Some(cmd) = it.next() else { return DbgClass::Control };
-    match cmd.as_str() {
-        "attach" | "write" | "setreg" => DbgClass::Change,
-        "run" | "__serve" => DbgClass::Other,
-        "do" => {
-            let rest: Vec<&String> = it.filter(|w| !w.starts_with("--")).collect();
-            let script = rest.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
-            let mut worst = DbgClass::Control;
-            for part in script.split(';').map(str::trim).filter(|p| !p.is_empty()) {
-                let w: Vec<String> = part.split_whitespace().map(str::to_string).collect();
-                match (w.first().map(String::as_str), dbg_class(&w)) {
-                    (Some("do"), _) | (_, DbgClass::Other) => return DbgClass::Other,
-                    (_, DbgClass::Change) => worst = DbgClass::Change,
-                    _ => {}
-                }
-            }
-            worst
-        }
-        "status" | "info" | "regs" | "mem" | "x" | "print" | "p" | "args" | "bt" | "threads" | "thread" | "breaks"
-        | "watches" | "maps" | "modules" | "find" | "history" | "out" | "log" | "dis" | "disasm" | "sessions"
-        | "help" | "catches" | "break" | "b" | "tbreak" | "delete" | "del" | "enable" | "disable" | "cont" | "c"
-        | "continue" | "step" | "s" | "next" | "n" | "finish" | "until" | "wait" | "stop" | "kill" | "detach"
-        | "end" | "stdin" | "catch" | "watch" | "core" => DbgClass::Control,
-        _ => DbgClass::Other,
-    }
-}
+use nexo_dbg::{dbg_class, DbgClass};
 
 /// Whether a command line holds a `nexo dbg` command that writes into a program or attaches to a process.
 pub fn dbg_changes(command: &str) -> bool {
     command_words(command).is_some_and(|segs| {
         segs.iter().any(|s| s.len() > 1 && s[0] == "nexo" && s[1] == "dbg" && dbg_class(&s[2..]) == DbgClass::Change)
     })
+}
+
+/// Whether a call of `tool` writes into a debugged program or attaches to a process: the shell with such a
+/// `nexo dbg` line, or the `debug` tool with such a command.
+pub fn changes_a_program(tool: &str, args: &serde_json::Value) -> bool {
+    let Some(command) = args.get("command").and_then(serde_json::Value::as_str) else { return false };
+    if tool == "debug" {
+        return dbg_class(&nexo_dbg::split_words(command)) == DbgClass::Change;
+    }
+    dbg_changes(command)
 }
 
 /// One command (its words) of the reading kind.

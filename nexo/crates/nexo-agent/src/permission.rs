@@ -134,7 +134,7 @@ impl Policy {
         // writing into a program under the debugger, or attaching to a process, asks every time
         if kind == ToolKind::Exec
             && self.mode != PermissionMode::Auto
-            && args.get("command").and_then(Value::as_str).is_some_and(nexo_tools::bash::dbg_changes)
+            && nexo_tools::bash::changes_a_program(tool, args)
         {
             return Decision::Ask;
         }
@@ -1564,6 +1564,11 @@ mod flag_tests {
             assert_eq!(at(&ruled, json!({"command": c}), true), Decision::Ask, "{c}");
         }
         assert_eq!(at(&ruled, json!({"command": "nexo dbg regs"}), true), Decision::Allow);
+        let dbg = |c: &str, k| ruled.decide_boxed("debug", k, &json!({"command": c}), Path::new("/work/proj"), true);
+        for c in ["attach 12", "write 0x10 90", "setreg rax 1", "do \"cont; write 1 2\""] {
+            assert_eq!(dbg(c, ToolKind::Exec), Decision::Ask, "{c}");
+        }
+        assert_eq!(dbg("regs", ToolKind::Read), Decision::Allow);
         assert_eq!(
             at(&policy(PermissionMode::Auto, &[], &[]), json!({"command": "nexo dbg attach 12"}), true),
             Decision::Allow

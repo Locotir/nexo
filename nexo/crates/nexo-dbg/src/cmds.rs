@@ -6,7 +6,7 @@ use std::time::Duration;
 use nexo_bin::{decode_live, parse_addr, parse_pattern, typed_rows, ElemType, LiveIns, Output, Place};
 use serde_json::json;
 
-use crate::engine::{rows, signal_name, Bp, Rec, Run, Session, State, Temp, TempKind, Why, Wp, HISTORY};
+use crate::engine::{rows, signal_name, Bp, Rec, Run, Session, State, StopInfo, Temp, TempKind, Why, Wp, HISTORY};
 use crate::platform::{Access, Fault, HwSlot, Os, Tid};
 use crate::{fail, usage, Result};
 
@@ -904,6 +904,21 @@ impl Session {
             Why::Exited(c) => format!("the program exited with code {c}"),
             Why::Killed(s) => format!("the program was killed by {}", signal_name(*s as u32)),
         };
+        let event = match &why {
+            Why::Entry => "entry",
+            Why::Step => "step",
+            Why::Next => "next",
+            Why::Finish => "finish",
+            Why::Until => "until",
+            Why::Break(_) => "breakpoint",
+            Why::Watch(_) => "watch",
+            Why::Signal(_) => "signal",
+            Why::Int3 => "int3",
+            Why::Interrupt => "interrupt",
+            Why::Exec => "exec",
+            Why::Exited(_) => "exit",
+            Why::Killed(_) => "killed",
+        };
         let short = match &why {
             Why::Step | Why::Next => "step".to_string(),
             other => format!("{other:?}").split(['(', ' ']).next().unwrap_or("").to_lowercase(),
@@ -913,6 +928,7 @@ impl Session {
             if let Some(o) = self.new_output_line() {
                 l.push(o);
             }
+            self.last_stop = Some(StopInfo { n: self.nstop, event: event.into(), place: "-".into(), addr: 0 });
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: crate::Regs::default() });
             return rows("exit", l, json!({"state": "exited"}));
         }
@@ -920,6 +936,12 @@ impl Session {
         if let Ok(r) = self.t.regs(tid) {
             let name = self.mods.label(r.rip, false).unwrap_or_default();
             l.push(format!("pc {:#x} {name}", r.rip));
+            self.last_stop = Some(StopInfo {
+                n: self.nstop,
+                event: event.into(),
+                place: if name.is_empty() { "?".into() } else { name.clone() },
+                addr: r.rip,
+            });
             let bytes = self.read_vec(r.rip, 16);
             let ins: Option<LiveIns> = decode_live(&bytes, r.rip, &|n| r.get(n));
             if let Some(i) = &ins {

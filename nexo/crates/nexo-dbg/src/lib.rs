@@ -4,6 +4,7 @@
 //!
 //! Nothing here hides the debugger from the program it runs.
 
+mod client;
 mod cmds;
 mod engine;
 mod expr;
@@ -15,13 +16,14 @@ mod server;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;
 
+pub use client::{dbg_class, execute, header, parse, parse_header, Call, DbgClass, Header, Host};
 pub use cmds::{help, split_words, Args, DEFAULT_WAIT, MAX_WAIT, READ_ONLY};
-pub use engine::{Session, State};
+pub use engine::{Session, State, StopInfo};
 pub use platform::{
     attach, launch, Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Target, Tid, Touch,
 };
 pub use regs::Regs;
-pub use server::{open, owner_of, request, serve, sessions, spawn, state_dir, Kind, Reply, Start, IDLE};
+pub use server::{open, owner_of, request, serve, sessions, spawn, spawn_thread, state_dir, Kind, Reply, Start, IDLE};
 
 use std::fmt;
 

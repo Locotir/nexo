@@ -9,6 +9,7 @@ description = "nexo: the built-in tools (read, write, edit, bash, glob, grep, ls
 
 [dependencies]
 nexo-core = { workspace = true }
+nexo-dbg = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
