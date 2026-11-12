@@ -141,7 +141,7 @@ fn a_crash_is_explained() {
         .parse()
         .unwrap();
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/dbg_target.rs")).unwrap();
-    assert!(src.lines().nth(line as usize - 1).unwrap().contains("read_volatile"), "line {line}: {pc}");
+    assert!(src.lines().nth(line as usize - 1).unwrap().contains("the faulting load"), "line {line}: {pc}");
     run(&mut s, "kill");
 }
 

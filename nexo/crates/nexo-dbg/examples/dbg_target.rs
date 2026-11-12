@@ -22,8 +22,20 @@ pub extern "C" fn dbg_add(a: u64, b: u64) -> u64 {
 #[inline(never)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn dbg_crash(p: *const u64) -> u64 {
+    // A plain load, not read_volatile: Rust before 1.90 checks read_volatile's pointer in debug builds and aborts in
+    // libc, and the tests want the fault on this function's own load whatever the toolchain.
+    let v: u64;
+    #[cfg(target_arch = "x86_64")]
     // SAFETY: not safe on purpose, this is the crash the debugger tests look at.
-    unsafe { std::ptr::read_volatile(p) }
+    unsafe {
+        std::arch::asm!("mov {}, qword ptr [{}]", out(reg) v, in(reg) p); // the faulting load
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    // SAFETY: as above.
+    unsafe {
+        v = std::ptr::read_volatile(p); // the faulting load
+    }
+    v
 }
 
 fn main() {
