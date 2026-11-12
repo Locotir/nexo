@@ -1,6 +1,7 @@
 //! `decomp`: pseudo-C for one x86-64 function.
 #![allow(dead_code, clippy::needless_range_loop)]
 
+pub mod divrec;
 pub mod flow;
 pub mod ir;
 pub mod lift;

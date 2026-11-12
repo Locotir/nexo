@@ -606,7 +606,7 @@ pub struct Block {
     pub term_addr: u64,
 }
 
-fn fold_bin(op: Bin, x: u64, y: u64, w: Bits) -> Option<u64> {
+pub(super) fn fold_bin(op: Bin, x: u64, y: u64, w: Bits) -> Option<u64> {
     let (sx, sy) = (signed(x, w), signed(y, w));
     let sh = (y & if w > 32 { 63 } else { 31 }) as u32;
     Some(
@@ -629,7 +629,7 @@ fn fold_bin(op: Bin, x: u64, y: u64, w: Bits) -> Option<u64> {
     )
 }
 
-fn fold_cmp(op: Cmp, x: u64, y: u64, w: Bits) -> Option<bool> {
+pub(super) fn fold_cmp(op: Cmp, x: u64, y: u64, w: Bits) -> Option<bool> {
     let (sx, sy) = (signed(x, w), signed(y, w));
     Some(match op {
         Cmp::Eq => x == y,

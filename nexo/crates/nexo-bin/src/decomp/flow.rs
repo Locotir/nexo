@@ -277,6 +277,12 @@ fn is_trivial(e: &Expr) -> bool {
         Expr::Flags(_, a, c) => is_simple(a) && is_simple(c),
         Expr::Bin(Bin::Add | Bin::Sub, a, c) => is_simple(a) && is_simple(c) && e.size() <= 5,
         Expr::Insert(..) => false,
+        Expr::Bin(Bin::UDiv | Bin::SDiv | Bin::UMod | Bin::SMod, a, c) => is_simple(a) && c.as_const().is_some(),
+        Expr::Zext(x, _) | Expr::Sext(x, _)
+            if matches!(**x, Expr::Bin(Bin::UDiv | Bin::SDiv | Bin::UMod | Bin::SMod, ..)) =>
+        {
+            is_trivial(x)
+        }
         _ => is_simple(e) && e.size() <= 4,
     }
 }
@@ -544,6 +550,7 @@ pub fn dce(f: &mut Lifted) -> bool {
 pub fn propagate(f: &mut Lifted) {
     for _ in 0..60 {
         let a = round(f);
+        recover_divs(f);
         let b = dce(f);
         if !a && !b {
             break;
@@ -1199,4 +1206,9 @@ fn drop_dead_inserts(f: &mut Lifted) {
             }
         }
     }
+}
+
+/// Turn multiply-and-shift sequences into divisions and remainders by their constant.
+fn recover_divs(f: &mut Lifted) {
+    super::divrec::recover_fn(f);
 }
