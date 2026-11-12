@@ -54,6 +54,8 @@ pub(crate) struct Cpu {
     pub rip: u64,
     pub flags: u64,
     pub xmm: [u128; 16],
+    /// The high 128 bits of each ymm register (AVX).
+    pub ymmh: [u128; 16],
     pub fs_base: u64,
     pub gs_base: u64,
     /// Steps a `rep` instruction may still take (each repetition counts as one step).
@@ -89,7 +91,17 @@ fn is_high8(r: Register) -> bool {
 
 impl Cpu {
     pub(crate) fn new() -> Cpu {
-        Cpu { gpr: [0; 16], rip: 0, flags: 0x202, xmm: [0; 16], fs_base: 0, gs_base: 0, budget: 0, extra_steps: 0 }
+        Cpu {
+            gpr: [0; 16],
+            rip: 0,
+            flags: 0x202,
+            xmm: [0; 16],
+            ymmh: [0; 16],
+            fs_base: 0,
+            gs_base: 0,
+            budget: 0,
+            extra_steps: 0,
+        }
     }
 
     fn flag(&self, f: u64) -> bool {

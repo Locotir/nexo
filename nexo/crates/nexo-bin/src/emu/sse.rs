@@ -8,7 +8,7 @@ use super::mem::Mem;
 
 type R<T> = Result<T, Event>;
 
-fn is_xmm(r: Register) -> bool {
+pub(super) fn is_xmm(r: Register) -> bool {
     r.is_xmm()
 }
 
@@ -57,7 +57,7 @@ fn put(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction, op: u32, size: usize, v:
     }
 }
 
-fn lane(v: u128, w: usize, i: usize) -> u64 {
+pub(super) fn lane(v: u128, w: usize, i: usize) -> u64 {
     let bits = w * 8;
     ((v >> (i * bits)) & ((1u128 << bits) - 1)) as u64
 }
@@ -75,7 +75,7 @@ fn lanes(a: u128, b: u128, w: usize, f: impl Fn(u64, u64) -> u64) -> u128 {
 }
 
 /// Lanes from a list (the first is the lowest).
-fn join(vals: &[u64], w: usize) -> u128 {
+pub(super) fn join(vals: &[u64], w: usize) -> u128 {
     let m = (1u128 << (w * 8)) - 1;
     vals.iter().enumerate().fold(0u128, |acc, (i, &v)| acc | ((v as u128 & m) << (i * w * 8)))
 }
@@ -122,13 +122,188 @@ fn width(mn: M) -> usize {
         | M::Punpckhdq
         | M::Pslld
         | M::Psrld
-        | M::Psrad => 4,
+        | M::Psrad
+        | M::Pminsd
+        | M::Pmaxsd
+        | M::Pminud
+        | M::Pmaxud
+        | M::Pmulld => 4,
         _ => 8,
     }
 }
 
 fn sat(v: i64, lo: i64, hi: i64) -> u64 {
     v.clamp(lo, hi) as u64
+}
+
+/// The lane arithmetic, logic, shuffles and shifts on two 128-bit values, shared by the legacy SSE forms and
+/// the VEX forms (which run it once per 128-bit half). `d` is the first source, `s` the second (or the shift
+/// count, or the source of a shuffle), `imm` the immediate byte. `None` when `mn` is not one of these.
+pub(super) fn lane_op(mn: M, d: u128, s: u128, imm: u64) -> Option<u128> {
+    Some(match mn {
+        M::Pxor | M::Xorps | M::Xorpd => d ^ s,
+        M::Pand | M::Andps | M::Andpd => d & s,
+        M::Por | M::Orps | M::Orpd => d | s,
+        M::Pandn | M::Andnps | M::Andnpd => !d & s,
+        M::Paddb
+        | M::Paddw
+        | M::Paddd
+        | M::Paddq
+        | M::Psubb
+        | M::Psubw
+        | M::Psubd
+        | M::Psubq
+        | M::Pcmpeqb
+        | M::Pcmpeqw
+        | M::Pcmpeqd
+        | M::Pcmpgtb
+        | M::Pcmpgtw
+        | M::Pcmpgtd
+        | M::Pminub
+        | M::Pmaxub
+        | M::Pminsw
+        | M::Pmaxsw
+        | M::Pminsd
+        | M::Pmaxsd
+        | M::Pminud
+        | M::Pmaxud
+        | M::Pmullw
+        | M::Pmulld
+        | M::Pmulhw
+        | M::Pmulhuw
+        | M::Pavgb
+        | M::Pavgw
+        | M::Paddusb
+        | M::Paddusw
+        | M::Psubusb
+        | M::Psubusw
+        | M::Paddsb
+        | M::Paddsw
+        | M::Psubsb
+        | M::Psubsw => {
+            let w = width(mn);
+            let ones = u64::MAX;
+            let (smin, smax) = (-(1i64 << (w * 8 - 1)), (1i64 << (w * 8 - 1)) - 1);
+            let umax = ((1u128 << (w * 8)) - 1) as i64;
+            lanes(d, s, w, |a, b| match mn {
+                M::Paddb | M::Paddw | M::Paddd | M::Paddq => a.wrapping_add(b),
+                M::Psubb | M::Psubw | M::Psubd | M::Psubq => a.wrapping_sub(b),
+                M::Pcmpeqb | M::Pcmpeqw | M::Pcmpeqd => {
+                    if a == b {
+                        ones
+                    } else {
+                        0
+                    }
+                }
+                M::Pcmpgtb | M::Pcmpgtw | M::Pcmpgtd => {
+                    if sext(a, w) > sext(b, w) {
+                        ones
+                    } else {
+                        0
+                    }
+                }
+                M::Pminub | M::Pminud => a.min(b),
+                M::Pmaxub | M::Pmaxud => a.max(b),
+                M::Pminsw | M::Pminsd => sext(a, w).min(sext(b, w)) as u64,
+                M::Pmaxsw | M::Pmaxsd => sext(a, w).max(sext(b, w)) as u64,
+                M::Pmullw | M::Pmulld => (sext(a, w) * sext(b, w)) as u64,
+                M::Pmulhw => ((sext(a, w) * sext(b, w)) >> 16) as u64,
+                M::Pmulhuw => (a * b) >> 16,
+                M::Pavgb | M::Pavgw => (a + b + 1) >> 1,
+                M::Paddusb | M::Paddusw => sat(a as i64 + b as i64, 0, umax),
+                M::Psubusb | M::Psubusw => sat(a as i64 - b as i64, 0, umax),
+                M::Paddsb | M::Paddsw => sat(sext(a, w) + sext(b, w), smin, smax),
+                _ => sat(sext(a, w) - sext(b, w), smin, smax),
+            })
+        }
+        M::Pmuludq => join(&[lane(d, 4, 0) * lane(s, 4, 0), lane(d, 4, 2) * lane(s, 4, 2)], 8),
+        M::Psadbw => {
+            let sum = |h: usize| (0..8).map(|i| lane(d, 1, h * 8 + i).abs_diff(lane(s, 1, h * 8 + i))).sum::<u64>();
+            join(&[sum(0), sum(1)], 8)
+        }
+        M::Pshufb => {
+            let v: Vec<u64> = (0..16)
+                .map(|i| match lane(s, 1, i) {
+                    c if c & 0x80 != 0 => 0,
+                    c => lane(d, 1, (c & 15) as usize),
+                })
+                .collect();
+            join(&v, 1)
+        }
+        M::Pshufd => {
+            let v: Vec<u64> = (0..4).map(|i| lane(s, 4, ((imm >> (2 * i)) & 3) as usize)).collect();
+            join(&v, 4)
+        }
+        M::Pshuflw | M::Pshufhw => {
+            let base = if mn == M::Pshuflw { 0 } else { 4 };
+            let mut v: Vec<u64> = (0..8).map(|i| lane(s, 2, i)).collect();
+            for i in 0..4 {
+                v[base + i] = lane(s, 2, base + ((imm >> (2 * i)) & 3) as usize);
+            }
+            join(&v, 2)
+        }
+        M::Shufps => {
+            let pick = |v: u128, i: u64| lane(v, 4, ((imm >> (2 * i)) & 3) as usize);
+            join(&[pick(d, 0), pick(d, 1), pick(s, 2), pick(s, 3)], 4)
+        }
+        M::Shufpd => join(&[lane(d, 8, (imm & 1) as usize), lane(s, 8, ((imm >> 1) & 1) as usize)], 8),
+        M::Punpcklbw
+        | M::Punpcklwd
+        | M::Punpckldq
+        | M::Punpcklqdq
+        | M::Punpckhbw
+        | M::Punpckhwd
+        | M::Punpckhdq
+        | M::Punpckhqdq
+        | M::Unpcklps
+        | M::Unpckhps
+        | M::Unpcklpd
+        | M::Unpckhpd => {
+            let w = match mn {
+                M::Punpcklqdq | M::Punpckhqdq | M::Unpcklpd | M::Unpckhpd => 8,
+                M::Unpcklps | M::Unpckhps => 4,
+                _ => width(mn),
+            };
+            let high =
+                matches!(mn, M::Punpckhbw | M::Punpckhwd | M::Punpckhdq | M::Punpckhqdq | M::Unpckhps | M::Unpckhpd);
+            let half = 8 / w;
+            let from = if high { half } else { 0 };
+            let v: Vec<u64> = (0..half).flat_map(|i| [lane(d, w, from + i), lane(s, w, from + i)]).collect();
+            join(&v, w)
+        }
+        M::Packuswb | M::Packsswb | M::Packssdw | M::Packusdw => {
+            let (w, lo, hi) = match mn {
+                M::Packuswb => (2, 0, 255),
+                M::Packsswb => (2, -128, 127),
+                M::Packusdw => (4, 0, 65535),
+                _ => (4, -32768, 32767),
+            };
+            let n = 16 / w;
+            let v: Vec<u64> =
+                (0..2 * n).map(|i| sat(sext(lane(if i < n { d } else { s }, w, i % n), w), lo, hi)).collect();
+            join(&v, w / 2)
+        }
+        M::Psllw | M::Pslld | M::Psllq | M::Psrlw | M::Psrld | M::Psrlq | M::Psraw | M::Psrad => {
+            let w = width(mn);
+            let count = (s & u64::MAX as u128) as u64;
+            let bits = (w * 8) as u64;
+            lanes(d, 0, w, |a, _| match mn {
+                M::Psllw | M::Pslld | M::Psllq if count < bits => a << count,
+                M::Psrlw | M::Psrld | M::Psrlq if count < bits => a >> count,
+                M::Psraw | M::Psrad => (sext(a, w) >> count.min(bits - 1)) as u64,
+                _ => 0,
+            })
+        }
+        M::Pslldq | M::Psrldq => {
+            let n = imm.min(16) as u32 * 8;
+            match (mn, n) {
+                (_, 128) => 0,
+                (M::Pslldq, n) => d << n,
+                (_, n) => d >> n,
+            }
+        }
+        _ => return None,
+    })
 }
 
 /// Run one vector instruction; `Ok(false)` when it is not one this unit knows.
@@ -191,105 +366,6 @@ pub(super) fn exec(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction) -> R<bool> {
                 put(cpu, mem, ins, 0, 16, v)?;
             }
         }
-        M::Pxor
-        | M::Xorps
-        | M::Xorpd
-        | M::Pand
-        | M::Andps
-        | M::Andpd
-        | M::Por
-        | M::Orps
-        | M::Orpd
-        | M::Pandn
-        | M::Andnps
-        | M::Andnpd => {
-            let (d, s) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?);
-            let v = match mn {
-                M::Pxor | M::Xorps | M::Xorpd => d ^ s,
-                M::Pand | M::Andps | M::Andpd => d & s,
-                M::Por | M::Orps | M::Orpd => d | s,
-                _ => !d & s,
-            };
-            put(cpu, mem, ins, 0, 16, v)?;
-        }
-        M::Paddb
-        | M::Paddw
-        | M::Paddd
-        | M::Paddq
-        | M::Psubb
-        | M::Psubw
-        | M::Psubd
-        | M::Psubq
-        | M::Pcmpeqb
-        | M::Pcmpeqw
-        | M::Pcmpeqd
-        | M::Pcmpgtb
-        | M::Pcmpgtw
-        | M::Pcmpgtd
-        | M::Pminub
-        | M::Pmaxub
-        | M::Pminsw
-        | M::Pmaxsw
-        | M::Pmullw
-        | M::Pmulhw
-        | M::Pmulhuw
-        | M::Pavgb
-        | M::Pavgw
-        | M::Paddusb
-        | M::Paddusw
-        | M::Psubusb
-        | M::Psubusw
-        | M::Paddsb
-        | M::Paddsw
-        | M::Psubsb
-        | M::Psubsw => {
-            let w = width(mn);
-            let (d, s) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?);
-            let ones = u64::MAX;
-            let (smin, smax) = (-(1i64 << (w * 8 - 1)), (1i64 << (w * 8 - 1)) - 1);
-            let umax = ((1u128 << (w * 8)) - 1) as i64;
-            let v = lanes(d, s, w, |a, b| match mn {
-                M::Paddb | M::Paddw | M::Paddd | M::Paddq => a.wrapping_add(b),
-                M::Psubb | M::Psubw | M::Psubd | M::Psubq => a.wrapping_sub(b),
-                M::Pcmpeqb | M::Pcmpeqw | M::Pcmpeqd => {
-                    if a == b {
-                        ones
-                    } else {
-                        0
-                    }
-                }
-                M::Pcmpgtb | M::Pcmpgtw | M::Pcmpgtd => {
-                    if sext(a, w) > sext(b, w) {
-                        ones
-                    } else {
-                        0
-                    }
-                }
-                M::Pminub => a.min(b),
-                M::Pmaxub => a.max(b),
-                M::Pminsw => sext(a, w).min(sext(b, w)) as u64,
-                M::Pmaxsw => sext(a, w).max(sext(b, w)) as u64,
-                M::Pmullw => (sext(a, w) * sext(b, w)) as u64,
-                M::Pmulhw => ((sext(a, w) * sext(b, w)) >> 16) as u64,
-                M::Pmulhuw => (a * b) >> 16,
-                M::Pavgb | M::Pavgw => (a + b + 1) >> 1,
-                M::Paddusb | M::Paddusw => sat(a as i64 + b as i64, 0, umax),
-                M::Psubusb | M::Psubusw => sat(a as i64 - b as i64, 0, umax),
-                M::Paddsb | M::Paddsw => sat(sext(a, w) + sext(b, w), smin, smax),
-                _ => sat(sext(a, w) - sext(b, w), smin, smax),
-            });
-            put(cpu, mem, ins, 0, 16, v)?;
-        }
-        M::Pmuludq => {
-            let (d, s) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?);
-            let v = join(&[lane(d, 4, 0) * lane(s, 4, 0), lane(d, 4, 2) * lane(s, 4, 2)], 8);
-            put(cpu, mem, ins, 0, 16, v)?;
-        }
-        M::Psadbw => {
-            let (d, s) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?);
-            let sum = |h: usize| (0..8).map(|i| lane(d, 1, h * 8 + i).abs_diff(lane(s, 1, h * 8 + i))).sum::<u64>();
-            put(cpu, mem, ins, 0, 16, join(&[sum(0), sum(1)], 8))?;
-        }
         M::Pmovmskb | M::Movmskps | M::Movmskpd => {
             let w = match mn {
                 M::Pmovmskb => 1,
@@ -299,85 +375,6 @@ pub(super) fn exec(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction) -> R<bool> {
             let s = get(cpu, mem, ins, 1)?;
             let bits = (0..16 / w).fold(0u64, |acc, i| acc | ((lane(s, w, i) >> (w * 8 - 1)) << i));
             cpu.set_reg(ins.op0_register(), bits)?;
-        }
-        M::Pshufd => {
-            let (s, imm) = (get(cpu, mem, ins, 1)?, ins.immediate(2));
-            let v: Vec<u64> = (0..4).map(|i| lane(s, 4, ((imm >> (2 * i)) & 3) as usize)).collect();
-            put(cpu, mem, ins, 0, 16, join(&v, 4))?;
-        }
-        M::Pshuflw | M::Pshufhw => {
-            let (s, imm) = (get(cpu, mem, ins, 1)?, ins.immediate(2));
-            let base = if mn == M::Pshuflw { 0 } else { 4 };
-            let mut v: Vec<u64> = (0..8).map(|i| lane(s, 2, i)).collect();
-            for i in 0..4 {
-                v[base + i] = lane(s, 2, base + ((imm >> (2 * i)) & 3) as usize);
-            }
-            put(cpu, mem, ins, 0, 16, join(&v, 2))?;
-        }
-        M::Shufps => {
-            let (d, s, imm) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?, ins.immediate(2));
-            let pick = |v: u128, i: u64| lane(v, 4, ((imm >> (2 * i)) & 3) as usize);
-            put(cpu, mem, ins, 0, 16, join(&[pick(d, 0), pick(d, 1), pick(s, 2), pick(s, 3)], 4))?;
-        }
-        M::Punpcklbw
-        | M::Punpcklwd
-        | M::Punpckldq
-        | M::Punpcklqdq
-        | M::Punpckhbw
-        | M::Punpckhwd
-        | M::Punpckhdq
-        | M::Punpckhqdq
-        | M::Unpcklps
-        | M::Unpckhps
-        | M::Unpcklpd
-        | M::Unpckhpd => {
-            let w = match mn {
-                M::Punpcklqdq | M::Punpckhqdq | M::Unpcklpd | M::Unpckhpd => 8,
-                M::Unpcklps | M::Unpckhps => 4,
-                _ => width(mn),
-            };
-            let high =
-                matches!(mn, M::Punpckhbw | M::Punpckhwd | M::Punpckhdq | M::Punpckhqdq | M::Unpckhps | M::Unpckhpd);
-            let (d, s) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?);
-            let half = 8 / w;
-            let from = if high { half } else { 0 };
-            let v: Vec<u64> = (0..half).flat_map(|i| [lane(d, w, from + i), lane(s, w, from + i)]).collect();
-            put(cpu, mem, ins, 0, 16, join(&v, w))?;
-        }
-        M::Packuswb | M::Packsswb | M::Packssdw => {
-            let (d, s) = (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?);
-            let (w, lo, hi) = match mn {
-                M::Packuswb => (2, 0, 255),
-                M::Packsswb => (2, -128, 127),
-                _ => (4, -32768, 32767),
-            };
-            let n = 16 / w;
-            let v: Vec<u64> =
-                (0..2 * n).map(|i| sat(sext(lane(if i < n { d } else { s }, w, i % n), w), lo, hi)).collect();
-            put(cpu, mem, ins, 0, 16, join(&v, w / 2))?;
-        }
-        M::Psllw | M::Pslld | M::Psllq | M::Psrlw | M::Psrld | M::Psrlq | M::Psraw | M::Psrad => {
-            let w = width(mn);
-            let d = get(cpu, mem, ins, 0)?;
-            let count = (get(cpu, mem, ins, 1)? & u64::MAX as u128) as u64;
-            let bits = (w * 8) as u64;
-            let v = lanes(d, 0, w, |a, _| match mn {
-                M::Psllw | M::Pslld | M::Psllq if count < bits => a << count,
-                M::Psrlw | M::Psrld | M::Psrlq if count < bits => a >> count,
-                M::Psraw | M::Psrad => (sext(a, w) >> count.min(bits - 1)) as u64,
-                _ => 0,
-            });
-            put(cpu, mem, ins, 0, 16, v)?;
-        }
-        M::Pslldq | M::Psrldq => {
-            let d = get(cpu, mem, ins, 0)?;
-            let n = ins.immediate(1).min(16) as u32 * 8;
-            let v = match (mn, n) {
-                (_, 128) => 0,
-                (M::Pslldq, n) => d << n,
-                (_, n) => d >> n,
-            };
-            put(cpu, mem, ins, 0, 16, v)?;
         }
         M::Pextrw => {
             let (s, imm) = (get(cpu, mem, ins, 1)?, ins.immediate(2));
@@ -389,7 +386,19 @@ pub(super) fn exec(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction) -> R<bool> {
             let sh = (imm & 7) * 16;
             put(cpu, mem, ins, 0, 16, (d & !(0xffffu128 << sh)) | ((s & 0xffff) << sh))?;
         }
-        _ => return Ok(false),
+        _ => {
+            if lane_op(mn, 0, 0, 0).is_none() {
+                return Ok(false);
+            }
+            let (d, s, imm) = match mn {
+                M::Pshufd | M::Pshuflw | M::Pshufhw => (0, get(cpu, mem, ins, 1)?, ins.immediate(2)),
+                M::Shufps | M::Shufpd => (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?, ins.immediate(2)),
+                M::Pslldq | M::Psrldq => (get(cpu, mem, ins, 0)?, 0, ins.immediate(1)),
+                _ => (get(cpu, mem, ins, 0)?, get(cpu, mem, ins, 1)?, 0),
+            };
+            let v = lane_op(mn, d, s, imm).unwrap_or(0);
+            put(cpu, mem, ins, 0, 16, v)?;
+        }
     }
     Ok(true)
 }

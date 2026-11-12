@@ -5,11 +5,15 @@
 //! the return value, the reason it stopped, the memory written, the library calls and a short trace.
 
 mod cpu;
+mod fp;
 mod libc;
 mod mem;
 mod sse;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_fp;
+mod vex;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
@@ -697,7 +701,10 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
         }
         let done = match m.cpu.exec(&mut m.mem, &ins) {
             Ok(true) => Ok(true),
-            Ok(false) => sse::exec(&mut m.cpu, &mut m.mem, &ins),
+            Ok(false) => match sse::exec(&mut m.cpu, &mut m.mem, &ins) {
+                Ok(false) => fp::exec(&mut m.cpu, &mut m.mem, &ins),
+                other => other,
+            },
             Err(e) => Err(e),
         };
         steps += 1 + m.cpu.extra_steps;
