@@ -35,7 +35,7 @@ pub fn wanted(command: &str, cwd: &Path) -> bool {
         .flat_map(|p| p.iter().skip(1).take(WORDS))
         // an option is not a file; a name that starts with a dash is not looked at
         .filter(|w| !w.is_empty() && !w.starts_with('-'))
-        .any(|w| nexo_bin::opens(&cwd.join(w)))
+        .any(|w| nexo_bin::opens(&cwd.join(w)) || nexo_bin::is_wasm(&cwd.join(w)))
 }
 
 /// The program a command word names, without its folder or `.exe`, in lower case.
@@ -181,6 +181,14 @@ mod tests {
         }
         assert_eq!(got, Ok(false), "the check must come back at once and say no");
         assert!(!nexo_bin::opens(dir.path()), "a folder is not a program either");
+    }
+
+    #[test]
+    fn a_webassembly_module_asks_for_the_line_too() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("m.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        assert!(wanted("strings m.wasm", dir.path()));
+        assert!(!wanted("strings notes.txt", dir.path()));
     }
 
     #[test]

@@ -45,6 +45,9 @@ fn fn_disassembles_with_offsets_callee_names_branch_targets_and_strings() {
     assert!(t.contains("call 2") && t.contains("demo::add"), "{t}");
     // every instruction line starts with a hex file offset
     assert!(t.lines().skip(1).all(|l| l.trim_start().starts_with("0x")), "{t}");
+    assert!(t.contains("global.get 0  ; $counter"), "{t}");
+    let add = ask("fn", Some("add"));
+    assert!(add.contains("local.get 0  ; $a") && add.contains("local.get 1  ; $b"), "{add}");
     let t = ask("fn", Some("4"));
     assert!(t.contains("call_indirect type 0 table 0") && t.contains("not known statically"), "{t}");
 }

@@ -95,6 +95,9 @@ pub(crate) struct Module<'a> {
     pub customs: Vec<(String, usize, usize)>,
     /// `(field, name, version)` from the producers section.
     pub producers: Vec<(String, String, String)>,
+    /// Names of locals from the name section: `(function, local) -> name`.
+    pub local_names: BTreeMap<(u32, u32), String>,
+    pub global_names: BTreeMap<u32, String>,
     pub scans: Vec<Scan>,
     /// Defined functions: the index of the first one.
     pub first_defined: u32,
@@ -143,6 +146,8 @@ impl<'a> Module<'a> {
             in_tables: Vec::new(),
             customs: Vec::new(),
             producers: Vec::new(),
+            local_names: BTreeMap::new(),
+            global_names: BTreeMap::new(),
             scans: Vec::new(),
             first_defined: 0,
             bodies: Vec::new(),
@@ -289,10 +294,25 @@ impl<'a> Module<'a> {
                     match c.as_known() {
                         KnownCustom::Name(r) => {
                             for n in r {
-                                if let Ok(Name::Function(map)) = n {
-                                    for nm in map.into_iter().flatten() {
-                                        names.insert(nm.index, nm.name.to_string());
+                                match n {
+                                    Ok(Name::Function(map)) => {
+                                        for nm in map.into_iter().flatten() {
+                                            names.insert(nm.index, nm.name.to_string());
+                                        }
                                     }
+                                    Ok(Name::Local(map)) => {
+                                        for f in map.into_iter().flatten() {
+                                            for nm in f.names.into_iter().flatten() {
+                                                m.local_names.insert((f.index, nm.index), nm.name.to_string());
+                                            }
+                                        }
+                                    }
+                                    Ok(Name::Global(map)) => {
+                                        for nm in map.into_iter().flatten() {
+                                            m.global_names.insert(nm.index, nm.name.to_string());
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

@@ -138,6 +138,25 @@ pub fn module() -> Vec<u8> {
     names.push(1);
     leb(sub.len() as u32, &mut names);
     names.extend(sub);
+    // subsection 2: local names of func 2 (`a`, `b`); subsection 7: global name
+    let mut locals = Vec::new();
+    leb(1, &mut locals);
+    leb(2, &mut locals);
+    leb(2, &mut locals);
+    for (i, n) in [(0u32, "a"), (1, "b")] {
+        leb(i, &mut locals);
+        name(n, &mut locals);
+    }
+    names.push(2);
+    leb(locals.len() as u32, &mut names);
+    names.extend(locals);
+    let mut globals = Vec::new();
+    leb(1, &mut globals);
+    leb(0, &mut globals);
+    name("counter", &mut globals);
+    names.push(7);
+    leb(globals.len() as u32, &mut names);
+    names.extend(globals);
     section(0, names, &mut m);
     m
 }

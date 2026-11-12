@@ -85,6 +85,7 @@ pub(crate) struct Open {
 /// `open` is the stack of blocks around it, updated here.
 pub(crate) fn render(
     m: &Module<'_>,
+    func: u32,
     strings: &BTreeMap<u64, String>,
     op: &Operator<'_>,
     off: usize,
@@ -141,6 +142,14 @@ pub(crate) fn render(
                 .and_then(|v| strings.get(&v))
                 .map(|s| format!("string? \"{}\"", shorten(s, 40)));
             (format!("{name} {value}"), note)
+        }
+        Operator::LocalGet { local_index }
+        | Operator::LocalSet { local_index }
+        | Operator::LocalTee { local_index } => {
+            (format!("{name} {local_index}"), m.local_names.get(&(func, *local_index)).map(|n| format!("${n}")))
+        }
+        Operator::GlobalGet { global_index } | Operator::GlobalSet { global_index } => {
+            (format!("{name} {global_index}"), m.global_names.get(global_index).map(|n| format!("${n}")))
         }
         Operator::F32Const { value } => (format!("{name} {:?}", f32::from_bits(value.bits())), None),
         Operator::F64Const { value } => (format!("{name} {:?}", f64::from_bits(value.bits())), None),
@@ -214,7 +223,7 @@ pub(crate) fn fn_view(m: &Module<'_>, path: &str, target: &str, with_bytes: bool
     for (i, (op, off)) in ops.iter().enumerate() {
         let end = ops.get(i + 1).map_or(body.end, |x| x.1);
         let depth_before = open.len();
-        let (text, note) = render(m, &strings, op, *off, &mut open);
+        let (text, note) = render(m, index, &strings, op, *off, &mut open);
         let depth = match op {
             Operator::End => open.len(),
             Operator::Else => depth_before.saturating_sub(1),
