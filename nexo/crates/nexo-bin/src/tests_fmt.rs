@@ -21,7 +21,7 @@ fn cxx_image(dir: &Path) -> Option<Image> {
          int main(int argc, char **) { geo::Shape s{argc}; return s.area(3); }\n",
     )
     .ok()?;
-    let exe = dir.join("p_cxx");
+    let exe = dir.join(if cfg!(windows) { "p_cxx.exe" } else { "p_cxx" });
     if !run_ok(Command::new("g++").args(["-O0", "-fno-pie", "-no-pie", "-o"]).arg(&exe).arg(&src)) {
         eprintln!("skipped: no g++");
         return None;

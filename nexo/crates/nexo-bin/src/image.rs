@@ -206,7 +206,11 @@ impl Image {
         for e in &self.exports {
             names.entry(e.addr).or_insert_with(|| e.name.clone());
         }
-        for s in self.symbols.iter().filter(|s| !s.func) {
+        // several data symbols can share an address (mingw puts `__data_start__` where `g_limit` is): the
+        // sized one without a linker-style leading `__` is the name the program's author wrote
+        let mut data: Vec<_> = self.symbols.iter().filter(|s| !s.func).collect();
+        data.sort_by_key(|s| (s.size == 0, s.name.starts_with("__")));
+        for s in data {
             if let Entry::Vacant(v) = names.entry(s.addr) {
                 v.insert(s.name.clone());
                 sizes.insert(s.addr, s.size);
