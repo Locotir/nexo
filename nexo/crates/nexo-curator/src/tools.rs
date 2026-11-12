@@ -155,6 +155,20 @@ fn dbg_line(line: &str) -> DbgEffect {
     }
 }
 
+/// The session a call to a debugger tool names (its `session` argument, or `-s <id>` at the head of the command);
+/// empty when it names none (the default session, which the curator cannot tell).
+pub fn debug_session(args: Option<&Value>) -> String {
+    let Some(o) = args.and_then(Value::as_object) else { return String::new() };
+    if let Some(s) = o.get("session").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        return s.to_string();
+    }
+    let mut w = o.get("command").and_then(Value::as_str).unwrap_or("").split_whitespace();
+    match (w.next(), w.next()) {
+        (Some("-s"), Some(id)) => id.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// The effect of a call to a debugger tool (`debug` with a `command`); `None` for any other tool.
 pub fn debug_effect(name: &str, args: Option<&Value>) -> Option<DbgEffect> {
     if !name_words(name).iter().any(|w| w == "debug" || w == "dbg") {
@@ -555,6 +569,9 @@ mod tests {
         assert_eq!(e("note crash: here"), Some(DbgEffect::Still));
         assert_eq!(debug_effect("bash", Some(&json!({"command": "cont"}))), None);
         assert_eq!(debug_effect("debug", None), None);
+        assert_eq!(debug_session(Some(&json!({"command": "bt", "session": "s2"}))), "s2");
+        assert_eq!(debug_session(Some(&json!({"command": "-s ab bt"}))), "ab");
+        assert_eq!(debug_session(Some(&json!({"command": "bt"}))), "");
     }
 
     #[test]

@@ -274,8 +274,8 @@ pub struct Engine {
     shell_reads: FxHashMap<usize, Vec<String>>,
     /// Debugger calls that look at the program's state (by call id), and their results (by unit): out of date once
     /// a later call moves the program.
-    dbg_look: rustc_hash::FxHashSet<String>,
-    dbg_looks: rustc_hash::FxHashSet<usize>,
+    dbg_look: FxHashMap<String, String>,
+    dbg_looks: FxHashMap<usize, String>,
     /// The reads that left the view while a later edit had made them out of date: (path, message of the edit).
     stale_gone: FxHashMap<usize, (String, usize)>,
     /// Seconds, as the host gives them with each view (`Params.pockets`).

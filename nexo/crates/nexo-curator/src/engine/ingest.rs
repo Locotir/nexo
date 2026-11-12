@@ -11,8 +11,8 @@ use crate::msg::{blocks, get_str, key_of};
 use crate::rules::{clip, rules_in};
 use crate::textops::{self};
 use crate::tools::{
-    classify, debug_effect, edit_size, full_write, heredoc_writes, printed_files, prints_files, shell_writes,
-    DbgEffect, Kind,
+    classify, debug_effect, debug_session, edit_size, full_write, heredoc_writes, printed_files, prints_files,
+    shell_writes, DbgEffect, Kind,
 };
 
 use super::files::{basename, command_of, edited, file_key, forget, head_and_tail, same_file, Wrote, WROTE_TOKENS};
@@ -302,9 +302,11 @@ impl Engine {
                     self.edits.push((p, u.msg, id.clone()));
                 }
                 match debug_effect(get_str(b, "name"), b.get("input")) {
-                    Some(DbgEffect::Move) => self.edits.push((DEBUG_STATE.to_string(), u.msg, id.clone())),
+                    Some(DbgEffect::Move) => {
+                        self.edits.push((format!("{DEBUG_STATE}{}", debug_session(b.get("input"))), u.msg, id.clone()))
+                    }
                     Some(DbgEffect::Look) => {
-                        self.dbg_look.insert(id.clone());
+                        self.dbg_look.insert(id.clone(), debug_session(b.get("input")));
                     }
                     _ => {}
                 }
@@ -316,8 +318,8 @@ impl Engine {
                 }
             } else if u.kind == UKind::Result {
                 let id = key_of(b.get("tool_use_id"));
-                if self.dbg_look.remove(&id) {
-                    self.dbg_looks.insert(i);
+                if let Some(session) = self.dbg_look.remove(&id) {
+                    self.dbg_looks.insert(i, session);
                 }
                 if self.edits.iter().any(|e| e.2 == id) {
                     self.edit_ok.insert(id.clone(), !info.is_some_and(|x| x.error));

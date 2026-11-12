@@ -28,8 +28,16 @@ impl Engine {
         if u.kind != UKind::Result || info.error {
             return None;
         }
+        if let Some(session) = self.dbg_looks.get(&i) {
+            // a move names a session or none; none could be any, so it ages every look, and a look naming none
+            // could be of any session, so every move ages it
+            return self.edits.iter().find_map(|(p, mi, id)| {
+                let moved = p.strip_prefix(DEBUG_STATE)?;
+                let same = moved.is_empty() || session.is_empty() || moved == session;
+                (*mi > u.msg && same && self.edit_ok.get(id) == Some(&true)).then(|| (DEBUG_STATE.to_string(), *mi))
+            });
+        }
         let paths: Vec<&str> = match info.kind {
-            Kind::Exec if self.dbg_looks.contains(&i) => vec![DEBUG_STATE],
             Kind::Read => info.path.as_deref().filter(|p| !p.is_empty()).into_iter().collect(),
             Kind::Exec if shell => self.shell_reads.get(&i)?.iter().map(String::as_str).collect(),
             _ => return None,

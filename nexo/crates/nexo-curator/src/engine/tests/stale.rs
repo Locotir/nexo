@@ -151,3 +151,23 @@ fn what_a_debugger_looked_at_is_out_of_date_once_the_program_moves_on() {
     assert_eq!(e.superseded_by(result_in(&e, 6)), None);
     assert_eq!(e.superseded_by(result_in(&e, 2)), None);
 }
+
+/// A move of one debugger session leaves the looks of another as they were; a move that names no session could
+/// be of any, so it ages them all.
+#[test]
+fn a_move_in_one_debugger_session_leaves_the_looks_of_another_fresh() {
+    let mut msgs = vec![json!({"role": "user", "content": "Compare two runs."})];
+    msgs.extend(tool(1, "debug", json!({"command": "regs", "session": "s1"}), "rax 0x1", false));
+    msgs.extend(tool(2, "debug", json!({"command": "regs", "session": "s2"}), "rax 0x2", false));
+    msgs.extend(tool(3, "debug", json!({"command": "cont", "session": "s2"}), "SIGSEGV", false));
+    msgs.extend(tool(4, "debug", json!({"command": "-s s1 regs"}), "rax 0x1", false));
+    let mut e = Engine::new(params("stale=1;eoq=0;threshold=0").unwrap());
+    e.sync(&msgs);
+    assert_eq!(e.superseded_by(result_in(&e, 2)), None);
+    assert_eq!(e.superseded_by(result_in(&e, 4)).map(|x| x.1), Some(5));
+    assert_eq!(e.superseded_by(result_in(&e, 8)), None);
+    msgs.extend(tool(5, "debug", json!({"command": "cont"}), "exited", false));
+    e.sync(&msgs);
+    assert_eq!(e.superseded_by(result_in(&e, 2)).map(|x| x.1), Some(9));
+    assert_eq!(e.superseded_by(result_in(&e, 8)).map(|x| x.1), Some(9));
+}

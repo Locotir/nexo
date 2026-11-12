@@ -255,7 +255,7 @@ impl Engine {
                 } else {
                     "read the file again to see it as it is now".to_string()
                 };
-                if path == super::stale::DEBUG_STATE {
+                if path.starts_with(super::stale::DEBUG_STATE) {
                     let back = if self.recall_tool {
                         format!("recall m{:05} brings it back as it was", u.msg + 1)
                     } else {
