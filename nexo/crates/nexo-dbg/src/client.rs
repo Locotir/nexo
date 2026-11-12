@@ -63,7 +63,7 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     }
     let Some(cmd) = it.next() else { return DbgClass::Control };
     match cmd.as_str() {
-        "attach" | "write" | "setreg" => DbgClass::Change,
+        "attach" | "connect" | "write" | "setreg" => DbgClass::Change,
         // a hook that sets an argument or the result changes the program
         "hook" if it.clone().any(|w| w == "set" || w == "ret") => DbgClass::Change,
         "hook" => DbgClass::Control,
@@ -288,9 +288,15 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
         return Ok(print(crate::help(), "-", &["help".to_string()], o, None, "", prefix));
     };
     match cmd {
-        "run" | "attach" | "core" => {
+        "run" | "attach" | "core" | "connect" => {
             let (mut input, mut to_main) = (None, false);
-            let kind = if cmd == "core" {
+            let kind = if cmd == "connect" {
+                let Some(addr) = o.words.get(1) else {
+                    return Err(Error::Usage("usage: connect <host:port> [--exe <path>]  (a GDB remote stub: gdbserver, qemu -g, a probe)".into()));
+                };
+                let exe = o.words.iter().position(|w| w == "--exe").and_then(|i| o.words.get(i + 1)).map(PathBuf::from);
+                Kind::Remote { addr: addr.clone(), exe }
+            } else if cmd == "core" {
                 let Some(file) = o.words.get(1) else {
                     return Err(Error::Usage("usage: core <file> [--exe <path>]".into()));
                 };
@@ -338,6 +344,9 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
             let head = header_of(&id, r.stop.as_ref(), &r.state, true, "run");
             Ok(print(r.out, &id, &["status".to_string()], o, Some(head), &r.state, prefix))
         }
+        "serve" => Err(Error::Usage(
+            "`serve --gdb <port> <program> [args]` (or `--attach <pid>`) is a server that stays up: start it from the shell, in the background".into(),
+        )),
         "sessions" => {
             let l = crate::sessions(dir);
             if l.is_empty() {

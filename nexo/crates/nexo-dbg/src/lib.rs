@@ -19,7 +19,10 @@ mod pe_unwind;
 mod places;
 mod platform;
 mod regs;
+mod remote;
+mod rsp;
 mod server;
+mod stub;
 mod syscalls;
 mod trace;
 mod vars;
@@ -38,6 +41,7 @@ pub use platform::{
 };
 pub use regs::Regs;
 pub use server::{open, owner_of, request, serve, sessions, spawn, spawn_thread, state_dir, Kind, Reply, Start, IDLE};
+pub use stub::serve_gdb;
 
 use std::fmt;
 

@@ -17,6 +17,7 @@ pub struct DbgArgs {
 fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
     let (mut id, mut dir, mut owner, mut run, mut attach) = (None, None, None, None, None);
     let (mut core, mut exe): (Option<PathBuf>, Option<PathBuf>) = (None, None);
+    let mut remote: Option<String> = None;
     let mut args = Vec::new();
     let mut it = w.iter();
     while let Some(k) = it.next() {
@@ -30,10 +31,12 @@ fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
             "--attach" => attach = v.parse().ok(),
             "--core" => core = Some(PathBuf::from(v)),
             "--exe" => exe = Some(PathBuf::from(v)),
+            "--remote" => remote = Some(v.clone()),
             other => return Err(Error::Usage(format!("unknown server option {other}"))),
         }
     }
     let kind = match (run, attach, core) {
+        _ if remote.is_some() => Kind::Remote { addr: remote.unwrap_or_default(), exe },
         (Some(exe), _, _) => Kind::Run { exe, args },
         (None, Some(pid), _) => Kind::Attach(pid),
         (None, None, Some(file)) => Kind::Core { file, exe },
@@ -48,8 +51,39 @@ fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
     })
 }
 
+/// `serve --gdb <port> <program> [args]` or `serve --gdb <port> --attach <pid>`: nexo's debugger as a GDB stub on 127.0.0.1.
+fn serve_gdb(w: &[String]) -> Result<String, Error> {
+    let usage = || {
+        Error::Usage(
+            "usage: serve --gdb <port> <program> [args]  |  serve --gdb <port> --attach <pid>  (port 0: any free port)"
+                .into(),
+        )
+    };
+    let mut it = w.iter();
+    if it.next().map(String::as_str) != Some("--gdb") {
+        return Err(usage());
+    }
+    let port: u16 = it.next().and_then(|p| p.parse().ok()).ok_or_else(usage)?;
+    let rest: Vec<String> = it.cloned().collect();
+    let kind = match rest.first().map(String::as_str) {
+        Some("--attach") => Kind::Attach(rest.get(1).and_then(|p| p.parse().ok()).ok_or_else(usage)?),
+        Some(exe) => {
+            Kind::Run { exe: PathBuf::from(exe), args: rest[1..].iter().filter(|a| *a != "--").cloned().collect() }
+        }
+        None => return Err(usage()),
+    };
+    nexo_dbg::serve_gdb(&kind, port, &mut |addr| {
+        println!("gdb stub listening on {addr}: connect with `target remote {addr}` or `nexo dbg connect {addr}`");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    })?;
+    Ok("gdb stub ended".into())
+}
+
 fn execute(a: &DbgArgs) -> Result<String, Error> {
     let call = nexo_dbg::parse(&a.words)?;
+    if call.words.first().map(String::as_str) == Some("serve") {
+        return serve_gdb(&call.words[1..]);
+    }
     nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
     if call.words.first().map(String::as_str) == Some("__serve") {
         let start = serve_args(&call.words[1..])?;

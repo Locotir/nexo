@@ -31,6 +31,11 @@ pub enum Kind {
         file: PathBuf,
         exe: Option<PathBuf>,
     },
+    /// A GDB remote stub at `host:port`, and the program's file here when the stub's own path is not one to open.
+    Remote {
+        addr: String,
+        exe: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +167,26 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
             Image::open(&path).map_err(|e| Error::Fail(format!("cannot read {} as a program: {e}", path.display())))?;
         return Ok((Session::new(Box::new(core), img), death));
     }
+    if let Kind::Remote { addr, exe } = kind {
+        let mut r = crate::remote::Remote::connect(addr)?;
+        let path = match exe {
+            Some(p) => p.clone(),
+            None => {
+                let p = PathBuf::from(r.exe_path());
+                if !p.is_file() {
+                    return fail(format!(
+                        "the stub runs {:?} and that file is not here: give the local copy with `--exe <path>`",
+                        r.exe_path()
+                    ));
+                }
+                p
+            }
+        };
+        let img =
+            Image::open(&path).map_err(|e| Error::Fail(format!("cannot read {} as a program: {e}", path.display())))?;
+        r.locate(img.entry, img.image_base);
+        return Ok((Session::new(Box::new(r), img), None));
+    }
     let t = match kind {
         Kind::Run { exe, args } => {
             if !exe.is_file() {
@@ -170,7 +195,7 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
             platform::launch(&Launch { exe: exe.clone(), args: args.clone(), ..Launch::default() })?
         }
         Kind::Attach(pid) => platform::attach(*pid)?,
-        Kind::Core { .. } => return fail("unreachable"),
+        Kind::Core { .. } | Kind::Remote { .. } => return fail("unreachable"),
     };
     let mut t = t;
     let mods = t.modules().unwrap_or_default();
@@ -195,6 +220,7 @@ pub fn open(kind: &Kind) -> Result<(Session, Output)> {
         Kind::Run { .. } => run_to_entry(&mut sess),
         Kind::Attach(pid) => attach_report(&mut sess, *pid),
         Kind::Core { file, .. } => core_report(&mut sess, file, death),
+        Kind::Remote { addr, .. } => remote_report(&mut sess, addr),
     };
     // what earlier sessions kept for this binary comes with the first answer
     let known = nexo_bin::names_brief(sess.mods.main_image(), 8);
@@ -318,6 +344,19 @@ fn core_report(s: &mut Session, file: &Path, death: Option<crate::corefile::Deat
         if n == 1 { "" } else { "s" }
     );
     o.rows.insert(0, Row { key: 0, text, json: None });
+    for (i, r) in o.rows.iter_mut().enumerate() {
+        r.key = i as u64;
+    }
+    o
+}
+
+fn remote_report(s: &mut Session, addr: &str) -> Output {
+    let tid = s.t.threads().first().copied().unwrap_or(0);
+    let mut o = s.stopped(tid, crate::engine::Why::Interrupt);
+    o.rows.insert(
+        0,
+        Row { key: 0, text: format!("connected to the stub at {addr}; the program is stopped"), json: None },
+    );
     for (i, r) in o.rows.iter_mut().enumerate() {
         r.key = i as u64;
     }
@@ -528,6 +567,12 @@ pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
         }
         Kind::Core { file, exe } => {
             cmd.arg("--core").arg(file);
+            if let Some(e) = exe {
+                cmd.arg("--exe").arg(e);
+            }
+        }
+        Kind::Remote { addr, exe } => {
+            cmd.arg("--remote").arg(addr);
             if let Some(e) = exe {
                 cmd.arg("--exe").arg(e);
             }
