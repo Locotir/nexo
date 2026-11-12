@@ -55,6 +55,29 @@ mod tests {
         }
     }
 
+    pub(crate) struct NoNames;
+    impl super::render::Names for NoNames {
+        fn func(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn import(&self, i: usize) -> String {
+            format!("imp{i}")
+        }
+        fn string(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn global(&self, _: u64) -> Option<String> {
+            None
+        }
+    }
+
+    fn text(code: Vec<u8>) -> String {
+        let n = code.len() as u64;
+        let env = Raw { base: 0x1000, code };
+        let l = super::decompile(&env, 0x1000, 0x1000 + n, Abi::SysV, &mut NoSigs, &NoNames, "f");
+        l.iter().map(|x| format!("{}{}\n", "    ".repeat(x.indent), x.text)).collect()
+    }
+
     fn dump(f: &super::lift::Lifted) -> String {
         let mut s = String::new();
         for (i, b) in f.blocks.iter().enumerate() {
@@ -77,6 +100,28 @@ mod tests {
         let d = dump(&f);
         println!("{d}");
         assert_eq!(f.blocks.len(), 3, "{d}");
+        let t = text(vec![0x39, 0xf7, 0x7d, 0x03, 0x89, 0xf8, 0xc3, 0x89, 0xf0, 0xc3]);
+        println!("{t}");
+        assert!(t.contains("if (a1 < a2)") || t.contains("if (a1 >= a2)"), "{t}");
         assert!(d.contains("Return(Some(Var(Reg(7), 32)))") || d.contains("Return(Some("), "{d}");
     }
+}
+pub mod structure;
+pub mod render;
+
+/// Lift, analyse, structure and print one function.
+pub fn decompile(
+    env: &dyn lift::Env,
+    start: u64,
+    end: u64,
+    abi: lift::Abi,
+    sigs: &mut dyn flow::Sigs,
+    names: &dyn render::Names,
+    name: &str,
+) -> Vec<render::Line> {
+    let mut f = lift::lift(env, start, end, abi);
+    let facts = flow::run(&mut f, sigs);
+    let web = render::make_webs(&mut f, &facts);
+    let body = structure::structure(&mut f);
+    render::render(&f, &facts, &web, &body, names, name)
 }

@@ -18,6 +18,8 @@ pub enum Var {
     FlagRes,
     /// Scratch of one instruction (`div`, `xchg`).
     Tmp(u8),
+    /// One live range of a register, after renaming (see render).
+    Web(u32),
 }
 
 pub const RAX: Var = Var::Reg(0);
