@@ -166,19 +166,21 @@ impl Selection {
         let (s, _) = self.range();
         let contained = self.region.map(|r| (r.block, r.idx)).filter(|_| !self.free);
         let mut logical: Vec<String> = Vec::new();
+        // one table row alone: its cells come out, even from a wrapped line or a rule
+        let cells = |info: &LineInfo| info.whole && infos.len() == 1;
         for (k, info) in infos.iter().enumerate() {
             let (from, to) = self.covers(s.line + k).unwrap_or((0, 0));
             let boxed = info.region.is_some() && !self.free;
             let piece = if let Some(own) = contained {
-                if info.region != Some(own) || info.skip {
+                if info.region != Some(own) || (info.skip && !cells(info)) {
                     continue;
                 }
-                box_piece(info, from, to)
+                box_piece(info, from, to, infos.len() == 1)
             } else if boxed {
-                if info.skip {
+                if info.skip && !cells(info) {
                     continue;
                 }
-                box_piece(info, from, to)
+                box_piece(info, from, to, infos.len() == 1)
             } else if let Some(c) = info.cont {
                 slice_cols(&info.text, from.max(c.deco as usize), to)
             } else {
@@ -221,10 +223,11 @@ impl Selection {
 }
 
 /// The content of a row of a box between columns `from` and `to` of the screen.
-fn box_piece(info: &LineInfo, from: usize, to: usize) -> String {
+fn box_piece(info: &LineInfo, from: usize, to: usize, single: bool) -> String {
     let deco = info.cont.map_or(info.deco, |c| info.deco.max(c.deco as usize));
     let from = from.max(deco);
     match &info.src {
+        Some(_) if info.whole && single => cells_of(&slice_cols(&info.text, from, to)),
         Some(src) if info.whole => src.clone(),
         Some(src) if info.cont.is_none() => {
             let base = info.deco;
@@ -232,6 +235,18 @@ fn box_piece(info: &LineInfo, from: usize, to: usize) -> String {
         }
         _ => slice_cols(&info.text, from, to),
     }
+}
+
+/// The cells of a piece of a drawn table row: the border and rule glyphs go, each cell loses its padding,
+/// and the cells come out joined by a tab.
+fn cells_of(piece: &str) -> String {
+    let is_border = |c: char| "│┃|║┌┐└┘├┤┬┴┼╭╮╰╯─╌═".contains(c);
+    let mut cells: Vec<&str> = piece.split(is_border).map(str::trim).collect();
+    while cells.last().is_some_and(|c| c.is_empty()) {
+        cells.pop();
+    }
+    let lead = cells.iter().take_while(|c| c.is_empty()).count();
+    cells[lead..].join("\t")
 }
 
 /// The glyphs the transcript puts in front of a block's first line.
@@ -435,5 +450,58 @@ mod tests {
         assert_eq!(styled, vec!["bc", "d"]);
         let out = style_cols(Line::from("ab"), 0, 5, Style::default().bg(ratatui::style::Color::Blue));
         assert_eq!(text(&out), "ab   ", "the empty columns are drawn too");
+    }
+
+    fn table_row(text: &str, src: &str) -> LineInfo {
+        LineInfo { text: text.into(), region: Some((0, 0)), src: Some(src.into()), whole: true, ..Default::default() }
+    }
+
+    fn drag(a: (usize, usize), b: (usize, usize)) -> Selection {
+        let mut s = Selection::new(Pos { line: a.0, col: a.1 });
+        s.head = Pos { line: b.0, col: b.1 };
+        s.region = Some(RegionRef { block: 0, idx: 0, start: 0, end: 9, deco: 0, kind: Kind::Table });
+        s
+    }
+
+    const ROW: &str = "alpha │ 42    │ beta";
+
+    #[test]
+    fn a_value_inside_a_table_cell_copies_alone() {
+        let infos = [table_row(ROW, "alpha\t42\tbeta")];
+        assert_eq!(drag((0, 8), (0, 9)).extract_clean(&infos), "42");
+        // a double click on the word is the same drag, fixed
+        let mut s = drag((0, 8), (0, 9));
+        s.fixed = true;
+        assert_eq!(s.extract_clean(&infos), "42");
+        // without a region (a drag from prose that ends here is one row too)
+        let mut s = drag((0, 0), (0, 4));
+        s.region = None;
+        assert_eq!(s.extract_clean(&infos), "alpha");
+    }
+
+    #[test]
+    fn several_cells_of_one_row_are_joined_by_a_tab() {
+        let infos = [table_row(ROW, "alpha\t42\tbeta")];
+        assert_eq!(drag((0, 2), (0, 18)).extract_clean(&infos), "pha\t42\tbet");
+        assert_eq!(drag((0, 0), (0, usize::MAX - 1)).extract_clean(&infos), "alpha\t42\tbeta");
+    }
+
+    #[test]
+    fn whole_table_rows_keep_their_source() {
+        let infos = [table_row("h1 │ h2", "h1\th2"), table_row("a1 │ a2", "a1\ta2")];
+        assert_eq!(drag((0, 1), (1, 3)).extract_clean(&infos), "h1\th2\na1\ta2");
+        let mut s = drag((0, 1), (1, 3));
+        s.region = None;
+        assert_eq!(s.extract_clean(&infos), "h1\th2\na1\ta2");
+    }
+
+    #[test]
+    fn a_wrapped_table_row_copies_its_piece() {
+        let mut second = table_row("      │ more words", "");
+        second.skip = true;
+        second.cont = None;
+        assert_eq!(drag((1, 8), (1, 12)).extract_clean(&[second]), "more");
+        let rule = LineInfo { text: "─────┼─────".into(), skip: true, ..table_row("", "") };
+        assert_eq!(drag((0, 0), (0, 10)).extract_clean(&[rule]), "");
     }
 }
