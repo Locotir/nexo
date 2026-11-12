@@ -152,9 +152,12 @@ pub(crate) struct Collector {
     max: usize,
     capped: bool,
     capped_code: bool,
-    indirect_calls: u64,
-    indirect_jumps: u64,
+    pub(crate) indirect_calls: u64,
+    pub(crate) indirect_jumps: u64,
     info: InstructionInfoFactory,
+    /// AArch64: a load from an import slot into a register, waiting for the `blr`/`br` that uses it:
+    /// (register, slot, address of the load).
+    pub(crate) a64_load: Option<(u8, u64, u64)>,
 }
 
 impl Collector {
@@ -167,11 +170,12 @@ impl Collector {
             indirect_calls: 0,
             indirect_jumps: 0,
             info: InstructionInfoFactory::new(),
+            a64_load: None,
         }
     }
 
     /// False when the list is full and the reference was dropped.
-    fn push(&mut self, target: u64, src: u64, kind: Kind) -> bool {
+    pub(crate) fn push(&mut self, target: u64, src: u64, kind: Kind) -> bool {
         if self.list.len() >= self.max {
             self.capped = true;
             self.capped_code |= kind != Kind::Ptr;

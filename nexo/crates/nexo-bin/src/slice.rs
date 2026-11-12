@@ -183,6 +183,7 @@ pub fn slice_window(
     from: Option<u64>,
     budget: usize,
 ) -> Result<Output> {
+    img.require_x86("slice")?;
     let at_addr = target_addr(img, at)?;
     let f = img
         .func_at(at_addr)

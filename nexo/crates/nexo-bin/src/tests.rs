@@ -395,9 +395,9 @@ fn other_files_are_named_not_read() {
     assert_eq!(e.to_string(), "Mach-O arm64 is not read yet");
     // an ELF for another machine
     let mut elf = fixtures::elf64(false).bytes;
-    elf[18] = 183; // EM_AARCH64
+    elf[18] = 243; // EM_RISCV
     let e = Image::from_bytes(elf, "/x".into()).err().unwrap();
-    assert_eq!(e.to_string(), "ELF64 arm64 is not read yet (only x86-64 is)");
+    assert_eq!(e.to_string(), "ELF64 riscv64 is not read yet (only x86-64 and arm64 are)");
     // a PE for ARM64
     let mut pe = fixtures::pe64(false).bytes;
     pe[0x44] = 0x64;
@@ -676,10 +676,11 @@ fn opens_says_yes_only_for_files_open_takes_and_reads_only_the_start() {
         // the headers are enough: the sections and symbols after them are never read
         assert!(opens(&put("head", &f.bytes[..512.min(f.bytes.len())])), "only the headers count");
     }
-    let mut arm = fixtures::elf64(false).bytes;
-    arm[18] = 0xb7; // e_machine: AArch64
-    arm[19] = 0;
-    assert!(!opens(&put("arm", &arm)) && Image::open(&put("arm", &arm)).is_err());
+    let mut other = fixtures::elf64(false).bytes;
+    other[18] = 243; // e_machine: RISC-V
+    assert!(!opens(&put("riscv", &other)) && Image::open(&put("riscv", &other)).is_err());
+    let arm = crate::a64::fixture::elf(true).bytes;
+    assert!(opens(&put("arm", &arm)) && Image::open(&put("arm", &arm)).is_ok());
     let mut rel = fixtures::elf64(false).bytes;
     rel[16] = 1; // e_type: ET_REL
     assert!(!opens(&put("rel", &rel)));

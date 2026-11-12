@@ -112,8 +112,63 @@ pub(crate) fn walk_code(img: &Image, sec: &crate::image::Section, f: impl FnMut(
     walk(bytes, sec.addr, f);
 }
 
+/// One instruction of either architecture, for the listings that show both (`fn`).
+pub(crate) enum Line<'a> {
+    X86(&'a Instruction),
+    A64(&'a crate::a64::Ins, Option<crate::a64::scan::Via>),
+}
+
+impl Line<'_> {
+    pub fn ip(&self) -> u64 {
+        match self {
+            Line::X86(i) => i.ip(),
+            Line::A64(i, _) => i.pc,
+        }
+    }
+
+    /// Filler between functions.
+    pub fn padding(&self) -> bool {
+        match self {
+            Line::X86(i) => matches!(i.mnemonic(), iced_x86::Mnemonic::Int3 | iced_x86::Mnemonic::Nop),
+            Line::A64(i, _) => i.is_padding(),
+        }
+    }
+
+    pub fn text(&self, fmt: &mut IntelFormatter) -> String {
+        match self {
+            Line::X86(i) => {
+                let mut s = String::new();
+                fmt.format(i, &mut s);
+                s
+            }
+            Line::A64(i, _) => i.text(),
+        }
+    }
+
+    pub fn comment(&self, img: &Image) -> Option<String> {
+        match self {
+            Line::X86(i) => comment(img, i),
+            Line::A64(i, via) => crate::a64::view::comment(img, i, *via),
+        }
+    }
+}
+
+/// [`walk`] for the architecture of `img`.
+pub(crate) fn walk_lines(img: &Image, bytes: &[u8], ip: u64, mut f: impl FnMut(&Line, &[u8])) {
+    if img.arm64 {
+        crate::a64::view::walk(bytes, ip, |i, via, raw| f(&Line::A64(i, via), raw));
+    } else {
+        walk(bytes, ip, |i, raw| f(&Line::X86(i), raw));
+    }
+}
+
 /// The instruction at `addr` as text, or `None` when the file holds no bytes there.
 pub(crate) fn text_at(img: &Image, fmt: &mut IntelFormatter, addr: u64) -> Option<String> {
+    if img.arm64 {
+        let b = img.read_at(addr, 4)?;
+        let w: [u8; 4] = b.try_into().ok()?;
+        return Some(crate::a64::decode(u32::from_le_bytes(w), addr).text());
+    }
     let bytes = img.read_at(addr, 15)?;
     let ins = Decoder::with_ip(64, bytes, addr, DecoderOptions::NONE).decode();
     if ins.is_invalid() {

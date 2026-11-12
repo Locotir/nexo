@@ -428,6 +428,7 @@ pub fn abi_of(img: &Image) -> Abi {
 /// Decompile one function (from the cache when it is there).
 pub fn one(img: &Image, data_dir: &Path, target: &str) -> Result<(String, Vec<Line>, bool)> {
     let f = crate::ops::resolve(img, target)?;
+    img.require_x86(&format!("decomp of {} ({:#x})", img.func_name(f), f.start))?;
     let digest = names_digest(img, data_dir);
     let cp = cache_path(img, data_dir, f.start);
     let name = img.func_name(f).to_string();

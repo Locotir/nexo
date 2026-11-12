@@ -546,6 +546,7 @@ fn reg_named(name: &str) -> Option<usize> {
 
 /// Run the function or stretch of code `spec` names and describe what happened.
 pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
+    img.require_x86("emulate")?;
     let t0 = Instant::now();
     let ms_abi = match spec.abi.as_deref() {
         None => img.format == Format::Pe,

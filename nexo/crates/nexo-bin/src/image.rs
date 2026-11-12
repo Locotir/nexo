@@ -120,6 +120,8 @@ pub struct Hardening {
 pub struct Image {
     pub path: PathBuf,
     pub format: Format,
+    /// AArch64 code (the default is x86-64).
+    pub arm64: bool,
     pub entry: u64,
     pub image_base: u64,
     pub sections: Vec<Section>,
@@ -374,7 +376,21 @@ impl Image {
     }
 
     pub fn arch_name(&self) -> &'static str {
-        "x86-64"
+        if self.arm64 {
+            "arm64"
+        } else {
+            "x86-64"
+        }
+    }
+
+    /// For the commands that read x86-64 only: an error that says so, instead of a wrong answer.
+    pub fn require_x86(&self, what: &str) -> Result<()> {
+        if self.arm64 {
+            return Err(Error::Bad(format!(
+                "{what} does not read AArch64 code yet (fn, funcs, xref and calls do); no output is better than a wrong one"
+            )));
+        }
+        Ok(())
     }
 
     pub fn code_sections(&self) -> impl Iterator<Item = &Section> {
@@ -406,7 +422,10 @@ pub fn opens(path: &Path) -> bool {
     }
     match FileKind::parse(&head[..]) {
         Ok(FileKind::Elf64) => object::elf::FileHeader64::<Endianness>::parse(&head[..]).is_ok_and(|h| {
-            h.endian().is_ok_and(|e| h.e_machine(e) == object::elf::EM_X86_64 && h.e_type(e) != object::elf::ET_REL)
+            h.endian().is_ok_and(|e| {
+                matches!(h.e_machine(e), object::elf::EM_X86_64 | object::elf::EM_AARCH64)
+                    && h.e_type(e) != object::elf::ET_REL
+            })
         }),
         Ok(FileKind::Pe64) => {
             let Ok(dos) = pe::ImageDosHeader::parse(&head[..]) else { return false };
@@ -456,6 +475,7 @@ fn blank(format: Format) -> Image {
     Image {
         path: PathBuf::new(),
         format,
+        arm64: false,
         entry: 0,
         image_base: 0,
         sections: Vec::new(),
@@ -618,10 +638,12 @@ fn common<'d, O: Object<'d>>(o: &O, img: &mut Image) {
 /// addend (`RELATIVE`), the resolver an `IRELATIVE` slot starts from, or a defined symbol plus the addend
 /// (`R_X86_64_64`).
 pub(crate) fn reloc_pointer(r_type: object::elf::RelocationType, defined: Option<u64>, addend: i64) -> Option<u64> {
-    use object::elf::{R_X86_64_64, R_X86_64_IRELATIVE, R_X86_64_RELATIVE};
+    use object::elf::{
+        R_AARCH64_ABS64, R_AARCH64_IRELATIVE, R_AARCH64_RELATIVE, R_X86_64_64, R_X86_64_IRELATIVE, R_X86_64_RELATIVE,
+    };
     match r_type {
-        R_X86_64_RELATIVE | R_X86_64_IRELATIVE => Some(addend as u64),
-        R_X86_64_64 => defined.map(|s| s.wrapping_add(addend as u64)),
+        R_X86_64_RELATIVE | R_X86_64_IRELATIVE | R_AARCH64_RELATIVE | R_AARCH64_IRELATIVE => Some(addend as u64),
+        R_X86_64_64 | R_AARCH64_ABS64 => defined.map(|s| s.wrapping_add(addend as u64)),
         _ => None,
     }
 }
@@ -629,9 +651,9 @@ pub(crate) fn reloc_pointer(r_type: object::elf::RelocationType, defined: Option
 fn load_elf(data: &[u8]) -> Result<Image> {
     let elf = object::read::elf::ElfFile64::<Endianness>::parse(data)
         .map_err(|e| Error::NotRead(format!("not a readable ELF file: {e}")))?;
-    if elf.architecture() != Architecture::X86_64 {
+    if !matches!(elf.architecture(), Architecture::X86_64 | Architecture::Aarch64) {
         return Err(Error::NotRead(format!(
-            "ELF64 {} is not read yet (only x86-64 is)",
+            "ELF64 {} is not read yet (only x86-64 and arm64 are)",
             arch_word(elf.architecture())
         )));
     }
@@ -641,6 +663,7 @@ fn load_elf(data: &[u8]) -> Result<Image> {
         ));
     }
     let mut img = blank(Format::Elf);
+    img.arm64 = elf.architecture() == Architecture::Aarch64;
     common(&elf, &mut img);
     // imports: undefined dynamic symbols; the slot comes from the relocation that fills it
     let mut slot_of = HashMap::new();

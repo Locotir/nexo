@@ -3,10 +3,10 @@
 //!
 //! Only the lines a page can show are formatted. Everything else is counted.
 
-use iced_x86::{Formatter, Instruction, IntelFormatter, Mnemonic};
+use iced_x86::IntelFormatter;
 use serde_json::json;
 
-use crate::disasm::{comment, formatter, walk};
+use crate::disasm::{formatter, walk_lines, Line};
 use crate::funcs::Func;
 use crate::ops::{command, hex, numeric, resolve};
 use crate::page::{shell_word, window, Output, Row, MIN_LINES};
@@ -50,10 +50,6 @@ pub fn func_view(img: &Image, q: &FnQuery) -> Result<Output> {
     }
 }
 
-fn is_padding(ins: &Instruction) -> bool {
-    matches!(ins.mnemonic(), Mnemonic::Int3 | Mnemonic::Nop)
-}
-
 fn bytes_of<'a>(img: &'a Image, f: &Func) -> &'a [u8] {
     img.read_at(f.start, f.end.saturating_sub(f.start) as usize).unwrap_or(&[])
 }
@@ -82,15 +78,14 @@ fn header(img: &Image, f: &Func, instructions: usize, extra: &str) -> String {
 fn instr_row(
     img: &Image,
     fmt: &mut IntelFormatter,
-    ins: &Instruction,
+    ins: &Line,
     raw: &[u8],
     with_bytes: bool,
     mark: Option<bool>,
     function: Option<&str>,
 ) -> Row {
-    let mut line = String::new();
-    fmt.format(ins, &mut line);
-    let note = comment(img, ins);
+    let line = ins.text(fmt);
+    let note = ins.comment(img);
     let mut text = String::new();
     if let Some(m) = mark {
         text.push_str(if m { "> " } else { "  " });
@@ -121,7 +116,7 @@ fn one(img: &Image, q: &FnQuery) -> Result<Output> {
     // an address inside the function, not its first byte: the page opens near it and marks it
     let asked = if numeric(t) { parse_addr(t).ok().filter(|&a| a != f.start) } else { None };
     let (mut total, mut holder) = (0usize, None::<usize>);
-    walk(bytes, f.start, |ins, raw| {
+    walk_lines(img, bytes, f.start, |ins, raw| {
         if let Some(a) = asked {
             if holder.is_none() && ins.ip().saturating_add(raw.len() as u64) > a {
                 holder = Some(total);
@@ -143,7 +138,7 @@ fn one(img: &Image, q: &FnQuery) -> Result<Output> {
     let mut fmt = formatter();
     let mut rows: Vec<Row> = Vec::new();
     let (mut i, mut wanted, mut first_ip) = (0usize, 0usize, None::<u64>);
-    walk(bytes, f.start, |ins, raw| {
+    walk_lines(img, bytes, f.start, |ins, raw| {
         let n = i;
         i += 1;
         if n < skip || q.from.is_some_and(|k| ins.ip() < k) {
@@ -249,7 +244,7 @@ fn range(img: &Image, q: &FnQuery, to: &str) -> Result<Output> {
         let hi = f.end.min(s1);
         let mut lo = if n == i0 { u64::MAX } else { f.start };
         let (mut all, mut in_range, mut trail_n, mut trail_from, mut last_end) = (0usize, 0usize, 0usize, 0u64, 0u64);
-        walk(bytes_of(img, f), f.start, |ins, raw| {
+        walk_lines(img, bytes_of(img, f), f.start, |ins, raw| {
             all += 1;
             let end = ins.ip().saturating_add(raw.len() as u64);
             if lo == u64::MAX && end > s0 {
@@ -257,7 +252,7 @@ fn range(img: &Image, q: &FnQuery, to: &str) -> Result<Output> {
             }
             if lo != u64::MAX && ins.ip() >= lo && ins.ip() < hi {
                 in_range += 1;
-                if is_padding(ins) {
+                if ins.padding() {
                     if trail_n == 0 {
                         trail_from = ins.ip();
                     }
@@ -325,7 +320,7 @@ fn range(img: &Image, q: &FnQuery, to: &str) -> Result<Output> {
         }
         pos += 1;
         let stop = if p.pad_bytes > 0 { p.pad_from } else { p.hi };
-        walk(bytes_of(img, f), f.start, |ins, raw| {
+        walk_lines(img, bytes_of(img, f), f.start, |ins, raw| {
             if ins.ip() < p.lo || ins.ip() >= stop || pos >= end {
                 return;
             }

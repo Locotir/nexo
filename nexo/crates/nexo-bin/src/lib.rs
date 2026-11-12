@@ -6,6 +6,7 @@
 //! prints: each op returns an [`Output`] that has a text form and a JSON form, and
 //! [`Output::page`] cuts either one to a line budget, saying exactly what is left and how to get it.
 
+mod a64;
 mod caps;
 mod crypto;
 mod decomp;

@@ -47,6 +47,10 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
         starts.insert(img.entry);
     }
     for sec in img.code_sections() {
+        if img.arm64 {
+            crate::a64::scan::discover(img, sec, collector.as_deref_mut(), Some((&mut starts, &in_code)));
+            continue;
+        }
         walk_code(img, sec, |ins, _| {
             if let Some(c) = collector.as_deref_mut() {
                 c.instruction(img, ins);
@@ -61,7 +65,8 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
         });
     }
     match img.format {
-        Format::Pe => pdata(img, &mut starts),
+        Format::Pe if !img.arm64 => pdata(img, &mut starts),
+        Format::Pe => {}
         Format::Elf => {
             for sec in img.sections.iter().filter(|s| s.alloc && s.name == ".eh_frame" && s.file_size > 0) {
                 eh_frame(img, sec, &mut starts);
@@ -88,6 +93,9 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
 
 /// A jump through an import slot in the first instructions: the stub the loader's import goes through.
 fn stub_name(img: &Image, start: u64, end: u64) -> Option<String> {
+    if img.arm64 {
+        return crate::a64::scan::stub_name(img, start, end);
+    }
     let bytes = img.read_at(start, ((end - start) as usize).min(24))?;
     let mut seen = 0;
     let mut found = None;
@@ -287,6 +295,10 @@ fn eh_frame(img: &Image, sec: &Section, starts: &mut BTreeSet<u64>) {
 /// The references of every executable section, when the functions were found without a collector.
 pub(crate) fn decode_refs(img: &Image, c: &mut Collector) {
     for sec in img.code_sections() {
+        if img.arm64 {
+            crate::a64::scan::discover(img, sec, Some(c), None);
+            continue;
+        }
         walk_code(img, sec, |ins, _| c.instruction(img, ins));
     }
 }

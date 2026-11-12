@@ -199,6 +199,9 @@ fn name_of(img: &Image, a: u64) -> String {
 
 /// Everything found for the program's main, strongest first.
 pub fn find_main(img: &Image) -> Vec<MainHit> {
+    if img.arm64 {
+        return Vec::new();
+    }
     let mut hits: Vec<MainHit> = Vec::new();
     let _ = img.refs();
     let refs = img.refs();

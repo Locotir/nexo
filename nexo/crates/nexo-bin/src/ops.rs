@@ -602,6 +602,7 @@ fn imm_matches(ins: &Instruction, v: i128) -> bool {
 /// operand (`[rdx+0x429a80]`, kind `disp` in JSON), and every place the data sections hold it as a
 /// 4-byte (or, for a larger number, 8-byte) little-endian value.
 pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
+    img.require_x86("find-imm")?;
     if value < i128::from(i64::MIN) || value > i128::from(u64::MAX) {
         return Err(Error::Bad("the number does not fit in 64 bits".into()));
     }
