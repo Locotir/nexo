@@ -346,3 +346,14 @@ fn strings_of_methods_whose_decoding_stopped_name_the_method_and_offset() {
     let line = t.lines().find(|l| l.ends_with("\"x\"")).unwrap_or_else(|| panic!("a 1 char string was dropped: {t}"));
     assert!(ok(line), "{t}");
 }
+
+#[test]
+fn a_32_bit_mixed_mode_pe_points_to_managed_instead_of_unknown_arch() {
+    let secs = [(0x1000, 0x200, 0x200, 0x200)];
+    let d = tiny_pe(&secs, 0x1000, 0x200, 0);
+    let err =
+        crate::Image::from_bytes(d, std::path::PathBuf::from("x86.dll")).err().expect("PE32 is not read natively");
+    let msg = format!("{err}");
+    assert!(msg.contains("nexo bin managed"), "{msg}");
+    assert!(msg.contains("PE32"), "{msg}");
+}

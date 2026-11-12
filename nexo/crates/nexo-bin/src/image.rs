@@ -187,6 +187,12 @@ impl Image {
         let mut img = match kind {
             FileKind::Elf64 => load_elf(&data).map_err(|e| explain(e, &data))?,
             FileKind::Pe64 => load_pe(&data).map_err(|e| explain(e, &data))?,
+            FileKind::Pe32 if crate::is_mixed_mode(&data[..data.len().min(crate::MANAGED_HEAD)]) => {
+                return Err(Error::NotRead(format!(
+                    "{} is a mixed-mode .NET assembly (C++/CLI), not read natively: `nexo bin managed FILE` reads its .NET metadata and IL",
+                    describe_kind(kind, &data)
+                )))
+            }
             other => return Err(Error::NotRead(format!("{} is not read yet", describe_kind(other, &data)))),
         };
         if let Some(w) = crate::damage::extent_problem(&data) {
