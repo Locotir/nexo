@@ -9,6 +9,7 @@
 mod decomp;
 mod disasm;
 mod dwarf;
+mod emu;
 mod fnview;
 mod funcs;
 mod image;
@@ -28,6 +29,7 @@ mod tests;
 mod tests_x;
 
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
+pub use emu::{emulate, limits as emu_limits, EmuSpec};
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
 pub use live::{

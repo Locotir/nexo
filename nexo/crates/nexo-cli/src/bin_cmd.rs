@@ -173,6 +173,51 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// Run one function (or code from an address) in an emulator, without running the program: args in,
+    /// return value, memory written, library calls and a trace tail out.
+    Emu {
+        file: PathBuf,
+        /// A function name, or an address to start at.
+        target: String,
+        /// Arguments in order: 42, -1, 0x401000, str:TEXT, hex:DE AD, buf:SIZE (a buffer to write into).
+        #[arg(allow_hyphen_values = true)]
+        args: Vec<String>,
+        /// Stop when execution reaches this address (run a stretch of code).
+        #[arg(long, value_parser = parse_addr, value_name = "ADDR")]
+        to: Option<u64>,
+        /// Set a register before the run: --reg rbx=5 or --reg rsi=str:abc (repeat).
+        #[arg(long = "reg", value_name = "NAME=VALUE")]
+        regs: Vec<String>,
+        /// Put bytes in the file's memory first: --mem 0x4010=hex:01 02, str:TEXT, u32:7 (repeat).
+        #[arg(long = "mem", value_name = "ADDR=VALUE")]
+        mems: Vec<String>,
+        /// Make an import return NUMBER and do nothing else: --stub rand=4 (repeat).
+        #[arg(long = "stub", value_name = "NAME=NUMBER")]
+        stubs: Vec<String>,
+        /// Calling convention: sysv or ms (default: ms for PE files, sysv for ELF).
+        #[arg(long, value_name = "ABI")]
+        abi: Option<String>,
+        /// Most instructions to run.
+        #[arg(long, default_value_t = nexo_bin::emu_limits::DEFAULT_STEPS, value_name = "N")]
+        steps: u64,
+        /// Most seconds to run.
+        #[arg(long, default_value_t = nexo_bin::emu_limits::DEFAULT_SECS, value_name = "S")]
+        secs: u64,
+        /// Instructions in the trace tail (0 to 200).
+        #[arg(long, default_value_t = nexo_bin::emu_limits::DEFAULT_TRACE, value_name = "N")]
+        trace: usize,
+        /// Bytes shown per written range (16 to 4096).
+        #[arg(long, default_value_t = nexo_bin::emu_limits::DEFAULT_DUMP, value_name = "N")]
+        dump: usize,
+        /// Also show what was written on the stack.
+        #[arg(long)]
+        stack: bool,
+        /// Show memory after the run: --show ADDR:LEN (repeat).
+        #[arg(long, value_name = "ADDR:LEN")]
+        show: Vec<String>,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Show LEN bytes at an address as a typed table.
     Bytes {
         file: PathBuf,
@@ -234,7 +279,8 @@ impl BinOp {
             | BinOp::Name { file, .. }
             | BinOp::Note { file, .. }
             | BinOp::Names { file, .. }
-            | BinOp::Find { file, .. } => file,
+            | BinOp::Find { file, .. }
+            | BinOp::Emu { file, .. } => file,
         }
     }
 
@@ -254,7 +300,8 @@ impl BinOp {
             | BinOp::Name { common, .. }
             | BinOp::Note { common, .. }
             | BinOp::Names { common, .. }
-            | BinOp::Find { common, .. } => common,
+            | BinOp::Find { common, .. }
+            | BinOp::Emu { common, .. } => common,
         }
     }
 }
@@ -318,6 +365,26 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Bytes { addr, len, ty, .. } => nexo_bin::bytes(&img, *addr, *len, ElemType::parse(ty)?)?,
         BinOp::Strings { grep, sort, .. } => {
             nexo_bin::strings_window(&img, grep.as_deref(), StrSort::parse(sort)?, from, lines)?
+        }
+        BinOp::Emu { target, args, to, regs, mems, stubs, abi, steps, secs, trace, dump, stack, show, .. } => {
+            nexo_bin::emulate(
+                &img,
+                &nexo_bin::EmuSpec {
+                    args: args.clone(),
+                    to: *to,
+                    regs: regs.clone(),
+                    mem: mems.clone(),
+                    stubs: stubs.clone(),
+                    abi: abi.clone(),
+                    steps: *steps,
+                    secs: *secs,
+                    trace: *trace,
+                    dump: *dump,
+                    stack: *stack,
+                    show: show.clone(),
+                    ..nexo_bin::EmuSpec::new(target)
+                },
+            )?
         }
         BinOp::Find { pattern, imm, .. } => match imm {
             Some(n) => nexo_bin::find_imm(&img, nexo_bin::parse_number(n)?)?,
