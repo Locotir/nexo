@@ -64,6 +64,8 @@ pub struct Reads {
     seen: HashMap<PathBuf, Seen>,
     /// The anchors whose content the last model call saw whole.
     in_view: HashSet<String>,
+    /// The files `edit` and `write` changed: what the file held then and the call that did it.
+    wrote: HashMap<PathBuf, (u64, String)>,
 }
 
 fn digest(bytes: &[u8]) -> u64 {
@@ -76,6 +78,7 @@ impl Reads {
     pub fn clear(&mut self) {
         self.seen.clear();
         self.in_view.clear();
+        self.wrote.clear();
     }
 
     /// Notes what the model call about to be made carries whole.
@@ -120,6 +123,13 @@ impl Reads {
         true
     }
 
+    /// The call that wrote `path` when the file still holds, byte for byte (`bytes`), what that call left and
+    /// the result of the call is still in what the model sees: it has the file, and need not be given it again.
+    pub fn wrote_unchanged(&self, path: &Path, bytes: &[u8]) -> Option<&str> {
+        let (hash, call) = self.wrote.get(path)?;
+        (*hash == digest(bytes) && self.in_view.contains(call)).then_some(call.as_str())
+    }
+
     /// A file attached whole to a request, under `header`.
     pub fn attached(&mut self, path: PathBuf, bytes: &[u8], header: String) {
         let end = String::from_utf8_lossy(bytes).lines().count();
@@ -136,6 +146,7 @@ impl Reads {
             Some(_) => vec![Piece { start: 1, end: text.lines().count(), anchor: call_id.to_string() }],
             None => Vec::new(),
         };
+        self.wrote.insert(path.to_path_buf(), (digest(&bytes), call_id.to_string()));
         self.seen.insert(path.to_path_buf(), Seen { hash: digest(&bytes), pieces, noted: false });
     }
 

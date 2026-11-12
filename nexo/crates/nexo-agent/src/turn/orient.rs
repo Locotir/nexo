@@ -250,7 +250,7 @@ fn included_line(included: &[Included]) -> String {
 
 /// The lines put at the head of a request: what changed in the project, what its check said, and how many
 /// project files nexo included by itself (they follow the note, so the line that counts them is its last).
-pub(super) fn start_note(included: &[Included], check: Option<&str>, tree: Option<&str>) -> String {
+pub(super) fn start_note(included: &[Included], known: &[String], check: Option<&str>, tree: Option<&str>) -> String {
     let mut lines = Vec::new();
     if let Some(t) = tree {
         lines.push(t.trim().to_string());
@@ -258,6 +258,7 @@ pub(super) fn start_note(included: &[Included], check: Option<&str>, tree: Optio
     if let Some(c) = check {
         lines.push(c.trim().to_string());
     }
+    lines.extend(known.iter().cloned());
     if !included.is_empty() {
         lines.push(included_line(included));
     }

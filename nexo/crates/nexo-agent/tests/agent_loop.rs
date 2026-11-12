@@ -280,6 +280,40 @@ async fn a_file_the_model_wrote_is_not_attached_again_at_the_next_request() {
     r.stop().await;
 }
 
+/// A file the model wrote that the person names at the next request is not attached again, the start note says
+/// where it was written; once the file changed on disk it is attached as before.
+#[tokio::test]
+async fn a_named_file_the_model_wrote_is_not_attached_again_until_it_changes() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("w1", "write", json!({"path": "made.rs", "content": "fn made() {}\n"}))),
+        Reply::Events(text("written")),
+        Reply::Events(text("seen")),
+        Reply::Events(text("again")),
+    ]);
+    let cfg = config(PermissionMode::Auto);
+    let set = tools().with(Arc::new(nexo_tools::write::Write));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "make it".into(), attachments: vec![] });
+    r.turn().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    r.send(AgentCommand::Submit { text: "explain made.rs".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = client.requests().last().unwrap().messages.last().unwrap().text();
+    assert!(!sent.contains("made.rs (project file"), "the file the model wrote is not attached again: {sent}");
+    assert!(sent.contains("made.rs: the file you wrote in call w1, unchanged since; not attached again."), "{sent}");
+    // changed on disk since: attached as today
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    std::fs::write(d.path().join("made.rs"), "fn changed() {}\n").unwrap();
+    r.send(AgentCommand::Submit { text: "explain made.rs again".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = client.requests().last().unwrap().messages.last().unwrap().text();
+    assert!(sent.contains("made.rs (project file, included in full by nexo, as it is now):"), "{sent}");
+    assert!(sent.contains("fn changed() {}") && !sent.contains("not attached again"), "{sent}");
+    r.stop().await;
+}
+
 /// A file the model's own command made during a request (generated data) is not attached again by the token
 /// budget at the next request; a file the person made between requests is.
 #[cfg(unix)]

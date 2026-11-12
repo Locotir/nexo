@@ -117,7 +117,7 @@ async fn begin_turn(
     {
         let mut st = state.lock().await;
         // the project files nexo includes by itself: the ones the message names, then the small ones in the budget
-        let mut own = named_files(&st, &text, &attachments);
+        let (mut own, known) = named_files(&st, &text, &attachments);
         let with: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
         own.extend(orient::budget_files(&st, &text, &with));
         let included = orient::include(&own, &st.cwd);
@@ -192,7 +192,7 @@ async fn begin_turn(
         added.append(&mut after);
         // the supervisor's resume mark is read back as it is, so it carries no note; the next request does
         let tree = if text.trim() == SUPERVISOR_RESUME_MARK { None } else { prefix::tree_note(&mut st) };
-        let note = orient::start_note(&included, check.as_deref(), tree.as_deref());
+        let note = orient::start_note(&included, &known, check.as_deref(), tree.as_deref());
         let text = if note.is_empty() {
             text
         } else {
@@ -300,8 +300,9 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     }
     while let Some((text, attachments)) = st.inbox.pop_front() {
         // the files the message names come as in a first request: under nexo's own header, counted by a note
-        let included = orient::include(&named_files(&st, &text, &attachments), &st.cwd);
-        let note = orient::start_note(&included, None, None);
+        let (named, known) = named_files(&st, &text, &attachments);
+        let included = orient::include(&named, &st.cwd);
+        let note = orient::start_note(&included, &known, None, None);
         let mut added = Vec::new();
         if !note.is_empty() {
             added.push(AddedPart::new(AddedKind::StartNote, "project at the start of the request", note.clone()));
@@ -624,9 +625,12 @@ const NAMED_FILES: usize = 3;
 /// directory, are text of at most 24 KB and are not in the conversation already: up to three, which nexo
 /// includes under its own header (never as the person's `@path`), so the model starts with them and needs no
 /// step to read them.
-fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachment> {
+///
+/// A named file the model wrote in this session (or one of its commands made), unchanged since, is not
+/// attached again: it comes back as a line saying so, for the start note.
+fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> (Vec<Attachment>, Vec<String>) {
     if !st.config.agent.attach_named_files {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let root = st.cwd.canonicalize().unwrap_or_else(|_| st.cwd.clone());
     let mut seen: Vec<PathBuf> = explicit
@@ -638,8 +642,9 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachmen
         .collect();
     let said = orient::carried(&st.history);
     let mut out = Vec::new();
+    let mut known = Vec::new();
     for word in text.split_whitespace() {
-        if out.len() >= NAMED_FILES {
+        if out.len() + known.len() >= NAMED_FILES {
             break;
         }
         let word = word.trim_matches(|c: char| {
@@ -665,7 +670,7 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachmen
             continue;
         }
         let Ok(bytes) = std::fs::read(&real) else { continue };
-        if String::from_utf8(bytes).is_err() {
+        if std::str::from_utf8(&bytes).is_err() {
             continue;
         }
         // the same policy as `read`: key files ask, denied paths stay out
@@ -676,8 +681,21 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachmen
         if said.contains(word) {
             continue;
         }
+        // written by the model, or made by its command, and not changed since: it has the file
+        let how = if let Some(call) = st.reads.wrote_unchanged(&real, &bytes) {
+            Some(format!("the file you wrote in call {call}"))
+        } else if orient::made_in_work(&st.worked, &real) {
+            Some("a file your own commands made".to_string())
+        } else {
+            None
+        };
+        if let Some(how) = how {
+            known.push(format!("{word}: {how}, unchanged since; not attached again. Read it if you need its lines."));
+            seen.push(real);
+            continue;
+        }
         seen.push(real);
         out.push(Attachment { path: PathBuf::from(word) });
     }
-    out
+    (out, known)
 }
