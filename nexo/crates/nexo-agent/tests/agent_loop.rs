@@ -735,8 +735,12 @@ async fn bash_calls(
 
 #[tokio::test]
 async fn two_pure_checks_in_one_message_run_at_the_same_time() {
-    let (took, outs, _) = bash_calls(&["cargo test a", "git status"], 1000).await;
-    assert!(took < 1.6, "the two commands took {took:.2} s: they ran one after the other");
+    let (_, outs, ran) = bash_calls(&["cargo test a", "git status"], 1000).await;
+    // Whether they overlapped, not how long the whole took: a loaded machine (a full gate runs hundreds of tests at
+    // once) can stretch the wall time past two sleeps even when both ran together.
+    assert_eq!(ran.len(), 2, "{ran:?}");
+    let (a, b) = (&ran[0], &ran[1]);
+    assert!(a.1 < b.2 && b.1 < a.2, "the two commands ran one after the other: {ran:?}");
     assert_eq!(outs, ["b0=ran cargo test a", "b1=ran git status"], "results keep the calls' order");
 }
 
