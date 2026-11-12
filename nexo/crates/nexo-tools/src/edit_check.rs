@@ -167,10 +167,14 @@ mod tests {
     use super::*;
 
     fn crate_with(body: &str) -> (tempfile::TempDir, PathBuf) {
+        // A name of its own: with CARGO_TARGET_DIR set (a shared build dir), crates of one name and version hash
+        // alike whatever their path, so one test's check found another's build fresh and reported nothing.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let d = tempfile::tempdir().unwrap();
         std::fs::write(
             d.path().join("Cargo.toml"),
-            "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            format!("[package]\nname = \"t{n}_{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n", std::process::id()),
         )
         .unwrap();
         std::fs::create_dir(d.path().join("src")).unwrap();
@@ -235,7 +239,10 @@ mod tests {
             return;
         }
         use nexo_core::{Tool, ToolContext};
-        let (d, _f) = crate_with("pub fn a() -> u32 {\n    1\n}\n");
+        let (d, f) = crate_with("pub fn a() -> u32 {\n    1\n}\n");
+        // The first check of a new crate builds it from nothing, which a loaded machine (a full gate) can stretch past
+        // LIMIT; build it once with room to spare, so the edit's own check is the quick one a real session gets.
+        assert_eq!(report_within(&f, Duration::from_secs(120)).await, "");
         let c = ToolContext::new(d.path().to_path_buf());
         let args = serde_json::json!({"path": "src/lib.rs", "old_string": "    1", "new_string": "    \"no\""});
         let out = crate::edit::Edit.run(args.clone(), &c).await;
