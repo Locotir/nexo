@@ -1684,9 +1684,10 @@ mod provider_tests {
             ]
         );
         // every request of a session carries these characters. 13619 before the tools seldom called went out
-        // with their short text; the ceiling is what they take now, so a text that grows is seen here.
-        // `bash` names the shell, and the Windows ones take up to 43 characters more than `sh -c`.
-        let ceiling = SCHEMA_CEILING + if cfg!(windows) { 43 } else { 0 };
+        // with their short text; the ceiling is what they take now, so a text that grows is seen here
+        // (Windows: the PowerShell line of bash is longer, 44 chars on CI).
+        // `bash` names the shell: PowerShell on CI takes 44 characters more than `sh -c`, so 64 of room.
+        let ceiling = SCHEMA_CEILING + if cfg!(windows) { 64 } else { 0 };
         let chars = wire_chars(&specs);
         let each: Vec<String> =
             specs.iter().map(|s| format!("{} {}", s.name, wire_chars(std::slice::from_ref(s)))).collect();
