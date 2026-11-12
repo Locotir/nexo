@@ -33,7 +33,7 @@ async fn replay_recorded_runs() {
             println!("{name}: no task {task_id}");
             continue;
         };
-        let wd = tempfile::tempdir().unwrap();
+        let wd = test_tmpdir().unwrap();
         task.materialize(wd.path()).unwrap();
         let text = std::fs::read_to_string(log).unwrap();
         let last: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
@@ -131,4 +131,9 @@ async fn replay_recorded_runs() {
             println!("REPLAY {name}: task csv {} original has {rows} lines (wc -l)", csv.0);
         }
     }
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

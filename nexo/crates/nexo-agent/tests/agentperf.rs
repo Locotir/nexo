@@ -60,7 +60,7 @@ fn history(n: usize) -> Vec<Message> {
 }
 
 async fn per_request(n: usize, policy: &str, requests: usize) -> Vec<f64> {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     std::env::set_var("NEXO_DATA_DIR", d.path());
     std::env::set_var("NEXO_CONFIG_DIR", d.path());
     std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
@@ -163,4 +163,9 @@ async fn per_request_cost_by_history_size() {
             println!("PERF policy={policy} history={n} median_ms={:.2} max_ms={:.2}", t[t.len() / 2], t[t.len() - 1]);
         }
     }
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

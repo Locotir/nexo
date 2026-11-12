@@ -51,7 +51,7 @@ struct Rig {
 }
 
 fn rig(judge: Arc<Stand>) -> Rig {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_tmpdir().unwrap();
     let logs = dir.path().join("logs").join("proj");
     std::fs::create_dir_all(&logs).unwrap();
     let line = json!({"type":"assistant","timestamp":"2026-10-01T00:00:00Z","cwd":"/work/app",
@@ -176,4 +176,9 @@ fn a_message_typed_in_the_panel_stays_the_persons_own() {
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0].manual);
     assert_eq!(sent[0].text, "please also run the linter");
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

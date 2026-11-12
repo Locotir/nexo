@@ -116,11 +116,11 @@ async fn delegate(repo: &Path, replies: Vec<Vec<StreamEvent>>) -> String {
 
 #[tokio::test]
 async fn an_isolated_sub_agent_works_in_its_own_worktree() {
-    let home = tempfile::tempdir().unwrap();
+    let home = test_tmpdir().unwrap();
     std::env::set_var("NEXO_CONFIG_DIR", home.path());
     std::env::set_var("NEXO_DATA_DIR", home.path());
     std::env::set_var("NEXO_CACHE_DIR", home.path().join("cache"));
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let repo = d.path().canonicalize().unwrap();
     git(&repo, &["init", "-q"]);
     std::fs::write(repo.join("a.txt"), "a\n").unwrap();
@@ -163,4 +163,9 @@ async fn an_isolated_sub_agent_works_in_its_own_worktree() {
     .await;
     assert!(got.contains("changed nothing"), "{got}");
     assert_eq!(std::fs::read_dir(repo.join(".nexo/worktrees")).unwrap().count(), 1, "only the first one is left");
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

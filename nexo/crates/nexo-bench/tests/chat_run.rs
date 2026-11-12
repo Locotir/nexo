@@ -31,7 +31,7 @@ impl ModelClient for Seq {
 fn bench(script: Vec<String>, max_steps: u32, out: &std::path::Path) -> Bench {
     static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
     HOME.get_or_init(|| {
-        let d = tempfile::tempdir().unwrap();
+        let d = test_tmpdir().unwrap();
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
             std::env::set_var(var, d.path().join(var));
         }
@@ -55,7 +55,7 @@ fn bench(script: Vec<String>, max_steps: u32, out: &std::path::Path) -> Bench {
 }
 
 async fn run_chat(script: Vec<String>) -> nexo_bench::run::Record {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(script, 40, out.path());
     padded::run_chat(&bench, &padded::chat_task(), &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap()
 }
@@ -83,4 +83,9 @@ async fn a_chat_run_reports_the_size_of_each_request_it_sent() {
     let r = run_chat((padded::chat_task().reference)()).await;
     assert_eq!(r.view_tokens.len(), 5, "one view per question: {r:?}");
     assert!(r.max_view_tokens > 0 && r.final_view_tokens > 0, "{r:?}");
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

@@ -12,7 +12,7 @@ fn task(id: &str) -> tasks::Task {
 #[test]
 fn the_data_task_scores_its_solution_1_and_the_start_and_a_wrong_state_less() {
     let t = task("padded-revert-data");
-    let wd = tempfile::tempdir().unwrap();
+    let wd = test_tmpdir().unwrap();
     t.materialize(wd.path()).unwrap();
     let start = (t.check)(wd.path());
     assert!(!start.ok && start.score < 1.0, "{start:?}");
@@ -37,7 +37,7 @@ fn the_data_task_scores_its_solution_1_and_the_start_and_a_wrong_state_less() {
 #[test]
 fn the_code_task_scores_its_solution_1_and_a_wrong_state_less() {
     let t = task("padded-revert-code");
-    let wd = tempfile::tempdir().unwrap();
+    let wd = test_tmpdir().unwrap();
     t.materialize(wd.path()).unwrap();
     // untouched: shipping is original but tax and invoice are not there
     let start = (t.check)(wd.path());
@@ -239,4 +239,9 @@ fn the_chat_is_built_the_same_every_time_and_ends_on_the_revert() {
     // it is no group member and no file task: only its id selects it
     assert!(tasks::all().iter().all(|t| t.id != a.id));
     assert!(tasks::select(&["padded"]).unwrap().iter().all(|t| t.id != a.id));
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

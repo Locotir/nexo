@@ -281,7 +281,7 @@ impl Tool for Named {
 
 fn data_dir() {
     static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    let d = DIR.get_or_init(|| tempfile::tempdir().unwrap());
+    let d = DIR.get_or_init(|| test_tmpdir().unwrap());
     std::env::set_var("NEXO_DATA_DIR", d.path());
     std::env::set_var("NEXO_CONFIG_DIR", d.path());
     std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
@@ -331,7 +331,7 @@ fn steps_line<'a>(out: &'a ToolOutput, id: &str) -> &'a str {
 
 #[tokio::test]
 async fn never_more_than_max_parallel_at_work_and_phases_do_not_overlap() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     // every sub-agent waits at a gate the test opens one permit at a time: no count of yields decides who is at work
     let client = Mock::new(vec![("P", Say::Gated("ok".into()))]);
     let toml = r#"
@@ -413,7 +413,7 @@ title = "Check"
 
 #[tokio::test]
 async fn three_items_with_two_votes_start_six_sub_agents_each_with_its_item_and_the_count_line() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let checked = answering(CHECKED);
     let client = Mock::new(vec![
         ("FIND", says("Three.\n[\"alpha\", \"beta\", \"gamma\"]")),
@@ -443,7 +443,7 @@ async fn three_items_with_two_votes_start_six_sub_agents_each_with_its_item_and_
 
 #[tokio::test]
 async fn the_count_line_needs_every_copy_to_begin_with_one_of_the_answers() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let one = answering(CHECKED).replace("votes = 2", "votes = 3");
     // two answers among three copies: the count is said for both
     let client = Mock::new(vec![
@@ -468,7 +468,7 @@ async fn the_count_line_needs_every_copy_to_begin_with_one_of_the_answers() {
 
 #[tokio::test]
 async fn a_report_with_no_array_fails_the_step_and_skips_what_needs_it_but_not_the_rest_of_the_phase() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("FIND", says("I found nothing to list")), ("SIDE", says("side report"))]);
     let toml = r#"
 [[phase]]
@@ -507,7 +507,7 @@ title = "Check"
 
 #[tokio::test]
 async fn a_phase_where_every_step_failed_ends_the_run() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("FIND", says("[1, 2, 3]"))]);
     let toml = format!("{CHECKED}\n[[phase]]\ntitle = \"Never\"\n[[phase.step]]\nid = \"never\"\nprompt = \"NEVER\"\n");
     let (out, _) = go(&client, d.path(), &toml, "").await;
@@ -521,7 +521,7 @@ async fn a_phase_where_every_step_failed_ends_the_run() {
 
 #[tokio::test]
 async fn text_that_arrives_through_a_placeholder_is_never_expanded_again() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("FIND", says("[\"{{args}} and {{steps.find.report}}\"]")), ("CHECK", says("fine"))]);
     let (out, _) = go(&client, d.path(), CHECKED, "THE-ARGS").await;
     assert!(!out.is_error, "{}", out.content);
@@ -532,7 +532,7 @@ async fn text_that_arrives_through_a_placeholder_is_never_expanded_again() {
 
 #[tokio::test]
 async fn max_agents_stops_new_starts_and_is_named() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("FIND", says("[\"a\", \"b\", \"c\", \"d\", \"e\"]"))]);
     let toml = format!("max_agents = 3\nmax_parallel = 1\n{CHECKED}\n[[phase]]\ntitle = \"After\"\n[[phase.step]]\nid = \"after\"\nprompt = \"AFTER\"\n");
     let (out, _) = go(&client, d.path(), &toml, "").await;
@@ -545,7 +545,7 @@ async fn max_agents_stops_new_starts_and_is_named() {
 
 #[tokio::test]
 async fn max_tokens_stops_new_starts_and_is_named() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![
         ("FIND", Say::Text("[\"a\", \"b\", \"c\"]".into(), 500, 100)),
         ("CHECK", Say::Text("fine".into(), 500, 100)),
@@ -561,7 +561,7 @@ async fn max_tokens_stops_new_starts_and_is_named() {
 
 #[tokio::test]
 async fn the_interrupt_stops_the_whole_run_and_nothing_starts_after_it() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("HANG", Say::Hang)]);
     let toml = r#"
 max_parallel = 2
@@ -604,7 +604,7 @@ title = "Two"
 
 #[tokio::test]
 async fn a_file_that_fails_a_check_or_names_an_unknown_kind_starts_nothing() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![]);
     let bad = "[[phase]]\n[[phase.step]]\nid = \"a\"\nprompt = \"p\"\nvotes = 9\nagent = \"nobody\"\n";
     let (out, _) = go(&client, d.path(), bad, "").await;
@@ -628,7 +628,7 @@ async fn a_file_that_fails_a_check_or_names_an_unknown_kind_starts_nothing() {
 
 #[tokio::test]
 async fn the_answer_is_bounded_per_report_and_every_report_keeps_its_share_of_the_total() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let big = "x".repeat(7000);
     let client = Mock::new(vec![("BIG", says(&big))]);
     // one report: 6000 characters, and the line says how much was cut
@@ -659,7 +659,7 @@ async fn the_answer_is_bounded_per_report_and_every_report_keeps_its_share_of_th
 
 #[tokio::test]
 async fn in_the_answer_every_vote_keeps_its_header_and_its_count_line_even_with_no_text_left() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     // 5 items with 5 votes: 25 reports share 24000, 960 characters each
     let items = (1..=5).map(|n| format!("\"it{n}\"")).collect::<Vec<_>>().join(", ");
     let client =
@@ -676,7 +676,7 @@ async fn in_the_answer_every_vote_keeps_its_header_and_its_count_line_even_with_
 
 #[tokio::test]
 async fn a_workflow_cannot_start_a_workflow_and_a_sub_agent_is_not_offered_the_tool() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![]);
     let set = ToolSet::new().with(Arc::new(Read)).with(Arc::new(Named("workflow")));
     let wf = Workflow::new(Arc::new(sub_agent(&client, set)), d.path().to_path_buf());
@@ -693,7 +693,7 @@ async fn a_workflow_cannot_start_a_workflow_and_a_sub_agent_is_not_offered_the_t
 #[tokio::test]
 async fn the_description_lists_the_saved_workflows_bounded_and_the_question_says_what_it_costs() {
     data_dir();
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     nexo_core::config::trust_project(d.path(), &nexo_core::paths::trusted_projects_file()).unwrap();
     let dir = d.path().join(".nexo/workflows");
     std::fs::create_dir_all(&dir).unwrap();
@@ -839,7 +839,7 @@ fn start_with(client: &Arc<Mock>, d: &Path, config: Config, tools: ToolSet) -> R
 /// A trusted project folder with the workflow `name` saved in it.
 fn project_with(name: &str, text: &str) -> tempfile::TempDir {
     data_dir();
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     nexo_core::config::trust_project(d.path(), &nexo_core::paths::trusted_projects_file()).unwrap();
     std::fs::create_dir_all(d.path().join(".nexo/workflows")).unwrap();
     std::fs::write(d.path().join(format!(".nexo/workflows/{name}.toml")), text).unwrap();
@@ -949,7 +949,7 @@ async fn grace() {
 
 #[tokio::test]
 async fn sub_agents_that_can_change_files_run_one_at_a_time_as_with_the_task_tool() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("GATE", Say::Gated("done".into()))]);
     let wf = writer_tool(&client, d.path(), false);
     let c = ctx(d.path());
@@ -971,7 +971,7 @@ async fn sub_agents_that_can_change_files_run_one_at_a_time_as_with_the_task_too
 #[tokio::test]
 async fn read_only_kinds_run_together_and_so_do_writers_when_the_setting_lets_task_sub_agents_write_side_by_side() {
     for (agent, parallel) in [("explore", false), ("general", true)] {
-        let d = tempfile::tempdir().unwrap();
+        let d = test_tmpdir().unwrap();
         let client = Mock::new(vec![("GATE", Say::Gated("done".into()))]);
         let wf = writer_tool(&client, d.path(), parallel);
         let c = ctx(d.path());
@@ -990,7 +990,7 @@ async fn read_only_kinds_run_together_and_so_do_writers_when_the_setting_lets_ta
 
 #[tokio::test]
 async fn an_error_a_cut_and_a_refused_start_each_fail_their_own_step_and_skip_what_needs_it() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![
         ("BOOM", Say::Fail),
         ("CUT", Say::Hang),
@@ -1078,7 +1078,7 @@ title = "After"
 
 #[tokio::test]
 async fn a_tool_a_sub_agent_is_refused_goes_back_to_it_and_does_not_by_itself_fail_its_step() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("DENY", Say::CallThen("edit", "the edit was refused, nothing changed".into()))]);
     let wf = writer_tool(&client, d.path(), false);
     let toml = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"deny\"\nagent = \"general\"\nprompt = \"DENY\"\n";
@@ -1124,7 +1124,7 @@ async fn read_only_and_plan_mode_ask_about_a_workflow_as_ever_and_the_mode_refus
 
 #[tokio::test]
 async fn a_run_that_reports_no_usage_counts_as_zero_tokens_and_the_result_says_so() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("BARE", Say::Bare("no meter".into())), ("METERED", says("metered"))]);
     let toml = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"bare\"\nprompt = \"BARE\"\n[[phase.step]]\nid = \"metered\"\nprompt = \"METERED\"\n";
     let (out, _) = go(&client, d.path(), toml, "").await;
@@ -1141,7 +1141,7 @@ async fn a_run_that_reports_no_usage_counts_as_zero_tokens_and_the_result_says_s
 
 #[tokio::test]
 async fn a_list_cut_at_fifty_items_and_equal_items_are_said_in_the_result() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let many = (0..60).map(|n| format!("\"i{n}\"")).collect::<Vec<_>>().join(", ");
     let client = Mock::new(vec![("FIND", says(&format!("[{many}]")))]);
     let toml = format!(
@@ -1169,7 +1169,7 @@ async fn a_list_cut_at_fifty_items_and_equal_items_are_said_in_the_result() {
 
 #[tokio::test]
 async fn what_a_later_prompt_gets_of_a_step_with_each_is_the_joined_reports_under_one_line_headers_and_capped() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let big = "y".repeat(7000);
     let client = Mock::new(vec![
         ("FIND", says("[\"alpha\", \"beta\"]")),
@@ -1192,7 +1192,7 @@ async fn what_a_later_prompt_gets_of_a_step_with_each_is_the_joined_reports_unde
 
 #[tokio::test]
 async fn an_item_longer_than_two_thousand_characters_is_cut_with_a_mark_in_the_prompt() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("FIND", says(&format!("[\"{}\"]", "z".repeat(3000)))), ("CHECK", says("fine"))]);
     let (out, _) = go(&client, d.path(), &CHECKED.replace("votes = 2", "votes = 1"), "").await;
     assert!(!out.is_error, "{}", out.content);
@@ -1262,7 +1262,7 @@ async fn no_subject_for_inline_text_or_a_name_that_does_not_load_and_a_bad_name_
 
 #[tokio::test]
 async fn the_unreported_note_counts_only_sub_agents_that_reported_without_usage() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![
         ("BOOM", Say::Fail),
         ("CUT", Say::Hang),
@@ -1302,7 +1302,7 @@ async fn the_unreported_note_counts_only_sub_agents_that_reported_without_usage(
 
 #[tokio::test]
 async fn a_step_report_of_five_or_more_parts_in_a_later_prompt_holds_to_the_group_cap_part_by_part() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let items = (1..=6).map(|n| format!("\"i{n}\"")).collect::<Vec<_>>().join(", ");
     let client = Mock::new(vec![
         ("FIND", says(&format!("[{items}]"))),
@@ -1323,7 +1323,7 @@ async fn a_step_report_of_five_or_more_parts_in_a_later_prompt_holds_to_the_grou
 
 #[tokio::test]
 async fn text_of_many_bytes_per_character_is_cut_in_the_answer_on_a_character_boundary_with_the_cut_line() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     // a sub-agent's own report is held to about 8 KB, so the 6000-character cap is reached only by text that is
     // mostly one byte per character: ASCII first, then characters of 2 and 3 bytes where the cut falls
     for (ch, ascii, multi, kept) in [("é", 5200, 1000, 800), ("日", 5300, 800, 700)] {
@@ -1407,7 +1407,7 @@ title = "Join"
 
 #[tokio::test]
 async fn a_run_reports_each_step_going_waiting_running_ok_in_order_with_its_sub_agents_and_ends() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("ONE", says("one")), ("TWO", says("two")), ("THREE", says("three"))]);
     let c = ctx(d.path());
     let mut rx = c.jobs.subs().changes();
@@ -1499,7 +1499,7 @@ async fn snapshots_reach_the_interface_but_are_not_in_the_session_file() {
 
 #[tokio::test]
 async fn stopping_a_step_cancels_its_agent_fails_it_with_the_reason_skips_what_needs_it_and_the_rest_goes_on() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("HANG", Say::Hang)]);
     let toml = r#"
 [[phase]]
@@ -1555,7 +1555,7 @@ title = "Two"
 
 #[tokio::test]
 async fn stopping_the_run_starts_nothing_more_and_the_result_lists_what_ended_and_what_was_stopped() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("HANG", Say::Hang), ("DONE", says("finished"))]);
     let toml = r#"
 max_parallel = 2
@@ -1604,7 +1604,7 @@ title = "Two"
 
 #[tokio::test]
 async fn one_run_at_a_time_a_second_is_refused_in_one_sentence_by_the_tool_too_and_allowed_once_the_first_ends() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
     let first = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"a\"\nprompt = \"GATE a\"\n";
     let c = ctx(d.path());
@@ -1944,7 +1944,7 @@ async fn a_session_with_no_saved_workflow_sends_a_request_that_says_nothing_of_w
         }
     }
     data_dir();
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let rec = Arc::new(Record::default());
     let (handle, ends) = channels();
     let setup = AgentSetup {
@@ -2282,7 +2282,7 @@ title = "Check"
 
 #[tokio::test]
 async fn a_stopped_step_does_not_start_the_items_that_waited_for_a_place_and_ends_failed_with_the_reason() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("FIND", says("[\"DONE one\", \"HANG two\", \"HANG three\"]")), ("HANG", Say::Hang)]);
     let c = ctx(d.path());
     let mut rx = c.jobs.subs().changes();
@@ -2306,7 +2306,7 @@ async fn a_stopped_step_does_not_start_the_items_that_waited_for_a_place_and_end
 #[cfg(unix)]
 #[tokio::test]
 async fn a_stop_that_comes_while_a_sub_agent_is_starting_reaches_it_as_soon_as_it_has_started() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Mock::new(vec![("HANG", Say::Hang)]);
     // the hook of the sub-agent's start holds the start until the test lets it go
     let hold = nexo_core::config::HookConfig {
@@ -2333,4 +2333,9 @@ async fn a_stop_that_comes_while_a_sub_agent_is_starting_reaches_it_as_soon_as_i
     let (out, ()) = tokio::join!(bounded("the run", wf.run(json!({"inline": toml}), &c)), stopper);
     assert!(steps_line(&out, "a").contains("failed: stopped by the person"), "{}", out.content);
     assert_eq!(c.jobs.running(), 0);
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

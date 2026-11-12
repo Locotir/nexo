@@ -249,7 +249,7 @@ fn tools(probe: &Arc<Probe>) -> ToolSet {
 
 fn data_dir() {
     static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    let d = DIR.get_or_init(|| tempfile::tempdir().unwrap());
+    let d = DIR.get_or_init(|| test_tmpdir().unwrap());
     std::env::set_var("NEXO_DATA_DIR", d.path());
     std::env::set_var("NEXO_CONFIG_DIR", d.path());
     std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
@@ -488,7 +488,7 @@ fn job_ended(n: u32) -> impl Fn(&AgentEvent) -> bool {
 
 #[tokio::test]
 async fn a_quiet_person_gets_the_report_as_the_tool_output_and_no_ended_note() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", task("explore", "look"))),
@@ -551,7 +551,7 @@ async fn an_isolated_writer_that_changed_nothing_ends_with_the_old_worktree_note
 
 #[tokio::test]
 async fn a_background_reader_keeps_the_old_started_text_and_the_old_ended_note() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", bg("explore", "look"))),
@@ -592,7 +592,7 @@ async fn a_background_reader_keeps_the_old_started_text_and_the_old_ended_note()
 
 #[tokio::test]
 async fn a_message_while_a_sub_agent_runs_moves_it_to_the_background_and_its_report_comes_as_a_note() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", task("explore", "slow look"))),
@@ -629,7 +629,7 @@ async fn a_message_while_a_sub_agent_runs_moves_it_to_the_background_and_its_rep
 
 #[tokio::test]
 async fn a_detached_sub_agent_that_ends_while_the_main_agent_works_joins_at_the_next_round() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", task("explore", "slow look"))),
@@ -657,7 +657,7 @@ async fn a_detached_sub_agent_that_ends_while_the_main_agent_works_joins_at_the_
 
 #[tokio::test]
 async fn the_key_sends_it_to_the_background_and_says_so() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![Reply::Events(call("t1", "task", task("explore", "slow"))), Reply::Events(text("free"))],
         vec![Reply::Events(call("w1", "wait", json!({}))), Reply::Events(text("r"))],
@@ -675,7 +675,7 @@ async fn the_key_sends_it_to_the_background_and_says_so() {
 
 #[tokio::test]
 async fn two_attached_sub_agents_both_detach_on_one_message() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(two_calls(("t1", "task", task("explore", "a")), ("t2", "task", task("explore", "b")))),
@@ -703,7 +703,7 @@ async fn two_attached_sub_agents_both_detach_on_one_message() {
 
 #[tokio::test]
 async fn with_detach_on_message_off_the_message_waits_for_the_round() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", task("explore", "slow"))),
@@ -728,7 +728,7 @@ async fn with_detach_on_message_off_the_message_waits_for_the_round() {
 
 #[tokio::test]
 async fn a_key_with_nothing_attached_leaves_no_signal_for_a_sub_agent_that_starts_later() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             // the model is still writing its reply when the key is pressed; the sub-agent starts after it
@@ -752,7 +752,7 @@ async fn a_key_with_nothing_attached_leaves_no_signal_for_a_sub_agent_that_start
 
 #[tokio::test]
 async fn a_message_in_a_round_detaches_a_sub_agent_that_starts_later_in_the_same_round() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![late(d.path(), "g1", call("t1", "task", task("explore", "look"))), Reply::Events(text("done"))],
         vec![Reply::Events(call("w1", "wait", json!({}))), Reply::Events(text("report"))],
@@ -772,7 +772,7 @@ async fn a_message_in_a_round_detaches_a_sub_agent_that_starts_later_in_the_same
 
 #[tokio::test]
 async fn a_message_does_not_detach_a_sub_agent_of_a_later_round() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("m1", "wait", json!({"file": "go2"}))),
@@ -795,7 +795,7 @@ async fn a_message_does_not_detach_a_sub_agent_of_a_later_round() {
 
 #[tokio::test]
 async fn a_signal_does_not_survive_a_round_that_went_on_without_hearing_the_inbox() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let reasoning_only = vec![
         StreamEvent::Start { response_id: None, model: None },
         StreamEvent::ReasoningDelta("hmm".into()),
@@ -824,7 +824,7 @@ async fn a_signal_does_not_survive_a_round_that_went_on_without_hearing_the_inbo
 
 #[tokio::test]
 async fn a_background_writer_of_any_profile_is_a_job_and_its_claim_keeps_others_out_until_it_ends() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", bg("general", "hold a.txt"))),
@@ -884,7 +884,7 @@ async fn a_background_writer_of_any_profile_is_a_job_and_its_claim_keeps_others_
 
 #[tokio::test]
 async fn a_second_sub_agent_writes_the_path_after_the_holder_ended_normally() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", bg("general", "hold a.txt"))),
@@ -920,7 +920,7 @@ async fn a_second_sub_agent_writes_the_path_after_the_holder_ended_normally() {
 
 #[tokio::test]
 async fn killing_the_holder_frees_its_file_for_the_main_agent_and_for_a_new_sub_agent() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", bg("general", "hold a.txt"))),
@@ -959,7 +959,7 @@ async fn killing_the_holder_frees_its_file_for_the_main_agent_and_for_a_new_sub_
 
 #[tokio::test]
 async fn clear_frees_the_file_of_a_background_writer_too() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", bg("general", "hold a.txt"))),
@@ -996,7 +996,7 @@ async fn clear_frees_the_file_of_a_background_writer_too() {
 
 #[tokio::test]
 async fn an_edit_of_several_files_claims_each_and_a_refused_call_gives_back_what_it_took() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", bg("general", "hold files"))),
@@ -1051,7 +1051,7 @@ async fn an_edit_of_several_files_claims_each_and_a_refused_call_gives_back_what
 
 #[tokio::test]
 async fn a_call_id_that_comes_again_does_not_share_the_claims_of_the_first_writer() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     // a provider that sends no ids makes `call_0` in every turn
     let client = Scripted::with_subs(
         vec![
@@ -1100,7 +1100,7 @@ fn git(dir: &Path, args: &[&str]) {
 static TRUST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn repo() -> (tempfile::TempDir, PathBuf) {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let p = d.path().canonicalize().unwrap();
     git(&p, &["init", "-q"]);
     std::fs::write(p.join("a.txt"), "a\n").unwrap();
@@ -1144,7 +1144,7 @@ async fn esc_stops_an_attached_isolated_writer_and_cleans_its_worktree() {
 
 #[tokio::test]
 async fn esc_leaves_a_detached_sub_agent_running() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", task("explore", "slow"))),
@@ -1175,7 +1175,7 @@ fn is_ask(e: &AgentEvent) -> bool {
 
 #[tokio::test]
 async fn a_question_of_a_sub_agent_names_it_and_esc_leaves_a_detached_ones_open() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let mut cfg = config(PermissionMode::Ask);
     cfg.permissions.allow.clear();
     let client = Scripted::new(
@@ -1207,7 +1207,7 @@ async fn a_question_of_a_sub_agent_names_it_and_esc_leaves_a_detached_ones_open(
 
 #[tokio::test]
 async fn a_question_of_a_sub_agent_started_in_the_background_stays_open_on_esc() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let mut cfg = config(PermissionMode::Ask);
     cfg.permissions.allow.clear();
     let client = Scripted::new(
@@ -1237,4 +1237,9 @@ async fn a_question_of_a_sub_agent_started_in_the_background_stays_open_on_esc()
     r.send(AgentCommand::Permission { id, decision: PermissionDecision::Allow });
     r.until(all_jobs_ended).await;
     r.stop().await;
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

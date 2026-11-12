@@ -20,7 +20,7 @@ struct Rig {
 }
 
 fn rig(policy_toml: &str, log_lines: &[Value]) -> Rig {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = test_tmpdir().unwrap();
     let logs = dir.path().join("logs").join("proj");
     std::fs::create_dir_all(&logs).unwrap();
     if !log_lines.is_empty() {
@@ -71,7 +71,7 @@ bash = ["cargo test*"]
 
 #[test]
 fn a_hook_with_the_supervisor_down_answers_nothing_fast() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let t = Instant::now();
     let req = Request::Hook { kind: HookKind::Stop, payload: json!({"session_id": "x"}) };
     assert!(ask(&d.path().join("none.sock"), &req, HOOK_TIMEOUT).is_none());
@@ -184,7 +184,7 @@ fn a_second_panel_forwards_to_the_running_supervisor() {
 
 #[test]
 fn the_alert_command_runs_when_a_permission_wait_is_too_long() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let out = d.path().join("alert.txt");
     let toml = format!(
         "interval_secs = 0\n[thresholds]\nalert_after_min = 0\n[alert]\ncommand = [\"/bin/sh\", \"-c\", \"printf '%s' \\\"$1\\\" > {}\", \"x\", \"{{agent}}:{{state}}\"]\n",
@@ -210,4 +210,9 @@ fn the_socket_is_private_and_goes_when_the_panel_does() {
     let sock = r.sock.clone();
     drop(r.panel);
     wait_for("socket removed", || !sock.exists());
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

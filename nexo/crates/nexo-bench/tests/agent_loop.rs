@@ -49,7 +49,7 @@ impl ModelClient for Script {
 fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) -> Bench {
     static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
     let home = HOME.get_or_init(|| {
-        let d = tempfile::tempdir().unwrap();
+        let d = test_tmpdir().unwrap();
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
             std::env::set_var(var, d.path().join(var));
         }
@@ -77,7 +77,7 @@ fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) ->
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_that_ends_in_an_error_still_counts_what_it_spent() {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(Arc::new(Script::default()), 100, out.path());
     let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     task.check = |_| panic!("a checker that breaks");
@@ -88,7 +88,7 @@ async fn a_run_that_ends_in_an_error_still_counts_what_it_spent() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_two_session_task_runs_through_the_agent_and_resumes_its_history() {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let script = Arc::new(Script::default());
     let bench = bench(script.clone(), 100, out.path());
     let task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "cross-session").unwrap();
@@ -118,7 +118,7 @@ async fn a_two_session_task_runs_through_the_agent_and_resumes_its_history() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_stops_at_its_step_limit() {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(Arc::new(Script::default()), 1, out.path());
     let task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     let rec = run::run(&bench, &task, &Arm::parse("compact").unwrap(), 0, 5.0).await.unwrap();
@@ -155,7 +155,7 @@ impl ModelClient for EditTwo {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn one_edit_call_of_two_files_comes_back_with_the_projects_test_result() {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(Arc::new(EditTwo), 100, out.path());
     let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     task.files = vec![
@@ -225,7 +225,7 @@ fn calc_task(id: &'static str, files: Vec<(String, String)>) -> nexo_bench::task
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fix_lands_in_the_first_call_when_the_tests_come_with_the_request() {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let edit = json!({"path": "src/lib.rs", "old_string": "a - b", "new_string": "a + b"});
     let rec = Arc::new(Recorder { requests: Mutex::default(), first: Some(edit) });
     let bench = bench(rec.clone(), 100, out.path());
@@ -242,7 +242,7 @@ async fn a_fix_lands_in_the_first_call_when_the_tests_come_with_the_request() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn check_at_start_puts_the_failing_tests_in_the_first_request_with_one_cargo_run() {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     // two failing tests in two test binaries
     let count = |name: &str| format!("#[test]\nfn {name}() {{\n    panic!(\"{name} fails\");\n}}\n");
     let rec = Arc::new(Recorder { requests: Mutex::default(), first: None });
@@ -301,7 +301,7 @@ impl ModelClient for EditThenRead {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_of_an_unchanged_file_already_shown_is_answered_in_one_line() {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(Arc::new(EditThenRead::default()), 100, out.path());
     let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     task.files = vec![("notes.txt".into(), "alpha\nbeta\ngamma\n".into())];
@@ -352,7 +352,7 @@ async fn six_reads_of_a_big_file_keep_the_last_request_under_the_window() {
         .collect();
     let mut last = Vec::new();
     for arm in ["plain", "curator:cap=0;target=0;hard=0", "curator:cap=20000", "curator"] {
-        let out = tempfile::tempdir().unwrap();
+        let out = test_tmpdir().unwrap();
         let bench = bench(Arc::new(SixReads), 100, out.path());
         let mut task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
         task.files = vec![("big.txt".into(), body.clone())];
@@ -370,4 +370,9 @@ async fn six_reads_of_a_big_file_keep_the_last_request_under_the_window() {
     // in `fire_point`), so it waits and the view stays what plain sends. An explicit `cap` keeps the fixed trigger.
     assert!(last[2] <= 40_000, "a fixed cap holds the request under 40k tokens: {last:?}");
     assert!(last[3] > 40_000, "the default waits while a rewrite does not pay: {last:?}");
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

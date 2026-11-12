@@ -74,7 +74,7 @@ impl Tool for Writer {
 
 fn data_dir() {
     static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    let d = DIR.get_or_init(|| tempfile::tempdir().unwrap());
+    let d = DIR.get_or_init(|| test_tmpdir().unwrap());
     std::env::set_var("NEXO_DATA_DIR", d.path());
     std::env::set_var("NEXO_CONFIG_DIR", d.path());
     std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
@@ -171,7 +171,7 @@ fn notice_text(ev: &AgentEvent) -> String {
 
 #[tokio::test]
 async fn a_denied_model_is_refused_at_model_and_an_allowed_one_switches() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let p = policy("[models]\ndeny = [\"m2\"]");
     let mut r = start(config(&p), vec![], d.path()).await;
     r.send(AgentCommand::SetModel { provider: None, model: "m2".into() });
@@ -185,7 +185,7 @@ async fn a_denied_model_is_refused_at_model_and_an_allowed_one_switches() {
 
 #[tokio::test]
 async fn bypass_mode_is_refused_when_the_policy_turns_it_off() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let p = policy("disable_bypass_mode = true");
     let mut r = start(config(&p), vec![], d.path()).await;
     r.send(AgentCommand::SetPermissionMode(PermissionMode::Auto));
@@ -199,7 +199,7 @@ async fn bypass_mode_is_refused_when_the_policy_turns_it_off() {
 
 #[tokio::test]
 async fn a_managed_deny_rule_beats_the_users_allow_rule() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let p = policy("[permissions]\ndeny = [\"write\"]");
     let mut cfg = config(&p);
     cfg.permissions.allow.push("write".into());
@@ -216,7 +216,7 @@ async fn a_managed_deny_rule_beats_the_users_allow_rule() {
 
 #[tokio::test]
 async fn status_lists_what_the_policy_forces_with_its_source() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let p = policy("disable_web = true\n[permissions]\nsandbox = \"workspace-write\"\ndeny = [\"bash(rm *)\"]");
     let mut r = start(config(&p), vec![], d.path()).await;
     r.send(AgentCommand::ShowStatus);
@@ -232,7 +232,7 @@ async fn status_lists_what_the_policy_forces_with_its_source() {
 #[cfg(unix)]
 #[tokio::test]
 async fn user_hooks_are_off_when_disallowed_and_forced_hooks_run() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let p = policy(
         "allow_user_hooks = false\n[[forced_hooks]]\nevent = \"user_prompt_submit\"\ncommand = \"touch forced_ran\"",
     );
@@ -257,4 +257,9 @@ async fn user_hooks_are_off_when_disallowed_and_forced_hooks_run() {
     let ev = r.until(|e| notice_text(e).contains("forced_ran")).await;
     assert!(notice_text(ev.last().unwrap()).contains("managed"));
     r.stop().await;
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

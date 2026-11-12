@@ -59,7 +59,7 @@ fn reply(text: &str, call: Option<(&str, Value)>) -> Vec<StreamEvent> {
 fn bench(script: Vec<Step>, max_steps: u32, on: bool, out: &std::path::Path) -> Bench {
     static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
     HOME.get_or_init(|| {
-        let d = tempfile::tempdir().unwrap();
+        let d = test_tmpdir().unwrap();
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
             std::env::set_var(var, d.path().join(var));
         }
@@ -83,7 +83,7 @@ fn bench(script: Vec<Step>, max_steps: u32, on: bool, out: &std::path::Path) -> 
 }
 
 async fn run_script(script: Vec<Step>, max_steps: u32, on: bool) -> Record {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(script, max_steps, on, out.path());
     let task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     run::run(&bench, &task, &Arm::parse("plain").unwrap(), 0, 5.0).await.unwrap()
@@ -148,8 +148,8 @@ async fn a_panic_in_the_turn_ends_as_other_panic() {
 /// The agent driven by hand: nothing in a bench run interrupts, so the interrupt is sent here.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_interrupted_turn_ends_as_cancelled() {
-    let out = tempfile::tempdir().unwrap();
-    let wd = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
+    let wd = test_tmpdir().unwrap();
     let b = bench(vec![Step::Hang(reply("Thinking", None))], 30, false, out.path());
     let setup = nexo_agent::AgentSetup {
         config: run::config(&b, &Arm::parse("plain").unwrap()),
@@ -201,4 +201,9 @@ fn a_record_of_an_older_benchmark_still_reads_and_unknown_exits_are_named() {
     assert_eq!(s.stop(None, false), Stop::Other("no turn ended".into()));
     s.observe(&AgentEvent::Shutdown);
     assert_eq!(s.stop(None, false), Stop::Other("agent shut down".into()));
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

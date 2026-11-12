@@ -41,13 +41,13 @@ fn reply(text: &str, call: Option<(&str, Value)>) -> Vec<StreamEvent> {
 async fn run_script(script: Vec<Vec<StreamEvent>>, on: bool) -> nexo_bench::run::Record {
     static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
     HOME.get_or_init(|| {
-        let d = tempfile::tempdir().unwrap();
+        let d = test_tmpdir().unwrap();
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
             std::env::set_var(var, d.path().join(var));
         }
         d
     });
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = Bench {
         provider: ProviderConfig::new("anthropic", "http://127.0.0.1:9", None),
         model: "deepseek-chat".into(),
@@ -121,4 +121,9 @@ async fn a_write_without_check_goes_on_and_with_a_passing_check_ends() {
 async fn a_lead_in_goes_on() {
     let r = run_script(vec![reply("Let me check:", Some(("bash", json!({"command": "true"}))))], true).await;
     assert_eq!((r.steps, r.finished), (2, true), "{r:?}");
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

@@ -239,7 +239,7 @@ fn tools(probe: &Arc<Probe>) -> ToolSet {
 
 fn data_dir() {
     static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    let d = DIR.get_or_init(|| tempfile::tempdir().unwrap());
+    let d = DIR.get_or_init(|| test_tmpdir().unwrap());
     std::env::set_var("NEXO_DATA_DIR", d.path());
     std::env::set_var("NEXO_CONFIG_DIR", d.path());
     std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
@@ -518,7 +518,7 @@ fn golden_path(name: &str) -> PathBuf {
 /// One scripted run with a waited-for reader that uses a tool, and a background reader whose end the main
 /// agent is told of. Nobody writes to a sub-agent.
 async fn the_scripted_run() -> (Value, Value) {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![
             Reply::Events(call("t1", "task", task("explore", "look around"))),
@@ -635,7 +635,7 @@ fn items_of(evs: &[SubChange], id: &str) -> Vec<SubItem> {
 
 #[tokio::test]
 async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversation_in_order() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![],
         vec![
@@ -695,7 +695,7 @@ async fn a_sub_agent_that_writes_calls_a_tool_and_reports_leaves_its_conversatio
 
 #[tokio::test]
 async fn two_sub_agents_at_once_never_cross_items_or_messages() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::with_subs(
         vec![],
         vec![
@@ -741,7 +741,7 @@ async fn two_sub_agents_at_once_never_cross_items_or_messages() {
 
 #[tokio::test]
 async fn failed_killed_and_interrupted_runs_end_in_the_right_state() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     // failed: the model answers nothing
     let client = Scripted::new(vec![], vec![Reply::Events(text(""))]);
     let (agent, ctx) = (task_tool(&client), call_ctx(d.path(), "f1"));
@@ -782,7 +782,7 @@ async fn failed_killed_and_interrupted_runs_end_in_the_right_state() {
 
 #[tokio::test]
 async fn nobody_listening_changes_nothing_for_the_sub_agent_or_the_registry() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![],
         vec![Reply::Events(says_then_calls(&["x"], "s1", "read", spends(1, 1))), Reply::Events(text("fine"))],
@@ -799,7 +799,7 @@ async fn nobody_listening_changes_nothing_for_the_sub_agent_or_the_registry() {
 
 #[tokio::test]
 async fn a_message_that_arrives_while_the_last_reply_is_written_is_read_before_it_ends() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![],
         vec![late(d.path(), "first", text("first answer")), Reply::Events(text("second answer"))],
@@ -849,7 +849,7 @@ async fn held_sub_agent(r: &mut Running, client: &Scripted) -> String {
 
 #[tokio::test]
 async fn a_message_sent_to_a_running_sub_agent_reaches_only_that_sub_agent() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", bg("explore", "slow look"))),
@@ -900,7 +900,7 @@ async fn a_message_sent_to_a_running_sub_agent_reaches_only_that_sub_agent() {
 
 #[tokio::test]
 async fn a_message_to_an_ended_or_unknown_sub_agent_says_it_was_not_delivered_and_queues_nothing() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", bg("explore", "slow look"))),
@@ -934,7 +934,7 @@ async fn a_message_to_an_ended_or_unknown_sub_agent_says_it_was_not_delivered_an
 
 #[tokio::test]
 async fn sub_agent_events_are_not_written_to_the_session_and_what_a_run_spends_is_in_the_session_total() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", bg("explore", "slow look"))),
@@ -1009,7 +1009,7 @@ fn many_deltas(n: usize) -> Vec<StreamEvent> {
 
 #[tokio::test]
 async fn a_view_that_falls_behind_is_sent_the_state_of_every_run_and_the_forwarder_goes_on() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", bg("explore", "burst"))),
@@ -1066,7 +1066,7 @@ fn slow_replies(d: &Path, n: usize) -> Vec<Reply> {
 
 #[tokio::test]
 async fn mail_that_never_stops_ends_at_the_rounds_of_the_profile() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     // the explore profile has 16 rounds: 17 requests at most, whatever arrives
     let client = Scripted::new(vec![], slow_replies(d.path(), 40));
     let (agent, ctx) = (Arc::new(task_tool(&client)), call_ctx(d.path(), "t1"));
@@ -1084,7 +1084,7 @@ async fn mail_that_never_stops_ends_at_the_rounds_of_the_profile() {
 
 #[tokio::test]
 async fn mail_that_never_stops_ends_when_the_person_cancels() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(vec![], slow_replies(d.path(), 40));
     let (agent, ctx) = (Arc::new(task_tool(&client)), call_ctx(d.path(), "t1"));
     let subs = ctx.jobs.subs();
@@ -1115,7 +1115,7 @@ async fn mail_that_never_stops_ends_when_the_person_cancels() {
 
 #[tokio::test]
 async fn a_view_can_ask_for_the_conversation_of_a_run() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![
             Reply::Events(call("t1", "task", bg("explore", "slow look"))),
@@ -1162,7 +1162,7 @@ async fn a_view_can_ask_for_the_conversation_of_a_run() {
 
 #[tokio::test]
 async fn a_rewind_announces_the_live_runs_again() {
-    let d = tempfile::tempdir().unwrap();
+    let d = test_tmpdir().unwrap();
     let client = Scripted::new(
         vec![Reply::Events(call("t1", "task", bg("explore", "slow look"))), Reply::Events(text("started it"))],
         vec![Reply::Events(call("w1", "wait", json!({"file": "go"}))), Reply::Events(text("late report"))],
@@ -1174,4 +1174,9 @@ async fn a_rewind_announces_the_live_runs_again() {
     assert!(evs.iter().any(|e| matches!(e, AgentEvent::HistoryCleared)), "the state comes after the clear: {evs:?}");
     release(d.path(), "go");
     r.stop().await;
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }

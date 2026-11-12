@@ -54,7 +54,7 @@ fn reply(text: &str, call: Option<(&str, Value)>) -> Vec<StreamEvent> {
 fn bench(script: Vec<Step>, limit: Option<Duration>, out: &std::path::Path) -> Bench {
     static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
     HOME.get_or_init(|| {
-        let d = tempfile::tempdir().unwrap();
+        let d = test_tmpdir().unwrap();
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
             std::env::set_var(var, d.path().join(var));
         }
@@ -79,7 +79,7 @@ fn bench(script: Vec<Step>, limit: Option<Duration>, out: &std::path::Path) -> B
 
 /// The run, and the money the bench counted for it, and how long it took.
 async fn run_script(script: Vec<Step>, limit: Option<Duration>) -> (Record, f64, Duration) {
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(script, limit, out.path());
     let task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     let t = Instant::now();
@@ -178,11 +178,16 @@ async fn a_run_inside_its_time_is_unaffected_and_zero_means_no_limit() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_run_after_a_timeout_starts_and_finishes() {
     let limit = roomy_limit().await;
-    let out = tempfile::tempdir().unwrap();
+    let out = test_tmpdir().unwrap();
     let bench = bench(vec![Step::Stall, Step::Reply(reply("The parser is fixed.", None))], Some(limit), out.path());
     let task = nexo_bench::tasks::all().into_iter().find(|t| t.id == "misleading-error").unwrap();
     let arm = Arm::parse("plain").unwrap();
     let a = run::run(&bench, &task, &arm, 0, 5.0).await.unwrap();
     let b = run::run(&bench, &task, &arm, 1, 5.0).await.unwrap();
     assert_eq!((a.stop, b.stop), (Some(Stop::Timeout), Some(Stop::Done)));
+}
+
+/// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
+fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
 }
