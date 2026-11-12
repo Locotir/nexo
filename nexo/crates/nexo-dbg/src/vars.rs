@@ -18,6 +18,8 @@ const MAX_BYTES: usize = 64 << 20;
 
 /// Longest value text: past it the rest is cut with `...`.
 const MAX_TEXT: usize = 400;
+/// How deep a type may nest before it is taken to loop back on itself.
+const MAX_TYPE_DEPTH: usize = 32;
 
 /// Array elements shown before `...`.
 const SHOWN: usize = 12;
@@ -122,6 +124,12 @@ enum Ctx {
 impl Vars {
     /// The variables of an image, or `None` when it has no (readable) DWARF.
     pub fn of(img: &Image) -> Option<Vars> {
+        // the DWARF reader trusts address arithmetic that a damaged file can overflow (a panic in debug builds);
+        // debug info it cannot read is "no debug info", not a crash
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::read(img))).ok().flatten()
+    }
+
+    fn read(img: &Image) -> Option<Vars> {
         let get = |name: &str| -> &[u8] {
             img.sections.iter().find(|s| s.name == name).map_or(&[][..], |s| img.section_bytes(s))
         };
@@ -357,28 +365,44 @@ impl Vars {
     }
 
     fn size(&self, v: View) -> u64 {
+        self.size_in(v, 0)
+    }
+
+    /// `size` with a depth guard: damaged debug info can make a type contain itself.
+    fn size_in(&self, v: View, depth: usize) -> u64 {
+        if depth > MAX_TYPE_DEPTH {
+            return 0;
+        }
         match self.strip(v.0) {
             Some(Ty::Base { size, .. } | Ty::Record { size, .. } | Ty::Enum { size, .. }) => *size,
             Some(Ty::Ptr { .. }) => 8,
             Some(Ty::Array { elem, dims }) => {
-                let n: u64 = dims.iter().skip(v.1).map(|d| d.unwrap_or(0)).product();
-                n * self.size(View(*elem, 0))
+                let n: u64 = dims.iter().skip(v.1).fold(1u64, |a, d| a.saturating_mul(d.unwrap_or(0)));
+                n.saturating_mul(self.size_in(View(*elem, 0), depth + 1))
             }
             _ => 0,
         }
     }
 
     fn name(&self, v: View) -> String {
+        self.name_in(v, 0)
+    }
+
+    /// `name` with a depth guard: a pointer chain that loops back on itself ends in `...`.
+    fn name_in(&self, v: View, depth: usize) -> String {
+        if depth > MAX_TYPE_DEPTH {
+            return "...".into();
+        }
         let Some(t) = v.0 else { return "void".into() };
         match self.types.get(&t) {
             Some(Ty::Base { name, .. }) => name.clone(),
             Some(Ty::Ptr { to }) => match self.strip(*to) {
                 Some(Ty::Func) => "function pointer".into(),
-                _ => format!("{} *", self.name(View(*to, 0))),
+                _ => format!("{} *", self.name_in(View(*to, 0), depth + 1)),
             },
             Some(Ty::Array { elem, dims }) => {
                 let d: String = dims.iter().skip(v.1).map(|d| d.map_or("[]".into(), |n| format!("[{n}]"))).collect();
-                format!("{} {d}", self.name(View(*elem, 0)))
+                format!("{} {d}", self.name_in(View(*elem, 0), depth + 1))
             }
             Some(Ty::Record { name, union, .. }) => {
                 let n = if name.is_empty() { "<anonymous>" } else { name };
@@ -388,7 +412,9 @@ impl Vars {
                     format!("{} {n}", if *union { "union" } else { "struct" })
                 }
             }
-            Some(Ty::Alias { name, to }) if name.is_empty() => format!("const {}", self.name(View(*to, 0))),
+            Some(Ty::Alias { name, to }) if name.is_empty() => {
+                format!("const {}", self.name_in(View(*to, 0), depth + 1))
+            }
             Some(Ty::Alias { name, .. }) => name.clone(),
             Some(Ty::Enum { name, .. }) => format!("enum {name}"),
             Some(Ty::Func) => "function".into(),
@@ -447,8 +473,8 @@ impl Vars {
             let mut parts = Vec::new();
             for i in 0..n.min(SHOWN) {
                 let at = match &v.at {
-                    At::Mem(a) => At::Mem(a + i as u64 * esz),
-                    At::Bytes(b) => At::Bytes(b.get(i * esz as usize..).unwrap_or(&[]).to_vec()),
+                    At::Mem(a) => At::Mem(a.wrapping_add((i as u64).wrapping_mul(esz))),
+                    At::Bytes(b) => At::Bytes(b.get((i as u64).saturating_mul(esz) as usize..).unwrap_or(&[]).to_vec()),
                 };
                 parts.push(self.render_inner(&Val { at, ty: ev }, regs, depth + 1));
             }
@@ -496,7 +522,7 @@ impl Vars {
                     .iter()
                     .map(|(n, off, t)| {
                         let at = match &v.at {
-                            At::Mem(a) => At::Mem(a + off),
+                            At::Mem(a) => At::Mem(a.wrapping_add(*off)),
                             At::Bytes(b) => At::Bytes(b.get(*off as usize..).unwrap_or(&[]).to_vec()),
                         };
                         format!("{n} = {}", self.render_inner(&Val { at, ty: View(*t, 0) }, regs, depth + 1))
@@ -634,7 +660,7 @@ impl Vars {
             return Err(format!("{} has no field {field}; its fields: {}", self.name(v.ty), names.join(", ")));
         };
         let at = match v.at {
-            At::Mem(a) => At::Mem(a + off),
+            At::Mem(a) => At::Mem(a.wrapping_add(*off)),
             At::Bytes(b) => At::Bytes(b.get(*off as usize..).unwrap_or(&[]).to_vec()),
         };
         Ok(Val { at, ty: View(*t, 0) })
@@ -652,7 +678,7 @@ impl Vars {
                 }
                 let esz = self.size(ev) as i64;
                 let at = match v.at {
-                    At::Mem(a) => At::Mem(a.wrapping_add((i * esz) as u64)),
+                    At::Mem(a) => At::Mem(a.wrapping_add(i.wrapping_mul(esz) as u64)),
                     At::Bytes(_) => return Err("this array is not in memory".into()),
                 };
                 Ok(Val { at, ty: ev })
@@ -660,7 +686,7 @@ impl Vars {
             Some(Ty::Ptr { to }) => {
                 let p = self.int(&v, regs).ok_or("the pointer cannot be read")? as u64;
                 let esz = self.size(View(*to, 0)) as i64;
-                Ok(Val { at: At::Mem(p.wrapping_add((i * esz) as u64)), ty: View(*to, 0) })
+                Ok(Val { at: At::Mem(p.wrapping_add(i.wrapping_mul(esz) as u64)), ty: View(*to, 0) })
             }
             _ => Err(format!("{} cannot be indexed", self.name(v.ty))),
         }
@@ -771,7 +797,7 @@ fn eval(expr: &[u8], enc: gimli::Encoding, fb: Option<&[u8]>, regs: &mut Regs) -
     // a value in pieces (a struct split over registers): its bytes one piece after another
     let mut out = Vec::new();
     for p in &pieces {
-        let n = p.size_in_bits.map_or(8, |b| b.div_ceil(8)) as usize;
+        let n = p.size_in_bits.map_or(8, |b| b.div_ceil(8)).min(1 << 16) as usize;
         let b = match &p.location {
             Location::Address { address } => (regs.rd)(*address, n)?,
             Location::Register { register } => reg(regs, register.0)?.to_le_bytes().to_vec(),
@@ -930,5 +956,54 @@ mod tests {
         assert_eq!(le(&[0xff, 0xff, 0xff, 0xff], false), 0xffff_ffff);
         assert_eq!(quote(b"ab\0cd", true), "\"ab\"");
         assert_eq!(quote(b"a\nb", true), "\"a\\nb\" (no NUL in its 3 bytes)");
+    }
+
+    fn lone(types: Vec<(u64, Ty)>) -> Vars {
+        Vars { funcs: Vec::new(), globals: Vec::new(), types: types.into_iter().collect() }
+    }
+
+    #[test]
+    fn types_that_contain_themselves_end_in_a_name_and_a_size_not_a_stack_overflow() {
+        // a pointer to itself, an array of itself, an alias loop, and a huge array of huge arrays
+        let v = lone(vec![
+            (1, Ty::Ptr { to: Some(1) }),
+            (2, Ty::Array { elem: Some(2), dims: vec![Some(4)] }),
+            (3, Ty::Alias { name: String::new(), to: Some(3) }),
+            (4, Ty::Array { elem: Some(5), dims: vec![Some(u64::MAX), Some(u64::MAX)] }),
+            (5, Ty::Array { elem: Some(5), dims: vec![Some(u64::MAX)] }),
+            (6, Ty::Ptr { to: Some(6) }),
+        ]);
+        for t in 1..=6 {
+            let _ = v.name(View(Some(t), 0));
+            let _ = v.size(View(Some(t), 0));
+        }
+        assert!(v.name(View(Some(1), 0)).contains("..."));
+    }
+
+    #[test]
+    fn random_location_expressions_never_panic_or_allocate_without_bound() {
+        let enc = gimli::Encoding { address_size: 8, format: gimli::Format::Dwarf32, version: 4 };
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..4000 {
+            let n = (next() % 24) as usize;
+            let mut e: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+            // lean on the opcodes that matter: piece (0x93), bit_piece (0x9d), deref (0x06), fbreg (0x91), addr (0x03)
+            for byte in e.iter_mut() {
+                if next() % 3 == 0 {
+                    *byte = [0x93, 0x9d, 0x06, 0x91, 0x03, 0x23, 0x9f, 0x70, 0x9c][(next() % 9) as usize];
+                }
+            }
+            let mut rd = |_: u64, n: usize| Some(vec![1u8; n.min(64)]);
+            let mut regs = Regs { gp: [0x1000; 16], rip: 0x40_0000, cfa: Some(0x7fff_0000), bias: 0, rd: &mut rd };
+            let t0 = std::time::Instant::now();
+            let _ = eval(&e, enc, Some(&[0x9c]), &mut regs);
+            assert!(t0.elapsed().as_secs() < 2, "{e:02x?}");
+        }
     }
 }

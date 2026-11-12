@@ -24,6 +24,8 @@ mod rsp;
 mod server;
 mod stub;
 mod syscalls;
+#[cfg(test)]
+mod tests_harden;
 mod trace;
 mod vars;
 

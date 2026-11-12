@@ -41,6 +41,12 @@ pub struct Where {
 impl Lines {
     /// The table of an image, or `None` when it has no (readable) line info.
     pub fn of(img: &Image) -> Option<Lines> {
+        // the DWARF reader trusts address arithmetic that a damaged file can overflow (a panic in debug builds);
+        // debug info it cannot read is "no debug info", not a crash
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::read(img))).ok().flatten()
+    }
+
+    fn read(img: &Image) -> Option<Lines> {
         let get = |name: &str| -> &[u8] {
             img.sections.iter().find(|s| s.name == name).map_or(&[][..], |s| img.section_bytes(s))
         };

@@ -91,9 +91,17 @@ impl Core {
         if phentsize < 56 || phnum == 0 || phnum > 65535 {
             return fail("the core file has no program headers");
         }
+        if phentsize * phnum > 16 << 20 {
+            return fail(format!(
+                "the core file's program header table claims {phnum} entries of {phentsize} bytes ({} MiB); a real core is far smaller, so the header is damaged",
+                (phentsize * phnum) >> 20
+            ));
+        }
         let mut table = vec![0u8; phentsize * phnum];
         file.seek(SeekFrom::Start(phoff))?;
-        file.read_exact(&mut table).map_err(|_| crate::Error::Fail("the core file is cut short".into()))?;
+        file.read_exact(&mut table).map_err(|_| {
+            crate::Error::Fail(format!("the core file is cut short: its program header table (at offset {phoff:#x}, {} bytes) runs past the end", table.len()))
+        })?;
         let mut core = Core { file, segs: Vec::new(), files: Vec::new(), threads: Vec::new(), death: None, disk: None };
         let mut notes: Vec<(u64, u64)> = Vec::new();
         for i in 0..phnum {
@@ -171,6 +179,9 @@ impl Core {
 
     fn files(&mut self, d: &[u8]) {
         let count = u64_at(d, 0).unwrap_or(0) as usize;
+        if count > d.len() / 24 {
+            return;
+        }
         let page = u64_at(d, 8).unwrap_or(4096);
         let names_at = 16 + count.saturating_mul(24);
         let Some(names) = d.get(names_at..) else { return };
@@ -205,14 +216,14 @@ impl Core {
         let rel = addr - vaddr;
         if rel < filesz {
             let n = want.min((filesz - rel) as usize);
-            let ok =
-                self.file.seek(SeekFrom::Start(offset + rel)).is_ok() && self.file.read_exact(&mut out[..n]).is_ok();
+            let ok = self.file.seek(SeekFrom::Start(offset.saturating_add(rel))).is_ok()
+                && self.file.read_exact(&mut out[..n]).is_ok();
             return if ok { n } else { 0 };
         }
         // not in the dump: a file on disk may hold it, else it was zero
         if let Some(m) = self.files.iter().find(|m| addr >= m.start && addr < m.end) {
-            let n = want.min((m.end - addr).min(vaddr + memsz - addr) as usize);
-            let (path, at) = (m.path.clone(), m.offset + (addr - m.start));
+            let n = want.min((m.end - addr).min(vaddr.saturating_add(memsz) - addr) as usize);
+            let (path, at) = (m.path.clone(), m.offset.saturating_add(addr - m.start));
             if self.disk.as_ref().map(|d| d.0.as_str()) != Some(path.as_str()) {
                 self.disk = File::open(&path).ok().map(|f| (path, f));
             }
@@ -232,7 +243,7 @@ impl Core {
             }
             return 0;
         }
-        let n = want.min((vaddr + memsz - addr) as usize);
+        let n = want.min((vaddr.saturating_add(memsz) - addr) as usize);
         out[..n].fill(0);
         n
     }
@@ -304,7 +315,7 @@ impl Target for Core {
                         read: s.flags & 4 != 0,
                         write: s.flags & 2 != 0,
                         exec: s.flags & 1 != 0,
-                        offset: m.offset + (a - m.start),
+                        offset: m.offset.saturating_add(a - m.start),
                         path: m.path.clone(),
                     });
                     at = b;
@@ -364,5 +375,166 @@ impl Target for Core {
     }
     fn kill(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(out: &mut Vec<u8>, kind: u32, desc: &[u8]) {
+        out.extend(5u32.to_le_bytes());
+        out.extend((desc.len() as u32).to_le_bytes());
+        out.extend(kind.to_le_bytes());
+        out.extend(b"CORE\0\0\0\0");
+        out.extend(desc);
+        while !out.len().is_multiple_of(4) {
+            out.push(0);
+        }
+    }
+
+    /// A small valid x86-64 core: one thread, a siginfo, one mapped file, one dumped page.
+    fn sample() -> Vec<u8> {
+        let mut notes = Vec::new();
+        let mut st = vec![0u8; 336];
+        st[0..4].copy_from_slice(&11u32.to_le_bytes());
+        st[12..14].copy_from_slice(&11u16.to_le_bytes());
+        st[32..36].copy_from_slice(&1234u32.to_le_bytes());
+        note(&mut notes, NT_PRSTATUS, &st);
+        let mut si = vec![0u8; 128];
+        si[0..4].copy_from_slice(&11u32.to_le_bytes());
+        note(&mut notes, NT_SIGINFO, &si);
+        let mut nf = Vec::new();
+        nf.extend(1u64.to_le_bytes());
+        nf.extend(4096u64.to_le_bytes());
+        nf.extend(0x40_0000u64.to_le_bytes());
+        nf.extend(0x40_2000u64.to_le_bytes());
+        nf.extend(0u64.to_le_bytes());
+        nf.extend(b"/bin/true\0");
+        note(&mut notes, NT_FILE, &nf);
+        let ph = |kind: u32, flags: u32, off: u64, vaddr: u64, filesz: u64, memsz: u64| {
+            let mut h = Vec::new();
+            h.extend(kind.to_le_bytes());
+            h.extend(flags.to_le_bytes());
+            h.extend(off.to_le_bytes());
+            h.extend(vaddr.to_le_bytes());
+            h.extend(0u64.to_le_bytes());
+            h.extend(filesz.to_le_bytes());
+            h.extend(memsz.to_le_bytes());
+            h.extend(1u64.to_le_bytes());
+            h
+        };
+        let data_at = 64 + 56 * 3 + notes.len();
+        let mut e = Vec::new();
+        e.extend(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");
+        e.extend(4u16.to_le_bytes());
+        e.extend(62u16.to_le_bytes());
+        e.extend(1u32.to_le_bytes());
+        e.extend(0u64.to_le_bytes());
+        e.extend(64u64.to_le_bytes());
+        e.extend(0u64.to_le_bytes());
+        e.extend(0u32.to_le_bytes());
+        e.extend(64u16.to_le_bytes());
+        e.extend(56u16.to_le_bytes());
+        e.extend(3u16.to_le_bytes());
+        e.extend([0u8; 6]);
+        e.extend(ph(PT_NOTE, 0, (64 + 56 * 3) as u64, 0, notes.len() as u64, 0));
+        e.extend(ph(PT_LOAD, 6, data_at as u64, 0x7ff0_0000, 4096, 4096));
+        e.extend(ph(PT_LOAD, 5, 0, 0x40_0000, 0, 0x2000));
+        e.extend(notes);
+        e.extend(vec![7u8; 4096]);
+        e
+    }
+
+    /// Open and use a core the way the debugger does; never panic, never hang.
+    fn exercise(bytes: &[u8], tag: &str) {
+        let path = std::env::temp_dir().join(format!("nexo-core-harden-{}-{tag}.core", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        if let Ok(mut c) = Core::open(&path) {
+            let mut buf = [0u8; 300];
+            for a in [0u64, 0x40_0000, 0x40_1fff, 0x7ff0_0000, 0x7ff0_0ff0, u64::MAX - 10, u64::MAX] {
+                let _ = c.read(a, &mut buf);
+            }
+            let _ = c.maps();
+            let _ = c.modules();
+            let _ = c.death();
+            let _ = c.exe();
+            for t in c.threads() {
+                let _ = c.regs(t);
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_sample_core_reads() {
+        let path = std::env::temp_dir().join(format!("nexo-core-sample-{}.core", std::process::id()));
+        std::fs::write(&path, sample()).unwrap();
+        let mut c = Core::open(&path).unwrap();
+        let mut b = [0u8; 4];
+        assert_eq!(c.read(0x7ff0_0000, &mut b), 4);
+        assert_eq!(b, [7; 4]);
+        assert_eq!(c.threads(), vec![1234]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn damaged_cores_never_panic() {
+        let good = sample();
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let cases: usize = std::env::var("NEXO_DBG_HARDEN_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
+        for i in 0..cases {
+            let mut b = good.clone();
+            match next() % 5 {
+                0 => {
+                    let n = (next() as usize) % b.len();
+                    b.truncate(n);
+                }
+                1 => {
+                    let at = (next() as usize) % b.len();
+                    b[at] ^= 1 << (next() % 8);
+                }
+                2 => {
+                    // smash a whole field with an extreme value, mostly inside the headers and notes
+                    let at = (next() as usize) % (64 + 56 * 3 + 400).min(b.len() - 8);
+                    let v = [u64::MAX, 1 << 63, 1 << 40, 0, 0xffff_ffff][(next() % 5) as usize];
+                    b[at..at + 8].copy_from_slice(&v.to_le_bytes());
+                }
+                3 => {
+                    let at = (next() as usize) % (64 + 56 * 3 + 400).min(b.len() - 4);
+                    b[at..at + 4].copy_from_slice(&(next() as u32).to_le_bytes());
+                }
+                _ => {
+                    for _ in 0..4 {
+                        let at = (next() as usize) % b.len();
+                        b[at] = next() as u8;
+                    }
+                }
+            }
+            let t0 = std::time::Instant::now();
+            exercise(&b, &i.to_string());
+            assert!(t0.elapsed() < Duration::from_secs(5), "case {i} took {:?}", t0.elapsed());
+        }
+    }
+
+    #[test]
+    fn a_huge_program_header_table_is_refused_by_name() {
+        let mut b = sample();
+        b[54..56].copy_from_slice(&60000u16.to_le_bytes());
+        b[56..58].copy_from_slice(&60000u16.to_le_bytes());
+        let path = std::env::temp_dir().join(format!("nexo-core-huge-{}.core", std::process::id()));
+        std::fs::write(&path, b).unwrap();
+        let e = match Core::open(&path) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("opened"),
+        };
+        let _ = std::fs::remove_file(&path);
+        assert!(e.contains("damaged") && e.contains("60000"), "{e}");
     }
 }
