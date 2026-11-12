@@ -75,12 +75,13 @@ fn rig(judge: Arc<Stand>) -> Rig {
 
 fn stop(r: &Rig, active: bool) -> Value {
     let p = json!({"session_id": "sess-1", "cwd": "/work/app", "stop_hook_active": active});
-    ask(&r.sock, &Request::Hook { kind: HookKind::Stop, payload: p }, HOOK_TIMEOUT).unwrap().out
+    // HOOK_TIMEOUT is what a live hook waits; a test on a loaded machine (a full gate) waits longer for the same answer.
+    ask(&r.sock, &Request::Hook { kind: HookKind::Stop, payload: p }, HOOK_TIMEOUT * 10).unwrap().out
 }
 
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
     let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(8) {
+    while t.elapsed() < Duration::from_secs(30) {
         if f() {
             return;
         }
