@@ -132,6 +132,8 @@ pub struct Engine {
     /// The tokens of the view (head included) at the last epoch, whether or not it changed anything: the next
     /// look also waits for `Params.check` tokens of growth past it.
     looked: i64,
+    /// The person's requests `epoch_due` has seen: a new one may make an epoch due (`Engine::turn_due`).
+    turn_seen: usize,
     /// Whether the last epoch that was due was refused (`Params.kept` 3 and 4): until one lands, the view is held
     /// to the working-set bound at every request (`Engine::past_working_set`).
     refused: bool,
@@ -346,6 +348,7 @@ impl Engine {
             checked_at: 0,
             landed: 0,
             looked: 0,
+            turn_seen: 0,
             refused: false,
             resent_from: usize::MAX,
             fresh_wait: FxHashSet::default(),

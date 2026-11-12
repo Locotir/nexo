@@ -211,6 +211,7 @@ impl Engine {
         if !self.epochs() {
             return true;
         }
+        let turned = self.turn_due();
         let view = self.sizes_now().iter().sum::<i64>();
         let total = view + self.head;
         let (start, land) = self.window_span();
@@ -225,7 +226,34 @@ impl Engine {
         // (with `kept` at 4 the room past the last landing is not asked: the epoch is tried each `check` tokens of
         // growth and lands by what it really does, `landing_pays`)
         let grown = (self.p.kept >= 4 && self.tries_landings()) || total - self.landed > start - land;
-        total > start && (self.p.cap > 0 || (grown && total - self.looked >= self.p.check))
+        (total > start && (self.p.cap > 0 || (grown && total - self.looked >= self.p.check))) || turned
+    }
+
+    /// Whether the person's latest request, new since the last look, makes an epoch due (`Params.close`): the
+    /// outputs of the requests it closed hold at least `check` tokens of the view. Those steps leave by the
+    /// rent rule (`rent_close`), which runs only at an epoch; waiting for the view to grow past the room the
+    /// cost rule gives keeps what an earlier task read for tens of calls of a new one that never uses it
+    /// (a session that went from reading a project's docs to configuring a model carried 25k tokens of
+    /// those docs for 19 calls). The rent rule still prices each step: what the new request uses stays.
+    fn turn_due(&mut self) -> bool {
+        let nt = self.goal.turns.len();
+        if self.p.close == 0 || nt <= self.turn_seen {
+            return false;
+        }
+        self.turn_seen = nt;
+        if nt < 2 {
+            return false;
+        }
+        let start = self.goal.turns[nt - 1].start;
+        let sizes = self.sizes_now();
+        let vis = self.visible();
+        let old: i64 = vis
+            .iter()
+            .filter(|&&mi| mi > 0 && mi < start)
+            .filter(|&&mi| self.fz.by_msg(mi).iter().any(|&i| self.tr.units[i].kind == UKind::Result))
+            .map(|&mi| sizes.get(mi).copied().unwrap_or(0))
+            .sum();
+        old >= self.p.check
     }
 
     /// The tokens of the latest outputs the agent has not written about that no cut may take (`still`): what the
