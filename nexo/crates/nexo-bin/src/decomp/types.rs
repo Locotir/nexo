@@ -61,7 +61,11 @@ pub fn parse_proto(text: &str) -> Result<Proto, String> {
                 continue;
             }
             let (ty, n) = split_decl(a);
-            let n = if n.is_empty() || matches!(ty.as_str(), "struct" | "unsigned" | "const") { format!("a{}", i + 1) } else { n };
+            let n = if n.is_empty() || matches!(ty.as_str(), "struct" | "unsigned" | "const") {
+                format!("a{}", i + 1)
+            } else {
+                n
+            };
             let ty = if ty.is_empty() { a.to_string() } else { ty };
             args.push((ty, n));
         }
@@ -119,7 +123,10 @@ mod tests {
         let p = parse_proto("int load(const char *path, struct item *it, ...)").unwrap();
         assert_eq!(p.ret, "int");
         assert_eq!(p.name, "load");
-        assert_eq!(p.args, vec![("const char *".to_string(), "path".to_string()), ("struct item *".to_string(), "it".to_string())]);
+        assert_eq!(
+            p.args,
+            vec![("const char *".to_string(), "path".to_string()), ("struct item *".to_string(), "it".to_string())]
+        );
         assert!(p.variadic);
         assert_eq!(struct_of("struct item *").as_deref(), Some("item"));
         assert!(parse_proto("nothing").is_err());

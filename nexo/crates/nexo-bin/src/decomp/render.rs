@@ -41,7 +41,7 @@ pub struct WebInfo {
 // ---------------------------------------------------------------------------------------------
 // Renaming registers into variables
 
-fn find(p: &mut Vec<usize>, x: usize) -> usize {
+fn find(p: &mut [usize], x: usize) -> usize {
     let mut r = x;
     while p[r] != r {
         r = p[r];
@@ -213,13 +213,7 @@ pub fn make_webs(f: &mut Lifted, facts: &Facts) -> WebInfo {
             names.insert(w, format!("v{counter}"));
         }
     }
-    WebInfo {
-        names,
-        bits,
-        signed: signed.into_iter().map(|(k, v)| (k, v >= 0)).collect(),
-        float,
-        args: arg_webs,
-    }
+    WebInfo { names, bits, signed: signed.into_iter().map(|(k, v)| (k, v >= 0)).collect(), float, args: arg_webs }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -459,7 +453,9 @@ impl Printer<'_> {
             }
             Expr::Flags(k, a, c) => format!("flags_{k:?}({}, {})", self.expr(a, 0), self.expr(c, 0)).to_lowercase(),
             Expr::Cond(cc, a, c) => format!("cond_{}({}, {})", cc.name(), self.expr(a, 0), self.expr(c, 0)),
-            Expr::Select(c, a, b) => paren(0, format!("{} ? {} : {}", self.expr(c, 1), self.expr(a, 1), self.expr(b, 1))),
+            Expr::Select(c, a, b) => {
+                paren(0, format!("{} ? {} : {}", self.expr(c, 1), self.expr(a, 1), self.expr(b, 1)))
+            }
             Expr::Call(c) => self.call_text(c),
             Expr::Intr(n, args, _) => {
                 let a: Vec<String> = args.iter().map(|x| self.expr(x, 0)).collect();
@@ -475,7 +471,12 @@ impl Printer<'_> {
     fn assign_text(&self, lhs: String, rhs: &Expr, for_step: bool) -> String {
         if let Expr::Bin(op, a, c) = rhs {
             if let Expr::Var(v, _) = &**a {
-                if self.var_text(*v, 0) == lhs && matches!(op, Bin::Add | Bin::Sub | Bin::Mul | Bin::And | Bin::Or | Bin::Xor | Bin::Shl | Bin::Shr | Bin::Sar) {
+                if self.var_text(*v, 0) == lhs
+                    && matches!(
+                        op,
+                        Bin::Add | Bin::Sub | Bin::Mul | Bin::And | Bin::Or | Bin::Xor | Bin::Shl | Bin::Shr | Bin::Sar
+                    )
+                {
                     if matches!(op, Bin::Add | Bin::Sub) && c.as_const() == Some(1) {
                         return format!("{lhs}{}", if *op == Bin::Add { "++" } else { "--" });
                     }
@@ -570,8 +571,16 @@ impl Printer<'_> {
                 self.push(None, format!("}} while ({});", self.expr(c, 0)));
             }
             Node::For(i, c, s, b) => {
-                let init = if let Node::Stmt(_, st) = &**i { self.stmt_text(st, false).unwrap_or_default() } else { String::new() };
-                let step = if let Node::Stmt(_, st) = &**s { self.stmt_text(st, true).unwrap_or_default() } else { String::new() };
+                let init = if let Node::Stmt(_, st) = &**i {
+                    self.stmt_text(st, false).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let step = if let Node::Stmt(_, st) = &**s {
+                    self.stmt_text(st, true).unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 let a = if let Node::Stmt(a, _) = &**i { Some(*a) } else { None };
                 self.push(a, format!("for ({init}; {}; {step}) {{", self.expr(c, 0)));
                 self.block(b);
@@ -672,7 +681,9 @@ pub fn render(
                             ret_bits(x, b);
                             ret_bits(y, b);
                         }
-                        Node::Loop(x) | Node::While(_, x) | Node::DoWhile(x, _) | Node::For(_, _, _, x) => ret_bits(x, b),
+                        Node::Loop(x) | Node::While(_, x) | Node::DoWhile(x, _) | Node::For(_, _, _, x) => {
+                            ret_bits(x, b)
+                        }
                         Node::Switch(_, _, arms, d) => {
                             arms.iter().for_each(|a| ret_bits(&a.1, b));
                             if let Some(d) = d {
@@ -684,7 +695,11 @@ pub fn render(
                 }
             }
             ret_bits(body, &mut b);
-            if b == 0 { "i64".into() } else { itype(b.max(8)).to_string() }
+            if b == 0 {
+                "i64".into()
+            } else {
+                itype(b.max(8)).to_string()
+            }
         }
     };
     let args: Vec<String> = web

@@ -145,7 +145,12 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
             } else {
                 String::new()
             };
-            Err(Error::Bad(format!("no function is named {t:?}{hint}")))
+            let next = if hint.is_empty() {
+                format!("; find it with: {}", command(img, "funcs", &format!("--grep {t}")))
+            } else {
+                String::new()
+            };
+            Err(Error::Bad(format!("no function is named {t:?}{hint}{next}")))
         }
         many => {
             let list: Vec<String> =

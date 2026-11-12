@@ -1,9 +1,9 @@
 //! `decomp`: pseudo-C for one x86-64 function.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::needless_range_loop)]
 
+pub mod flow;
 pub mod ir;
 pub mod lift;
-pub mod flow;
 
 #[cfg(test)]
 pub(crate) mod testenv {
@@ -121,6 +121,24 @@ mod tests {
     }
 
     #[test]
+    fn setcc_then_movzx_is_a_plain_comparison() {
+        // mov eax,[rdi+0x6c] ; sub eax,1 ; cmp eax,8 ; setbe al ; movzx eax,al ; ret
+        let t =
+            text(vec![0x8b, 0x47, 0x6c, 0x83, 0xe8, 0x01, 0x83, 0xf8, 0x08, 0x0f, 0x96, 0xc0, 0x0f, 0xb6, 0xc0, 0xc3]);
+        println!("{t}");
+        assert!(!t.contains("INSERT"), "{t}");
+        assert!(t.contains("return") && t.contains("<= 8"), "{t}");
+    }
+
+    #[test]
+    fn flags_survive_a_register_being_reused() {
+        // test eax,eax ; mov eax,[rdi] ; je L ; mov eax,1 ; L: ret
+        let t = text(vec![0x85, 0xc0, 0x8b, 0x07, 0x74, 0x05, 0xb8, 1, 0, 0, 0, 0xc3]);
+        println!("{t}");
+        assert!(!t.contains("flags"), "{t}");
+    }
+
+    #[test]
     fn test_and_branch_folds_flags() {
         // test edi,1 ; je L ; mov eax,1 ; ret ; L: mov eax,2 ; ret
         let t = text(vec![0xf7, 0xc7, 1, 0, 0, 0, 0x74, 6, 0xb8, 1, 0, 0, 0, 0xc3, 0xb8, 2, 0, 0, 0, 0xc3]);
@@ -129,10 +147,10 @@ mod tests {
         assert!(t.contains("a1 & 1"), "{t}");
     }
 }
-pub mod structure;
 pub mod api;
-pub mod types;
 pub mod render;
+pub mod structure;
+pub mod types;
 
 /// The blocks as plain text, for debugging (`NEXO_DECOMP_IR=1` prints it on stderr).
 pub fn ir_text(f: &lift::Lifted) -> String {

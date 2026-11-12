@@ -5,9 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use iced_x86::{
-    ConditionCode, FlowControl, Instruction, InstructionInfoFactory, Mnemonic, OpAccess, OpKind, Register,
-};
+use iced_x86::{ConditionCode, FlowControl, Instruction, InstructionInfoFactory, Mnemonic, OpAccess, OpKind, Register};
 
 use super::ir::*;
 use crate::disasm::{formatter, walk};
@@ -248,9 +246,7 @@ impl<'a> Lifter<'a> {
                 }
                 Expr::Var(Var::Reg(n), bits)
             }
-            Some((n, _, true)) => {
-                Expr::Intr("high8", vec![Expr::Var(Var::Reg(n), 64)], 8)
-            }
+            Some((n, _, true)) => Expr::Intr("high8", vec![Expr::Var(Var::Reg(n), 64)], 8),
             None if r.is_xmm() => Expr::Var(Var::Xmm(r.number() as u8), 64),
             None => Expr::Unknown(64),
         }
@@ -262,12 +258,17 @@ impl<'a> Lifter<'a> {
             e = Some(Expr::Const(i.ip_rel_memory_address(), 64));
         } else if i.memory_base() != Register::None {
             let base = i.memory_base();
-            let bv = if base.is_gpr64() { self.reg_read(base) } else { self.reg_read(base.full_register()).trunc(32).zext(64) };
+            let bv = if base.is_gpr64() {
+                self.reg_read(base)
+            } else {
+                self.reg_read(base.full_register()).trunc(32).zext(64)
+            };
             e = Some(bv);
         }
         if i.memory_index() != Register::None {
             let ix = i.memory_index();
-            let mut v = if ix.is_gpr64() { self.reg_read(ix) } else { self.reg_read(ix.full_register()).trunc(32).zext(64) };
+            let mut v =
+                if ix.is_gpr64() { self.reg_read(ix) } else { self.reg_read(ix.full_register()).trunc(32).zext(64) };
             let sc = i.memory_index_scale() as u64;
             if sc != 1 {
                 v = Expr::bin(Bin::Mul, v, Expr::Const(sc, 64));
@@ -279,13 +280,7 @@ impl<'a> Lifter<'a> {
         }
         if !i.is_ip_rel_memory_operand() {
             let d = i.memory_displacement64();
-            let disp = if d == 0 {
-                None
-            } else if i.memory_base() == Register::None && i.memory_index() == Register::None {
-                Some(Expr::Const(d, 64))
-            } else {
-                Some(Expr::Const(d, 64))
-            };
+            let disp = if d == 0 { None } else { Some(Expr::Const(d, 64)) };
             if let Some(d) = disp {
                 e = Some(match e {
                     Some(x) => Expr::add(x, d),
@@ -452,7 +447,10 @@ impl<'a> Lifter<'a> {
             }
         }
         for m in info.used_memory() {
-            if matches!(m.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite) {
+            if matches!(
+                m.access(),
+                OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite
+            ) {
                 mem = true;
             }
             // anything that touches the frame leaves its slot in memory
@@ -483,7 +481,9 @@ impl<'a> Lifter<'a> {
                 let t = ins.near_branch_target();
                 Target::Direct(t)
             }
-            OpKind::Memory if ins.is_ip_rel_memory_operand() && self.env.import_slot(ins.ip_rel_memory_address()).is_some() => {
+            OpKind::Memory
+                if ins.is_ip_rel_memory_operand() && self.env.import_slot(ins.ip_rel_memory_address()).is_some() =>
+            {
                 Target::Import(self.env.import_slot(ins.ip_rel_memory_address()).unwrap_or(0))
             }
             _ => {
@@ -529,7 +529,15 @@ impl<'a> Lifter<'a> {
             self.in_prologue = false;
         }
         match m {
-            M::Nop | M::Endbr64 | M::Int3 | M::Pause | M::Lfence | M::Mfence | M::Sfence | M::Prefetcht0 | M::Prefetchw => {}
+            M::Nop
+            | M::Endbr64
+            | M::Int3
+            | M::Pause
+            | M::Lfence
+            | M::Mfence
+            | M::Sfence
+            | M::Prefetcht0
+            | M::Prefetchw => {}
             M::Fnop => {}
             M::Mov => {
                 // `mov rbp, rsp` starts a frame
@@ -569,13 +577,14 @@ impl<'a> Lifter<'a> {
                 let a = self.mem_addr(ins);
                 let bits = self.op_bits(ins, 0);
                 let a = if let Expr::StackAddr(_) = a { a } else { a.trunc(bits.max(8)) };
-                let a = if bits == 16 { a } else { a };
                 self.write(addr, ins, 0, a);
             }
             M::Add | M::Sub | M::And | M::Or | M::Xor => {
                 // frame bookkeeping on the stack pointer
                 if ins.op0_kind() == OpKind::Register && ins.op0_register() == Register::RSP {
-                    if let (Some(o), true) = (self.st.rsp, ins.op1_kind() != OpKind::Register && ins.op1_kind() != OpKind::Memory) {
+                    if let (Some(o), true) =
+                        (self.st.rsp, ins.op1_kind() != OpKind::Register && ins.op1_kind() != OpKind::Memory)
+                    {
                         let v = ins.immediate(1) as i64;
                         match m {
                             M::Add => self.st.rsp = Some(o.wrapping_add(v)),
@@ -664,7 +673,11 @@ impl<'a> Lifter<'a> {
                 let a = self.read(ins, 0, bits);
                 let c = self.read(ins, 1, bits);
                 self.assign(addr, Var::FlagOps, Expr::Flags(FlagKind::Bt, b(a), b(c)));
-                self.assign(addr, Var::FlagRes, Expr::Flags(FlagKind::Bt, b(Expr::Const(0, bits)), b(Expr::Const(0, bits))));
+                self.assign(
+                    addr,
+                    Var::FlagRes,
+                    Expr::Flags(FlagKind::Bt, b(Expr::Const(0, bits)), b(Expr::Const(0, bits))),
+                );
             }
             M::Shl | M::Sal | M::Shr | M::Sar => {
                 let bits = self.op_bits(ins, 0);
@@ -710,8 +723,16 @@ impl<'a> Lifter<'a> {
                 } else {
                     self.assign(addr, RDX, hi.zext(64));
                     self.assign(addr, RAX, lo.zext(64));
-                    self.assign(addr, Var::FlagOps, Expr::Flags(FlagKind::Res, b(Expr::Const(0, 1)), b(Expr::Const(0, 1))));
-                    self.assign(addr, Var::FlagRes, Expr::Flags(FlagKind::Res, b(Expr::Const(0, 1)), b(Expr::Const(0, 1))));
+                    self.assign(
+                        addr,
+                        Var::FlagOps,
+                        Expr::Flags(FlagKind::Res, b(Expr::Const(0, 1)), b(Expr::Const(0, 1))),
+                    );
+                    self.assign(
+                        addr,
+                        Var::FlagRes,
+                        Expr::Flags(FlagKind::Res, b(Expr::Const(0, 1)), b(Expr::Const(0, 1))),
+                    );
                 }
             }
             M::Div | M::Idiv => {
@@ -749,7 +770,10 @@ impl<'a> Lifter<'a> {
             }
             M::Xchg => {
                 let bits = self.op_bits(ins, 0);
-                if ins.op0_kind() == OpKind::Register && ins.op1_kind() == OpKind::Register && ins.op0_register() == ins.op1_register() {
+                if ins.op0_kind() == OpKind::Register
+                    && ins.op1_kind() == OpKind::Register
+                    && ins.op0_register() == ins.op1_register()
+                {
                     return false;
                 }
                 let a = self.read(ins, 0, bits);
@@ -759,13 +783,41 @@ impl<'a> Lifter<'a> {
                 let t = Expr::Var(Var::Tmp(0), bits);
                 self.write(addr, ins, 1, t);
             }
-            M::Seta | M::Setae | M::Setb | M::Setbe | M::Sete | M::Setg | M::Setge | M::Setl | M::Setle | M::Setne
-            | M::Setno | M::Setnp | M::Setns | M::Seto | M::Setp | M::Sets => {
+            M::Seta
+            | M::Setae
+            | M::Setb
+            | M::Setbe
+            | M::Sete
+            | M::Setg
+            | M::Setge
+            | M::Setl
+            | M::Setle
+            | M::Setne
+            | M::Setno
+            | M::Setnp
+            | M::Setns
+            | M::Seto
+            | M::Setp
+            | M::Sets => {
                 let c = flag_cond(cc_of(ins));
                 self.write(addr, ins, 0, c.zext(8));
             }
-            M::Cmova | M::Cmovae | M::Cmovb | M::Cmovbe | M::Cmove | M::Cmovg | M::Cmovge | M::Cmovl | M::Cmovle
-            | M::Cmovne | M::Cmovno | M::Cmovnp | M::Cmovns | M::Cmovo | M::Cmovp | M::Cmovs => {
+            M::Cmova
+            | M::Cmovae
+            | M::Cmovb
+            | M::Cmovbe
+            | M::Cmove
+            | M::Cmovg
+            | M::Cmovge
+            | M::Cmovl
+            | M::Cmovle
+            | M::Cmovne
+            | M::Cmovno
+            | M::Cmovnp
+            | M::Cmovns
+            | M::Cmovo
+            | M::Cmovp
+            | M::Cmovs => {
                 let bits = self.op_bits(ins, 0);
                 let src = self.read(ins, 1, bits);
                 let old = self.read(ins, 0, bits);
@@ -773,10 +825,11 @@ impl<'a> Lifter<'a> {
                 let sel = Expr::Select(b(c), b(src), b(old));
                 self.write(addr, ins, 0, sel);
             }
-            M::Sbb if ins.op_count() == 2
-                && ins.op0_kind() == OpKind::Register
-                && ins.op1_kind() == OpKind::Register
-                && ins.op0_register() == ins.op1_register() =>
+            M::Sbb
+                if ins.op_count() == 2
+                    && ins.op0_kind() == OpKind::Register
+                    && ins.op1_kind() == OpKind::Register
+                    && ins.op0_register() == ins.op1_register() =>
             {
                 let bits = self.op_bits(ins, 0);
                 let c = flag_cond(Cc::B).zext(bits);
@@ -861,7 +914,11 @@ impl<'a> Lifter<'a> {
                 let bits = self.op_bits(ins, 1).max(32);
                 let src = self.read(ins, 1, bits);
                 let w: Bits = if m == M::Cvtsi2sd { 64 } else { 32 };
-                self.write_reg(addr, ins.op0_register(), Expr::Intr(if w == 64 { "(double)" } else { "(float)" }, vec![src], w));
+                self.write_reg(
+                    addr,
+                    ins.op0_register(),
+                    Expr::Intr(if w == 64 { "(double)" } else { "(float)" }, vec![src], w),
+                );
             }
             M::Cvttsd2si | M::Cvttss2si | M::Cvtsd2si | M::Cvtss2si => {
                 let bits = self.op_bits(ins, 0);
@@ -912,13 +969,17 @@ impl<'a> Lifter<'a> {
             Mnemonic::Movaps | Mnemonic::Movapd | Mnemonic::Movups | Mnemonic::Movdqa | Mnemonic::Movdqu
         );
         if packed {
-            return false;
+            let x = |n: u32| {
+                ins.op_kind(n) == OpKind::Memory || (ins.op_kind(n) == OpKind::Register && ins.op_register(n).is_xmm())
+            };
+            return x(0) && x(1);
         }
         reg_ok(0) && reg_ok(1)
     }
 
     fn xmm_bits(ins: &Instruction) -> Bits {
         match ins.mnemonic() {
+            Mnemonic::Movaps | Mnemonic::Movapd | Mnemonic::Movups | Mnemonic::Movdqa | Mnemonic::Movdqu => 128,
             Mnemonic::Movss => 32,
             Mnemonic::Movd => 32,
             _ => 64,
@@ -951,7 +1012,11 @@ impl<'a> Lifter<'a> {
             OpKind::Register => {
                 let r = ins.op_register(0);
                 if r.is_xmm() {
-                    let v = if ins.op_kind(1) == OpKind::Register && !ins.op_register(1).is_xmm() { Expr::Intr("as_float", vec![v], w) } else { v };
+                    let v = if ins.op_kind(1) == OpKind::Register && !ins.op_register(1).is_xmm() {
+                        Expr::Intr("as_float", vec![v], w)
+                    } else {
+                        v
+                    };
                     self.assign(addr, Var::Xmm(r.number() as u8), v);
                 } else {
                     let v = if v.bits() != w { v.trunc(w) } else { v };
@@ -980,7 +1045,11 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
     let in_fn = |a: u64| a >= start && a < end;
     let lo = jmp_idx.saturating_sub(10);
     // Absolute table: jmp [table + idx*8]
-    if jmp.op0_kind() == OpKind::Memory && jmp.memory_index() != Register::None && jmp.memory_index_scale() == 8 && jmp.memory_base() == Register::None {
+    if jmp.op0_kind() == OpKind::Memory
+        && jmp.memory_index() != Register::None
+        && jmp.memory_index_scale() == 8
+        && jmp.memory_base() == Register::None
+    {
         let table = jmp.memory_displacement64();
         let idx = jmp.memory_index();
         let bound = find_bound(d, jmp_idx, idx);
@@ -1020,7 +1089,11 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
                 break;
             }
             match i.mnemonic() {
-                M::Add if i.op0_register().full_register() == target_reg && i.op1_kind() == OpKind::Register && add_i.is_none() => {
+                M::Add
+                    if i.op0_register().full_register() == target_reg
+                        && i.op1_kind() == OpKind::Register
+                        && add_i.is_none() =>
+                {
                     add_i = Some(k)
                 }
                 M::Movsxd | M::Mov
@@ -1059,7 +1132,8 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
         for k in 0..count {
             let raw = env.read(table + k * 4, 4)?;
             let v = i32::from_le_bytes(raw.try_into().ok()?);
-            let t = if env.is_pe() && base != 0 { base + (v as u32 as u64) } else { table.wrapping_add(v as i64 as u64) };
+            let t =
+                if env.is_pe() && base != 0 { base + (v as u32 as u64) } else { table.wrapping_add(v as i64 as u64) };
             if !in_fn(t) {
                 if bound.is_some() {
                     return None;
@@ -1136,9 +1210,9 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
                 FlowControl::Call | FlowControl::IndirectCall => {
                     let noret = match ins.op0_kind() {
                         OpKind::NearBranch64 => env.name_of(ins.near_branch_target()).is_some_and(|n| is_noreturn(&n)),
-                        OpKind::Memory if ins.is_ip_rel_memory_operand() => {
-                            env.import_slot(ins.ip_rel_memory_address()).is_some_and(|i| is_noreturn(&env.import_name(i)))
-                        }
+                        OpKind::Memory if ins.is_ip_rel_memory_operand() => env
+                            .import_slot(ins.ip_rel_memory_address())
+                            .is_some_and(|i| is_noreturn(&env.import_name(i))),
                         _ => false,
                     };
                     if noret {
@@ -1148,10 +1222,8 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
                 }
                 FlowControl::UnconditionalBranch => {
                     let t = ins.near_branch_target();
-                    if in_fn(t) {
-                        if leaders.insert(t) {
-                            work.push(t);
-                        }
+                    if in_fn(t) && leaders.insert(t) {
+                        work.push(t);
                     }
                     break;
                 }
@@ -1197,7 +1269,12 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
         blocks[id] = Some(Block {
             addr: a,
             stmts: Vec::new(),
-            term: Term::TailCall(Expr::Call(Box::new(Call { target: Target::Direct(a), args: Vec::new(), addr: a, known: false }))),
+            term: Term::TailCall(Expr::Call(Box::new(Call {
+                target: Target::Direct(a),
+                args: Vec::new(),
+                addr: a,
+                known: false,
+            }))),
             term_addr: a,
         });
     }
@@ -1235,7 +1312,7 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
         lf.st = st0;
         lf.in_prologue = id == 0;
         let mut k = first;
-        let mut term: Option<(Term, u64)> = None;
+        let term: Option<(Term, u64)>;
         let id_of = |a: u64| ids.get(&a).copied().or_else(|| ext_ids.get(&a).copied());
         let mut succ_states: Vec<(usize, State)> = Vec::new();
         loop {
@@ -1349,7 +1426,14 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
     let blocks: Vec<Block> = blocks
         .into_iter()
         .enumerate()
-        .map(|(i, x)| x.unwrap_or(Block { addr: leader_list.get(i).copied().unwrap_or(0), stmts: Vec::new(), term: Term::Stop, term_addr: 0 }))
+        .map(|(i, x)| {
+            x.unwrap_or(Block {
+                addr: leader_list.get(i).copied().unwrap_or(0),
+                stmts: Vec::new(),
+                term: Term::Stop,
+                term_addr: 0,
+            })
+        })
         .collect();
     let mut out = Lifted {
         start,
@@ -1386,7 +1470,11 @@ fn promote_slots(f: &mut Lifted, raw_escapes: &BTreeSet<i64>) {
             }
             Expr::Const(..) | Expr::Var(..) | Expr::Unknown(_) | Expr::SegBase(_) => {}
             Expr::Un(_, a) | Expr::Trunc(a, _) | Expr::Zext(a, _) | Expr::Sext(a, _) => scan(a, widths, escapes),
-            Expr::Bin(_, a, c) | Expr::Insert(a, c) | Expr::Cmp(_, a, c) | Expr::Flags(_, a, c) | Expr::Cond(_, a, c) => {
+            Expr::Bin(_, a, c)
+            | Expr::Insert(a, c)
+            | Expr::Cmp(_, a, c)
+            | Expr::Flags(_, a, c)
+            | Expr::Cond(_, a, c) => {
                 scan(a, widths, escapes);
                 scan(c, widths, escapes);
             }
@@ -1421,7 +1509,8 @@ fn promote_slots(f: &mut Lifted, raw_escapes: &BTreeSet<i64>) {
         bl.term.exprs().into_iter().for_each(|e| scan(e, &mut widths, &mut escapes));
     }
     let min_escape = escapes.iter().next().copied();
-    let slots: Vec<(i64, Bits)> = widths.iter().filter(|(_, w)| w.len() == 1).map(|(k, w)| (*k, *w.iter().next().unwrap())).collect();
+    let slots: Vec<(i64, Bits)> =
+        widths.iter().filter(|(_, w)| w.len() == 1).map(|(k, w)| (*k, *w.iter().next().unwrap())).collect();
     let mut ok: HashMap<i64, Bits> = HashMap::new();
     for (i, &(k, w)) in slots.iter().enumerate() {
         let size = (w as i64 / 8).max(1);

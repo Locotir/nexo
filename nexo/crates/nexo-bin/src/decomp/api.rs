@@ -123,47 +123,189 @@ fn table(name: &str) -> Option<Sig> {
     let f = |args: usize, fmt: usize| Sig { args, fmt: Some(fmt), ..Sig::default() };
     Some(match name {
         "printf" | "scanf" | "g_print" | "g_printerr" | "g_strdup_printf" | "wprintf" => f(1, 0),
-        "fprintf" | "sprintf" | "sscanf" | "fscanf" | "dprintf" | "g_string_printf" | "g_string_append_printf" => f(2, 1),
+        "fprintf" | "sprintf" | "sscanf" | "fscanf" | "dprintf" | "g_string_printf" | "g_string_append_printf" => {
+            f(2, 1)
+        }
         "snprintf" | "g_snprintf" => f(3, 2),
         "__printf_chk" => f(2, 1),
         "__fprintf_chk" | "__sprintf_chk" => f(3, 2),
         "__snprintf_chk" => f(5, 4),
-        "puts" | "strlen" | "atoi" | "atol" | "atof" | "getenv" | "strdup" | "malloc" | "free_" | "fclose" | "close"
-        | "toupper" | "tolower" | "isdigit" | "isalpha" | "isspace" | "isalnum" | "isupper" | "islower" | "putchar"
-        | "srand" | "usleep" | "sleep" | "fflush" | "rewind" | "chdir" | "rmdir" | "unlink" | "g_strdup"
-        | "g_malloc" | "g_malloc0" | "fgetc" | "getc" | "fileno" | "ftell" | "opendir" | "closedir" | "readdir"
-        | "strerror" | "perror" | "system" | "abs" | "labs" | "ferror" | "feof" | "strtod_" | "setlocale_"
-        | "rand_r" | "gmtime" | "localtime" | "sqrt" => s(1),
+        "puts" | "strlen" | "atoi" | "atol" | "atof" | "getenv" | "strdup" | "malloc" | "free_" | "fclose"
+        | "close" | "toupper" | "tolower" | "isdigit" | "isalpha" | "isspace" | "isalnum" | "isupper" | "islower"
+        | "putchar" | "srand" | "usleep" | "sleep" | "fflush" | "rewind" | "chdir" | "rmdir" | "unlink"
+        | "g_strdup" | "g_malloc" | "g_malloc0" | "fgetc" | "getc" | "fileno" | "ftell" | "opendir" | "closedir"
+        | "readdir" | "strerror" | "perror" | "system" | "abs" | "labs" | "ferror" | "feof" | "strtod_"
+        | "setlocale_" | "rand_r" | "gmtime" | "localtime" | "sqrt" => s(1),
         "free" | "exit" | "_exit" | "srandom" | "g_free" | "g_object_unref" => v(1),
         "abort" | "__stack_chk_fail" => v(0),
-        "__ctype_toupper_loc" | "__ctype_tolower_loc" | "__ctype_b_loc" | "__errno_location" | "g_ptr_array_new" | "doupdate"
-        | "rand" | "getchar" | "random" | "getpid" | "fork" | "getuid" | "clock" => s(0),
+        "__ctype_toupper_loc"
+        | "__ctype_tolower_loc"
+        | "__ctype_b_loc"
+        | "__errno_location"
+        | "g_ptr_array_new"
+        | "doupdate"
+        | "rand"
+        | "getchar"
+        | "random"
+        | "getpid"
+        | "fork"
+        | "getuid"
+        | "clock" => s(0),
         "time" | "ctime" | "fputc_" | "putc_" => s(1),
-        "strcmp" | "strcpy" | "strcat" | "strchr" | "strrchr" | "strstr" | "strcasecmp" | "fputs" | "fputc" | "putc"
-        | "fopen" | "access" | "mkdir" | "rename" | "realloc" | "calloc" | "strpbrk" | "strcspn" | "strspn"
-        | "strtok" | "setlocale" | "getcwd" | "fgetpos" | "g_strconcat_" | "pow" | "fmod" | "atan2" | "ungetc"
-        | "strcoll" | "gettimeofday" | "nanosleep" | "g_hash_table_lookup" => s(2),
-        "strncmp" | "strncpy" | "strncat" | "memcpy" | "memmove" | "memset" | "memcmp" | "strncasecmp" | "fgets"
-        | "read" | "write" | "open" | "strtol" | "strtoul" | "strtod" | "lseek" | "memchr" | "fseek" | "mmap_"
-        | "signal_" | "__strcpy_chk" | "g_strndup" | "send_" | "bsearch_" | "g_hash_table_insert" => s(3),
+        "strcmp"
+        | "strcpy"
+        | "strcat"
+        | "strchr"
+        | "strrchr"
+        | "strstr"
+        | "strcasecmp"
+        | "fputs"
+        | "fputc"
+        | "putc"
+        | "fopen"
+        | "access"
+        | "mkdir"
+        | "rename"
+        | "realloc"
+        | "calloc"
+        | "strpbrk"
+        | "strcspn"
+        | "strspn"
+        | "strtok"
+        | "setlocale"
+        | "getcwd"
+        | "fgetpos"
+        | "g_strconcat_"
+        | "pow"
+        | "fmod"
+        | "atan2"
+        | "ungetc"
+        | "strcoll"
+        | "gettimeofday"
+        | "nanosleep"
+        | "g_hash_table_lookup" => s(2),
+        "strncmp"
+        | "strncpy"
+        | "strncat"
+        | "memcpy"
+        | "memmove"
+        | "memset"
+        | "memcmp"
+        | "strncasecmp"
+        | "fgets"
+        | "read"
+        | "write"
+        | "open"
+        | "strtol"
+        | "strtoul"
+        | "strtod"
+        | "lseek"
+        | "memchr"
+        | "fseek"
+        | "mmap_"
+        | "signal_"
+        | "__strcpy_chk"
+        | "g_strndup"
+        | "send_"
+        | "bsearch_"
+        | "g_hash_table_insert" => s(3),
         "fread" | "fwrite" | "qsort" | "__memcpy_chk" | "__memset_chk" | "__memmove_chk" | "__strncpy_chk" => s(4),
         "__fgets_chk" => s(4),
         "__isoc99_sscanf" | "__isoc99_fscanf" => f(2, 1),
         "__isoc99_scanf" => f(1, 0),
-        "wgetch" | "wrefresh" | "wclear" | "werase" | "wclrtoeol" | "wclrtobot" | "wnoutrefresh" | "doupdate_" | "wstandout"
-        | "wstandend" | "keypad_" | "g_string_new" | "g_utf8_get_char" | "g_strfreev_" | "g_ascii_strup_" | "g_hash_table_size"
-        | "g_ptr_array_new_" | "g_list_length" | "g_list_first" | "g_list_last" | "g_strdup_" | "getpwuid" | "gethostbyname"
-        | "inet_ntoa" | "mkstemp" | "tmpfile_" | "isatty" | "g_hash_table_destroy_" | "g_string_free_" => s(1),
-        "g_strfreev" | "g_ptr_array_free_" | "g_hash_table_destroy" | "g_list_free" | "g_ptr_array_unref" | "endwin_" => v(1),
-        "wattrset" | "wattron" | "wattroff" | "waddch" | "g_string_append" | "g_string_free" | "g_string_append_c" | "g_utf8_strlen"
-        | "g_string_prepend" | "g_hash_table_new" | "listen" | "g_hash_table_remove" | "g_list_nth" | "g_list_append_"
-        | "g_ascii_strcasecmp" | "g_str_has_prefix" | "g_str_has_suffix" | "g_ptr_array_index_" | "g_string_truncate"
-        | "g_string_set_size" | "g_utf8_offset_to_pointer" | "g_unichar_to_utf8" | "wbkgd" | "mvwin_" | "g_ascii_strncasecmp_" => s(2),
-        "g_string_insert_len" | "g_string_insert" | "wmove" | "waddnstr" | "waddstr_" | "socket" | "connect" | "bind" | "accept"
-        | "getsockname" | "g_strsplit" | "g_utf8_find_next_char_" | "g_string_append_len" | "g_strndup_" | "g_hash_table_replace"
-        | "g_hash_table_insert_" | "wresize" | "whline" | "wvline" | "g_ptr_array_add_" | "__isoc23_strtol" | "__isoc23_strtoul"
-        | "__isoc23_strtoll" | "__isoc23_strtoull" | "g_utf8_strncpy" | "g_string_erase" => s(3),
-        "recv" | "send" | "g_string_insert_c_" | "mvwaddstr_" | "g_strsplit_set_" | "g_hash_table_lookup_extended" | "waddchnstr_"
+        "wgetch"
+        | "wrefresh"
+        | "wclear"
+        | "werase"
+        | "wclrtoeol"
+        | "wclrtobot"
+        | "wnoutrefresh"
+        | "doupdate_"
+        | "wstandout"
+        | "wstandend"
+        | "keypad_"
+        | "g_string_new"
+        | "g_utf8_get_char"
+        | "g_strfreev_"
+        | "g_ascii_strup_"
+        | "g_hash_table_size"
+        | "g_ptr_array_new_"
+        | "g_list_length"
+        | "g_list_first"
+        | "g_list_last"
+        | "g_strdup_"
+        | "getpwuid"
+        | "gethostbyname"
+        | "inet_ntoa"
+        | "mkstemp"
+        | "tmpfile_"
+        | "isatty"
+        | "g_hash_table_destroy_"
+        | "g_string_free_" => s(1),
+        "g_strfreev"
+        | "g_ptr_array_free_"
+        | "g_hash_table_destroy"
+        | "g_list_free"
+        | "g_ptr_array_unref"
+        | "endwin_" => v(1),
+        "wattrset"
+        | "wattron"
+        | "wattroff"
+        | "waddch"
+        | "g_string_append"
+        | "g_string_free"
+        | "g_string_append_c"
+        | "g_utf8_strlen"
+        | "g_string_prepend"
+        | "g_hash_table_new"
+        | "listen"
+        | "g_hash_table_remove"
+        | "g_list_nth"
+        | "g_list_append_"
+        | "g_ascii_strcasecmp"
+        | "g_str_has_prefix"
+        | "g_str_has_suffix"
+        | "g_ptr_array_index_"
+        | "g_string_truncate"
+        | "g_string_set_size"
+        | "g_utf8_offset_to_pointer"
+        | "g_unichar_to_utf8"
+        | "wbkgd"
+        | "mvwin_"
+        | "g_ascii_strncasecmp_" => s(2),
+        "g_string_insert_len"
+        | "g_string_insert"
+        | "wmove"
+        | "waddnstr"
+        | "waddstr_"
+        | "socket"
+        | "connect"
+        | "bind"
+        | "accept"
+        | "getsockname"
+        | "g_strsplit"
+        | "g_utf8_find_next_char_"
+        | "g_string_append_len"
+        | "g_strndup_"
+        | "g_hash_table_replace"
+        | "g_hash_table_insert_"
+        | "wresize"
+        | "whline"
+        | "wvline"
+        | "g_ptr_array_add_"
+        | "__isoc23_strtol"
+        | "__isoc23_strtoul"
+        | "__isoc23_strtoll"
+        | "__isoc23_strtoull"
+        | "g_utf8_strncpy"
+        | "g_string_erase" => s(3),
+        "recv"
+        | "send"
+        | "g_string_insert_c_"
+        | "mvwaddstr_"
+        | "g_strsplit_set_"
+        | "g_hash_table_lookup_extended"
+        | "waddchnstr_"
         | "g_hash_table_foreach_" => s(4),
         "select" | "setsockopt" | "getsockopt" | "recvfrom_" | "mvwaddnstr" => s(5),
         "g_log" => f(3, 2),
@@ -213,7 +355,14 @@ fn names_digest(img: &Image, data_dir: &Path) -> String {
     let p = crate::names::file_path(data_dir, &img.sha256);
     let mut h = Sha256::new();
     h.update(std::fs::read(&p).unwrap_or_default());
-    for src in [include_str!("ir.rs"), include_str!("lift.rs"), include_str!("flow.rs"), include_str!("structure.rs"), include_str!("render.rs"), include_str!("api.rs")] {
+    for src in [
+        include_str!("ir.rs"),
+        include_str!("lift.rs"),
+        include_str!("flow.rs"),
+        include_str!("structure.rs"),
+        include_str!("render.rs"),
+        include_str!("api.rs"),
+    ] {
         h.update(src.as_bytes());
     }
     h.finalize().iter().take(8).map(|x| format!("{x:02x}")).collect()
@@ -231,9 +380,7 @@ fn read_cache(path: &Path, digest: &str) -> Option<Vec<Line>> {
     v["lines"]
         .as_array()?
         .iter()
-        .map(|l| {
-            Some(Line { addr: l[0].as_u64(), indent: l[1].as_u64()? as usize, text: l[2].as_str()?.to_string() })
-        })
+        .map(|l| Some(Line { addr: l[0].as_u64(), indent: l[1].as_u64()? as usize, text: l[2].as_str()?.to_string() }))
         .collect()
 }
 
@@ -288,7 +435,15 @@ pub fn one(img: &Image, data_dir: &Path, target: &str) -> Result<(String, Vec<Li
     }
     let names = ImgNames { img, vars, arg_types, structs: super::types::structs(user) };
     let mut sigs = ImgSigs { img, protos };
-    let lines = super::decompile_with(&ImgEnv(img), f.start, f.end, abi_of(img), &mut sigs, &names, &name, proto.as_ref());
+    let mut lines =
+        super::decompile_with(&ImgEnv(img), f.start, f.end, abi_of(img), &mut sigs, &names, &name, proto.as_ref());
+    let nl = lines.iter().filter(|l| l.text.contains("/* not lifted")).count();
+    let argc = lines.first().map_or(0, |l| match l.text.split_once('(') {
+        Some((_, r)) if !r.starts_with("void)") => r.matches(", ").count() + 1,
+        _ => 0,
+    });
+    let head = format!("// {name} {:#x} {} bytes, {argc} args, {nl} not lifted", f.start, f.end - f.start);
+    lines.insert(0, Line { addr: None, indent: 0, text: head });
     write_cache(&cp, &digest, &lines);
     Ok((name, lines, false))
 }
@@ -367,16 +522,31 @@ pub fn proto_set(img: &Image, data_dir: &Path, target: &str, text: Option<&str>)
     match text {
         Some(t) => {
             let p = super::types::parse_proto(t).map_err(Error::Bad)?;
-            let shown = format!("{} {}({})", p.ret, p.name, p.args.iter().map(|a| format!("{} {}", a.0, a.1)).collect::<Vec<_>>().join(", "));
+            let shown = format!(
+                "{} {}({})",
+                p.ret,
+                p.name,
+                p.args.iter().map(|a| format!("{} {}", a.0, a.1)).collect::<Vec<_>>().join(", ")
+            );
             crate::names::edit(data_dir, &img.sha256, |n| {
                 n.protos.insert(start, t.trim().trim_end_matches(';').to_string());
                 Ok(())
             })?;
-            Ok(line_out(img, "proto", format!("prototype of {start:#x}: {shown}"), json!({"addr": start, "proto": shown})))
+            Ok(line_out(
+                img,
+                "proto",
+                format!("prototype of {start:#x}: {shown}"),
+                json!({"addr": start, "proto": shown}),
+            ))
         }
         None => {
             let had = crate::names::edit(data_dir, &img.sha256, |n| Ok(n.protos.remove(&start).is_some()))?;
-            Ok(line_out(img, "proto", format!("cleared the prototype of {start:#x} (had one: {had})"), json!({"addr": start, "cleared": had})))
+            Ok(line_out(
+                img,
+                "proto",
+                format!("cleared the prototype of {start:#x} (had one: {had})"),
+                json!({"addr": start, "cleared": had}),
+            ))
         }
     }
 }
@@ -393,11 +563,21 @@ pub fn struct_set(img: &Image, data_dir: &Path, name: &str, fields: Option<&str>
                 n.structs.insert(name.to_string(), t.trim().to_string());
                 Ok(())
             })?;
-            Ok(line_out(img, "struct", format!("struct {name}: {} fields", f.len()), json!({"name": name, "fields": f.len()})))
+            Ok(line_out(
+                img,
+                "struct",
+                format!("struct {name}: {} fields", f.len()),
+                json!({"name": name, "fields": f.len()}),
+            ))
         }
         None => {
             let had = crate::names::edit(data_dir, &img.sha256, |n| Ok(n.structs.remove(name).is_some()))?;
-            Ok(line_out(img, "struct", format!("cleared struct {name} (had one: {had})"), json!({"name": name, "cleared": had})))
+            Ok(line_out(
+                img,
+                "struct",
+                format!("cleared struct {name} (had one: {had})"),
+                json!({"name": name, "cleared": had}),
+            ))
         }
     }
 }
@@ -407,21 +587,33 @@ pub fn var_set(img: &Image, data_dir: &Path, target: &str, key: &str, name: Opti
     let f = crate::ops::resolve(img, target)?;
     let start = f.start;
     let key_ok = key.len() > 1
-        && (key.starts_with('a') || key.starts_with('v') || key.starts_with('f') || key.starts_with("local_") || key.starts_with("stack_"))
+        && (key.starts_with('a')
+            || key.starts_with('v')
+            || key.starts_with('f')
+            || key.starts_with("local_")
+            || key.starts_with("stack_"))
         && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !key_ok {
         return Err(Error::Bad(format!("{key:?} is not a variable of the output (a1, v3, local_18, stack_0)")));
     }
     match name {
         Some(n) => {
-            if n.is_empty() || !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || n.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            if n.is_empty()
+                || !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || n.chars().next().is_some_and(|c| c.is_ascii_digit())
+            {
                 return Err(Error::Bad(format!("{n:?} is not a C name (letters, digits, _)")));
             }
             crate::names::edit(data_dir, &img.sha256, |u| {
                 u.vars.entry(start).or_default().insert(key.to_string(), n.to_string());
                 Ok(())
             })?;
-            Ok(line_out(img, "var", format!("{key} is now {n} in {start:#x}"), json!({"addr": start, "key": key, "name": n})))
+            Ok(line_out(
+                img,
+                "var",
+                format!("{key} is now {n} in {start:#x}"),
+                json!({"addr": start, "key": key, "name": n}),
+            ))
         }
         None => {
             let had = crate::names::edit(data_dir, &img.sha256, |u| {
@@ -431,7 +623,12 @@ pub fn var_set(img: &Image, data_dir: &Path, target: &str, key: &str, name: Opti
                 }
                 Ok(r)
             })?;
-            Ok(line_out(img, "var", format!("cleared the name of {key} in {start:#x} (had one: {had})"), json!({"addr": start, "key": key, "cleared": had})))
+            Ok(line_out(
+                img,
+                "var",
+                format!("cleared the name of {key} in {start:#x} (had one: {had})"),
+                json!({"addr": start, "key": key, "cleared": had}),
+            ))
         }
     }
 }

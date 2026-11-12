@@ -258,7 +258,14 @@ impl Expr {
     pub fn bits(&self) -> Bits {
         use Expr::*;
         match self {
-            Const(_, w) | Var(_, w) | Unknown(w) | Load(_, w) | Trunc(_, w) | Zext(_, w) | Sext(_, w) | Intr(_, _, w) => *w,
+            Const(_, w)
+            | Var(_, w)
+            | Unknown(w)
+            | Load(_, w)
+            | Trunc(_, w)
+            | Zext(_, w)
+            | Sext(_, w)
+            | Intr(_, _, w) => *w,
             StackAddr(_) | SegBase(_) | Call(_) => 64,
             Un(self::Un::LNot, _) | Cmp(..) | Cond(..) => 1,
             Un(_, e) => e.bits(),
@@ -448,7 +455,12 @@ pub enum Stmt {
     /// The values these hold are gone (a call does not keep them).
     Clobber(Vec<Var>),
     /// An instruction this version does not lift, with the variables it reads and writes.
-    Raw { text: String, uses: Vec<Var>, defs: Vec<Var>, mem: bool },
+    Raw {
+        text: String,
+        uses: Vec<Var>,
+        defs: Vec<Var>,
+        mem: bool,
+    },
 }
 
 impl Stmt {
@@ -542,7 +554,11 @@ impl Term {
 
     pub fn exprs(&self) -> Vec<&Expr> {
         match self {
-            Term::Branch(e, ..) | Term::Switch(e, ..) | Term::TailCall(e) | Term::Indirect(e) | Term::Return(Some(e)) => {
+            Term::Branch(e, ..)
+            | Term::Switch(e, ..)
+            | Term::TailCall(e)
+            | Term::Indirect(e)
+            | Term::Return(Some(e)) => {
                 vec![e]
             }
             _ => vec![],
@@ -551,7 +567,11 @@ impl Term {
 
     pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
         match self {
-            Term::Branch(e, ..) | Term::Switch(e, ..) | Term::TailCall(e) | Term::Indirect(e) | Term::Return(Some(e)) => {
+            Term::Branch(e, ..)
+            | Term::Switch(e, ..)
+            | Term::TailCall(e)
+            | Term::Indirect(e)
+            | Term::Return(Some(e)) => {
                 vec![e]
             }
             _ => vec![],
@@ -680,11 +700,8 @@ fn fold_cond(cc: Cc, ops: &Expr, res: &Expr) -> Option<Expr> {
                 _ => return None,
             }),
             FlagKind::Bt => {
-                let bit = simplify_node(Expr::bin(
-                    Bin::And,
-                    simplify_node(Expr::bin(Bin::Shr, x, y)),
-                    Expr::Const(1, w),
-                ));
+                let bit =
+                    simplify_node(Expr::bin(Bin::And, simplify_node(Expr::bin(Bin::Shr, x, y)), Expr::Const(1, w)));
                 match cc {
                     Cc::B => Some(cmp(Cmp::Ne, bit, zero(w))),
                     Cc::AE => Some(cmp(Cmp::Eq, bit, zero(w))),
@@ -751,11 +768,11 @@ fn trunc_of(e: Expr, w: Bits) -> Expr {
         Zext(x, _) => Zext(x, w),
         Sext(x, _) => Sext(x, w),
         Insert(_, new) if new.bits() >= w => trunc_of(*new, w),
-        Bin(op @ (self::Bin::Add | self::Bin::Sub | self::Bin::Mul | self::Bin::And | self::Bin::Or | self::Bin::Xor), x, y)
-            if w >= 8 =>
-        {
-            simplify_node(Bin(op, b(trunc_of(*x, w)), b(trunc_of(*y, w))))
-        }
+        Bin(
+            op @ (self::Bin::Add | self::Bin::Sub | self::Bin::Mul | self::Bin::And | self::Bin::Or | self::Bin::Xor),
+            x,
+            y,
+        ) if w >= 8 => simplify_node(Bin(op, b(trunc_of(*x, w)), b(trunc_of(*y, w)))),
         Bin(self::Bin::Shl, x, y) if w >= 8 && y.as_const().is_some_and(|c| c < w as u64) => {
             simplify_node(Bin(self::Bin::Shl, b(trunc_of(*x, w)), y))
         }
@@ -811,7 +828,9 @@ pub fn simplify_node(e: Expr) -> Expr {
             (self::Un::Neg, Const(v, w)) => konst(v.wrapping_neg(), w),
             (self::Un::Not, Const(v, w)) => konst(!v, w),
             (self::Un::LNot, Const(v, _)) => Const(u64::from(v == 0), 1),
-            (self::Un::Neg, Un(self::Un::Neg, y)) | (self::Un::Not, Un(self::Un::Not, y)) | (self::Un::LNot, Un(self::Un::LNot, y)) => *y,
+            (self::Un::Neg, Un(self::Un::Neg, y))
+            | (self::Un::Not, Un(self::Un::Not, y))
+            | (self::Un::LNot, Un(self::Un::LNot, y)) => *y,
             (self::Un::LNot, Cmp(c, l, r)) if !c.is_float() => Cmp(c.negate(), l, r),
             (self::Un::LNot, Cond(cc, o, r)) => Cond(cc.negate(), o, r),
             (self::Un::LNot, Bin(self::Bin::LAnd, l, r)) => {
@@ -929,10 +948,11 @@ fn simplify_cmp(op: Cmp, x: Expr, y: Expr) -> Expr {
             let iw = i.bits();
             simplify_cmp(op, *i, Const(c, iw))
         }
-        (_, Expr::Sext(i, _), Const(c, cw)) if (eq || op.is_signed()) && i.bits() >= 8 && {
-            let s = signed(c, cw);
-            s == signed(c & mask(i.bits()), i.bits())
-        } =>
+        (_, Expr::Sext(i, _), Const(c, cw))
+            if (eq || op.is_signed()) && i.bits() >= 8 && {
+                let s = signed(c, cw);
+                s == signed(c & mask(i.bits()), i.bits())
+            } =>
         {
             let iw = i.bits();
             simplify_cmp(op, *i, konst(c, iw))

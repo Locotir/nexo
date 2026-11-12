@@ -141,7 +141,7 @@ pub fn analyze(f: &Lifted) -> Analysis {
     let nb = f.blocks.len();
     let mut keys: Vec<Key> = Vec::new();
     let mut key_ix: HashMap<Key, usize> = HashMap::new();
-    let mut intern = |k: Key, keys: &mut Vec<Key>, key_ix: &mut HashMap<Key, usize>| -> usize {
+    let intern = |k: Key, keys: &mut Vec<Key>, key_ix: &mut HashMap<Key, usize>| -> usize {
         *key_ix.entry(k).or_insert_with(|| {
             keys.push(k);
             keys.len() - 1
@@ -327,6 +327,10 @@ fn round(f: &mut Lifted) -> bool {
     for d in an.nentry..nd {
         let site = an.defs[d];
         let Stmt::Assign(v, e) = &f.blocks[site.blk].stmts[site.idx].st else { continue };
+        // the copy made for the flags stays a copy
+        if matches!(v, Var::Tmp(n) if *n >= 16) && matches!(e, Expr::Var(..)) {
+            continue;
+        }
         if single[d].is_empty() {
             continue;
         }
@@ -393,7 +397,11 @@ fn round(f: &mut Lifted) -> bool {
                 continue;
             }
             let bl = &f.blocks[ur.blk];
-            let occ = if ur.idx < bl.stmts.len() { count_occ(&bl.stmts[ur.idx].st, None, *v) } else { count_occ(&Stmt::Clobber(vec![]), Some(&bl.term), *v) };
+            let occ = if ur.idx < bl.stmts.len() {
+                count_occ(&bl.stmts[ur.idx].st, None, *v)
+            } else {
+                count_occ(&Stmt::Clobber(vec![]), Some(&bl.term), *v)
+            };
             if !trivial && occ != 1 {
                 continue;
             }
@@ -436,7 +444,7 @@ pub fn dce(f: &mut Lifted) -> bool {
     let mut any = false;
     for _ in 0..30 {
         let mut ix: HashMap<Var, usize> = HashMap::new();
-        let mut collect = |v: Var, ix: &mut HashMap<Var, usize>| {
+        let collect = |v: Var, ix: &mut HashMap<Var, usize>| {
             let n = ix.len();
             ix.entry(v).or_insert(n);
         };
@@ -635,15 +643,17 @@ pub fn resolve_calls(f: &mut Lifted, sigs: &mut dyn Sigs, variadic: bool) {
                     });
                     match fmt {
                         Some(text) => n = fi + 1 + count_conversions(&text),
-                        None => n = n.max(fixed.min(abi.arg_count_max())),
+                        None => n = n.max(c.args.len()).max(fixed.min(abi.arg_count_max())),
                     }
-                    c.args = arg_vars(abi, n.min(abi.arg_count_max()));
+                    let old = std::mem::take(&mut c.args);
+                    let fresh = arg_vars(abi, n.min(abi.arg_count_max()));
+                    c.args = fresh.into_iter().enumerate().map(|(i, v)| old.get(i).cloned().unwrap_or(v)).collect();
                     c.known = true;
                     return;
                 }
                 if s.fmt.is_some() {
-                    // wait for the format string
-                    c.args = arg_vars(abi, n.min(abi.arg_count_max()));
+                    // wait for the format string; keep every register set before the call alive until then
+                    c.args = arg_vars(abi, n.max(fixed).min(abi.arg_count_max()));
                     c.known = false;
                     return;
                 }
@@ -786,7 +796,7 @@ pub fn fix_returns(f: &mut Lifted) -> Option<Var> {
 pub fn set_return_var(f: &mut Lifted, v: Option<Var>) {
     for bl in &mut f.blocks {
         if let Term::Return(e) = &mut bl.term {
-            *e = v.map(|x| Expr::Var(x, if matches!(x, Var::Xmm(_)) { 64 } else { 64 }));
+            *e = v.map(|x| Expr::Var(x, 64));
         }
     }
 }
@@ -853,7 +863,7 @@ pub fn tidy(f: &mut Lifted) {
         for i in 0..n {
             let mut t = std::mem::replace(&mut f.blocks[i].term, Term::Stop);
             let before = t.clone();
-            t.retarget(&resolve);
+            t.retarget(resolve);
             if let Term::Branch(_, a, c) = &t {
                 if a == c {
                     t = Term::Jump(*a);
@@ -927,13 +937,25 @@ pub fn merge_switches(f: &mut Lifted) {
 
 /// Hide the stack protector: the canary check can never fail in the code we show.
 pub fn drop_canary(f: &mut Lifted) {
-    let has = |e: &Expr| e.has(&|x| matches!(x, Expr::Intr("canary", ..)) || matches!(x, Expr::Load(a, _) if matches!(**a, Expr::SegBase(_))) || matches!(x, Expr::Bin(_, a, _) if matches!(**a, Expr::SegBase(_))));
+    let has = |e: &Expr| {
+        e.has(&|x| {
+            matches!(x, Expr::Intr("canary", ..))
+                || matches!(x, Expr::Load(a, _) if matches!(**a, Expr::SegBase(_)))
+                || matches!(x, Expr::Bin(_, a, _) if matches!(**a, Expr::SegBase(_)))
+        })
+    };
     for i in 0..f.blocks.len() {
         if let Term::Branch(c, t, e) = f.blocks[i].term.clone() {
             if has(&c) {
                 // the side that ends in a call that does not return is the failure
                 let fail = |b: usize| matches!(f.blocks[b].term, Term::Stop) && f.blocks[b].stmts.len() <= 3;
-                let keep = if fail(t) { e } else if fail(e) { t } else { continue };
+                let keep = if fail(t) {
+                    e
+                } else if fail(e) {
+                    t
+                } else {
+                    continue;
+                };
                 f.blocks[i].term = Term::Jump(keep);
             }
         }
@@ -964,6 +986,8 @@ pub fn run(f: &mut Lifted, sigs: &mut dyn Sigs) -> Facts {
     prune(f);
     drop_canary(f);
     tidy(f);
+    snapshot_flags(f);
+    drop_dead_inserts(f);
     show(f, "tidy");
     resolve_calls(f, sigs, false);
     show(f, "resolve1");
@@ -1025,6 +1049,154 @@ fn narrow_returns(f: &mut Lifted) {
         if let Term::Return(Some(e)) = &mut bl.term {
             let old = std::mem::replace(e, Expr::Unknown(0));
             *e = strip(old);
+        }
+    }
+}
+
+/// A flag definition reads registers; when one of them is written before the flags are used, keep a copy
+/// so that the condition can still be written in terms of the operands.
+fn snapshot_flags(f: &mut Lifted) {
+    let mut next: u8 = 16;
+    for bi in 0..f.blocks.len() {
+        let mut i = 0;
+        while i < f.blocks[bi].stmts.len() {
+            let is_def = matches!(&f.blocks[bi].stmts[i].st, Stmt::Assign(Var::FlagOps, _));
+            if !is_def {
+                i += 1;
+                continue;
+            }
+            // the registers both flag definitions read
+            let mut regs: Vec<u8> = Vec::new();
+            let mut j = i;
+            let mut end = f.blocks[bi].stmts.len();
+            let mut defs = Vec::new();
+            while j < end {
+                match &f.blocks[bi].stmts[j].st {
+                    Stmt::Assign(Var::FlagOps | Var::FlagRes, e) if j <= i + 1 => {
+                        defs.push(j);
+                        e.visit(&mut |x| {
+                            if let Expr::Var(Var::Reg(r), _) = x {
+                                if !regs.contains(r) {
+                                    regs.push(*r);
+                                }
+                            }
+                        });
+                    }
+                    Stmt::Assign(Var::FlagOps, _) if j > i + 1 => {
+                        end = j;
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            let mut need: Vec<u8> = Vec::new();
+            // the last place in the block that reads the flags; the statement that reads them reads before it writes
+            let mut last = i + 1;
+            for k in i + 1..end {
+                let mut reads = false;
+                f.blocks[bi].stmts[k].st.uses(&mut |v| reads |= matches!(v, Var::FlagOps | Var::FlagRes));
+                if reads {
+                    last = k;
+                }
+            }
+            if end == f.blocks[bi].stmts.len()
+                && f.blocks[bi].term.exprs().iter().any(|e| e.uses(Var::FlagOps) > 0 || e.uses(Var::FlagRes) > 0)
+            {
+                last = end;
+            }
+            for st in &f.blocks[bi].stmts[i + 1..last] {
+                match &st.st {
+                    Stmt::Assign(Var::Reg(r), _) if regs.contains(r) && !need.contains(r) => need.push(*r),
+                    Stmt::Clobber(vs) => {
+                        for v in vs {
+                            if let Var::Reg(r) = v {
+                                if regs.contains(r) && !need.contains(r) {
+                                    need.push(*r);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut ins = 0;
+            // a value read from memory that memory writes may change before the flags are used
+            if next < u8::MAX && f.blocks[bi].stmts[i + 1..last].iter().any(|s| s.st.writes_mem()) {
+                let mut load: Option<Expr> = None;
+                if let Stmt::Assign(_, e) = &f.blocks[bi].stmts[i].st {
+                    e.visit(&mut |x| {
+                        if load.is_none() && matches!(x, Expr::Load(..)) {
+                            load = Some(x.clone());
+                        }
+                    });
+                }
+                if let Some(l) = load {
+                    let t = Var::Tmp(next);
+                    next += 1;
+                    let lb = l.bits();
+                    let addr = f.blocks[bi].stmts[i].addr;
+                    for &d in &defs {
+                        if let Stmt::Assign(_, e) = &mut f.blocks[bi].stmts[d].st {
+                            e.rewrite(&mut |x| {
+                                if *x == l {
+                                    *x = Expr::Var(t, lb);
+                                }
+                            });
+                        }
+                    }
+                    f.blocks[bi].stmts.insert(i, S { addr, st: Stmt::Assign(t, l.zext(64)) });
+                    ins += 1;
+                }
+            }
+            for r in need {
+                if next == u8::MAX {
+                    break;
+                }
+                let t = Var::Tmp(next);
+                next += 1;
+                let addr = f.blocks[bi].stmts[i].addr;
+                for &d in &defs {
+                    if let Stmt::Assign(_, e) = &mut f.blocks[bi].stmts[d + ins].st {
+                        e.subst(Var::Reg(r), &Expr::Var(t, 64));
+                    }
+                }
+                f.blocks[bi].stmts.insert(i, S { addr, st: Stmt::Assign(t, Expr::Var(Var::Reg(r), 64)) });
+                ins += 1;
+            }
+            i += ins + 2;
+        }
+    }
+}
+
+/// `al = cond; eax = zx(al)`: the upper bits written by the first are overwritten by the second, so the first
+/// can write the whole register.
+fn drop_dead_inserts(f: &mut Lifted) {
+    for bl in &mut f.blocks {
+        for i in 0..bl.stmts.len().saturating_sub(1) {
+            let Stmt::Assign(Var::Reg(r), Expr::Insert(old, new)) = &bl.stmts[i].st else { continue };
+            if !matches!(&**old, Expr::Var(Var::Reg(q), 64) if q == r) {
+                continue;
+            }
+            let nb = new.bits();
+            let Stmt::Assign(Var::Reg(r2), rhs) = &bl.stmts[i + 1].st else { continue };
+            if r2 != r {
+                continue;
+            }
+            let mut narrow = true;
+            rhs.visit(&mut |x| {
+                if let Expr::Var(Var::Reg(q), w) = x {
+                    if q == r && *w > nb {
+                        narrow = false;
+                    }
+                }
+            });
+            // the second statement must write the whole register
+            let whole = matches!(rhs, Expr::Zext(_, 64) | Expr::Sext(_, 64));
+            if narrow && whole {
+                let v = Var::Reg(*r);
+                let n = (**new).clone();
+                bl.stmts[i].st = Stmt::Assign(v, n.zext(64));
+            }
         }
     }
 }

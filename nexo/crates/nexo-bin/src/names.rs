@@ -123,7 +123,10 @@ fn parse(raw: &[u8]) -> std::result::Result<UserNames, String> {
     if let Some(m) = obj.get("vars").and_then(Value::as_object) {
         for (k, val) in m {
             let addr = parse_addr(k).map_err(|_| format!("\"{k}\" in \"vars\" is not an address"))?;
-            let inner = val.as_object().map(|o| o.iter().filter_map(|(a, b)| b.as_str().map(|s| (a.clone(), s.to_string()))).collect()).unwrap_or_default();
+            let inner = val
+                .as_object()
+                .map(|o| o.iter().filter_map(|(a, b)| b.as_str().map(|s| (a.clone(), s.to_string()))).collect())
+                .unwrap_or_default();
             out.vars.insert(addr, inner);
         }
     }

@@ -32,7 +32,13 @@ pub enum Node {
 impl Node {
     pub fn is_terminal(&self) -> bool {
         match self {
-            Node::Break | Node::Continue | Node::Goto(_) | Node::Return(..) | Node::TailCall(..) | Node::Indirect(..) | Node::Stop(_) => true,
+            Node::Break
+            | Node::Continue
+            | Node::Goto(_)
+            | Node::Return(..)
+            | Node::TailCall(..)
+            | Node::Indirect(..)
+            | Node::Stop(_) => true,
             Node::If(_, _, a, b) => ends_terminal(a) && ends_terminal(b),
             _ => false,
         }
@@ -446,7 +452,9 @@ fn contains_continue(v: &[Node]) -> bool {
     v.iter().any(|n| match n {
         Node::Continue => true,
         Node::If(_, _, a, b) => contains_continue(a) || contains_continue(b),
-        Node::Switch(_, _, arms, d) => arms.iter().any(|a| contains_continue(&a.1)) || d.as_ref().is_some_and(|d| contains_continue(d)),
+        Node::Switch(_, _, arms, d) => {
+            arms.iter().any(|a| contains_continue(&a.1)) || d.as_ref().is_some_and(|d| contains_continue(d))
+        }
         // an inner loop has its own continue
         _ => false,
     })
@@ -509,7 +517,9 @@ fn clean(v: &mut Vec<Node>, labels: &HashSet<usize>) {
     let mut i = 1;
     while i < v.len() {
         if let Node::While(c, body) = &v[i] {
-            if let (Some(Node::Stmt(_, Stmt::Assign(iv, _))), Some(Node::Stmt(_, Stmt::Assign(sv, _)))) = (v.get(i - 1), body.last()) {
+            if let (Some(Node::Stmt(_, Stmt::Assign(iv, _))), Some(Node::Stmt(_, Stmt::Assign(sv, _)))) =
+                (v.get(i - 1), body.last())
+            {
                 if iv == sv && c.uses(*iv) > 0 && body.len() > 1 && !contains_continue(body) {
                     let init = v[i - 1].clone();
                     let Node::While(c, mut body) = std::mem::replace(&mut v[i], Node::Break) else { unreachable!() };

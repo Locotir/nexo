@@ -528,7 +528,10 @@ mod tests {
         let mut root = crate::cli::Args::command();
         let bin = root.find_subcommand_mut("bin").expect("bin is a command");
         let ops: Vec<String> = bin.get_subcommands().map(|c| c.get_name().to_string()).collect();
-        for want in ["info", "fn", "xref", "funcs", "calls", "decomp", "proto", "struct", "var", "name", "note", "names", "bytes", "strings", "find"] {
+        for want in [
+            "info", "fn", "xref", "funcs", "calls", "decomp", "proto", "struct", "var", "name", "note", "names",
+            "bytes", "strings", "find",
+        ] {
             assert!(ops.iter().any(|o| o == want), "{want} is missing from {ops:?}");
         }
         let help = bin.render_help().to_string();
