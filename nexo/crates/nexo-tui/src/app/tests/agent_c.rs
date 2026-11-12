@@ -1559,3 +1559,31 @@ fn a_new_line_in_an_empty_box_takes_the_placeholder_away() {
         "the caret is on line 2, not on the placeholder: {rows:?}"
     );
 }
+
+#[test]
+fn opening_or_selecting_a_block_never_makes_the_new_pill_count() {
+    let (mut a, _rx) = app();
+    long_answer(&mut a, 0);
+    a.push(card("x", 30));
+    frame(&mut a, 60, 20);
+    assert!(a.follow);
+    a.select_last();
+    frame(&mut a, 60, 20);
+    let i = a.selected.unwrap();
+    a.toggle_block(i);
+    frame(&mut a, 60, 20);
+    for _ in 0..4 {
+        a.scroll_by(-3);
+        let rows = frame(&mut a, 60, 20);
+        assert_eq!(a.unseen(), 0, "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains(" new ")), "{rows:?}");
+    }
+    a.select_step(false);
+    frame(&mut a, 60, 20);
+    assert_eq!(a.unseen(), 0);
+    // output that really arrives while scrolled up still counts
+    long_answer(&mut a, 100);
+    let rows = frame(&mut a, 60, 20);
+    assert!(a.unseen() > 0);
+    assert!(rows.iter().any(|r| r.contains(" new ")), "{rows:?}");
+}

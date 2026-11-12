@@ -276,6 +276,14 @@ impl App {
         if let Some(m) = self.selected.filter(|s| self.hidden(*s)).and_then(|s| self.group_of(s)) {
             self.selected = Some(m);
         }
+        // the last block seen may be opening: it grows by itself, which is not output that arrived
+        let opening = self.seen_blocks.checked_sub(1).filter(|&k| {
+            self.looks.get(k).and_then(|l| l.opened).is_some_and(|(at, _)| at.elapsed().as_millis() <= OPEN_MS as u128)
+        });
+        let span = |o: &[usize], total: usize, k: usize| {
+            o.get(k + 1).copied().unwrap_or(total) - o.get(k).copied().unwrap_or(0).min(total)
+        };
+        let before = opening.map(|k| span(&self.offsets, self.total_lines, k));
         let mut off = 0;
         self.offsets.clear();
         for i in 0..self.blocks.len() {
@@ -287,6 +295,12 @@ impl App {
             off += n + self.gap_after(i, n);
         }
         self.total_lines = off;
+        if let (Some(k), Some(b)) = (opening, before) {
+            if kept.is_none() && k < self.offsets.len() {
+                let grown = span(&self.offsets, self.total_lines, k);
+                self.seen_tail = (self.seen_tail + grown).saturating_sub(b);
+            }
+        }
         if let Some(u) = kept {
             let from = self.offsets.get(self.seen_blocks.wrapping_sub(1)).copied().unwrap_or(0);
             self.seen_tail = self.total_lines.saturating_sub(from + u);
