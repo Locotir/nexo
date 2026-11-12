@@ -24,6 +24,8 @@ pub(crate) struct Insn {
     /// `Owner.name` plus the raw descriptor in parentheses, for calls.
     pub callee: Option<String>,
     pub line: Option<u32>,
+    /// The callee's address is taken (`ldftn`, `ldvirtftn`), not called: a delegate or event handler target.
+    pub addr: bool,
     /// More lines that belong to this instruction (switch cases).
     pub cont: Vec<String>,
 }
@@ -92,7 +94,18 @@ pub struct ManagedQuery<'a> {
     pub grep: Option<&'a str>,
 }
 
-/// True when the first bytes say the file is managed bytecode this module reads.
+/// How many leading bytes `is_managed` and `is_mixed_mode` need: the CLI header sits at the start of the
+/// first section, usually well inside this.
+pub const HEAD: usize = 64 * 1024;
+
+/// A mixed-mode .NET assembly (C++/CLI: managed metadata plus native code) is not claimed here: the
+/// native ops read it, and this says `managed` reads its metadata too.
+pub fn is_mixed_mode(head: &[u8]) -> bool {
+    dotnet::is_mixed_mode(head)
+}
+
+/// True when the first bytes say the file is managed bytecode this module reads whole. A .NET assembly
+/// counts only when its CLI header (inside `head`) has the IL-only flag.
 pub fn is_managed(head: &[u8]) -> bool {
     is_class(head) || zip::looks_like_zip(head) || dotnet::is_dotnet(head)
 }
@@ -119,7 +132,7 @@ pub(crate) fn load(path: &std::path::Path, data: &[u8]) -> Result<Module> {
     if zip::looks_like_zip(data) {
         return load_jar(file, data);
     }
-    if dotnet::is_dotnet(data) {
+    if dotnet::has_cli_header(data) {
         let p =
             dotnet::parse(data).map_err(|e| Error::NotRead(format!("{file}: not a readable .NET assembly: {e}")))?;
         return Ok(Module { kind: ".NET assembly".into(), file, types: p.types, strings: p.strings, facts: p.facts });
@@ -215,21 +228,24 @@ pub fn managed_window(
     let (rows, tail, op, meta);
     if let Some(t) = q.callers {
         base.push_str(&format!(" --callers {}", shell_word(t)));
-        let mut sites: Vec<(String, String, String)> = Vec::new();
+        let mut sites: Vec<(String, String, String, bool)> = Vec::new();
         for ty in &m.types {
             for me in &ty.methods {
                 for i in me.code.iter().flat_map(|c| &c.insns) {
                     if i.callee.as_deref().is_some_and(|c| callee_matches(c, t)) {
-                        sites.push((me.key.clone(), format!("{:#06x}", i.off), i.text.clone()));
+                        sites.push((me.key.clone(), format!("{:#06x}", i.off), i.text.clone(), i.addr));
                     }
                 }
             }
         }
         let n = sites.len();
-        let (r, tl) = cut(&sites, from, budget, |(k, off, text)| Row {
+        let loads = sites.iter().filter(|s| s.3).count();
+        let (r, tl) = cut(&sites, from, budget, |(k, off, text, addr)| Row {
             key: 0,
-            text: format!("{k} +{off}  {text}"),
-            json: Some(json!({"method": k, "offset": off, "insn": text})),
+            text: format!("{k} +{off}  {text}{}", if *addr { "  [loads address]" } else { "" }),
+            json: Some(
+                json!({"method": k, "offset": off, "insn": text, "kind": if *addr { "loads address" } else { "call" }}),
+            ),
         });
         (rows, tail, op, meta) = (r, tl, "managed-callers", json!({"target": t, "call_sites": n}));
         let mut rows = rows;
@@ -239,7 +255,17 @@ pub fn managed_window(
                 m.file
             )));
         } else {
-            rows.insert(0, text_row(format!("{n} call sites of {t}")));
+            rows.insert(
+                0,
+                text_row(format!(
+                    "{n} call sites of {t}{}",
+                    if loads > 0 {
+                        format!(" ({loads} only load the address, a delegate or event handler target: ldftn/ldvirtftn)")
+                    } else {
+                        String::new()
+                    }
+                )),
+            );
         }
         return Ok(Output { op, meta, rows, tail, command: base });
     }
@@ -359,9 +385,11 @@ fn target_view(
 ) -> Result<Output> {
     let t = t.replace('/', ".");
     // 1. a type by exact or short name
-    let exact: Vec<&TypeDef> = m.types.iter().filter(|x| x.name == t).collect();
+    // (a .NET nested type is written Outer/Inner in the listing: both spellings find it)
+    let dotted = |s: &str| s.replace('/', ".");
+    let exact: Vec<&TypeDef> = m.types.iter().filter(|x| dotted(&x.name) == t).collect();
     let by_type: Vec<&TypeDef> =
-        if exact.is_empty() { m.types.iter().filter(|x| matches_name(&x.name, &t)).collect() } else { exact };
+        if exact.is_empty() { m.types.iter().filter(|x| matches_name(&dotted(&x.name), &t)).collect() } else { exact };
     // 2. a method: Type.name or Type.name(desc)
     let (bare, sig) = match t.find('(') {
         Some(i) => (&t[..i], Some(&t[i..])),
@@ -370,7 +398,7 @@ fn target_view(
     let mut meths: Vec<(&TypeDef, &MethodDef)> = Vec::new();
     for ty in &m.types {
         for me in &ty.methods {
-            let full = format!("{}.{}", ty.name, me.name);
+            let full = dotted(&format!("{}.{}", ty.name, me.name));
             let hit = matches_name(&full, bare);
             if hit && sig.is_none_or(|s| me.raw == s) {
                 meths.push((ty, me));
@@ -514,10 +542,12 @@ fn method_view(
         });
     };
     let mut calls: Vec<String> = Vec::new();
-    for c in code.insns.iter().filter_map(|i| i.callee.as_deref()) {
+    let mut loads: Vec<String> = Vec::new();
+    for (c, addr) in code.insns.iter().filter_map(|i| i.callee.as_deref().map(|c| (c, i.addr))) {
         let b = c.split('(').next().unwrap_or(c).to_string();
-        if !calls.contains(&b) {
-            calls.push(b);
+        let list = if addr { &mut loads } else { &mut calls };
+        if !list.contains(&b) {
+            list.push(b);
         }
     }
     let mut lines: Vec<(Option<u32>, String)> = Vec::new();
@@ -555,6 +585,9 @@ fn method_view(
                 String::new()
             }
         )));
+    }
+    if !loads.is_empty() {
+        head_rows.push(text_row(format!("loads address of {}: {}", loads.len(), loads.join(", "))));
     }
     for h in &code.handlers {
         head_rows.push(text_row(h.clone()));

@@ -98,9 +98,31 @@ fn rd32(d: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?))
 }
 
-/// True when the PE headers in `head` carry a CLI header directory (a .NET assembly).
-pub fn is_dotnet(head: &[u8]) -> bool {
+/// True when the PE headers in `head` carry a CLI header directory (a .NET assembly, pure or mixed).
+pub fn has_cli_header(head: &[u8]) -> bool {
     pe_open(head).is_ok_and(|p| p.clr.0 != 0)
+}
+
+/// `Some(true)` for a CLI header with COMIMAGE_FLAGS_ILONLY, `Some(false)` without it (mixed-mode C++/CLI
+/// or native code inside), `None` when there is no CLI header or it is not inside `head`.
+fn il_only(head: &[u8]) -> Option<bool> {
+    let pe = pe_open(head).ok()?;
+    if pe.clr.0 == 0 {
+        return None;
+    }
+    let cli = pe.off(pe.clr.0)?;
+    Some(rd32(head, cli.checked_add(16)?)? & 1 != 0)
+}
+
+/// True when the PE headers in `head` say this is an IL-only .NET assembly: what `managed` reads whole.
+pub fn is_dotnet(head: &[u8]) -> bool {
+    il_only(head) == Some(true)
+}
+
+/// True for a .NET assembly that also holds native code (C++/CLI): the native ops read it, and `managed`
+/// reads its metadata and IL.
+pub fn is_mixed_mode(head: &[u8]) -> bool {
+    il_only(head) == Some(false)
 }
 
 fn pe_open(d: &[u8]) -> Result<Pe<'_>, String> {
@@ -134,15 +156,16 @@ fn pe_open(d: &[u8]) -> Result<Pe<'_>, String> {
         else {
             break;
         };
-        sections.push((va, vs.max(rs), ro, rs));
+        sections.push((va, vs, ro, rs));
     }
     Ok(Pe { d, sections, clr })
 }
 
 impl Pe<'_> {
     fn off(&self, rva: u32) -> Option<usize> {
-        let s = self.sections.iter().find(|(va, vs, _, _)| rva >= *va && rva - va < *vs)?;
-        Some((rva - s.0 + s.2) as usize)
+        // only bytes the file really holds: past the raw size an RVA is zero fill, not the next section
+        let s = self.sections.iter().find(|(va, _, _, rs)| rva.checked_sub(*va).is_some_and(|x| x < *rs))?;
+        Some((rva - s.0).checked_add(s.2)? as usize)
     }
 }
 
@@ -285,9 +308,24 @@ struct Names {
 struct Ctx<'a> {
     m: &'a Meta<'a>,
     names: Names,
+    /// Nodes a signature may still read: bounds the work a crafted one can ask for.
+    work: std::cell::Cell<u32>,
 }
 
+const WORK: u32 = 256;
+
 impl Ctx<'_> {
+    /// A new signature starts: it gets the whole work budget again.
+    fn fresh(&self) {
+        self.work.set(WORK);
+    }
+
+    /// `type_of` as a signature of its own (an extends or implements column).
+    fn type_name(&self, coded: u32) -> String {
+        self.fresh();
+        self.type_of(coded, 0)
+    }
+
     fn typeref_name(&self, row: usize, depth: u32) -> String {
         let (scope, name, ns) =
             (self.m.cell(TYPE_REF, row, 0), self.m.cell(TYPE_REF, row, 1), self.m.cell(TYPE_REF, row, 2));
@@ -319,7 +357,12 @@ impl Ctx<'_> {
 
     fn read_type(&self, s: &mut Sig<'_>, depth: u32) -> String {
         if depth > 12 {
-            return "...".into();
+            return "<not read: nested too deep>".into();
+        }
+        // TypeSpecs may point at each other and fan out 32 or 255 ways: a node count caps the whole signature
+        match self.work.get() {
+            0 => return "<not read: signature too large>".into(),
+            w => self.work.set(w - 1),
         }
         let Some(e) = s.byte() else { return "?".into() };
         let prim = |n: &str| n.to_string();
@@ -348,14 +391,16 @@ impl Ctx<'_> {
             0x1e => format!("!!{}", s.uint().unwrap_or(0)),
             0x14 => {
                 let t = self.read_type(s, depth + 1);
-                let rank = s.uint().unwrap_or(1);
-                for _ in 0..s.uint().unwrap_or(0) {
-                    s.uint();
+                // a real array has rank 32 at most; the counts after it cannot exceed the rank either
+                let bad = |what: &str| format!("{t}[<not read: {what}>]");
+                let Some(rank) = s.uint().filter(|r| (1..=32).contains(r)) else { return bad("array rank") };
+                for _ in 0..2 {
+                    match s.uint() {
+                        Some(n) if n <= rank => (0..n).for_each(|_| _ = s.uint()),
+                        _ => return bad("array bounds"),
+                    }
                 }
-                for _ in 0..s.uint().unwrap_or(0) {
-                    s.uint();
-                }
-                format!("{t}[{}]", ",".repeat(rank.saturating_sub(1) as usize))
+                format!("{t}[{}]", ",".repeat(rank as usize - 1))
             }
             0x15 => {
                 s.byte();
@@ -399,12 +444,14 @@ impl Ctx<'_> {
     }
 
     fn field_type(&self, blob: &[u8]) -> String {
+        self.fresh();
         let mut s = Sig { b: blob, p: 0 };
         s.byte();
         self.read_type(&mut s, 0)
     }
 
     fn method_parts(&self, blob: &[u8]) -> (String, String) {
+        self.fresh();
         let mut s = Sig { b: blob, p: 0 };
         let (p, r, _) = self.method_sig(&mut s, 0);
         (format!("({})", p.join(",")), format!("({}) -> {r}", p.join(", ")))
@@ -418,6 +465,7 @@ impl Ctx<'_> {
 
     /// `(display text, callee key if it is a method)`.
     fn token(&self, tok: u32) -> (String, Option<String>) {
+        self.fresh();
         let (table, row) = ((tok >> 24) as usize, (tok & 0xFF_FFFF) as usize);
         match table {
             TYPE_DEF | TYPE_REF | 0x1b => (
@@ -494,6 +542,20 @@ pub struct Parsed {
     pub types: Vec<TypeDef>,
     pub strings: Vec<(String, String)>,
     pub facts: Vec<String>,
+}
+
+/// TypeDef visibility (ECMA-335 II.23.1.15): the low three flag bits tell top-level from nested.
+fn type_vis(tf: u32) -> &'static str {
+    match tf & 7 {
+        0 => "internal",
+        1 => "public",
+        2 => "nested public",
+        3 => "nested private",
+        4 => "nested protected",
+        5 => "nested internal",
+        6 => "nested private protected",
+        _ => "nested protected internal",
+    }
 }
 
 fn flags(v: u32, t: &[(u32, &str)]) -> String {
@@ -629,7 +691,11 @@ pub fn parse(d: &[u8]) -> Result<Parsed, String> {
         }
         tnames[t] = s;
     }
-    let cx = Ctx { m: &m, names: Names { types: tnames, method_owner: owner_m, field_owner: owner_f } };
+    let cx = Ctx {
+        m: &m,
+        names: Names { types: tnames, method_owner: owner_m, field_owner: owner_f },
+        work: std::cell::Cell::new(WORK),
+    };
     // P/Invoke
     let mut pinvoke: HashMap<usize, String> = HashMap::new();
     for r in 1..=m.rows(28) {
@@ -641,11 +707,13 @@ pub fn parse(d: &[u8]) -> Result<Parsed, String> {
     }
     let mut strings: Vec<(String, String)> = Vec::new();
     let mut used_us: HashSet<u32> = HashSet::new();
+    // methods whose decoding stopped: they may load user strings no decoded code loads
+    let mut stops: Vec<String> = Vec::new();
     let mut types: Vec<TypeDef> = Vec::new();
     for t in 1..=ntd {
         let (tf, ext) = (m.cell(2, t, 0), m.cell(2, t, 3));
         let name = cx.names.types[t].clone();
-        let extends = (ext != 0).then(|| cx.type_of(ext, 0));
+        let extends = (ext != 0).then(|| cx.type_name(ext));
         let kind = if tf & 0x20 != 0 {
             "interface"
         } else {
@@ -656,12 +724,7 @@ pub fn parse(d: &[u8]) -> Result<Parsed, String> {
                 _ => "class",
             }
         };
-        let vis = match tf & 7 {
-            0 => "internal",
-            1..=3 => "public",
-            _ => "private",
-        };
-        let mut fl = vec![vis.to_string()];
+        let mut fl = vec![type_vis(tf).to_string()];
         let rest = flags(tf, &[(0x80, "abstract"), (0x100, "sealed")]);
         if !rest.is_empty() {
             fl.push(rest);
@@ -713,8 +776,9 @@ pub fn parse(d: &[u8]) -> Result<Parsed, String> {
             let fl = format!("{vis} {fl}").trim().to_string();
             let rva = m.cell(6, mi, 0);
             let owner = name.clone();
-            let code =
-                (rva != 0).then(|| decode_body(&pe, &cx, rva, &format!("{owner}.{mname}"), &mut used_us, &mut strings));
+            let code = (rva != 0).then(|| {
+                decode_body(&pe, &cx, rva, &format!("{owner}.{mname}"), &mut used_us, &mut strings, &mut stops)
+            });
             methods.push(MethodDef {
                 name: mname.clone(),
                 sig: pretty,
@@ -738,10 +802,20 @@ pub fn parse(d: &[u8]) -> Result<Parsed, String> {
     for r in 1..=m.rows(9) {
         let (c, i) = (m.cell(9, r, 0) as usize, m.cell(9, r, 1));
         if let Some(ty) = types.get_mut(c.wrapping_sub(1)) {
-            ty.implements.push(cx.type_of(i, 0));
+            ty.implements.push(cx.type_name(i));
         }
     }
-    // user strings no code loads
+    // user strings no decoded code loads
+    let origin = if stops.is_empty() {
+        "(user strings heap: no code loads it)".to_string()
+    } else {
+        let shown = stops.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        let more = if stops.len() > 3 { format!("; {} more", stops.len() - 3) } else { String::new() };
+        format!(
+            "(user strings heap: {shown}{more}; {} may load this string)",
+            if stops.len() == 1 { "it" } else { "one of them" }
+        )
+    };
     let mut i = 1usize;
     while i < m.us.len() {
         let mut s = Sig { b: m.us, p: i };
@@ -760,7 +834,7 @@ pub fn parse(d: &[u8]) -> Result<Parsed, String> {
                 m.us[start..start + (len - 1) / 2 * 2].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
             let text = String::from_utf16_lossy(&u);
             if !text.is_empty() {
-                strings.push(("(user strings heap)".to_string(), text));
+                strings.push((origin.clone(), text));
             }
         }
         i = start + len;
@@ -795,6 +869,12 @@ pub fn parse(d: &[u8]) -> Result<Parsed, String> {
     if m.rows(28) > 0 {
         facts.push(format!("{} P/Invoke imports (shown as `pinvoke dll!function` on the method)", m.rows(28)));
     }
+    if !stops.is_empty() {
+        facts.push(format!(
+            "{} methods not fully decoded (WARNING in their listing): their strings and calls may be missing",
+            stops.len()
+        ));
+    }
     types.retain(|t| !(t.name == "<Module>" && t.methods.is_empty() && t.fields.is_empty()));
     Ok(Parsed { types, strings, facts })
 }
@@ -806,15 +886,18 @@ fn decode_body(
     label: &str,
     used_us: &mut HashSet<u32>,
     strings: &mut Vec<(String, String)>,
+    stops: &mut Vec<String>,
 ) -> Code {
     let mut c = Code::default();
     let Some(off) = pe.off(rva) else {
         c.note = Some(format!("method body at RVA {rva:#x} is outside every section"));
+        stops.push(format!("{label} was not decoded (body outside every section)"));
         return c;
     };
     let d = pe.d;
     let Some(&h) = d.get(off) else {
         c.note = Some("method body is past the end of the file".into());
+        stops.push(format!("{label} was not decoded (body past the end of the file)"));
         return c;
     };
     let (code_off, code_len, stack, hdr_flags) = if h & 3 == 2 {
@@ -822,15 +905,18 @@ fn decode_body(
     } else if h & 3 == 3 {
         let (Some(f), Some(ms), Some(cs)) = (rd16(d, off), rd16(d, off + 2), rd32(d, off + 4)) else {
             c.note = Some("fat method header cut short".into());
+            stops.push(format!("{label} was not decoded (header cut short)"));
             return c;
         };
         (off + ((f >> 12) as usize) * 4, cs as usize, ms, f & 0xFFF)
     } else {
         c.note = Some(format!("unknown method header byte {h:#04x}"));
+        stops.push(format!("{label} was not decoded (unknown header byte)"));
         return c;
     };
     let Some(code) = d.get(code_off..code_off + code_len) else {
         c.note = Some("method body runs past the end of the file".into());
+        stops.push(format!("{label} was not decoded (body runs past the end of the file)"));
         return c;
     };
     c.size = code_len;
@@ -846,6 +932,7 @@ fn decode_body(
             ins.text = format!("?? {e}");
             c.insns.push(ins);
             c.note = Some(format!("decoding stopped at {p:#06x}: {e}"));
+            stops.push(format!("decoding of {label} stopped at offset {p:#06x}"));
             return c;
         }
         p += len;
@@ -894,7 +981,21 @@ fn decode_sections(d: &[u8], mut p: usize, cx: &Ctx<'_>, c: &mut Code) {
                     4 => "fault".to_string(),
                     o => format!("clause kind {o}"),
                 };
-                c.handlers.push(format!("try {to:#06x}..{:#06x} {what} {ho:#06x}..{:#06x}", to + tl, ho + hl));
+                // the offsets come from the file: a sum past 4 GB is damage, said as such and never wrapped
+                match (to.checked_add(tl), ho.checked_add(hl)) {
+                    (Some(te), Some(he)) => {
+                        c.handlers.push(format!("try {to:#06x}..{te:#06x} {what} {ho:#06x}..{he:#06x}"))
+                    }
+                    _ => {
+                        c.handlers.push(format!(
+                            "try {to:#06x}+{tl:#x} {what} {ho:#06x}+{hl:#x} (offsets overflow 32 bits: damaged clause)"
+                        ));
+                        c.note = Some(
+                            "an exception clause has offsets that overflow 32 bits: the handler table is damaged"
+                                .into(),
+                        );
+                    }
+                }
             }
         }
         if kind & 0x80 == 0 {
@@ -1017,8 +1118,13 @@ fn decode_il(
                 len += 4;
                 let (t, callee) = cx.token(tok);
                 text += &format!(" {t}");
-                if matches!(op, 0x28 | 0x6f | 0x73 | 0x27) && callee.is_some() {
+                // calls, and ldftn/ldvirtftn (0xFE06/0xFE07): the delegate or event handler target is a reference too
+                let second = code.get(p + 1).copied();
+                let call = matches!(op, 0x28 | 0x6f | 0x73 | 0x27);
+                let addr = op == 0xFE && matches!(second, Some(0x06 | 0x07));
+                if (call || addr) && callee.is_some() {
                     ins.callee = callee;
+                    ins.addr = addr;
                 }
             }
         }
@@ -1034,5 +1140,64 @@ fn branch(size: usize, base: usize, rel: i64) -> String {
         format!("{t:#06x} (outside the method)")
     } else {
         format!("{t:#06x}")
+    }
+}
+
+/// Test hooks: crafted metadata and signature blobs without building a whole assembly.
+#[cfg(test)]
+pub(super) mod probe {
+    use super::*;
+
+    fn with_ctx<R>(typespecs: &[Vec<u8>], f: impl FnOnce(&Ctx<'_>) -> R) -> R {
+        let mut blob = vec![0u8];
+        let mut tab = Vec::new();
+        for t in typespecs {
+            tab.extend_from_slice(&(blob.len() as u16).to_le_bytes());
+            if t.len() < 0x80 {
+                blob.push(t.len() as u8);
+            } else {
+                blob.extend_from_slice(&(0x8000u16 | t.len() as u16).to_be_bytes());
+            }
+            blob.extend_from_slice(t);
+        }
+        let mut rows = [0usize; 64];
+        rows[27] = typespecs.len();
+        let m = Meta { d: &[], strings: &[], us: &[], blob: &blob, tab: &tab, lay: sizes(&rows, 0) };
+        let cx = Ctx {
+            m: &m,
+            names: Names { types: vec![String::new()], method_owner: vec![], field_owner: vec![] },
+            work: std::cell::Cell::new(WORK),
+        };
+        f(&cx)
+    }
+
+    /// Read one type from `sig`; `typespecs` are rows 1.. of the TypeSpec table.
+    pub fn read_type(typespecs: &[Vec<u8>], sig: &[u8]) -> String {
+        with_ctx(typespecs, |cx| {
+            cx.fresh();
+            cx.read_type(&mut Sig { b: sig, p: 0 }, 0)
+        })
+    }
+
+    /// Decode the exception sections that start at `p` of `d`.
+    pub fn sections(d: &[u8], p: usize) -> Code {
+        with_ctx(&[], |cx| {
+            let mut c = Code::default();
+            decode_sections(d, p, cx, &mut c);
+            c
+        })
+    }
+
+    /// `(is_dotnet, is_mixed_mode)` for a PE image.
+    pub fn claims(d: &[u8]) -> (bool, bool) {
+        (is_dotnet(d), is_mixed_mode(d))
+    }
+
+    pub fn type_vis(tf: u32) -> &'static str {
+        super::type_vis(tf)
+    }
+
+    pub fn parse_err(d: &[u8]) -> String {
+        parse(d).err().unwrap_or_default()
     }
 }

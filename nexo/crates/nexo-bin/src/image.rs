@@ -178,7 +178,7 @@ impl Image {
 
     /// Parse bytes already in memory.
     pub fn from_bytes(data: Vec<u8>, path: PathBuf) -> Result<Image> {
-        if crate::is_managed(&data[..data.len().min(4096)]) {
+        if crate::is_managed(&data[..data.len().min(crate::MANAGED_HEAD)]) {
             return Err(Error::NotRead(
                 "this is JVM bytecode, a jar or a .NET assembly: read it with `nexo bin managed FILE`".into(),
             ));
@@ -191,6 +191,12 @@ impl Image {
         };
         if let Some(w) = crate::damage::extent_problem(&data) {
             img.warnings.push(w);
+        }
+        if crate::is_mixed_mode(&data[..data.len().min(crate::MANAGED_HEAD)]) {
+            img.warnings.push(
+                "mixed-mode .NET assembly (C++/CLI): these native ops cover its native code; `nexo bin managed FILE` also reads its .NET metadata and IL"
+                    .into(),
+            );
         }
         img.path = path;
         img.sha256 = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();

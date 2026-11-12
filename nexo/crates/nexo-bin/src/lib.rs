@@ -71,7 +71,7 @@ pub use live::{
 };
 #[cfg(any(test, feature = "fixtures"))]
 pub use managed::testkit as managed_fixtures;
-pub use managed::{is_managed, managed_window, ManagedQuery};
+pub use managed::{is_managed, is_mixed_mode, managed_window, ManagedQuery, HEAD as MANAGED_HEAD};
 pub use names::{
     add_call_target, attach as attach_names, brief as names_brief, call_targets, file_path as names_path,
     MAX_ENTRIES as MAX_NAMES,
