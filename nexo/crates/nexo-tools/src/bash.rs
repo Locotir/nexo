@@ -1038,12 +1038,73 @@ pub fn command_words(command: &str) -> Option<Vec<Vec<String>>> {
     Some(segments.into_iter().filter(|s| !s.is_empty()).collect())
 }
 
+/// What a `nexo dbg` command does to the world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbgClass {
+    /// Looks at, or steers, a program the person already let the debugger start.
+    Control,
+    /// Writes into the program: memory or a register, or attaches to a process that was not started here.
+    Change,
+    /// Starts a program (judged like running it in the shell), or is not a known command.
+    Other,
+}
+
+/// Classify the words after `nexo dbg`. A `do "a; b"` script is as strong as its strongest command.
+pub fn dbg_class(words: &[String]) -> DbgClass {
+    let mut it = words.iter().peekable();
+    while let Some(w) = it.peek() {
+        match w.as_str() {
+            "-s" | "--session" | "--lines" | "--from" => {
+                it.next();
+                it.next();
+            }
+            "--json" => {
+                it.next();
+            }
+            _ => break,
+        }
+    }
+    let Some(cmd) = it.next() else { return DbgClass::Control };
+    match cmd.as_str() {
+        "attach" | "write" | "setreg" => DbgClass::Change,
+        "run" | "__serve" => DbgClass::Other,
+        "do" => {
+            let rest: Vec<&String> = it.filter(|w| !w.starts_with("--")).collect();
+            let script = rest.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+            let mut worst = DbgClass::Control;
+            for part in script.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+                let w: Vec<String> = part.split_whitespace().map(str::to_string).collect();
+                match (w.first().map(String::as_str), dbg_class(&w)) {
+                    (Some("do"), _) | (_, DbgClass::Other) => return DbgClass::Other,
+                    (_, DbgClass::Change) => worst = DbgClass::Change,
+                    _ => {}
+                }
+            }
+            worst
+        }
+        "status" | "info" | "regs" | "mem" | "x" | "print" | "p" | "args" | "bt" | "threads" | "thread" | "breaks"
+        | "watches" | "maps" | "modules" | "find" | "history" | "out" | "log" | "dis" | "disasm" | "sessions"
+        | "help" | "catches" | "break" | "b" | "tbreak" | "delete" | "del" | "enable" | "disable" | "cont" | "c"
+        | "continue" | "step" | "s" | "next" | "n" | "finish" | "until" | "wait" | "stop" | "kill" | "detach"
+        | "end" | "stdin" | "catch" | "watch" | "core" => DbgClass::Control,
+        _ => DbgClass::Other,
+    }
+}
+
+/// Whether a command line holds a `nexo dbg` command that writes into a program or attaches to a process.
+pub fn dbg_changes(command: &str) -> bool {
+    command_words(command).is_some_and(|segs| {
+        segs.iter().any(|s| s.len() > 1 && s[0] == "nexo" && s[1] == "dbg" && dbg_class(&s[2..]) == DbgClass::Change)
+    })
+}
+
 /// One command (its words) of the reading kind.
 fn reads_only(words: &[String]) -> bool {
     let flags = || words[1..].iter().filter(|w| w.starts_with('-'));
     match words[0].as_str() {
         "cat" | "head" | "tail" | "grep" | "egrep" | "fgrep" | "rg" | "ls" | "wc" | "stat" | "file" => true,
         // `nexo bin` reads a file as bytes and prints. `name` and `note` also save into nexo's data folder, so they ask
+        "nexo" if words.get(1).map(String::as_str) == Some("dbg") => dbg_class(&words[2..]) == DbgClass::Control,
         "nexo" => {
             words.get(1).map(String::as_str) == Some("bin")
                 && matches!(
@@ -1162,6 +1223,46 @@ mod tests {
             assert_eq!(kind(c), want, "{c}");
         }
         assert_eq!(Bash.call_kind(&json!({"command": "cat x", "background": true})), ToolKind::Exec);
+    }
+
+    #[test]
+    fn nexo_dbg_steering_is_a_read_and_starting_or_writing_is_not() {
+        let kind = |c: &str| Bash.call_kind(&json!({"command": c}));
+        for c in [
+            "nexo dbg regs",
+            "nexo dbg -s ab12 bt 5 --lines 20",
+            "nexo dbg mem rsp 64 --as u64",
+            "nexo dbg break main if rdi == 3",
+            "nexo dbg cont --wait 5",
+            "nexo dbg step 3",
+            "nexo dbg kill",
+            "nexo dbg sessions",
+            "nexo dbg do \"break f; cont; args; bt\"",
+        ] {
+            assert_eq!(kind(c), ToolKind::Read, "{c}");
+        }
+        for c in [
+            "nexo dbg run ./a.out",
+            "nexo dbg attach 1234",
+            "nexo dbg write 0x1000 90 90",
+            "nexo dbg setreg rax 0",
+            "nexo dbg do \"break f; cont; setreg rax 1\"",
+            "nexo dbg do \"run x\"",
+            "nexo dbg nosuch",
+            "nexo dbg regs > out.txt",
+        ] {
+            assert_eq!(kind(c), ToolKind::Exec, "{c}");
+        }
+        for (c, changes) in [
+            ("nexo dbg attach 1234", true),
+            ("nexo dbg -s ab write 0x10 90", true),
+            ("nexo dbg do \"cont; setreg rax 1\"", true),
+            ("nexo dbg run ./a.out", false),
+            ("nexo dbg regs", false),
+            ("echo nexo dbg attach", false),
+        ] {
+            assert_eq!(dbg_changes(c), changes, "{c}");
+        }
     }
 
     #[test]

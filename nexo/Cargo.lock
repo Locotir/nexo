@@ -1700,6 +1700,7 @@ dependencies = [
  "nexo-bench",
  "nexo-bin",
  "nexo-core",
+ "nexo-dbg",
  "nexo-providers",
  "nexo-tools",
  "nexo-tui",
@@ -1747,6 +1748,18 @@ dependencies = [
  "rustc-hash",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "nexo-dbg"
+version = "0.1.0"
+dependencies = [
+ "gimli",
+ "libc",
+ "nexo-bin",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

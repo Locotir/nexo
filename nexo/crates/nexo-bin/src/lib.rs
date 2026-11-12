@@ -1,7 +1,8 @@
 //! `nexo-bin`: reads ELF and PE x86-64 files as bytes and answers questions about them in
 //! bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search.
 //!
-//! The file is only read. It is never run, loaded or handed to another program. No function here
+//! The file is only read. It is never run, loaded or handed to another program (`nexo-dbg` is the
+//! crate that runs programs; it asks this one for names and instruction text). No function here
 //! prints: each op returns an [`Output`] that has a text form and a JSON form, and
 //! [`Output::page`] cuts either one to a line budget, saying exactly what is left and how to get it.
 
@@ -11,6 +12,7 @@ mod dwarf;
 mod fnview;
 mod funcs;
 mod image;
+mod live;
 mod names;
 mod ops;
 mod page;
@@ -28,8 +30,12 @@ mod tests_x;
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
+pub use live::{decode_live, describe_addr, nearest_symbol, place_of, LiveIns, LiveMem, Place};
 pub use names::{attach as attach_names, file_path as names_path, MAX_ENTRIES as MAX_NAMES};
-pub use ops::{bytes, find_bytes, find_imm, func, func_window, info, strings, strings_window, ElemType, StrSort};
+pub use ops::{
+    bytes, find_bytes, find_imm, func, func_window, info, parse_pattern, strings, strings_window, typed_rows, ElemType,
+    StrSort,
+};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
 pub use xops::{

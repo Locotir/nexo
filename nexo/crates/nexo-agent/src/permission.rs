@@ -131,6 +131,13 @@ impl Policy {
         if kind == ToolKind::Exec && self.mode != PermissionMode::Auto && is_flag(args, "detach") {
             return Decision::Ask;
         }
+        // writing into a program under the debugger, or attaching to a process, asks every time
+        if kind == ToolKind::Exec
+            && self.mode != PermissionMode::Auto
+            && args.get("command").and_then(Value::as_str).is_some_and(nexo_tools::bash::dbg_changes)
+        {
+            return Decision::Ask;
+        }
         // keys and credentials are read only when asked, or by a rule that names their path
         if matches!(kind, ToolKind::Read | ToolKind::Search)
             && self.mode != PermissionMode::Auto
@@ -1546,6 +1553,21 @@ mod flag_tests {
         // read-only still denies; yolo keeps asking nothing
         assert!(matches!(at(&policy(PermissionMode::ReadOnly, &[], &[]), flagged.clone(), true), Decision::Deny(_)));
         assert_eq!(at(&policy(PermissionMode::Auto, &[], &[]), flagged, true), Decision::Allow);
+    }
+
+    #[test]
+    fn writing_into_a_debugged_program_or_attaching_asks_even_with_a_rule() {
+        let ruled = policy(PermissionMode::Ask, &["bash"], &[]);
+        for c in
+            ["nexo dbg attach 12", "nexo dbg write 0x10 90", "nexo dbg setreg rax 1", "nexo dbg do \"cont; write 1 2\""]
+        {
+            assert_eq!(at(&ruled, json!({"command": c}), true), Decision::Ask, "{c}");
+        }
+        assert_eq!(at(&ruled, json!({"command": "nexo dbg regs"}), true), Decision::Allow);
+        assert_eq!(
+            at(&policy(PermissionMode::Auto, &[], &[]), json!({"command": "nexo dbg attach 12"}), true),
+            Decision::Allow
+        );
     }
 
     #[test]

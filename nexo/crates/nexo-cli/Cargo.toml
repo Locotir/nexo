@@ -22,6 +22,7 @@ nexo-providers = { workspace = true }
 nexo-tools = { workspace = true }
 nexo-agent = { workspace = true }
 nexo-bin = { workspace = true }
+nexo-dbg = { workspace = true }
 nexo-tui = { workspace = true }
 nexo-bench = { workspace = true, optional = true }
 anyhow = { workspace = true }

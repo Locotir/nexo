@@ -247,6 +247,28 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
         }
         None => Error::Bad(format!("{addr:#x} is not inside any section")),
     })?;
+    let mut rows = typed_rows(data, addr, ty, &|v| describe(img, v, false));
+    if (data.len() as u64) < len {
+        let a = addr + data.len() as u64;
+        rows.push(Row {
+            key: a,
+            text: format!("... the file holds no more bytes after {a:#x} here ({} of {len} read)", data.len()),
+            json: None,
+        });
+    }
+    let meta = json!({"addr": addr, "len": data.len(), "as": ty.name()});
+    Ok(Output {
+        op: "bytes",
+        meta,
+        rows,
+        tail: 0,
+        command: command(img, "bytes", &format!("{addr:#x} {len} --as {}", ty.name())),
+    })
+}
+
+/// The typed table for bytes that start at `addr`, wherever they were read from (the file, or the
+/// memory of a process). `name` says what a pointer value points at.
+pub fn typed_rows(data: &[u8], addr: u64, ty: ElemType, name: &dyn Fn(u64) -> Option<String>) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     let (w, per) = (ty.width(), ty.per_row());
     if ty == ElemType::Str {
@@ -336,7 +358,7 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
             }
             if ty == ElemType::Ptr {
                 let v = vals[0].as_u64().unwrap_or(0);
-                let what = describe(img, v, false);
+                let what = name(v);
                 if let Some(wh) = &what {
                     text.push_str(&format!("  {wh}"));
                 }
@@ -355,22 +377,7 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
             });
         }
     }
-    if (data.len() as u64) < len {
-        let a = addr + data.len() as u64;
-        rows.push(Row {
-            key: a,
-            text: format!("... the file holds no more bytes after {a:#x} here ({} of {len} read)", data.len()),
-            json: None,
-        });
-    }
-    let meta = json!({"addr": addr, "len": data.len(), "as": ty.name()});
-    Ok(Output {
-        op: "bytes",
-        meta,
-        rows,
-        tail: 0,
-        command: command(img, "bytes", &format!("{addr:#x} {len} --as {}", ty.name())),
-    })
+    rows
 }
 
 /// How `strings` orders its list.
@@ -469,7 +476,7 @@ pub fn strings_window(
 }
 
 /// A hex pattern: bytes written with or without spaces, `0x` or commas; `??` matches any byte.
-fn parse_pattern(s: &str) -> Result<Vec<Option<u8>>> {
+pub fn parse_pattern(s: &str) -> Result<Vec<Option<u8>>> {
     let cleaned: String = s
         .replace("0x", "")
         .replace("0X", "")
