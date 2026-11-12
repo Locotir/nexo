@@ -66,3 +66,21 @@ fn the_real_target_of_each_call_through_a_pointer_is_logged_by_name() {
     assert_eq!(names, ["add_one", "double_it", "add_one", "double_it"], "{log}");
     assert!(run(&mut s, "calls off").contains("off"));
 }
+
+#[test]
+fn the_call_chain_goes_through_the_c_library_up_to_its_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(exe) = build(dir.path()) else {
+        eprintln!("no C compiler: skipped");
+        return;
+    };
+    let (mut s, _) = open(&Kind::Run { exe, args: vec![] }).expect("start");
+    run(&mut s, "break add_one");
+    let stop = run(&mut s, "cont");
+    assert!(stop.contains("backtrace:") || stop.contains("breakpoint"), "{stop}");
+    let bt = run(&mut s, "bt");
+    eprintln!("{bt}");
+    assert!(bt.contains("add_one") && bt.contains("main"), "{bt}");
+    assert!(bt.contains("table.c:"), "{bt}");
+    assert!(bt.contains("libc_start"), "the chain reaches the C library's start: {bt}");
+}

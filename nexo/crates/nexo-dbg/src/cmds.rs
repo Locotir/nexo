@@ -482,6 +482,8 @@ impl Session {
 
     fn frames(&mut self, max: usize) -> Result<Vec<crate::modules::Frame>> {
         let r = self.tid_regs()?;
+        // a library may have come in since the last look: the chain goes through it
+        self.mods.refresh(&mut *self.t);
         let Session { t, mods, .. } = self;
         let mut rd = |a: u64| {
             let mut b = [0u8; 8];
