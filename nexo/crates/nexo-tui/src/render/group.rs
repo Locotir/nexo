@@ -197,6 +197,20 @@ pub fn elapsed_ms(members: &[Block]) -> Option<u64> {
         .max()
 }
 
+/// The first line of the summary of the call that started last among the live ones.
+fn live_call(members: &[Block]) -> Option<String> {
+    let mut best: Option<(&Option<Instant>, &str)> = None;
+    for b in members {
+        if let Block::Tool { status: ToolStatus::Running | ToolStatus::Pending, started, summary, .. } = b {
+            if best.is_none_or(|(s, _)| started >= s) {
+                best = Some((started, summary));
+            }
+        }
+    }
+    let first = best?.1.lines().next().unwrap_or("").trim();
+    (!first.is_empty()).then(|| first.to_string())
+}
+
 /// The head line of a group of `members`, `w` cells wide.
 pub fn header(members: &[Block], folded: bool, spinner: usize, w: usize, theme: &Theme) -> Line<'static> {
     header_for(members, folded, spinner, w, theme, nexo_core::config::Detail::Full)
@@ -253,6 +267,15 @@ pub fn header_for(
     let stamp = if w.saturating_sub(fixed(&stamp)) < width(&text).min(24) { String::new() } else { stamp };
     let room = w.saturating_sub(fixed(&stamp)).max(4);
     let mut spans = vec![Span::styled(format!("{icon} "), istyle), Span::raw(truncate(&text, room))];
+    // the call running now takes what the sentence leaves, and is the first thing to go
+    if live {
+        if let Some(call) = live_call(members) {
+            let avail = room.saturating_sub(width(&text) + 3);
+            if width(&text) <= room && avail >= 8 {
+                spans.push(Span::styled(format!(" · {}", truncate(&call, avail)), theme.dim()));
+            }
+        }
+    }
     if !fails.is_empty() {
         spans.push(Span::styled(fails, theme.style(theme.error)));
     }
@@ -406,5 +429,69 @@ mod tests {
         assert_eq!(t, "✓ Read 2 files ▾");
         let t = text(&header(&[done("read"), call("bash", ToolStatus::Running)], true, 0, 60, &theme));
         assert!(t.starts_with(&format!("{} Read 1 file, running", SPINNER[0])), "{t}");
+    }
+
+    fn running(summary: &str, start_ago: u64) -> Block {
+        let mut b = call("bash", ToolStatus::Running);
+        if let Block::Tool { summary: s, started, .. } = &mut b {
+            *s = summary.into();
+            *started = Some(Instant::now() - Duration::from_secs(start_ago));
+        }
+        b
+    }
+
+    #[test]
+    fn a_live_group_shows_the_call_running_now_dim() {
+        let theme = Theme::dark();
+        let m = [done("bash"), running("old call", 30), running("ssh minipc docker ps", 5)];
+        let h = header(&m, true, 0, 100, &theme);
+        let t = text(&h);
+        assert!(t.contains("Running 3 shell commands… · ssh minipc docker ps  "), "{t}");
+        assert!(t.ends_with('▸'), "{t}");
+        let dim = h.spans.iter().find(|s| s.content.contains("docker ps")).unwrap();
+        assert_eq!(dim.style, theme.dim());
+        // open and quiet too
+        assert!(text(&header(&m, false, 0, 100, &theme)).contains("· ssh minipc docker ps"));
+        let q = text(&header_for(&m, true, 0, 100, &theme, nexo_core::config::Detail::Quiet));
+        assert!(q.contains("· ssh minipc docker ps"), "{q}");
+    }
+
+    #[test]
+    fn a_finished_group_is_unchanged() {
+        let theme = Theme::dark();
+        let m = [done("bash"), done("bash"), done("read")];
+        assert_eq!(text(&header(&m, true, 0, 80, &theme)), "✓ Ran 2 shell commands, read 1 file ▸");
+    }
+
+    #[test]
+    fn a_narrow_width_drops_the_call_before_the_time_and_the_chevron() {
+        let theme = Theme::dark();
+        let mut a = running("ssh minipc docker ps --format json", 400);
+        if let Block::Tool { summary, .. } = &mut a {
+            summary.push_str(" and more");
+        }
+        let m = [a];
+        let full = text(&header(&m, true, 0, 200, &theme));
+        let base = full.split(" · ").next().unwrap().to_string();
+        for w in 20..90usize {
+            let t = text(&header(&m, true, 0, w, &theme));
+            assert!(width(&t) <= w, "{w}: {t:?}");
+            if !t.contains(" · ") {
+                assert!(t.ends_with('▸'), "{w}: {t}");
+            }
+            if t.contains("docker") {
+                assert!(t.contains(&base) && t.contains("6m4") && t.ends_with('▸'), "{w}: {t}");
+            }
+        }
+        // some width keeps the time and chevron with the call already gone
+        let t = text(&header(&m, true, 0, 40, &theme));
+        assert!(!t.contains("ssh") && t.contains("6m4") && t.ends_with('▸'), "{t}");
+    }
+
+    #[test]
+    fn a_multi_line_summary_shows_its_first_line_only() {
+        let theme = Theme::dark();
+        let t = text(&header(&[running("echo one\necho two", 3)], true, 0, 100, &theme));
+        assert!(t.contains("· echo one") && !t.contains("two"), "{t}");
     }
 }
