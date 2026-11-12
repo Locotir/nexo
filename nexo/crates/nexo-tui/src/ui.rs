@@ -1611,7 +1611,9 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let mut parts: Vec<String> = vec![time, "Esc interrupt".to_string()];
     parts.extend(toks);
     let head: usize = spans.iter().map(|s| width(&s.content)).sum();
-    let fits = |p: &[String]| head + 2 + p.iter().map(|s| width(s)).sum::<usize>() + 3 * (p.len() - 1) <= w;
+    // the tag at the right of the rule (level, size of the draft) is drawn over it: the segments stop short of it
+    let room = rule_tag(app, w.min(u16::MAX as usize) as u16).map_or(w, |(x, _)| (x as usize).saturating_sub(1));
+    let fits = |p: &[String]| head + 2 + p.iter().map(|s| width(s)).sum::<usize>() + 3 * (p.len() - 1) <= room;
     let mut keep = parts.len();
     while keep > 0 && !fits(&parts[..keep]) {
         keep -= 1;

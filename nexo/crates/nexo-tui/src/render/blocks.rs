@@ -526,7 +526,10 @@ impl Block {
                         lines.extend(body.into_iter().take(preview));
                         lines.push(Line::from(vec![
                             Span::styled("│ ", theme.style(rail_color)),
-                            Span::styled(format!("▸ {hidden} more lines"), theme.dim()),
+                            Span::styled(
+                                format!("▸ {hidden} more {}", if hidden == 1 { "line" } else { "lines" }),
+                                theme.dim(),
+                            ),
                         ]));
                     }
                 } else {

@@ -238,7 +238,10 @@ impl App {
                 let hidden = lines.len() - 1;
                 lines.truncate(1);
                 meta.truncate(1);
-                lines.push(Line::from(Span::styled(format!("  ▸ {hidden} more lines"), self.theme.dim())));
+                lines.push(Line::from(Span::styled(
+                    format!("  ▸ {hidden} more {}", if hidden == 1 { "line" } else { "lines" }),
+                    self.theme.dim(),
+                )));
             }
             debug_assert!(meta.conts.iter().all(|c| (c.line as usize) < lines.len()));
             if indent > 0 {
