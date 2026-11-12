@@ -152,6 +152,8 @@ pub struct Image {
     dwarf: OnceLock<crate::dwarf::Dwarf>,
     /// Library signatures added to the shipped ones (see `sigs`).
     pub(crate) sigs: crate::sigs::SigSet,
+    /// Things wrong with the file that did not stop it from opening (cut short, a table that points out).
+    pub warnings: Vec<String>,
 }
 
 impl Image {
@@ -176,10 +178,13 @@ impl Image {
     pub fn from_bytes(data: Vec<u8>, path: PathBuf) -> Result<Image> {
         let kind = FileKind::parse(&data[..]).map_err(|_| not_a_binary(&data))?;
         let mut img = match kind {
-            FileKind::Elf64 => load_elf(&data)?,
-            FileKind::Pe64 => load_pe(&data)?,
+            FileKind::Elf64 => load_elf(&data).map_err(|e| explain(e, &data))?,
+            FileKind::Pe64 => load_pe(&data).map_err(|e| explain(e, &data))?,
             other => return Err(Error::NotRead(format!("{} is not read yet", describe_kind(other, &data)))),
         };
+        if let Some(w) = crate::damage::extent_problem(&data) {
+            img.warnings.push(w);
+        }
         img.path = path;
         img.sha256 = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
         img.data = data;
@@ -454,6 +459,14 @@ fn not_a_binary(data: &[u8]) -> Error {
     if data.is_empty() {
         return Error::NotRead("the file is empty, not a binary".into());
     }
+    if let Some(w) = crate::damage::short_magic(data) {
+        return Error::NotRead(format!("not a readable binary: it {w}"));
+    }
+    if data.starts_with(b"MZ") {
+        if let Some(p) = crate::damage::extent_problem(data) {
+            return Error::NotRead(format!("not a readable PE file: {p}"));
+        }
+    }
     let head = &data[..data.len().min(4096)];
     if std::str::from_utf8(head).is_ok() || head.iter().all(|b| b.is_ascii()) {
         Error::NotRead("this is a text file, not an ELF or PE binary".into())
@@ -511,6 +524,7 @@ fn blank(format: Format) -> Image {
         refs: OnceLock::new(),
         dwarf: OnceLock::new(),
         sigs: Default::default(),
+        warnings: Vec::new(),
     }
 }
 
@@ -863,5 +877,16 @@ fn arch_word(a: Architecture) -> &'static str {
         Architecture::PowerPc64 => "ppc64",
         Architecture::Mips | Architecture::Mips64 => "mips",
         _ => "unknown arch",
+    }
+}
+
+/// A parse error with the file's length and, when a header promises bytes the file lacks, where.
+fn explain(e: Error, data: &[u8]) -> Error {
+    match e {
+        Error::NotRead(m) => Error::NotRead(match crate::damage::extent_problem(data) {
+            Some(p) => format!("{m}; {p}"),
+            None => format!("{m} (the file is {} bytes)", data.len()),
+        }),
+        other => other,
     }
 }

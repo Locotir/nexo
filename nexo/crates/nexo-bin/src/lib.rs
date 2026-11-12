@@ -9,6 +9,7 @@
 mod a64;
 mod caps;
 mod crypto;
+mod damage;
 mod decomp;
 mod disasm;
 mod dwarf;
@@ -36,6 +37,8 @@ pub mod fixtures;
 mod tests;
 #[cfg(test)]
 mod tests_fmt;
+#[cfg(test)]
+mod tests_harden;
 #[cfg(test)]
 mod tests_map;
 #[cfg(test)]

@@ -207,7 +207,7 @@ pub fn slice_window(
         .map(|i| i.near_branch_target())
         .filter(|t| (fstart..fend).contains(t))
         .collect();
-    let branch_between = |lo: u64, hi: u64| targets.range(lo + 1..=hi).next().is_some();
+    let branch_between = |lo: u64, hi: u64| hi > lo && targets.range(lo + 1..=hi).next().is_some();
     let mut info = InstructionInfoFactory::new();
     let mut fmt = formatter();
     let text_of = |i: &Instruction, fmt: &mut iced_x86::IntelFormatter| {

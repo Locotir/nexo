@@ -55,6 +55,9 @@ pub fn info(img: &Image) -> Output {
     let mut l = Lines(Vec::new());
     l.text(format!("format      {} little-endian, {}", img.format.name(), img.arch_name()));
     l.text(format!("file        {size} bytes, sha256 {}", img.sha256));
+    for w in &img.warnings {
+        l.text(format!("warning     {w}"));
+    }
     l.text(format!("entry       {entry}"));
     l.text(format!("base        {:#x}", img.image_base));
     l.text(format!(
@@ -99,6 +102,7 @@ pub fn info(img: &Image) -> Output {
             "strings": strings, "symbols": img.symbols.len(), "sections": img.sections.len(),
         },
         "hardening": hardening,
+        "warnings": img.warnings,
     });
     Output { op: "info", meta, rows: l.0, tail: 0, command: command(img, "info", "") }
 }

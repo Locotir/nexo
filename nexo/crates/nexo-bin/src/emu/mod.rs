@@ -28,6 +28,8 @@ use cpu::{Cpu, Event, GPR_NAMES, RAX, RSP};
 use mem::{Access, Fault, Mem};
 
 /// Where nexo puts the things the file does not have. All far from where ELF and PE files load.
+/// The most memory the sections of one file may take once loaded (zero pages count).
+const MAX_IMAGE_BYTES: u64 = 256 << 20;
 const IMPORT_BASE: u64 = 0x7a00_0000_0000;
 const FILE_BASE: u64 = 0x7b00_0000_0000;
 /// The most bytes one library stub copies, compares or allocates.
@@ -220,6 +222,7 @@ impl<'a> Machine<'a> {
 
     fn load(&mut self) -> Result<()> {
         let img = self.img;
+        let mut mapped: u64 = 0;
         for s in img.sections.iter().filter(|s| s.alloc && s.size > 0) {
             let end = s.addr.saturating_add(s.size);
             if end > IMPORT_BASE {
@@ -234,6 +237,17 @@ impl<'a> Machine<'a> {
             let from = s.addr.max(mem::PAGE);
             if from >= end {
                 continue;
+            }
+            // a header that claims a huge section must not make the emulator allocate it
+            mapped = mapped.saturating_add(end - from);
+            if mapped > MAX_IMAGE_BYTES {
+                return Err(Error::Bad(format!(
+                    "section {} at {:#x} makes the image {} MiB or more in memory; emu loads at most {} MiB (the file's section table may be damaged)",
+                    s.name,
+                    s.addr,
+                    mapped >> 20,
+                    MAX_IMAGE_BYTES >> 20
+                )));
             }
             self.mem.map(from, end - from, s.write, s.exec);
             let bytes = img.section_bytes(s);

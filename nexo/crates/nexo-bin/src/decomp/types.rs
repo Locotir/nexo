@@ -29,7 +29,7 @@ fn is_ident(c: char) -> bool {
 fn split_decl(d: &str) -> (String, String) {
     let d = d.trim();
     let end = d.len();
-    let start = d.rfind(|c: char| !is_ident(c)).map_or(0, |i| i + 1);
+    let start = d.char_indices().rfind(|&(_, c)| !is_ident(c)).map_or(0, |(i, c)| i + c.len_utf8());
     let name = &d[start..end];
     let ty = d[..start].trim();
     if ty.is_empty() || name.is_empty() {
