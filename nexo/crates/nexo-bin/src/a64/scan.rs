@@ -50,9 +50,9 @@ impl Tracker {
         } else if let Some(l) = ins.literal {
             via = Some(Via::Read(l));
         }
-        for n in 0..31 {
+        for (n, slot) in self.known.iter_mut().enumerate().take(31) {
             if ins.writes >> n & 1 == 1 {
-                self.known[n] = None;
+                *slot = None;
             }
         }
         if matches!(ins.flow, Flow::Call | Flow::CallReg) {

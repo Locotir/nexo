@@ -1,2 +1,6 @@
 # keep LF everywhere: the interface tests compare text captures byte for byte, on Windows too
 * text=auto eol=lf
+# test data, not nexo's own code: the bench's practice apps and nexo bin's signature table stay out of
+# GitHub's language count
+nexo/crates/nexo-bench/src/tasks/** linguist-vendored
+nexo/crates/nexo-bin/src/sigdata/** linguist-detectable=false

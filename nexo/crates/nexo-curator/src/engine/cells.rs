@@ -98,9 +98,10 @@ impl Engine {
                 c.changed.push((mi, State::Out));
             }
         }
-        for mi in cells.len()..n {
+        let have = cells.len();
+        for (mi, &size) in self.sizes.iter().enumerate().take(n).skip(have) {
             let zone = if mi == 0 { 0 } else { g.thread_at(mi) + 1 };
-            cells.push(Cell { zone, tokens: self.sizes[mi].max(1), state: State::Out });
+            cells.push(Cell { zone, tokens: size.max(1), state: State::Out });
         }
         for &mi in vis.iter() {
             let state = self.cell_state(mi);

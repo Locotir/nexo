@@ -894,14 +894,22 @@ impl Session {
     /// where files are told apart by device and inode) replaced.
     fn file_changed(&self) -> bool {
         let Ok(now) = std::fs::metadata(&self.path) else { return false };
-        if now.len() != self.size {
-            return true;
-        }
-        #[cfg(unix)]
-        if let Some(mine) = self.file.as_ref().and_then(|f| f.metadata().ok()) {
-            use std::os::unix::fs::MetadataExt;
-            return (now.dev(), now.ino()) != (mine.dev(), mine.ino());
-        }
+        now.len() != self.size || self.replaced(&now)
+    }
+
+    /// Another file now stands at the path: on Unix, told apart by device and inode.
+    #[cfg(unix)]
+    fn replaced(&self, now: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        self.file
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .is_some_and(|mine| (now.dev(), now.ino()) != (mine.dev(), mine.ino()))
+    }
+
+    /// Elsewhere a replaced file is not told apart from the one this session wrote.
+    #[cfg(not(unix))]
+    fn replaced(&self, _now: &std::fs::Metadata) -> bool {
         false
     }
 

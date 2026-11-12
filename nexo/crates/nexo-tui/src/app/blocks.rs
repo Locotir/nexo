@@ -46,8 +46,8 @@ impl App {
             if let Block::Group { len, .. } = &mut self.blocks[m] {
                 *len = at - m;
             }
-            for k in first..=at {
-                self.looks[k].group_back = Some((k - m) as u32);
+            for (look, k) in self.looks[first..=at].iter_mut().zip(first..) {
+                look.group_back = Some((k - m) as u32);
             }
             self.cache[m] = None;
             return at;
@@ -60,8 +60,8 @@ impl App {
         self.blocks.insert(prev, Block::Group { folded: true, len: at + 1 - prev });
         self.cache.insert(prev, None);
         self.looks.insert(prev, Look { born, ..Look::default() });
-        for k in prev + 1..=at + 1 {
-            self.looks[k].group_back = Some((k - prev) as u32);
+        for (look, k) in self.looks[prev + 1..=at + 1].iter_mut().zip(prev + 1..) {
+            look.group_back = Some((k - prev) as u32);
         }
         // the indices at and after the new block moved up by one
         let shift = |i: &mut usize| {
