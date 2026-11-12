@@ -362,6 +362,7 @@ fn names_digest(img: &Image, data_dir: &Path) -> String {
         include_str!("structure.rs"),
         include_str!("render.rs"),
         include_str!("api.rs"),
+        include_str!("../dwarf.rs"),
     ] {
         h.update(src.as_bytes());
     }
@@ -430,10 +431,16 @@ pub fn one(img: &Image, data_dir: &Path, target: &str) -> Result<(String, Vec<Li
             arg_types.insert(format!("a{}", i + 1), t.clone());
         }
     }
+    if let Some(m) = img.dwarf().slot_types.get(&f.start) {
+        arg_types.extend(m.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    if let Some(m) = img.dwarf().vars.get(&f.start) {
+        vars.extend(m.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
     if let Some(m) = user.vars.get(&f.start) {
         vars.extend(m.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
-    let names = ImgNames { img, vars, arg_types, structs: super::types::structs(user) };
+    let names = ImgNames { img, vars, arg_types, structs: super::types::structs(user, img) };
     let mut sigs = ImgSigs { img, protos };
     let mut lines =
         super::decompile_with(&ImgEnv(img), f.start, f.end, abi_of(img), &mut sigs, &names, &name, proto.as_ref());

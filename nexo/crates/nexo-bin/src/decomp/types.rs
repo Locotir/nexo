@@ -93,12 +93,16 @@ pub fn parse_struct(text: &str) -> Result<Vec<Field>, String> {
     Ok(out)
 }
 
-pub fn protos(user: &UserNames, _img: &Image) -> HashMap<u64, Proto> {
-    user.protos.iter().filter_map(|(a, t)| parse_proto(t).ok().map(|p| (*a, p))).collect()
+/// Prototypes: DWARF first, then the person's (theirs replace whole entries).
+pub fn protos(user: &UserNames, img: &Image) -> HashMap<u64, Proto> {
+    let all = img.dwarf().protos.iter().chain(user.protos.iter());
+    all.filter_map(|(a, t)| parse_proto(t).ok().map(|p| (*a, p))).collect()
 }
 
-pub fn structs(user: &UserNames) -> HashMap<String, Vec<Field>> {
-    user.structs.iter().filter_map(|(n, t)| parse_struct(t).ok().map(|f| (n.clone(), f))).collect()
+/// Struct layouts: DWARF first, the person's replace by name.
+pub fn structs(user: &UserNames, img: &Image) -> HashMap<String, Vec<Field>> {
+    let all = img.dwarf().structs.iter().chain(user.structs.iter());
+    all.filter_map(|(n, t)| parse_struct(t).ok().map(|f| (n.clone(), f))).collect()
 }
 
 /// `struct item *` or `item *` -> `item`.

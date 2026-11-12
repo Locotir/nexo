@@ -305,14 +305,18 @@ impl Printer<'_> {
         }
     }
 
-    fn slot_name(&self, o: i64) -> String {
-        let n = if o < 0 {
+    fn slot_key(&self, o: i64) -> String {
+        if o < 0 {
             format!("local_{:x}", -o)
         } else if o >= self.abi_stack_arg {
             format!("stack_{:x}", o - self.abi_stack_arg)
         } else {
             format!("saved_{o:x}")
-        };
+        }
+    }
+
+    fn slot_name(&self, o: i64) -> String {
+        let n = self.slot_key(o);
         self.names.var_name(&n).unwrap_or(n)
     }
 
@@ -356,6 +360,12 @@ impl Printer<'_> {
                     let v = self.var_text(Var::Web(*w), 64);
                     return format!("{v}->{fld}");
                 }
+            }
+        }
+        if let Expr::Var(Var::Stack(o), _) = base {
+            let key = self.slot_key(i64::from(*o));
+            if let Some(fld) = self.names.field(&key, off) {
+                return format!("{}->{fld}", self.slot_name(i64::from(*o)));
             }
         }
         match addr {
@@ -712,7 +722,11 @@ pub fn render(
                 None => ty(*w),
             };
             let n = names.var_name(n).unwrap_or_else(|| n.clone());
-            format!("{t} {n}")
+            if t.ends_with('*') {
+                format!("{t}{n}")
+            } else {
+                format!("{t} {n}")
+            }
         })
         .collect();
     let sig = format!("{ret} {name}({})", if args.is_empty() { "void".to_string() } else { args.join(", ") });

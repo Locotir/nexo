@@ -13,6 +13,7 @@ fixtures = []
 
 [dependencies]
 object = { workspace = true }
+gimli = { workspace = true }
 iced-x86 = { workspace = true }
 rustc-demangle = { workspace = true }
 cpp_demangle = { workspace = true }

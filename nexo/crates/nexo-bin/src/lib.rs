@@ -7,6 +7,7 @@
 
 mod decomp;
 mod disasm;
+mod dwarf;
 mod fnview;
 mod funcs;
 mod image;

@@ -139,6 +139,7 @@ pub struct Image {
     funcs: OnceLock<Vec<Func>>,
     strings: OnceLock<Vec<Str>>,
     refs: OnceLock<Refs>,
+    dwarf: OnceLock<crate::dwarf::Dwarf>,
 }
 
 impl Image {
@@ -266,6 +267,11 @@ impl Image {
     /// The functions found (see the lane notes): sorted, no duplicates.
     pub fn funcs(&self) -> &[Func] {
         self.funcs.get_or_init(|| crate::funcs::find(self))
+    }
+
+    /// Names and types the file carries as DWARF (empty when it has none).
+    pub(crate) fn dwarf(&self) -> &crate::dwarf::Dwarf {
+        self.dwarf.get_or_init(|| crate::dwarf::read(&self.data))
     }
 
     /// The strings found in the data sections, sorted by address.
@@ -435,6 +441,7 @@ fn blank(format: Format) -> Image {
         funcs: OnceLock::new(),
         strings: OnceLock::new(),
         refs: OnceLock::new(),
+        dwarf: OnceLock::new(),
     }
 }
 
