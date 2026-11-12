@@ -84,10 +84,7 @@ impl Tool for Note {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "The note lines."
-                    },
+                    "text": { "type": "string" },
                     "scope": {
                         "type": "string",
                         "enum": ["session", "project", "global"],

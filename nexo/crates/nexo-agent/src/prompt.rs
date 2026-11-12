@@ -26,6 +26,21 @@ pub fn is_compact(window: Option<u64>) -> bool {
 /// directory, date, project instructions or extra text appended.
 pub const RAW_MARK: &str = "<!-- nexo: raw -->";
 
+/// Said only with `agent.close_on_verified` on: without it the turn does not end on that reply, so the model
+/// would write its answer twice.
+const CLOSE_ON_VERIFIED: &str = "- When your last calls only confirm finished work (a test run, a check), put the answer for the person in that same message: if everything passes the turn ends there; if something fails you get the result and go on.";
+
+/// The built-in text for a model with context window `window`, with the line for `agent.close_on_verified`
+/// when that setting is on (the compact text does not have it).
+fn base_for(window: Option<u64>, close_on_verified: bool) -> String {
+    let mut out = built_in_for(window).to_string();
+    if close_on_verified && !is_compact(window) {
+        out.push('\n');
+        out.push_str(CLOSE_ON_VERIFIED);
+    }
+    out
+}
+
 /// The built-in text: what every request starts with.
 pub fn built_in() -> &'static str {
     BUILT_IN.trim()
@@ -90,12 +105,18 @@ pub fn with_directives(system: String, cfg: &AgentConfig, directives: Option<&st
 /// Only what nexo itself writes of the prompt (`nexo prompt --builtin`): the built-in text, the guidance for
 /// `tools` and the context policy's directives. No directory, date, project, instruction file or preference.
 pub fn builtin_part(tools: &ToolSet, directives: Option<&str>) -> String {
-    builtin_part_for(tools, directives, None)
+    builtin_part_for(tools, directives, None, false)
 }
 
-/// [`builtin_part`] for a model with context window `window`.
-pub fn builtin_part_for(tools: &ToolSet, directives: Option<&str>, window: Option<u64>) -> String {
-    let mut out = format!("{}{}", built_in_for(window), guidance_for(tools, window));
+/// [`builtin_part`] for a model with context window `window`, with `agent.close_on_verified` as given.
+pub fn builtin_part_for(
+    tools: &ToolSet,
+    directives: Option<&str>,
+    window: Option<u64>,
+    close_on_verified: bool,
+) -> String {
+    let mut out = base_for(window, close_on_verified);
+    out.push_str(&guidance_for(tools, window));
     if let Some(d) = directives {
         out.push_str(&format!("\n\n{d}"));
     }
@@ -158,20 +179,7 @@ fn tool_guidance(tools: &ToolSet) -> String {
     let mut lines = Vec::new();
     let has = |n: &str| tools.get(n).is_some();
     if has("ls") || has("bash") {
-        lines.push("- The Project block, with the project note a request may start with, is current: use them, not `ls` or `find`. A file the request names is already attached, whole.");
-    }
-    if has("bash") && (has("edit") || has("write")) {
-        lines.push("- Calls run in order; check once, after the last change.");
-    }
-    if has("skill") {
-        lines.push("- `skill`: skills are folders of ready-made instructions; when a task matches one in the tool's list, load it before you start.");
-    }
-    if has("web_search") {
-        lines
-            .push("- `web_search`: check anything current or outside the repository instead of answering from memory.");
-    }
-    if has("web_fetch") {
-        lines.push("- `web_fetch`: open the best results before relying on them and cite their URLs.");
+        lines.push("- The Project block, with the project note a request may start with, is current: use them, not `ls` or `find`.");
     }
     let mcp: Vec<&str> = tools.names().filter(|n| n.starts_with("mcp__")).collect();
     if !mcp.is_empty() {
@@ -201,13 +209,10 @@ fn abilities(tools: &ToolSet) -> String {
         lines.push("- `edit` and `write` change many files in one call with its check result.");
     }
     if has("task") {
-        lines.push("- `task` sub-agents take side work in parallel: several searches or checks (one call each, all in ONE message), a long job (`background: true`), anything the person asks to hand off. Not for one or two reads. They see nothing of this conversation: put all they need in `prompt`.");
-    }
-    if has("recall") {
-        lines.push("- `recall` returns a message the context left out.");
+        lines.push("- `task` sub-agents take side work in parallel: several searches or checks (one call each, all in ONE message), a long job (`background: true`), anything the person asks to hand off. Not for one or two reads.");
     }
     if has("note") {
-        lines.push("- `note` keeps `Finding: ...`, `Plan: ...`, `Rule: ...` lines; send it with your next call. A lasting preference, rule or fact the person states (\"always ...\", \"my .bashrc is at ...\"), or one you find that matters again (a non-default path or port, something not to touch), is saved as a `Rule: ...` line (one short line: the exact fact (path, value, name, command) and the rule, no filler) with `scope` `global` (all projects) or `project` (this repo). Not one-off details, guesses, secrets or what is saved. Say nothing about saving it.");
+        lines.push("- `note`: a lasting preference, rule or fact the person states (\"always ...\", \"my .bashrc is at ...\"), or one you find that matters again (a non-default path or port, something not to touch), is saved as a `Rule: ...` line (one short line: the exact fact (path, value, name, command) and the rule, no filler) with `scope` `global` (all projects) or `project` (this repo). Not one-off details, guesses, secrets or what is saved. Say nothing about saving it.");
     }
     if lines.is_empty() {
         return String::new();
@@ -478,12 +483,13 @@ pub fn system_prompt_with(
     if let Some(raw) = file.as_deref().and_then(|t| t.strip_prefix(RAW_MARK)) {
         return raw.trim().to_string();
     }
-    let (base, prefs) = match &file {
-        Some(t) if replaces(cfg, t) => (paths::prompt_base(t), String::new()),
-        Some(t) => (built_in_for(window), without_comments(t)),
-        None => (built_in_for(window), String::new()),
+    let built_in = || base_for(window, cfg.close_on_verified);
+    let (mut out, prefs) = match &file {
+        Some(t) if replaces(cfg, t) => (paths::prompt_base(t).to_string(), String::new()),
+        Some(t) => (built_in(), without_comments(t)),
+        None => (built_in(), String::new()),
     };
-    let mut out = format!("{base}\n\nWorking directory: {}\nDate: {}", cwd.display(), vol.date);
+    out.push_str(&format!("\n\nWorking directory: {}\nDate: {}", cwd.display(), vol.date));
     out.push_str(&vol.environment);
     out.push_str(&guidance_for(tools, window));
     out.push_str(&vol.instructions);
@@ -586,7 +592,7 @@ mod tests {
             "`wait_until`",
             "touches the same state",
             "many files",
-            "`note` keeps",
+            "`note`: a lasting preference",
         ] {
             assert!(all.contains(want), "missing {want}: {all}");
         }
@@ -808,13 +814,41 @@ mod tests {
         assert!(after.contains(&format!("Instructions from {}", cwd.path().join("AGENTS.md").display())), "{after}");
     }
 
+    /// When to search and to cite is said once, in the description of `web_search` (a sub-agent gets it too), and
+    /// not a second time in the system text.
     #[test]
-    fn the_web_tools_get_their_guidance_only_when_present() {
-        let with = tool_guidance(&nexo_tools::builtin());
-        assert!(with.contains("`web_search`: check anything current") && with.contains("cite their URLs"), "{with}");
+    fn the_web_tools_carry_their_own_guidance() {
+        let tools = nexo_tools::builtin();
+        let search = tools.get("web_search").unwrap().spec().description;
+        for want in
+            ["anything current or outside the repository", "`web_fetch` before relying on them", "cite their URLs"]
+        {
+            assert!(search.contains(want), "missing {want}: {search}");
+        }
         let off = nexo_core::config::WebConfig { enabled: false, ..Default::default() };
-        let without = tool_guidance(&nexo_tools::builtin_with(&off));
-        assert!(!without.contains("web_"), "{without}");
+        for set in [tools, nexo_tools::builtin_with(&off)] {
+            let g = tool_guidance(&set);
+            assert!(!g.contains("web_"), "{g}");
+        }
+    }
+
+    /// The model is told to answer in the reply that holds its last checks only when that reply ends the turn
+    /// (`agent.close_on_verified`); told so with the setting off, it writes the answer twice.
+    #[test]
+    fn the_line_about_answering_with_the_last_checks_is_sent_only_when_that_ends_the_turn() {
+        let d = tempfile::tempdir().unwrap();
+        let tools = nexo_tools::builtin();
+        let off = AgentConfig { hermetic: true, ..Default::default() };
+        let on = AgentConfig { close_on_verified: true, ..off.clone() };
+        let line = "put the answer for the person in that same message";
+        assert!(!off.close_on_verified && !system_prompt(d.path(), &off, &tools).contains(line));
+        let with = system_prompt(d.path(), &on, &tools);
+        assert!(with.contains(&format!("\n{CLOSE_ON_VERIFIED}\n\nWorking directory: ")), "{with}");
+        assert!(with.starts_with(built_in()), "{with}");
+        assert!(!system_prompt_for(d.path(), &on, &tools, Some(8_000)).contains(line));
+        // `nexo prompt --builtin` prints what the session gets
+        assert!(builtin_part_for(&tools, None, None, true).contains(line));
+        assert!(!builtin_part(&tools, None).contains(line));
     }
 
     #[test]
@@ -850,16 +884,16 @@ mod size_budget {
         specs + tool_guidance(&set).len()
     }
 
-    /// 10565 characters (about 2600 tokens) when this budget was set; it may grow 10% and no more
-    /// (11620), 100 more went to the sequence sentence of the strands line, and 380 more went to the one line that tells the model what to save with `note` and where,
-    /// and 50 more to `replaces`, the way a model corrects a line it saved instead of adding a second one.
+    /// 10135 characters (about 2500 tokens) when this budget was set, after the text said twice was taken out
+    /// (the budget before it was 12150); it may grow 5% and no more (10650).
     /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
-    /// model already knows about shells and search tools.
+    /// model already knows about shells and search tools, and a parameter gets a description only for what its
+    /// name and the tool description do not say.
     #[test]
     fn the_tool_text_stays_within_its_budget() {
         let n = tool_text_chars();
         // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
-        let budget = if cfg!(windows) { 12_200 } else { 12_150 };
+        let budget = if cfg!(windows) { 10_700 } else { 10_650 };
         assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
     }
 
@@ -949,7 +983,7 @@ mod size_budget {
     fn a_large_window_gets_the_full_text_unchanged() {
         let tools = nexo_tools::builtin();
         for w in [None, Some(200_000), Some(COMPACT_WINDOW + 1)] {
-            assert_eq!(builtin_part_for(&tools, Some("D."), w), builtin_part(&tools, Some("D.")), "{w:?}");
+            assert_eq!(builtin_part_for(&tools, Some("D."), w, false), builtin_part(&tools, Some("D.")), "{w:?}");
             assert_eq!(tool_definitions_for(&tools.specs(), w), tool_definitions(&tools.specs()), "{w:?}");
         }
         assert!(!is_compact(None) && !is_compact(Some(COMPACT_WINDOW + 1)) && is_compact(Some(COMPACT_WINDOW)));
@@ -964,7 +998,7 @@ mod size_budget {
     fn a_small_window_gets_the_compact_text_within_its_caps() {
         let tools = nexo_tools::builtin();
         for w in [8_000, COMPACT_WINDOW] {
-            let b = builtin_part_for(&tools, None, Some(w));
+            let b = builtin_part_for(&tools, None, Some(w), false);
             assert!(b.len() <= 2_600, "{w}: the compact built-in part takes {} characters", b.len());
             assert!(!b.contains("How to write code:") && !b.contains("You can do:"), "{b}");
             let t = tool_definitions_for(&tools.compact_specs(), Some(w));
@@ -978,7 +1012,7 @@ mod size_budget {
 
     #[test]
     fn the_compact_prompt_keeps_the_safety_rules() {
-        let b = builtin_part_for(&nexo_tools::builtin(), None, Some(8_000)).to_lowercase();
+        let b = builtin_part_for(&nexo_tools::builtin(), None, Some(8_000), false).to_lowercase();
         for want in ["secrets", "destructive", "only the person", "explicit request", "information"] {
             assert!(b.contains(want), "missing {want}: {b}");
         }

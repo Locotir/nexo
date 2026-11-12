@@ -552,7 +552,8 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
                     .collect();
                 println!("{}", nexo_agent::prompt::tool_definitions_for(&specs, *window));
             } else if *builtin {
-                println!("{}", nexo_agent::prompt::builtin_part_for(&tools, directives, *window));
+                let close = config.agent.close_on_verified;
+                println!("{}", nexo_agent::prompt::builtin_part_for(&tools, directives, *window, close));
             } else {
                 let base = nexo_agent::prompt::system_prompt_for(&cwd, &config.agent, &tools, *window);
                 println!("{}", nexo_agent::prompt::with_directives(base, &config.agent, directives));

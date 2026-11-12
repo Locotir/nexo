@@ -670,8 +670,8 @@ impl Tool for WebSearch {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "What to search for, as you would type it in a search engine."},
-                    "max_results": {"type": "integer", "description": "How many results (default 8, at most 20)."},
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "description": "Default 8, at most 20."},
                     "domains": {"type": "array", "items": {"type": "string"}, "description": "Only results from these sites, e.g. [\"docs.rs\"]."}
                 },
                 "required": ["query"]
@@ -889,7 +889,7 @@ impl Tool for WebFetch {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "The full URL, http:// or https://."},
+                    "url": {"type": "string"},
                     "start": {"type": "integer", "description": "Character to start from (default 0), to read on."},
                     "max_chars": {"type": "integer", "description": "Characters to return (default 20000, at most 100000)."}
                 },

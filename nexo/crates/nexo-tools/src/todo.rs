@@ -145,7 +145,6 @@ impl Tool for Todo {
                 "properties": {
                     "items": {
                         "type": "array",
-                        "description": "The whole list, in order.",
                         "items": {
                             "type": "object",
                             "properties": {

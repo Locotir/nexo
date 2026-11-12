@@ -142,11 +142,11 @@ impl Tool for Bash {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "The command line to run."},
-                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds, default 120."},
+                    "command": {"type": "string"},
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600},
                     "description": {"type": "string", "description": "A few words on what it does, for the person."},
                     "wait_until": {"type": "string", "description": "Shell condition polled up to `timeout`; then `command` runs."},
-                    "background": {"type": "boolean", "description": "Run as a job, return at once."},
+                    "background": {"type": "boolean"},
                     "detach": {"type": "boolean", "description": "With `background`: outlives nexo, logs to a file; stop it by pid."},
                     "unsandboxed": {"type": "boolean", "description": "Only after the OS sandbox blocked a command: run outside it; the person is asked."}
                 },

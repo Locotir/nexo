@@ -36,8 +36,8 @@ impl Tool for Glob {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "The glob, e.g. `*.rs`, `src/**/*.ts`, `**/Cargo.toml`."},
-                    "path": {"type": "string", "description": "The directory to search. Default: the working directory."}
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string", "description": "Default: the working directory."}
                 },
                 "required": ["pattern"]
             }),

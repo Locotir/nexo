@@ -47,10 +47,10 @@ impl Tool for Read {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file; relative paths start at the working directory."},
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Several files instead of `path` (at most 20, about 100000 characters in all); offset and limit apply to each."},
-                    "offset": {"type": "integer", "minimum": 1, "description": "First line to return (1-based). Default 1."},
-                    "limit": {"type": "integer", "minimum": 1, "description": "Lines to return. Default 2000."}
+                    "path": {"type": "string"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "At most 20, about 100000 characters in all; offset and limit apply to each."},
+                    "offset": {"type": "integer", "minimum": 1},
+                    "limit": {"type": "integer", "minimum": 1}
                 }
             }),
         }

@@ -26,7 +26,7 @@ impl Tool for Ls {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The directory. Default: the working directory."}
+                    "path": {"type": "string", "description": "Default: the working directory."}
                 }
             }),
         }

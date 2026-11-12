@@ -36,11 +36,11 @@ impl Tool for Edit {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file."},
-                    "old_string": {"type": "string", "description": "The exact text to replace."},
-                    "new_string": {"type": "string", "description": "The text that replaces it (empty to delete)."},
-                    "replace_all": {"type": "boolean", "description": "Replace every occurrence."},
-                    "edits": {"type": "array", "description": "Several changes to this file: [{old_string, new_string, replace_all}].", "items": {"type": "object"}},
+                    "path": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string", "description": "Empty to delete."},
+                    "replace_all": {"type": "boolean"},
+                    "edits": {"type": "array", "items": {"type": "object"}},
                     "files": {"type": "array", "description": "Instead of `path`: [{path, edits}]; stops at the first failure.", "items": {"type": "object", "properties": {"path": {"type": "string"}, "edits": {"type": "array"}}}},
                     "check": {"type": "string", "description": "Short command to run after; exit and tail come back."}
                 },

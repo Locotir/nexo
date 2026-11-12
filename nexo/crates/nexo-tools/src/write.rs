@@ -31,8 +31,8 @@ impl Tool for Write {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The file."},
-                    "content": {"type": "string", "description": "The complete new content."},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
                     "check": {"type": "string", "description": "Short command to run after; exit and tail come back."}
                 },
                 "required": ["path", "content"]

@@ -50,9 +50,9 @@ impl Tool for Jobs {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "output", "kill"], "description": "What to do. Default list."},
-                    "id": {"type": "integer", "description": "The job, for output and kill."},
-                    "wait": {"type": "integer", "minimum": 0, "maximum": 600, "description": "Seconds to wait for the job to end before reading (output only). Default 0."}
+                    "action": {"type": "string", "enum": ["list", "output", "kill"], "description": "Default list."},
+                    "id": {"type": "integer"},
+                    "wait": {"type": "integer", "minimum": 0, "maximum": 600}
                 }
             }),
         }
