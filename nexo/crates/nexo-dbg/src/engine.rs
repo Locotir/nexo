@@ -32,6 +32,8 @@ pub struct Bp {
     pub log: Option<String>,
     /// Removed after the first stop.
     pub once: bool,
+    /// Set by `calls`: at an indirect call, the real target goes to the log and the program goes on.
+    pub call: bool,
 }
 
 pub struct Wp {
@@ -501,6 +503,11 @@ impl Session {
             if self.bps[i].hits <= self.bps[i].after {
                 continue;
             }
+            if self.bps[i].call {
+                let line = self.call_line(tid, addr);
+                self.log_line(line);
+                continue;
+            }
             if let Some(text) = self.bps[i].log.clone() {
                 let line = self.format_log(tid, &text);
                 self.log_line(format!("#{id} {line}"));
@@ -527,6 +534,35 @@ impl Session {
             }
         }
         Ok(None)
+    }
+
+    /// `call 0x401136 main+0x20 -> 0x401220 helper`: the real target of the indirect call at `addr` now.
+    fn call_line(&mut self, tid: Tid, addr: u64) -> String {
+        let from = self.mods.label(addr, false).unwrap_or_default();
+        let mut bytes = self.read_vec(addr, 16);
+        // our own int3 sits on the first byte while the program runs
+        if let (Some(b), Some(o)) = (bytes.first_mut(), self.inserted.get(&addr)) {
+            *b = *o;
+        }
+        let regs = self.t.regs(tid).ok();
+        let to = regs.and_then(|r| {
+            let t = std::cell::RefCell::new(&mut self.t);
+            nexo_bin::indirect_call_target(&bytes, addr, &|n| r.get(n), &|a| {
+                let mut b = [0u8; 8];
+                (t.borrow_mut().read(a, &mut b) == 8).then(|| u64::from_le_bytes(b))
+            })
+        });
+        match to {
+            Some(t) => {
+                if self.mods.locate(t).is_none() {
+                    // a library that came in after the last look
+                    self.mods.refresh(&mut *self.t);
+                }
+                let name = self.mods.label(t, false).unwrap_or_else(|| "?".into());
+                format!("call {addr:#x} {from} -> {t:#x} {name}")
+            }
+            None => format!("call {addr:#x} {from} -> ? (target could not be read)"),
+        }
     }
 
     pub fn log_line(&mut self, s: String) {

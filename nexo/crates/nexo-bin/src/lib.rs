@@ -30,7 +30,10 @@ mod tests_x;
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
 pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
-pub use live::{decode_live, describe_addr, nearest_symbol, place_of, LiveIns, LiveMem, Place};
+pub use live::{
+    decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, LiveIns, LiveMem,
+    Place, MAX_INDIRECT_CALLS,
+};
 pub use names::{attach as attach_names, brief as names_brief, file_path as names_path, MAX_ENTRIES as MAX_NAMES};
 pub use ops::{
     bytes, find_bytes, find_imm, func, func_window, info, parse_pattern, strings, strings_window, typed_rows, ElemType,

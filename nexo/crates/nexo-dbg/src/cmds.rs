@@ -106,6 +106,7 @@ impl Session {
             "status" | "info" => self.status(),
             "regs" => self.cmd_regs(&a),
             "setreg" => self.cmd_setreg(&a),
+            "calls" => self.cmd_calls(&a),
             "break" | "b" | "tbreak" => self.cmd_break(cmd == "tbreak", &words[1..], &a),
             "breaks" | "watches" => Ok(self.cmd_breaks()),
             "delete" | "del" => self.cmd_delete(&a),
@@ -300,8 +301,51 @@ impl Session {
         }
         let id = self.new_id();
         let label = self.mods.label(addr, false).unwrap_or_default();
-        self.bps.push(Bp { id, addr, enabled: true, cond, after, hits: 0, log, once });
+        self.bps.push(Bp { id, addr, enabled: true, cond, after, hits: 0, log, once, call: false });
         Ok(rows("break", vec![format!("breakpoint #{id} at {addr:#x} {label}")], json!({"id": id, "addr": addr})))
+    }
+
+    /// `calls` logs the real target of every `call reg` / `call [mem]` in the program as it runs; `calls off` stops.
+    fn cmd_calls(&mut self, a: &Args) -> Result<Output> {
+        let n_on = self.bps.iter().filter(|b| b.call).count();
+        if a.pos.first().is_some_and(|w| w == "off") {
+            self.bps.retain(|b| !b.call);
+            return Ok(rows("calls", vec![format!("indirect-call logging off ({n_on} sites)")], json!({})));
+        }
+        if n_on > 0 {
+            return Ok(rows(
+                "calls",
+                vec![format!("logging {n_on} indirect calls: `log` shows the targets, `calls off` stops")],
+                json!({"sites": n_on}),
+            ));
+        }
+        let (sites, more) = nexo_bin::indirect_calls(self.mods.main_image());
+        if sites.is_empty() {
+            return fail("no `call reg` or `call [mem]` in this program's code: every call goes to a fixed place (`dis` or `nexo bin` shows them)");
+        }
+        let bias = self.mods.main_bias();
+        let n = sites.len();
+        for fa in sites {
+            let id = self.new_id();
+            self.bps.push(Bp {
+                id,
+                addr: fa.wrapping_add(bias),
+                enabled: true,
+                cond: None,
+                after: 0,
+                hits: 0,
+                log: None,
+                once: false,
+                call: true,
+            });
+        }
+        let mut l = vec![format!(
+            "logging {n} indirect calls: `cont`, then `log` shows each target by name; `calls off` stops"
+        )];
+        if more > 0 {
+            l.push(format!("{more} more sites past the cap were left out"));
+        }
+        Ok(rows("calls", l, json!({"sites": n})))
     }
 
     fn maps_exec(&mut self, addr: u64) -> bool {
@@ -314,8 +358,14 @@ impl Session {
         let bps: Vec<(u32, u64, bool, Option<String>, u64, u64, Option<String>, bool)> = self
             .bps
             .iter()
+            .filter(|b| !b.call)
             .map(|b| (b.id, b.addr, b.enabled, b.cond.clone(), b.after, b.hits, b.log.clone(), b.once))
             .collect();
+        let sites = self.bps.iter().filter(|b| b.call).count();
+        if sites > 0 {
+            let hits: u64 = self.bps.iter().filter(|b| b.call).map(|b| b.hits).sum();
+            l.push(format!("indirect-call logging on {sites} sites, {hits} calls seen (`calls off`)"));
+        }
         for (id, addr, en, cond, after, hits, log, once) in bps {
             let label = self.mods.label(addr, false).unwrap_or_default();
             let mut s = format!("#{id} {addr:#x} {label} hits {hits}");
@@ -1151,6 +1201,7 @@ pub fn help() -> Output {
     let l = [
         "run: nexo dbg run <exe> [args]   attach: nexo dbg attach <pid>   core: nexo dbg core <file>",
         "go:    cont [--wait N] | step [N] | next [N] | finish | until <addr> | stop | wait [--wait N] | kill | detach",
+        "calls: calls | calls off    log the real target of every indirect call (call reg / call [mem]) as the program runs; read with `log`",
         "break: break <addr|name|name+off|import> [if <expr>] [after N] [log <text with {expr}>] [once] | breaks | delete <id>|all | enable/disable <id>",
         "look:  regs [name] | bt [N] | dis [addr] [N] | mem <addr> [len] [--as u8|u32|u64|ptr|str] | print <expr> [--as str] | args | threads | thread <tid>",
         "       maps [filter] | modules | find <hex|\"text\"> [--in <map>] | out [--all] | log | history [N] | status",

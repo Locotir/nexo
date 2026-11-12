@@ -2,7 +2,7 @@
 //! words for an address, and the text of an instruction that was read from memory. Nothing here
 //! starts, opens or touches a process: the caller reads the bytes and passes them in.
 
-use iced_x86::{Decoder, DecoderOptions, FlowControl, Formatter, InstructionInfoFactory, OpAccess, Register};
+use iced_x86::{Decoder, DecoderOptions, FlowControl, Formatter, InstructionInfoFactory, OpAccess, OpKind, Register};
 
 use crate::disasm::{describe, formatter, target};
 use crate::xops::target_addr;
@@ -96,6 +96,70 @@ pub fn decode_live(bytes: &[u8], ip: u64, reg: &dyn Fn(&str) -> Option<u64>) -> 
         target: target(&ins),
         mem,
     })
+}
+
+/// How many indirect calls `indirect_calls` lists at most.
+pub const MAX_INDIRECT_CALLS: usize = 4000;
+
+/// The addresses (as in the file) of the instructions that call through a register or a memory slot
+/// (`call rax`, `call [rbx+8]`), found by reading the code sections once from start to end. At most
+/// `MAX_INDIRECT_CALLS`; the second value is how many more there were.
+pub fn indirect_calls(img: &Image) -> (Vec<u64>, usize) {
+    let (mut out, mut more) = (Vec::new(), 0usize);
+    for s in img
+        .sections
+        .iter()
+        .filter(|s| s.exec && s.alloc && !s.name.starts_with(".plt") && s.name != ".init" && s.name != ".fini")
+    {
+        let bytes = img.section_bytes(s);
+        let mut d = Decoder::with_ip(64, bytes, s.addr, DecoderOptions::NONE);
+        while d.can_decode() {
+            let ins = d.decode();
+            if !ins.is_invalid() && ins.flow_control() == FlowControl::IndirectCall {
+                if out.len() < MAX_INDIRECT_CALLS {
+                    out.push(ins.ip());
+                } else {
+                    more += 1;
+                }
+            }
+        }
+    }
+    (out, more)
+}
+
+/// Where the indirect call at the start of `bytes` (at `ip` in the running program) goes right now: the
+/// register's value, or the 8 bytes `read` gives at the slot. `None` for anything that is not an indirect call.
+pub fn indirect_call_target(
+    bytes: &[u8],
+    ip: u64,
+    reg: &dyn Fn(&str) -> Option<u64>,
+    read: &dyn Fn(u64) -> Option<u64>,
+) -> Option<u64> {
+    let ins = Decoder::with_ip(64, bytes, ip, DecoderOptions::NONE).decode();
+    if ins.is_invalid() || ins.flow_control() != FlowControl::IndirectCall {
+        return None;
+    }
+    let value = |r: Register, _: usize, _: usize| -> Option<u64> {
+        if r.is_segment_register() {
+            return match r {
+                Register::FS => reg("fs_base"),
+                Register::GS => reg("gs_base"),
+                _ => Some(0),
+            };
+        }
+        reg(&format!("{:?}", r.full_register()).to_ascii_lowercase())
+    };
+    match ins.op0_kind() {
+        OpKind::Register => {
+            let r = ins.op0_register();
+            let v = value(r, 0, 0)?;
+            Some(if r.size() == 4 { v & 0xffff_ffff } else { v })
+        }
+        OpKind::Memory => {
+            read(InstructionInfoFactory::new().info(&ins).used_memory().first()?.virtual_address(0, value)?)
+        }
+        _ => None,
+    }
 }
 
 /// What a name or a number points at in the file.
