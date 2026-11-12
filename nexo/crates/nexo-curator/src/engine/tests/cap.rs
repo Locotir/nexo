@@ -70,6 +70,35 @@ fn what_leaves_for_the_window_counts_the_miss_from_the_anchor() {
 }
 
 #[test]
+fn a_view_fit_to_the_window_leaves_room_for_the_next_call() {
+    // no working window: `fit` alone keeps the view inside the model's window
+    let mut e =
+        Engine::new(params("nudge=0;eoq=0;close=0;live=0;check=100000000;every=100000;target=0;cap=0").unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "Say what each part holds."})];
+    for k in 0..24 {
+        msgs.extend(step(k + 1, &format!("cat part{k}.txt"), &listing(60 * k + 1, 60 * k + 60)));
+    }
+    e.sync(&msgs);
+    e.decide();
+    let budget = e.tokens() * 9 / 10;
+    e.set_budget(budget);
+    // each call from here on adds an output as long as the ones before it
+    msgs.extend(step(25, "cat part24.txt", &listing(1441, 1500)));
+    e.sync(&msgs);
+    e.decide();
+    assert_eq!(e.stats.get("window_fits"), Some(&1), "{:?}", e.stats);
+    let landed: i64 = e.sizes_now().iter().sum();
+    // the oldest messages left down to where a ceiling cut lands, not down to the edge of the window: every
+    // fit reads the whole view again without the cache, so it must buy more than one call
+    assert!(landed <= budget * 9 / 10, "landed on {landed} of {budget}");
+    msgs.extend(step(26, "cat part25.txt", &listing(1501, 1560)));
+    e.sync(&msgs);
+    e.decide();
+    assert_eq!(e.stats.get("window_fits"), Some(&1), "the next call was fit again: {:?}", e.stats);
+    assert!(e.sizes_now().iter().sum::<i64>() <= budget);
+}
+
+#[test]
 fn past_the_cap_only_copies_leave_until_twice_the_cap() {
     let spec = (0..200).map(|k| format!("field_{k} = {} {}", word(k), word(k + 1000))).collect::<Vec<_>>().join("\n");
     let log =

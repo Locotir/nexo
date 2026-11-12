@@ -549,6 +549,12 @@ impl Engine {
     /// messages leave until it fits (they go to the ledger, as past the cap), the protected tail first
     /// kept and then given up but for the latest message. What one message alone holds past the
     /// window is paged when the view is rendered (`Curator::view`). Whether any message left.
+    ///
+    /// The messages leave down to where a ceiling cut lands (`ceiling_land`), not down to the window itself: the
+    /// anchor changes with them, so the whole view is read again without the cache, and a view left at the
+    /// edge of the window is past it again at the next call. Five tasks in one session with a window of 40 000
+    /// tokens: 27 of 68 calls moved messages out and read the whole view again; landing with room, 6 did. The
+    /// protected tail is given up only as far as the window asks.
     pub(super) fn fit(&mut self) -> bool {
         if self.budget <= 0 {
             return false;
@@ -557,7 +563,8 @@ impl Engine {
         if sizes.iter().sum::<i64>() <= self.budget {
             return false;
         }
-        let mut left = self.leave(&sizes, self.budget as f64);
+        let land = (self.ceiling_land() - self.head.max(0)).clamp(self.budget / 2, self.budget);
+        let mut left = self.leave(&sizes, land as f64);
         let sizes = self.sizes_now();
         if sizes.iter().sum::<i64>() > self.budget {
             let protect = std::mem::replace(&mut self.p.protect, 1);

@@ -147,6 +147,11 @@ impl Engine {
         }
     }
 
+    /// Where a cut made because the view passed the ceiling lands, head included (`CEILING_LAND`).
+    pub(super) fn ceiling_land(&self) -> i64 {
+        (self.ceiling() as f64 * CEILING_LAND) as i64
+    }
+
     /// The size past which a rewrite down to `land` tokens pays, head included: keeping the extra tokens costs
     /// `ratio` of an uncached token each (the provider's cache price when the host gave it, `Curator::prices`) on
     /// every call still to come, plus the quality a view past `LONG_KNEE` loses; the rewrite sends its new
@@ -432,7 +437,7 @@ impl Engine {
         let mut first: Option<usize> = None;
         let mut cut = 0;
         for tier in 0..2 {
-            let limit = if tier == 0 { land } else { (self.ceiling() as f64 * CEILING_LAND) as i64 };
+            let limit = if tier == 0 { land } else { self.ceiling_land() };
             if limit <= 0 {
                 continue;
             }
