@@ -277,6 +277,9 @@ struct Run {
     quiet_text: bool,
     /// What to add when the provider cannot be reached (see `unreachable_note`).
     reach: Option<String>,
+    /// A turn of this run has started. A resumed session replays its recorded calls before that, for the
+    /// interface: they are history, not work this run did, so they are not reported as new calls.
+    live: bool,
 }
 
 /// The line the legacy JSON output prints for an event. The events about a sub-agent run's own conversation
@@ -305,6 +308,7 @@ impl Run {
             printed: false,
             quiet_text: false,
             reach,
+            live: false,
         }
     }
 
@@ -329,7 +333,11 @@ impl Run {
                 }
             }
             AgentEvent::SessionChanged { session_id, .. } => self.t.session_id = session_id.clone(),
-            AgentEvent::TurnStart { .. } => self.t.turns += 1,
+            AgentEvent::TurnStart { .. } => {
+                self.t.turns += 1;
+                self.live = true;
+            }
+            AgentEvent::ToolCall { .. } | AgentEvent::ToolDone { .. } if !self.live => {}
             AgentEvent::AssistantStart => {
                 self.r.text.clear();
                 if self.fmt == Fmt::Text && self.printed {
@@ -769,6 +777,22 @@ mod tests {
         assert!(t.starts_with("Automatic check by nexo, not a message from the person:"), "{t}");
         assert!(t.contains("/name: missing") && t.ends_with("Reply again with only the corrected JSON value."), "{t}");
         assert!(!t.contains('\n'), "{t}");
+    }
+
+    #[test]
+    fn the_calls_a_resumed_session_replays_are_not_reported_as_this_run_s_work() {
+        let mut run = super::Run::new(super::Fmt::Text, vec![], None);
+        let denied = || AgentEvent::ToolDone {
+            id: "c1".into(),
+            output: nexo_core::ToolOutput::error("Permission denied: rm"),
+            elapsed_ms: 0,
+        };
+        // the replay comes before the first turn of the run
+        run.on_event(&denied());
+        assert!(!run.r.denied, "a recorded call counted as one this run made");
+        run.on_event(&AgentEvent::TurnStart { turn: 1 });
+        run.on_event(&denied());
+        assert!(run.r.denied, "a call of this run went unreported");
     }
 
     use super::legacy_line;
