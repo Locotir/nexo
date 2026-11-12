@@ -6,6 +6,7 @@
 
 mod client;
 mod cmds;
+mod corefile;
 mod engine;
 mod expr;
 mod knowledge;

@@ -226,8 +226,14 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
         return Ok(print(crate::help(), "-", &["help".to_string()], o, None, "", prefix));
     };
     match cmd {
-        "run" | "attach" => {
-            let kind = if cmd == "run" {
+        "run" | "attach" | "core" => {
+            let kind = if cmd == "core" {
+                let Some(file) = o.words.get(1) else {
+                    return Err(Error::Usage("usage: core <file> [--exe <path>]".into()));
+                };
+                let exe = o.words.iter().position(|w| w == "--exe").and_then(|i| o.words.get(i + 1)).map(PathBuf::from);
+                Kind::Core { file: PathBuf::from(file), exe }
+            } else if cmd == "run" {
                 let Some(exe) = o.words.get(1) else { return Err(Error::Usage("usage: run <path> [args]".into())) };
                 let args = o.words[2..].iter().filter(|w| *w != "--").cloned().collect();
                 Kind::Run { exe: PathBuf::from(exe), args }

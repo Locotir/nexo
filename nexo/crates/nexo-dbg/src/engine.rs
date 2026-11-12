@@ -342,7 +342,14 @@ impl Session {
     pub fn begin(&mut self, run: Run) -> Result<()> {
         self.need_stopped()?;
         self.run = run;
-        self.resume_now()
+        let r = self.resume_now();
+        if r.is_err() {
+            // the program did not start: it is where it was, with none of our breakpoints in it
+            self.state = State::Stopped;
+            self.uninsert_all();
+            self.run = Run::default();
+        }
+        r
     }
 
     fn resume_now(&mut self) -> Result<()> {

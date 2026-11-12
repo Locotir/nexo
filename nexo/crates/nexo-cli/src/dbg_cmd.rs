@@ -16,6 +16,7 @@ pub struct DbgArgs {
 
 fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
     let (mut id, mut dir, mut owner, mut run, mut attach) = (None, None, None, None, None);
+    let (mut core, mut exe): (Option<PathBuf>, Option<PathBuf>) = (None, None);
     let mut args = Vec::new();
     let mut it = w.iter();
     while let Some(k) = it.next() {
@@ -27,13 +28,16 @@ fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
             "--run" => run = Some(PathBuf::from(v)),
             "--arg" => args.push(v.clone()),
             "--attach" => attach = v.parse().ok(),
+            "--core" => core = Some(PathBuf::from(v)),
+            "--exe" => exe = Some(PathBuf::from(v)),
             other => return Err(Error::Usage(format!("unknown server option {other}"))),
         }
     }
-    let kind = match (run, attach) {
-        (Some(exe), _) => Kind::Run { exe, args },
-        (None, Some(pid)) => Kind::Attach(pid),
-        _ => return Err(Error::Usage("the server needs --run or --attach".into())),
+    let kind = match (run, attach, core) {
+        (Some(exe), _, _) => Kind::Run { exe, args },
+        (None, Some(pid), _) => Kind::Attach(pid),
+        (None, None, Some(file)) => Kind::Core { file, exe },
+        _ => return Err(Error::Usage("the server needs --run, --attach or --core".into())),
     };
     Ok(nexo_dbg::Start {
         id: id.ok_or_else(|| Error::Usage("--id".into()))?,

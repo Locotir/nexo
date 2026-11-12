@@ -141,3 +141,15 @@ fn what_a_session_keeps_comes_back_with_the_next_one_of_the_same_binary() {
     assert!(again.contains("known about this binary") && again.contains("crash: findings go here"), "{again}");
     assert!(nexo(&tmp, &["end"]).status.success());
 }
+
+#[test]
+fn a_core_file_that_is_not_one_is_refused_through_the_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().join(format!("nexo-tmp-{}-c", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let o = nexo(&tmp, &["core", sleep_bin().to_str().unwrap()]);
+    let t = out(&o);
+    assert!(!o.status.success() && t.contains("not a core file"), "{t}");
+    let o = nexo(&tmp, &["core"]);
+    assert!(out(&o).contains("usage: core <file>"), "{}", out(&o));
+}

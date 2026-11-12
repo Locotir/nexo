@@ -21,8 +21,16 @@ pub const IDLE: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone)]
 pub enum Kind {
-    Run { exe: PathBuf, args: Vec<String> },
+    Run {
+        exe: PathBuf,
+        args: Vec<String>,
+    },
     Attach(u32),
+    /// A core file, and the program's file when the dump's own record of it is not the one to use.
+    Core {
+        file: PathBuf,
+        exe: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +140,17 @@ pub fn out_from_json(v: &Value) -> Output {
     }
 }
 
-fn make_session(kind: &Kind) -> Result<Session> {
+fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)> {
+    if let Kind::Core { file, exe } = kind {
+        let core = crate::corefile::Core::open(file)?;
+        let death = core.death();
+        let Some(path) = exe.clone().or_else(|| core.exe()) else {
+            return fail("the core file does not name its program: give it with `--exe <path>`");
+        };
+        let img =
+            Image::open(&path).map_err(|e| Error::Fail(format!("cannot read {} as a program: {e}", path.display())))?;
+        return Ok((Session::new(Box::new(core), img), death));
+    }
     let t = match kind {
         Kind::Run { exe, args } => {
             if !exe.is_file() {
@@ -141,12 +159,13 @@ fn make_session(kind: &Kind) -> Result<Session> {
             platform::launch(&Launch { exe: exe.clone(), args: args.clone(), ..Launch::default() })?
         }
         Kind::Attach(pid) => platform::attach(*pid)?,
+        Kind::Core { .. } => return fail("unreachable"),
     };
     let mut t = t;
     let mods = t.modules().unwrap_or_default();
     let path = match kind {
         Kind::Run { exe, .. } => exe.clone(),
-        Kind::Attach(_) => PathBuf::from(mods.first().map(|m| m.path.clone()).unwrap_or_default()),
+        _ => PathBuf::from(mods.first().map(|m| m.path.clone()).unwrap_or_default()),
     };
     let img = match Image::open(&path) {
         Ok(i) => i,
@@ -155,15 +174,16 @@ fn make_session(kind: &Kind) -> Result<Session> {
             return fail(format!("cannot read {} as a program: {e}", path.display()));
         }
     };
-    Ok(Session::new(t, img))
+    Ok((Session::new(t, img), None))
 }
 
 /// Start the program and take it to its first stop. The caller owns the result and must stay on this thread.
 pub fn open(kind: &Kind) -> Result<(Session, Output)> {
-    let mut sess = make_session(kind)?;
+    let (mut sess, death) = make_session(kind)?;
     let mut first = match kind {
         Kind::Run { .. } => run_to_entry(&mut sess),
         Kind::Attach(pid) => attach_report(&mut sess, *pid),
+        Kind::Core { file, .. } => core_report(&mut sess, file, death),
     };
     // what earlier sessions kept for this binary comes with the first answer
     let known = nexo_bin::names_brief(sess.mods.main_image(), 8);
@@ -265,6 +285,32 @@ fn run_to_entry(s: &mut Session) -> Output {
         }
         Err(e) => rows("stop", vec![format!("started, but cannot run to the entry: {e}")], json!({})),
     }
+}
+
+fn core_report(s: &mut Session, file: &Path, death: Option<crate::corefile::Death>) -> Output {
+    let tid = s.t.threads().first().copied().unwrap_or(0);
+    let why = match death {
+        Some(d) => crate::engine::Why::Signal(crate::Fault {
+            number: d.signal,
+            code: d.code,
+            addr: d.addr,
+            touch: None,
+            first_chance: false,
+        }),
+        None => crate::engine::Why::Interrupt,
+    };
+    let mut o = s.stopped(tid, why);
+    let n = s.t.threads().len();
+    let text = format!(
+        "core file {}: the program died here ({n} thread{}); nothing can run",
+        file.display(),
+        if n == 1 { "" } else { "s" }
+    );
+    o.rows.insert(0, Row { key: 0, text, json: None });
+    for (i, r) in o.rows.iter_mut().enumerate() {
+        r.key = i as u64;
+    }
+    o
 }
 
 fn attach_report(s: &mut Session, pid: u32) -> Output {
@@ -463,6 +509,12 @@ pub fn spawn(nexo: &Path, dir: &Path, kind: &Kind) -> Result<String> {
         }
         Kind::Attach(pid) => {
             cmd.arg("--attach").arg(pid.to_string());
+        }
+        Kind::Core { file, exe } => {
+            cmd.arg("--core").arg(file);
+            if let Some(e) = exe {
+                cmd.arg("--exe").arg(e);
+            }
         }
     }
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
