@@ -607,7 +607,7 @@ impl Tool for Diagnostics {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact { description: "Language-server errors and warnings of a file; call after editing.", params: &[] })
     }
 

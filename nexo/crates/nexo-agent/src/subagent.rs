@@ -10,6 +10,9 @@
 //!   (the person), a front matter with `name`, `description`, `tools`, `model` and
 //!   `rounds`, and a body that is the sub-agent's instructions.
 //!
+//! A request carries the short text of `task` ([`short_text`]): the kinds by name, the person's own with the
+//! start of their description. The whole descriptions answer a call that names a kind there is not.
+//!
 //! Every sub-agent runs as its own task and job. With `background: true` the call returns at once and
 //! the report comes in the note of the ended job. Without it the call waits for the report, unless the
 //! person writes or presses the key: then the sub-agent goes to the background and the call returns.
@@ -57,6 +60,83 @@ const EXPLORE: &str = "You can only read: read files, search, list, search the w
 
 const GENERAL: &str = "You can read, edit and run commands. Keep to the task: change only what it needs, check \
 your work (build, tests) when you can, and say in the report exactly which files you changed.";
+
+/// What `task` is for, in the text every request carries.
+const SHORT: &str =
+    "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report.";
+
+/// The most characters of a kind's description in the short text of `task`.
+const KIND_CHARS: usize = 60;
+
+/// The most characters the kinds of the person's own take in the short text of `task`.
+const KINDS_CHARS: usize = 1_400;
+
+/// The start of a description, for the short text of `task`: its first clause (up to a full stop, a
+/// semicolon, a colon, a dash, a bracket or a new line) and at most `max` characters of it. A longer clause
+/// ends at its last comma within them, or on a whole word when that would leave under a third.
+fn clause(description: &str, max: usize) -> &str {
+    let text = description.trim();
+    let ends = [". ", "; ", ": ", " - ", " \u{2013} ", " \u{2014} ", " (", "\n", "\\n"];
+    let mut cut = &text[..ends.iter().filter_map(|e| text.find(e)).min().unwrap_or(text.len())];
+    if let Some((at, next)) = cut.char_indices().nth(max) {
+        cut = &cut[..at];
+        match cut.rfind(", ").filter(|comma| *comma >= at / 3) {
+            Some(comma) => cut = &cut[..comma],
+            None if !next.is_whitespace() => cut = &cut[..cut.rfind(' ').unwrap_or(at)],
+            None => {}
+        }
+    }
+    cut.trim_end_matches(|c: char| c.is_whitespace() || ".,;:-".contains(c))
+}
+
+/// The short text of `task`, which every request carries: what it is for, the two built-in kinds in a few
+/// words, and each kind of the person's own by name with the start of its description ([`clause`]). That
+/// list is held to [`KINDS_CHARS`] however many kinds there are: a kind is described while the names of
+/// those after it still fit, then named alone, then only counted.
+fn short_text(profiles: &[Profile]) -> String {
+    let stock = builtin();
+    let kept = |name: &str| profiles.iter().any(|p| p.name == name && stock.contains(p));
+    let mut text = String::from(SHORT);
+    // a built-in kind the person replaced is listed with theirs, by what their file says of it
+    match (kept("explore"), kept("general")) {
+        (true, true) => text.push_str(" `explore` (default) is read-only; `general` can edit."),
+        (true, false) => text.push_str(" `explore` (default) is read-only."),
+        (false, true) => text.push_str(" `general` can edit."),
+        (false, false) => {}
+    }
+    let own: Vec<&Profile> = profiles.iter().filter(|p| !stock.contains(p)).collect();
+    if own.is_empty() {
+        return text;
+    }
+    let label =
+        |p: &Profile| if p.name == DEFAULT { format!("`{}` (default)", p.name) } else { format!("`{}`", p.name) };
+    // what the names not yet written take, each with the `; ` after it
+    let mut names_left: usize = own.iter().map(|p| label(p).len() + 2).sum();
+    let (mut list, mut left_out) = (String::new(), 0);
+    for p in own {
+        let name = label(p);
+        names_left -= name.len() + 2;
+        let said = clause(&p.description, KIND_CHARS);
+        let fits = list.len() + name.len() + 2 + said.len() + 2 + names_left <= KINDS_CHARS;
+        let entry = if fits && !said.is_empty() { format!("{name}: {said}") } else { name };
+        if list.len() + entry.len() + 2 > KINDS_CHARS {
+            left_out += 1;
+            continue;
+        }
+        list.push_str(&entry);
+        list.push_str("; ");
+    }
+    text.push_str(" More kinds for `agent`: ");
+    text.push_str(&list);
+    match left_out {
+        0 => text.truncate(text.len() - 2),
+        n => text.push_str(&format!(
+            "and {n} more: an `agent` that is none of these is answered with every kind and its description"
+        )),
+    }
+    text.push('.');
+    text
+}
 
 /// One kind of sub-agent.
 #[derive(Debug, Clone, PartialEq)]
@@ -315,6 +395,8 @@ pub struct SubAgent {
     /// Every tool but `task`.
     all: ToolSet,
     profiles: Vec<Profile>,
+    /// The text of `task` in a request ([`short_text`] of the kinds).
+    short: String,
     host: HostCell,
     brief: BriefConfig,
     /// The providers set up, by name: a sub-agent may be sent to another one.
@@ -353,6 +435,7 @@ impl SubAgent {
             client,
             target,
             all: tools,
+            short: short_text(&profiles),
             profiles,
             host,
             brief: BriefConfig { tokens: 0, ..Default::default() },
@@ -445,8 +528,17 @@ impl SubAgent {
     pub(crate) async fn launch(&self, l: Launch<'_>, ctx: &ToolContext) -> Result<Started, String> {
         let Launch { agent: name, prompt, provider, model, description, title, background: asked, detachable } = l;
         let Some(profile) = self.profiles.iter().find(|p| p.name == name).cloned() else {
-            let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
-            return Err(format!("no sub-agent `{name}`; there are: {}", names.join(", ")));
+            // the text of `task` in a request holds the start of each description: here they are whole, so
+            // the next call can name the right kind
+            let kinds: Vec<String> = self
+                .profiles
+                .iter()
+                .map(|p| match p.description.trim() {
+                    "" => format!("- {}", p.name),
+                    d => format!("- {}: {d}", p.name),
+                })
+                .collect();
+            return Err(format!("no sub-agent `{name}`; there are:\n{}", kinds.join("\n")));
         };
         let provider = match provider {
             None => None,
@@ -1232,9 +1324,9 @@ impl Tool for SubAgent {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
+            description: &self.short,
             params: &[
                 ("prompt", "The whole task, naming files and symbols"),
                 ("background", "Run as a job"),
@@ -1244,10 +1336,10 @@ impl Tool for SubAgent {
         })
     }
 
-    /// Seldom called, so the short text goes out in every window. That text tells the two built-in kinds
-    /// apart and no other: with kinds of the person's own the full text goes out, which describes each.
+    /// Seldom called, so the short text goes out in every window, whatever kinds the person has: the full
+    /// text describes each kind whole, thousands of characters in every request once there are a dozen.
     fn rare(&self) -> bool {
-        self.profiles == builtin()
+        true
     }
 
     fn kind(&self) -> ToolKind {
@@ -1529,6 +1621,84 @@ mod tests {
             assert_eq!(p.tools, Some(["read", "grep", "glob", "ls"].map(String::from).to_vec()), "{list}");
         }
     }
+
+    fn kind(name: &str, description: &str) -> Profile {
+        Profile { name: name.into(), description: description.into(), ..builtin()[1].clone() }
+    }
+
+    #[test]
+    fn a_description_is_cut_to_its_first_clause_and_a_long_one_at_a_comma_or_a_word() {
+        assert_eq!(clause("Writes the manual. Use after a change.", 60), "Writes the manual");
+        assert_eq!(clause("Performance specialist: measures first", 60), "Performance specialist");
+        assert_eq!(clause("Refines UI code - spacing and states", 60), "Refines UI code");
+        assert_eq!(clause("Plans migrations (PostgreSQL, SQLite), checks them", 60), "Plans migrations");
+        assert_eq!(clause("  writes docs.  ", 60), "writes docs");
+        assert_eq!(clause("First line\\nExamples: <example>", 60), "First line");
+        assert_eq!(clause("", 60), "");
+        // over the cap: the last comma within it, unless that leaves under a third
+        assert_eq!(
+            clause("Reads an issue report, reproduces it when it can, labels its area", 60),
+            "Reads an issue report, reproduces it when it can"
+        );
+        assert_eq!(
+            clause("One, two three four five six seven eight nine ten eleven twelve thirteen", 60),
+            "One, two three four five six seven eight nine ten eleven"
+        );
+        assert_eq!(clause("abcdefghij klmno", 10), "abcdefghij");
+        assert_eq!(clause("abcdefghijklmno", 10), "abcdefghij");
+        // characters, not bytes
+        assert_eq!(clause(&"\u{e9}".repeat(80), 60), "\u{e9}".repeat(60));
+    }
+
+    #[test]
+    fn the_short_text_names_the_kinds_of_the_person_and_keeps_the_built_in_two_in_few_words() {
+        let stock = format!("{SHORT} `explore` (default) is read-only; `general` can edit.");
+        assert_eq!(short_text(&builtin()), stock);
+        let mut kinds = builtin();
+        kinds.extend([kind("docs", "Writes the manual. Use after a change."), kind("bare", "")]);
+        assert_eq!(short_text(&kinds), format!("{stock} More kinds for `agent`: `docs`: Writes the manual; `bare`."));
+        // their own `explore` in place of the built-in one: said by what their file says of it
+        let mut kinds = builtin();
+        kinds.remove(0);
+        kinds.push(kind("explore", "reads the wiki too"));
+        assert_eq!(
+            short_text(&kinds),
+            format!("{SHORT} `general` can edit. More kinds for `agent`: `explore` (default): reads the wiki too.")
+        );
+    }
+
+    #[test]
+    fn the_kinds_of_the_person_never_take_more_than_their_ceiling() {
+        let long = "Reviews every change for the mistakes that reach production ".repeat(4);
+        let own = |text: &str| text.split_once(" More kinds for `agent`: ").unwrap().1.to_string();
+        // forty: the first ones described, the others by name, none left out
+        let mut kinds = builtin();
+        kinds.extend((0..40).map(|i| kind(&format!("reviewer-{i:02}"), &long)));
+        let list = own(&short_text(&kinds));
+        assert!(list.len() <= KINDS_CHARS, "{}: {list}", list.len());
+        assert!((0..40).all(|i| list.contains(&format!("`reviewer-{i:02}`"))), "{list}");
+        assert!(
+            list.starts_with("`reviewer-00`: Reviews every change for the mistakes that reach production;"),
+            "{list}"
+        );
+        assert!(list.ends_with("; `reviewer-38`; `reviewer-39`."), "{list}");
+        assert!(!list.contains("more"), "{list}");
+        // two hundred: the names that fit, and how many there are besides
+        let mut kinds = builtin();
+        kinds.extend((0..200).map(|i| kind(&format!("reviewer-{i:03}"), &long)));
+        let list = own(&short_text(&kinds));
+        let (named, tail) = list.split_once("and ").unwrap();
+        assert!(named.len() <= KINDS_CHARS, "{}: {named}", named.len());
+        let names = named.matches("`reviewer-").count();
+        assert!(names > 80 && !named.contains(": "), "{names}: {named}");
+        assert_eq!(
+            tail,
+            format!(
+                "{} more: an `agent` that is none of these is answered with every kind and its description.",
+                200 - names
+            )
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1559,6 +1729,12 @@ mod provider_tests {
 
     /// The most characters the tools of a new session may take in a request (see the test that reads it).
     const SCHEMA_CEILING: usize = 11_472;
+    /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
+    /// takes now, 5107 when it went out whole.
+    const TASK_WITH_OWN_KINDS: usize = 1_845;
+    /// What those kinds may add to the tools of a session, over [`SCHEMA_CEILING`]: `task` takes 655 of it
+    /// with the two built-in kinds alone.
+    const OWN_KINDS_BUDGET: usize = TASK_WITH_OWN_KINDS - 655;
 
     fn map(list: &[(&str, ProviderConfig)]) -> BTreeMap<String, ProviderConfig> {
         list.iter().map(|(n, c)| (n.to_string(), c.clone())).collect()
@@ -1662,13 +1838,63 @@ mod provider_tests {
 
     /// What a new session offers in an empty folder: the built-in tools and `task`, every preset provider set up.
     fn default_tools() -> ToolSet {
+        tools_with(Vec::new())
+    }
+
+    /// The tools of a new session whose sub-agents are of these `kinds` (none: the built-in two).
+    fn tools_with(kinds: Vec<Profile>) -> ToolSet {
         let providers = nexo_providers::presets::presets();
         let (name, main) = providers.iter().next().map(|(n, c)| (n.clone(), c.clone())).unwrap();
         let mut tools = nexo_tools::builtin();
-        let sub = SubAgent::new(Arc::new(Mute), Target::new(name, main, "m"), &tools, Vec::new(), Default::default())
+        let sub = SubAgent::new(Arc::new(Mute), Target::new(name, main, "m"), &tools, kinds, Default::default())
             .with_providers(providers);
         tools.add(Arc::new(sub));
         tools
+    }
+
+    /// Nineteen kinds of sub-agent as a person keeps them in `~/.claude/agents`: made up, each described in
+    /// about 150 characters (2 756 in all).
+    const OWN_KINDS: [(&str, &str); 19] = [
+        ("api-designer", "Designs REST and gRPC interfaces before any code is written. Use when a feature needs new endpoints, a versioning plan or a review of request shapes."),
+        ("bug-hunter", "Debugging specialist for crashes, stack traces and flaky tests; reproduces the failure first, then narrows it to one cause and proposes the smallest fix."),
+        ("changelog-writer", "Writes release notes from the commits since the last tag: groups them by area, drops internal noise and keeps each entry to one plain sentence."),
+        ("code-reviewer", "Use this agent after a change is written to review the diff for correctness, missed edge cases, naming and tests. It reports findings by severity."),
+        ("db-migrator", "Plans and writes database migrations (PostgreSQL, SQLite), checks they can be rolled back and flags locks that would stall a busy production table."),
+        ("dependency-auditor", "Checks the dependency tree for known vulnerabilities, abandoned packages and licence conflicts, and proposes the smallest safe set of upgrades."),
+        ("docs-writer", "Technical writer for READMEs, guides and API references. Use when behaviour changed and the documentation must follow, or a page reads unclear."),
+        ("frontend-polisher", "Refines UI code - spacing, states, keyboard access and responsive breakpoints - without changing behaviour; reports every file it touched."),
+        ("i18n-checker", "Finds hard-coded strings, missing translation keys and broken plural forms across the locale files, then lists them by screen with a suggested key."),
+        ("infra-planner", "Use proactively when a task touches deployment: reads the Terraform and CI files, explains what would change and warns about anything irreversible."),
+        ("log-analyst", "Reads large log files and traces to find when an incident started, what errors cluster around it and which service emitted the first bad line."),
+        ("perf-profiler", "Performance specialist: measures before guessing, finds the hot path with a profiler or timing probes, and reports the gain of each proposed change."),
+        ("refactor-planner", "Plans a refactor as a sequence of small safe steps, each with its own check, and names the callers that would break at every step of the way."),
+        ("release-manager", "Prepares a release: bumps versions, verifies the build on every target, checks the changelog and lists what still blocks the tag from going out."),
+        ("security-reviewer", "Reviews code for injection, broken access control, secrets in the tree and unsafe deserialisation. Read-only; reports each issue with a location."),
+        ("sql-tuner", "Explains slow queries from their plans, proposes indexes or rewrites and estimates the cost of each on write-heavy tables before recommending one."),
+        ("test-writer", "Writes focused unit and integration tests for code that has none, following the patterns of the suite in place, and runs them until they pass."),
+        ("ticket-triager", "Reads an issue report, reproduces it when it can, labels its area and severity, and writes the first reply asking only for what is truly missing."),
+        ("ux-critic", "Critiques a screen or flow as a first-time user would meet it: what is unclear, what takes too many steps and which words mislead. No code changes."),
+    ];
+
+    /// The kinds a session has with [`OWN_KINDS`] as files in the person's `~/.claude/agents`, read as a
+    /// session reads them.
+    fn own_kinds() -> Vec<Profile> {
+        let (home, cfg, proj) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = home.path().join(".claude/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, description) in OWN_KINDS {
+            let text = format!(
+                "---\nname: {name}\ndescription: {description}\ntools: Read, Grep, Glob, Bash\nmodel: inherit\n---\nYou are {name}.\n"
+            );
+            std::fs::write(dir.join(format!("{name}.md")), text).unwrap();
+        }
+        let kinds = load_from(proj.path(), cfg.path(), &cfg.path().join("trusted-projects"), Some(home.path()));
+        assert_eq!(kinds.len(), 2 + OWN_KINDS.len(), "{kinds:?}");
+        for (name, description) in OWN_KINDS {
+            assert_eq!(kinds.iter().find(|k| k.name == name).unwrap().description, description, "{name}");
+        }
+        kinds
     }
 
     /// The characters `specs` take as the `tools` of a chat request.
@@ -1731,15 +1957,52 @@ mod provider_tests {
     }
 
     #[test]
-    fn task_goes_out_whole_when_the_person_has_kinds_of_their_own() {
-        let mut kinds = builtin();
-        kinds.push(Profile { name: "docs".into(), description: "writes the manual".into(), ..kinds[0].clone() });
-        let target = Target::new("a", cfg("a1", &[]), "a1");
-        let sub = SubAgent::new(Arc::new(Mute), target, &ToolSet::new(), kinds, Default::default());
-        assert!(!sub.rare());
-        let tools = ToolSet::new().with(Arc::new(sub));
-        let spec = &tools.specs_for(false)[0];
-        assert!(spec.description.contains("`docs`: writes the manual"), "{}", spec.description);
-        assert_eq!(spec.parameters["properties"]["agent"]["enum"], json!(["explore", "general", "docs"]));
+    fn task_keeps_its_short_text_with_nineteen_kinds_of_the_persons_own() {
+        let tools = tools_with(own_kinds());
+        let full = tools.get("task").unwrap().spec();
+        // one text for every window, as for the two built-in kinds
+        for small_window in [false, true] {
+            let specs = tools.specs_for(small_window);
+            let task = specs.iter().find(|s| s.name == "task").unwrap();
+            let chars = wire_chars(std::slice::from_ref(task));
+            assert!(
+                chars <= TASK_WITH_OWN_KINDS,
+                "task takes {chars} characters, over {TASK_WITH_OWN_KINDS}: {}",
+                task.description
+            );
+            for name in ["explore", "general"].into_iter().chain(OWN_KINDS.iter().map(|k| k.0)) {
+                assert!(task.description.contains(&format!("`{name}`")), "{name} is not named: {}", task.description);
+            }
+            // the call takes what the whole text says it takes
+            assert_eq!(task.parameters["required"], full.parameters["required"]);
+            let (got, want) = (&task.parameters["properties"], full.parameters["properties"].as_object().unwrap());
+            assert_eq!(got.as_object().unwrap().len(), want.len());
+            for (param, schema) in want {
+                assert_eq!(got[param]["type"], schema["type"], "{param}");
+            }
+        }
+        let specs = tools.specs_for(false);
+        let chars = wire_chars(&specs);
+        // 15924 when `task` went out whole (Windows: see the ceiling of the default tools)
+        let ceiling = SCHEMA_CEILING + OWN_KINDS_BUDGET + if cfg!(windows) { 64 } else { 0 };
+        let each: Vec<String> =
+            specs.iter().map(|s| format!("{} {}", s.name, wire_chars(std::slice::from_ref(s)))).collect();
+        assert!(chars <= ceiling, "the tools take {chars} characters, over {ceiling}: {}", each.join(", "));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_kind_is_answered_with_every_kind_and_its_whole_description() {
+        let tools = tools_with(own_kinds());
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().into());
+        let out = tools.get("task").unwrap().run(json!({"prompt": "look", "agent": "reviewer"}), &ctx).await;
+        assert!(out.is_error, "{out:?}");
+        assert!(out.content.starts_with("no sub-agent `reviewer`; there are:\n"), "{}", out.content);
+        for p in builtin() {
+            assert!(out.content.contains(&format!("\n- {}: {}", p.name, p.description)), "{}: {}", p.name, out.content);
+        }
+        for (name, description) in OWN_KINDS {
+            assert!(out.content.contains(&format!("\n- {name}: {description}")), "{name}: {}", out.content);
+        }
     }
 }

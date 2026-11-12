@@ -32,7 +32,7 @@ impl Tool for Ls {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "List a directory (default: working directory); subdirectories first, then files with sizes.",
             params: &[],

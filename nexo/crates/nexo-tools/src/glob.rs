@@ -44,7 +44,7 @@ impl Tool for Glob {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Find files by name under `path` (default: working directory), newest first. `*.rs` matches names anywhere; with `/` or `**`, the path.",
             params: &[],

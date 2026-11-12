@@ -196,7 +196,7 @@ impl Tool for Workflow {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description:
                 "Run a saved or inline (TOML) workflow of sub-agents in phases; one answer. Asks the person first.",

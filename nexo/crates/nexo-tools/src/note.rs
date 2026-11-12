@@ -101,7 +101,7 @@ impl Tool for Note {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Keep lines for the session; send with your next tool call, never alone.",
             params: &[

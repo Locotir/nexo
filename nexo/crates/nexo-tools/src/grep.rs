@@ -56,7 +56,7 @@ impl Tool for Grep {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Regex search (Rust syntax) of file contents under `path` (default: working directory); returns `path:line: text`.",
             params: &[

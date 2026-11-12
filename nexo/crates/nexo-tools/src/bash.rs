@@ -155,7 +155,7 @@ impl Tool for Bash {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Run a shell command in the working directory; returns output and exit code. `background: true` makes it a job (see `jobs`).",
             params: &[

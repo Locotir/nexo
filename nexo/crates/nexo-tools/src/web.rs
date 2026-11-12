@@ -679,7 +679,7 @@ impl Tool for WebSearch {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Search the web for anything current or outside the repository; returns titles, URLs, snippets. Read pages with `web_fetch`.",
             params: &[
@@ -898,7 +898,7 @@ impl Tool for WebFetch {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Read a web page as Markdown; a long page ends with the next `start`.",
             params: &[("start", "Character to start from"), ("max_chars", "Default 20000")],

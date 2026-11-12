@@ -56,7 +56,7 @@ impl Tool for Read {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Read text files as numbered lines; shows images. Not for directories: use `ls`.",
             params: &[

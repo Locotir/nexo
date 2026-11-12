@@ -40,7 +40,7 @@ impl Tool for Write {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Write a whole file, creating its directories; use `edit` for part of a file.",
             params: &[("check", "Command to run after")],

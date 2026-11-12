@@ -33,7 +33,7 @@ impl Tool for Recall {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Bring back a message the context left out, by name (`m00042`); `from` and `to` pick lines.",
             params: &[],

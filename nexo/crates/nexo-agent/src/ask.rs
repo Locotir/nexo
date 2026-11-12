@@ -141,7 +141,7 @@ impl Tool for AskUser {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Ask the person to pick from options. Only for a choice that is theirs.",
             params: &[("options", "2 to 6, your pick first"), ("multi", "Several may be picked")],

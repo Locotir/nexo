@@ -160,7 +160,7 @@ impl Tool for Todo {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description:
                 "Task list for long work; each call replaces the whole list. Send it with real work, never alone.",

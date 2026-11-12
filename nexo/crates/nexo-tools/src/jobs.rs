@@ -58,7 +58,7 @@ impl Tool for Jobs {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "List background jobs, read a job's new output, or kill one.",
             params: &[("wait", "Seconds to wait (output)")],

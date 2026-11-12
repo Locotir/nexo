@@ -231,6 +231,10 @@ rounds: 20
 Read the change and list what is wrong with it, worst first.
 ```
 
+The model is told each of your kinds by name with the start of its `description`: the first clause, 60
+characters at most, so say first what the kind is for. A call that names a kind there is not is answered
+with every kind and its whole description.
+
 `[agent] subagents = false` removes the tool.
 
 **The briefing.** A sub-agent does not start blind. Before it runs, nexo (not the model) picks from the

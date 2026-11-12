@@ -49,7 +49,7 @@ impl Tool for Edit {
         }
     }
 
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
             description: "Replace `old_string` with `new_string` in a file; it must match exactly and occur once, or set `replace_all`. `edits` or `files` for several.",
             params: &[

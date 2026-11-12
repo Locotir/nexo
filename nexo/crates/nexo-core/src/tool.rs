@@ -211,14 +211,15 @@ impl ToolContext {
 
 /// The text of a tool for a model with a small window, and in any window for a tool seldom called
 /// ([`Tool::rare`]): one or two sentences, and a short phrase for the parameters worth one (`(name, phrase)`;
-/// a parameter left out keeps its name and type only).
+/// a parameter left out keeps its name and type only). The description is lent by the tool, so one that
+/// depends on the session (the kinds of sub-agent the person has) is written once and kept by it.
 #[derive(Debug, Clone, Copy)]
-pub struct Compact {
-    pub description: &'static str,
+pub struct Compact<'a> {
+    pub description: &'a str,
     pub params: &'static [(&'static str, &'static str)],
 }
 
-impl Compact {
+impl Compact<'_> {
     /// `spec` with this description, and the parameter schema cut down to names, types, `required` and short
     /// enums: the phrases of `params` for descriptions, no bounds.
     pub fn apply(&self, mut spec: ToolSpec) -> ToolSpec {
@@ -256,7 +257,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn spec(&self) -> ToolSpec;
     /// The short text for a window of 32k tokens or less; `None` keeps the full one.
-    fn compact(&self) -> Option<Compact> {
+    fn compact(&self) -> Option<Compact<'_>> {
         None
     }
     /// A tool the model seldom calls: it is offered with its short text ([`Tool::compact`]) in every window,
@@ -410,7 +411,7 @@ mod tests {
                 }),
             }
         }
-        fn compact(&self) -> Option<Compact> {
+        fn compact(&self) -> Option<Compact<'_>> {
             Some(Compact { description: "Short.", params: &[] })
         }
         fn rare(&self) -> bool {
