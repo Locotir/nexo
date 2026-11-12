@@ -21,6 +21,9 @@ mod supervise;
 mod update;
 mod worktree;
 
+/// The stack of the thread the CLI runs on: what Linux gives a main thread.
+const STACK: usize = 8 << 20;
+
 fn main() {
     nexo_core::version::set(env!("NEXO_VERSION"));
     // The local UTC offset can only be read while the process has one thread.
@@ -46,8 +49,18 @@ fn main() {
     for old in nexo_core::paths::move_old_dirs() {
         eprintln!("nexo: moved {} into {}", old.display(), nexo_core::paths::home_dir().display());
     }
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
-    let code = rt.block_on(cli::main());
+    // The CLI runs on a thread of its own with the stack Linux gives a main thread: Windows gives its main
+    // thread 1 MiB, less than an unoptimised build of the CLI takes before it reads its arguments.
+    let code = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(STACK)
+        .spawn(|| {
+            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+            rt.block_on(cli::main())
+        })
+        .expect("main thread")
+        .join()
+        .unwrap_or(101);
     // `exit` runs no destructors: the audit log writes what it has queued first
     nexo_agent::audit::close_all();
     std::process::exit(code);

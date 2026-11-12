@@ -436,8 +436,9 @@ int main(int argc, char **argv) {
                 .map(|o| o.status.success())
                 .unwrap_or(false)
         });
-        if !ok {
-            eprintln!("skipped: no C compiler that builds the sample");
+        // a Windows compiler writes `prog.exe`: the sample is a Unix build
+        if !ok || !exe.is_file() {
+            eprintln!("skipped: no C compiler that builds the sample here");
             return None;
         }
         Some(exe)
