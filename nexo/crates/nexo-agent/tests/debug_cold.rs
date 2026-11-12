@@ -73,25 +73,19 @@ fn target() -> PathBuf {
     t
 }
 
-#[tokio::test]
-async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
-    let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("NEXO_TMP", dir.path().join("tmp"));
-    std::env::set_var("NEXO_DATA_DIR", dir.path().join("data"));
-    std::env::set_var("NEXO_CONFIG_DIR", dir.path());
-    std::env::set_var("NEXO_CACHE_DIR", dir.path().join("cache"));
-    let prog = target();
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    let steps = [
-        format!("run {} crash", prog.display()),
-        "cont".to_string(),
-        "print rdi".to_string(),
-        "note crash: dbg_crash reads through a null pointer (rdi is 0)".to_string(),
-        "end".to_string(),
-    ];
+/// Run a scripted model that makes these `debug` calls and then answers; gives back what each call returned.
+async fn drive(dir: &std::path::Path, steps: Vec<String>, ask: &str) -> Vec<String> {
+    let _one = ONE_AT_A_TIME.lock().await;
+    std::env::set_var("NEXO_TMP", dir.join("tmp"));
+    std::env::set_var("NEXO_DATA_DIR", dir.join("data"));
+    std::env::set_var("NEXO_CONFIG_DIR", dir);
+    std::env::set_var("NEXO_CACHE_DIR", dir.join("cache"));
+
     let mut replies: VecDeque<Vec<StreamEvent>> =
         steps.iter().enumerate().map(|(i, c)| call(&format!("c{i}"), c)).collect();
-    replies.push_back(say("The program crashes in dbg_crash: rdi is null."));
+    replies.push_back(say("done"));
     let client = Arc::new(Scripted { replies: Mutex::new(replies), requests: Mutex::new(Vec::new()) });
 
     let mut cfg = Config::default();
@@ -106,7 +100,7 @@ async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
     let (handle, ends) = channels();
     let setup = AgentSetup {
         config: cfg,
-        cwd: dir.path().to_path_buf(),
+        cwd: dir.to_path_buf(),
         provider: "mock".into(),
         model: "m1".into(),
         tools: ToolSet::new().with(Arc::new(nexo_tools::debug::Debug::new())),
@@ -119,7 +113,7 @@ async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
     };
     let task = tokio::spawn(nexo_agent::run(ends, setup));
     let mut handle = handle;
-    handle.commands.send(AgentCommand::Submit { text: "why does it crash?".into(), attachments: vec![] }).unwrap();
+    handle.commands.send(AgentCommand::Submit { text: ask.into(), attachments: vec![] }).unwrap();
     let mut calls = 0;
     let end = loop {
         let ev =
@@ -134,11 +128,11 @@ async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
         }
     };
     assert_eq!(end, TurnEnd::Done);
-    assert_eq!(calls, 5, "the whole investigation is five tool calls");
+    assert_eq!(calls, steps.len());
 
     // what the model was shown after each call
     let reqs = client.requests.lock().unwrap().clone();
-    assert_eq!(reqs.len(), 6);
+    assert_eq!(reqs.len(), steps.len() + 1);
     let results: Vec<String> = reqs[1..]
         .iter()
         .map(|r| match &r.messages.last().unwrap().content[0] {
@@ -146,6 +140,23 @@ async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
             other => panic!("{other:?}"),
         })
         .collect();
+    let _ = handle.commands.send(AgentCommand::Shutdown);
+    let _ = task.await;
+    results
+}
+
+#[tokio::test]
+async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let prog = target();
+    let steps = vec![
+        format!("run {} crash", prog.display()),
+        "cont".to_string(),
+        "print rdi".to_string(),
+        "note crash: dbg_crash reads through a null pointer (rdi is 0)".to_string(),
+        "end".to_string(),
+    ];
+    let results = drive(dir.path(), steps, "why does it crash?").await;
     for (i, r) in results.iter().enumerate() {
         let first = r.lines().next().unwrap();
         let h = nexo_dbg::parse_header(first).unwrap_or_else(|| panic!("call {i} has no header line: {r}"));
@@ -163,6 +174,41 @@ async fn a_model_finds_a_crash_reads_a_value_and_keeps_it_in_five_calls() {
             && std::fs::read_to_string(e.path()).unwrap().contains("null pointer")
     });
     assert!(kept);
-    let _ = handle.commands.send(AgentCommand::Shutdown);
-    let _ = task.await;
+}
+
+/// A tiny C program with an array read, built with -g: the model pokes an index out of range and runs on.
+#[tokio::test]
+async fn a_model_pokes_an_index_out_of_range_and_reads_the_crash_in_five_calls() {
+    let Some(cc) = ["cc", "gcc", "clang"]
+        .into_iter()
+        .find(|c| std::process::Command::new(c).arg("--version").output().is_ok_and(|o| o.status.success()))
+    else {
+        eprintln!("no C compiler: skipped");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("paint.c");
+    std::fs::write(
+        &src,
+        "#include <stdio.h>\nstatic int pixels[16];\n__attribute__((noinline)) int put(int *buf, long i, int v) {\n    buf[i] = v;\n    return buf[i];\n}\nint main(void) {\n    int s = 0;\n    for (long i = 0; i < 16; i++) s += put(pixels, i, 7);\n    printf(\"%d\\n\", s);\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let exe = dir.path().join("paint");
+    let st = std::process::Command::new(cc).args(["-g", "-O0", "-no-pie", "-o"]).arg(&exe).arg(&src).status().unwrap();
+    assert!(st.success());
+    let steps = vec![
+        format!("run {}", exe.display()),
+        "break put".to_string(),
+        "cont".to_string(),
+        "setreg rsi 0x10000000000".to_string(),
+        "cont".to_string(),
+    ];
+    let results = drive(dir.path(), steps, "what happens with a pixel far out of range?").await;
+    let last = &results[4];
+    assert!(last.contains("SIGSEGV"), "{last}");
+    assert!(last.contains("put"), "the faulting function is named: {last}");
+    assert!(last.contains("paint.c:4"), "and the source line: {last}");
+    assert!(last.contains("backtrace:") && last.contains("main"), "{last}");
+    assert!(last.contains("fault address 0x"), "{last}");
+    assert!(last.lines().count() < 30, "{last}");
 }

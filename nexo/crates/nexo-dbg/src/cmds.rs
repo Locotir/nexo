@@ -11,6 +11,8 @@ use crate::platform::{Access, Fault, HwSlot, Os, Tid};
 use crate::{fail, usage, Result};
 
 /// Registers listed in a stop report; the rest are one `regs` away.
+/// Frames a stop report shows; one more asked for tells whether there are others.
+const BT_SHOWN: usize = 8;
 const CHANGED_SHOWN: usize = 6;
 
 /// Seconds a `cont`, `step` over a long call or `wait` holds the answer unless told otherwise.
@@ -998,10 +1000,13 @@ impl Session {
             }
             self.prev.insert(tid, r);
             if let Why::Signal(_) = &why {
-                if let Ok(f) = self.frames(8) {
+                if let Ok(f) = self.frames(BT_SHOWN + 1) {
                     l.push("backtrace:".into());
-                    let fl = self.frame_lines(&f);
+                    let fl = self.frame_lines(&f[..f.len().min(BT_SHOWN)]);
                     l.extend(fl.into_iter().map(|s| format!("  {s}")));
+                    if f.len() > BT_SHOWN {
+                        l.push("  ... more frames (`bt 50`)".into());
+                    }
                 }
             }
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: r });
