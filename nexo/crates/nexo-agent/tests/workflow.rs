@@ -2337,5 +2337,7 @@ async fn a_stop_that_comes_while_a_sub_agent_is_starting_reaches_it_as_soon_as_i
 
 /// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
 fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
-    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+    tempfile::Builder::new()
+        .prefix("nexo-test-")
+        .tempdir_in(nexo_core::compat::scratch_base(std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))))
 }

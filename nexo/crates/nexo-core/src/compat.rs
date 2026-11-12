@@ -33,6 +33,16 @@ pub fn project_root(cwd: &Path) -> PathBuf {
     project_root_with(cwd, dirs::home_dir().as_deref())
 }
 
+/// Where scratch folders go: `dir` (on disk, under a build's target dir) unless it lies inside a git
+/// repository, else the system temp dir. A test folder inside the checkout it was built from would be taken
+/// for that project: its git line, its worktrees, its instruction files.
+pub fn scratch_base(dir: &Path) -> PathBuf {
+    match project_root(dir).join(".git").exists() {
+        true => std::env::temp_dir(),
+        false => dir.to_path_buf(),
+    }
+}
+
 /// [`project_root`] below the person's home `own_home`.
 fn project_root_with(cwd: &Path, own_home: Option<&Path>) -> PathBuf {
     for d in cwd.ancestors() {

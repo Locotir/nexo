@@ -125,5 +125,7 @@ async fn a_lead_in_goes_on() {
 
 /// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
 fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
-    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+    tempfile::Builder::new()
+        .prefix("nexo-test-")
+        .tempdir_in(nexo_core::compat::scratch_base(std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))))
 }

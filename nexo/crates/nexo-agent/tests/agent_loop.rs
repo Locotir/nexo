@@ -6685,5 +6685,7 @@ async fn a_session_that_never_touches_a_binary_sends_what_it_sent_before() {
 
 /// Scratch dir on disk under the Cargo target dir, never in the RAM-backed system temp dir.
 fn test_tmpdir() -> std::io::Result<tempfile::TempDir> {
-    tempfile::Builder::new().prefix("nexo-test-").tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+    tempfile::Builder::new()
+        .prefix("nexo-test-")
+        .tempdir_in(nexo_core::compat::scratch_base(std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))))
 }
