@@ -497,3 +497,67 @@ fn past_the_ceiling_a_landing_is_made_whatever_it_sends_again() {
     assert!(e.stats.get("window_cuts").is_some_and(|n| *n > 0), "{:?}", e.stats);
     assert!(e.stats.get("landings_refused").is_some_and(|n| *n > 0), "{:?}", e.stats);
 }
+
+#[test]
+fn a_new_request_opens_an_epoch_when_the_requests_it_closed_left_outputs_in_the_view() {
+    // the reads of a finished task leave by the rent rule, which runs at an epoch: once the person's next request
+    // has made two calls that draw on none of them, it opens one at once, instead of after the view grew past
+    // the room the cost rule gives; a request that draws on them waits as before
+    let epochs = |spec: &str, calls: [String; 2]| {
+        let mut e = Engine::new(params(&format!("epoch=1;target=10000;check=4000;{spec}")).unwrap());
+        let mut msgs = vec![json!({"role": "user", "content": "Read the five parts and say what slot 50 holds."})];
+        for k in 1..=5 {
+            msgs.extend(step(k, &format!("cat part{k}.txt"), &format!("{}\nentry_q{k}_frobnic_cell", big(k, 1_500))));
+        }
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Slot 50 holds nothing."}]}));
+        e.sync(&msgs);
+        let _ = e.view();
+        let before = e.stats.get("epochs").copied().unwrap_or(0);
+        msgs.push(json!({"role": "user", "content": "What is the date today?"}));
+        for (k, call) in calls.iter().enumerate() {
+            e.sync(&msgs);
+            let _ = e.view();
+            msgs.extend(step(10 + k, call, "ok"));
+        }
+        e.sync(&msgs);
+        let _ = e.view();
+        e.stats.get("epochs").copied().unwrap_or(0) - before
+    };
+    let unrelated = ["date".to_string(), "uptime".to_string()];
+    let marks = (1..=5).map(|p| format!("entry_q{p}_frobnic_cell")).collect::<Vec<_>>().join("|");
+    let same = [format!("grep -c '{marks}' part*.txt"), "date".to_string()];
+    assert_eq!(epochs("close=2", unrelated.clone()), 1);
+    assert_eq!(epochs("close=0", unrelated), 0);
+    assert_eq!(epochs("close=2", same), 0);
+}
+
+#[test]
+fn once_the_person_has_gone_back_to_an_earlier_topic_a_new_request_opens_no_epoch() {
+    // the early cut a new request makes is for a session that moves on; one that has returned to a topic
+    // left earlier is one that goes back, and the idle steps of the requests before wait for the cost rule
+    let run = |back: bool| {
+        let mut e = Engine::new(params("epoch=1;target=10000;check=4000;close=2").unwrap());
+        let mut msgs = vec![json!({"role": "user", "content": "Read the five parts and say what slot 50 holds."})];
+        for k in 1..=5 {
+            msgs.extend(step(k, &format!("cat part{k}.txt"), &big(k, 1_500)));
+        }
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Slot 50 holds nothing."}]}));
+        e.sync(&msgs);
+        let _ = e.view();
+        if back {
+            e.goal.mt().mark_return();
+        }
+        let before = e.stats.get("epochs").copied().unwrap_or(0);
+        msgs.push(json!({"role": "user", "content": "What is the date today?"}));
+        for (k, call) in ["date", "uptime"].iter().enumerate() {
+            e.sync(&msgs);
+            let _ = e.view();
+            msgs.extend(step(10 + k, call, "ok"));
+        }
+        e.sync(&msgs);
+        let _ = e.view();
+        e.stats.get("epochs").copied().unwrap_or(0) - before
+    };
+    assert_eq!(run(false), 1, "a session that only moves on opens the epoch");
+    assert_eq!(run(true), 0, "a session that went back opens none");
+}

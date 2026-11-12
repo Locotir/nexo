@@ -229,31 +229,50 @@ impl Engine {
         (total > start && (self.p.cap > 0 || (grown && total - self.looked >= self.p.check))) || turned
     }
 
-    /// Whether the person's latest request, new since the last look, makes an epoch due (`Params.close`): the
-    /// outputs of the requests it closed hold at least `check` tokens of the view. Those steps leave by the
-    /// rent rule (`rent_close`), which runs only at an epoch; waiting for the view to grow past the room the
-    /// cost rule gives keeps what an earlier task read for tens of calls of a new one that never uses it
-    /// (a session that went from reading a project's docs to configuring a model carried 25k tokens of
-    /// those docs for 19 calls). The rent rule still prices each step: what the new request uses stays.
+    /// Whether the person's latest request makes an epoch due (`Params.close`): it has made two calls of its
+    /// own, none of them nor its text drew on the steps of the requests before it that went idle (a distinctive
+    /// word of their outputs the person's requests do not hold; a step it names stays too), and those still
+    /// hold `check` tokens of the view. They leave by the rent rule (`rent_close`), which runs only at an
+    /// epoch; waiting for the view to grow past the room the cost rule gives keeps what an earlier task read
+    /// for tens of calls of a new one that never uses it (a session that went from reading a project's docs
+    /// to configuring a model carried 25k tokens of those docs for 19 calls). A request that goes on from them
+    /// ("run it again", then an edit of the file read before) draws on them, and they wait as before. A
+    /// session in which the person has already gone back to a topic left earlier is one that goes back: the
+    /// idle steps of the requests before wait for the cost rule (on the fixtures that return to old topics
+    /// the rule alone forgot 17 more words). Once per request.
     fn turn_due(&mut self) -> bool {
         let nt = self.goal.turns.len();
-        if self.p.close == 0 || nt <= self.turn_seen {
+        if self.p.close == 0 || nt < 2 || nt <= self.turn_seen || self.goal.switches().1 > 0 {
+            return false;
+        }
+        let (start, n) = (self.goal.turns[nt - 1].start, self.tr.msgs.len());
+        let has = |e: &Engine, mi: usize, k: UKind| e.fz.by_msg(mi).iter().any(|&i| e.tr.units[i].kind == k);
+        if (start..n).filter(|&mi| has(self, mi, UKind::Call)).count() < 2 {
             return false;
         }
         self.turn_seen = nt;
-        if nt < 2 {
-            return false;
-        }
-        let start = self.goal.turns[nt - 1].start;
+        let asked = self.user_words();
+        let said: FxHashSet<_> =
+            self.words_in(start..n, &[UKind::Text, UKind::Call]).into_iter().filter(|w| !asked.contains(w)).collect();
         let sizes = self.sizes_now();
-        let vis = self.visible();
-        let old: i64 = vis
-            .iter()
-            .filter(|&&mi| mi > 0 && mi < start)
-            .filter(|&&mi| self.fz.by_msg(mi).iter().any(|&i| self.tr.units[i].kind == UKind::Result))
-            .map(|&mi| sizes.get(mi).copied().unwrap_or(0))
-            .sum();
-        old >= self.p.check
+        let shown: FxHashSet<usize> = self.visible().iter().copied().collect();
+        let need = self.asks(nt - 1);
+        let named: FxHashSet<usize> =
+            self.pick(&need, &FxHashSet::default(), |s| !s.out && s.idle.is_some()).into_iter().collect();
+        let mut idle = 0;
+        for (i, s) in self.steps.iter_mut().enumerate().filter(|(_, s)| !s.out && s.idle.is_some()) {
+            if named.contains(&i) || s.read.iter().any(|w| said.contains(w)) {
+                s.idle = None;
+            } else {
+                idle += s
+                    .msgs
+                    .iter()
+                    .filter(|m| shown.contains(m))
+                    .map(|&m| sizes.get(m).copied().unwrap_or(0))
+                    .sum::<i64>();
+            }
+        }
+        idle >= self.p.check
     }
 
     /// The tokens of the latest outputs the agent has not written about that no cut may take (`still`): what the

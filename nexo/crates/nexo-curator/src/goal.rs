@@ -273,6 +273,13 @@ impl Threads {
         (self.sw, self.back)
     }
 
+    /// For tests: the person has gone back to a topic left earlier.
+    #[cfg(test)]
+    pub fn mark_return(&mut self) {
+        self.sw += 1;
+        self.back += 1;
+    }
+
     pub fn active(&self) -> usize {
         self.turns.last().map_or(0, |t| t.thread)
     }
