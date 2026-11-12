@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, SetHandleInformation, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, HANDLE,
-    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, NTSTATUS, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, SetHandleInformation, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, ERROR_SEM_TIMEOUT,
+    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, NTSTATUS, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, ReadFile, WriteFile};
@@ -64,10 +64,18 @@ pub struct Windows {
     seen_first_break: bool,
     interrupting: bool,
     exited: bool,
+    /// The code the program ended with, once its exit event has been seen.
+    exit_code: Option<i32>,
     stdin: Option<HANDLE>,
     out: Arc<Mutex<Vec<u8>>>,
     /// Set by the reader of the output pipe when it has seen the end.
     out_done: Arc<AtomicBool>,
+}
+
+/// Whether `WaitForDebugEvent` failing with this error just means "no event yet". Windows reports a timeout of
+/// the wait as ERROR_SEM_TIMEOUT (121); wine reports WAIT_TIMEOUT (258). Both are "still running", never an error.
+fn is_timeout(err: u32) -> bool {
+    err == ERROR_SEM_TIMEOUT || err == WAIT_TIMEOUT
 }
 
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -256,6 +264,7 @@ impl Windows {
             seen_first_break: false,
             interrupting: false,
             exited: false,
+            exit_code: None,
             stdin: None,
             out,
             out_done: Arc::new(AtomicBool::new(true)),
@@ -270,7 +279,12 @@ impl Windows {
         while Instant::now() < until {
             // SAFETY: ev is a valid out-structure.
             if unsafe { WaitForDebugEvent(&mut ev, 200) } == 0 {
-                continue;
+                // SAFETY: reads the last error of this thread.
+                let e = unsafe { GetLastError() };
+                if is_timeout(e) {
+                    continue;
+                }
+                return Err(last_error("WaitForDebugEvent"));
             }
             self.book(&ev);
             if ev.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
@@ -632,6 +646,13 @@ impl Target for Windows {
     }
 
     fn wait(&mut self, timeout: Duration) -> Result<Vec<Event>> {
+        // the exit event was taken by an earlier wait: nothing is left to wait on, and what there is to say is the end
+        if self.exited {
+            return match self.exit_code {
+                Some(code) => Ok(vec![Event::Exited { code }]),
+                None => fail("the program is no longer being debugged"),
+            };
+        }
         let until = Instant::now() + timeout;
         loop {
             let left = until.saturating_duration_since(Instant::now());
@@ -640,7 +661,9 @@ impl Target for Windows {
             // SAFETY: ev is a valid out-structure.
             if unsafe { WaitForDebugEvent(&mut ev, ms) } == 0 {
                 // SAFETY: reads the last error of this thread.
-                if unsafe { GetLastError() } == WAIT_TIMEOUT || Instant::now() >= until {
+                let e = unsafe { GetLastError() };
+                // a timeout is "still running"; the system may also give the wait back a tick before the time is up
+                if is_timeout(e) || Instant::now() >= until {
                     return Ok(Vec::new());
                 }
                 return Err(last_error("WaitForDebugEvent"));
@@ -651,6 +674,7 @@ impl Target for Windows {
                     // SAFETY: the member read matches the event code.
                     let code = unsafe { ev.u.ExitProcess.dwExitCode } as i32;
                     self.exited = true;
+                    self.exit_code = Some(code);
                     self.held.clear();
                     // what the program wrote last is still on its way through the pipe: give it a moment
                     let by = Instant::now() + Duration::from_millis(500);
@@ -742,7 +766,11 @@ impl Target for Windows {
             let mut ev = DEBUG_EVENT::default();
             // SAFETY: ev is a valid out-structure.
             if unsafe { WaitForDebugEvent(&mut ev, 100) } == 0 {
-                continue;
+                // SAFETY: reads the last error of this thread.
+                if is_timeout(unsafe { GetLastError() }) {
+                    continue;
+                }
+                break; // not a timeout: there is no program left to drain
             }
             let last = ev.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT;
             // SAFETY: draining events of a dying program.
@@ -767,5 +795,17 @@ impl Drop for Windows {
         }
         // SAFETY: the process handle was opened or given to us and is closed once.
         unsafe { CloseHandle(self.process) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_timeout_errors_mean_still_running() {
+        assert!(is_timeout(121), "ERROR_SEM_TIMEOUT is what Windows gives a timed-out WaitForDebugEvent");
+        assert!(is_timeout(258), "WAIT_TIMEOUT is what wine gives");
+        assert!(!is_timeout(6) && !is_timeout(5) && !is_timeout(0));
     }
 }

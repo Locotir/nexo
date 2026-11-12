@@ -248,6 +248,9 @@ fn an_exception_nobody_handles_ends_the_program_with_its_code() {
     assert!(second.contains("not handled by the program"), "{second}");
     let end = run(&mut s, "cont --wait 20");
     assert!(end.contains("exited with code -1073741819"), "{end}");
+    // a go after the end says the program has ended, with its code, not a Windows error
+    let after = s.exec(&split_words("cont --wait 20")).expect_err("nothing is left to run").to_string();
+    assert!(after.contains("has ended") && after.contains("-1073741819"), "{after}");
 }
 
 #[test]
