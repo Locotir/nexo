@@ -167,6 +167,9 @@ nexo re run ./a.out              run it under the debugger, the same as: nexo db
 
 `nexo bin` reads a file and never runs it. `nexo dbg` runs a program, or attaches to one of yours, and answers one bounded call at a time. When a word exists in both, `nexo re` takes the `nexo bin` one and the map says so; write `nexo dbg <word>` for the other. In a session, the model is pointed to `nexo re` the first time it reads a binary by hand, so the prompt stays the same size.
 
+`nexo re --mcp` serves the kit to other harnesses as an MCP server on stdio: one `bin_<op>` tool for each `nexo bin` op (generated from its definition), plus `dbg_start`, `dbg_command` and `dbg_stop` for a session that stays alive between calls; each result is the text `nexo bin` or `nexo dbg` prints.
+Saved names and notes, memory writes, attach and patches are refused unless the server starts with `--allow-changes`; attach is always for your own processes.
+
 ## Providers
 
 Bring your own key. Built in: Anthropic, OpenAI, Google Gemini, DeepSeek, xAI, Groq, Mistral, OpenRouter, Together,

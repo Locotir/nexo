@@ -79,7 +79,7 @@ fn serve_gdb(w: &[String]) -> Result<String, Error> {
     Ok("gdb stub ended".into())
 }
 
-fn execute(a: &DbgArgs) -> Result<String, Error> {
+pub(crate) fn execute(a: &DbgArgs) -> Result<String, Error> {
     let call = nexo_dbg::parse(&a.words)?;
     if call.words.first().map(String::as_str) == Some("serve") {
         return serve_gdb(&call.words[1..]);

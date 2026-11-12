@@ -11,6 +11,12 @@ pub struct ReArgs {
     /// Nothing prints the map. A `nexo bin` op or a `nexo dbg` command runs it, with the rest of the words.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0.., value_name = "WORD")]
     pub words: Vec<String>,
+    /// Serve the kit to other harnesses as an MCP server on stdin and stdout.
+    #[arg(long)]
+    pub mcp: bool,
+    /// With `--mcp`: allow tools that save names or notes, write into a program or attach to a process.
+    #[arg(long, requires = "mcp")]
+    pub allow_changes: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -20,7 +26,7 @@ enum Route {
 }
 
 /// Every op of `nexo bin`: `(name, aliases, one line)`, read from its clap definition.
-fn bin_ops() -> Vec<(String, Vec<String>, String)> {
+pub(crate) fn bin_ops() -> Vec<(String, Vec<String>, String)> {
     let root = crate::cli::Args::command();
     let bin = root.find_subcommand("bin").expect("bin is a command");
     bin.get_subcommands()
@@ -81,6 +87,7 @@ pub fn map() -> String {
             both.join(", ")
         ));
     }
+    out.push("serve it to another harness: nexo re --mcp [--allow-changes] (MCP over stdio; changes refused without the flag)".to_string());
     out.push("details: nexo bin <op> --help | nexo dbg help".to_string());
     out.join("\n")
 }
@@ -125,6 +132,9 @@ fn plan(words: &[String]) -> Plan {
 }
 
 pub fn run(a: &ReArgs) -> i32 {
+    if a.mcp {
+        return crate::re_mcp::run_stdio(a.allow_changes);
+    }
     match plan(&a.words) {
         Plan::Map => {
             println!("{}", map());
