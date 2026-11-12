@@ -1149,6 +1149,7 @@ pub fn help() -> Output {
         "       maps [filter] | modules | find <hex|\"text\"> [--in <map>] | out [--all] | log | history [N] | status",
         "change (asks): setreg <reg> <value> | write <addr> <hex> | watch <addr> [len] [r|w|x] | stdin <text> | catch add|del <SIG>",
         "script: do \"break f; cont; args; bt\" [--keep-going]     expressions: rax+8, *(u32*)(rdi+8), main+4, rsp, sym == 3",
+        "flags, first in the command: -s <id> (the session when several are live) | --lines N (rows per answer, default 40) | --from <addr> (continue a long answer from this row)",
         "addresses: a number inside the program's sections is a file address (as `nexo bin` shows); any other number is a memory address",
     ];
     rows("help", l.iter().map(|s| s.to_string()).collect(), json!({}))

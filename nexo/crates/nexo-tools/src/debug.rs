@@ -117,6 +117,14 @@ impl Tool for Debug {
         true
     }
 
+    /// Only `command` is offered in the short text; `session`, `lines` and `from` are still taken as arguments
+    /// and as flags at the head of the command (`-s`, `--lines`, `--from`, listed by `help`).
+    fn trim_compact(&self, spec: &mut ToolSpec) {
+        if let Some(p) = spec.parameters.get_mut("properties").and_then(Value::as_object_mut) {
+            p.retain(|k, _| k == "command");
+        }
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Exec
     }
@@ -193,7 +201,14 @@ mod tests {
         )
         .unwrap();
         eprintln!("debug tool as offered: {} chars: {sent}", sent.len());
-        assert!(sent.len() <= 300, "{} chars: {sent}", sent.len());
+        assert!(sent.len() <= 210, "{} chars: {sent}", sent.len());
+        // the full text keeps every argument, and the flags the short one leaves out parse at the head of a command
+        let full = set.specs_for(true).len() + Debug::new().spec().parameters["properties"].as_object().unwrap().len();
+        assert!(full >= 5);
+        for flags in [["-s", "ab", "bt"], ["--lines", "5", "bt"], ["--from", "0x10", "bt"]] {
+            let w: Vec<String> = flags.iter().map(|s| s.to_string()).collect();
+            assert!(nexo_dbg::parse(&w).is_ok(), "{flags:?}");
+        }
     }
 
     fn sleep_bin() -> String {

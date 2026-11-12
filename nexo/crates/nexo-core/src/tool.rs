@@ -265,6 +265,9 @@ pub trait Tool: Send + Sync {
     fn rare(&self) -> bool {
         false
     }
+    /// A last cut of the compact spec (a parameter the tool takes but a short text leaves out, to be learnt from
+    /// its own help when needed). The full spec is untouched.
+    fn trim_compact(&self, _spec: &mut ToolSpec) {}
     fn kind(&self) -> ToolKind;
     /// The kind of this call, where `args` change it (a sub-agent that may write is a write);
     /// it decides which calls of one round may run at the same time.
@@ -329,7 +332,11 @@ impl ToolSet {
         self.tools
             .values()
             .map(|t| match t.compact() {
-                Some(c) if compact || t.rare() => c.apply(t.spec()),
+                Some(c) if compact || t.rare() => {
+                    let mut spec = c.apply(t.spec());
+                    t.trim_compact(&mut spec);
+                    spec
+                }
                 _ => t.spec(),
             })
             .collect()
