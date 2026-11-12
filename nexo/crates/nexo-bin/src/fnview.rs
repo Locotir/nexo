@@ -69,6 +69,9 @@ fn header(img: &Image, f: &Func, instructions: usize, extra: &str) -> String {
         img.refs().callers(f.start)
     );
     t.push_str(extra);
+    if let Some(r) = img.raw_name_at(f.start) {
+        t.push_str(&format!("  ; raw {r}"));
+    }
     if let Some(n) = img.note_at(f.start) {
         t.push_str(&format!("  ; note: {n}"));
     }
@@ -171,7 +174,7 @@ fn one(img: &Image, q: &FnQuery) -> Result<Output> {
     }
     let mut meta = json!({"name": img.func_name(f), "start": f.start, "end": f.end,
         "size": f.end.saturating_sub(f.start), "instructions": total,
-        "refs": img.refs().callers(f.start), "note": img.note_at(f.start)});
+        "refs": img.refs().callers(f.start), "note": img.note_at(f.start), "raw_name": img.raw_name_at(f.start)});
     if earlier {
         meta["earlier_lines"] = json!(skip);
         meta["showing_from"] = json!(first_ip);

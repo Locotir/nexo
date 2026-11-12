@@ -33,6 +33,8 @@ pub mod fixtures;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_fmt;
+#[cfg(test)]
 mod tests_map;
 #[cfg(test)]
 mod tests_x;

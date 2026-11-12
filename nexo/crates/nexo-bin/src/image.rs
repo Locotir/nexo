@@ -86,6 +86,8 @@ impl Section {
 #[derive(Debug, Clone)]
 pub struct Symbol {
     pub name: String,
+    /// The name as the file writes it, when `name` is the demangled form of it (empty otherwise).
+    pub raw: String,
     pub addr: u64,
     pub size: u64,
     pub func: bool,
@@ -95,6 +97,8 @@ pub struct Symbol {
 pub struct Import {
     pub lib: Option<String>,
     pub name: String,
+    /// The mangled name, when `name` is its demangled form (empty otherwise).
+    pub raw: String,
     /// The address of the slot the loader fills (GOT entry or IAT entry), when known.
     pub slot: Option<u64>,
 }
@@ -102,6 +106,8 @@ pub struct Import {
 #[derive(Debug, Clone)]
 pub struct Export {
     pub name: String,
+    /// The mangled name, when `name` is its demangled form (empty otherwise).
+    pub raw: String,
     pub addr: u64,
 }
 
@@ -127,6 +133,8 @@ pub struct Image {
     pub(crate) names: BTreeMap<u64, String>,
     /// Size of the symbol each entry of `names` came from (0 for an export).
     sizes: HashMap<u64, u64>,
+    /// Mangled names by address, for the names that were demangled (so the raw name can still be searched).
+    pub(crate) raws: HashMap<u64, String>,
     /// Import slot address to index in `imports`.
     pub(crate) slots: HashMap<u64, usize>,
     /// PE exception directory (RVA, size).
@@ -195,6 +203,19 @@ impl Image {
                 sizes.insert(s.addr, s.size);
             }
         }
+        let mut raws: HashMap<u64, String> = HashMap::new();
+        for s in self.symbols.iter().filter(|s| !s.raw.is_empty()) {
+            raws.entry(s.addr).or_insert_with(|| s.raw.clone());
+        }
+        for e in self.exports.iter().filter(|e| !e.raw.is_empty()) {
+            raws.entry(e.addr).or_insert_with(|| e.raw.clone());
+        }
+        for i in self.imports.iter().filter(|i| !i.raw.is_empty()) {
+            if let Some(slot) = i.slot {
+                raws.entry(slot).or_insert_with(|| i.raw.clone());
+            }
+        }
+        self.raws = raws;
         self.names = names;
         self.sizes = sizes;
         self.slots = self.imports.iter().enumerate().filter_map(|(i, im)| im.slot.map(|s| (s, i))).collect();
@@ -251,6 +272,19 @@ impl Image {
             .get(&addr)
             .map(String::as_str)
             .or_else(|| self.slots.get(&addr).map(|&i| self.imports[i].name.as_str()))
+    }
+
+    /// The mangled name written in the file for the name at `addr`, when it was demangled.
+    pub fn raw_name_at(&self, addr: u64) -> Option<&str> {
+        self.raws.get(&addr).map(String::as_str)
+    }
+
+    /// The address whose mangled name is exactly `raw` (a symbol, an export or an import slot).
+    pub(crate) fn addr_of_raw(&self, raw: &str) -> Option<u64> {
+        if !raw.starts_with('_') && !raw.starts_with('?') {
+            return None;
+        }
+        self.raws.iter().filter(|(_, r)| r.as_str() == raw).map(|(a, _)| *a).min()
     }
 
     /// The nearest named data or code symbol at or below `addr` and inside its size.
@@ -433,6 +467,7 @@ fn blank(format: Format) -> Image {
         data: Vec::new(),
         names: BTreeMap::new(),
         sizes: HashMap::new(),
+        raws: HashMap::new(),
         slots: HashMap::new(),
         exception_dir: None,
         sorted: Vec::new(),
@@ -445,24 +480,40 @@ fn blank(format: Format) -> Image {
     }
 }
 
-/// Demangle Rust and C++ names; anything else stays as written. The whole name is demangled (up to
-/// `MAX_NAME_IN` characters) and then the result is cut to `MAX_NAME`.
+/// Demangle Rust (legacy and v0), Itanium C++ and MSVC C++ names; anything else stays as written. The
+/// whole name is demangled (up to `MAX_NAME_IN` characters) and then the result is cut to `MAX_NAME`.
 pub(crate) fn demangle(raw: &str) -> String {
     let cut = |t: &str| t.chars().take(MAX_NAME).collect::<String>();
     let raw: String = raw.chars().take(MAX_NAME_IN).collect();
-    if raw.starts_with("_Z") || raw.starts_with("_R") {
-        if let Ok(d) = rustc_demangle::try_demangle(&raw) {
+    // Mach-O writes every C symbol with one more underscore in front
+    let body = raw.strip_prefix("__Z").map(|_| &raw[1..]).unwrap_or(&raw);
+    if body.starts_with("_Z") || body.starts_with("_R") {
+        if let Ok(d) = rustc_demangle::try_demangle(body) {
             return cut(&format!("{d:#}"));
         }
-        if raw.starts_with("_Z") {
-            if let Ok(s) = cpp_demangle::Symbol::new(raw.as_bytes()) {
+        if body.starts_with("_Z") {
+            if let Ok(s) = cpp_demangle::Symbol::new(body.as_bytes()) {
                 if let Ok(t) = s.demangle() {
                     return cut(&t);
                 }
             }
         }
     }
+    if raw.starts_with('?') {
+        if let Ok(t) = msvc_demangler::demangle(&raw, msvc_demangler::DemangleFlags::llvm()) {
+            return cut(&t);
+        }
+    }
     cut(&raw)
+}
+
+/// The mangled name to keep next to a demangled one: empty when demangling changed nothing.
+fn raw_of(raw: &str, shown: &str) -> String {
+    if raw == shown {
+        String::new()
+    } else {
+        raw.chars().take(MAX_NAME_IN).collect()
+    }
 }
 
 /// Sections, symbols and exports: what ELF and PE have in common.
@@ -537,8 +588,10 @@ fn common<'d, O: Object<'d>>(o: &O, img: &mut Image) {
         if raw.is_empty() {
             continue;
         }
+        let name = demangle(raw);
         img.symbols.push(Symbol {
-            name: demangle(raw),
+            raw: raw_of(raw, &name),
+            name,
             addr: s.address(),
             size: s.size(),
             func: kind == SymbolKind::Text,
@@ -553,7 +606,8 @@ fn common<'d, O: Object<'d>>(o: &O, img: &mut Image) {
             };
             let name = String::from_utf8_lossy(n).chars().take(MAX_NAME_IN).collect::<String>();
             if !name.is_empty() {
-                img.exports.push(Export { name: demangle(&name), addr: address });
+                let shown = demangle(&name);
+                img.exports.push(Export { raw: raw_of(&name, &shown), name: shown, addr: address });
             }
         }
     }
@@ -619,7 +673,13 @@ fn load_elf(data: &[u8]) -> Result<Image> {
         if name.is_empty() {
             continue;
         }
-        img.imports.push(Import { lib: None, name: demangle(name), slot: slot_of.get(&s.index()).copied() });
+        let shown = demangle(name);
+        img.imports.push(Import {
+            lib: None,
+            raw: raw_of(name, &shown),
+            name: shown,
+            slot: slot_of.get(&s.index()).copied(),
+        });
     }
     // headers
     use object::elf::{
@@ -731,6 +791,7 @@ fn load_pe(data: &[u8]) -> Result<Image> {
                     };
                     img.imports.push(Import {
                         lib: lib.clone(),
+                        raw: String::new(),
                         name,
                         slot: Some(img.image_base.wrapping_add(first).wrapping_add(i * 8)),
                     });

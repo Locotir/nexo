@@ -17,6 +17,7 @@ gimli = { workspace = true }
 iced-x86 = { workspace = true }
 rustc-demangle = { workspace = true }
 cpp_demangle = { workspace = true }
+msvc-demangler = { workspace = true }
 sha2 = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }

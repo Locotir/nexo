@@ -134,7 +134,12 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
     if let Some(f) = funcs.iter().find(|f| img.func_name(f) == t || f.name == t) {
         return Ok(f);
     }
-    let hits: Vec<_> = funcs.iter().filter(|f| img.func_name(f).contains(t) || f.name.contains(t)).collect();
+    if let Some(f) = img.addr_of_raw(t).and_then(|a| img.func_at(a)) {
+        return Ok(f);
+    }
+    let raw_has = |f: &crate::funcs::Func| img.raw_name_at(f.start).is_some_and(|r| r.contains(t));
+    let hits: Vec<_> =
+        funcs.iter().filter(|f| img.func_name(f).contains(t) || f.name.contains(t) || raw_has(f)).collect();
     match hits.as_slice() {
         [one] => Ok(one),
         [] => {

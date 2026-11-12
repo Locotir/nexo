@@ -76,6 +76,12 @@ pub(crate) fn target_addr(img: &Image, t: &str) -> Result<u64> {
     if let Some(f) = img.funcs().iter().find(|f| f.name == t) {
         return Ok(f.start);
     }
+    if let Some(a) = img.addr_of_raw(t) {
+        if let Some(f) = img.func_at(a).filter(|f| f.start == a) {
+            return Ok(f.start);
+        }
+        return Ok(a);
+    }
     // an ELF import is called through its PLT stub: that is the address its call sites target
     if img.imports.iter().any(|i| i.name == t) {
         if let Some(f) = img.funcs().iter().find(|f| f.name.strip_suffix("@plt") == Some(t)) {
@@ -478,7 +484,13 @@ pub fn func_list_window(
         .iter()
         .enumerate()
         .filter(|(_, f)| f.end.saturating_sub(f.start) >= min_size)
-        .filter(|(_, f)| re.as_ref().is_none_or(|r| r.is_match(img.func_name(f)) || r.is_match(&f.name)))
+        .filter(|(_, f)| {
+            re.as_ref().is_none_or(|r| {
+                r.is_match(img.func_name(f))
+                    || r.is_match(&f.name)
+                    || img.raw_name_at(f.start).is_some_and(|n| r.is_match(n))
+            })
+        })
         .map(|(i, f)| (i, img.refs().callers(f.start), callee_count(img, f.start, f.end)))
         .collect();
     let size = |i: usize| funcs[i].end.saturating_sub(funcs[i].start);
