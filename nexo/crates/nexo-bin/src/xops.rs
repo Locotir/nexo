@@ -216,7 +216,7 @@ fn cut_line(img: &Image) -> Option<String> {
 }
 
 /// The line that says how many indirect calls and jumps could not be followed.
-fn indirect_line(img: &Image) -> Option<String> {
+pub(crate) fn indirect_line(img: &Image) -> Option<String> {
     let r = img.refs();
     let mut parts: Vec<String> = Vec::new();
     if r.indirect_calls > 0 {
@@ -254,7 +254,7 @@ fn closing_lines(img: &Image, indirect: bool) -> Vec<String> {
 }
 
 /// The GOT slot an ELF PLT stub jumps through, when `t` is the start of such a stub.
-fn stub_slot(img: &Image, t: u64) -> Option<u64> {
+pub(crate) fn stub_slot(img: &Image, t: u64) -> Option<u64> {
     let funcs = img.funcs();
     let i = funcs.partition_point(|f| f.start < t);
     let f = funcs.get(i).filter(|f| f.start == t)?;

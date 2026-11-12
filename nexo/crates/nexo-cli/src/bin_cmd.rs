@@ -37,6 +37,54 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// The map of the file in one call: main, imports by capability, top strings and functions, next commands.
+    Overview {
+        file: PathBuf,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Known crypto constants (AES, SHA, MD5, CRC-32, ChaCha, base64) with evidence and the functions that use them.
+    Crypto {
+        file: PathBuf,
+        /// Name the tables and note the functions that use them (never replaces a name or note).
+        #[arg(long)]
+        save: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// How one function reaches another: the shortest call chains, with the call site of each hop.
+    Path {
+        file: PathBuf,
+        /// Start: an address or a function name.
+        from_fn: String,
+        /// Goal: an address, a function or an import name.
+        to_fn: String,
+        /// Also follow functions whose address is taken (possible calls through pointers).
+        #[arg(long)]
+        ptrs: bool,
+        /// How many shortest routes to list (1 to 20).
+        #[arg(long, default_value_t = 3)]
+        routes: usize,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Callers (--up) or callees of a function to N levels, as an indented tree.
+    Tree {
+        file: PathBuf,
+        /// An address or a function name.
+        target: String,
+        /// Show who calls it instead of what it calls.
+        #[arg(long)]
+        up: bool,
+        /// Levels to expand (1 to 12).
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        /// Also count functions whose address is taken.
+        #[arg(long)]
+        ptrs: bool,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Disassemble the whole function that holds an address, or has a name (Intel syntax).
     Fn {
         file: PathBuf,
@@ -266,6 +314,10 @@ impl BinOp {
     fn file(&self) -> &Path {
         match self {
             BinOp::Info { file, .. }
+            | BinOp::Overview { file, .. }
+            | BinOp::Path { file, .. }
+            | BinOp::Crypto { file, .. }
+            | BinOp::Tree { file, .. }
             | BinOp::Fn { file, .. }
             | BinOp::Bytes { file, .. }
             | BinOp::Strings { file, .. }
@@ -287,6 +339,10 @@ impl BinOp {
     fn common(&self) -> &Common {
         match self {
             BinOp::Info { common, .. }
+            | BinOp::Overview { common, .. }
+            | BinOp::Path { common, .. }
+            | BinOp::Crypto { common, .. }
+            | BinOp::Tree { common, .. }
             | BinOp::Fn { common, .. }
             | BinOp::Bytes { common, .. }
             | BinOp::Strings { common, .. }
@@ -320,6 +376,14 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     let (from, lines) = (c.from, c.lines.max(MIN_LINES));
     let out: Output = match &a.op {
         BinOp::Info { .. } => nexo_bin::info(&img),
+        BinOp::Overview { .. } => nexo_bin::overview_window(&img, from, lines)?,
+        BinOp::Crypto { save, .. } => nexo_bin::crypto_window(&img, save.then_some(data_dir), from, lines)?,
+        BinOp::Path { from_fn, to_fn, ptrs, routes, .. } => {
+            nexo_bin::path_window(&img, from_fn, to_fn, *ptrs, *routes, from, lines)?
+        }
+        BinOp::Tree { target, up, depth, ptrs, .. } => {
+            nexo_bin::tree_window(&img, target, *up, *depth, *ptrs, from, lines)?
+        }
         BinOp::Fn { target, bytes, to, .. } => nexo_bin::func_view(
             &img,
             &FnQuery {
@@ -476,6 +540,16 @@ mod tests {
             let t = ask(&["find", &path, "--imm", "0x539"]).unwrap();
             assert!(t.contains("mov eax"), "{t}");
         }
+    }
+
+    #[test]
+    fn overview_answers_through_the_parser() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = file(&dir, "elf", &fixtures::elf64_xref());
+        let t = ask(&["overview", &path]).unwrap();
+        assert!(t.contains("overview") && t.contains("next") && t.contains("nexo bin decomp"), "{t}");
+        let j = ask(&["overview", &path, "--json"]).unwrap();
+        assert!(j.contains("\"op\": \"overview\""), "{j}");
     }
 
     #[test]

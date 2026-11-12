@@ -6,16 +6,21 @@
 //! prints: each op returns an [`Output`] that has a text form and a JSON form, and
 //! [`Output::page`] cuts either one to a line budget, saying exactly what is left and how to get it.
 
+mod caps;
+mod crypto;
 mod decomp;
 mod disasm;
 mod dwarf;
 mod emu;
 mod fnview;
 mod funcs;
+mod graph;
 mod image;
 mod live;
+mod mainfind;
 mod names;
 mod ops;
+mod overview;
 mod page;
 mod refs;
 mod strings;
@@ -26,11 +31,15 @@ pub mod fixtures;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_map;
+#[cfg(test)]
 mod tests_x;
 
+pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
 pub use emu::{emulate, limits as emu_limits, EmuSpec};
 pub use fnview::{func_view, FnQuery, LEAD_IN, MAX_RANGE};
+pub use graph::{path_window, tree_window};
 pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
 pub use live::{
     decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, LiveIns, LiveMem,
@@ -41,6 +50,7 @@ pub use ops::{
     bytes, find_bytes, find_imm, func, func_window, info, parse_pattern, strings, strings_window, typed_rows, ElemType,
     StrSort,
 };
+pub use overview::{overview, overview_window};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
 pub use xops::{
