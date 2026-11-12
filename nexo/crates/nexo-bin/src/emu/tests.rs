@@ -320,9 +320,15 @@ fn emu_runs_the_vectorized_xor_loop_with_its_sse_instructions() {
         returned(&v);
         let want: Vec<String> = plain.iter().take(16).map(|b| format!("{:02x}", b ^ 0x5c)).collect();
         assert!(text.contains(&want.join(" ")), "{opt}\n{text}");
-        if opt == "-O2" {
-            let (text, _) = run(&img, "xor_buf", &["buf:64", "64", "0x5c"], |s| s.trace = 200);
-            assert!(text.contains("pxor") || text.contains("xorps"), "the loop is vectorized at -O2: {text}");
-        }
     }
+    // GCC 12-13 keep this loop scalar at -O2 (its very-cheap cost model refuses an epilogue); every GCC and Clang vectorize it at -O3
+    let Some(exe) = build(dir.path(), "-O3") else { return };
+    let img = Image::open(&exe).unwrap();
+    let (text, v) = run(&img, "xor_buf", &["buf:64", "64", "0x5c"], |s| {
+        s.trace = 200;
+        s.dump = 64;
+    });
+    returned(&v);
+    assert!(text.contains("pxor") || text.contains("xorps"), "the loop is vectorized at -O3: {text}");
+    assert!(text.contains(&["5c"; 16].join(" ")), "zero bytes xor 0x5c read back as 0x5c: {text}");
 }
