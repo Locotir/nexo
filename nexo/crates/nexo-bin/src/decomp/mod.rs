@@ -186,6 +186,38 @@ mod tests {
         let lost = run(&mut NoSigs);
         assert!(!lost.contains("return *(u64*)a1;"), "{lost}");
     }
+
+    fn after_a_call(tail: &[u8]) -> String {
+        // sub rsp,8 ; call 0x1100 ; <tail>
+        let mut code = vec![0x48, 0x83, 0xec, 0x08, 0xe8, 0xf7, 0, 0, 0];
+        code.extend_from_slice(tail);
+        let end = 0x1000 + code.len() as u64;
+        code.resize(0x100, 0x90);
+        code.push(0xc3);
+        let env = Raw { base: 0x1000, code };
+        let l = super::decompile(&env, 0x1000, end, Abi::SysV, &mut NoSigs, &NoNames, "f");
+        l.iter().map(|x| format!("{}\n", x.text)).collect()
+    }
+
+    #[test]
+    fn a_signed_clamp_is_not_rendered_unsigned() {
+        // mov edx,10 ; cmp eax,edx ; cmovl eax,edx ; add rsp,8 ; ret   (if (x < 10) x = 10)
+        let t = after_a_call(&[0xba, 10, 0, 0, 0, 0x39, 0xd0, 0x0f, 0x4c, 0xc2, 0x48, 0x83, 0xc4, 8, 0xc3]);
+        println!("{t}");
+        assert!(t.contains("(i32)v1 < 0xa"), "{t}");
+        assert!(!t.contains("(u32)v1 < 0xa"), "{t}");
+    }
+
+    #[test]
+    fn a_signed_guard_is_not_rendered_unsigned() {
+        // cmp eax,0xff ; jg L ; add rsp,8 ; ret ; L: xor eax,eax ; add rsp,8 ; ret   (if (c > 255) return 0)
+        let t = after_a_call(&[
+            0x3d, 0xff, 0, 0, 0, 0x7f, 5, 0x48, 0x83, 0xc4, 8, 0xc3, 0x31, 0xc0, 0x48, 0x83, 0xc4, 8, 0xc3,
+        ]);
+        println!("{t}");
+        assert!(t.contains("(i32)v1 > 0xff"), "{t}");
+        assert!(!t.contains("(u32)v1 > 0xff"), "{t}");
+    }
 }
 pub mod api;
 pub mod render;

@@ -455,6 +455,8 @@ impl Printer<'_> {
                         }
                     };
                     (cast(a), cast(c))
+                } else if op.is_signed() {
+                    (self.signed_operand(a), self.signed_operand(c))
                 } else {
                     (self.expr(a, 8), self.expr(c, 8))
                 };
@@ -471,6 +473,20 @@ impl Printer<'_> {
                 let a: Vec<String> = args.iter().map(|x| self.expr(x, 0)).collect();
                 format!("{n}({})", a.join(", "))
             }
+        }
+    }
+
+    /// A signed predicate decides the sign of its operands: a narrowed operand is cast to `iN`, never `uN`.
+    fn signed_operand(&self, x: &Expr) -> String {
+        match x {
+            Expr::Trunc(inner, b) => match &**inner {
+                Expr::Var(..) => format!("({}){}", itype(*b), self.expr(inner, 11)),
+                _ => format!("({})({})", itype(*b), self.expr(inner, 0)),
+            },
+            Expr::Var(Var::Web(w), b) if *b > 1 && self.web.bits.get(w).is_some_and(|&wb| *b < wb) => {
+                format!("({}){}", itype(*b), self.var_text(Var::Web(*w), *b))
+            }
+            _ => self.expr(x, 8),
         }
     }
 
