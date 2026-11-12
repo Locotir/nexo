@@ -198,6 +198,10 @@ pub fn rows(op: &'static str, lines: Vec<String>, meta: Value) -> Output {
 impl Session {
     pub fn new(t: Box<dyn Target>, img: Image) -> Session {
         let os = t.os();
+        let mut img = img;
+        if let Some(d) = crate::knowledge::data_dir() {
+            let _ = nexo_bin::attach_names(&mut img, &d);
+        }
         let mut s = Session {
             t,
             mods: Mods::new(img),

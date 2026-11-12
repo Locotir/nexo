@@ -161,10 +161,23 @@ fn make_session(kind: &Kind) -> Result<Session> {
 /// Start the program and take it to its first stop. The caller owns the result and must stay on this thread.
 pub fn open(kind: &Kind) -> Result<(Session, Output)> {
     let mut sess = make_session(kind)?;
-    let first = match kind {
+    let mut first = match kind {
         Kind::Run { .. } => run_to_entry(&mut sess),
         Kind::Attach(pid) => attach_report(&mut sess, *pid),
     };
+    // what earlier sessions kept for this binary comes with the first answer
+    let known = nexo_bin::names_brief(sess.mods.main_image(), 8);
+    if !known.is_empty() {
+        let key = first.rows.len() as u64;
+        first.rows.push(nexo_bin::Row {
+            key,
+            text: "known about this binary (kept by earlier sessions; `name` and `note` add):".into(),
+            json: None,
+        });
+        for (i, k) in known.into_iter().enumerate() {
+            first.rows.push(nexo_bin::Row { key: key + 1 + i as u64, text: format!("  {k}"), json: None });
+        }
+    }
     Ok((sess, first))
 }
 

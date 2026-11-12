@@ -41,6 +41,16 @@ impl Mods {
         Mods { list: Vec::new(), main, main_idx: 0, others: HashMap::new() }
     }
 
+    /// The program's image, with the names and notes kept for it.
+    pub fn main_image(&self) -> &Image {
+        &self.main
+    }
+
+    /// Read the names and notes kept for the program again (after `name` or `note`). A reason when they cannot be read.
+    pub fn reload_names(&mut self, dir: &Path) -> Option<String> {
+        nexo_bin::attach_names(&mut self.main, dir)
+    }
+
     pub fn exe_path(&self) -> &Path {
         &self.main.path
     }

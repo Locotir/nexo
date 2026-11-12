@@ -69,9 +69,10 @@ impl Args {
 }
 
 /// Commands that only look (they never change the program or the debugger beyond what they show).
-pub const READ_ONLY: [&str; 25] = [
+pub const READ_ONLY: [&str; 27] = [
     "status", "regs", "mem", "x", "print", "p", "args", "bt", "threads", "breaks", "maps", "modules", "find",
     "history", "out", "log", "dis", "disasm", "info", "watches", "sessions", "core", "help", "catches", "thread",
+    "name", "note",
 ];
 
 impl Session {
@@ -143,6 +144,7 @@ impl Session {
             "catch" | "catches" => self.cmd_catch(&a),
             "kill" => self.cmd_kill(),
             "detach" => self.cmd_detach(),
+            "name" | "note" => self.cmd_keep(cmd == "name", &words[1..]),
             "do" => self.cmd_do(&words[1..]),
             other => usage(format!("unknown command {other:?}: `help` lists them")),
         }
@@ -1012,6 +1014,58 @@ impl Session {
             l.push(format!("log: {} lines (`log` shows them)", self.log.len()));
         }
         rows("stop", l, json!({"state": "stopped", "thread": tid}))
+    }
+
+    /// `name <addr> <name>` and `note [<0xaddr>] <text>`: keep a finding for this binary. A note without an
+    /// address is for the place the program stopped at. Answers with one `saved:` line.
+    fn cmd_keep(&mut self, is_name: bool, w: &[String]) -> Result<Output> {
+        let Some(dir) = crate::knowledge::data_dir() else {
+            return fail("nothing can be kept here: this host has no data folder for names and notes");
+        };
+        let mine = |s: &mut Session, a: u64| -> Result<u64> {
+            let (base, bias) = (s.mods.main_base(), s.mods.main_bias());
+            if base == 0 || s.mods.locate(a) != s.mods.locate(base) {
+                return fail(format!(
+                    "{a:#x} is not inside the program itself; only its own code and data can be named"
+                ));
+            }
+            Ok(a.wrapping_sub(bias))
+        };
+        let (addr, text) = if is_name {
+            if w.len() != 2 {
+                return usage("usage: name <addr> <name>   (a name for a function or data; letters, digits and _ . : $ @ < > ~ -)");
+            }
+            let a = self.addr_of(&w[0])?;
+            (mine(self, a)?, w[1].clone())
+        } else {
+            let explicit = w.len() > 1 && w[0].starts_with("0x");
+            if explicit {
+                let a = self.addr_of(&w[0])?;
+                (mine(self, a)?, w[1..].join(" "))
+            } else {
+                if w.is_empty() {
+                    return usage(
+                        "usage: note [0xaddr] <text>   (without an address the note is for the current place)",
+                    );
+                }
+                let pc = self.tid_regs()?.rip;
+                (mine(self, pc)?, w.join(" "))
+            }
+        };
+        let target = format!("{addr:#x}");
+        let img = self.mods.main_image();
+        let r = if is_name {
+            nexo_bin::name_set(img, &dir, &target, &text)
+        } else {
+            nexo_bin::note_set(img, &dir, &target, &text)
+        };
+        let o = r.map_err(|e| crate::Error::Fail(e.to_string()))?;
+        if let Some(why) = self.mods.reload_names(&dir) {
+            return fail(why);
+        }
+        let line = o.rows.first().map(|r| r.text.clone()).unwrap_or_default();
+        let line = format!("saved: {line} (kept for this binary)");
+        Ok(rows(if is_name { "name" } else { "note" }, vec![line], json!({"addr": addr})))
     }
 
     /// The likely cause of a fault, from the signal, the address and the instruction that did it.

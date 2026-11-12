@@ -24,6 +24,7 @@ mem <addr> <len> [--as u8|u32|u64|ptr|str], x, print <expr>, write <addr> <hex> 
 bt [N], args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
 do \"c1; c2\"  several commands in one call
+name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
 
 /// A debug session for the model. `steer_only` refuses everything that starts, attaches or writes.
@@ -34,11 +35,13 @@ pub struct Debug {
 
 impl Debug {
     pub fn new() -> Debug {
+        nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
         Debug { dir: nexo_dbg::state_dir(), steer_only: false }
     }
 
     /// A tool for sub-agents that may only look at and steer sessions someone else started.
     pub fn steer_only() -> Debug {
+        nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
         Debug { dir: nexo_dbg::state_dir(), steer_only: true }
     }
 

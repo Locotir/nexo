@@ -245,6 +245,28 @@ pub fn set_note(img: &Image, data_dir: &Path, addr: u64, text: &str) -> Result<S
     })
 }
 
+/// What this file already holds, for a first look: notes that start with `crash` first, then the other notes,
+/// then the names, each list cut to `max` entries with a count of the rest. Empty when there is nothing.
+pub fn brief(img: &Image, max: usize) -> Vec<String> {
+    let mut notes: Vec<(&u64, &String)> = img.user.notes.iter().collect();
+    notes.sort_by_key(|(a, t)| (!t.starts_with("crash"), **a));
+    let mut out = Vec::new();
+    let mut cut = |label: &str, items: Vec<String>| {
+        let more = items.len().saturating_sub(max);
+        let mut line = items.into_iter().take(max).collect::<Vec<_>>().join("; ");
+        if line.is_empty() {
+            return;
+        }
+        if more > 0 {
+            line.push_str(&format!(" (+{more} more: `nexo bin names`)"));
+        }
+        out.push(format!("{label}: {line}"));
+    };
+    cut("notes", notes.iter().map(|(a, t)| format!("{a:#x} {t}")).collect());
+    cut("names", img.user.names.iter().map(|(a, n)| format!("{a:#x} {n}")).collect());
+    out
+}
+
 /// Remove the name at `addr`. True when there was one.
 pub fn clear_name(img: &Image, data_dir: &Path, addr: u64) -> Result<bool> {
     edit(data_dir, &img.sha256, |n| Ok(n.names.remove(&addr).is_some()))

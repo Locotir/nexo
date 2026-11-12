@@ -46,6 +46,7 @@ fn serve_args(w: &[String]) -> Result<nexo_dbg::Start, Error> {
 
 fn execute(a: &DbgArgs) -> Result<String, Error> {
     let call = nexo_dbg::parse(&a.words)?;
+    nexo_dbg::set_data_dir(nexo_core::paths::data_dir());
     if call.words.first().map(String::as_str) == Some("__serve") {
         let start = serve_args(&call.words[1..])?;
         let code = nexo_dbg::serve(&start);

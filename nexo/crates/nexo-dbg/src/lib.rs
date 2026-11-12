@@ -8,6 +8,7 @@ mod client;
 mod cmds;
 mod engine;
 mod expr;
+mod knowledge;
 mod modules;
 mod platform;
 mod regs;
@@ -19,6 +20,7 @@ mod linux;
 pub use client::{dbg_class, execute, header, parse, parse_header, Call, DbgClass, Header, Host};
 pub use cmds::{help, split_words, Args, DEFAULT_WAIT, MAX_WAIT, READ_ONLY};
 pub use engine::{Session, State, StopInfo};
+pub use knowledge::set_data_dir;
 pub use platform::{
     attach, launch, Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Target, Tid, Touch,
 };

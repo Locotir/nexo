@@ -126,3 +126,18 @@ fn a_file_that_is_not_a_program_fails_with_a_reason() {
     let o = nexo(&tmp, &["run", "/no/such/file"]);
     assert!(out(&o).contains("is not a file"), "{}", out(&o));
 }
+
+#[test]
+fn what_a_session_keeps_comes_back_with_the_next_one_of_the_same_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().join(format!("nexo-tmp-{}-k", std::process::id()));
+    let sleep = sleep_bin();
+    let first = out(&nexo(&tmp, &["run", sleep.to_str().unwrap(), "60"]));
+    assert!(!first.contains("known about this binary"), "{first}");
+    let saved = out(&nexo(&tmp, &["note", "crash: findings go here"]));
+    assert_eq!(saved.lines().filter(|l| l.starts_with("saved:")).count(), 1, "{saved}");
+    assert!(nexo(&tmp, &["end"]).status.success());
+    let again = out(&nexo(&tmp, &["run", sleep.to_str().unwrap(), "60"]));
+    assert!(again.contains("known about this binary") && again.contains("crash: findings go here"), "{again}");
+    assert!(nexo(&tmp, &["end"]).status.success());
+}
