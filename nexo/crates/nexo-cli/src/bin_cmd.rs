@@ -66,6 +66,9 @@ pub enum BinOp {
         /// Follow a stack slot, like rbp-0x14 or rsp+8.
         #[arg(long)]
         mem: Option<String>,
+        /// Go forward instead: where the value goes (compares, calls it is passed to, stores, copies).
+        #[arg(long)]
+        forward: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -441,6 +444,9 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Info { .. } => nexo_bin::info(&img),
         BinOp::Overview { .. } => nexo_bin::overview_window(&img, from, lines)?,
         BinOp::Crypto { save, .. } => nexo_bin::crypto_window(&img, save.then_some(data_dir), from, lines)?,
+        BinOp::Slice { at, reg, mem, forward: true, .. } => {
+            nexo_bin::slice_forward(&img, at, reg.as_deref(), mem.as_deref(), from, lines)?
+        }
         BinOp::Slice { at, reg, arg, mem, .. } => {
             nexo_bin::slice_window(&img, at, reg.as_deref(), *arg, mem.as_deref(), from, lines)?
         }

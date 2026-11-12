@@ -341,6 +341,35 @@ impl Session {
             self.bps.retain(|b| !b.call);
             return Ok(rows("calls", vec![format!("indirect-call logging off ({n_on} sites)")], json!({})));
         }
+        if !a.pos.is_empty() {
+            // named sites only: `calls 0x40114b main+0x20`
+            self.bps.retain(|b| !b.call);
+            let mut n = 0;
+            for w in &a.pos {
+                let at = self.addr_of(w)?;
+                let id = self.new_id();
+                self.bps.push(Bp {
+                    id,
+                    addr: at,
+                    enabled: true,
+                    cond: None,
+                    after: 0,
+                    hits: 0,
+                    log: None,
+                    once: false,
+                    call: true,
+                });
+                n += 1;
+            }
+            return Ok(rows(
+                "calls",
+                vec![format!(
+                    "logging {n} indirect call site{}: `cont`, then `log` shows each target; they are saved for `nexo bin decomp`",
+                    if n == 1 { "" } else { "s" }
+                )],
+                json!({"sites": n}),
+            ));
+        }
         if n_on > 0 {
             return Ok(rows(
                 "calls",

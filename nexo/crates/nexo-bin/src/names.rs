@@ -33,6 +33,8 @@ pub struct UserNames {
     pub(crate) structs: BTreeMap<String, String>,
     /// Variable names by function address: `a1` -> `path`.
     pub(crate) vars: BTreeMap<u64, BTreeMap<String, String>>,
+    /// Targets the debugger saw at an indirect call site: `0x401100 add1` (program code) or `libc.so.6!qsort`.
+    pub(crate) targets: BTreeMap<u64, std::collections::BTreeSet<String>>,
 }
 
 impl UserNames {
@@ -130,6 +132,16 @@ fn parse(raw: &[u8]) -> std::result::Result<UserNames, String> {
             out.vars.insert(addr, inner);
         }
     }
+    if let Some(m) = obj.get("targets").and_then(Value::as_object) {
+        for (k, val) in m {
+            let addr = parse_addr(k).map_err(|_| format!("\"{k}\" in \"targets\" is not an address"))?;
+            let set = val
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            out.targets.insert(addr, set);
+        }
+    }
     Ok(out)
 }
 
@@ -141,6 +153,7 @@ fn render(n: &UserNames, sha256: &str) -> String {
         &json!({"version": 1, "sha256": sha256, "names": side(&n.names), "notes": side(&n.notes),
                "protos": side(&n.protos),
                "structs": n.structs,
+               "targets": n.targets.iter().map(|(a, s)| (format!("{a:#x}"), json!(s))).collect::<Map<String, Value>>(),
                "vars": n.vars.iter().map(|(a, m)| (format!("{a:#x}"), json!(m))).collect::<Map<String, Value>>()}),
     )
     .unwrap_or_default()
@@ -276,4 +289,29 @@ pub fn clear_name(img: &Image, data_dir: &Path, addr: u64) -> Result<bool> {
 /// Remove the note at `addr`. True when there was one.
 pub fn clear_note(img: &Image, data_dir: &Path, addr: u64) -> Result<bool> {
     edit(data_dir, &img.sha256, |n| Ok(n.notes.remove(&addr).is_some()))
+}
+
+/// Most targets kept for one call site.
+pub const MAX_TARGETS: usize = 16;
+
+/// Remember that the indirect call at `site` was seen going to `target` (`0x401100 add1` or `lib!name`).
+/// Returns false when the site already holds it or is full.
+pub fn add_call_target(img: &Image, data_dir: &Path, site: u64, target: &str) -> Result<bool> {
+    check_addr(img, site)?;
+    let target = clean_note(target);
+    edit(data_dir, &img.sha256, |n| {
+        if !n.targets.contains_key(&site) && n.targets.len() >= MAX_ENTRIES {
+            return Ok(false);
+        }
+        let set = n.targets.entry(site).or_default();
+        if set.len() >= MAX_TARGETS && !set.contains(&target) {
+            return Ok(false);
+        }
+        Ok(set.insert(target))
+    })
+}
+
+/// The targets seen at an indirect call site, sorted.
+pub fn call_targets(img: &Image, site: u64) -> Vec<String> {
+    img.user.targets.get(&site).map(|s| s.iter().cloned().collect()).unwrap_or_default()
 }

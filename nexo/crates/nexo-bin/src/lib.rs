@@ -30,6 +30,7 @@ mod pdbread;
 mod refs;
 mod sigs;
 mod slice;
+mod slice_fwd;
 mod strings;
 mod wasm;
 mod wasm_dis;
@@ -44,6 +45,8 @@ mod tests;
 mod tests_fmt;
 #[cfg(test)]
 mod tests_harden;
+#[cfg(test)]
+mod tests_indirect;
 #[cfg(test)]
 mod tests_map;
 #[cfg(test)]
@@ -69,7 +72,10 @@ pub use live::{
 #[cfg(any(test, feature = "fixtures"))]
 pub use managed::testkit as managed_fixtures;
 pub use managed::{is_managed, managed_window, ManagedQuery};
-pub use names::{attach as attach_names, brief as names_brief, file_path as names_path, MAX_ENTRIES as MAX_NAMES};
+pub use names::{
+    add_call_target, attach as attach_names, brief as names_brief, call_targets, file_path as names_path,
+    MAX_ENTRIES as MAX_NAMES,
+};
 pub use ops::{
     bytes, find_bytes, find_imm, func, func_window, info, parse_pattern, strings, strings_window, typed_rows, ElemType,
     StrSort,
@@ -81,6 +87,7 @@ pub use sigs::{
     find_libraries as sig_libraries, generate as sig_generate, Keep as SigKeep, SigHit, SigSet, Strength as SigStrength,
 };
 pub use slice::slice_window;
+pub use slice_fwd::slice_forward;
 pub use wasm_ops::{is_wasm, wasm_answer, wasm_answer_bytes, WasmAsk, WASM_OPS};
 pub use xops::{
     calls, calls_window, func_list, func_list_window, name_clear, name_set, names_list, names_list_window, note_clear,

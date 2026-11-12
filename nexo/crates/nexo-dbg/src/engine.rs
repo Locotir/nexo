@@ -111,6 +111,8 @@ pub struct Session {
     pub wps: Vec<Wp>,
     pub next_id: u32,
     inserted: BTreeMap<u64, u8>,
+    /// (site, target) pairs of indirect calls already saved to the names file.
+    seen_targets: std::collections::BTreeSet<(u64, String)>,
     pub run: Run,
     backlog: Vec<Event>,
     pub prev: HashMap<Tid, Regs>,
@@ -291,6 +293,7 @@ impl Session {
             wps: Vec::new(),
             next_id: 1,
             inserted: BTreeMap::new(),
+            seen_targets: std::collections::BTreeSet::new(),
             run: Run::default(),
             backlog: Vec::new(),
             prev: HashMap::new(),
@@ -657,9 +660,29 @@ impl Session {
                     self.mods.refresh(&mut *self.t);
                 }
                 let name = self.mods.label(t, false).unwrap_or_else(|| "?".into());
+                self.keep_target(addr, t, &name);
                 format!("call {addr:#x} {from} -> {t:#x} {name}")
             }
             None => format!("call {addr:#x} {from} -> ? (target could not be read)"),
+        }
+    }
+
+    /// Save what an indirect call went to, for `nexo bin decomp` to show. Only the program's own sites, once per pair.
+    fn keep_target(&mut self, site: u64, target: u64, name: &str) {
+        let Some(dir) = crate::knowledge::data_dir() else { return };
+        let main = self.mods.main_base();
+        if main == 0 || self.mods.locate(site) != self.mods.locate(main) {
+            return;
+        }
+        let bias = self.mods.main_bias();
+        let entry = if self.mods.locate(target) == self.mods.locate(main) {
+            format!("{:#x} {name}", target.wrapping_sub(bias))
+        } else {
+            name.to_string()
+        };
+        let site = site.wrapping_sub(bias);
+        if self.seen_targets.insert((site, entry.clone())) {
+            let _ = nexo_bin::add_call_target(self.mods.main_image(), &dir, site, &entry);
         }
     }
 

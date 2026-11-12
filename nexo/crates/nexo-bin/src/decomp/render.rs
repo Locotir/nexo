@@ -17,6 +17,10 @@ pub trait Names {
     fn var_name(&self, _key: &str) -> Option<String> {
         None
     }
+    /// Where the debugger saw the indirect call at `site` go, as a comment body.
+    fn call_note(&self, _site: u64) -> Option<String> {
+        None
+    }
     /// The field at this offset of the struct the variable points to.
     fn field(&self, _key: &str, _off: u64) -> Option<String> {
         None
@@ -346,7 +350,11 @@ impl Printer<'_> {
             Target::Import(i) => self.names.import(*i),
             Target::Indirect(e) => format!("(*{})", self.expr(e, 12)),
         };
-        format!("{name}({})", args.join(", "))
+        let call = format!("{name}({})", args.join(", "));
+        match (&c.target, self.names.call_note(c.addr)) {
+            (Target::Indirect(_), Some(n)) => format!("{call} /* {n} */"),
+            _ => call,
+        }
     }
 
     fn mem_text(&self, addr: &Expr, bits: Bits) -> String {

@@ -631,8 +631,27 @@ pub fn resolve_calls(f: &mut Lifted, sigs: &mut dyn Sigs, variadic: bool) {
                 if !is_call {
                     continue;
                 }
+                // the register that holds the address called is not also an argument
+                let target = if si < n {
+                    match &f.blocks[bi].stmts[si].st {
+                        Stmt::Assign(_, Expr::Call(c)) | Stmt::Eval(Expr::Call(c)) => Some(&c.target),
+                        _ => None,
+                    }
+                } else {
+                    match &f.blocks[bi].term {
+                        Term::TailCall(Expr::Call(c)) => Some(&c.target),
+                        _ => None,
+                    }
+                };
+                let held = match target {
+                    Some(Target::Indirect(Expr::Var(Var::Reg(r), _))) => Some(*r),
+                    _ => None,
+                };
                 let mut best = 0;
                 for (pos, &r) in abi.arg_regs().iter().enumerate() {
+                    if Some(r) == held {
+                        continue;
+                    }
                     if fresh_reach(f, &an, bi, si, Var::Reg(r)) {
                         best = pos + 1;
                     }

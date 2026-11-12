@@ -1382,6 +1382,16 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
                             break;
                         }
                     }
+                    // with the frame already torn down, a jump through a pointer or a table of function addresses
+                    // that is not a switch of this function is a tail call; a register computed from a table
+                    // base (lea) before the jump is a switch we could not recover, so it stays unresolved.
+                    let frame_gone = lf.st.rsp.is_none_or(|r| r >= 0);
+                    let from_table = ins.op0_kind() == OpKind::Register
+                        && d.ins[k.saturating_sub(10)..k].iter().any(|x| x.mnemonic() == Mnemonic::Lea);
+                    if frame_gone && !from_table {
+                        term = Some((Term::TailCall(call), ip));
+                        break;
+                    }
                     unresolved += 1;
                     let t = lf.read(ins, 0, 64);
                     term = Some((Term::Indirect(t), ip));

@@ -82,6 +82,20 @@ pub fn escape(s: &str) -> String {
 }
 
 impl Names for ImgNames<'_> {
+    fn call_note(&self, site: u64) -> Option<String> {
+        let seen = crate::names::call_targets(self.img, site);
+        if seen.is_empty() {
+            return None;
+        }
+        let shown: Vec<String> = seen
+            .iter()
+            .map(|t| match t.split_once(' ').and_then(|(a, n)| Some((crate::parse_number(a).ok()? as u64, n))) {
+                Some((a, n)) => self.func(a).unwrap_or_else(|| n.to_string()),
+                None => t.clone(),
+            })
+            .collect();
+        Some(format!("seen: {}", shown.join(", ")))
+    }
     fn func(&self, addr: u64) -> Option<String> {
         plain_name(self.img, addr)
     }

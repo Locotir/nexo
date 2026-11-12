@@ -27,7 +27,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("enable disable", "switch a breakpoint on or off"),
     ("watch", "stop when an address is read or written (asks)"),
     ("catch catches", "stop on a signal or a system call"),
-    ("calls", "log the real target of every indirect call"),
+    ("calls", "log (and save for decomp) the real targets of indirect calls: all, or the sites given"),
     ("strace", "log the system calls the program makes"),
     ("ltrace", "log the library calls the program makes"),
     ("hook hooks", "run a note, a stop or a changed argument at a function"),

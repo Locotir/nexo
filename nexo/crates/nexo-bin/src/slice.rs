@@ -26,7 +26,7 @@ use crate::{Error, Format, Image, Result};
 
 /// A place a value lives.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Loc {
+pub(crate) enum Loc {
     Reg(Register),
     /// `[base + disp]` with base rbp or rsp, `size` bytes.
     Slot(Register, i64, u32),
@@ -41,7 +41,7 @@ struct Want {
     need: u64,
 }
 
-fn overlaps(a: &Loc, b: &Loc) -> bool {
+pub(crate) fn overlaps(a: &Loc, b: &Loc) -> bool {
     match (a, b) {
         (Loc::Reg(x), Loc::Reg(y)) => x == y,
         (Loc::Slot(b1, d1, s1), Loc::Slot(b2, d2, s2)) => {
@@ -52,11 +52,11 @@ fn overlaps(a: &Loc, b: &Loc) -> bool {
     }
 }
 
-fn reg_name(r: Register) -> String {
+pub(crate) fn reg_name(r: Register) -> String {
     format!("{r:?}").to_lowercase()
 }
 
-fn loc_text(img: &Image, l: &Loc) -> String {
+pub(crate) fn loc_text(img: &Image, l: &Loc) -> String {
     match l {
         Loc::Reg(r) => reg_name(*r),
         Loc::Slot(b, d, _) => {
@@ -100,13 +100,13 @@ const NAMES32: [&str; 16] = [
     "r15d",
 ];
 
-fn parse_reg(s: &str) -> Option<Register> {
+pub(crate) fn parse_reg(s: &str) -> Option<Register> {
     let s = s.trim().to_ascii_lowercase();
     NAMES64.iter().position(|n| *n == s).or_else(|| NAMES32.iter().position(|n| *n == s)).map(|i| GPR64[i])
 }
 
 /// `rbp-0x14`, `rsp+8`, `[rbp-20]`.
-fn parse_mem(s: &str) -> Result<Loc> {
+pub(crate) fn parse_mem(s: &str) -> Result<Loc> {
     let t = s.trim().trim_start_matches('[').trim_end_matches(']').replace(' ', "");
     let bad = || Error::Bad(format!("{s:?} is not a stack slot; write rbp-0x14 or rsp+8"));
     let pos = t.find(['+', '-']).ok_or_else(bad)?;
@@ -115,24 +115,24 @@ fn parse_mem(s: &str) -> Result<Loc> {
     Ok(Loc::Slot(base, if t.as_bytes()[pos] == b'-' { -n } else { n }, 8))
 }
 
-fn arg_regs(img: &Image) -> &'static [Register] {
+pub(crate) fn arg_regs(img: &Image) -> &'static [Register] {
     match img.format {
         Format::Elf => &[Register::RDI, Register::RSI, Register::RDX, Register::RCX, Register::R8, Register::R9],
         Format::Pe => &[Register::RCX, Register::RDX, Register::R8, Register::R9],
     }
 }
 
-fn writes(a: OpAccess) -> bool {
+pub(crate) fn writes(a: OpAccess) -> bool {
     matches!(a, OpAccess::Write | OpAccess::ReadWrite | OpAccess::CondWrite | OpAccess::ReadCondWrite)
 }
-fn pure_write(a: OpAccess) -> bool {
+pub(crate) fn pure_write(a: OpAccess) -> bool {
     matches!(a, OpAccess::Write)
 }
-fn reads(a: OpAccess) -> bool {
+pub(crate) fn reads(a: OpAccess) -> bool {
     matches!(a, OpAccess::Read | OpAccess::ReadWrite | OpAccess::CondRead | OpAccess::ReadCondWrite)
 }
 
-fn mem_loc(ins: &Instruction, size: u32) -> Option<Loc> {
+pub(crate) fn mem_loc(ins: &Instruction, size: u32) -> Option<Loc> {
     if ins.is_ip_rel_memory_operand() {
         return Some(Loc::Global(ins.ip_rel_memory_address()));
     }
@@ -160,7 +160,7 @@ struct Stop {
     certainty: &'static str,
 }
 
-fn call_name(img: &Image, ins: &Instruction) -> String {
+pub(crate) fn call_name(img: &Image, ins: &Instruction) -> String {
     if ins.op0_kind() == OpKind::NearBranch64 {
         return node_name(img, node_of(img, ins.near_branch_target()));
     }
