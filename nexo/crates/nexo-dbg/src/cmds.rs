@@ -10,6 +10,9 @@ use crate::engine::{rows, signal_name, Bp, Rec, Run, Session, State, StopInfo, T
 use crate::platform::{Access, Fault, HwSlot, Os, Tid};
 use crate::{fail, usage, Result};
 
+/// Registers listed in a stop report; the rest are one `regs` away.
+const CHANGED_SHOWN: usize = 6;
+
 /// Seconds a `cont`, `step` over a long call or `wait` holds the answer unless told otherwise.
 pub const DEFAULT_WAIT: u64 = 8;
 /// The most a single answer waits.
@@ -946,6 +949,15 @@ impl Session {
             let ins: Option<LiveIns> = decode_live(&bytes, r.rip, &|n| r.get(n));
             if let Some(i) = &ins {
                 l.push(format!("=> {}", i.text));
+                // the next two as well: what the program is about to do, without a `dis` call
+                let (mut at, mut len) = (r.rip, i.len as u64);
+                for _ in 0..2 {
+                    at += len;
+                    let b = self.read_vec(at, 16);
+                    let Some(n) = decode_live(&b, at, &|_| None) else { break };
+                    l.push(format!("   {:#x} {}", at, n.text));
+                    len = n.len as u64;
+                }
             }
             if let Why::Watch(ids) = &why {
                 for id in ids {
@@ -965,10 +977,20 @@ impl Session {
                 None => Vec::new(),
             };
             if !changed.is_empty() {
-                l.push(format!(
+                let more = changed.len().saturating_sub(CHANGED_SHOWN);
+                let mut line = format!(
                     "changed: {}",
-                    changed.iter().map(|(n, o, v)| format!("{n} {o:#x} -> {v:#x}")).collect::<Vec<_>>().join(", ")
-                ));
+                    changed
+                        .iter()
+                        .take(CHANGED_SHOWN)
+                        .map(|(n, o, v)| format!("{n} {o:#x} -> {v:#x}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                if more > 0 {
+                    line.push_str(&format!(" (+{more} more: `regs`)"));
+                }
+                l.push(line);
             }
             self.prev.insert(tid, r);
             if let Why::Signal(_) = &why {
