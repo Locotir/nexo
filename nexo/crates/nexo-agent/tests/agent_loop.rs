@@ -3973,6 +3973,84 @@ async fn a_reply_that_only_reasons_ends_with_a_notice() {
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
     assert!(notices(&evs).iter().any(|n| n.contains("reasoned without answering")), "{:?}", notices(&evs));
+    // a person is there to send "continue": two asks to go on and no more
+    assert_eq!(client.requests().len(), 3);
+    r.stop().await;
+}
+
+/// Answers for a person who is not there, as `nexo -p` does.
+struct Nobody;
+
+#[async_trait]
+impl nexo_core::permission::PermissionGate for Nobody {
+    async fn ask(&self, _req: nexo_core::permission::PermissionRequest) -> PermissionDecision {
+        PermissionDecision::Allow
+    }
+}
+
+/// As `start`, for a run no person watches: a gate answers in their place.
+async fn start_alone(client: Arc<Scripted>, cfg: Config, cwd: &std::path::Path) -> Running {
+    data_dir();
+    let (handle, ends) = channels();
+    let setup = AgentSetup {
+        config: cfg,
+        cwd: cwd.to_path_buf(),
+        provider: "mock".into(),
+        model: "m1".into(),
+        tools: tools(),
+        client,
+        resume: None,
+        gate: Some(Arc::new(Nobody)),
+        mail: None,
+        mcp: None,
+        model_pinned: false,
+    };
+    let task = tokio::spawn(nexo_agent::run(ends, setup));
+    Running { handle, task }
+}
+
+#[tokio::test]
+async fn a_run_with_nobody_there_goes_on_after_two_budget_cuts_and_a_reply_that_only_reasoned() {
+    let d = tempfile::tempdir().unwrap();
+    // two cuts at the budget, then the free reply reasons up to max_tokens and says nothing
+    let third = format!("{}NEXT: write gen.py with three multipliers", "y".repeat(60_000));
+    let client = Scripted::new(vec![
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(thought(&third)),
+        Reply::Events(call("c1", "read", json!({"path": "sim.c"}))),
+        Reply::Events(text("built it")),
+    ]);
+    let mut r = start_alone(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "{:?}", notices(&evs));
+    assert!(text_of(&evs).contains("built it"), "{}", text_of(&evs));
+    // nobody can send "continue", and the request was not left there
+    assert!(!notices(&evs).iter().any(|n| n.contains("reasoned without answering")), "{:?}", notices(&evs));
+    // the ask after the third reply carries the end of what it reasoned, with no more room than before
+    let note = reqs[3].messages.last().unwrap().text();
+    assert!(note.contains("NEXT: write gen.py with three multipliers"), "{}", note.len());
+    assert_eq!(reqs[3].max_tokens, reqs[0].max_tokens);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_run_with_nobody_there_stops_after_five_replies_in_a_row_that_only_reasoned() {
+    let d = tempfile::tempdir().unwrap();
+    let client = Scripted::new((0..8).map(|_| Reply::Events(thought("thinking it over"))).collect());
+    let mut r = start_alone(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(client.requests().len(), 5, "{:?}", notices(&evs));
+    let said = notices(&evs);
+    assert!(said.iter().any(|n| n.contains("reasoned without answering 5 times in a row")), "{said:?}");
+    assert!(!said.iter().any(|n| n.contains("Send \"continue\"")), "{said:?}");
     r.stop().await;
 }
 

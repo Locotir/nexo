@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEnd {
-    let (events, max_turns, guard, stale_guard, guard_answer, turn_no, mut known, ck_on, mut ck, mut known_ck) = {
+    let (events, max_turns, guard, stale_guard, guard_answer, turn_no, mut known, ck_on, mut ck, mut known_ck, alone) = {
         let st = state.lock().await;
         let a = &st.config.agent;
         let ck_on = a.on_limit == OnLimit::Checkpoint && a.max_checkpoints != Some(0);
@@ -25,6 +25,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             ck_on,
             ck,
             known_ck,
+            st.alone,
         )
     };
     emit(&events, AgentEvent::TurnStart { turn: turn_no });
@@ -43,6 +44,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     let mut cut_calls = 0u32;
     // replies in a row that held only reasoning: no answer and no call
     let mut mute = 0u32;
+    // how many of them are asked to go on before the request ends there
+    let mute_asks = if alone { MUTE_ASKS_ALONE } else { MUTE_ASKS };
     // times in a row this request was sent again because its stream broke inside the reasoning
     let mut recut = 0u32;
     // times in a row a Stop hook asked the agent to go on (capped at STOP_HOOK_CAP)
@@ -138,7 +141,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             let (_, pcfg, model) = st.target.get();
             match setup::effort_of(&pcfg, &model, &st.config.agent.reasoning) {
                 Some(_) => 0,
-                // two cuts in this turn already: this call runs free so the model can finish
+                // two cuts in this turn already: from here a call runs free (up to max_tokens) so the model can finish
                 None if mute >= 2 => 0,
                 None => u64::from(st.config.agent.reasoning_budget),
             }
@@ -329,7 +332,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             continue;
         }
         cut_calls = 0;
-        if calls.is_empty() && msg.text().trim().is_empty() && !msg.reasoning().trim().is_empty() && mute < 2 {
+        if calls.is_empty() && msg.text().trim().is_empty() && !msg.reasoning().trim().is_empty() && mute < mute_asks {
             // the model thought and stopped before writing anything: ending here would leave the request
             // undone with nothing said, so it is asked to go on from its reasoning
             mute += 1;
@@ -387,11 +390,14 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         }
         if calls.is_empty() {
             if msg.text().trim().is_empty() && !msg.reasoning().trim().is_empty() && ck.stopping.is_none() {
-                notice(
-                    &events,
-                    Level::Warn,
-                    "The model reasoned without answering. Send \"continue\" or raise agent.reasoning_budget.",
-                );
+                let why = if alone {
+                    let n = mute_asks + 1;
+                    format!("The model reasoned without answering {n} times in a row; stopped. Raise agent.max_tokens or agent.reasoning_budget.")
+                } else {
+                    "The model reasoned without answering. Send \"continue\" or raise agent.reasoning_budget."
+                        .to_string()
+                };
+                notice(&events, Level::Warn, why);
             }
             if cut {
                 notice(&events, Level::Warn, "the reply was cut at max_tokens (agent.max_tokens)");
@@ -621,6 +627,14 @@ pub(super) fn retry_temperature(t: Option<f32>) -> Option<f32> {
 /// How many times one request is sent again after its stream broke inside the reasoning (`agent.retries`
 /// lower than this, or 0, lowers it).
 pub(super) const RECUT_RETRIES: u32 = 2;
+
+/// How many replies in a row that held only reasoning are asked to go on: after them the person is told, and
+/// can send "continue".
+pub(super) const MUTE_ASKS: u32 = 2;
+
+/// The same with no person there (`nexo -p`): nobody can send "continue" and the request would be lost, so it
+/// is asked twice more. Past the two under `agent.reasoning_budget` each reply is bounded by `agent.max_tokens`.
+pub(super) const MUTE_ASKS_ALONE: u32 = 4;
 
 /// Sent when a reply held only reasoning (often cut at max_tokens while thinking): not a request of the person.
 pub(super) const MUTE_NOTE: &str =

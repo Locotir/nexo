@@ -118,6 +118,8 @@ struct State {
     /// The OS sandbox of the `bash` tool (`/sandbox` changes its mode).
     sandbox: nexo_core::sandbox::SandboxSettings,
     gate: Arc<dyn PermissionGate>,
+    /// No person is there to answer (`nexo -p`, a script): what a person would be left to decide is decided here.
+    alone: bool,
     events: EventTx,
     usage: Usage,
     cost: f64,
@@ -458,6 +460,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         perm,
         sandbox: nexo_core::sandbox::SandboxSettings::new(config_sandbox.0, config_sandbox.1, config_sandbox.2),
         gate,
+        alone: headless,
         events: events.clone(),
         usage,
         cost,
