@@ -42,7 +42,7 @@ const CONTROL: &[&str] = &[
     "status", "info", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "thread", "breaks",
     "watches", "maps", "modules", "find", "history", "out", "log", "dis", "disasm", "sessions", "help", "catches",
     "break", "b", "tbreak", "delete", "del", "enable", "disable", "cont", "c", "continue", "step", "s", "next", "n",
-    "finish", "until", "wait", "stop", "kill", "detach", "end", "stdin", "catch", "watch", "core", "strace",
+    "finish", "until", "wait", "stop", "kill", "detach", "end", "stdin", "catch", "watch", "core", "strace", "ltrace",
 ];
 
 /// Classify the words after `nexo dbg`. A `do "a; b"` script is as strong as its strongest command.

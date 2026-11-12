@@ -349,6 +349,7 @@ impl Session {
         if let Some(t) = &self.run.temp {
             w.insert(t.addr);
         }
+        w.extend(self.hook_addrs());
         w
     }
 
@@ -525,6 +526,14 @@ impl Session {
         }
         for (tid, a) in bp_hits {
             let v = self.hit(tid, a)?;
+            // a breakpoint that served once (a call's return) goes: the thread runs the program's byte
+            if !self.wanted().contains(&a) {
+                if let Some(b) = self.inserted.remove(&a) {
+                    self.t.write(a, &[b])?;
+                    let patches: Vec<(u64, u8)> = self.inserted.iter().map(|(a, b)| (*a, *b)).collect();
+                    self.t.set_patches(&patches);
+                }
+            }
             if verdict.is_none() {
                 verdict = v;
             }
@@ -559,11 +568,14 @@ impl Session {
         self.exit = Some(how);
         self.inserted.clear();
         self.drain_output();
+        self.hooks_end();
         self.trace_end();
     }
 
     /// A thread is at one of our breakpoints: does it stop?
     fn hit(&mut self, tid: Tid, addr: u64) -> Result<Option<(Tid, Why)>> {
+        // the trace and the hooks see every pass, whatever a breakpoint there decides
+        let traced = self.hook_hit(tid, addr)?;
         let mut stop_ids: Vec<u32> = Vec::new();
         let ids: Vec<u32> = self.bps.iter().filter(|b| b.enabled && b.addr == addr).map(|b| b.id).collect();
         for id in ids {
@@ -617,7 +629,7 @@ impl Session {
                 }
             }
         }
-        Ok(None)
+        Ok(traced)
     }
 
     /// `call 0x401136 main+0x20 -> 0x401220 helper`: the real target of the indirect call at `addr` now.

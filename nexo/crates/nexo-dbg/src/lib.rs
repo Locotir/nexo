@@ -9,6 +9,7 @@ mod cmds;
 mod corefile;
 mod engine;
 mod expr;
+mod hooks;
 mod knowledge;
 mod lines;
 mod modules;

@@ -25,6 +25,7 @@ mem <addr> <len> [--as u8|u32|u64|ptr|str], x, print <expr>, write <addr> <hex> 
 bt [N], args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
+ltrace [names], ltrace show [names], ltrace off  library calls with typed args and result, written at return
 do \"c1; c2\"  several commands in one call
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
@@ -346,6 +347,22 @@ mod tests {
             split_script(r#"break f if x == 1; stdin "a;b"; cont"#),
             [r#"break f if x == 1"#, r#"stdin "a;b""#, "cont"]
         );
+    }
+
+    #[tokio::test]
+    async fn ltrace_runs_through_the_tool_with_the_stable_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Debug::in_dir(dir.path());
+        let tru = ["/usr/bin/true", "/bin/true"].iter().find(|p| Path::new(p).is_file()).expect("true").to_string();
+        assert!(!call(&t, &format!("run {tru}")).await.is_error);
+        let on = call(&t, "ltrace").await;
+        assert!(on.content.contains("tracing library calls"), "{}", on.content);
+        let end = call(&t, "cont").await;
+        assert!(end.content.contains("exited with code 0"), "{}", end.content);
+        let shown = call(&t, "ltrace show").await;
+        assert!(shown.content.starts_with("debug "), "{}", shown.content);
+        assert!(shown.content.contains("__libc_start_main("), "{}", shown.content);
+        call(&t, "end").await;
     }
 
     #[test]

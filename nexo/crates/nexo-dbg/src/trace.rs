@@ -61,6 +61,10 @@ pub struct Tracing {
     /// Lines already told about in a stop report, per kind.
     pub told: BTreeMap<&'static str, u64>,
     pub counts: BTreeMap<String, u64>,
+    /// `ltrace` is on: where the program calls its imports.
+    pub lib: Option<crate::hooks::Lib>,
+    /// Library calls and hooks whose entry was seen, waiting for their return.
+    pub pending: Vec<crate::hooks::Pending>,
 }
 
 impl Tracing {
