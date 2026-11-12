@@ -25,6 +25,7 @@ mod ops;
 mod overview;
 mod page;
 mod refs;
+mod sigs;
 mod slice;
 mod strings;
 mod xops;
@@ -37,6 +38,8 @@ mod tests;
 mod tests_fmt;
 #[cfg(test)]
 mod tests_map;
+#[cfg(test)]
+mod tests_sigs;
 #[cfg(test)]
 mod tests_x;
 
@@ -59,6 +62,9 @@ pub use ops::{
 pub use overview::{overview, overview_window};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
+pub use sigs::{
+    find_libraries as sig_libraries, generate as sig_generate, Keep as SigKeep, SigHit, SigSet, Strength as SigStrength,
+};
 pub use slice::slice_window;
 pub use xops::{
     calls, calls_window, func_list, func_list_window, name_clear, name_set, names_list, names_list_window, note_clear,

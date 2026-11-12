@@ -117,7 +117,8 @@ fn target_desc(img: &Image, t: u64) -> String {
 }
 
 fn note_suffix(img: &Image, a: u64) -> String {
-    img.note_at(a).map(|n| format!("  ; note: {n}")).unwrap_or_default()
+    let sig = img.sig_label(a).map(|s| format!("  ; {s}")).unwrap_or_default();
+    sig + &img.note_at(a).map(|n| format!("  ; note: {n}")).unwrap_or_default()
 }
 
 /// One reference as a line: the source, the kind, where it sits, the instruction for code.

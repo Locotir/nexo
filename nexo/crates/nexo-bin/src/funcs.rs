@@ -16,6 +16,8 @@ pub struct Func {
     /// One past the last byte.
     pub end: u64,
     pub name: String,
+    /// What a library signature said about this function (see `sigs`).
+    pub sig: Option<crate::sigs::SigHit>,
 }
 
 impl Func {
@@ -86,8 +88,9 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
             .cloned()
             .or_else(|| stub_name(img, start, end))
             .unwrap_or_else(|| format!("sub_{start:x}"));
-        out.push(Func { start, end, name });
+        out.push(Func { start, end, name, sig: None });
     }
+    name_by_signature(img, &mut out);
     out
 }
 
@@ -300,5 +303,18 @@ pub(crate) fn decode_refs(img: &Image, c: &mut Collector) {
             continue;
         }
         walk_code(img, sec, |ins, _| c.instruction(img, ins));
+    }
+}
+
+/// Unnamed functions that a library signature recognizes: an exact match gives the library name, a
+/// partial or ambiguous one only a note (the function stays `sub_<addr>`).
+fn name_by_signature(img: &Image, funcs: &mut [Func]) {
+    let sets = [crate::sigs::SigSet::builtin(), &img.sigs];
+    for f in funcs.iter_mut().filter(|f| f.name.starts_with("sub_")) {
+        let Some(hit) = crate::sigs::identify(img, &sets, f.start, f.end) else { continue };
+        if hit.strength == crate::sigs::Strength::Exact {
+            f.name = hit.name.clone();
+        }
+        f.sig = Some(hit);
     }
 }

@@ -183,6 +183,20 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// Make library signatures from static libraries on this machine (libc.a, the Rust std), so stripped
+    /// programs get their library functions named. Run once; `funcs`, `fn`, `overview` and `decomp` use the file.
+    Sigs {
+        /// Libraries (.a, .rlib) or object files; default: the ones found on this machine.
+        libs: Vec<PathBuf>,
+        /// Keep every function, not only the common ones (memory, string, malloc, stdio, Rust fmt and alloc).
+        #[arg(long)]
+        all: bool,
+        /// Write here instead of `<data dir>/sigs/local.sig` (the folder `nexo bin` reads).
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        #[command(flatten)]
+        common: Common,
+    },
     /// List the functions with size, callers and callees (default order: most callers first).
     Funcs {
         file: PathBuf,
@@ -351,6 +365,7 @@ impl BinOp {
             | BinOp::Names { file, .. }
             | BinOp::Find { file, .. }
             | BinOp::Emu { file, .. } => file,
+            BinOp::Sigs { .. } => Path::new(""),
         }
     }
 
@@ -376,6 +391,7 @@ impl BinOp {
             | BinOp::Note { common, .. }
             | BinOp::Names { common, .. }
             | BinOp::Find { common, .. }
+            | BinOp::Sigs { common, .. }
             | BinOp::Emu { common, .. } => common,
         }
     }
@@ -389,6 +405,9 @@ pub fn execute(a: &BinArgs) -> Result<String, Error> {
 /// Like [`execute`], with the data dir given (tests use a temporary one).
 pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     let t0 = std::time::Instant::now();
+    if let BinOp::Sigs { libs, all, out, .. } = &a.op {
+        return make_sigs(libs, *all, out.as_deref(), data_dir);
+    }
     let mut img = Image::open(a.op.file())?;
     let warning = nexo_bin::attach_names(&mut img, data_dir);
     let c = a.op.common();
@@ -447,6 +466,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
                 nexo_bin::note_set(&img, data_dir, target, &text.join(" "))?
             }
         }
+        BinOp::Sigs { .. } => unreachable!("handled before the file is opened"),
         BinOp::Names { .. } => nexo_bin::names_list_window(&img, from, lines),
         BinOp::Bytes { addr, len, ty, .. } => nexo_bin::bytes(&img, *addr, *len, ElemType::parse(ty)?)?,
         BinOp::Strings { grep, sort, .. } => {
@@ -515,6 +535,43 @@ pub fn run(a: &BinArgs) -> i32 {
     }
 }
 
+/// `nexo bin sigs`: sign the functions of static libraries and write the file `nexo bin` reads.
+fn make_sigs(libs: &[PathBuf], all: bool, out: Option<&Path>, data_dir: &Path) -> Result<String, Error> {
+    let libs = if libs.is_empty() { nexo_bin::sig_libraries() } else { libs.to_vec() };
+    if libs.is_empty() {
+        return Err(Error::Bad("no static library found here; give one: nexo bin sigs /path/libc.a".into()));
+    }
+    let keep = if all { nexo_bin::SigKeep::All } else { nexo_bin::SigKeep::Common };
+    let mut set = nexo_bin::SigSet::default();
+    let mut lines = Vec::new();
+    for l in &libs {
+        match nexo_bin::sig_generate(l, keep) {
+            Ok(s) => {
+                lines.push(format!("  {} signatures from {}", s.len(), l.display()));
+                set = set.merged(s);
+            }
+            Err(e) => lines.push(format!("  skipped {}: {e}", l.display())),
+        }
+    }
+    if set.is_empty() {
+        return Err(Error::Bad(format!("no signatures made:\n{}", lines.join("\n"))));
+    }
+    let path = out.map(Path::to_path_buf).unwrap_or_else(|| data_dir.join("sigs").join("local.sig"));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| Error::Io(format!("cannot create {}: {e}", dir.display())))?;
+    }
+    let names: Vec<String> =
+        libs.iter().filter_map(|l| l.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+    std::fs::write(&path, set.to_text(&names.join(", ")))
+        .map_err(|e| Error::Io(format!("cannot write {}: {e}", path.display())))?;
+    Ok(format!(
+        "wrote {} signatures to {}\n{}\nfuncs, fn, overview and decomp name a matching unnamed function and label it [signature ...]; a match is never proof.",
+        set.len(),
+        path.display(),
+        lines.join("\n")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +599,38 @@ mod tests {
         let p = dir.path().join(name);
         std::fs::write(&p, &f.bytes).unwrap();
         p.display().to_string()
+    }
+
+    #[test]
+    fn sigs_makes_a_file_that_names_library_functions_of_a_stripped_program() {
+        let Some(libc) = nexo_bin::sig_libraries().into_iter().find(|p| p.file_name().is_some_and(|n| n == "libc.a"))
+        else {
+            eprintln!("skipped: no libc.a");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let c = dir.path().join("p.c");
+        std::fs::write(&c, "#include <string.h>\n#include <stdio.h>\nint main(int n, char **v) { char b[64]; strcpy(b, v[0]); memset(b, n, 9); printf(\"%zu %s\\n\", strlen(v[n - 1]), b); return b[1]; }\n").unwrap();
+        let exe = dir.path().join("p.out");
+        let built = std::process::Command::new("cc")
+            .args(["-O1", "-static", "-fno-pie", "-no-pie", "-s", "-o"])
+            .arg(&exe)
+            .arg(&c)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !built {
+            eprintln!("skipped: cannot link a static program here");
+            return;
+        }
+        let data = dir.path().join("data");
+        let exe = exe.display().to_string();
+        let made = ask_in(&data, &["sigs", &libc.display().to_string()]).unwrap();
+        assert!(made.contains("signatures to") && data.join("sigs/local.sig").is_file(), "{made}");
+        let t = ask_in(&data, &["funcs", &exe, "--grep", "strlen|memset", "--lines", "40"]).unwrap();
+        assert!(t.contains("[signature exact") && t.contains("not proof"), "{t}");
+        // without the file the same functions stay unnamed
+        let none = ask(&["funcs", &exe, "--grep", "strlen|memset"]).unwrap();
+        assert!(!none.contains("[signature exact"), "{none}");
     }
 
     #[test]

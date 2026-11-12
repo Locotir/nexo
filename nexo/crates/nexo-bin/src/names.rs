@@ -181,6 +181,7 @@ pub(crate) fn edit<R>(data_dir: &Path, sha256: &str, change: impl FnOnce(&mut Us
 /// Load the names of this image from `data_dir` into it. On failure the image keeps no names and
 /// the answer is a one-line reason to print on the last line.
 pub fn attach(img: &mut Image, data_dir: &Path) -> Option<String> {
+    img.add_sigs(crate::SigSet::load_dir(data_dir));
     match load(data_dir, &img.sha256) {
         Ok(n) => {
             img.user = n;

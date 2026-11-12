@@ -68,6 +68,9 @@ fn header(img: &Image, f: &Func, instructions: usize, extra: &str) -> String {
     if let Some(r) = img.raw_name_at(f.start) {
         t.push_str(&format!("  ; raw {r}"));
     }
+    if let Some(s) = img.sig_label(f.start) {
+        t.push_str(&format!("  ; {s}"));
+    }
     if let Some(n) = img.note_at(f.start) {
         t.push_str(&format!("  ; note: {n}"));
     }

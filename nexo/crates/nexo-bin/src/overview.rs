@@ -198,7 +198,8 @@ pub fn overview_window(img: &Image, from: Option<u64>, budget: usize) -> Result<
     let mut fs = Sec { title: format!("functions called most ({} functions in all)", funcs.len()), lines: Vec::new() };
     for &(c, i) in called.iter().take(TOP) {
         let f = &funcs[i];
-        fs.lines.push(format!("  {:#010x}  {c:>3} callers  {:>6} bytes  {}", f.start, f.size(), img.func_name(f)));
+        let tag = img.sig_label(f.start).map(|s| format!("  ; {s}")).unwrap_or_default();
+        fs.lines.push(format!("  {:#010x}  {c:>3} callers  {:>6} bytes  {}{tag}", f.start, f.size(), img.func_name(f)));
     }
     if called.is_empty() {
         fs.lines.push("  none is called directly".into());

@@ -467,6 +467,10 @@ pub fn one(img: &Image, data_dir: &Path, target: &str) -> Result<(String, Vec<Li
         _ => 0,
     });
     let head = format!("// {name} {:#x} {} bytes, {argc} args, {nl} not lifted", f.start, f.end - f.start);
+    let head = match img.sig_label(f.start) {
+        Some(s) => format!("{head}  {s}"),
+        None => head,
+    };
     lines.insert(0, Line { addr: None, indent: 0, text: head });
     write_cache(&cp, &digest, &lines);
     Ok((name, lines, false))

@@ -150,6 +150,8 @@ pub struct Image {
     strings: OnceLock<Vec<Str>>,
     refs: OnceLock<Refs>,
     dwarf: OnceLock<crate::dwarf::Dwarf>,
+    /// Library signatures added to the shipped ones (see `sigs`).
+    pub(crate) sigs: crate::sigs::SigSet,
 }
 
 impl Image {
@@ -344,6 +346,17 @@ impl Image {
         self.user.names.get(&f.start).map_or(f.name.as_str(), String::as_str)
     }
 
+    /// Add library signatures to the shipped ones (before the functions are first asked for).
+    pub fn add_sigs(&mut self, set: crate::SigSet) {
+        self.sigs = std::mem::take(&mut self.sigs).merged(set);
+    }
+
+    /// The signature label of the function at `addr`: `[signature exact: ...]` and so on.
+    pub fn sig_label(&self, addr: u64) -> Option<String> {
+        let f = self.funcs().binary_search_by_key(&addr, |f| f.start).ok()?;
+        self.funcs()[f].sig.as_ref().map(|h| h.label())
+    }
+
     /// The name the person gave to `addr`, if any.
     pub fn user_name(&self, addr: u64) -> Option<&str> {
         self.user.names.get(&addr).map(String::as_str)
@@ -497,6 +510,7 @@ fn blank(format: Format) -> Image {
         strings: OnceLock::new(),
         refs: OnceLock::new(),
         dwarf: OnceLock::new(),
+        sigs: Default::default(),
     }
 }
 
