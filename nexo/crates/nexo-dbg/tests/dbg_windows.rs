@@ -293,7 +293,9 @@ fn dump_of(s: &mut Session, file: &std::path::Path) -> Option<()> {
     use windows_sys::Win32::System::Threading::{
         OpenProcess, OpenThread, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, THREAD_ALL_ACCESS,
     };
-    let (pid, tid) = (s.t.pid(), s.t.threads()[0]);
+    // the thread that took the exception, not the first one listed: Windows starts loader worker threads in
+    // the program too, and their ids can sort before the main thread's (the dump then names a thread in ntdll)
+    let (pid, tid) = (s.t.pid(), s.cur);
     // SAFETY: plain Win32 calls on handles opened here and closed below; the structures are local.
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);

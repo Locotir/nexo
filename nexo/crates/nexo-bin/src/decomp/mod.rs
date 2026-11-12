@@ -275,6 +275,45 @@ mod tests {
         assert!(!t.contains("TailCall"), "{t}");
         assert_eq!(f.unresolved_jumps, 1, "{t}");
     }
+    /// How a 64-bit Windows image dispatches through a table of functions: its addresses do not fit a 32-bit
+    /// displacement, so the base is loaded with a rip-relative `lea` and the entry read through that register.
+    fn base_in_a_register(first_entry: u64) -> String {
+        // lea rax,[rip+0x39] ; movsxd rcx,ecx ; mov rax,[rax+rcx*8] ; mov ecx,edx ; jmp rax ; ret padding ; table at 0x1040
+        let mut code = vec![0x48, 0x8d, 0x05, 0x39, 0, 0, 0, 0x48, 0x63, 0xc9, 0x48, 0x8b, 0x04, 0xc8, 0x89, 0xd1];
+        code.extend_from_slice(&[0xff, 0xe0]);
+        code.resize(0x40, 0xc3);
+        code.extend_from_slice(&first_entry.to_le_bytes());
+        code.extend_from_slice(&0x9999u64.to_le_bytes());
+        let env = Raw { base: 0x1000, code };
+        let f = lift(&env, 0x1000, 0x1040, Abi::Win64);
+        format!("{}\nunresolved {}", terms(&f), f.unresolved_jumps)
+    }
+
+    #[test]
+    fn a_call_through_a_table_whose_base_is_in_a_register_is_a_tail_call_when_the_entries_leave_the_function() {
+        let t = base_in_a_register(0x9998);
+        assert!(t.contains("TailCall") && t.ends_with("unresolved 0"), "{t}");
+    }
+
+    #[test]
+    fn a_table_whose_base_is_in_a_register_is_a_switch_when_the_entries_stay_in_the_function() {
+        let t = base_in_a_register(0x1012);
+        assert!(!t.contains("TailCall") && t.ends_with("unresolved 1"), "{t}");
+    }
+
+    #[test]
+    fn a_table_of_offsets_added_straight_from_memory_is_a_switch() {
+        // the large code model: lea rax,[rip+0x39] ; mov ecx,ecx ; add rax,[rax+rcx*8] ; jmp rax ; table of offsets at 0x1040
+        let mut code = vec![0x48, 0x8d, 0x05, 0x39, 0, 0, 0, 0x89, 0xc9, 0x48, 0x03, 0x04, 0xc8, 0xff, 0xe0];
+        code.resize(0x40, 0xc3);
+        code.extend_from_slice(&0x10u64.to_le_bytes());
+        let env = Raw { base: 0x1000, code };
+        let f = lift(&env, 0x1000, 0x1040, Abi::Win64);
+        let t = terms(&f);
+        assert!(!t.contains("TailCall"), "{t}");
+        assert_eq!(f.unresolved_jumps, 1, "{t}");
+    }
+
     #[test]
     fn a_jump_through_a_pointer_field_with_the_frame_gone_is_still_a_tail_call() {
         // mov rax, [rdi+8] ; jmp rax

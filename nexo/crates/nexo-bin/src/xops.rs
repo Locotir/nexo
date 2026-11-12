@@ -480,7 +480,9 @@ pub fn func_list_window(
     let re = grep.map(regex::Regex::new).transpose().map_err(|e| Error::Bad(format!("bad regular expression: {e}")))?;
     let _ = img.refs();
     let funcs = img.funcs();
-    // (function index, callers, callees)
+    // (function index, callers, callees). The callees of every function are counted only when they sort the list;
+    // otherwise just the rows of the page are counted, so a page costs the page and not the whole binary.
+    let counted = sort == FuncSort::Callees;
     let mut list: Vec<(usize, usize, usize)> = funcs
         .iter()
         .enumerate()
@@ -492,7 +494,7 @@ pub fn func_list_window(
                     || img.raw_name_at(f.start).is_some_and(|n| r.is_match(n))
             })
         })
-        .map(|(i, f)| (i, img.refs().callers(f.start), callee_count(img, f.start, f.end)))
+        .map(|(i, f)| (i, img.refs().callers(f.start), if counted { callee_count(img, f.start, f.end) } else { 0 }))
         .collect();
     let size = |i: usize| funcs[i].end.saturating_sub(funcs[i].start);
     match sort {
@@ -519,6 +521,7 @@ pub fn func_list_window(
         L::Func(i, callers, callees) => {
             let f = &funcs[*i];
             let name = img.func_name(f);
+            let callees = if counted { *callees } else { callee_count(img, f.start, f.end) };
             Row {
                 key: 0,
                 text: format!(

@@ -605,10 +605,14 @@ fn every_new_op_joins_from_pieces_to_the_whole() {
     assert!(img.refs().callers(hot) > 10, "the busiest function has {} callers", img.refs().callers(hot));
     let budgets = [10usize, 37, 120];
     pieces_join("real xref", |from, b| xref_window(&img, &hex(hot), from, b).unwrap(), &budgets);
+    // Every page of the whole list is cut again from the whole list, so the walk costs (pages x functions): on a
+    // test binary with tens of thousands of functions, 10-line pages took minutes. The page sizes
+    // follow the list instead, which still walks 40 and 4 pages of it; the 10-line edge is on the fixtures above.
+    let nfuncs = img.funcs().len();
     pieces_join(
         "real funcs",
         |from, b| func_list_window(&img, FuncSort::Callers, None, 0, from, b).unwrap(),
-        &[10, 500],
+        &[(nfuncs / 40).max(10), (nfuncs / 4).max(10)],
     );
     pieces_join(
         "real funcs by size",

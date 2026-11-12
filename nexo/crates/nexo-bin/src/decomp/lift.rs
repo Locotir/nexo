@@ -1589,40 +1589,61 @@ fn entry_is_here(env: &dyn Env, entry: u64, start: u64, end: u64) -> bool {
 /// `find_switch` could not recover. A memory operand `[table + idx*8]`, or a register loaded in the 64
 /// instructions before it from such an operand, counts unless the table is readable and holds addresses
 /// outside the function (a table of function pointers, a real tail call). So does the PIE pattern: a
-/// rip-relative `lea` for the table base and an `add jump_reg, reg` that adds it to the loaded offset.
+/// rip-relative `lea` for the table base and an `add jump_reg, reg` (or `add jump_reg, [table+idx*8]`) that adds it to
+/// the offset. The table base may sit in a register loaded by a rip-relative `lea` (how every 64-bit Windows image reaches
+/// a table, as its addresses do not fit a 32-bit displacement): its first pointer is read the same way.
 fn jumps_through_a_table(env: &dyn Env, d: &Decoded, k: usize, start: u64, end: u64) -> bool {
     let jmp = &d.ins[k];
-    // `base` is None for an absolute table (the displacement is its address); a register base is unknown
-    let indexed = |x: &Instruction| -> Option<bool> {
+    // The address of the table a 64-bit read at instruction `at` starts from, when it is known: the
+    // displacement of an absolute table, or a register base loaded by a rip-relative `lea` before it.
+    let table_of = |x: &Instruction, at: usize| -> Option<u64> {
+        if x.is_ip_rel_memory_operand() {
+            return None;
+        }
+        if x.memory_base() == Register::None {
+            return Some(x.memory_displacement64());
+        }
+        let base = x.memory_base().full_register();
+        let lea = d.ins[at.saturating_sub(64)..at].iter().rev().find(|l| {
+            l.mnemonic() == Mnemonic::Lea
+                && l.op0_kind() == OpKind::Register
+                && l.op0_register().full_register() == base
+        })?;
+        (lea.is_ip_rel_memory_operand()).then(|| lea.memory_displacement64().wrapping_add(x.memory_displacement64()))
+    };
+    // `None`: not an indexed read; `Some(false)`: a table of addresses outside this function; `Some(true)`: a
+    // switch of it, or a table not known to be anything else (a register base we could not follow, 32-bit offsets)
+    let indexed = |x: &Instruction, at: usize, wide: bool| -> Option<bool> {
         if x.memory_index() == Register::None {
             return None;
         }
-        if x.memory_base() == Register::None && !x.is_ip_rel_memory_operand() {
-            return Some(entry_is_here(env, x.memory_displacement64(), start, end));
+        match table_of(x, at) {
+            Some(table) if wide => Some(entry_is_here(env, table, start, end)),
+            _ => Some(true),
         }
-        Some(true)
     };
     if jmp.op0_kind() == OpKind::Memory {
-        return indexed(jmp).unwrap_or(false);
+        return indexed(jmp, k, true).unwrap_or(false);
     }
     if jmp.op0_kind() != OpKind::Register {
         return false;
     }
     let target = jmp.op0_register().full_register();
-    let window = &d.ins[k.saturating_sub(64)..k];
-    let loaded = window.iter().any(|x| {
+    let from = k.saturating_sub(64);
+    let loaded = d.ins[from..k].iter().enumerate().any(|(i, x)| {
         matches!(x.mnemonic(), Mnemonic::Mov | Mnemonic::Movsxd)
             && x.op0_kind() == OpKind::Register
             && x.op0_register().full_register() == target
             && x.op1_kind() == OpKind::Memory
-            && indexed(x).unwrap_or(false)
+            && indexed(x, from + i, x.mnemonic() == Mnemonic::Mov && x.op0_register().size() == 8).unwrap_or(false)
     });
-    let lea = window.iter().any(|x| x.mnemonic() == Mnemonic::Lea && x.is_ip_rel_memory_operand());
-    let add = window.iter().any(|x| {
+    let lea = d.ins[from..k].iter().any(|x| x.mnemonic() == Mnemonic::Lea && x.is_ip_rel_memory_operand());
+    let add = d.ins[from..k].iter().any(|x| {
         x.mnemonic() == Mnemonic::Add
             && x.op0_kind() == OpKind::Register
             && x.op0_register().full_register() == target
-            && x.op1_kind() == OpKind::Register
+            && (x.op1_kind() == OpKind::Register
+                || (x.op1_kind() == OpKind::Memory && x.memory_index() != Register::None))
     });
     loaded || (lea && add)
 }

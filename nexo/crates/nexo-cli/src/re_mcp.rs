@@ -634,7 +634,10 @@ mod tests {
             crate::bin_cmd::execute(&b).unwrap()
         };
         assert_eq!(text, expect);
-        assert!(text.to_lowercase().contains("elf"), "{text}");
+        // the format line names what `cc` really produced: ELF on Linux, PE on Windows (MinGW)
+        let magic = std::fs::read(&exe).unwrap();
+        let want = if magic.starts_with(b"MZ") { "pe32" } else { "elf" };
+        assert!(text.to_lowercase().contains(want), "expected {want} in\n{text}");
         // a positional and a flag together
         let a = talk(false, &[call(2, "bin_funcs", json!({"file": exe, "lines": 12}))]);
         assert_eq!(a[0]["result"]["isError"], false, "{a:?}");

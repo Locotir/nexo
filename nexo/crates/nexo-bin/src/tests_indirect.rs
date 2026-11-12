@@ -157,7 +157,9 @@ fn a_non_pie_switch_is_never_rendered_as_a_call_through_a_pointer() {
         let img = Image::open(&exe).unwrap();
         let sw = dec(&img, dir.path(), "sw");
         println!("{flags:?}\n{sw}");
-        assert!(!sw.contains("return (*") && !sw.contains("(*"), "{flags:?}: not a tail call\n{sw}");
+        // a dereference may appear in the address of an unresolved `goto *...` (the table read), never as a call
+        let calls = sw.lines().filter(|l| l.contains("(*") && !l.trim_start().starts_with("goto")).count();
+        assert!(!sw.contains("return (*") && calls == 0, "{flags:?}: not a tail call\n{sw}");
         assert!(sw.contains("switch") || sw.contains("jump not resolved"), "{flags:?}\n{sw}");
     }
 }
