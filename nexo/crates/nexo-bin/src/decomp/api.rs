@@ -136,7 +136,8 @@ fn table(name: &str) -> Option<Sig> {
         | "rand_r" | "gmtime" | "localtime" | "sqrt" => s(1),
         "free" | "exit" | "_exit" | "srandom" | "g_free" | "g_object_unref" => v(1),
         "abort" | "__stack_chk_fail" => v(0),
-        "rand" | "getchar" | "random" | "getpid" | "fork" | "getuid" | "clock" => s(0),
+        "__ctype_toupper_loc" | "__ctype_tolower_loc" | "__ctype_b_loc" | "__errno_location" | "g_ptr_array_new" | "doupdate"
+        | "rand" | "getchar" | "random" | "getpid" | "fork" | "getuid" | "clock" => s(0),
         "time" | "ctime" | "fputc_" | "putc_" => s(1),
         "strcmp" | "strcpy" | "strcat" | "strchr" | "strrchr" | "strstr" | "strcasecmp" | "fputs" | "fputc" | "putc"
         | "fopen" | "access" | "mkdir" | "rename" | "realloc" | "calloc" | "strpbrk" | "strcspn" | "strspn"
@@ -149,6 +150,27 @@ fn table(name: &str) -> Option<Sig> {
         "__fgets_chk" => s(4),
         "__isoc99_sscanf" | "__isoc99_fscanf" => f(2, 1),
         "__isoc99_scanf" => f(1, 0),
+        "wgetch" | "wrefresh" | "wclear" | "werase" | "wclrtoeol" | "wclrtobot" | "wnoutrefresh" | "doupdate_" | "wstandout"
+        | "wstandend" | "keypad_" | "g_string_new" | "g_utf8_get_char" | "g_strfreev_" | "g_ascii_strup_" | "g_hash_table_size"
+        | "g_ptr_array_new_" | "g_list_length" | "g_list_first" | "g_list_last" | "g_strdup_" | "getpwuid" | "gethostbyname"
+        | "inet_ntoa" | "mkstemp" | "tmpfile_" | "isatty" | "g_hash_table_destroy_" | "g_string_free_" => s(1),
+        "g_strfreev" | "g_ptr_array_free_" | "g_hash_table_destroy" | "g_list_free" | "g_ptr_array_unref" | "endwin_" => v(1),
+        "wattrset" | "wattron" | "wattroff" | "waddch" | "g_string_append" | "g_string_free" | "g_string_append_c" | "g_utf8_strlen"
+        | "g_string_prepend" | "g_hash_table_new" | "listen" | "g_hash_table_remove" | "g_list_nth" | "g_list_append_"
+        | "g_ascii_strcasecmp" | "g_str_has_prefix" | "g_str_has_suffix" | "g_ptr_array_index_" | "g_string_truncate"
+        | "g_string_set_size" | "g_utf8_offset_to_pointer" | "g_unichar_to_utf8" | "wbkgd" | "mvwin_" | "g_ascii_strncasecmp_" => s(2),
+        "g_string_insert_len" | "g_string_insert" | "wmove" | "waddnstr" | "waddstr_" | "socket" | "connect" | "bind" | "accept"
+        | "getsockname" | "g_strsplit" | "g_utf8_find_next_char_" | "g_string_append_len" | "g_strndup_" | "g_hash_table_replace"
+        | "g_hash_table_insert_" | "wresize" | "whline" | "wvline" | "g_ptr_array_add_" | "__isoc23_strtol" | "__isoc23_strtoul"
+        | "__isoc23_strtoll" | "__isoc23_strtoull" | "g_utf8_strncpy" | "g_string_erase" => s(3),
+        "recv" | "send" | "g_string_insert_c_" | "mvwaddstr_" | "g_strsplit_set_" | "g_hash_table_lookup_extended" | "waddchnstr_"
+        | "g_hash_table_foreach_" => s(4),
+        "select" | "setsockopt" | "getsockopt" | "recvfrom_" | "mvwaddnstr" => s(5),
+        "g_log" => f(3, 2),
+        "__isoc23_sscanf" | "__isoc23_fscanf" => f(2, 1),
+        "__isoc23_scanf" => f(1, 0),
+        "mvwprintw" => f(4, 3),
+        "wprintw" => f(2, 1),
         "ExitProcess" | "Sleep" | "CloseHandle" | "GetProcAddress_" | "LoadLibraryA" | "LoadLibraryW" => s(1),
         "GetProcAddress" | "GetModuleHandleExW_" => s(2),
         "ReadFile" | "WriteFile" => s(5),
@@ -186,12 +208,15 @@ impl Sigs for ImgSigs<'_> {
 // ---------------------------------------------------------------------------------------------
 // Cache and op
 
+/// Names file plus the decompiler sources: a new build never reads an old answer.
 fn names_digest(img: &Image, data_dir: &Path) -> String {
     let p = crate::names::file_path(data_dir, &img.sha256);
-    match std::fs::read(&p) {
-        Ok(b) => Sha256::digest(&b).iter().take(8).map(|x| format!("{x:02x}")).collect(),
-        Err(_) => "none".into(),
+    let mut h = Sha256::new();
+    h.update(std::fs::read(&p).unwrap_or_default());
+    for src in [include_str!("ir.rs"), include_str!("lift.rs"), include_str!("flow.rs"), include_str!("structure.rs"), include_str!("render.rs"), include_str!("api.rs")] {
+        h.update(src.as_bytes());
     }
+    h.finalize().iter().take(8).map(|x| format!("{x:02x}")).collect()
 }
 
 fn cache_path(img: &Image, data_dir: &Path, start: u64) -> std::path::PathBuf {
@@ -242,8 +267,10 @@ pub fn one(img: &Image, data_dir: &Path, target: &str) -> Result<(String, Vec<Li
     let digest = names_digest(img, data_dir);
     let cp = cache_path(img, data_dir, f.start);
     let name = img.func_name(f).to_string();
-    if let Some(lines) = read_cache(&cp, &digest) {
-        return Ok((name, lines, true));
+    if std::env::var_os("NEXO_DECOMP_IR").is_none() {
+        if let Some(lines) = read_cache(&cp, &digest) {
+            return Ok((name, lines, true));
+        }
     }
     let user = &img.user;
     let protos = super::types::protos(user, img);

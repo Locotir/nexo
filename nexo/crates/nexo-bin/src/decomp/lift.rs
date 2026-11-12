@@ -166,8 +166,8 @@ fn reg_num(r: Register) -> Option<(u8, Bits, bool)> {
     }
     if r.is_gpr8() {
         let high = matches!(r, AH | CH | DH | BH);
-        let n = if high { (r as u32 - AH as u32) as u8 } else { r.number() as u8 };
-        // spl, bpl, sil, dil have numbers 4..7 in the extended encoding
+        let n = if high { (r as u32 - AH as u32) as u8 } else { r.full_register().number() as u8 };
+        // iced numbers the 8-bit registers by position in their own group (spl is 8, r14b is 18)
         return Some((n, 8, high));
     }
     Option::None
@@ -389,6 +389,20 @@ impl<'a> Lifter<'a> {
         self.assign(addr, Var::FlagRes, res);
     }
 
+    /// After an instruction that writes its destination register, the result flags read the
+    /// register: its operands may be overwritten, the register is what the next test sees.
+    fn res_from_dest(&mut self, addr: u64, ins: &Instruction, bits: Bits, logic: bool) {
+        if ins.op0_kind() != OpKind::Register || ins.op0_register().is_xmm() || bits < 8 {
+            return;
+        }
+        let rd = self.read(ins, 0, bits);
+        let kind = if logic { FlagKind::ResLogic } else { FlagKind::Res };
+        self.assign(addr, Var::FlagRes, Expr::Flags(kind, b(rd.clone()), b(rd.clone())));
+        if logic {
+            self.assign(addr, Var::FlagOps, Expr::Flags(FlagKind::Logic, b(rd.clone()), b(rd)));
+        }
+    }
+
     fn flags_sub(&mut self, addr: u64, a: Expr, c: Expr) {
         let r = simplify(Expr::bin(Bin::Sub, a.clone(), c.clone()));
         self.set_flags(addr, Expr::Flags(FlagKind::Sub, b(a), b(c)), Expr::Flags(FlagKind::Res, b(r.clone()), b(r)));
@@ -595,6 +609,7 @@ impl<'a> Lifter<'a> {
                     }
                 }
                 self.write(addr, ins, 0, r);
+                self.res_from_dest(addr, ins, bits, kind == FlagKind::Logic);
             }
             M::Inc | M::Dec => {
                 let bits = self.op_bits(ins, 0);
@@ -611,6 +626,7 @@ impl<'a> Lifter<'a> {
                     Expr::Flags(FlagKind::Res, b(r.clone()), b(r.clone())),
                 );
                 self.write(addr, ins, 0, r);
+                self.res_from_dest(addr, ins, bits, false);
             }
             M::Neg => {
                 let bits = self.op_bits(ins, 0);
@@ -765,6 +781,17 @@ impl<'a> Lifter<'a> {
                 let bits = self.op_bits(ins, 0);
                 let c = flag_cond(Cc::B).zext(bits);
                 self.write(addr, ins, 0, simplify(Expr::Un(Un::Neg, b(c))));
+            }
+            M::Adc | M::Sbb => {
+                let bits = self.op_bits(ins, 0);
+                let a = self.read(ins, 0, bits);
+                let c = self.read(ins, 1, bits);
+                let c = if c.bits() != bits && c.bits() != 0 { c.sext(bits).trunc(bits) } else { c };
+                let cf = flag_cond(Cc::B).zext(bits);
+                let (op, other) = if m == M::Adc { (Bin::Add, Bin::Add) } else { (Bin::Sub, Bin::Sub) };
+                let r = simplify(Expr::bin(other, simplify(Expr::bin(op, a, c)), cf));
+                self.set_flags(addr, Expr::Unknown(0), Expr::Flags(FlagKind::Res, b(r.clone()), b(r.clone())));
+                self.write(addr, ins, 0, r);
             }
             M::Push => {
                 let v = self.read(ins, 0, 64);

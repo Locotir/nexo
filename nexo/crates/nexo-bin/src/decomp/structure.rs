@@ -190,6 +190,8 @@ struct Ctx<'a> {
     loops: HashMap<usize, BTreeSet<usize>>,
     emitted: HashSet<usize>,
     entered: HashSet<usize>,
+    /// The loop header whose body is being started: it is not a continue yet.
+    opening: Option<usize>,
     labels: HashSet<usize>,
     scopes: Vec<Scope>,
 }
@@ -267,7 +269,9 @@ impl Ctx<'_> {
         let mut out: Vec<Node> = Vec::new();
         let mut cur = Some(start);
         while let Some(b) = cur {
-            if let Some(n) = self.jump_to(b) {
+            if self.opening == Some(b) {
+                self.opening = None;
+            } else if let Some(n) = self.jump_to(b) {
                 out.push(n);
                 break;
             }
@@ -282,6 +286,7 @@ impl Ctx<'_> {
                 self.entered.insert(b);
                 let exit = self.loop_exit(b);
                 self.scopes.push(Scope::Loop { header: b, exit });
+                self.opening = Some(b);
                 let body = self.gen(b, None);
                 self.scopes.pop();
                 out.push(Node::Loop(body));
@@ -404,6 +409,7 @@ pub fn structure(f: &mut Lifted) -> Vec<Node> {
         loops: HashMap::new(),
         emitted: HashSet::new(),
         entered: HashSet::new(),
+        opening: None,
         labels: HashSet::new(),
         scopes: Vec::new(),
     };

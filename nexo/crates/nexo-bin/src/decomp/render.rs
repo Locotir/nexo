@@ -661,7 +661,13 @@ pub fn render(
             fn ret_bits(v: &[Node], b: &mut Bits) {
                 for n in v {
                     match n {
-                        Node::Return(_, Some(e)) => *b = (*b).max(e.bits()),
+                        Node::Return(_, Some(e)) => {
+                            let inner = match e {
+                                Expr::Zext(x, _) | Expr::Sext(x, _) => x.bits(),
+                                other => other.bits(),
+                            };
+                            *b = (*b).max(inner);
+                        }
                         Node::If(_, _, x, y) => {
                             ret_bits(x, b);
                             ret_bits(y, b);

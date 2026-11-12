@@ -291,6 +291,7 @@ fn expr_keys(e: &Expr) -> Vec<Key> {
 }
 
 struct Plan {
+    src: (usize, usize),
     blk: usize,
     idx: usize,
     var: Var,
@@ -321,6 +322,8 @@ fn round(f: &mut Lifted) -> bool {
         }
     }
     let mut plans: Vec<Plan> = Vec::new();
+    // calls that moved into their only reader: the old statement must not run a second time
+    let mut moved: Vec<(usize, usize)> = Vec::new();
     for d in an.nentry..nd {
         let site = an.defs[d];
         let Stmt::Assign(v, e) = &f.blocks[site.blk].stmts[site.idx].st else { continue };
@@ -342,10 +345,7 @@ fn round(f: &mut Lifted) -> bool {
         }
         let is_call = e.has_call();
         let ops: Vec<Key> = expr_keys(e);
-        let mut taint0 = ops.contains(&Key::V(*v));
-        if matches!(v, Var::FlagOps | Var::FlagRes) && !trivial {
-            taint0 = true;
-        }
+        let taint0 = ops.contains(&Key::V(*v));
         // walk forward from the definition
         let mut clean: HashSet<(usize, usize)> = HashSet::new();
         let mut seen: HashSet<(usize, bool)> = HashSet::new();
@@ -386,6 +386,7 @@ fn round(f: &mut Lifted) -> bool {
                 }
             }
         }
+        let before = plans.len();
         for &u in &own {
             let ur = &an.uses[u];
             if !clean.contains(&(ur.blk, ur.idx)) {
@@ -397,10 +398,18 @@ fn round(f: &mut Lifted) -> bool {
                 continue;
             }
             // a statement that changes the variable and reads it elsewhere is left alone
-            plans.push(Plan { blk: ur.blk, idx: ur.idx, var: *v, with: e.clone() });
+            plans.push(Plan { src: (site.blk, site.idx), blk: ur.blk, idx: ur.idx, var: *v, with: e.clone() });
+        }
+        if is_call && !trivial && plans.len() == before + 1 {
+            moved.push((site.blk, site.idx));
         }
     }
+    // a definition that is itself rewritten this round moves next round, with its new text
+    let rewritten: HashSet<(usize, usize)> = plans.iter().map(|p| (p.blk, p.idx)).collect();
+    plans.retain(|p| !rewritten.contains(&p.src));
+    moved.retain(|m| plans.iter().any(|p| p.src == *m));
     let n = plans.len();
+    let targets: HashSet<(usize, usize)> = plans.iter().map(|p| (p.blk, p.idx)).collect();
     for p in plans {
         let bl = &mut f.blocks[p.blk];
         if p.idx < bl.stmts.len() {
@@ -411,6 +420,11 @@ fn round(f: &mut Lifted) -> bool {
             for e in bl.term.exprs_mut() {
                 e.subst(p.var, &p.with);
             }
+        }
+    }
+    for (blk, idx) in moved {
+        if !targets.contains(&(blk, idx)) {
+            f.blocks[blk].stmts[idx].st = Stmt::Clobber(Vec::new());
         }
     }
     n > 0
@@ -606,6 +620,9 @@ pub fn resolve_calls(f: &mut Lifted, sigs: &mut dyn Sigs, variadic: bool) {
             return;
         }
         let sig = sigs.sig_of(&c.target);
+        if c.known && sig.as_ref().is_none_or(|s| s.fmt.is_none()) {
+            return;
+        }
         let fixed = at_call.get(&(bi, si)).copied().unwrap_or(0);
         match sig {
             Some(s) => {
@@ -938,14 +955,24 @@ pub struct Facts {
 }
 
 pub fn run(f: &mut Lifted, sigs: &mut dyn Sigs) -> Facts {
+    let dbg = std::env::var("NEXO_DECOMP_IR").is_ok_and(|v| v == "2");
+    let show = |f: &Lifted, s: &str| {
+        if dbg {
+            eprintln!("STAGE {s}\n{}", super::ir_text(f));
+        }
+    };
     prune(f);
     drop_canary(f);
     tidy(f);
+    show(f, "tidy");
     resolve_calls(f, sigs, false);
+    show(f, "resolve1");
     let ret = fix_returns(f);
     set_return_var(f, ret);
     propagate(f);
+    show(f, "propagate1");
     resolve_calls(f, sigs, true);
+    show(f, "resolve2");
     propagate(f);
     // a canary compare is only visible after propagation
     drop_canary(f);
@@ -954,6 +981,7 @@ pub fn run(f: &mut Lifted, sigs: &mut dyn Sigs) -> Facts {
     tidy(f);
     propagate(f);
     tidy(f);
+    narrow_returns(f);
     let mut facts = Facts { ret, ..Facts::default() };
     entry_facts(f, &mut facts);
     facts
@@ -980,6 +1008,23 @@ pub fn entry_facts(f: &Lifted, facts: &mut Facts) {
                 facts.float_args.insert(x);
             }
             _ => {}
+        }
+    }
+}
+
+/// `eax` after a `setcc al` that only the low byte of is read: return the byte.
+fn narrow_returns(f: &mut Lifted) {
+    fn strip(e: Expr) -> Expr {
+        match e {
+            Expr::Insert(_, n) if n.bits() <= 16 => *n,
+            Expr::Trunc(x, _) | Expr::Zext(x, _) if matches!(*x, Expr::Insert(_, ref n) if n.bits() <= 16) => strip(*x),
+            other => other,
+        }
+    }
+    for bl in &mut f.blocks {
+        if let Term::Return(Some(e)) = &mut bl.term {
+            let old = std::mem::replace(e, Expr::Unknown(0));
+            *e = strip(old);
         }
     }
 }

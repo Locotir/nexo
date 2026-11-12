@@ -105,11 +105,47 @@ mod tests {
         assert!(t.contains("if (a1 < a2)") || t.contains("if (a1 >= a2)"), "{t}");
         assert!(d.contains("Return(Some(Var(Reg(7), 32)))") || d.contains("Return(Some("), "{d}");
     }
+
+    #[test]
+    fn calls_inside_a_loop_stay() {
+        // L: mov edi,1 ; call X ; cmp eax,12 ; je L ; ret
+        let code = vec![0xbf, 1, 0, 0, 0, 0xe8, 0x40, 0, 0, 0, 0x83, 0xf8, 0x0c, 0x74, 0xf1, 0xc3];
+        let env = Raw { base: 0x1000, code: code.clone() };
+        let mut f = lift(&env, 0x1000, 0x1010, Abi::SysV);
+        println!("LIFTED\n{}", dump(&f));
+        flow::run(&mut f, &mut NoSigs);
+        println!("FLOW\n{}", dump(&f));
+        let t = text(code);
+        println!("{t}");
+        assert!(t.contains("do {") && t.contains("} while ((u32)v1 == 0xc);"), "{t}");
+    }
+
+    #[test]
+    fn test_and_branch_folds_flags() {
+        // test edi,1 ; je L ; mov eax,1 ; ret ; L: mov eax,2 ; ret
+        let t = text(vec![0xf7, 0xc7, 1, 0, 0, 0, 0x74, 6, 0xb8, 1, 0, 0, 0, 0xc3, 0xb8, 2, 0, 0, 0, 0xc3]);
+        println!("{t}");
+        assert!(!t.contains("flags"), "{t}");
+        assert!(t.contains("a1 & 1"), "{t}");
+    }
 }
 pub mod structure;
 pub mod api;
 pub mod types;
 pub mod render;
+
+/// The blocks as plain text, for debugging (`NEXO_DECOMP_IR=1` prints it on stderr).
+pub fn ir_text(f: &lift::Lifted) -> String {
+    let mut s = String::new();
+    for (i, b) in f.blocks.iter().enumerate() {
+        s += &format!("B{i}:\n");
+        for st in &b.stmts {
+            s += &format!("  {:?}\n", st.st);
+        }
+        s += &format!("  {:?}\n", b.term);
+    }
+    s
+}
 
 pub fn decompile(
     env: &dyn lift::Env,
@@ -136,7 +172,14 @@ pub fn decompile_with(
     proto: Option<&types::Proto>,
 ) -> Vec<render::Line> {
     let mut f = lift::lift(env, start, end, abi);
+    let debug = std::env::var_os("NEXO_DECOMP_IR").is_some();
+    if debug {
+        eprintln!("LIFTED\n{}", ir_text(&f));
+    }
     let mut facts = flow::run(&mut f, sigs);
+    if debug {
+        eprintln!("FLOW\n{}", ir_text(&f));
+    }
     if let Some(p) = proto {
         facts.argc = p.args.len().min(abi.arg_count_max());
         if p.ret == "void" {
