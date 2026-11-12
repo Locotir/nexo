@@ -111,6 +111,14 @@ fn lookalike_functions_of_the_program_are_not_named() {
 }
 
 #[test]
+fn the_shipped_set_is_not_empty_and_parses_back() {
+    let b = crate::sigs::SigSet::builtin();
+    assert!(!b.is_empty(), "the shipped signature set is empty");
+    let again = crate::sigs::SigSet::parse(&b.to_text("test"));
+    assert_eq!(again.len(), b.len());
+}
+
+#[test]
 fn a_signature_file_round_trips() {
     let Some(lib) = libc_a() else {
         eprintln!("skipped: no libc.a");

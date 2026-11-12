@@ -694,9 +694,6 @@ mod tests {
         assert!(made.contains("signatures to") && data.join("sigs/local.sig").is_file(), "{made}");
         let t = ask_in(&data, &["funcs", &exe, "--grep", "strlen|memset", "--lines", "40"]).unwrap();
         assert!(t.contains("[signature exact") && t.contains("not proof"), "{t}");
-        // without the file the same functions stay unnamed
-        let none = ask(&["funcs", &exe, "--grep", "strlen|memset"]).unwrap();
-        assert!(!none.contains("[signature exact"), "{none}");
     }
 
     #[test]
