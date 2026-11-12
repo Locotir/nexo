@@ -129,3 +129,7 @@ strip = true
 opt-level = 2
 [profile.dev.package."*"]
 opt-level = 2
+# nexo-dbg's tests read the fixture program's own DWARF line table, so keep line info on this crate even when the build strips debug to stay lean
+[profile.dev.package.nexo-dbg]
+opt-level = 2
+debug = "line-tables-only"
