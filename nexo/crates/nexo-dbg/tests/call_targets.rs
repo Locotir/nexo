@@ -53,6 +53,11 @@ fn the_targets_of_one_call_site_are_saved_and_decomp_shows_them_by_name() {
     assert!(on.contains("logging 1 indirect call site"), "{on}");
     let end = run(&mut s, "cont");
     assert!(end.contains("exited with code 0"), "{end}");
+    // the save is announced once, with the file it went to
+    let log = run(&mut s, "log");
+    let said: Vec<&str> = log.lines().filter(|l| l.contains("saved indirect-call targets")).collect();
+    assert_eq!(said.len(), 1, "{log}");
+    assert!(said[0].contains(data.to_str().unwrap()) && said[0].contains(".json"), "{log}");
     drop(s);
     let img = nexo_bin::Image::open(&exe).unwrap();
     let mut img = img;

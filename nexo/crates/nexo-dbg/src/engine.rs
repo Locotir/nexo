@@ -113,6 +113,8 @@ pub struct Session {
     inserted: BTreeMap<u64, u8>,
     /// (site, target) pairs of indirect calls already saved to the names file.
     seen_targets: std::collections::BTreeSet<(u64, String)>,
+    /// The "saved targets" line has been written to the log.
+    said_saved: bool,
     pub run: Run,
     backlog: Vec<Event>,
     pub prev: HashMap<Tid, Regs>,
@@ -294,6 +296,7 @@ impl Session {
             next_id: 1,
             inserted: BTreeMap::new(),
             seen_targets: std::collections::BTreeSet::new(),
+            said_saved: false,
             run: Run::default(),
             backlog: Vec::new(),
             prev: HashMap::new(),
@@ -637,6 +640,11 @@ impl Session {
         Ok(traced)
     }
 
+    /// The byte our own int3 replaced at `addr`, if one sits there.
+    pub(crate) fn inserted_byte(&self, addr: u64) -> Option<u8> {
+        self.inserted.get(&addr).copied()
+    }
+
     /// `call 0x401136 main+0x20 -> 0x401220 helper`: the real target of the indirect call at `addr` now.
     fn call_line(&mut self, tid: Tid, addr: u64) -> String {
         let from = self.mods.label(addr, false).unwrap_or_default();
@@ -682,7 +690,14 @@ impl Session {
         };
         let site = site.wrapping_sub(bias);
         if self.seen_targets.insert((site, entry.clone())) {
-            let _ = nexo_bin::add_call_target(self.mods.main_image(), &dir, site, &entry);
+            let saved = nexo_bin::add_call_target(self.mods.main_image(), &dir, site, &entry);
+            if saved.is_ok() && !self.said_saved {
+                self.said_saved = true;
+                self.log_line(format!(
+                    "saved indirect-call targets for `nexo bin decomp` in {} (more are added as they are seen)",
+                    nexo_bin::names_path(&dir, &self.mods.main_image().sha256).display()
+                ));
+            }
         }
     }
 

@@ -94,6 +94,9 @@ impl Names for ImgNames<'_> {
                 None => t.clone(),
             })
             .collect();
+        if crate::names::call_targets_more(self.img, site) {
+            return Some(format!("seen: {}, ... ({} kept, more seen)", shown.join(", "), shown.len()));
+        }
         Some(format!("seen: {}", shown.join(", ")))
     }
     fn func(&self, addr: u64) -> Option<String> {

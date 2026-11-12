@@ -218,6 +218,72 @@ mod tests {
         assert!(t.contains("(i32)v1 > 0xff"), "{t}");
         assert!(!t.contains("(u32)v1 > 0xff"), "{t}");
     }
+
+    /// The terminators of a lifted function, as text.
+    fn terms(f: &super::lift::Lifted) -> String {
+        f.blocks.iter().map(|b| format!("{:?}", b.term)).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_jump_is_not_a_tail_call_when_the_stack_pointer_is_unknown() {
+        // mov rsp, rdx ; jmp rax
+        let env = Raw { base: 0x1000, code: vec![0x48, 0x89, 0xd4, 0xff, 0xe0] };
+        let f = lift(&env, 0x1000, 0x1005, Abi::SysV);
+        let t = terms(&f);
+        assert!(!t.contains("TailCall"), "an unknown frame is not a torn-down frame\n{t}");
+        assert_eq!(f.unresolved_jumps, 1, "{t}");
+    }
+
+    #[test]
+    fn a_register_jump_after_a_scaled_table_load_is_left_unresolved() {
+        // mov rax, [rdi*8+0x1020] ; jmp rax ; ret padding ; the table at 0x1020 points back into the function
+        let mut code = vec![0x48, 0x8b, 0x04, 0xfd, 0x20, 0x10, 0x00, 0x00, 0xff, 0xe0];
+        code.resize(0x20, 0xc3);
+        code.extend_from_slice(&0x1010u64.to_le_bytes());
+        code.extend_from_slice(&0x1011u64.to_le_bytes());
+        let env = Raw { base: 0x1000, code };
+        let f = lift(&env, 0x1000, 0x1020, Abi::SysV);
+        let t = terms(&f);
+        assert!(!t.contains("TailCall"), "a table dispatch is not a tail call\n{t}");
+        assert_eq!(f.unresolved_jumps, 1, "{t}");
+    }
+
+    #[test]
+    fn a_switch_whose_table_address_was_loaded_far_back_is_left_unresolved() {
+        // lea rcx,[rip+0x39] ; 12 nops ; movsxd rax,[rcx+rdi*4] ; add rax,rcx ; jmp rax ; ret padding
+        let mut code = vec![0x48, 0x8d, 0x0d, 0x39, 0, 0, 0];
+        code.extend(std::iter::repeat_n(0x90, 12));
+        code.extend_from_slice(&[0x48, 0x63, 0x04, 0xb9, 0x48, 0x01, 0xc8, 0xff, 0xe0]);
+        code.resize(0x30, 0xc3);
+        let env = Raw { base: 0x1000, code };
+        let f = lift(&env, 0x1000, 0x1030, Abi::SysV);
+        let t = terms(&f);
+        assert!(!t.contains("TailCall"), "the lea is far back but it is still a table dispatch\n{t}");
+        assert_eq!(f.unresolved_jumps, 1, "{t}");
+    }
+
+    #[test]
+    fn a_memory_jump_through_a_table_that_points_into_the_function_is_left_unresolved() {
+        // cmp edi,1 ; ja L ; jmp [rdi*8+0x1020] ; L: ret ; the table has one entry here and one far away
+        let mut code = vec![0x83, 0xff, 0x01, 0x77, 0x07, 0xff, 0x24, 0xfd, 0x20, 0x10, 0x00, 0x00];
+        code.resize(0x20, 0xc3);
+        code.extend_from_slice(&0x100cu64.to_le_bytes());
+        code.extend_from_slice(&0x9999u64.to_le_bytes());
+        let env = Raw { base: 0x1000, code };
+        let f = lift(&env, 0x1000, 0x1020, Abi::SysV);
+        let t = terms(&f);
+        assert!(!t.contains("TailCall"), "{t}");
+        assert_eq!(f.unresolved_jumps, 1, "{t}");
+    }
+    #[test]
+    fn a_jump_through_a_pointer_field_with_the_frame_gone_is_still_a_tail_call() {
+        // mov rax, [rdi+8] ; jmp rax
+        let env = Raw { base: 0x1000, code: vec![0x48, 0x8b, 0x47, 0x08, 0xff, 0xe0] };
+        let f = lift(&env, 0x1000, 0x1006, Abi::SysV);
+        let t = terms(&f);
+        assert!(t.contains("TailCall"), "{t}");
+        assert_eq!(f.unresolved_jumps, 0, "{t}");
+    }
 }
 pub mod api;
 pub mod render;

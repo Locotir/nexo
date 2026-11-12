@@ -35,6 +35,8 @@ pub struct UserNames {
     pub(crate) vars: BTreeMap<u64, BTreeMap<String, String>>,
     /// Targets the debugger saw at an indirect call site: `0x401100 add1` (program code) or `libc.so.6!qsort`.
     pub(crate) targets: BTreeMap<u64, std::collections::BTreeSet<String>>,
+    /// Call sites where more targets were seen than [`MAX_TARGETS`] kept, so the list is not complete.
+    pub(crate) targets_more: std::collections::BTreeSet<u64>,
 }
 
 impl UserNames {
@@ -135,11 +137,21 @@ fn parse(raw: &[u8]) -> std::result::Result<UserNames, String> {
     if let Some(m) = obj.get("targets").and_then(Value::as_object) {
         for (k, val) in m {
             let addr = parse_addr(k).map_err(|_| format!("\"{k}\" in \"targets\" is not an address"))?;
-            let set = val
+            // the file may have been edited by hand: clean every target and keep no more than the cap
+            let all: std::collections::BTreeSet<String> = val
                 .as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(clean_target)).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default();
-            out.targets.insert(addr, set);
+            if all.len() > MAX_TARGETS {
+                out.targets_more.insert(addr);
+            }
+            out.targets.insert(addr, all.into_iter().take(MAX_TARGETS).collect());
+        }
+    }
+    if let Some(a) = obj.get("targets_more").and_then(Value::as_array) {
+        for k in a.iter().filter_map(Value::as_str) {
+            let addr = parse_addr(k).map_err(|_| format!("\"{k}\" in \"targets_more\" is not an address"))?;
+            out.targets_more.insert(addr);
         }
     }
     Ok(out)
@@ -153,6 +165,7 @@ fn render(n: &UserNames, sha256: &str) -> String {
         &json!({"version": 1, "sha256": sha256, "names": side(&n.names), "notes": side(&n.notes),
                "protos": side(&n.protos),
                "structs": n.structs,
+               "targets_more": n.targets_more.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>(),
                "targets": n.targets.iter().map(|(a, s)| (format!("{a:#x}"), json!(s))).collect::<Map<String, Value>>(),
                "vars": n.vars.iter().map(|(a, m)| (format!("{a:#x}"), json!(m))).collect::<Map<String, Value>>()}),
     )
@@ -298,17 +311,32 @@ pub const MAX_TARGETS: usize = 16;
 /// Returns false when the site already holds it or is full.
 pub fn add_call_target(img: &Image, data_dir: &Path, site: u64, target: &str) -> Result<bool> {
     check_addr(img, site)?;
-    let target = clean_note(target);
+    let target = clean_target(target);
+    if target.is_empty() {
+        return Ok(false);
+    }
     edit(data_dir, &img.sha256, |n| {
         if !n.targets.contains_key(&site) && n.targets.len() >= MAX_ENTRIES {
             return Ok(false);
         }
         let set = n.targets.entry(site).or_default();
         if set.len() >= MAX_TARGETS && !set.contains(&target) {
+            // a target that is not kept is still remembered as seen, so the list never looks complete
+            n.targets_more.insert(site);
             return Ok(false);
         }
         Ok(set.insert(target))
     })
+}
+
+/// A target as it is kept: one line, no control characters, and nothing that could close a `/* */` comment.
+fn clean_target(text: &str) -> String {
+    clean_note(text).replace("*/", "* /").replace("/*", "/ *")
+}
+
+/// True when the debugger saw more targets at this call site than the list keeps.
+pub fn call_targets_more(img: &Image, site: u64) -> bool {
+    img.user.targets_more.contains(&site)
 }
 
 /// The targets seen at an indirect call site, sorted.

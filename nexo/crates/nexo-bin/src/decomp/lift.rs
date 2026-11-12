@@ -1382,13 +1382,11 @@ pub fn lift(env: &dyn Env, start: u64, end: u64, abi: Abi) -> Lifted {
                             break;
                         }
                     }
-                    // with the frame already torn down, a jump through a pointer or a table of function addresses
-                    // that is not a switch of this function is a tail call; a register computed from a table
-                    // base (lea) before the jump is a switch we could not recover, so it stays unresolved.
-                    let frame_gone = lf.st.rsp.is_none_or(|r| r >= 0);
-                    let from_table = ins.op0_kind() == OpKind::Register
-                        && d.ins[k.saturating_sub(10)..k].iter().any(|x| x.mnemonic() == Mnemonic::Lea);
-                    if frame_gone && !from_table {
+                    // Only a frame known to be gone makes the jump a tail call (an unknown rsp is not "gone"), and
+                    // only when the target is not picked from a table of this function: a jump through a table
+                    // or a register loaded from one is a switch we could not recover, so it stays unresolved.
+                    let frame_gone = lf.st.rsp.is_some_and(|r| r >= 0);
+                    if frame_gone && !jumps_through_a_table(env, &d, k, start, end) {
                         term = Some((Term::TailCall(call), ip));
                         break;
                     }
@@ -1578,4 +1576,53 @@ fn promote_slots(f: &mut Lifted, raw_escapes: &BTreeSet<i64>) {
             e.rewrite(&mut |x| fix(x));
         }
     }
+}
+
+/// Whether a first table entry at `entry` is an address inside the function (so the table is a switch of it).
+/// An entry that cannot be read is not known to be anything else, so it counts.
+fn entry_is_here(env: &dyn Env, entry: u64, start: u64, end: u64) -> bool {
+    let e = env.read(entry, 8).and_then(|r| <[u8; 8]>::try_from(r).ok());
+    e.is_none_or(|e| (start..end).contains(&u64::from_le_bytes(e)))
+}
+
+/// An indirect `jmp` at instruction `k` that reads like a dispatch through a table of this function, which
+/// `find_switch` could not recover. A memory operand `[table + idx*8]`, or a register loaded in the 64
+/// instructions before it from such an operand, counts unless the table is readable and holds addresses
+/// outside the function (a table of function pointers, a real tail call). So does the PIE pattern: a
+/// rip-relative `lea` for the table base and an `add jump_reg, reg` that adds it to the loaded offset.
+fn jumps_through_a_table(env: &dyn Env, d: &Decoded, k: usize, start: u64, end: u64) -> bool {
+    let jmp = &d.ins[k];
+    // `base` is None for an absolute table (the displacement is its address); a register base is unknown
+    let indexed = |x: &Instruction| -> Option<bool> {
+        if x.memory_index() == Register::None {
+            return None;
+        }
+        if x.memory_base() == Register::None && !x.is_ip_rel_memory_operand() {
+            return Some(entry_is_here(env, x.memory_displacement64(), start, end));
+        }
+        Some(true)
+    };
+    if jmp.op0_kind() == OpKind::Memory {
+        return indexed(jmp).unwrap_or(false);
+    }
+    if jmp.op0_kind() != OpKind::Register {
+        return false;
+    }
+    let target = jmp.op0_register().full_register();
+    let window = &d.ins[k.saturating_sub(64)..k];
+    let loaded = window.iter().any(|x| {
+        matches!(x.mnemonic(), Mnemonic::Mov | Mnemonic::Movsxd)
+            && x.op0_kind() == OpKind::Register
+            && x.op0_register().full_register() == target
+            && x.op1_kind() == OpKind::Memory
+            && indexed(x).unwrap_or(false)
+    });
+    let lea = window.iter().any(|x| x.mnemonic() == Mnemonic::Lea && x.is_ip_rel_memory_operand());
+    let add = window.iter().any(|x| {
+        x.mnemonic() == Mnemonic::Add
+            && x.op0_kind() == OpKind::Register
+            && x.op0_register().full_register() == target
+            && x.op1_kind() == OpKind::Register
+    });
+    loaded || (lea && add)
 }

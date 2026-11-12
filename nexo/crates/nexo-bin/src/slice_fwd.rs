@@ -230,6 +230,8 @@ pub fn slice_forward(
             let mut rd: Vec<Loc> = Vec::new();
             let mut wr: Vec<(Loc, bool)> = Vec::new();
             let mut ptr_store = false;
+            // writes to al / ah / ax leave the other bytes of the 64-bit register as they were
+            let mut partial: Vec<(Loc, Register)> = Vec::new();
             for u in i.used_registers() {
                 if skip_reg(u.register()) {
                     continue;
@@ -239,7 +241,11 @@ pub fn slice_forward(
                     rd.push(l);
                 }
                 if writes(u.access()) {
-                    wr.push((l, pure_write(u.access())));
+                    let part = u.register().is_gpr8() || u.register().is_gpr16();
+                    if part {
+                        partial.push((l, u.register()));
+                    }
+                    wr.push((l, pure_write(u.access()) && !part));
                 }
             }
             if ins.mnemonic() != Mnemonic::Lea {
@@ -261,7 +267,22 @@ pub fn slice_forward(
                     }
                 }
             }
-            let hit: Vec<Loc> = rd.iter().filter(|l| set.iter().any(|s| overlaps(s, l))).copied().collect();
+            let all_hit: Vec<Loc> = rd.iter().filter(|l| set.iter().any(|s| overlaps(s, l))).copied().collect();
+            // a register that is only the address of a memory operand is dereferenced, not copied: what the
+            // instruction loads through it is another value, and the register itself is unchanged
+            let value_regs: Vec<Register> = (0..ins.op_count())
+                .filter(|n| ins.op_kind(*n) == OpKind::Register)
+                .map(|n| ins.op_register(n).full_register())
+                .collect();
+            let has_mem = ins.op_kinds().any(|k| k == OpKind::Memory) && ins.mnemonic() != Mnemonic::Lea;
+            let (addr_hit, hit): (Vec<Loc>, Vec<Loc>) = all_hit.iter().partition(|l| match l {
+                Loc::Reg(r) => {
+                    has_mem
+                        && (ins.memory_base().full_register() == *r || ins.memory_index().full_register() == *r)
+                        && !value_regs.contains(r)
+                }
+                _ => false,
+            });
             let zeroing = matches!(ins.mnemonic(), Mnemonic::Xor | Mnemonic::Sub)
                 && ins.op0_kind() == OpKind::Register
                 && ins.op1_kind() == OpKind::Register
@@ -269,6 +290,41 @@ pub fn slice_forward(
             let rsp_slot = hit.iter().any(|l| matches!(l, Loc::Slot(Register::RSP, ..)));
             let cert = if rsp_slot { "inferred" } else { cert };
             let mut killed: Vec<Loc> = Vec::new();
+            if !addr_hit.is_empty() {
+                let names = addr_hit.iter().map(|l| loc_text(img, l)).collect::<Vec<_>>().join(", ");
+                let mem = mem_text(&ins);
+                let (mem_read, mem_write) = i
+                    .used_memory()
+                    .iter()
+                    .fold((false, false), |(r, w), m| (r || reads(m.access()), w || writes(m.access())));
+                let dests: Vec<String> = wr
+                    .iter()
+                    .map(|(l, _)| *l)
+                    .filter(|l| matches!(l, Loc::Reg(_)))
+                    .map(|l| loc_text(img, &l))
+                    .collect();
+                let why = match (mem_read, mem_write) {
+                    (_, false) if !dests.is_empty() => {
+                        format!("the value at {mem} is loaded into {}", dests.join(", "))
+                    }
+                    (true, true) => format!("{names} is the address of {mem}, which is read and written"),
+                    (_, true) => format!("{names} is the address of a store: {mem} is written"),
+                    _ => format!("the value at {mem} is read through {names}"),
+                };
+                step!(&ins, why, cert);
+            }
+            for (l, r) in &partial {
+                if set.contains(l) && !hit.contains(l) {
+                    let part = if r.is_gpr16() {
+                        format!("the low 2 bytes ({}) of {} are overwritten", reg_name(*r), loc_text(img, l))
+                    } else if matches!(r, Register::AH | Register::BH | Register::CH | Register::DH) {
+                        format!("bits 8-15 ({}) of {} are overwritten", reg_name(*r), loc_text(img, l))
+                    } else {
+                        format!("the low byte ({}) of {} is overwritten", reg_name(*r), loc_text(img, l))
+                    };
+                    step!(&ins, format!("{part}; the rest of it still holds the value"), cert);
+                }
+            }
             if !hit.is_empty() && !zeroing {
                 let names = hit.iter().map(|l| loc_text(img, l)).collect::<Vec<_>>().join(", ");
                 let mut new_places: Vec<Loc> = Vec::new();
@@ -471,4 +527,30 @@ pub fn slice_forward(
 
 fn pure_write_of(wr: &[(Loc, bool)], l: &Loc) -> bool {
     wr.iter().any(|(w, p)| w == l && *p)
+}
+
+/// The memory operand as `[rax+rcx*4+0x10]`.
+fn mem_text(ins: &Instruction) -> String {
+    let mut s = String::new();
+    if ins.memory_base() != Register::None {
+        s.push_str(&reg_name(ins.memory_base()));
+    }
+    if ins.memory_index() != Register::None {
+        if !s.is_empty() {
+            s.push('+');
+        }
+        s.push_str(&reg_name(ins.memory_index()));
+        if ins.memory_index_scale() > 1 {
+            s.push_str(&format!("*{}", ins.memory_index_scale()));
+        }
+    }
+    let d = ins.memory_displacement64() as i64;
+    if s.is_empty() {
+        s.push_str(&format!("{:#x}", d as u64));
+    } else if d < 0 {
+        s.push_str(&format!("-{:#x}", -d));
+    } else if d > 0 {
+        s.push_str(&format!("+{d:#x}"));
+    }
+    format!("[{s}]")
 }
