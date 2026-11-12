@@ -266,12 +266,13 @@ pub struct AgentConfig {
     /// and `~/.nexo/prompt.md`. Benchmarks set it, so a run sends the same prompt everywhere.
     pub hermetic: bool,
     /// Files a request names by path (a word with a `/` or an extension) that exist under the working
-    /// directory, are text and at most 24 KB, up to three, are attached to it in full as if written
-    /// `@path`, so the model needs no step to read them.
+    /// directory, are text and at most 24 KB, up to three, are included in it in full, so the model needs no
+    /// step to read them. They go under nexo's own header (`path (project file, included in full by nexo, as it
+    /// is now):`), never under the `@path` header of a file the person attached.
     pub attach_named_files: bool,
-    /// Tokens of the project's small text files attached whole to each request, the named ones counted,
-    /// smallest first (nothing in `target/`, `node_modules/`, `.git/`, binaries, files over 2000 lines).
-    /// 0: none.
+    /// Tokens of the project's small text files included whole in each request, under that same header, the
+    /// named ones counted, smallest first (nothing in `target/`, `node_modules/`, `.git/`, binaries, files over
+    /// 2000 lines). 0: none.
     pub attach_budget: u32,
     /// Runs the project's check (its tests) once at the start of each request, when the policy lets commands
     /// run and the files changed since the last result, and puts the failing tests in the request.

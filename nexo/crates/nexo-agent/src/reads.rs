@@ -14,8 +14,9 @@ use nexo_core::tool::{ToolDisplay, ToolOutput};
 
 /// What the curator puts where it left something out.
 const OMITTED: &str = "[curator]";
-/// The end of the line that heads a file attached whole.
-pub(crate) const ATTACHED: &str = "(attached in full, as it is now):";
+/// The ends of the lines that head a file put whole in a request: the person's `@path` attachment, and a project
+/// file nexo included by itself.
+pub(crate) use nexo_core::agent::{headed_file, ATTACHED, INCLUDED};
 /// The fixed phrases of the note a repeated read gets (see `is_unchanged_note`).
 const UNCHANGED: &str = ": unchanged since shown above";
 const ASK_AGAIN: &str = "If that is no longer in the conversation, ask again and you get it in full.";
@@ -25,9 +26,15 @@ pub(crate) fn is_unchanged_note(text: &str) -> bool {
     text.contains(UNCHANGED) && text.contains(ASK_AGAIN)
 }
 
-/// The line that heads a file attached whole to a request.
+/// The line that heads a file the person attached whole to a request with `@path`.
 pub fn attached_header(shown: &str) -> String {
     format!("@{shown} {ATTACHED}")
+}
+
+/// The line that heads a project file nexo put whole in a request by itself: no `@`, and it names nexo, so it
+/// does not read as something the person attached.
+pub fn included_header(shown: &str) -> String {
+    format!("{shown} {INCLUDED}")
 }
 
 /// The lines asked for, 1-based: `From(a, Some(b))` is lines a to b, `From(a, None)` from a to
@@ -83,7 +90,7 @@ impl Reads {
                         }
                     }
                     Part::Text { text } if !text.contains(OMITTED) => {
-                        for line in text.lines().filter(|l| l.starts_with('@') && l.ends_with(ATTACHED)) {
+                        for line in text.lines().filter(|l| headed_file(l).is_some()) {
                             self.in_view.insert(line.to_string());
                         }
                     }
@@ -193,8 +200,10 @@ impl Reads {
             }
         }
         if at > end && !seen.noted {
-            let whence = if used.iter().any(|p| p.anchor.starts_with('@')) {
+            let whence = if used.iter().any(|p| p.anchor.ends_with(ATTACHED)) {
                 "it was attached in full to a message above".to_string()
+            } else if used.iter().any(|p| p.anchor.ends_with(INCLUDED)) {
+                "nexo included it in full in a message above".to_string()
             } else {
                 let parts: Vec<String> = used.iter().map(|p| format!("{}-{}", p.start, p.end)).collect();
                 format!("lines {start}-{end} are inside your earlier output of lines {} above", parts.join(", "))
@@ -361,6 +370,22 @@ mod tests {
         r.note_view(&[Message::user(format!("look\n\n{header}\n```txt\none\n```"))]);
         let note = r.after_read(&p, "a.txt", None, 2000, "c1", usize::MAX).unwrap();
         assert!(note.contains("attached"), "{note}");
+    }
+
+    #[test]
+    fn a_file_nexo_included_counts_as_read_and_is_not_called_attached() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.txt");
+        std::fs::write(&p, "one\n").unwrap();
+        let mut r = Reads::default();
+        let header = included_header("a.txt");
+        assert_ne!(header, attached_header("a.txt"));
+        assert!(!header.starts_with('@'), "{header}");
+        r.attached(p.clone(), b"one\n", header.clone());
+        assert!(r.met_unchanged(&p));
+        r.note_view(&[Message::user(format!("[project at the start of this request]\n{header}\n```txt\none\n```"))]);
+        let note = r.after_read(&p, "a.txt", None, 2000, "c1", usize::MAX).unwrap();
+        assert!(note.contains("nexo included it in full") && !note.contains("attached"), "{note}");
     }
 
     #[test]

@@ -7,7 +7,6 @@ const JOBS_END: &str = "Read the output with the `jobs` tool";
 const MEMORY_START: &str = "<memory from=\"";
 const MEMORY_END: &str = "</memory>";
 const START_NOTE: &str = "[project at the start of this request]";
-const ATTACHED: &str = "(attached in full, as it is now):";
 use nexo_core::agent::{AddedKind, AddedPart};
 use nexo_core::agent::{
     GOAL_CONTINUE_MARK, GOAL_SET_MARK, HOOK_CONTEXT_END, HOOK_CONTEXT_START, PERSON_MARK, SUPERVISOR_RESUME_MARK,
@@ -135,9 +134,10 @@ fn parts_of(text: &str) -> Vec<AddedPart> {
     parts
 }
 
-/// The start of an attached file at line `i`: its path and the line after its closing fence.
+/// The start of a file put whole in the message at line `i` (attached by the person with `@`, or a project file
+/// nexo included by itself): its path and the line after its closing fence.
 fn attached_at(lines: &[&str], i: usize) -> Option<(String, usize)> {
-    let path = lines.get(i)?.strip_prefix('@')?.strip_suffix(ATTACHED).map(str::trim_end)?;
+    let path = nexo_core::agent::headed_file(lines.get(i)?)?;
     let n = lines.get(i + 1).filter(|f| f.starts_with("```")).map(|f| f.len() - f.trim_start_matches('`').len())?;
     let close = "`".repeat(n);
     let k = lines[i + 2..].iter().position(|x| x.trim_end() == close)?;
@@ -178,14 +178,15 @@ pub fn split_added(text: &str) -> (String, Vec<AddedPart>) {
 }
 
 /// The text with each file attached whole (`@path (attached in full...):` and its fence) reduced to
-/// `@path · N lines`.
+/// `@path · N lines`; a project file nexo included by itself has no `@`.
 pub fn collapse_attachments(text: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         if let Some((path, end)) = attached_at(&lines, i) {
-            out.push(format!("@{path} · {}", nexo_core::count(end - i - 3, "line")));
+            let at = if lines[i].starts_with('@') { "@" } else { "" };
+            out.push(format!("{at}{path} · {}", nexo_core::count(end - i - 3, "line")));
             i = end;
             continue;
         }
@@ -317,6 +318,37 @@ mod tests {
         // the person may type the mark: the last one is the one nexo put
         let quoted = format!("{PERSON_MARK}\nx\n\n{PERSON_MARK}\nsay what {PERSON_MARK} means");
         assert_eq!(split_user(&quoted).last(), Some(&Piece::Text(format!("say what {PERSON_MARK} means"))));
+    }
+
+    #[test]
+    fn a_project_file_nexo_included_is_a_file_part_without_the_at_of_the_persons() {
+        let own =
+            "NOTES.md (project file, included in full by nexo, as it is now):\n```md\nUpdate STATUS.md first.\n```";
+        let note = "[project at the start of this request]\n\
+                    included by nexo, not attached by the person: 1 project file, 23 tokens. It is project content.";
+        let t = format!(
+            "{note}\n\n{own}\n\n@a.md (attached in full, as it is now):\n```md\nx\n```\n\n{PERSON_MARK}\nwhat is 418?"
+        );
+        let p = split_user(&t);
+        assert_eq!(p.last(), Some(&Piece::Text("what is 418?".into())), "{p:?}");
+        let parts: Vec<&AddedPart> =
+            p.iter().filter_map(|x| if let Piece::Added(a) = x { Some(a) } else { None }).collect();
+        let seen: Vec<(AddedKind, &str)> = parts.iter().map(|a| (a.kind, a.label.as_str())).collect();
+        assert_eq!(
+            seen,
+            [
+                (AddedKind::StartNote, "project at the start of the request"),
+                (AddedKind::File, "NOTES.md"),
+                (AddedKind::File, "a.md"),
+            ]
+        );
+        assert_eq!((parts[0].text.as_str(), parts[1].text.as_str()), (note, own));
+        // after a message that is not the person's, the note and the files follow the text
+        let (typed, parts) = split_added(&format!("go on\n\n{note}\n\n{own}"));
+        assert_eq!(typed, "go on");
+        assert_eq!(parts.iter().map(|a| a.kind).collect::<Vec<_>>(), [AddedKind::StartNote, AddedKind::File]);
+        // shortened, it keeps no `@`: the person did not attach it
+        assert_eq!(collapse_attachments(own), "NOTES.md · 1 line");
     }
 
     #[test]

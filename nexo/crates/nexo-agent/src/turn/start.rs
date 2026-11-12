@@ -93,7 +93,6 @@ async fn begin_turn(
     person: bool,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
-    let mut attachments = attachments;
     // @server:uri mentions become the resources they name (read before the state is taken)
     let hub = state.lock().await.mcp.clone();
     let typed = text.clone();
@@ -117,10 +116,11 @@ async fn begin_turn(
     let check = orient::start_check(state, &cancel).await;
     {
         let mut st = state.lock().await;
-        let named = named_files(&st, &text, &attachments);
-        attachments.extend(named);
-        let small = orient::budget_files(&st, &text, &attachments);
-        attachments.extend(small.clone());
+        // the project files nexo includes by itself: the ones the message names, then the small ones in the budget
+        let mut own = named_files(&st, &text, &attachments);
+        let with: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();
+        own.extend(orient::budget_files(&st, &text, &with));
+        let included = orient::include(&own, &st.cwd);
         // a server changed its tools since the last turn: they take effect now, not in the middle of one
         if let Some(h) = st.mcp.clone() {
             let st = &mut *st;
@@ -192,7 +192,7 @@ async fn begin_turn(
         added.append(&mut after);
         // the supervisor's resume mark is read back as it is, so it carries no note; the next request does
         let tree = if text.trim() == SUPERVISOR_RESUME_MARK { None } else { prefix::tree_note(&mut st) };
-        let note = orient::start_note(&small, &st.cwd, check.as_deref(), tree.as_deref());
+        let note = orient::start_note(&included, check.as_deref(), tree.as_deref());
         let text = if note.is_empty() {
             text
         } else {
@@ -205,9 +205,9 @@ async fn begin_turn(
             }
         };
         if person {
-            push_user(&mut st, first.join("\n\n"), Some(text), &attachments, added);
+            push_user(&mut st, first.join("\n\n"), Some(text), included, &attachments, added);
         } else {
-            push_user(&mut st, text, None, &attachments, added);
+            push_user(&mut st, text, None, included, &attachments, added);
         }
     }
     let state = state.clone();
@@ -225,19 +225,32 @@ pub(super) fn reply_tokens(st: &State) -> u32 {
     st.limits.reply_room(st.config.agent.max_tokens, st.reply_boost)
 }
 
-/// Adds a user message to the conversation, its attachments expanded after ``text``. With ``typed`` (the words the
-/// person wrote) ``text`` is what nexo adds to them, and the words come after it and after the files, under
+/// Adds a user message to the conversation: ``text``, then the project files nexo included by itself (``included``,
+/// counted by the start note that ends ``text``), then the person's own attachments expanded. With ``typed`` (the
+/// words the person wrote) ``text`` is what nexo adds to them, and the words come after it and after the files, under
 /// `PERSON_MARK` (alone when nothing was added). `added` is what nexo put in the message besides the person's
-/// words, in the order of the message; the files it expands now are told after it, and the interface hears of all
+/// words, in the order of the message; the files are told after it, and the interface hears of all
 /// (`AgentEvent::Added`) right after the message.
 pub(super) fn push_user(
     st: &mut State,
     text: String,
     typed: Option<String>,
+    included: Vec<orient::Included>,
     attachments: &[Attachment],
     mut added: Vec<AddedPart>,
 ) {
-    let (text, images, whole) = expand_attachments(text, attachments, &st.cwd, &mut added);
+    let mut text = text;
+    let mut own = Vec::new();
+    for f in included {
+        text.push_str("\n\n");
+        text.push_str(&f.block);
+        added.push(AddedPart::new(AddedKind::File, f.shown, f.block));
+        own.push((f.path, f.bytes, f.header));
+    }
+    let (text, images, mut whole) = expand_attachments(text, attachments, &st.cwd, &mut added);
+    // a file the person attached too is known by their header: theirs is recorded last
+    own.append(&mut whole);
+    let whole = own;
     let text = match typed {
         Some(words) if text.trim().is_empty() => words,
         Some(words) => format!("{}\n\n{}\n{words}", text.trim_matches('\n'), nexo_core::agent::PERSON_MARK),
@@ -280,15 +293,20 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
     let ended = st.jobs.take_ended();
     if !ended.is_empty() {
         let note = st.jobs.note_ended(&ended);
-        push_user(&mut st, note, None, &[], Vec::new());
+        push_user(&mut st, note, None, Vec::new(), &[], Vec::new());
     }
     if st.inbox.is_empty() {
         return false;
     }
-    while let Some((text, mut attachments)) = st.inbox.pop_front() {
-        let named = named_files(&st, &text, &attachments);
-        attachments.extend(named);
-        push_user(&mut st, String::new(), Some(text), &attachments, Vec::new());
+    while let Some((text, attachments)) = st.inbox.pop_front() {
+        // the files the message names come as in a first request: under nexo's own header, counted by a note
+        let included = orient::include(&named_files(&st, &text, &attachments), &st.cwd);
+        let note = orient::start_note(&included, None, None);
+        let mut added = Vec::new();
+        if !note.is_empty() {
+            added.push(AddedPart::new(AddedKind::StartNote, "project at the start of the request", note.clone()));
+        }
+        push_user(&mut st, note, Some(text), included, &attachments, added);
     }
     person_spoke(&mut st);
     // the message shows in the transcript where it joined: nothing else to say
@@ -313,7 +331,25 @@ pub(super) const IMAGE_BYTES: usize = 5_000_000;
 /// A text file attached whole: its path, its bytes and the line that heads it.
 pub(super) type Whole = (PathBuf, Vec<u8>, String);
 
-/// The text of a request with its `@file` attachments as fenced blocks, the images
+/// The fence around `text`: three backticks, or one more than the longest run of them in it, so that no line of
+/// a file closes its own block and reads as what follows it.
+fn fence_of(text: &str) -> String {
+    let (mut longest, mut run) = (0, 0);
+    for c in text.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    "`".repeat(longest.max(2) + 1)
+}
+
+/// The text `s` of the file at `p` under the line `header`, fenced.
+pub(super) fn fenced(header: &str, p: &Path, s: &str) -> String {
+    let fence = fence_of(s);
+    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+    format!("{header}\n{fence}{ext}\n{}\n{fence}", s.trim_end_matches('\n'))
+}
+
+/// The text of a request with the person's `@file` attachments as fenced blocks, the images
 /// among them as image parts, and the text files attached whole.
 pub(super) fn expand_attachments(
     text: String,
@@ -360,10 +396,8 @@ pub(super) fn expand_attachments(
             }
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(s) => {
-                    let fence = if s.contains("```") { "````" } else { "```" };
-                    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
                     let header = attached_header(&shown.to_string());
-                    out.push_str(&format!("\n\n{header}\n{fence}{ext}\n{}\n{fence}", s.trim_end_matches('\n')));
+                    out.push_str(&format!("\n\n{}", fenced(&header, &p, &s)));
                     whole.push((p.clone(), s.into_bytes(), header));
                 }
                 Err(_) => out.push_str(&format!("\n\n@{shown}: not attached, it is not text")),
@@ -587,8 +621,9 @@ const NAMED_FILE_BYTES: u64 = 24_000;
 const NAMED_FILES: usize = 3;
 
 /// The files a request names (a word with a `/` or an extension) that exist under the working
-/// directory, are text of at most 24 KB and are not attached already: up to three, attached as if
-/// the person had written `@path`, so the model starts with them and needs no step to read them.
+/// directory, are text of at most 24 KB and are not in the conversation already: up to three, which nexo
+/// includes under its own header (never as the person's `@path`), so the model starts with them and needs no
+/// step to read them.
 fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachment> {
     if !st.config.agent.attach_named_files {
         return Vec::new();
@@ -601,6 +636,7 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachmen
             p.canonicalize().unwrap_or(p)
         })
         .collect();
+    let said = orient::carried(&st.history);
     let mut out = Vec::new();
     for word in text.split_whitespace() {
         if out.len() >= NAMED_FILES {
@@ -636,9 +672,8 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> Vec<Attachmen
         if st.perm.decide("read", ToolKind::Read, &serde_json::json!({ "path": word }), &st.cwd) != Decision::Allow {
             continue;
         }
-        // attached to an earlier request: the conversation holds it
-        let header = attached_header(word);
-        if st.history.iter().any(|m| m.text().contains(&header)) {
+        // attached to an earlier request, or included in one: the conversation holds it
+        if said.contains(word) {
             continue;
         }
         seen.push(real);

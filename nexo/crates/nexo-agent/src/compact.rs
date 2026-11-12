@@ -235,8 +235,8 @@ fn person_text(text: &str, attached: &mut Vec<String>) -> Option<String> {
     let words = nexo_core::agent::person_words(text);
     if words.len() < text.len() {
         for line in text[..text.len() - words.len()].lines() {
-            if let Some(path) = line.strip_suffix(crate::reads::ATTACHED).and_then(|l| l.strip_prefix('@')) {
-                push_new(attached, path.trim_end());
+            if let Some(path) = crate::reads::headed_file(line) {
+                push_new(attached, path);
             }
         }
         let t = words.trim();
@@ -254,16 +254,21 @@ fn person_text(text: &str, attached: &mut Vec<String>) -> Option<String> {
             break;
         }
     }
-    // the attachments come after the text, each from a line that starts with `@` and the file's path
+    // the files come after the text, each from the line that heads it: `@path (attached ...):` for one the person
+    // attached, `path (project file, ...):` for one nexo included
     let mut end = t.len();
-    for (i, _) in t.match_indices("\n\n@") {
+    for (i, _) in t.match_indices("\n\n") {
         let line = t[i + 2..].lines().next().unwrap_or("");
-        match line.strip_suffix(crate::reads::ATTACHED) {
+        match crate::reads::headed_file(line) {
             Some(path) => {
                 end = end.min(i);
-                push_new(attached, path.trim_start_matches('@').trim_end());
+                push_new(attached, path);
             }
-            None if line.contains(": attached as an image") || line.contains(": not attached") => end = end.min(i),
+            None if line.starts_with('@')
+                && (line.contains(": attached as an image") || line.contains(": not attached")) =>
+            {
+                end = end.min(i)
+            }
             None => {}
         }
     }
@@ -555,6 +560,20 @@ mod tests {
         let k = kept(&[Message::user(now), Message::assistant("ok")]);
         assert_eq!(k.requests, ["Sum the totals per month."]);
         assert_eq!(k.read, ["data/sales.csv"]);
+        // a project file nexo included by itself was seen too, and is no part of the request
+        let own = format!("{}\n```md\nUpdate STATUS.md first.\n```", crate::reads::included_header("NOTES.md"));
+        let now = format!(
+            "[project at the start of this request]\nincluded by nexo, not attached by the person: 1 project file, 20 \
+             tokens.\n\n{own}{attached}\n\n{}\nSum the totals per month.",
+            nexo_core::agent::PERSON_MARK
+        );
+        let k = kept(&[Message::user(now), Message::assistant("ok")]);
+        assert_eq!(k.requests, ["Sum the totals per month."]);
+        assert_eq!(k.read, ["NOTES.md", "data/sales.csv"]);
+        // after a message that is not the person's (mail, a goal step), nexo's files follow the text
+        let k = kept(&[Message::user(format!("Go on with the goal.\n\n{own}")), Message::assistant("ok")]);
+        assert_eq!(k.requests, ["Go on with the goal."]);
+        assert_eq!(k.read, ["NOTES.md"]);
     }
 
     #[test]

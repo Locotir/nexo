@@ -374,6 +374,23 @@ pub fn person_words(text: &str) -> &str {
 }
 pub const HOOK_CONTEXT_END: &str = "</hook-context>";
 
+/// The end of the line that heads a file the person attached with `@path`: `@path (attached in full, as it is now):`.
+pub const ATTACHED: &str = "(attached in full, as it is now):";
+/// The end of the line that heads a project file nexo put in a request by itself (one the message names, or a small
+/// one within `agent.attach_budget`): `path (project file, included in full by nexo, as it is now):`. It has no `@`
+/// and says who put it there, so it never reads as something the person handed over.
+pub const INCLUDED: &str = "(project file, included in full by nexo, as it is now):";
+
+/// The path `line` heads when it is the first line of a file put whole in a request: the person's `@path`
+/// attachment ([`ATTACHED`]) or a project file nexo included by itself ([`INCLUDED`]).
+pub fn headed_file(line: &str) -> Option<&str> {
+    let path = match line.strip_suffix(ATTACHED) {
+        Some(l) => l.strip_prefix('@')?,
+        None => line.strip_suffix(INCLUDED)?,
+    };
+    Some(path.trim_end()).filter(|p| !p.is_empty())
+}
+
 /// What the loop sends in the person's place to start a goal; the person's words follow it.
 pub const GOAL_SET_MARK: &str = "[goal set]";
 /// What the loop sends in the person's place to keep a goal going.
@@ -1043,6 +1060,19 @@ pub fn channels() -> (AgentHandle, AgentEnds) {
 mod tests {
     use super::*;
     use crate::subs::SubItem;
+
+    #[test]
+    fn a_line_that_heads_a_file_gives_its_path_and_the_two_headers_never_match_each_other() {
+        assert_eq!(headed_file("@src/a b.rs (attached in full, as it is now):"), Some("src/a b.rs"));
+        let own = "src/lib.rs (project file, included in full by nexo, as it is now):";
+        assert_eq!(headed_file(own), Some("src/lib.rs"));
+        assert!(!own.starts_with('@') && !own.ends_with(ATTACHED) && !ATTACHED.ends_with(INCLUDED));
+        // the person's header needs its `@`
+        assert_eq!(headed_file("src/lib.rs (attached in full, as it is now):"), None);
+        assert_eq!(headed_file("@shot.png: attached as an image"), None);
+        assert_eq!(headed_file(" (project file, included in full by nexo, as it is now):"), None);
+        assert_eq!(headed_file("fn main() {"), None);
+    }
 
     #[test]
     fn sub_events_are_marked_and_the_others_are_not() {

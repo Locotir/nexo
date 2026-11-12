@@ -43,7 +43,7 @@ use crate::limits::{self, Limits};
 use crate::permission::{self, Decision, Policy};
 use crate::prompt;
 use crate::reader;
-use crate::reads::{attached_header, Reads};
+use crate::reads::{attached_header, headed_file, included_header, Reads};
 use crate::session::{Session, UsageKind, UsageMeta};
 use crate::setup;
 use crate::AgentSetup;
