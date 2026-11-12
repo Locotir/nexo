@@ -69,10 +69,10 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
         "hook" => DbgClass::Control,
         "run" | "__serve" => DbgClass::Other,
         "do" => {
-            let rest: Vec<&str> = it.filter(|w| !w.starts_with("--")).map(String::as_str).collect();
+            let rest: Vec<String> = it.cloned().collect();
+            let Ok(parts) = do_parts(&rest) else { return DbgClass::Other };
             let mut worst = DbgClass::Control;
-            for part in rest.join(" ").split(';').map(str::trim).filter(|p| !p.is_empty()) {
-                let w: Vec<String> = part.split_whitespace().map(str::to_string).collect();
+            for w in parts {
                 match (w.first().map(String::as_str), dbg_class(&w)) {
                     (Some("do"), _) | (_, DbgClass::Other) => return DbgClass::Other,
                     (_, DbgClass::Change) => worst = DbgClass::Change,
@@ -83,6 +83,68 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
         }
         c if CONTROL.contains(&c) => DbgClass::Control,
         _ => DbgClass::Other,
+    }
+}
+
+/// The commands a server that was not given permission to change things may run: they look at the program,
+/// or steer one the person already let the debugger start. Everything else (writes, saved names and notes,
+/// attach and connect, `calls`, `serve`, a new `run`, unknown words) is refused by name.
+const READ_ALLOWED: &[&str] = &[
+    "status", "info", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "thread", "breaks",
+    "watches", "maps", "modules", "find", "history", "out", "log", "dis", "disasm", "sessions", "help", "catches",
+    "break", "b", "tbreak", "delete", "del", "enable", "disable", "cont", "c", "continue", "step", "s", "next", "n",
+    "finish", "until", "wait", "stop", "kill", "detach", "catch", "strace", "ltrace", "hook", "hooks", "cover",
+];
+
+/// The commands inside a `do` script, split exactly as the server splits them: the plain words after `do` are
+/// joined, cut at `;` and each part is split with `split_words` (so a quoted command word is unquoted here too).
+pub fn do_parts(words_after_do: &[String]) -> Result<Vec<Vec<String>>, String> {
+    let a = crate::Args::new(words_after_do).map_err(|e| e.to_string())?;
+    let script = a.pos.join(" ");
+    Ok(script.split(';').map(str::trim).filter(|p| !p.is_empty()).map(crate::split_words).collect())
+}
+
+/// Why a server without permission to change things must not run these words (the command first, our own
+/// options already taken out by `parse`), or None when it only reads. It parses with the server's own word
+/// splitting and allows only the commands in the read list, so unknown words are refused too.
+pub fn read_only_refusal(words: &[String]) -> Option<String> {
+    refusal_in(words, 0)
+}
+
+fn refusal_in(words: &[String], depth: usize) -> Option<String> {
+    let name = words.first()?.as_str();
+    if name == "do" {
+        if depth > 0 {
+            return Some("`do` inside `do` is not allowed".to_string());
+        }
+        return match do_parts(&words[1..]) {
+            Err(e) => Some(format!("the script cannot be read ({e})")),
+            Ok(parts) => parts.iter().find_map(|p| refusal_in(p, depth + 1)),
+        };
+    }
+    if !READ_ALLOWED.contains(&name) {
+        return Some(match name {
+            "write" | "setreg" => format!("`{name}` writes into the program"),
+            "name" | "note" => format!("`{name}` saves a name or note"),
+            "attach" | "connect" => format!("`{name}` attaches to a process or a remote stub"),
+            "run" => "`run` starts a program".to_string(),
+            "serve" | "__serve" => format!("`{name}` opens a port or an internal server"),
+            "stdin" | "watch" | "calls" | "core" | "end" => format!("`{name}` changes the session or the program"),
+            other => {
+                format!("`{other}` is not a command this server may run without permission (unknown or not read-only)")
+            }
+        });
+    }
+    let rest = &words[1..];
+    match name {
+        "hook" if rest.iter().any(|w| w == "set" || w == "ret") => {
+            Some("a hook that sets an argument or the result changes the program".to_string())
+        }
+        "catch" if rest.first().is_some_and(|w| w == "add" || w == "del") => {
+            Some("`catch add|del` changes how signals reach the program".to_string())
+        }
+        "cover" if rest.first().is_some_and(|w| w == "save") => Some("`cover save` saves a file".to_string()),
+        _ => None,
     }
 }
 

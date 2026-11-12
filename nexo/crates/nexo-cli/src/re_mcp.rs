@@ -127,13 +127,17 @@ impl Server {
     fn initialize(&self, params: &Value) -> Value {
         let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or("");
         let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[0]);
-        let changes = if self.allow_changes { "allowed" } else { "refused (start with --allow-changes)" };
+        let changes = if self.allow_changes {
+            "allowed: running programs, attaching to your own processes, connecting to stubs, memory and register writes, patches, saved names and notes"
+        } else {
+            "refused (start the server with --allow-changes to enable running programs, attaching, connecting, memory and register writes, patches, saved names and notes); only reading a core file or minidump and read-only commands work"
+        };
         json!({
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "nexo-re", "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!(
-                "nexo RE: bin_* tools read a file and never run it; dbg_start, dbg_command and dbg_stop drive a live program. Changes (saved names and notes, memory writes, attach, patches): {changes}."
+                "nexo RE: bin_* tools read a file and never run it; dbg_start, dbg_command and dbg_stop drive a debugger session. Changes: {changes}."
             ),
         })
     }
@@ -211,11 +215,26 @@ impl Server {
         }
         let target =
             scalar(args.get("target")).ok_or("dbg_start needs \"target\": the program, core file, pid or host:port")?;
+        // running a program executes code, attach and connect reach other processes: all need the flag
+        if kind != "core" && !self.allow_changes {
+            return Err(self.refuse(&format!(
+                "dbg_start kind {kind} {} (without the flag only kind core, reading a dump, is allowed)",
+                match kind {
+                    "run" => "starts and runs a program",
+                    "attach" => "attaches to a process that was not started here",
+                    _ => "connects to a remote stub",
+                }
+            )));
+        }
         let mut words = vec![kind.to_string()];
         if kind == "run" && args.get("main").and_then(Value::as_bool) == Some(true) {
             words.push("--main".into());
         }
-        words.push(target.clone());
+        let target = if kind == "attach" { same_user(&target)?.to_string() } else { target };
+        if kind == "core" && target.starts_with('-') {
+            return Err(format!("a core file name cannot start with '-' (it would be read as a flag): use ./{target}"));
+        }
+        words.push(target);
         if kind == "run" {
             words.extend(list_of(args.get("args"))?);
         }
@@ -223,14 +242,6 @@ impl Server {
             if kind == "core" || kind == "connect" {
                 words.extend(["--exe".to_string(), exe]);
             }
-        }
-        if kind == "attach" {
-            if !self.allow_changes {
-                return Err(self.refuse("attaching to a process that was not started here"));
-            }
-            same_user(&target)?;
-        } else if kind == "connect" && !self.allow_changes {
-            return Err(self.refuse("connecting to a remote stub"));
         }
         run_dbg(words)
     }
@@ -252,7 +263,7 @@ impl Server {
             _ => {}
         }
         if !self.allow_changes {
-            if let Some(why) = change_in(&words) {
+            if let Some(why) = nexo_dbg::read_only_refusal(&call.words) {
                 return Err(self.refuse(&why));
             }
         }
@@ -283,51 +294,39 @@ impl Server {
     }
 }
 
-/// Why these `nexo dbg` words change something, or none.
-fn change_in(words: &[String]) -> Option<String> {
-    if nexo_dbg::dbg_class(words) == nexo_dbg::DbgClass::Change {
-        return Some("this command writes into the program or attaches to a process".to_string());
-    }
-    let call = nexo_dbg::parse(words).ok()?;
-    let parts: Vec<Vec<String>> = if call.words.first().map(String::as_str) == Some("do") {
-        call.words[1..].join(" ").split(';').map(|p| p.split_whitespace().map(str::to_string).collect()).collect()
-    } else {
-        vec![call.words.clone()]
-    };
-    for p in parts {
-        match p.first().map(String::as_str) {
-            Some(c @ ("name" | "note")) => return Some(format!("`{c}` saves a name or note")),
-            Some("serve") => return Some("`serve` opens a port".to_string()),
-            _ => {}
-        }
-    }
-    None
-}
-
 fn run_dbg(words: Vec<String>) -> Result<String, String> {
     crate::dbg_cmd::execute(&DbgArgs { words }).map_err(|e| format!("nexo dbg: {e}"))
 }
 
-/// Attach stays same-user: the process must belong to this user.
-fn same_user(pid: &str) -> Result<(), String> {
-    let n: u32 = pid.parse().map_err(|_| format!("attach needs a process id, not {pid:?}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let owner = std::fs::metadata(format!("/proc/{n}")).map(|m| m.uid());
-        let me = unsafe { libc::geteuid() };
-        match owner {
-            Ok(u) if u != me => {
-                return Err(format!(
-                    "refused: process {n} belongs to another user; attach is for your own processes only"
-                ))
-            }
-            Err(_) => return Err(format!("no process {n} to attach to; check the id with `ps`")),
-            Ok(_) => {}
-        }
+/// Attach stays same-user: the process must belong to this user. Returns the parsed process id, which is the
+/// one to pass on (only plain decimal digits are a pid: "+123" is not).
+fn same_user(pid: &str) -> Result<u32, String> {
+    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("attach needs a process id of plain digits, not {pid:?}"));
     }
-    let _ = n;
-    Ok(())
+    let n: u32 = pid.parse().map_err(|_| format!("attach needs a process id, not {pid:?}"))?;
+    check_owner(n).map(|()| n)
+}
+
+#[cfg(unix)]
+fn check_owner(n: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let owner = std::fs::metadata(format!("/proc/{n}")).map(|m| m.uid());
+    let me = unsafe { libc::geteuid() };
+    match owner {
+        Ok(u) if u != me => {
+            Err(format!("refused: process {n} belongs to another user; attach is for your own processes only"))
+        }
+        Err(_) => Err(format!("no process {n} to attach to; check the id with `ps`")),
+        Ok(_) => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn check_owner(n: u32) -> Result<(), String> {
+    Err(format!(
+        "refused: attaching to process {n} is not available on this system because the owner of a process cannot be checked here; read a core file or minidump instead (kind core)"
+    ))
 }
 
 fn scalar(v: Option<&Value>) -> Option<String> {
@@ -514,7 +513,7 @@ fn dbg_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "dbg_start".into(),
-            description: "nexo dbg: start a session that stays alive between calls. kind run (program + args), core (core file or minidump), attach (a pid of yours, needs --allow-changes) or connect (GDB stub, needs --allow-changes). Then use dbg_command.".into(),
+            description: "nexo dbg: start a session that stays alive between calls. kind core (core file or minidump, reading only) always works; run (starts a program, so it executes code), attach (a pid of yours) and connect (GDB stub) need --allow-changes. Then use dbg_command.".into(),
             schema: json!({"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["run", "core", "attach", "connect"]},
                 "target": {"type": ["string", "integer"], "description": "program path, core file, pid or host:port"},
@@ -526,7 +525,7 @@ fn dbg_tools() -> Vec<Tool> {
         },
         Tool {
             name: "dbg_command".into(),
-            description: "nexo dbg: one command on the live session, such as `break main`, `cont`, `bt`, `regs`, `mem <addr> 32`, or `do \"break f; cont; bt\"` (`help` lists them). write, setreg, name, note, serve and hooks that change values need --allow-changes.".into(),
+            description: "nexo dbg: one command on the live session, such as `break main`, `cont`, `bt`, `regs`, `mem <addr> 32`, or `do \"break f; cont; bt\"` (`help` lists them). Without --allow-changes only reading commands run; write, setreg, name, note, serve, calls, stdin, watch, hooks that set values and any unknown command need --allow-changes.".into(),
             schema: json!({"type": "object", "properties": {
                 "command": {"type": "string"},
                 "session": {"type": "string", "description": "session id, when more than one is live"},
@@ -707,6 +706,7 @@ mod tests {
             assert!(same_user("1").unwrap_err().contains("another user"));
         }
         assert!(same_user("abc").is_err());
+        #[cfg(unix)]
         assert!(same_user(&std::process::id().to_string()).is_ok());
     }
 
@@ -726,5 +726,102 @@ mod tests {
         assert_eq!(split_words("break main").unwrap(), ["break", "main"]);
         assert_eq!(split_words("do \"break f; cont; bt\"").unwrap(), ["do", "break f; cont; bt"]);
         assert_eq!(split_words("a 'b c' \"\"").unwrap(), ["a", "b c", ""]);
+    }
+
+    fn refused(a: &Value) -> bool {
+        a["result"]["isError"] == true
+            && result_text(a).starts_with("refused:")
+            && result_text(a).contains("--allow-changes")
+    }
+
+    #[test]
+    fn a_quoted_command_word_does_not_skip_the_gate() {
+        let cmds = [
+            "do '\"write\" 0x1000 90'",
+            "do 'h\"ook\" f set arg1 5'",
+            "do 'wr\"i\"te 0x1000 90'",
+            "do 'break main; \"setreg\" rax 1'",
+        ];
+        let calls: Vec<Value> =
+            cmds.iter().enumerate().map(|(i, c)| call(i as u64, "dbg_command", json!({"command": c}))).collect();
+        let a = talk(false, &calls);
+        for (c, v) in cmds.iter().zip(&a) {
+            assert!(refused(v), "{c}: {v}");
+        }
+        // with the flag the same lines pass the gate (and then fail only because no session is live)
+        let a = talk(true, &calls);
+        for (c, v) in cmds.iter().zip(&a) {
+            assert!(!result_text(v).starts_with("refused:"), "{c}: {v}");
+        }
+    }
+
+    #[test]
+    fn a_nested_do_and_unknown_words_and_calls_and_run_are_refused_without_the_flag() {
+        let cmds = [
+            "do 'break main; do \"write 0x1000 90\"'",
+            "do 'bt; frobnicate'",
+            "frobnicate",
+            "calls",
+            "do 'bt; calls'",
+            "do '__serve'",
+            "do 'run /bin/sh'",
+            "stdin hello",
+            "serve --gdb 1 x",
+        ];
+        let calls: Vec<Value> =
+            cmds.iter().enumerate().map(|(i, c)| call(i as u64, "dbg_command", json!({"command": c}))).collect();
+        let a = talk(false, &calls);
+        for (c, v) in cmds.iter().zip(&a) {
+            assert!(refused(v), "{c}: {v}");
+        }
+    }
+
+    #[test]
+    fn reading_commands_and_a_read_only_script_pass_the_gate_without_the_flag() {
+        let cmds = ["bt", "regs rax", "do 'break main; cont; \"bt\"; mem 0x10 8'", "hook f stop", "cover show"];
+        let calls: Vec<Value> =
+            cmds.iter().enumerate().map(|(i, c)| call(i as u64, "dbg_command", json!({"command": c}))).collect();
+        for (c, v) in cmds.iter().zip(&talk(false, &calls)) {
+            assert!(!result_text(v).starts_with("refused:"), "{c}: {v}");
+        }
+    }
+
+    #[test]
+    fn running_a_program_or_attaching_needs_the_flag_and_only_a_core_is_free() {
+        let a = talk(
+            false,
+            &[
+                call(1, "dbg_start", json!({"kind": "run", "target": "/bin/sh", "args": ["-c", "id"]})),
+                call(2, "dbg_start", json!({"kind": "run", "target": "/bin/cat", "args": ["<", "/etc/hostname"]})),
+                call(3, "dbg_start", json!({"kind": "core", "target": "/nonexistent/core"})),
+                call(4, "dbg_start", json!({"kind": "core", "target": "-s"})),
+            ],
+        );
+        assert!(refused(&a[0]) && refused(&a[1]), "{a:?}");
+        assert!(!result_text(&a[2]).starts_with("refused:"), "{}", result_text(&a[2]));
+        assert!(result_text(&a[3]).contains("cannot start with '-'"), "{}", result_text(&a[3]));
+        let a = talk(true, &[call(1, "dbg_start", json!({"kind": "run", "target": "/nonexistent/prog"}))]);
+        assert!(!result_text(&a[0]).starts_with("refused:"), "{}", result_text(&a[0]));
+    }
+
+    #[test]
+    fn a_pid_with_a_plus_sign_or_other_junk_is_not_a_pid() {
+        for bad in ["+123", "-1", " 12", "1_0", "", "0x10"] {
+            assert!(same_user(bad).is_err(), "{bad:?}");
+        }
+        #[cfg(unix)]
+        {
+            let me = std::process::id();
+            assert_eq!(same_user(&format!("{me:010}")).unwrap(), me);
+        }
+    }
+
+    #[test]
+    fn the_initialize_text_says_what_the_flag_enables() {
+        let off = talk(false, &[json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})]);
+        let t = off[0]["result"]["instructions"].as_str().unwrap().to_string();
+        for w in ["running programs", "attaching", "memory and register writes", "patches", "--allow-changes"] {
+            assert!(t.contains(w), "{w}: {t}");
+        }
     }
 }
