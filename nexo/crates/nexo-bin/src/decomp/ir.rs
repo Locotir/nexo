@@ -689,7 +689,8 @@ fn fold_cond(cc: Cc, ops: &Expr, res: &Expr) -> Option<Expr> {
                     _ => None,
                 }
             }
-            FlagKind::Res | FlagKind::ResLogic => None,
+            FlagKind::Res => fold_result(cc, x, false),
+            FlagKind::ResLogic => fold_result(cc, x, true),
         };
     }
     if matches!(ops, Expr::Var(Var::FlagOps, _)) {
