@@ -64,6 +64,8 @@ pub enum Why {
     Int3,
     Interrupt,
     Exec,
+    /// `catch syscall`: the call, as the trace writes it.
+    Syscall(String),
     Exited(i32),
     Killed(i32),
 }
@@ -120,6 +122,8 @@ pub struct Session {
     pub last_stop: Option<StopInfo>,
     pub catch: BTreeSet<u32>,
     pub exit: Option<String>,
+    /// `strace`, `ltrace`, hooks and coverage.
+    pub tr: crate::trace::Tracing,
 }
 
 /// A stop in the words of the header line of an answer: its number, the event, the place and the address.
@@ -225,6 +229,7 @@ impl Session {
             last_stop: None,
             catch: default_catch(os),
             exit: None,
+            tr: Default::default(),
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -437,6 +442,12 @@ impl Session {
                         verdict = Some((tid, Why::Int3));
                     }
                 }
+                Event::Stopped { tid, stop: Stop::Syscall(sys) } => {
+                    let v = self.on_syscall(tid, sys);
+                    if verdict.is_none() {
+                        verdict = v;
+                    }
+                }
                 _ => {}
             }
         }
@@ -476,6 +487,7 @@ impl Session {
         self.exit = Some(how);
         self.inserted.clear();
         self.drain_output();
+        self.trace_end();
     }
 
     /// A thread is at one of our breakpoints: does it stop?

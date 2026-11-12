@@ -90,6 +90,21 @@ pub enum Stop {
     Interrupt,
     /// The program replaced itself with another one: every address is new.
     Exec,
+    /// A system call starts or ends (only while `Target::trace_syscalls` is on).
+    Syscall(Sys),
+}
+
+/// One side of a system call, as the kernel reported it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sys {
+    /// True: the call is about to run (`args` are read). False: it returned (`ret` is read).
+    pub entry: bool,
+    /// The call's number; on a return the kernel does not give it again, so it is the number in `orig_rax`.
+    pub nr: u64,
+    pub args: [u64; 6],
+    pub ret: i64,
+    /// The kernel says `ret` is an error (`-errno`).
+    pub error: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +165,10 @@ pub trait Target {
     /// The bytes under the breakpoints now in memory: a child the program forks is let go with them put back.
     fn set_patches(&mut self, _patches: &[(u64, u8)]) {}
     fn resume(&mut self, how: Resume) -> Result<()>;
+    /// Stop at every system call's start and end from the next resume on (`Stop::Syscall`).
+    fn trace_syscalls(&mut self, _on: bool) -> Result<()> {
+        crate::fail("system call tracing runs on Linux only")
+    }
     /// What happened, waiting at most `timeout`. Empty: still running. Not empty: every thread is
     /// stopped (or the program is gone); the first event is the one that stopped it, the others
     /// happened in the same moment on other threads.

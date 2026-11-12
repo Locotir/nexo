@@ -117,7 +117,7 @@ impl Names for ImgNames<'_> {
 // ---------------------------------------------------------------------------------------------
 // Signatures
 
-fn table(name: &str) -> Option<Sig> {
+pub(crate) fn table(name: &str) -> Option<Sig> {
     let s = |args: usize| Sig { args, ..Sig::default() };
     let v = |args: usize| Sig { args, void: true, ..Sig::default() };
     let f = |args: usize, fmt: usize| Sig { args, fmt: Some(fmt), ..Sig::default() };

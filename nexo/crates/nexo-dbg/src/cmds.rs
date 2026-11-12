@@ -144,7 +144,9 @@ impl Session {
             "log" => Ok(rows("log", self.log.iter().cloned().collect(), json!({}))),
             "history" => Ok(self.cmd_history(&a)),
             "stdin" => self.cmd_stdin(&a),
+            "catch" if a.pos.first().is_some_and(|w| w == "syscall") => self.cmd_catch_syscall(&a.pos[1..]),
             "catch" | "catches" => self.cmd_catch(&a),
+            "strace" => self.cmd_strace(&a),
             "kill" => self.cmd_kill(),
             "detach" => self.cmd_detach(),
             "name" | "note" => self.cmd_keep(cmd == "name", &words[1..]),
@@ -961,6 +963,7 @@ impl Session {
             Why::Int3 => "int3 in the program (not ours)".to_string(),
             Why::Interrupt => "stopped on request".to_string(),
             Why::Exec => "the program started another program (exec): addresses are new".to_string(),
+            Why::Syscall(t) => format!("system call {t}"),
             Why::Exited(c) => format!("the program exited with code {c}"),
             Why::Killed(s) => format!("the program was killed by {}", signal_name(*s as u32)),
         };
@@ -976,6 +979,7 @@ impl Session {
             Why::Int3 => "int3",
             Why::Interrupt => "interrupt",
             Why::Exec => "exec",
+            Why::Syscall(_) => "syscall",
             Why::Exited(_) => "exit",
             Why::Killed(_) => "killed",
         };
@@ -988,6 +992,7 @@ impl Session {
             if let Some(o) = self.new_output_line() {
                 l.push(o);
             }
+            l.extend(self.trace_note());
             self.last_stop = Some(StopInfo { n: self.nstop, event: event.into(), place: "-".into(), addr: 0 });
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: crate::Regs::default() });
             return rows("exit", l, json!({"state": "exited"}));
@@ -1072,6 +1077,7 @@ impl Session {
         if !self.log.is_empty() {
             l.push(format!("log: {} lines (`log` shows them)", self.log.len()));
         }
+        l.extend(self.trace_note());
         rows("stop", l, json!({"state": "stopped", "thread": tid}))
     }
 
@@ -1204,6 +1210,7 @@ pub fn help() -> Output {
         "run: nexo dbg run <exe> [args]   attach: nexo dbg attach <pid>   core: nexo dbg core <file>",
         "go:    cont [--wait N] | step [N] | next [N] | finish | until <addr> | stop | wait [--wait N] | kill | detach",
         "calls: calls | calls off    log the real target of every indirect call (call reg / call [mem]) as the program runs; read with `log`",
+        "trace: strace [names|file|net|process|memory] | strace show [filter] | strace off | catch syscall <names|groups> | catch syscall off",
         "break: break <addr|name|name+off|import> [if <expr>] [after N] [log <text with {expr}>] [once] | breaks | delete <id>|all | enable/disable <id>",
         "look:  regs [name] | bt [N] | dis [addr] [N] | mem <addr> [len] [--as u8|u32|u64|ptr|str] | print <expr> [--as str] | args | threads | thread <tid>",
         "       maps [filter] | modules | find <hex|\"text\"> [--in <map>] | out [--all] | log | history [N] | status",

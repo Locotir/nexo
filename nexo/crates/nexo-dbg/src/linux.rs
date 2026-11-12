@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use libc::{c_long, c_void};
 
-use crate::platform::{Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Target, Tid};
+use crate::platform::{Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Sys, Target, Tid};
 use crate::regs::Regs;
 use crate::{fail, Error, Result};
 
@@ -22,6 +22,7 @@ const POKEDATA: c_long = 5;
 const POKEUSER: c_long = 6;
 const CONT: c_long = 7;
 const SINGLESTEP: c_long = 9;
+const SYSCALL: c_long = 24;
 const GETREGS: c_long = 12;
 const SETREGS: c_long = 13;
 const DETACH: c_long = 17;
@@ -29,7 +30,9 @@ const GETEVENTMSG: c_long = 0x4201;
 const GETSIGINFO: c_long = 0x4202;
 const SEIZE: c_long = 0x4206;
 const INTERRUPT: c_long = 0x4207;
+const GET_SYSCALL_INFO: c_long = 0x420e;
 
+const O_TRACESYSGOOD: u64 = 0x1;
 const O_TRACEFORK: u64 = 0x2;
 const O_TRACECLONE: u64 = 0x8;
 const O_TRACEEXEC: u64 = 0x10;
@@ -97,6 +100,38 @@ pub struct Linux {
     /// The program ended or was let go.
     gone: bool,
     want_stop: bool,
+    /// Stop at system calls (`PTRACE_SYSCALL` instead of `PTRACE_CONT`).
+    sys: bool,
+}
+
+/// The ptrace order that lets a thread go: one instruction, up to the next system call, or on.
+fn order(step: bool, sys: bool) -> c_long {
+    if step {
+        SINGLESTEP
+    } else if sys {
+        SYSCALL
+    } else {
+        CONT
+    }
+}
+
+/// What the kernel says about the system call `tid` is stopped in (`PTRACE_GET_SYSCALL_INFO`).
+fn syscall_info(tid: i32) -> Option<Sys> {
+    let mut b = [0u64; 12];
+    let n = pt(GET_SYSCALL_INFO, tid, std::mem::size_of_val(&b) as u64, b.as_mut_ptr() as u64).ok()?;
+    if n < 24 {
+        return None;
+    }
+    match b[0] & 0xff {
+        1 => Some(Sys { entry: true, nr: b[3], args: [b[4], b[5], b[6], b[7], b[8], b[9]], ret: 0, error: false }),
+        2 => {
+            // the kernel does not give the number again on the way out: it is still in orig_rax
+            let mut nr = u64::MAX;
+            let _ = pt(PEEKUSER, tid, 15 * 8, (&raw mut nr) as u64);
+            Some(Sys { entry: false, nr, args: [0; 6], ret: b[3] as i64, error: b[4] & 0xff != 0 })
+        }
+        _ => None,
+    }
 }
 
 fn os_err(what: &str, e: io::Error) -> Error {
@@ -209,7 +244,7 @@ impl Linux {
         if unsafe { libc::waitpid(pid, &mut st, libc::WUNTRACED) } != pid || !libc::WIFSTOPPED(st) {
             return Err(why(pid));
         }
-        if let Err(e) = pt(SEIZE, pid, 0, O_EXITKILL | O_TRACECLONE | O_TRACEFORK | O_TRACEEXEC) {
+        if let Err(e) = pt(SEIZE, pid, 0, O_EXITKILL | O_TRACESYSGOOD | O_TRACECLONE | O_TRACEFORK | O_TRACEEXEC) {
             let _ = why(pid);
             return Err(Error::Fail(format!(
                 "the system does not let nexo trace a program here ({e}); inside nexo's sandbox run the dbg command unsandboxed"
@@ -243,6 +278,7 @@ impl Linux {
             patches: Vec::new(),
             gone: false,
             want_stop: false,
+            sys: false,
         };
         me.open_mem();
         Ok(me)
@@ -269,6 +305,7 @@ impl Linux {
             patches: Vec::new(),
             gone: false,
             want_stop: false,
+            sys: false,
         };
         loop {
             let mut new = 0;
@@ -278,7 +315,7 @@ impl Linux {
                 if me.th.contains_key(&tid) {
                     continue;
                 }
-                if let Err(e) = pt(SEIZE, tid, 0, O_TRACECLONE | O_TRACEFORK | O_TRACEEXEC) {
+                if let Err(e) = pt(SEIZE, tid, 0, O_TRACESYSGOOD | O_TRACECLONE | O_TRACEFORK | O_TRACEEXEC) {
                     if e.raw_os_error() == Some(libc::ESRCH) {
                         continue;
                     }
@@ -351,7 +388,7 @@ impl Linux {
     fn again(&mut self, tid: i32) {
         let Some(t) = self.th.get_mut(&tid) else { return };
         let sig = std::mem::take(&mut t.sig);
-        if pt(if t.step { SINGLESTEP } else { CONT }, tid, 0, sig as u64).is_ok() {
+        if pt(order(t.step, self.sys), tid, 0, sig as u64).is_ok() {
             t.running = true;
         }
     }
@@ -443,6 +480,11 @@ impl Linux {
                     self.again(tid);
                 }
             }
+            0 if sig == libc::SIGTRAP | 0x80 => match syscall_info(tid) {
+                Some(sys) => events.push(stopped(Stop::Syscall(sys))),
+                None if !stopping => self.again(tid),
+                None => {}
+            },
             0 => {
                 let mut info = [0u64; 16];
                 let have = pt(GETSIGINFO, tid, 0, info.as_mut_ptr() as u64).is_ok();
@@ -624,6 +666,22 @@ impl Target for Linux {
         self.patches = patches.to_vec();
     }
 
+    fn trace_syscalls(&mut self, on: bool) -> Result<()> {
+        if on && !self.sys {
+            // ask once, on a stopped thread, whether this kernel can say what a stop is about
+            let Some(tid) = self.th.keys().next().copied() else { return fail("the program has ended") };
+            let mut b = [0u64; 12];
+            if let Err(e) = pt(GET_SYSCALL_INFO, tid, std::mem::size_of_val(&b) as u64, b.as_mut_ptr() as u64) {
+                return Err(os_err(
+                    "this kernel cannot describe system calls (PTRACE_GET_SYSCALL_INFO, Linux 5.3+)",
+                    e,
+                ));
+            }
+        }
+        self.sys = on;
+        Ok(())
+    }
+
     fn resume(&mut self, how: Resume) -> Result<()> {
         if self.gone {
             return fail("the program has ended");
@@ -632,13 +690,14 @@ impl Target for Linux {
             Resume::All => None,
             Resume::Step(t) => Some(t as i32),
         };
+        let sys = self.sys;
         for (tid, t) in self.th.iter_mut() {
             if t.running || one.is_some_and(|o| o != *tid) {
                 continue;
             }
             t.step = one.is_some();
             let sig = std::mem::take(&mut t.sig);
-            match pt(if t.step { SINGLESTEP } else { CONT }, *tid, 0, sig as u64) {
+            match pt(order(t.step, sys), *tid, 0, sig as u64) {
                 Ok(_) => t.running = true,
                 // A thread that died while stopped is found by the next wait.
                 Err(e) if e.raw_os_error() == Some(libc::ESRCH) => t.running = true,

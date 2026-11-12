@@ -23,6 +23,7 @@ regs, setreg <reg> <v>  (asks)
 mem <addr> <len> [--as u8|u32|u64|ptr|str], x, print <expr>, write <addr> <hex> (asks)
 bt [N], args, threads, thread <id>, maps, modules, find <hex|text>, dis <addr> [N]
 watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
+strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
 do \"c1; c2\"  several commands in one call
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
@@ -253,6 +254,23 @@ mod tests {
             assert!(o.is_error && o.content.contains("only look"), "{c}: {}", o.content);
         }
         assert!(call(&t, "sessions").await.content.contains("no debug sessions"));
+    }
+
+    #[tokio::test]
+    async fn strace_runs_through_the_tool_with_the_stable_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Debug::in_dir(dir.path());
+        assert_eq!(t.call_kind(&json!({"command": "strace show"})), ToolKind::Read);
+        let tru = ["/usr/bin/true", "/bin/true"].iter().find(|p| Path::new(p).is_file()).expect("true").to_string();
+        let first = call(&t, &format!("run {tru}")).await;
+        assert!(!first.is_error, "{}", first.content);
+        assert!(!call(&t, "strace process").await.is_error);
+        let end = call(&t, "cont").await;
+        assert!(end.content.contains("exited with code 0"), "{}", end.content);
+        let shown = call(&t, "strace show").await;
+        assert!(shown.content.starts_with("debug "), "{}", shown.content);
+        assert!(shown.content.contains("exit_group(0) = ?"), "{}", shown.content);
+        call(&t, "end").await;
     }
 
     #[test]
