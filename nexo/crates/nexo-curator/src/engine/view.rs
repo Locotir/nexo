@@ -255,11 +255,24 @@ impl Engine {
                 } else {
                     "read the file again to see it as it is now".to_string()
                 };
-                format!(
-                    "{MARK} {} output left out here: the read of {path} from before its edit in m{:05}; {back}",
-                    u.tool,
-                    edit + 1
-                )
+                if path == super::stale::DEBUG_STATE {
+                    let back = if self.recall_tool {
+                        format!("recall m{:05} brings it back as it was", u.msg + 1)
+                    } else {
+                        "look again to see the program as it is now".to_string()
+                    };
+                    format!(
+                        "{MARK} {} output left out here: what the program showed before it moved on in m{:05}; {back}",
+                        u.tool,
+                        edit + 1
+                    )
+                } else {
+                    format!(
+                        "{MARK} {} output left out here: the read of {path} from before its edit in m{:05}; {back}",
+                        u.tool,
+                        edit + 1
+                    )
+                }
             } else if self.recall_tool {
                 format!(
                     "{MARK} {} output left out here, {} line{} you read already; recall m{:05} brings it back as it was",

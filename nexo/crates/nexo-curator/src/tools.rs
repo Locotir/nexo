@@ -106,6 +106,64 @@ pub fn classify(name: &str, args: Option<&Value>) -> (Kind, Option<String>, Opti
     (kind, path, command)
 }
 
+/// What a debugger call does to the program it drives.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DbgEffect {
+    /// Shows the state the program is in now (registers, stack, memory, values): the answer is only true until the
+    /// program moves.
+    Look,
+    /// Lets the program run on, changes it or ends the session: what earlier looks showed is out of date.
+    Move,
+    /// Neither: code, notes, names, help.
+    Still,
+}
+
+const DBG_LOOK: [&str; 21] = [
+    "regs", "bt", "mem", "x", "print", "p", "args", "threads", "thread", "status", "info", "history", "out", "log",
+    "maps", "modules", "find", "watches", "breaks", "catches", "stack",
+];
+const DBG_MOVE: [&str; 17] = [
+    "run", "attach", "cont", "c", "continue", "step", "s", "next", "n", "finish", "until", "kill", "detach", "end",
+    "setreg", "write", "stdin",
+];
+
+/// The effect of one debugger command line (`-s id` first is skipped; `do "a; b"` is a move when any part is).
+fn dbg_line(line: &str) -> DbgEffect {
+    let mut w = line.split_whitespace().peekable();
+    while w.peek() == Some(&"-s") {
+        w.next();
+        w.next();
+    }
+    let first = w.next().unwrap_or("");
+    if first == "do" {
+        let rest = line.trim_start().strip_prefix("do").unwrap_or("").trim().trim_matches(['"', '\'']);
+        let parts: Vec<DbgEffect> = rest.split(';').map(dbg_line).collect();
+        return if parts.contains(&DbgEffect::Move) {
+            DbgEffect::Move
+        } else if parts.contains(&DbgEffect::Look) {
+            DbgEffect::Look
+        } else {
+            DbgEffect::Still
+        };
+    }
+    if DBG_MOVE.contains(&first) || first == "stop" || first == "wait" {
+        DbgEffect::Move
+    } else if DBG_LOOK.contains(&first) {
+        DbgEffect::Look
+    } else {
+        DbgEffect::Still
+    }
+}
+
+/// The effect of a call to a debugger tool (`debug` with a `command`); `None` for any other tool.
+pub fn debug_effect(name: &str, args: Option<&Value>) -> Option<DbgEffect> {
+    if !name_words(name).iter().any(|w| w == "debug" || w == "dbg") {
+        return None;
+    }
+    let command = args.and_then(Value::as_object)?.get("command")?.as_str()?;
+    Some(dbg_line(command))
+}
+
 /// Arguments that ask a read tool for a part of a file (a line range or a window), whatever the tool
 /// calls them.
 const RANGE_KEYS: [&str; 10] =
@@ -484,6 +542,20 @@ pub fn shell_writes(command: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_debugger_call_looks_at_the_program_or_moves_it() {
+        let e = |c: &str| debug_effect("debug", Some(&json!({"command": c})));
+        assert_eq!(e("bt 5"), Some(DbgEffect::Look));
+        assert_eq!(e("-s ab regs"), Some(DbgEffect::Look));
+        assert_eq!(e("cont --wait 5"), Some(DbgEffect::Move));
+        assert_eq!(e("setreg rax 1"), Some(DbgEffect::Move));
+        assert_eq!(e("do \"break f; bt\""), Some(DbgEffect::Look));
+        assert_eq!(e("do \"break f; cont; bt\""), Some(DbgEffect::Move));
+        assert_eq!(e("note crash: here"), Some(DbgEffect::Still));
+        assert_eq!(debug_effect("bash", Some(&json!({"command": "cont"}))), None);
+        assert_eq!(debug_effect("debug", None), None);
+    }
 
     #[test]
     fn a_here_document_sent_to_a_file_is_a_whole_write() {

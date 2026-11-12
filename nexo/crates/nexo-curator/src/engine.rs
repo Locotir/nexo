@@ -272,6 +272,10 @@ pub struct Engine {
     /// its result, then by result unit, so a later edit of one makes the output out of date as a read's.
     shell_read: FxHashMap<String, Vec<String>>,
     shell_reads: FxHashMap<usize, Vec<String>>,
+    /// Debugger calls that look at the program's state (by call id), and their results (by unit): out of date once
+    /// a later call moves the program.
+    dbg_look: rustc_hash::FxHashSet<String>,
+    dbg_looks: rustc_hash::FxHashSet<usize>,
     /// The reads that left the view while a later edit had made them out of date: (path, message of the edit).
     stale_gone: FxHashMap<usize, (String, usize)>,
     /// Seconds, as the host gives them with each view (`Params.pockets`).
@@ -413,6 +417,8 @@ impl Engine {
             edit_ok: FxHashMap::default(),
             shell_read: FxHashMap::default(),
             shell_reads: FxHashMap::default(),
+            dbg_look: Default::default(),
+            dbg_looks: Default::default(),
             stale_gone: FxHashMap::default(),
             now: 0.0,
             pockets: FxHashMap::default(),

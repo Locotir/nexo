@@ -10,6 +10,9 @@ use crate::tools::{full_write, heredoc_writes, Kind};
 use super::files::{command_of, same_file};
 use super::Engine;
 
+/// The name the program a debugger drives goes by where a file's name goes: a call that moves it is an edit of it.
+pub(super) const DEBUG_STATE: &str = "debug:";
+
 impl Engine {
     /// The file a read result `i` holds and the message of the first later edit or write of it that did not
     /// fail: the read no longer shows what the file holds (`None`: not a read, or not changed since). A shell
@@ -26,6 +29,7 @@ impl Engine {
             return None;
         }
         let paths: Vec<&str> = match info.kind {
+            Kind::Exec if self.dbg_looks.contains(&i) => vec![DEBUG_STATE],
             Kind::Read => info.path.as_deref().filter(|p| !p.is_empty()).into_iter().collect(),
             Kind::Exec if shell => self.shell_reads.get(&i)?.iter().map(String::as_str).collect(),
             _ => return None,

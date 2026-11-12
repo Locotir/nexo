@@ -90,6 +90,14 @@ static FINDING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?mi)^[ \t]*(?:[-*•][ \t]*|\d+[.)][ \t]*)?(?:\*\*)?Finding(?:\*\*)?:(?:\*\*)?[ \t]*(.+?)[ \t]*$")
         .expect("static pattern")
 });
+/// The line a debugging session answers with when it keeps a name or a note for a binary: `saved: noted 0x1b7af: …`
+/// or `saved: named 0x2000 parse_header`. What it keeps is a fact about that binary from then on.
+static SAVED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^saved:[ \t]*((?:noted|named)[ \t]+(0x[0-9a-fA-F]+)\b.*?)(?:[ \t]+\(kept for this binary\))?[ \t]*$",
+    )
+    .expect("static pattern")
+});
 /// Where a subject ends: the first verb of the statement or the first sign.
 static SUBJECT_END: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -244,6 +252,18 @@ impl Standing {
             }
             let mut from_results = 0;
             for r in results {
+                for c in SAVED.captures_iter(r) {
+                    let line: String = c[1].chars().take(LINE_CHARS).collect();
+                    // one fact per address and kind: a new note at the same place replaces the old one
+                    let kind = line.split_whitespace().next().unwrap_or("").to_string();
+                    let mut targets = stems(&line);
+                    targets.retain(|t| !t.starts_with('#'));
+                    if from_results < PER_RESULT
+                        && self.put(mi, format!("this binary, {line}"), targets, vec![kind, c[2].to_string()])
+                    {
+                        from_results += 1;
+                    }
+                }
                 for line in r.lines().filter(|l| l.len() <= LINE_CHARS && l.contains('=')) {
                     if from_results >= PER_RESULT {
                         break;

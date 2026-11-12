@@ -132,3 +132,22 @@ fn a_failed_partial_edit_leaves_the_written_file_and_its_pin_as_they_were() {
         assert!(e.written.contains_key("config.json"), "failed={failed}");
     }
 }
+
+/// What a debugger showed of the program is out of date once a later call moves the program.
+#[test]
+fn what_a_debugger_looked_at_is_out_of_date_once_the_program_moves_on() {
+    let mut msgs = vec![json!({"role": "user", "content": "Why does it crash?"})];
+    msgs.extend(tool(1, "debug", json!({"command": "run ./target crash"}), "stopped at entry", false));
+    msgs.extend(tool(2, "debug", json!({"command": "regs"}), "rax 0x1 rbx 0x2", false));
+    msgs.extend(tool(3, "debug", json!({"command": "cont"}), "SIGSEGV in dbg_crash", false));
+    msgs.extend(tool(4, "debug", json!({"command": "bt"}), "#0 dbg_crash", false));
+    msgs.extend(tool(5, "debug", json!({"command": "note crash: null"}), "saved: noted 0x10: crash: null", false));
+    let mut e = Engine::new(params("stale=1;eoq=0;threshold=0").unwrap());
+    e.sync(&msgs);
+    // `regs` (message 4) was before the `cont` in message 6; `bt` (message 8) has nothing after it that moves
+    assert_eq!(e.superseded_by(result_in(&e, 4)), Some(("debug:".to_string(), 5)));
+    assert_eq!(e.superseded_by(result_in(&e, 8)), None);
+    // the stop itself and the run are not looks
+    assert_eq!(e.superseded_by(result_in(&e, 6)), None);
+    assert_eq!(e.superseded_by(result_in(&e, 2)), None);
+}

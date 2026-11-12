@@ -250,3 +250,18 @@ fn a_word_most_requests_hold_is_not_a_target() {
     let (_, standing) = ask(&mut cur, msgs, "Add a line to ~/.bashrc.");
     assert_eq!(standing.len(), 1, "{standing:?}");
 }
+
+/// A debugging session that kept a note for a binary (`saved: noted 0x… …`) gives a fact about that binary: it
+/// comes back when the work gets to the function it names, long after the result that said it has left.
+#[test]
+fn what_a_debug_session_saved_for_a_binary_comes_back_when_its_function_is_asked_about() {
+    let mut cur = curator();
+    let saved = "saved: noted 0x1b7af: crash: dbg_crash reads through a null pointer (kept for this binary)";
+    let msgs = work(&mut cur, &[user("Find out why the target crashes.")], 250, saved);
+    let (_, standing) = ask(&mut cur, msgs.clone(), "Now fix dbg_crash so it checks its argument.");
+    assert!(standing.iter().any(|l| l.contains("0x1b7af") && l.contains("null pointer")), "{standing:?}");
+    assert!(standing.iter().all(|l| !l.contains("kept for this binary")), "{standing:?}");
+    // a request about something else does not bring it
+    let (_, other) = ask(&mut cur, msgs, "Rename the variable total in the invoices module.");
+    assert!(other.iter().all(|l| !l.contains("0x1b7af")), "{other:?}");
+}
