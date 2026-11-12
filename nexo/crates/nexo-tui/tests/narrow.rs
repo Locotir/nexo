@@ -110,3 +110,18 @@ fn a_fold_hiding_one_row_says_line_not_lines() {
     let all = draw(&mut a, 24, 10).join("\n");
     assert!(all.contains("1 more line") && !all.contains("1 more lines"), "{all}");
 }
+
+/// At 24x10 the scrollbar column overwrote a corner of the welcome card.
+#[test]
+fn the_scrollbar_never_overwrites_the_welcome_card() {
+    let mut a = app();
+    let rows = draw(&mut a, 24, 10);
+    let all = rows.join("\n");
+    let top: Vec<&String> = rows.iter().filter(|r| r.starts_with('│') || r.starts_with('╰')).collect();
+    assert!(top.len() >= 3, "no card\n{all}");
+    for r in top {
+        // the last column is the scrollbar; the card's edge is the one just left of it
+        let edge = r.chars().nth(22).unwrap();
+        assert!("│╮╯".contains(edge), "card edge hit: {r:?}\n{all}");
+    }
+}

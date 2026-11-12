@@ -826,7 +826,7 @@ fn welcome(
     intro_ms: Option<u64>,
     detail: nexo_core::config::Detail,
 ) -> Vec<Line<'static>> {
-    let inner = w.saturating_sub(4).clamp(20, 72);
+    let inner = w.saturating_sub(4).clamp(1, 72);
     let border = match intro_ms {
         Some(ms) if ms < BORDER_MS => theme.style(mix(theme.bg, theme.border, ms as f32 / BORDER_MS as f32)),
         _ => theme.style(theme.border),
