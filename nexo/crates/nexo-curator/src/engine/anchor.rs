@@ -10,6 +10,12 @@ use crate::textops::{self, bisect_left};
 
 use super::Engine;
 
+/// Characters of the request in progress the anchor keeps word for word once it left the view (a longer one keeps
+/// its head and its tail).
+const IN_PROGRESS_CHARS: usize = 6_000;
+/// What the loop sends in the person's place to go on with a goal or after a check-in: not a request of the person.
+const LOOP_MARKS: [&str; 2] = ["[goal: continue]", "[supervisor: continue]"];
+
 fn thousands(n: i64) -> String {
     let s = n.unsigned_abs().to_string();
     let mut out = String::new();
@@ -113,6 +119,35 @@ impl Engine {
         lines.join("\n")
     }
 
+    /// The person's latest request (its message and its words) once it left the view: in a long run of steps it
+    /// goes out like any other message, and the model then saw the first request whole and the latest as one
+    /// line of the list, and took the first for the request in progress. The loop's own continuations are not one.
+    fn in_progress(&self) -> Option<(usize, String)> {
+        let r = self.fz.requests.iter().rev().copied().find(|&r| {
+            let t = self.unit_text_at(r, UKind::User);
+            let w = crate::msg::person_words(&t).trim_start();
+            !LOOP_MARKS.iter().any(|m| w.starts_with(m))
+        })?;
+        if r == 0 || r >= self.start {
+            return None;
+        }
+        let t = self.unit_text_at(r, UKind::User);
+        let w = textops::strip(crate::msg::person_words(&t));
+        if w.is_empty() {
+            return None;
+        }
+        let w = if textops::len(w) > IN_PROGRESS_CHARS {
+            format!(
+                "{} [… middle left out …] {}",
+                textops::head(w, IN_PROGRESS_CHARS / 2),
+                textops::tail(w, IN_PROGRESS_CHARS / 2)
+            )
+        } else {
+            w.to_string()
+        };
+        Some((r, w))
+    }
+
     /// The map text, with the findings and the pinned files after it, and the tokens of those.
     pub(super) fn map(&self) -> (String, i64) {
         let mut lines = vec![format!(
@@ -124,6 +159,7 @@ impl Engine {
         let n = self.tr.msgs.len();
         let end_of = |x: usize| reqs.get(x + 1).copied().unwrap_or(n);
         let upto = bisect_left(reqs, &self.start);
+        let current = self.in_progress();
         let requests: Vec<usize> = (0..upto)
             .filter(|&x| {
                 reqs[x] > 0 || !self.outcome(0, end_of(x)).is_empty() || !self.fixes(0, end_of(x), None).is_empty()
@@ -147,6 +183,8 @@ impl Engine {
                 let r = reqs[x];
                 let ask = if r == 0 {
                     "(the first request, above)".to_string()
+                } else if current.as_ref().is_some_and(|c| c.0 == r) {
+                    "(the latest request, in progress: word for word below)".to_string()
                 } else {
                     let s = textops::squash_ws(&self.unit_text_at(r, UKind::User));
                     if textops::len(&s) > 300 {
@@ -177,8 +215,15 @@ impl Engine {
         if self.gone_commands != 0 {
             lines.push(format!("Commands run in them: {}.", self.gone_commands));
         }
-        let mut text = lines.join("\n");
         let mut kept = 0;
+        if let Some((_, words)) = &current {
+            let block = format!(
+                "The user's latest request, the one the work is on, moved out with them; here it is word for word:\n{words}"
+            );
+            kept += est_str(&block);
+            lines.push(block);
+        }
+        let mut text = lines.join("\n");
         for block in [self.notes_text(), self.pins_text(), self.wrote_text(self.start)] {
             if !block.is_empty() {
                 text += "\n\n";

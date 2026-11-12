@@ -116,3 +116,67 @@ fn a_fact_the_agent_saved_with_note_is_shown_as_its_own_note_and_not_as_a_reques
         "{block}"
     );
 }
+
+/// A run of steps after the person's latest request, all on that request.
+fn a_long_run_after(latest: &str, then: Option<&str>) -> (Vec<Value>, usize) {
+    let mut msgs = vec![json!({"role": "user", "content": "Map where each module of the realm is configured."})];
+    msgs.extend(tool(1, "read_file", json!({"path": "config/realm.toml"}), "modules: alpha, beta, gamma", false));
+    msgs.push(json!({"role": "assistant", "content": "Each module is configured in config/realm.toml."}));
+    msgs.push(json!({"role": "user", "content": latest}));
+    let at = msgs.len() - 1;
+    for k in 0..40 {
+        let out = format!("the loader_{k} reads the rows of the csv file and checks every column of them in turn");
+        msgs.extend(tool(k + 2, "read_file", json!({"path": format!("src/{}.rs", word(k))}), &out, false));
+        if k == 20 {
+            if let Some(t) = then {
+                msgs.push(json!({"role": "assistant", "content": "Paused here."}));
+                msgs.push(json!({"role": "user", "content": t}));
+            }
+        }
+    }
+    (msgs, at)
+}
+
+#[test]
+fn the_latest_request_that_left_the_view_is_in_the_anchor_word_for_word() {
+    let latest = "Now port the CSV loader to streaming, keep the column order and stop at the first bad row.";
+    let (msgs, at) = a_long_run_after(latest, None);
+    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    e.sync(&msgs);
+    let view = e.view();
+    assert!(e.start > at, "the request did not leave the view: start {} at {at}", e.start);
+    // the model sees it whole, marked as the one in progress, and the list no longer stands for it with a cut line
+    assert!(e
+        .base_map
+        .contains(&format!("the one the work is on, moved out with them; here it is word for word:\n{latest}")));
+    assert!(e.base_map.contains("- (the latest request, in progress: word for word below)"), "{}", e.base_map);
+    let sent = serde_json::to_string(&view).unwrap();
+    assert!(sent.contains("stop at the first bad row"), "the view sent lacks the request in progress");
+}
+
+#[test]
+fn a_continuation_of_the_loop_is_not_taken_for_the_request_in_progress() {
+    let latest = "Now port the CSV loader to streaming, keep the column order and stop at the first bad row.";
+    let (msgs, _) = a_long_run_after(latest, Some("[goal: continue]"));
+    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    e.sync(&msgs);
+    e.view();
+    assert!(e.base_map.contains(&format!("word for word:\n{latest}")), "{}", e.base_map);
+    assert!(!e.base_map.contains("word for word:\n[goal: continue]"));
+}
+
+#[test]
+fn a_latest_request_still_in_view_is_not_repeated_in_the_anchor() {
+    let mut msgs = vec![json!({"role": "user", "content": "Map where each module of the realm is configured."})];
+    for k in 0..40 {
+        let out = format!("the module_{k} service reads its limits from the shared table and retries them");
+        msgs.extend(tool(k + 1, "read_file", json!({"path": format!("config/{}.toml", word(k))}), &out, false));
+    }
+    msgs.push(json!({"role": "assistant", "content": "Mapped."}));
+    msgs.push(json!({"role": "user", "content": "Now list the modules that retry."}));
+    let mut e = Engine::new(params("ledger=6000;target=3000;eoq=0;nudge=0").unwrap());
+    e.sync(&msgs);
+    e.view();
+    assert!(e.start > 0, "nothing left the view");
+    assert!(!e.base_map.contains("the one the work is on"), "{}", e.base_map);
+}
