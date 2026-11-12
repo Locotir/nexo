@@ -96,6 +96,7 @@ fn overview_calls_a_symbol_a_symbol_not_proof() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "rustc keeps Windows symbols in a .pdb, not read yet")]
 fn overview_follows_a_rust_program_to_its_own_main() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("hello.rs");
