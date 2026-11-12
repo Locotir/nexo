@@ -24,6 +24,7 @@ mod ops;
 mod overview;
 mod page;
 mod refs;
+mod slice;
 mod strings;
 mod xops;
 
@@ -55,6 +56,7 @@ pub use ops::{
 pub use overview::{overview, overview_window};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
+pub use slice::slice_window;
 pub use xops::{
     calls, calls_window, func_list, func_list_window, name_clear, name_set, names_list, names_list_window, note_clear,
     note_set, xref, xref_str, xref_str_window, xref_window, FuncSort,

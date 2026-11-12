@@ -279,3 +279,74 @@ fn crypto_save_names_tables_and_notes_users_without_replacing_anything() {
     let b64 = addr_of(&img, "b64");
     assert!(img.note_at(b64).is_some_and(|n| n.contains("base64")), "{:?}", img.note_at(b64));
 }
+
+/// A function whose result is built from a constant, an argument, a global, a call and a stack slot.
+const SLICE: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+int g_limit = 7;
+__attribute__((noinline)) int source(int x) { return x ^ 0x55; }
+__attribute__((noinline)) int mix(int a, int b) {
+    int local = a * 3;
+    int k = 40;
+    int r = source(b);
+    local = local + k + g_limit;
+    return printf("%d\n", local + r);
+}
+int main(int argc, char **argv) { return mix(argc, argc + 1) + (int)(long)argv; }
+"#;
+
+fn call_to(img: &Image, func: &str, callee: &str) -> u64 {
+    let t = img.func_at(addr_of(img, func)).unwrap();
+    img.refs()
+        .from(t.start, t.end)
+        .find(|r| {
+            r.kind == crate::Kind::Call
+                && crate::graph::node_name(img, crate::graph::node_of(img, r.target)).starts_with(callee)
+        })
+        .unwrap_or_else(|| panic!("no call to {callee} in {func}"))
+        .src
+}
+
+#[test]
+fn slice_follows_registers_and_slots_back_to_their_sources_and_says_where_it_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(exe) = compile(dir.path(), SLICE, &["-O0", "-fno-pie", "-no-pie"]) else { return };
+    let img = Image::open(&exe).unwrap();
+    // the arguments of printf: the format string and the sum
+    let printf_call = call_to(&img, "mix", "printf");
+    let o = slice_window(&img, &format!("{printf_call:#x}"), None, Some(2), None, None, 200).unwrap();
+    let t = whole(&o);
+    assert!(t.contains("global g_limit"), "the global is a stop\n{t}");
+    assert!(t.contains("result of the call to source"), "the call result is a stop with the callee named\n{t}");
+    assert!(t.contains("[proven]"), "{t}");
+    assert!(t.contains("add eax, eax") || t.contains("imul") || t.contains("lea"), "a*3 is in the slice\n{t}");
+    assert!(
+        t.contains("is argument 1 of mix") || t.contains("is argument 2 of mix") || t.contains("never written"),
+        "{t}"
+    );
+    // the constant 40 is a step that ends in a constant
+    assert!(t.contains("sets ") && t.contains("to a constant"), "{t}");
+    // the call itself is a step, and the slice never includes the unrelated main
+    assert!(!t.contains("main"), "{t}");
+    // a slot given by hand
+    let o = slice_window(&img, &format!("{printf_call:#x}"), None, None, Some("rbp-0x4"), None, 200);
+    assert!(o.is_ok());
+    // an address inside an instruction is refused
+    assert!(slice_window(&img, &format!("{:#x}", printf_call + 1), None, None, None, None, 50).is_err());
+}
+
+#[test]
+fn slice_marks_a_value_set_on_two_paths_as_inferred() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = r#"
+#include <stdio.h>
+__attribute__((noinline)) int pick(int c) { int v; if (c) v = 5; else v = 9; return printf("%d", v); }
+int main(int argc, char **argv) { (void)argv; return pick(argc); }
+"#;
+    let Some(exe) = compile(dir.path(), src, &["-O0", "-fno-pie", "-no-pie"]) else { return };
+    let img = Image::open(&exe).unwrap();
+    let call = call_to(&img, "pick", "printf");
+    let t = whole(&slice_window(&img, &format!("{call:#x}"), None, Some(2), None, None, 200).unwrap());
+    assert!(t.contains("[inferred]"), "a branch joins before the use\n{t}");
+}

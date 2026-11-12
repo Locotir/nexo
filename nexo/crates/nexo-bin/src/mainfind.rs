@@ -27,7 +27,7 @@ pub struct MainHit {
 }
 
 /// Registers a call may overwrite (System V and Windows x64 together, so the answer holds for both).
-fn clobbered_by_call(r: Register) -> bool {
+pub(crate) fn clobbered_by_call(r: Register) -> bool {
     matches!(
         r.full_register(),
         Register::RAX

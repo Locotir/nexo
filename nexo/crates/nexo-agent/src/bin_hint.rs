@@ -13,7 +13,7 @@ use nexo_core::message::{Message, Part};
 use serde_json::Value;
 
 /// The line added to the result. It starts with `[nexo:` so it is told apart from the command's own output.
-pub const LINE: &str = "[nexo: this file can be read in pages with names and references: nexo bin info|funcs|fn|xref|calls|strings|find <file> ... (nexo bin --help)]";
+pub const LINE: &str = "[nexo: this file can be read in pages with names and references: nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto (nexo bin --help)]";
 
 /// The programs people use to read a compiled program by hand.
 const READERS: [&str; 11] =
@@ -187,7 +187,7 @@ mod tests {
     fn the_line_is_the_agreed_text() {
         assert_eq!(
             LINE,
-            "[nexo: this file can be read in pages with names and references: nexo bin info|funcs|fn|xref|calls|strings|find <file> ... (nexo bin --help)]"
+            "[nexo: this file can be read in pages with names and references: nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto (nexo bin --help)]"
         );
     }
 

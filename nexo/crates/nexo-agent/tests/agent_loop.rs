@@ -6629,7 +6629,7 @@ async fn the_first_time_a_compiled_program_is_read_by_hand_the_result_says_nexo_
     let exe = std::env::current_exe().unwrap();
     let (first, second) = (format!("objdump -d '{}' | head", exe.display()), format!("strings '{}'", exe.display()));
     let (reqs, sid) = run_commands(&["ls", &first, &second, "ls"], d.path(), None).await;
-    const LINE: &str = "[nexo: this file can be read in pages with names and references: nexo bin info|funcs|fn|xref|calls|strings|find <file> ... (nexo bin --help)]";
+    const LINE: &str = "[nexo: this file can be read in pages with names and references: nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto (nexo bin --help)]";
     let last = result_texts(reqs.last().unwrap());
     assert_eq!(last.len(), 4, "{last:?}");
     assert_eq!(last[0], "bash:ls");

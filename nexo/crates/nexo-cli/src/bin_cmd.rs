@@ -52,6 +52,23 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// Backward slice: the instructions of a function that produced a value read at an address.
+    Slice {
+        file: PathBuf,
+        /// The instruction whose inputs to follow (an address inside a function).
+        at: String,
+        /// Follow this register (rax, edi, r8, ...) instead of what the instruction reads.
+        #[arg(long)]
+        reg: Option<String>,
+        /// For a call: follow argument N (1 is the first).
+        #[arg(long)]
+        arg: Option<usize>,
+        /// Follow a stack slot, like rbp-0x14 or rsp+8.
+        #[arg(long)]
+        mem: Option<String>,
+        #[command(flatten)]
+        common: Common,
+    },
     /// How one function reaches another: the shortest call chains, with the call site of each hop.
     Path {
         file: PathBuf,
@@ -316,6 +333,7 @@ impl BinOp {
             BinOp::Info { file, .. }
             | BinOp::Overview { file, .. }
             | BinOp::Path { file, .. }
+            | BinOp::Slice { file, .. }
             | BinOp::Crypto { file, .. }
             | BinOp::Tree { file, .. }
             | BinOp::Fn { file, .. }
@@ -341,6 +359,7 @@ impl BinOp {
             BinOp::Info { common, .. }
             | BinOp::Overview { common, .. }
             | BinOp::Path { common, .. }
+            | BinOp::Slice { common, .. }
             | BinOp::Crypto { common, .. }
             | BinOp::Tree { common, .. }
             | BinOp::Fn { common, .. }
@@ -378,6 +397,9 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Info { .. } => nexo_bin::info(&img),
         BinOp::Overview { .. } => nexo_bin::overview_window(&img, from, lines)?,
         BinOp::Crypto { save, .. } => nexo_bin::crypto_window(&img, save.then_some(data_dir), from, lines)?,
+        BinOp::Slice { at, reg, arg, mem, .. } => {
+            nexo_bin::slice_window(&img, at, reg.as_deref(), *arg, mem.as_deref(), from, lines)?
+        }
         BinOp::Path { from_fn, to_fn, ptrs, routes, .. } => {
             nexo_bin::path_window(&img, from_fn, to_fn, *ptrs, *routes, from, lines)?
         }

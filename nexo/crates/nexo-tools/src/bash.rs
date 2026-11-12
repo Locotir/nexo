@@ -1066,10 +1066,24 @@ fn reads_only(words: &[String]) -> bool {
         "nexo" if words.get(1).map(String::as_str) == Some("dbg") => dbg_class(&words[2..]) == DbgClass::Control,
         "nexo" => {
             words.get(1).map(String::as_str) == Some("bin")
-                && matches!(
+                && (matches!(
                     words.get(2).map(String::as_str),
-                    Some("info" | "funcs" | "fn" | "xref" | "calls" | "strings" | "find" | "names" | "bytes")
-                )
+                    Some(
+                        "info"
+                            | "overview"
+                            | "funcs"
+                            | "fn"
+                            | "xref"
+                            | "calls"
+                            | "tree"
+                            | "path"
+                            | "slice"
+                            | "strings"
+                            | "find"
+                            | "names"
+                            | "bytes"
+                    )
+                ) || (words.get(2).map(String::as_str) == Some("crypto") && !words.iter().any(|w| w == "--save")))
         }
         "sed" => {
             flags().any(|w| w == "-n" || w == "--quiet" || w == "--silent")

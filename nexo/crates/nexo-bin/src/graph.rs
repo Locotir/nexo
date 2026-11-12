@@ -54,14 +54,14 @@ struct Edge {
 }
 
 /// The node an address belongs to: an import slot, or the start of the function that holds it.
-fn node_of(img: &Image, a: u64) -> u64 {
+pub(crate) fn node_of(img: &Image, a: u64) -> u64 {
     if img.slots.contains_key(&a) {
         return a;
     }
     img.func_at(a).map_or(a, |f| f.start)
 }
 
-fn node_name(img: &Image, n: u64) -> String {
+pub(crate) fn node_name(img: &Image, n: u64) -> String {
     if let Some(&i) = img.slots.get(&n) {
         return img.imports[i].name.clone();
     }
