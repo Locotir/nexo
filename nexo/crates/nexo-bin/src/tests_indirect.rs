@@ -115,8 +115,13 @@ fn forward_slice_follows_a_call_result_into_compares_stores_and_calls_on_both_br
 #[test]
 fn indirect_calls_and_tail_jumps_through_pointers_are_never_dropped() {
     let dir = tempfile::tempdir().unwrap();
-    for flags in [&["-O0", "-fno-pie", "-no-pie"][..], &["-O2", "-fno-pie", "-no-pie"][..]] {
-        let Some(exe) = sample(dir.path(), PTRS, flags, "indirect_calls_and_tail_jumps") else { return };
+    for flags in [
+        &["-O0", "-fno-pie", "-no-pie"][..],
+        // Ubuntu's gcc emits a jump table at -O0; force the same shape on every machine
+        &["-O0", "-fno-pie", "-no-pie", "-fjump-tables", "--param", "case-values-threshold=1"][..],
+        &["-O2", "-fno-pie", "-no-pie"][..],
+    ] {
+        let Some(exe) = sample(dir.path(), PTRS, flags, "indirect_calls_and_tail_jumps") else { continue };
         let img = Image::open(&exe).unwrap();
         let run = dec(&img, dir.path(), "run");
         assert!(run.contains("(*") && run.contains("&table") && run.contains("a2)"), "{flags:?}\n{run}");
@@ -125,15 +130,39 @@ fn indirect_calls_and_tail_jumps_through_pointers_are_never_dropped() {
         assert!(via.contains("(*a1)(a2)"), "{flags:?}\n{via}");
         // the switch comes back as cases, with the bounds check as the default
         let sw = dec(&img, dir.path(), "sw");
-        if flags[0] == "-O0" {
-            // an unoptimised build compares one case at a time (no table): every case value is still there
-            // and no jump is left unresolved or turned into a call
-            assert!(!sw.contains("jump not resolved") && !sw.contains("return (*"), "{flags:?}\n{sw}");
-            assert!(sw.contains("a1 == 5") && sw.contains("a1 == 0") && sw.contains("a2 + 0xa"), "{flags:?}\n{sw}");
-            continue;
-        }
-        assert!(sw.contains("switch") && sw.contains("case 5:"), "{flags:?}\n{sw}");
+        println!("{flags:?}\n{sw}");
+        assert!(!sw.contains("jump not resolved") && !sw.contains("return (*"), "{flags:?}\n{sw}");
+        // an unoptimised build may compare one case at a time (no table) or index a table: either way every case
+        // value is there, and no jump is left unresolved or turned into a call
+        let compares = sw.contains("a1 == 5") && sw.contains("a1 == 0");
+        let cases = sw.contains("switch") && (0..=5).all(|n| sw.contains(&format!("case {n}:")));
+        assert!(compares || cases, "{flags:?}\n{sw}");
+        assert!(sw.contains("a2 + 0xa"), "{flags:?}\n{sw}");
     }
+}
+
+#[test]
+fn an_unoptimised_clang_table_switch_with_a_spilled_index_comes_back_as_cases() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = dir.path().join("prog.c");
+    std::fs::write(&c, PTRS).unwrap();
+    let exe = dir.path().join("clang_o0.exe");
+    let built = std::process::Command::new("clang")
+        .args(["-O0", "-fno-pie", "-no-pie", "-o"])
+        .arg(&exe)
+        .arg(&c)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !built {
+        eprintln!("SKIPPED an_unoptimised_clang_table_switch: clang does not build the sample, so nothing was checked");
+        return;
+    }
+    let img = Image::open(&exe).unwrap();
+    let sw = dec(&img, dir.path(), "sw");
+    println!("{sw}");
+    assert!(!sw.contains("jump not resolved") && !sw.contains("return (*"), "{sw}");
+    assert!((0..=5).all(|n| sw.contains(&format!("case {n}:"))), "{sw}");
 }
 
 #[test]

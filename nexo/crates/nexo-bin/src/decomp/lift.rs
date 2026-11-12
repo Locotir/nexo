@@ -1080,6 +1080,51 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
     // jmp reg, reg = base + sext(dword [base + idx*4])
     if jmp.op0_kind() == OpKind::Register {
         let target_reg = jmp.op0_register().full_register();
+        // Absolute table read into the register just before the jump (an unoptimised non-PIE build):
+        // mov reg, [table + idx*8] ; jmp reg
+        let load = (lo..jmp_idx).rev().take_while(|&k| d.ins[k].flow_control() == FlowControl::Next).find(|&k| {
+            let i = &d.ins[k];
+            i.op0_kind() == OpKind::Register
+                && i.op0_register().full_register() == target_reg
+                && !matches!(i.mnemonic(), M::Cmp | M::Test)
+        });
+        if let Some(l) = load {
+            let ld = &d.ins[l];
+            if ld.mnemonic() == M::Mov
+                && ld.op0_register().size() == 8
+                && ld.op1_kind() == OpKind::Memory
+                && ld.memory_index() != Register::None
+                && ld.memory_index_scale() == 8
+                && ld.memory_base() == Register::None
+                && !ld.is_ip_rel_memory_operand()
+            {
+                let table = ld.memory_displacement64();
+                let idx = ld.memory_index();
+                let bound = find_bound(d, l, idx).or_else(|| find_bound_of_reloaded(d, l, idx));
+                let count = bound.map(|x| x.0 + 1).unwrap_or(256);
+                let mut targets = Vec::new();
+                for k in 0..count {
+                    let t = u64::from_le_bytes(env.read(table + k * 8, 8)?.try_into().ok()?);
+                    if !in_fn(t) {
+                        if bound.is_some() {
+                            return None;
+                        }
+                        break;
+                    }
+                    targets.push(t);
+                }
+                if targets.is_empty() {
+                    return None;
+                }
+                return Some(SwitchInfo {
+                    hide_from: l,
+                    targets,
+                    idx_reg: gpr_number(idx),
+                    idx_bits: if idx.is_gpr32() { 32 } else { 64 },
+                    bound: bound.map(|x| x.0),
+                });
+            }
+        }
         let (mut add_i, mut load_i, mut lea_i) = (None, None, None);
         let mut k = jmp_idx;
         while k > lo {
@@ -1175,6 +1220,43 @@ fn find_bound(d: &Decoded, at: usize, idx: Register) -> Option<(u64, u64)> {
             // the branch right after the compare
             let j = d.ins.get(k + 1)?;
             if matches!(j.mnemonic(), Mnemonic::Ja | Mnemonic::Jae) {
+                let n = if j.mnemonic() == Mnemonic::Ja { n } else { n.wrapping_sub(1) };
+                return Some((n & 0xffff_ffff, j.near_branch_target()));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// The highest valid index when the index register was reloaded from a stack slot just before the table read and
+/// the guard compared that slot: `cmp [slot], N ; ja default ; ... ; mov idx, [slot]` (an unoptimised build).
+fn find_bound_of_reloaded(d: &Decoded, at: usize, idx: Register) -> Option<(u64, u64)> {
+    let reload = (at.saturating_sub(4)..at).rev().find(|&k| {
+        let i = &d.ins[k];
+        i.mnemonic() == Mnemonic::Mov
+            && i.op0_kind() == OpKind::Register
+            && i.op0_register().full_register() == idx.full_register()
+            && i.op1_kind() == OpKind::Memory
+    })?;
+    let slot = &d.ins[reload];
+    let mut k = reload;
+    let mut steps = 0;
+    while k > 0 && steps < 14 {
+        k -= 1;
+        steps += 1;
+        let i = &d.ins[k];
+        if i.mnemonic() == Mnemonic::Cmp
+            && i.op0_kind() == OpKind::Memory
+            && i.memory_base() == slot.memory_base()
+            && i.memory_index() == slot.memory_index()
+            && i.memory_displacement64() == slot.memory_displacement64()
+            && i.op1_kind() != OpKind::Register
+            && i.op1_kind() != OpKind::Memory
+        {
+            let j = d.ins.get(k + 1)?;
+            if matches!(j.mnemonic(), Mnemonic::Ja | Mnemonic::Jae) {
+                let n = i.immediate(1);
                 let n = if j.mnemonic() == Mnemonic::Ja { n } else { n.wrapping_sub(1) };
                 return Some((n & 0xffff_ffff, j.near_branch_target()));
             }
