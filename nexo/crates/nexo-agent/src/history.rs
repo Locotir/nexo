@@ -9,7 +9,7 @@
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nexo_core::message::{message_tokens, Message};
+use nexo_core::message::{latest_person, message_tokens, reasoning_tokens, Message};
 
 static VERSIONS: AtomicU64 = AtomicU64::new(1);
 
@@ -22,17 +22,18 @@ pub fn size_of(m: &Message) -> u64 {
     serde_json::to_string(m).map(|s| s.len() as u64).unwrap_or(0)
 }
 
-fn sizes(m: &Message) -> (u64, u64) {
-    (size_of(m), message_tokens(m))
+fn sizes(m: &Message) -> (u64, u64, u64) {
+    (size_of(m), message_tokens(m), reasoning_tokens(m))
 }
 
 #[derive(Default)]
 pub struct History {
     messages: Vec<Message>,
-    /// The JSON length and the `message_tokens` of each message.
-    sizes: Vec<(u64, u64)>,
+    /// The JSON length, the `message_tokens` and the `reasoning_tokens` of each message.
+    sizes: Vec<(u64, u64, u64)>,
     bytes: u64,
-    /// `estimate_tokens` of the whole history: the sum of each message's tokens.
+    /// The sum of each message's `message_tokens`; `estimate_tokens` adds the opaque reasoning that
+    /// follows the latest person message (see `tokens_from`).
     tokens: u64,
     version: u64,
 }
@@ -57,10 +58,10 @@ impl History {
     }
 
     pub fn push(&mut self, m: Message) {
-        let (n, t) = sizes(&m);
-        self.sizes.push((n, t));
-        self.bytes += n;
-        self.tokens += t;
+        let s = sizes(&m);
+        self.sizes.push(s);
+        self.bytes += s.0;
+        self.tokens += s.1;
         self.messages.push(m);
     }
 
@@ -102,12 +103,20 @@ impl History {
 
     /// Same as `estimate_tokens(&history)`.
     pub fn tokens(&self) -> u64 {
-        self.tokens
+        self.tokens + self.reasoning_from(0)
     }
 
     /// Same as `estimate_tokens(&history[from..])`.
     pub fn tokens_from(&self, from: usize) -> u64 {
-        self.sizes[from.min(self.sizes.len())..].iter().map(|s| s.1).sum()
+        let from = from.min(self.sizes.len());
+        self.sizes[from..].iter().map(|s| s.1).sum::<u64>() + self.reasoning_from(from)
+    }
+
+    /// The opaque reasoning tokens of `history[from..]` that follow its latest person message.
+    fn reasoning_from(&self, from: usize) -> u64 {
+        let from = from.min(self.sizes.len());
+        let start = from + latest_person(&self.messages[from..]).map_or(0, |i| i + 1);
+        self.sizes[start..].iter().map(|s| s.2).sum()
     }
 
     /// The JSON bytes of the whole history.

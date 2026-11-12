@@ -2,7 +2,7 @@
 //! it the next model call carries; with the curator, also the zone of its
 //! memory (anchor or topic) the message is in.
 
-use nexo_core::message::{estimate_tokens, Message, Part, Role};
+use nexo_core::message::{message_tokens, Message, Part, Role};
 use nexo_core::{CallMark, CellKind, CellState, ContextCell, ContextZone};
 
 use crate::context::Memory;
@@ -47,7 +47,7 @@ pub fn map(history: &[Message], view: &[Message]) -> Vec<ContextCell> {
     history
         .iter()
         .map(|h| {
-            let tokens = estimate_tokens(std::slice::from_ref(h)).max(1);
+            let tokens = message_tokens(h).max(1);
             let k = key(h);
             let state = match view[from..].iter().position(|v| v == h) {
                 Some(i) => {

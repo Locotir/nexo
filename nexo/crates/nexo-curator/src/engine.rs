@@ -97,6 +97,9 @@ pub struct Engine {
     fz: Shared<Featurizer>,
     goal: Shared<Threads>,
     sizes: Vec<i64>,
+    /// The messages after the person's latest with the tokens of the opaque reasoning in them, which a request
+    /// sends back with the calls of the turn: `sizes` holds them, and drops them when the person writes again.
+    sent_think: Vec<(usize, i64)>,
     raw_tokens: i64,
     dropped: FxHashMap<usize, FxHashSet<usize>>,
     /// For measurement: where the features of what the view holds, and what each unit came to be used
@@ -322,6 +325,7 @@ impl Engine {
             fz: Shared::default(),
             goal: Shared(Arc::new(goal)),
             sizes: Vec::new(),
+            sent_think: Vec::new(),
             raw_tokens: 0,
             dropped: FxHashMap::default(),
             dump: None,

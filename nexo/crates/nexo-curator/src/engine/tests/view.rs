@@ -357,3 +357,35 @@ fn what_the_outputs_before_the_view_hold_follows_the_view_forward_and_back() {
     assert!(lists[5].iter().any(|a| a.label.contains('×')));
     assert!(lists[5].iter().any(|a| a.label.ends_with("smaller items")));
 }
+
+#[test]
+fn opaque_reasoning_counts_in_the_view_only_for_the_turn_the_request_sends_back() {
+    let think = |n: usize| {
+        json!({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "hm", "encrypted": "E".repeat(n), "signature": "rs_1"},
+            {"type": "tool_use", "id": "call_1", "name": "bash", "input": {"command": "ls"}}]})
+    };
+    let result =
+        || json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "ok"}]});
+    let size = |encrypted: usize, then_person: bool| {
+        let mut msgs = vec![json!({"role": "user", "content": "go"}), think(encrypted), result()];
+        if then_person {
+            msgs.extend([json!({"role": "user", "content": "next"})]);
+        }
+        let mut e = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+        e.sync(&msgs);
+        e.tokens()
+    };
+    // in the turn its reasoning is sent with the call: 4000 characters are 1000 tokens
+    assert!(size(4000, false) - size(40, false) >= (4000 - 40) / 4 - 1, "{} {}", size(4000, false), size(40, false));
+    // the person wrote again: the earlier turn's reasoning is not sent and does not count
+    assert_eq!(size(4000, true), size(40, true));
+    // a message added later takes the earlier turn's reasoning out of the size
+    let mut e = Engine::new(params("eoq=0;threshold=0;nudge=0").unwrap());
+    let mut msgs = vec![json!({"role": "user", "content": "go"}), think(8000), result()];
+    e.sync(&msgs);
+    let with = e.tokens();
+    msgs.push(json!({"role": "user", "content": "next"}));
+    e.sync(&msgs);
+    assert!(with - e.tokens() >= 1900, "{with} -> {}", e.tokens());
+}

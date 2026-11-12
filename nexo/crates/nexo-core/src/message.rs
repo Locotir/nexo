@@ -187,6 +187,20 @@ impl Message {
     pub fn is_tool_results(&self) -> bool {
         !self.content.is_empty() && self.content.iter().all(Part::is_tool_result)
     }
+
+    /// Whether this is something the person said: a user message with text or a picture and no tool
+    /// result. A turn is everything after the latest one; the opaque reasoning of earlier turns is
+    /// not sent back (see [`latest_person`]).
+    pub fn is_person(&self) -> bool {
+        self.role == Role::User
+            && self.content.iter().any(|p| matches!(p, Part::Text { .. } | Part::Image { .. }))
+            && !self.content.iter().any(Part::is_tool_result)
+    }
+}
+
+/// The index of the latest message the person wrote (see [`Message::is_person`]).
+pub fn latest_person(messages: &[Message]) -> Option<usize> {
+    messages.iter().rposition(Message::is_person)
 }
 
 /// The text of a tool result (its text parts joined).
@@ -344,9 +358,32 @@ pub const MEDIA_TOKENS: u64 = 1500;
 
 /// A cheap token estimate (about four characters per token), the curator's rule with one
 /// difference: the visible text of reasoning counts here, while the curator counts a reasoning
-/// block as its type alone. Sizes agree for a history without reasoning text.
+/// block as its type alone. Sizes agree for a history without reasoning text. The opaque data of
+/// reasoning counts only for the messages after the latest one the person wrote: that is the
+/// reasoning a request sends back (see [`reasoning_tokens`]).
 pub fn estimate_tokens(messages: &[Message]) -> u64 {
-    messages.iter().map(message_tokens).sum()
+    let from = latest_person(messages).map_or(0, |i| i + 1);
+    messages.iter().map(message_tokens).sum::<u64>() + messages[from..].iter().map(reasoning_tokens).sum::<u64>()
+}
+
+/// The tokens of the opaque reasoning in `m` (signatures, encrypted and withheld blocks), at the same
+/// four characters a token as the rest: what the message adds to a request while it is sent back.
+/// Where the vendor counted the reasoning itself the provider's own count replaces this through the
+/// ratio the loop learns from every response.
+pub fn reasoning_tokens(m: &Message) -> u64 {
+    let chars: usize = m
+        .content
+        .iter()
+        .map(|p| match p {
+            Part::Reasoning { signature, encrypted, .. } => {
+                signature.as_ref().map_or(0, |s| s.chars().count())
+                    + encrypted.as_ref().map_or(0, |s| s.chars().count())
+            }
+            Part::RedactedReasoning { data, .. } => data.chars().count(),
+            _ => 0,
+        })
+        .sum();
+    chars as u64 / 4
 }
 
 /// [`estimate_tokens`] of one message: the characters of its JSON over 4, with each image at
@@ -410,9 +447,38 @@ mod tests {
         let reasoning = |sig: usize| {
             let p =
                 Part::Reasoning { text: "hm".into(), signature: Some("s".repeat(sig)), encrypted: None, model: None };
-            estimate_tokens(&[Message::new(Role::Assistant, vec![p])])
+            estimate_tokens(&[Message::new(Role::Assistant, vec![p]), Message::user("next")])
         };
-        assert_eq!(reasoning(1), reasoning(100_000), "opaque signatures are not counted");
+        assert_eq!(reasoning(1), reasoning(100_000), "opaque signatures of an earlier turn are not counted");
+    }
+
+    #[test]
+    fn opaque_reasoning_counts_only_after_the_latest_person_message() {
+        let think = |n: usize| {
+            Message::new(
+                Role::Assistant,
+                vec![
+                    Part::Reasoning { text: "hm".into(), signature: None, encrypted: Some("E".repeat(n)), model: None },
+                    Part::tool_call("c", "read", serde_json::json!({})),
+                ],
+            )
+        };
+        let result = || Message::tool_results(vec![Part::tool_result("c", "ok", false)]);
+        let turn = |n: usize| vec![Message::user("go"), think(n), result()];
+        // one turn: its reasoning is sent back with the call, so it counts
+        assert_eq!(estimate_tokens(&turn(4000)) - estimate_tokens(&turn(40)), (4000 - 40) / 4);
+        // a second request: the first turn's reasoning is not sent, only the new one is
+        let mut two = turn(4000);
+        two.push(Message::user("next"));
+        two.extend([think(80), result()]);
+        let mut two_small = turn(40);
+        two_small.push(Message::user("next"));
+        two_small.extend([think(80), result()]);
+        assert_eq!(estimate_tokens(&two), estimate_tokens(&two_small), "an earlier turn's reasoning is free");
+        // a tool result with text next to it is not the person's message
+        assert!(!Message::new(Role::User, vec![Part::tool_result("c", "ok", false), Part::text("note")]).is_person());
+        assert!(Message::user("x").is_person() && !think(1).is_person() && !result().is_person());
+        assert_eq!(latest_person(&two), Some(3));
     }
 
     #[test]

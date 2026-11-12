@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 
 use crate::goal::head_slice;
 use crate::hindsight::UKind;
-use crate::json::est;
+use crate::json::{est, opaque_tokens};
 use crate::mechanical::MARK;
 use crate::msg::{blocks, get_str, text_block, text_of};
 use crate::textops::{self};
@@ -193,6 +193,10 @@ impl Engine {
             add_blocks(&mut m2, lines.iter().map(|l| text_block(l)));
         }
         let mut size = est(&m2);
+        // what the message still holds of the reasoning a request sends back (the view may have left it out)
+        if self.sent_think.iter().any(|(mj, _)| *mj == mi) {
+            size += opaque_tokens(&m2);
+        }
         if let Some(card) = self.frozen.get(&mi) {
             let tb = text_block(card);
             size += est(&tb);

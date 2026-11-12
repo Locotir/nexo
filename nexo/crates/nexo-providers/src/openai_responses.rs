@@ -26,10 +26,7 @@ impl OpenAiResponses {
     }
 
     pub fn body(cfg: &ProviderConfig, req: &ModelRequest) -> Value {
-        let mut input = Vec::new();
-        for m in &req.messages {
-            input.extend(convert(m, &req.model));
-        }
+        let input = input_items(req);
         let mut body = json!({"model": req.model, "input": input, "stream": true});
         // a subscription backend (ChatGPT's) sets the limit itself, rejects a sampling temperature and
         // wants the instructions even when empty
@@ -115,8 +112,33 @@ fn cache_key_allowed(cfg: &ProviderConfig) -> bool {
     cfg.extra.get("prompt_cache_key").and_then(|v| v.as_bool()).unwrap_or(known)
 }
 
-/// A message as input items.
-fn convert(m: &Message, model: &str) -> Vec<Value> {
+/// The request's messages as input items. Reasoning items are passed back only with the calls of the current
+/// turn (since the latest person message): the API drops the ones of earlier turns, so sending them is input
+/// for nothing.
+fn input_items(req: &ModelRequest) -> Vec<Value> {
+    let turn = nexo_core::message::latest_person(&req.messages).unwrap_or(0);
+    let mut input = Vec::new();
+    for (i, m) in req.messages.iter().enumerate() {
+        input.extend(convert(m, &req.model, i >= turn));
+    }
+    pair_reasoning(&mut input);
+    input
+}
+
+/// A reasoning item is valid only right before the item it led to (an assistant message or a call):
+/// one left at the end of the input, before another reasoning item or before anything else is dropped.
+/// The other way round needs nothing: a call is sent without an `id`, so it does not name a reasoning
+/// item, and goes alone when the curator left its reasoning out.
+fn pair_reasoning(input: &mut Vec<Value>) {
+    let leads = |v: &Value| v["type"] == "function_call" || (v["type"] == "message" && v["role"] == "assistant");
+    let keep: Vec<bool> =
+        (0..input.len()).map(|i| input[i]["type"] != "reasoning" || input.get(i + 1).is_some_and(leads)).collect();
+    let mut k = keep.into_iter();
+    input.retain(|_| k.next().unwrap_or(true));
+}
+
+/// A message as input items; `echo` says whether its reasoning is passed back (it is, in the current turn).
+fn convert(m: &Message, model: &str, echo: bool) -> Vec<Value> {
     let mut out = Vec::new();
     match m.role {
         Role::User => {
@@ -160,6 +182,8 @@ fn convert(m: &Message, model: &str) -> Vec<Value> {
                 match p {
                     // opaque items of another model are not echoed: this one cannot decrypt them
                     p if p.is_foreign_reasoning(model) => {}
+                    // nor are the ones of an earlier turn
+                    Part::Reasoning { .. } if !echo => {}
                     // only the opaque item is echoed; its text is for the person
                     Part::Reasoning { signature, encrypted: Some(enc), .. } => {
                         let mut item = json!({"type": "reasoning", "encrypted_content": enc, "summary": []});
@@ -607,6 +631,110 @@ mod tests {
         let text = other["input"].to_string();
         assert!(!text.contains("encrypted_content") && !text.contains("rs_1"), "{text}");
         assert!(text.contains("answer"));
+    }
+
+    fn think(id: &str) -> Part {
+        Part::Reasoning {
+            text: "visible".into(),
+            signature: Some(id.into()),
+            encrypted: Some(format!("ENC-{id}")),
+            model: None,
+        }
+    }
+
+    fn two_person_requests() -> Vec<Message> {
+        vec![
+            Message::user("first"),
+            Message::new(Role::Assistant, vec![think("rs_old"), Part::tool_call("c1", "read", json!({"path": "a"}))]),
+            Message::tool_results(vec![Part::tool_result("c1", "one", false)]),
+            Message::new(Role::Assistant, vec![think("rs_old2"), Part::text("done")]),
+            Message::user("second"),
+            Message::new(Role::Assistant, vec![think("rs_new"), Part::tool_call("c2", "read", json!({"path": "b"}))]),
+            Message::tool_results(vec![Part::tool_result("c2", "two", false)]),
+            Message::new(Role::Assistant, vec![think("rs_new2"), Part::tool_call("c3", "read", json!({"path": "c"}))]),
+            Message::tool_results(vec![Part::tool_result("c3", "three", false)]),
+        ]
+    }
+
+    fn kinds(b: &Value) -> Vec<String> {
+        b["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| match v["type"].as_str().unwrap() {
+                "reasoning" => format!("reasoning:{}", v["id"].as_str().unwrap_or("")),
+                "function_call" => format!("call:{}", v["call_id"].as_str().unwrap()),
+                t => t.to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reasoning_before_the_latest_person_message_is_not_sent_and_the_current_turns_stays_in_order() {
+        let cfg = ProviderConfig::new(ID, "https://api.openai.com/v1", None);
+        let b = OpenAiResponses::body(&cfg, &ModelRequest::new("gpt-5", "", two_person_requests()));
+        assert_eq!(
+            kinds(&b),
+            [
+                "message",
+                "call:c1",
+                "function_call_output",
+                "message",
+                "message",
+                "reasoning:rs_new",
+                "call:c2",
+                "function_call_output",
+                "reasoning:rs_new2",
+                "call:c3",
+                "function_call_output"
+            ]
+        );
+        let text = b["input"].to_string();
+        assert!(!text.contains("rs_old") && !text.contains("ENC-rs_old"), "{text}");
+        // a first request has only its own turn: everything stays
+        let first = OpenAiResponses::body(&cfg, &ModelRequest::new("gpt-5", "", two_person_requests()[..3].to_vec()));
+        assert_eq!(kinds(&first), ["message", "reasoning:rs_old", "call:c1", "function_call_output"]);
+    }
+
+    #[test]
+    fn a_reasoning_item_is_never_sent_without_the_item_it_led_to() {
+        let cfg = ProviderConfig::new(ID, "https://api.openai.com/v1", None);
+        // the call its reasoning led to was cut from the view: the reasoning goes with it
+        let cut = vec![
+            Message::user("go"),
+            Message::new(Role::Assistant, vec![think("rs_a"), Part::text("")]),
+            Message::new(Role::Assistant, vec![think("rs_b"), Part::text("then this")]),
+            Message::new(Role::Assistant, vec![think("rs_c")]),
+        ];
+        let b = OpenAiResponses::body(&cfg, &ModelRequest::new("gpt-5", "", cut));
+        assert_eq!(kinds(&b), ["message", "reasoning:rs_b", "message"]);
+        // the reasoning of a call is left out by the curator: the call goes alone, with no id naming it
+        let alone = vec![
+            Message::user("go"),
+            Message::new(Role::Assistant, vec![Part::tool_call("c1", "read", json!({}))]),
+            Message::tool_results(vec![Part::tool_result("c1", "ok", false)]),
+        ];
+        let b = OpenAiResponses::body(&cfg, &ModelRequest::new("gpt-5", "", alone));
+        assert_eq!(kinds(&b), ["message", "call:c1", "function_call_output"]);
+        assert!(b["input"][1].get("id").is_none());
+        // a reasoning item of another model is dropped as before, and the pairing sees it gone
+        let foreign = vec![
+            Message::user("go"),
+            Message::new(
+                Role::Assistant,
+                vec![
+                    Part::Reasoning {
+                        text: "v".into(),
+                        signature: Some("rs_f".into()),
+                        encrypted: Some("E".into()),
+                        model: Some("other".into()),
+                    },
+                    Part::text("answer"),
+                ],
+            ),
+        ];
+        let b = OpenAiResponses::body(&cfg, &ModelRequest::new("gpt-5", "", foreign));
+        assert_eq!(kinds(&b), ["message", "message"]);
     }
 
     #[test]

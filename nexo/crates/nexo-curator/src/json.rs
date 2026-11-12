@@ -83,9 +83,41 @@ fn num_chars(n: &Number) -> usize {
     }
 }
 
-/// The characters the estimate gives a reasoning block of type `kind`: a few, as it is not sent back.
+/// The characters the estimate gives a reasoning block of type `kind`: a few. Its opaque data (signature,
+/// encrypted or withheld content) is counted apart by [`opaque_tokens`], and only while it is sent back.
 pub fn thinking_chars(kind: &str) -> usize {
     8 + str_chars(kind) + 1
+}
+
+/// The tokens of the opaque data of the reasoning blocks in message `m` (a signature, encrypted content,
+/// the data of a withheld block), at the estimate's four characters a token. A request sends it back only
+/// for the messages after the person's latest one ([`is_person`]); earlier turns' reasoning is dropped by
+/// the providers that take it, so it adds nothing there.
+pub fn opaque_tokens(m: &Value) -> i64 {
+    let Some(Value::Array(content)) = m.get("content") else { return 0 };
+    let chars: usize = content
+        .iter()
+        .filter(|b| matches!(b.get("type").and_then(Value::as_str), Some("thinking" | "redacted_thinking")))
+        .flat_map(|b| ["signature", "encrypted", "data"].into_iter().filter_map(|k| b.get(k)?.as_str()))
+        .map(|s| s.chars().count())
+        .sum();
+    (chars / 4) as i64
+}
+
+/// Whether `m` is something the person said: a user message with text and no tool result.
+pub fn is_person(m: &Value) -> bool {
+    if m.get("role").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    match m.get("content") {
+        Some(Value::String(_)) => true,
+        Some(Value::Array(a)) => {
+            let is =
+                |b: &Value, names: &[&str]| b.get("type").and_then(Value::as_str).is_some_and(|t| names.contains(&t));
+            a.iter().any(|b| is(b, &["text", "image"])) && !a.iter().any(|b| is(b, &["tool_result"]))
+        }
+        _ => false,
+    }
 }
 
 /// Characters of `json.dumps(strip_cache_control(strip_media(v)))` and the number of media blocks.
@@ -247,5 +279,21 @@ mod tests {
         assert_eq!(est_media(&result(json!([text, big, small]))).1, 2);
         assert_eq!(est(&json!({"type": "thinking", "thinking": "x", "signature": "s"})), 19 / 4);
         assert_eq!(est(&json!({"a": "\n\u{1}é"})), 17 / 4);
+    }
+
+    #[test]
+    fn opaque_reasoning_and_the_person_message() {
+        let m = json!({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "x", "encrypted": "E".repeat(400), "signature": "rs_1"},
+            {"type": "redacted_thinking", "data": "D".repeat(40)},
+            {"type": "text", "text": "T".repeat(4000)}]});
+        assert_eq!(opaque_tokens(&m), (400 + 4 + 40) / 4);
+        assert_eq!(opaque_tokens(&json!({"role": "user", "content": "hi"})), 0);
+        assert!(is_person(&json!({"role": "user", "content": "hi"})));
+        assert!(is_person(&json!({"role": "user", "content": [{"type": "text", "text": "hi"}]})));
+        assert!(!is_person(
+            &json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c", "content": "x"}]})
+        ));
+        assert!(!is_person(&m));
     }
 }

@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use serde_json::{Map, Value};
 
 use crate::hindsight::UKind;
-use crate::json::{est, py_eq, strip_cc};
+use crate::json::{est, is_person, opaque_tokens, py_eq, strip_cc};
 use crate::learn::MODEL;
 use crate::mechanical::{squeeze, MARK};
 use crate::msg::{blocks, get_str, key_of};
@@ -162,6 +162,17 @@ impl Engine {
         self.tr.mt().add(msg, &mut self.int);
         self.sizes.push(it);
         self.raw_tokens += it;
+        // the reasoning of a turn is sent back until the person writes again
+        if is_person(&self.last_raw) {
+            for (mj, t) in std::mem::take(&mut self.sent_think) {
+                self.sizes[mj] -= t;
+                self.built.remove(&mj);
+            }
+        } else if let t @ 1.. = opaque_tokens(&self.last_raw) {
+            let mi = self.sizes.len() - 1;
+            self.sizes[mi] += t;
+            self.sent_think.push((mi, t));
+        }
         let new = self.fz.mt().extend(&self.tr, &mut self.int);
         if self.p.rules != 0 {
             self.take_index(new.clone());
