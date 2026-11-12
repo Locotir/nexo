@@ -15,6 +15,7 @@ mod first_use;
 mod headless;
 mod mcp_cmd;
 mod plugin_cmd;
+mod re_cmd;
 mod schema;
 mod setup;
 mod supervise;

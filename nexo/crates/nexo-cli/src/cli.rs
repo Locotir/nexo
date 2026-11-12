@@ -253,6 +253,8 @@ pub enum Cmd {
     Bin(crate::bin_cmd::BinArgs),
     /// Run a program under a debugger, or attach to one, and drive it one bounded call at a time: run, break, cont, step, regs, mem, bt, watch, kill (`nexo dbg help`).
     Dbg(crate::dbg_cmd::DbgArgs),
+    /// nexo RE, the binary kit: no word prints the map of `nexo bin` (read a file) and `nexo dbg` (run it); a word runs that op or command.
+    Re(crate::re_cmd::ReArgs),
     /// Run as an Agent Client Protocol server on stdin and stdout, for Zed, JetBrains and Neovim (see docs/ACP.md).
     Acp,
     #[cfg(feature = "bench")]
@@ -358,6 +360,9 @@ pub async fn main() -> i32 {
     }
     if let Some(Cmd::Dbg(d)) = &args.cmd {
         return crate::dbg_cmd::run(d);
+    }
+    if let Some(Cmd::Re(r)) = &args.cmd {
+        return crate::re_cmd::run(r);
     }
     if let (None, Some(word)) = (&args.cmd, &args.first) {
         use clap::CommandFactory;
@@ -595,6 +600,7 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Supervise { .. }) => return Ok(0),
         Some(Cmd::Bin(_)) => return Ok(0),
         Some(Cmd::Dbg(_)) => return Ok(0),
+        Some(Cmd::Re(_)) => return Ok(0),
     }
 
     if args.prompt.is_none() && args.headless.any() {

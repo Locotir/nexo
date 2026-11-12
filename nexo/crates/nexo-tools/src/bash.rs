@@ -1043,7 +1043,9 @@ use nexo_dbg::{dbg_class, DbgClass};
 /// Whether a command line holds a `nexo dbg` command that writes into a program or attaches to a process.
 pub fn dbg_changes(command: &str) -> bool {
     command_words(command).is_some_and(|segs| {
-        segs.iter().any(|s| s.len() > 1 && s[0] == "nexo" && s[1] == "dbg" && dbg_class(&s[2..]) == DbgClass::Change)
+        segs.iter().any(|s| {
+            s.len() > 1 && s[0] == "nexo" && (s[1] == "dbg" || s[1] == "re") && dbg_class(&s[2..]) == DbgClass::Change
+        })
     })
 }
 
@@ -1064,6 +1066,12 @@ fn reads_only(words: &[String]) -> bool {
         "cat" | "head" | "tail" | "grep" | "egrep" | "fgrep" | "rg" | "ls" | "wc" | "stat" | "file" => true,
         // `nexo bin` reads a file as bytes and prints. `name` and `note` also save into nexo's data folder, so they ask
         "nexo" if words.get(1).map(String::as_str) == Some("dbg") => dbg_class(&words[2..]) == DbgClass::Control,
+        // `nexo re <word>` is `nexo bin <word>` or `nexo dbg <word>`: it reads when either way it would
+        "nexo" if words.get(1).map(String::as_str) == Some("re") => {
+            let mut as_bin = words.to_vec();
+            as_bin[1] = "bin".into();
+            words.len() == 2 || reads_only(&as_bin) || dbg_class(&words[2..]) == DbgClass::Control
+        }
         "nexo" => {
             words.get(1).map(String::as_str) == Some("bin")
                 && (matches!(
@@ -1210,6 +1218,9 @@ mod tests {
             "nexo dbg step 3",
             "nexo dbg kill",
             "nexo dbg sessions",
+            "nexo re",
+            "nexo re overview ./a.out",
+            "nexo re regs",
             "nexo dbg do \"break f; cont; args; bt\"",
         ] {
             assert_eq!(kind(c), ToolKind::Read, "{c}");
@@ -1218,6 +1229,8 @@ mod tests {
             "nexo dbg run ./a.out",
             "nexo dbg attach 1234",
             "nexo dbg write 0x1000 90 90",
+            "nexo re write 0x1000 90 90",
+            "nexo re run ./a.out",
             "nexo dbg setreg rax 0",
             "nexo dbg do \"break f; cont; setreg rax 1\"",
             "nexo dbg do \"run x\"",
@@ -1230,6 +1243,9 @@ mod tests {
             ("nexo dbg attach 1234", true),
             ("nexo dbg -s ab write 0x10 90", true),
             ("nexo dbg do \"cont; setreg rax 1\"", true),
+            ("nexo re attach 1234", true),
+            ("nexo re write 0x10 90", true),
+            ("nexo re regs", false),
             ("nexo dbg run ./a.out", false),
             ("nexo dbg regs", false),
             ("echo nexo dbg attach", false),

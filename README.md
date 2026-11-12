@@ -154,6 +154,19 @@ Engine and every setting: [`docs/how-it-works.md`](docs/how-it-works.md). What t
 
 Every feature with the test that checks it: [`nexo/FEATURES.md`](nexo/FEATURES.md). Full guide: [`nexo/README.md`](nexo/README.md).
 
+## nexo RE
+
+nexo RE is the kit for reading and debugging compiled programs. Start with `nexo re`: it prints one line for each command.
+
+```
+nexo re                          the map
+nexo re overview ./a.out         read a file: main, imports, strings, what to ask next
+nexo re decomp ./a.out main      the same as: nexo bin decomp ./a.out main
+nexo re run ./a.out              run it under the debugger, the same as: nexo dbg run ./a.out
+```
+
+`nexo bin` reads a file and never runs it. `nexo dbg` runs a program, or attaches to one of yours, and answers one bounded call at a time. When a word exists in both, `nexo re` takes the `nexo bin` one and the map says so; write `nexo dbg <word>` for the other. In a session, the model is pointed to `nexo re` the first time it reads a binary by hand, so the prompt stays the same size.
+
 ## Providers
 
 Bring your own key. Built in: Anthropic, OpenAI, Google Gemini, DeepSeek, xAI, Groq, Mistral, OpenRouter, Together,

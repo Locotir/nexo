@@ -1,5 +1,5 @@
 //! The first time a model reads a compiled program by hand (`objdump`, `strings`, `xxd`, ...), the result of
-//! that command ends with one line saying `nexo bin` exists. Once per session, and only when the file the
+//! that command ends with one line saying `nexo re` (`nexo bin`) exists. Once per session, and only when the file the
 //! command names is one `nexo bin` opens. No tool, no schema and no system text carry it: a person who never
 //! opens a binary pays nothing. The line is part of the result, so it stays in the history, the saved session
 //! and a compaction summary's source like any output; `told` tells a resumed or rewound history from a fresh one.
@@ -13,7 +13,7 @@ use nexo_core::message::{Message, Part};
 use serde_json::Value;
 
 /// The line added to the result. It starts with `[nexo:` so it is told apart from the command's own output.
-pub const LINE: &str = "[nexo: this file can be read in pages with names and references: nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto (nexo bin --help)]";
+pub const LINE: &str = "[nexo: this file can be read in pages with names and references: nexo re lists the kit (nexo bin reads, nexo dbg runs); nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto]";
 
 /// The programs people use to read a compiled program by hand.
 const READERS: [&str; 11] =
@@ -26,7 +26,10 @@ const WORDS: usize = 12;
 pub fn wanted(command: &str, cwd: &Path) -> bool {
     let Some(parts) = nexo_tools::bash::command_words(command) else { return false };
     // a command that already is `nexo bin` needs no hint
-    if parts.iter().any(|p| p.first().is_some_and(|w| program(w) == "nexo") && p.get(1).is_some_and(|w| w == "bin")) {
+    if parts
+        .iter()
+        .any(|p| p.first().is_some_and(|w| program(w) == "nexo") && p.get(1).is_some_and(|w| w == "bin" || w == "re"))
+    {
         return false;
     }
     parts
@@ -195,7 +198,7 @@ mod tests {
     fn the_line_is_the_agreed_text() {
         assert_eq!(
             LINE,
-            "[nexo: this file can be read in pages with names and references: nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto (nexo bin --help)]"
+            "[nexo: this file can be read in pages with names and references: nexo re lists the kit (nexo bin reads, nexo dbg runs); nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto]"
         );
     }
 
