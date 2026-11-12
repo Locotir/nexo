@@ -27,6 +27,7 @@ watch <addr> <len> [r|w|x], catch <signal>, stdin <text>, out, history
 strace [names|file|net|process|memory], strace show [filter], strace off; catch syscall <names|groups>|off  stop at a call
 ltrace [names], ltrace show [names], ltrace off  library calls with typed args and result, written at return
 hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args, result, counters; set/ret change the program
+cover [funcs], cover show [func], cover save <A>, cover diff <A> <B>|now, cover off  basic blocks passed in the program's own code
 do \"c1; c2\"  several commands in one call
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
@@ -369,6 +370,8 @@ mod tests {
         assert!(shown.content.contains("__libc_start_main("), "{}", shown.content);
         let hooks = call(&t, "hooks").await;
         assert!(hooks.content.starts_with("debug ") && hooks.content.contains("no hooks"), "{}", hooks.content);
+        let cover = call(&t, "cover show").await;
+        assert!(cover.is_error && cover.content.contains("`cover` turns it on"), "{}", cover.content);
         call(&t, "end").await;
     }
 

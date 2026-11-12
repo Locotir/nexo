@@ -175,3 +175,30 @@ fn a_hook_with_stop_stops_the_program_at_the_entry() {
     run(&mut s, "hook del all");
     assert!(run(&mut s, "hooks").contains("no hooks"));
 }
+
+#[test]
+fn cover_counts_the_blocks_passed_and_diff_tells_two_runs_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(exe) = build(dir.path()) else { return };
+    std::env::set_var("NEXO_TMP", dir.path());
+    let session = |arg: &str| open(&Kind::Run { exe: exe.clone(), args: vec![arg.to_string()] }).expect("start").0;
+    let mut hi = session("12");
+    assert!(run(&mut hi, "cover").contains("measuring coverage from now on"));
+    let end = run(&mut hi, "cont");
+    assert!(end.contains("exited with code 1"), "{end}");
+    let t = run(&mut hi, "cover show");
+    assert!(t.contains("blocks passed") && t.contains("functions entered"), "{t}");
+    assert!(t.contains("small ") && t.contains(": 0/"), "{t}");
+    let c = run(&mut hi, "cover show check");
+    assert!(c.contains("check ") && c.contains("not passed"), "{c}");
+    assert!(run(&mut hi, "cover save high").contains("saved high"));
+
+    let mut lo = session("3");
+    run(&mut lo, "cover");
+    run(&mut lo, "cont");
+    let d = run(&mut lo, "cover diff high now");
+    assert!(d.contains("only high ") && d.contains(" big"), "{d}");
+    assert!(d.contains("only now ") && d.contains(" small"), "{d}");
+    assert!(lo.exec(&split_words("cover diff high nosuch")).is_err());
+    assert!(lo.exec(&split_words("cover save ../x")).is_err());
+}

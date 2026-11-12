@@ -183,12 +183,14 @@ impl Session {
             v.extend(l.sites.keys());
         }
         v.extend(self.tr.hooks.iter().map(|h| h.addr));
+        v.extend(self.cover_addrs());
         v
     }
 
     /// A thread is at an address the trace or a hook watches. `Some`: a hook stops the program.
     pub(crate) fn hook_hit(&mut self, tid: Tid, addr: u64) -> Result<Option<(Tid, Why)>> {
         let mut verdict = None;
+        self.cover_hit(addr);
         // a return first: the same address may also be an entry
         if self.tr.pending.iter().any(|p| p.tid == tid && p.ret_addr == addr) {
             let mut r = self.t.regs(tid)?;

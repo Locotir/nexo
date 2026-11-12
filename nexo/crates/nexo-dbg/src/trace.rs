@@ -67,6 +67,8 @@ pub struct Tracing {
     pub pending: Vec<crate::hooks::Pending>,
     /// Declared hooks.
     pub hooks: Vec<crate::hooks::Hook>,
+    /// `cover`: blocks of the program's code and which were passed.
+    pub cover: Option<crate::cover::Cover>,
 }
 
 impl Tracing {

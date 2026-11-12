@@ -7,6 +7,7 @@
 mod client;
 mod cmds;
 mod corefile;
+mod cover;
 mod engine;
 mod expr;
 mod hooks;
