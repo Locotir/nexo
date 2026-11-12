@@ -27,6 +27,12 @@ const MAX_FILE: u64 = 8 << 20;
 pub struct UserNames {
     pub(crate) names: BTreeMap<u64, String>,
     pub(crate) notes: BTreeMap<u64, String>,
+    /// C prototypes by function address.
+    pub(crate) protos: BTreeMap<u64, String>,
+    /// Struct layouts by name: `0:i32:id 8:ptr:next`.
+    pub(crate) structs: BTreeMap<String, String>,
+    /// Variable names by function address: `a1` -> `path`.
+    pub(crate) vars: BTreeMap<u64, BTreeMap<String, String>>,
 }
 
 impl UserNames {
@@ -103,6 +109,24 @@ fn parse(raw: &[u8]) -> std::result::Result<UserNames, String> {
             }
         }
     }
+    if let Some(m) = obj.get("protos").and_then(Value::as_object) {
+        for (k, val) in m {
+            let addr = parse_addr(k).map_err(|_| format!("\"{k}\" in \"protos\" is not an address"))?;
+            out.protos.insert(addr, val.as_str().unwrap_or_default().to_string());
+        }
+    }
+    if let Some(m) = obj.get("structs").and_then(Value::as_object) {
+        for (k, val) in m {
+            out.structs.insert(k.clone(), val.as_str().unwrap_or_default().to_string());
+        }
+    }
+    if let Some(m) = obj.get("vars").and_then(Value::as_object) {
+        for (k, val) in m {
+            let addr = parse_addr(k).map_err(|_| format!("\"{k}\" in \"vars\" is not an address"))?;
+            let inner = val.as_object().map(|o| o.iter().filter_map(|(a, b)| b.as_str().map(|s| (a.clone(), s.to_string()))).collect()).unwrap_or_default();
+            out.vars.insert(addr, inner);
+        }
+    }
     Ok(out)
 }
 
@@ -111,7 +135,10 @@ fn render(n: &UserNames, sha256: &str) -> String {
         Value::Object(m.iter().map(|(a, s)| (format!("{a:#x}"), json!(s))).collect::<Map<String, Value>>())
     };
     serde_json::to_string_pretty(
-        &json!({"version": 1, "sha256": sha256, "names": side(&n.names), "notes": side(&n.notes)}),
+        &json!({"version": 1, "sha256": sha256, "names": side(&n.names), "notes": side(&n.notes),
+               "protos": side(&n.protos),
+               "structs": n.structs,
+               "vars": n.vars.iter().map(|(a, m)| (format!("{a:#x}"), json!(m))).collect::<Map<String, Value>>()}),
     )
     .unwrap_or_default()
 }
@@ -119,7 +146,7 @@ fn render(n: &UserNames, sha256: &str) -> String {
 static TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Read, change under the lock, write. An unreadable file is never overwritten: the error comes back.
-fn edit<R>(data_dir: &Path, sha256: &str, change: impl FnOnce(&mut UserNames) -> Result<R>) -> Result<R> {
+pub(crate) fn edit<R>(data_dir: &Path, sha256: &str, change: impl FnOnce(&mut UserNames) -> Result<R>) -> Result<R> {
     let path = file_path(data_dir, sha256);
     let dir = path.parent().unwrap_or(data_dir).to_path_buf();
     std::fs::create_dir_all(&dir).map_err(|e| bad(&dir, format!("cannot be created ({e})")))?;

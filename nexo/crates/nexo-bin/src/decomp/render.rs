@@ -17,6 +17,10 @@ pub trait Names {
     fn var_name(&self, _key: &str) -> Option<String> {
         None
     }
+    /// The field at this offset of the struct the variable points to.
+    fn field(&self, _key: &str, _off: u64) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -348,6 +352,18 @@ impl Printer<'_> {
     }
 
     fn mem_text(&self, addr: &Expr, bits: Bits) -> String {
+        let (base, off) = match addr {
+            Expr::Bin(Bin::Add, b, k) if k.as_const().is_some() => (&**b, k.as_const().unwrap_or(0)),
+            other => (other, 0),
+        };
+        if let Expr::Var(Var::Web(w), _) = base {
+            if let Some(key) = self.web.names.get(w) {
+                if let Some(fld) = self.names.field(key, off) {
+                    let v = self.var_text(Var::Web(*w), 64);
+                    return format!("{v}->{fld}");
+                }
+            }
+        }
         match addr {
             Expr::StackAddr(o) => self.slot_name(*o),
             Expr::Const(a, _) => match self.names.global(*a) {
@@ -617,6 +633,7 @@ pub fn render(
     body: &[Node],
     names: &dyn Names,
     name: &str,
+    proto: Option<&super::types::Proto>,
 ) -> Vec<Line> {
     let mut pr = Printer {
         names,
@@ -635,6 +652,7 @@ pub fn render(
         if web.signed.get(&w).copied().unwrap_or(true) { itype(b) } else { utype(b) }.to_string()
     };
     let ret = match facts.ret {
+        _ if proto.is_some() => proto.map(|p| p.ret.clone()).unwrap_or_default(),
         None => "void".to_string(),
         Some(Var::Xmm(_)) => "double".to_string(),
         Some(_) => {
@@ -667,7 +685,11 @@ pub fn render(
         .args
         .iter()
         .map(|(n, w)| {
-            let t = if *w == 0 { "i64".to_string() } else { ty(*w) };
+            let t = match proto.and_then(|p| n[1..].parse::<usize>().ok().and_then(|i| p.args.get(i.wrapping_sub(1)))) {
+                Some((t, _)) => t.clone(),
+                None if *w == 0 => "i64".to_string(),
+                None => ty(*w),
+            };
             let n = names.var_name(n).unwrap_or_else(|| n.clone());
             format!("{t} {n}")
         })

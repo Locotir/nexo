@@ -51,6 +51,58 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// Pseudo-C of one or more functions (lift, flow, structure; cached by file hash).
+    Decomp {
+        file: PathBuf,
+        /// Addresses (0x401a30) or function names.
+        #[arg(required = true)]
+        targets: Vec<String>,
+        /// Start every line with the address of the instruction it came from.
+        #[arg(long)]
+        addr: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Give a function a C prototype, so decomp names and types its arguments (`--clear` removes it).
+    Proto {
+        file: PathBuf,
+        /// An address inside the function or its name.
+        target: String,
+        /// For example: int load(const char *path, struct item *it)
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        text: Option<String>,
+        #[arg(long)]
+        clear: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Define a small struct for decomp: fields as offset:type:name (`--clear` removes it).
+    Struct {
+        file: PathBuf,
+        name: String,
+        /// For example: 0:i32:id 8:ptr:next
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        fields: Option<String>,
+        #[arg(long)]
+        clear: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Rename a variable of one decompiled function: a1, v3 or local_18 (`--clear` undoes it).
+    Var {
+        file: PathBuf,
+        /// An address inside the function or its name.
+        target: String,
+        /// The variable as decomp prints it.
+        key: String,
+        /// The new name.
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        name: Option<String>,
+        #[arg(long)]
+        clear: bool,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Who calls, jumps to, reads, writes, takes the address of, or points at an address or name.
     Xref {
         file: PathBuf,
@@ -174,6 +226,10 @@ impl BinOp {
             | BinOp::Strings { file, .. }
             | BinOp::Xref { file, .. }
             | BinOp::Funcs { file, .. }
+            | BinOp::Decomp { file, .. }
+            | BinOp::Proto { file, .. }
+            | BinOp::Struct { file, .. }
+            | BinOp::Var { file, .. }
             | BinOp::Calls { file, .. }
             | BinOp::Name { file, .. }
             | BinOp::Note { file, .. }
@@ -190,6 +246,10 @@ impl BinOp {
             | BinOp::Strings { common, .. }
             | BinOp::Xref { common, .. }
             | BinOp::Funcs { common, .. }
+            | BinOp::Decomp { common, .. }
+            | BinOp::Proto { common, .. }
+            | BinOp::Struct { common, .. }
+            | BinOp::Var { common, .. }
             | BinOp::Calls { common, .. }
             | BinOp::Name { common, .. }
             | BinOp::Note { common, .. }
@@ -231,6 +291,16 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         },
         BinOp::Funcs { sort, grep, min_size, .. } => {
             nexo_bin::func_list_window(&img, FuncSort::parse(sort)?, grep.as_deref(), *min_size, from, lines)?
+        }
+        BinOp::Decomp { targets, addr, .. } => nexo_bin::decomp_window(&img, data_dir, targets, *addr, from, lines)?,
+        BinOp::Proto { target, text, clear, .. } => {
+            nexo_bin::proto_set(&img, data_dir, target, if *clear { None } else { text.as_deref() })?
+        }
+        BinOp::Struct { name, fields, clear, .. } => {
+            nexo_bin::struct_set(&img, data_dir, name, if *clear { None } else { fields.as_deref() })?
+        }
+        BinOp::Var { target, key, name, clear, .. } => {
+            nexo_bin::var_set(&img, data_dir, target, key, if *clear { None } else { name.as_deref() })?
         }
         BinOp::Calls { target, .. } => nexo_bin::calls_window(&img, target, from, lines)?,
         BinOp::Name { target, name, clear, .. } => match (clear, name) {
@@ -458,7 +528,7 @@ mod tests {
         let mut root = crate::cli::Args::command();
         let bin = root.find_subcommand_mut("bin").expect("bin is a command");
         let ops: Vec<String> = bin.get_subcommands().map(|c| c.get_name().to_string()).collect();
-        for want in ["info", "fn", "xref", "funcs", "calls", "name", "note", "names", "bytes", "strings", "find"] {
+        for want in ["info", "fn", "xref", "funcs", "calls", "decomp", "proto", "struct", "var", "name", "note", "names", "bytes", "strings", "find"] {
             assert!(ops.iter().any(|o| o == want), "{want} is missing from {ops:?}");
         }
         let help = bin.render_help().to_string();

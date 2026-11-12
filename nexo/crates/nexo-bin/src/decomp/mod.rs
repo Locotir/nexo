@@ -107,9 +107,10 @@ mod tests {
     }
 }
 pub mod structure;
+pub mod api;
+pub mod types;
 pub mod render;
 
-/// Lift, analyse, structure and print one function.
 pub fn decompile(
     env: &dyn lift::Env,
     start: u64,
@@ -119,9 +120,30 @@ pub fn decompile(
     names: &dyn render::Names,
     name: &str,
 ) -> Vec<render::Line> {
+    decompile_with(env, start, end, abi, sigs, names, name, None)
+}
+
+/// Lift, analyse, structure and print one function; a prototype from the person fixes the signature.
+#[allow(clippy::too_many_arguments)]
+pub fn decompile_with(
+    env: &dyn lift::Env,
+    start: u64,
+    end: u64,
+    abi: lift::Abi,
+    sigs: &mut dyn flow::Sigs,
+    names: &dyn render::Names,
+    name: &str,
+    proto: Option<&types::Proto>,
+) -> Vec<render::Line> {
     let mut f = lift::lift(env, start, end, abi);
-    let facts = flow::run(&mut f, sigs);
+    let mut facts = flow::run(&mut f, sigs);
+    if let Some(p) = proto {
+        facts.argc = p.args.len().min(abi.arg_count_max());
+        if p.ret == "void" {
+            facts.ret = None;
+        }
+    }
     let web = render::make_webs(&mut f, &facts);
     let body = structure::structure(&mut f);
-    render::render(&f, &facts, &web, &body, names, name)
+    render::render(&f, &facts, &web, &body, names, name, proto)
 }
