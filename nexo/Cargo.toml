@@ -71,8 +71,7 @@ iced-x86 = { version = "1.22", default-features = false, features = ["std", "dec
 rustc-demangle = "0.1"
 cpp_demangle = "0.5"
 
-# debugger (nexo-dbg): unwind tables and line tables read in pure Rust; the Win32 Debug API on Windows
-gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
+# debugger (nexo-dbg): unwind and line tables come from the shared gimli above; the Win32 Debug API on Windows
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
