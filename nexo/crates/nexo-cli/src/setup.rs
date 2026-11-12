@@ -152,7 +152,8 @@ fn session_builtins(cfg: &Config) -> ToolSet {
         tools.remove("web_fetch");
         tools.remove("web_search");
     }
-    if cfg.tools.debug {
+    // only where the debugger has a backend
+    if cfg.tools.debug && cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         tools.add(Arc::new(nexo_tools::debug::Debug::new()));
     }
     tools

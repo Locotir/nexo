@@ -108,8 +108,8 @@ impl Tool for Debug {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Debugger: run <path>, break, cont, step, next, finish, regs, mem, bt, print, watch, kill. `help` lists all.",
-            params: &[("command", "One command, e.g. `break main`")],
+            description: "Debugger: `run <path>`, break, cont, step, bt, regs, print. `help` lists all.",
+            params: &[],
         })
     }
 
@@ -180,6 +180,21 @@ impl Tool for Debug {
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
 mod tests {
     use super::*;
+
+    /// The tool is on by default on Linux x86-64, so what every request carries for it stays small: the compact
+    /// text only (the tool is `rare`).
+    #[test]
+    fn what_every_request_carries_for_the_tool_is_the_compact_text_and_stays_small() {
+        let mut set = nexo_core::tool::ToolSet::new();
+        set.add(std::sync::Arc::new(Debug::new()));
+        let spec = set.specs_for(false).pop().unwrap();
+        let sent = serde_json::to_string(
+            &json!({"name": spec.name, "description": spec.description, "parameters": spec.parameters}),
+        )
+        .unwrap();
+        eprintln!("debug tool as offered: {} chars: {sent}", sent.len());
+        assert!(sent.len() <= 300, "{} chars: {sent}", sent.len());
+    }
 
     fn sleep_bin() -> String {
         ["/usr/bin/sleep", "/bin/sleep"].iter().find(|p| Path::new(p).is_file()).expect("sleep").to_string()

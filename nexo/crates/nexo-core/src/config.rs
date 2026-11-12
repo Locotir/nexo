@@ -590,14 +590,20 @@ pub struct ToolsConfig {
     pub post_write_check: bool,
     /// Seconds that check may take (also the cap of an `edit`/`write` `check` command).
     pub post_write_check_secs: u64,
-    /// Offer the `debug` tool (run a program under a debugger, break, step, read memory) to the model. Off: its
-    /// text takes part of every request.
+    /// Offer the `debug` tool (run a program under a debugger, break, step, read memory) to the model. On by
+    /// default where the debugger has a backend (Linux x86-64); off elsewhere, and there the tool is never
+    /// registered, whatever this says.
     pub debug: bool,
 }
 
 impl Default for ToolsConfig {
     fn default() -> ToolsConfig {
-        ToolsConfig { edit_diagnostics: true, post_write_check: true, post_write_check_secs: 45, debug: false }
+        ToolsConfig {
+            edit_diagnostics: true,
+            post_write_check: true,
+            post_write_check_secs: 45,
+            debug: cfg!(all(target_os = "linux", target_arch = "x86_64")),
+        }
     }
 }
 
