@@ -28,6 +28,7 @@ fn source() -> String {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 unsigned char secret[] = {{{}}};
 
@@ -79,6 +80,24 @@ __attribute__((noipa)) int greet(const char *name) {{
     return n;
 }}
 
+__attribute__((noipa)) void xor_buf(unsigned char *b, int n, unsigned char k) {{
+    for (int i = 0; i < n; i++) b[i] ^= k;
+}}
+
+__attribute__((noipa)) char *shout(const char *s) {{
+    size_t n = strlen(s);
+    char *p = malloc(n + 1);
+    for (size_t i = 0; i <= n; i++) p[i] = (char)toupper((unsigned char)s[i]);
+    return p;
+}}
+
+__attribute__((noipa)) int twice(void) {{
+    char *volatile p = malloc(8);
+    free(p);
+    free(p);
+    return 0;
+}}
+
 __attribute__((noipa)) unsigned int rolled(void) {{
     return (unsigned int)rand();
 }}
@@ -88,6 +107,8 @@ int main(int argc, char **argv) {{
     if (argc > 2 && !strcmp(argv[1], "check")) {{ printf("%d\n", check(argv[2])); return 0; }}
     if (argc > 2 && !strcmp(argv[1], "greet")) {{ greet(argv[2]); return 0; }}
     if (argc > 1 && !strcmp(argv[1], "mix")) {{ printf("%ld\n", mix(1, 2, 3, 4, 5, 6, 7, 8)); return 0; }}
+    if (argc > 2 && !strcmp(argv[1], "shout")) {{ puts(shout(argv[2])); return 0; }}
+    if (argc > 1 && !strcmp(argv[1], "twice")) {{ return twice(); }}
     if (argc > 1 && !strcmp(argv[1], "rand")) {{ printf("%u\n", rolled()); return 0; }}
     if (argc > 1 && !strcmp(argv[1], "spin")) {{ int z = 0; return spin(&z) + ratio(argc, argc) + deref(&z); }}
     char buf[64];
@@ -249,4 +270,59 @@ fn emu_stops_at_the_address_given_with_to() {
     let (text, v) = run(&img, "fnv", &["str:ab"], |s| s.to = Some(to));
     assert_eq!(v["stop"]["kind"], "reached", "{text}");
     assert_eq!(v["stop"]["rip"].as_u64(), Some(to), "{text}");
+}
+
+#[test]
+fn emu_prints_what_the_program_prints_through_the_printf_and_strlen_stubs() {
+    let dir = tempfile::tempdir().unwrap();
+    for opt in OPTS {
+        let Some(exe) = build(dir.path(), opt) else { return };
+        let img = Image::open(&exe).unwrap();
+        let (text, v) = run(&img, "greet", &["str:nexo"], |_| {});
+        assert_eq!(returned(&v), 4, "{opt}\n{text}");
+        assert_eq!(v["stdout"].as_str().unwrap().trim(), real(&exe, &["greet", "nexo"]), "{opt}\n{text}");
+        assert!(text.contains("strlen("), "the call is in the log: {text}");
+    }
+}
+
+#[test]
+fn emu_follows_malloc_and_toupper_and_shows_the_heap_block_it_filled() {
+    let dir = tempfile::tempdir().unwrap();
+    for opt in OPTS {
+        let Some(exe) = build(dir.path(), opt) else { return };
+        let img = Image::open(&exe).unwrap();
+        let (text, v) = run(&img, "shout", &["str:quiet please"], |_| {});
+        returned(&v);
+        let want = real(&exe, &["shout", "quiet please"]);
+        assert!(text.contains(&format!("\"{want}\"")) && text.contains("heap block #1"), "{opt}\n{text}");
+    }
+}
+
+#[test]
+fn emu_stops_on_a_double_free_and_names_the_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(exe) = build(dir.path(), "-O1") else { return };
+    let img = Image::open(&exe).unwrap();
+    let (text, v) = run(&img, "twice", &[], |_| {});
+    assert_eq!(v["stop"]["kind"], "abort", "{text}");
+    assert!(text.contains("heap block #1 was already freed"), "{text}");
+}
+
+#[test]
+fn emu_runs_the_vectorized_xor_loop_with_its_sse_instructions() {
+    let dir = tempfile::tempdir().unwrap();
+    for opt in OPTS {
+        let Some(exe) = build(dir.path(), opt) else { return };
+        let img = Image::open(&exe).unwrap();
+        let plain: Vec<u8> = (0..45u8).map(|i| i.wrapping_mul(37).wrapping_add(11)).collect();
+        let hex: Vec<String> = plain.iter().map(|b| format!("{b:02x}")).collect();
+        let (text, v) = run(&img, "xor_buf", &[&format!("hex:{}", hex.join("")), "45", "0x5c"], |s| s.dump = 64);
+        returned(&v);
+        let want: Vec<String> = plain.iter().take(16).map(|b| format!("{:02x}", b ^ 0x5c)).collect();
+        assert!(text.contains(&want.join(" ")), "{opt}\n{text}");
+        if opt == "-O2" {
+            let (text, _) = run(&img, "xor_buf", &["buf:64", "64", "0x5c"], |s| s.trace = 200);
+            assert!(text.contains("pxor") || text.contains("xorps"), "the loop is vectorized at -O2: {text}");
+        }
+    }
 }

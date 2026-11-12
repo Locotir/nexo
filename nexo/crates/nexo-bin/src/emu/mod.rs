@@ -26,6 +26,8 @@ use mem::{Access, Fault, Mem};
 /// Where nexo puts the things the file does not have. All far from where ELF and PE files load.
 const IMPORT_BASE: u64 = 0x7a00_0000_0000;
 const FILE_BASE: u64 = 0x7b00_0000_0000;
+/// The most bytes one library stub copies, compares or allocates.
+const MAX_LIB_BYTES: u64 = 64 << 20;
 const RET_MAGIC: u64 = 0x7c00_dead_0000;
 const TLS_BASE: u64 = 0x7d00_0000_0000;
 const HEAP_BASE: u64 = 0x7e00_0000_0000;
@@ -352,6 +354,9 @@ impl<'a> Machine<'a> {
         }
         if (FILE_BASE..FILE_BASE + mem::PAGE).contains(&a) {
             return "a FILE nexo made for stdin/stdout/stderr".into();
+        }
+        if (libc::CTYPE_BASE..libc::CTYPE_BASE + 3 * mem::PAGE).contains(&a) {
+            return "the character class tables nexo made for <ctype.h>".into();
         }
         crate::disasm::describe(self.img, a, true).unwrap_or_else(|| "nothing mapped".into())
     }
