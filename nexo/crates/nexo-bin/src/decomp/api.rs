@@ -325,6 +325,7 @@ fn table(name: &str) -> Option<Sig> {
 pub struct ImgSigs<'a> {
     pub img: &'a Image,
     pub protos: HashMap<u64, super::types::Proto>,
+    pub kept: HashMap<u64, Vec<u8>>,
 }
 
 impl Sigs for ImgSigs<'_> {
@@ -340,6 +341,20 @@ impl Sigs for ImgSigs<'_> {
             }
         }
         table(&name)
+    }
+    fn keeps(&mut self, t: &Target) -> Vec<u8> {
+        let Target::Direct(a) = t else { return Vec::new() };
+        if let Some(k) = self.kept.get(a) {
+            return k.clone();
+        }
+        let k = match crate::ops::resolve(self.img, &format!("{a:#x}")) {
+            Ok(fx) if fx.start == *a => {
+                super::flow::unwritten_regs(&ImgEnv(self.img), fx.start, fx.end, abi_of(self.img))
+            }
+            _ => Vec::new(),
+        };
+        self.kept.insert(*a, k.clone());
+        k
     }
     fn cstr(&self, addr: u64) -> Option<String> {
         let (s, off) = self.img.string_at(addr)?;
@@ -359,6 +374,7 @@ fn names_digest(img: &Image, data_dir: &Path) -> String {
         include_str!("ir.rs"),
         include_str!("lift.rs"),
         include_str!("flow.rs"),
+        include_str!("divrec.rs"),
         include_str!("structure.rs"),
         include_str!("render.rs"),
         include_str!("api.rs"),
@@ -441,7 +457,7 @@ pub fn one(img: &Image, data_dir: &Path, target: &str) -> Result<(String, Vec<Li
         vars.extend(m.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
     let names = ImgNames { img, vars, arg_types, structs: super::types::structs(user, img) };
-    let mut sigs = ImgSigs { img, protos };
+    let mut sigs = ImgSigs { img, protos, kept: HashMap::new() };
     let mut lines =
         super::decompile_with(&ImgEnv(img), f.start, f.end, abi_of(img), &mut sigs, &names, &name, proto.as_ref());
     let nl = lines.iter().filter(|l| l.text.contains("/* not lifted")).count();

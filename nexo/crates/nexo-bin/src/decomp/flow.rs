@@ -18,6 +18,10 @@ pub trait Sigs {
     fn sig_of(&mut self, t: &Target) -> Option<Sig>;
     /// The text of the C string at an address, if there is one.
     fn cstr(&self, addr: u64) -> Option<String>;
+    /// Caller-saved registers the callee never writes: after the call they still hold what they held before.
+    fn keeps(&mut self, _t: &Target) -> Vec<u8> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -358,6 +362,8 @@ fn round(f: &mut Lifted) -> bool {
         let taint0 = ops.contains(&Key::V(*v));
         // walk forward from the definition
         let mut clean: HashSet<(usize, usize)> = HashSet::new();
+        // reached by a path where an operand changed: the copy would read a different value
+        let mut stale: HashSet<(usize, usize)> = HashSet::new();
         let mut seen: HashSet<(usize, bool)> = HashSet::new();
         let mut stack: Vec<(usize, usize, bool)> = vec![(site.blk, site.idx + 1, taint0)];
         let mut first = true;
@@ -372,8 +378,12 @@ fn round(f: &mut Lifted) -> bool {
             for idx in start..=bl.stmts.len() {
                 for &u in &an.use_at[b][idx] {
                     let ur = &an.uses[u];
-                    if ur.key == Key::V(*v) && ur.reach.len() == 1 && ur.reach[0] == d && !taint {
-                        clean.insert((b, idx));
+                    if ur.key == Key::V(*v) && ur.reach.len() == 1 && ur.reach[0] == d {
+                        if taint {
+                            stale.insert((b, idx));
+                        } else {
+                            clean.insert((b, idx));
+                        }
                     }
                     if is_call && ur.key == Key::Mem {
                         taint = true;
@@ -396,6 +406,7 @@ fn round(f: &mut Lifted) -> bool {
                 }
             }
         }
+        clean.retain(|k| !stale.contains(k));
         let before = plans.len();
         for &u in &own {
             let ur = &an.uses[u];
@@ -996,6 +1007,7 @@ pub fn run(f: &mut Lifted, sigs: &mut dyn Sigs) -> Facts {
     snapshot_flags(f);
     drop_dead_inserts(f);
     show(f, "tidy");
+    keep_across_calls(f, sigs);
     resolve_calls(f, sigs, false);
     show(f, "resolve1");
     let ret = fix_returns(f);
@@ -1211,4 +1223,47 @@ fn drop_dead_inserts(f: &mut Lifted) {
 /// Turn multiply-and-shift sequences into divisions and remainders by their constant.
 fn recover_divs(f: &mut Lifted) {
     super::divrec::recover_fn(f);
+}
+
+/// A callee that never writes a register leaves it as it was: the caller must not treat it as lost.
+/// (Compilers do this on purpose for functions of the same file, "ipa-ra".)
+fn keep_across_calls(f: &mut Lifted, sigs: &mut dyn Sigs) {
+    for bl in &mut f.blocks {
+        for i in 0..bl.stmts.len().saturating_sub(1) {
+            let target = match &bl.stmts[i].st {
+                Stmt::Assign(_, Expr::Call(c)) | Stmt::Eval(Expr::Call(c)) => c.target.clone(),
+                _ => continue,
+            };
+            if matches!(target, Target::Indirect(_)) {
+                continue;
+            }
+            let keep = sigs.keeps(&target);
+            if keep.is_empty() {
+                continue;
+            }
+            if let Stmt::Clobber(vs) = &mut bl.stmts[i + 1].st {
+                vs.retain(|v| !matches!(v, Var::Reg(r) if keep.contains(r)));
+            }
+        }
+    }
+}
+
+/// The caller-saved registers that code from `start` to `end` never writes (empty when it ends in
+/// a tail call, which hands the question to another function).
+pub fn unwritten_regs(env: &dyn super::lift::Env, start: u64, end: u64, abi: super::lift::Abi) -> Vec<u8> {
+    let f = super::lift::lift(env, start, end, abi);
+    let mut written: HashSet<u8> = HashSet::new();
+    for bl in &f.blocks {
+        if matches!(bl.term, Term::TailCall(_) | Term::Indirect(_)) {
+            return Vec::new();
+        }
+        for s in &bl.stmts {
+            for k in stmt_def_keys(&s.st) {
+                if let Key::V(Var::Reg(r)) = k {
+                    written.insert(r);
+                }
+            }
+        }
+    }
+    abi.caller_saved().iter().copied().filter(|r| !written.contains(r)).collect()
 }

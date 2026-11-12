@@ -72,6 +72,24 @@ mod tests {
         }
     }
 
+    /// Calls to 0x1100 are known to leave rdi alone.
+    struct KeepsRdi;
+    impl Sigs for KeepsRdi {
+        fn sig_of(&mut self, _: &Target) -> Option<Sig> {
+            Some(Sig { args: 1, void: true, ..Sig::default() })
+        }
+        fn cstr(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn keeps(&mut self, t: &Target) -> Vec<u8> {
+            if matches!(t, Target::Direct(0x1100)) {
+                vec![7]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
     fn text(code: Vec<u8>) -> String {
         let n = code.len() as u64;
         let env = Raw { base: 0x1000, code };
@@ -146,6 +164,27 @@ mod tests {
         println!("{t}");
         assert!(!t.contains("flags"), "{t}");
         assert!(t.contains("a1 & 1"), "{t}");
+    }
+
+    #[test]
+    fn a_register_the_callee_leaves_alone_is_still_the_argument_after_the_call() {
+        // f: sub rsp,8 ; call 0x1100 ; mov rax,[rdi] ; add rsp,8 ; ret
+        let mut code =
+            vec![0x48, 0x83, 0xec, 0x08, 0xe8, 0xf7, 0, 0, 0, 0x48, 0x8b, 0x07, 0x48, 0x83, 0xc4, 0x08, 0xc3];
+        code.resize(0x100, 0x90);
+        // g: mov qword ptr [rdi+8],0 ; ret
+        code.extend([0x48, 0xc7, 0x47, 0x08, 0, 0, 0, 0, 0xc3]);
+        let env = Raw { base: 0x1000, code };
+        let run = |sigs: &mut dyn Sigs| {
+            let l = super::decompile(&env, 0x1000, 0x1011, Abi::SysV, sigs, &NoNames, "f");
+            l.iter().map(|x| format!("{}\n", x.text)).collect::<String>()
+        };
+        let kept = run(&mut KeepsRdi);
+        println!("{kept}");
+        assert!(kept.contains("return *(u64*)a1;"), "{kept}");
+        // without the knowledge, rdi after the call is lost and the read has no source
+        let lost = run(&mut NoSigs);
+        assert!(!lost.contains("return *(u64*)a1;"), "{lost}");
     }
 }
 pub mod api;
