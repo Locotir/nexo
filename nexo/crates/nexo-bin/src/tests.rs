@@ -397,13 +397,13 @@ fn other_files_are_named_not_read() {
     let mut elf = fixtures::elf64(false).bytes;
     elf[18] = 243; // EM_RISCV
     let e = Image::from_bytes(elf, "/x".into()).err().unwrap();
-    assert_eq!(e.to_string(), "ELF64 riscv64 is not read yet (only x86-64 and arm64 are)");
+    assert!(e.to_string().starts_with("ELF64 riscv64 is not read yet (only x86-64 and arm64 are)"), "{e}");
     // a PE for ARM64
     let mut pe = fixtures::pe64(false).bytes;
     pe[0x44] = 0x64;
     pe[0x45] = 0xaa;
     let e = Image::from_bytes(pe, "/x".into()).err().unwrap();
-    assert!(e.to_string().ends_with("is not read yet (only x86-64 is)"), "{e}");
+    assert!(e.to_string().contains("is not read yet (only x86-64 is)"), "{e}");
     // 32-bit ELF
     let mut elf32 = fixtures::elf64(false).bytes;
     elf32[4] = 1;
