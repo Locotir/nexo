@@ -293,6 +293,25 @@ pub(super) fn exec(cpu: &mut Cpu, mem: &mut Mem, ins: &Instruction) -> R<bool> {
             wr(cpu, mem, ins, 0, r, true)?;
         }
         M::Vptest => ptest(cpu, mem, ins)?,
+        M::Vmovddup | M::Vmovshdup | M::Vmovsldup => {
+            // Per 128-bit lane: the low qword twice, the odd dwords twice, or the even dwords twice.
+            let s = rd(cpu, mem, ins, 1)?;
+            let half = |x: u128| -> u128 {
+                match mn {
+                    M::Vmovddup => (x & u64::MAX as u128) * ((1u128 << 64) | 1),
+                    M::Vmovshdup => {
+                        let (a, b) = (lane(x, 4, 1) as u128, lane(x, 4, 3) as u128);
+                        a | (a << 32) | (b << 64) | (b << 96)
+                    }
+                    _ => {
+                        let (a, b) = (lane(x, 4, 0) as u128, lane(x, 4, 2) as u128);
+                        a | (a << 32) | (b << 64) | (b << 96)
+                    }
+                }
+            };
+            let hi = if bytes == 32 { half(s.hi) } else { 0 };
+            wr(cpu, mem, ins, 0, V { lo: half(s.lo), hi }, true)?;
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -357,6 +376,26 @@ mod tests {
         assert_eq!(cpu.xmm[2], all);
         assert_eq!(cpu.xmm[3], all);
         assert_eq!(cpu.ymmh[3], 0xdead_beef);
+    }
+
+    #[test]
+    fn movddup_and_the_dword_duplicates_work_per_lane() {
+        let mut cpu = Cpu::new();
+        let mut mem = Mem::default();
+        let q =
+            |a: u32, b: u32, c: u32, d: u32| (a as u128) | (b as u128) << 32 | (c as u128) << 64 | (d as u128) << 96;
+        cpu.xmm[1] = q(1, 2, 3, 4);
+        cpu.ymmh[1] = q(5, 6, 7, 8);
+        // vmovddup xmm0,xmm1 ; vmovddup ymm2,ymm1 ; vmovshdup ymm3,ymm1 ; vmovsldup xmm4,xmm1
+        run(
+            &[0xc5, 0xfb, 0x12, 0xc1, 0xc5, 0xff, 0x12, 0xd1, 0xc5, 0xfe, 0x16, 0xd9, 0xc5, 0xfa, 0x12, 0xe1],
+            &mut cpu,
+            &mut mem,
+        );
+        assert_eq!(cpu.xmm[0], q(1, 2, 1, 2));
+        assert_eq!((cpu.xmm[2], cpu.ymmh[2]), (q(1, 2, 1, 2), q(5, 6, 5, 6)));
+        assert_eq!((cpu.xmm[3], cpu.ymmh[3]), (q(2, 2, 4, 4), q(6, 6, 8, 8)));
+        assert_eq!(cpu.xmm[4], q(1, 1, 3, 3));
     }
 
     #[test]
