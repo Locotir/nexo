@@ -250,9 +250,12 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
         "sessions" => {
             let l = crate::sessions(dir);
             if l.is_empty() {
-                return Ok("no debug sessions: use `run <path>` or `attach <pid>`".into());
+                return Ok("debug - #0 sessions\nno debug sessions: use `run <path>` or `attach <pid>`".into());
             }
-            Ok(l.iter().map(|(id, exe, pid)| format!("{id}  pid {pid}  {exe}")).collect::<Vec<_>>().join("\n"))
+            Ok(format!(
+                "debug - #0 sessions\n{}",
+                l.iter().map(|(id, exe, pid)| format!("{id}  pid {pid}  {exe}")).collect::<Vec<_>>().join("\n")
+            ))
         }
         "end" => {
             let id = pick_session(dir, &o.session)?;
@@ -264,7 +267,7 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            Ok(format!("session {id} ended: use `run <path>` to start another"))
+            Ok(format!("debug {id} #0 end\nsession {id} ended: use `run <path>` to start another"))
         }
         _ => {
             let id = pick_session(dir, &o.session)?;

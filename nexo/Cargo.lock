@@ -1634,6 +1634,7 @@ dependencies = [
  "nexo-bin",
  "nexo-core",
  "nexo-curator",
+ "nexo-dbg",
  "nexo-providers",
  "nexo-tools",
  "pulldown-cmark",
