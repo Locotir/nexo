@@ -18,6 +18,7 @@ pub mod compact;
 pub mod config_edit;
 pub mod context;
 mod context_map;
+mod dbg_hint;
 pub mod export;
 pub mod gate;
 pub mod gitcmds;

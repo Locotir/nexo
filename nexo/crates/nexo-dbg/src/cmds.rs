@@ -26,7 +26,7 @@ pub struct Args {
     flags: HashMap<String, String>,
 }
 
-const BOOL_FLAGS: [&str; 5] = ["all", "raw", "close", "keep-going", "once"];
+const BOOL_FLAGS: [&str; 6] = ["all", "raw", "close", "keep-going", "once", "exact"];
 
 impl Args {
     pub fn new(words: &[String]) -> Result<Args> {
@@ -71,8 +71,8 @@ impl Args {
 }
 
 /// Commands that only look (they never change the program or the debugger beyond what they show).
-pub const READ_ONLY: [&str; 27] = [
-    "status", "regs", "mem", "x", "print", "p", "args", "bt", "threads", "breaks", "maps", "modules", "find",
+pub const READ_ONLY: [&str; 28] = [
+    "status", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "breaks", "maps", "modules", "find",
     "history", "out", "log", "dis", "disasm", "info", "watches", "sessions", "core", "help", "catches", "thread",
     "name", "note",
 ];
@@ -87,6 +87,10 @@ impl Session {
     /// `nexo bin` prints) and a memory address otherwise; anything else is an expression.
     pub fn addr_of(&mut self, text: &str) -> Result<u64> {
         let t = text.trim();
+        let t = t.strip_prefix('*').unwrap_or(t);
+        if let Some(r) = self.source_place(t, false) {
+            return r;
+        }
         if parse_addr(t).is_ok() {
             return Ok(self.mods.resolve(t)?.addr());
         }
@@ -132,6 +136,7 @@ impl Session {
             "write" => self.cmd_write(&a),
             "print" | "p" => self.cmd_print(&a),
             "args" => self.cmd_args(&a),
+            "locals" => self.cmd_locals(),
             "bt" => self.cmd_bt(&a),
             "dis" | "disasm" => self.cmd_dis(&a),
             "threads" => self.cmd_threads(),
@@ -225,8 +230,15 @@ impl Session {
 
     fn cmd_break(&mut self, once: bool, words: &[String], a: &Args) -> Result<Output> {
         let Some(spec) = a.pos.first() else {
-            return usage("break <address|name|name+off|import> [if <expr>] [after N] [log <text>] [once]");
+            return usage(
+                "break <address|*address|name|file:line|name+off|import> [if <expr>] [after N] [log <text>] [once]",
+            );
         };
+        if let Some(w) = words.iter().find(|w| w.ends_with(';')) {
+            return usage(format!(
+                "unexpected {w:?}: several commands go in one `do \"a; b\"` (or one debug call `a; b`)"
+            ));
+        }
         let (mut cond, mut after, mut log) = (None, 0u64, None);
         let mut once = once || a.has("once");
         let rest: Vec<&String> = words.iter().skip_while(|w| *w != spec).skip(1).collect();
@@ -267,11 +279,16 @@ impl Session {
             i += 1;
         }
         flush(&mut cur, &mut buf)?;
-        let addr = match self.mods.resolve(spec) {
-            Ok(Place::Code(x)) => x,
-            Ok(Place::ImportSlot(_)) => {
-                // an import: stop in the library code when it is loaded, in the stub otherwise
-                match self.mods.resolve(&format!("!{}", spec.trim_start_matches('!'))) {
+        // `*place` is that exact address: no move past a function's prologue
+        let exact = spec.starts_with('*');
+        let spec = &spec.trim_start_matches('*').to_string();
+        let addr = match self.source_place(spec, !exact) {
+            Some(r) => r?,
+            None => match self.mods.resolve(spec) {
+                Ok(Place::Code(x)) => x,
+                Ok(Place::ImportSlot(_)) => {
+                    // an import: stop in the library code when it is loaded, in the stub otherwise
+                    match self.mods.resolve(&format!("!{}", spec.trim_start_matches('!'))) {
                     Ok(Place::Code(x)) => x,
                     _ => {
                         return fail(format!(
@@ -279,17 +296,20 @@ impl Session {
                         ))
                     }
                 }
-            }
-            Ok(Place::Data(x)) => {
-                if self.mods.locate(x).is_some() && self.maps_exec(x) {
-                    x
-                } else {
-                    return fail(format!("{spec} ({x:#x}) is data, not code: use `watch` for a place that is written"));
                 }
-            }
-            Err(e) => match self.addr_of(spec) {
-                Ok(x) if self.maps_exec(x) => x,
-                _ => return Err(e),
+                Ok(Place::Data(x)) => {
+                    if self.mods.locate(x).is_some() && self.maps_exec(x) {
+                        x
+                    } else {
+                        return fail(format!(
+                            "{spec} ({x:#x}) is data, not code: use `watch` for a place that is written"
+                        ));
+                    }
+                }
+                Err(e) => match self.addr_of(spec) {
+                    Ok(x) if self.maps_exec(x) => x,
+                    _ => return Err(e),
+                },
             },
         };
         if let Some(c) = &cond {
@@ -302,7 +322,10 @@ impl Session {
             }
         }
         let id = self.new_id();
-        let label = self.mods.label(addr, false).unwrap_or_default();
+        let mut label = self.mods.label(addr, false).unwrap_or_default();
+        if let Some(src) = self.mods.source(addr).filter(|s| !label.contains(s.as_str())) {
+            label = format!("{label} ({src})");
+        }
         self.bps.push(Bp { id, addr, enabled: true, cond, after, hits: 0, log, once, call: false });
         Ok(rows("break", vec![format!("breakpoint #{id} at {addr:#x} {label}")], json!({"id": id, "addr": addr})))
     }
@@ -531,6 +554,9 @@ impl Session {
         if bytes.is_empty() {
             return fail(format!("{addr:#x} cannot be read"));
         }
+        if ty == ElemType::Str {
+            return Ok(rows("mem", str_rows(&bytes, addr, len), json!({"addr": addr, "len": bytes.len()})));
+        }
         let mods = std::cell::RefCell::new(&mut self.mods);
         let mut r = typed_rows(&bytes, addr, ty, &|x| mods.borrow_mut().label(x, true));
         if (bytes.len() as u64) < len {
@@ -572,6 +598,11 @@ impl Session {
         }
         self.need_stopped()?;
         let src = a.pos.join(" ");
+        if a.flag("as").is_none() {
+            if let Some(r) = self.print_var(&src) {
+                return r;
+            }
+        }
         let v = self.eval(&src)?;
         let mut s = format!("{src} = {v:#x} ({})", v as i64);
         if let Some(l) = self.mods.label(v, true) {
@@ -589,7 +620,8 @@ impl Session {
             Os::Linux => ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
             Os::Windows => ["rcx", "rdx", "r8", "r9", "", ""],
         };
-        let mut l = Vec::new();
+        // the named parameters when the program carries variable info, then the registers they came in
+        let mut l = self.named_args();
         for (i, n) in regs.iter().enumerate().filter(|(_, n)| !n.is_empty()) {
             let v = r.get(n).unwrap_or(0);
             let mut s = format!("arg{} {n} = {v:#x} ({})", i + 1, v as i64);
@@ -857,7 +889,11 @@ impl Session {
                 "stdin <text> (a newline is added; --raw sends exactly the text, \\n \\t escapes work) | stdin --close",
             );
         }
-        let mut text = a.pos.join(" ").replace("\\n", "\n").replace("\\t", "\t");
+        // --exact: the bytes of a file, no escapes read
+        let mut text = a.pos.join(" ");
+        if !a.has("exact") {
+            text = text.replace("\\n", "\n").replace("\\t", "\t");
+        }
         if !a.has("raw") {
             text.push('\n');
         }
@@ -920,7 +956,9 @@ impl Session {
         }
         let script = a.pos.join(" ");
         let mut out: Vec<String> = Vec::new();
-        for part in script.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let parts: Vec<&str> = script.split(';').map(str::trim).filter(|p| !p.is_empty()).collect();
+        for (n, &part) in parts.iter().enumerate() {
+            let left = parts[n + 1..].join("; ");
             let w = split_words(part);
             if w.first().is_some_and(|c| c == "do") {
                 return usage("`do` inside `do` is not allowed");
@@ -931,13 +969,22 @@ impl Session {
                 Err(e) => {
                     out.push(format!("error: {e}"));
                     if !a.has("keep-going") {
-                        out.push("... script stopped at the error".into());
+                        if !left.is_empty() {
+                            out.push(format!("... script stopped at the error; not run: {left}"));
+                        }
                         break;
                     }
                 }
             }
             if self.state == State::Exited && !matches!(w[0].as_str(), "out" | "log" | "history" | "status") {
-                out.push("... script stopped: the program ended".into());
+                if w[0] == "until" {
+                    out.push(format!(
+                        "... `{part}` was never reached: the program ended first (a `break` there and `cont` shows whether it runs at all)"
+                    ));
+                }
+                if !left.is_empty() {
+                    out.push(format!("... script stopped: the program ended; not run: {left}"));
+                }
                 break;
             }
         }
@@ -1002,6 +1049,9 @@ impl Session {
             let name = self.mods.label(r.rip, false).unwrap_or_default();
             let at = self.mods.source(r.rip).map(|s| format!("  ({s})")).unwrap_or_default();
             l.push(format!("pc {:#x} {name}{at}", r.rip));
+            if let Some(t) = self.mods.source_text(r.rip) {
+                l.push(format!("   {t}"));
+            }
             self.last_stop = Some(StopInfo {
                 n: self.nstop,
                 event: event.into(),
@@ -1034,6 +1084,9 @@ impl Session {
             }
             if let Why::Signal(f) = &why {
                 l.extend(self.triage(f, &r, ins.as_ref()));
+            }
+            if matches!(why, Why::Signal(_) | Why::Break(_) | Why::Until | Why::Finish) {
+                l.extend(self.locals_line());
             }
             let changed = match self.prev.get(&tid) {
                 Some(p) => r.changed(p),
@@ -1174,6 +1227,38 @@ impl Session {
     }
 }
 
+/// `mem <addr> <len> --as str`: the bytes as one string, 64 to a row, with where the C string ends.
+fn str_rows(bytes: &[u8], addr: u64, len: u64) -> Vec<String> {
+    let nul = bytes.iter().position(|&c| c == 0);
+    let mut l = vec![match nul {
+        Some(n) => format!("C string at {addr:#x}: {n} bytes, NUL at +{n:#x}"),
+        None => format!("no NUL in the {} bytes read: the C string at {addr:#x} goes on past them", bytes.len()),
+    }];
+    // trailing zero bytes are one note, not a row of \0
+    let end = bytes.iter().rposition(|&c| c != 0).map_or(0, |i| i + 1);
+    for (i, chunk) in bytes[..end].chunks(64).enumerate() {
+        let t: String = chunk
+            .iter()
+            .map(|&c| match c {
+                0 => "\\0".to_string(),
+                b'"' => "\\\"".to_string(),
+                b'\\' => "\\\\".to_string(),
+                b'\n' => "\\n".to_string(),
+                0x20..=0x7e => (c as char).to_string(),
+                _ => format!("\\x{c:02x}"),
+            })
+            .collect();
+        l.push(format!("{:#x}: \"{t}\"", addr + i as u64 * 64));
+    }
+    if end < bytes.len() {
+        l.push(format!("+{end:#x}..+{:#x}: zero", bytes.len()));
+    }
+    if (bytes.len() as u64) < len {
+        l.push(format!("... only {} of {len} bytes are readable", bytes.len()));
+    }
+    l
+}
+
 fn hex(b: &[u8]) -> String {
     if b.is_empty() {
         return "?".into();
@@ -1211,8 +1296,8 @@ pub fn help() -> Output {
         "go:    cont [--wait N] | step [N] | next [N] | finish | until <addr> | stop | wait [--wait N] | kill | detach",
         "calls: calls | calls off    log the real target of every indirect call (call reg / call [mem]) as the program runs; read with `log`",
         "trace: strace [names|file|net|process|memory] | strace show [filter] | strace off | catch syscall <names|groups> | catch syscall off",
-        "break: break <addr|name|name+off|import> [if <expr>] [after N] [log <text with {expr}>] [once] | breaks | delete <id>|all | enable/disable <id>",
-        "look:  regs [name] | bt [N] | dis [addr] [N] | mem <addr> [len] [--as u8|u32|u64|ptr|str] | print <expr> [--as str] | args | threads | thread <tid>",
+        "break: break <addr|*addr|name|file:line|name+off|import> (a function stops after its prologue) [if <expr>] [after N] [log <text with {expr}>] [once] | breaks | delete <id>|all | enable/disable <id>",
+        "look:  regs [name] | bt [N] | dis [addr] [N] | mem <addr> [len] [--as u8|u32|u64|ptr|str] | print <expr|var|p->f|a[i]> [--as str] | args | locals | threads | thread <tid>",
         "       maps [filter] | modules | find <hex|\"text\"> [--in <map>] | out [--all] | log | history [N] | status",
         "change (asks): setreg <reg> <value> | write <addr> <hex> | watch <addr> [len] [r|w|x] | stdin <text> | catch add|del <SIG>",
         "script: do \"break f; cont; args; bt\" [--keep-going]     expressions: rax+8, *(u32*)(rdi+8), main+4, rsp, sym == 3",

@@ -465,7 +465,13 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         let results = {
             let mut st = state.lock().await;
             let cwd = st.cwd.clone();
-            crate::bin_hint::round(&mut st.bin_told, &kept, results, &cwd)
+            let results = crate::bin_hint::round(&mut st.bin_told, &kept, results, &cwd);
+            // and the `debug` call that explains a crash or a gdb run, when the tool is offered
+            if st.tools.get("debug").is_some() {
+                crate::dbg_hint::round(&mut st.dbg_told, &kept, results, &cwd)
+            } else {
+                results
+            }
         };
         if stale_guard > 0 {
             let wrote = {

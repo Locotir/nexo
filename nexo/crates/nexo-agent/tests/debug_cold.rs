@@ -198,7 +198,8 @@ async fn a_model_pokes_an_index_out_of_range_and_reads_the_crash_in_five_calls()
     assert!(st.success());
     let steps = vec![
         format!("run {}", exe.display()),
-        "break put".to_string(),
+        // `*put` is the entry itself: past the prologue the index is already on the stack, not in rsi
+        "break *put".to_string(),
         "cont".to_string(),
         "setreg rsi 0x10000000000".to_string(),
         "cont".to_string(),

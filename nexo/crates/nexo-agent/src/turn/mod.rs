@@ -178,6 +178,8 @@ struct State {
     /// Whether the line about `nexo bin` is in this session (see `bin_hint.rs`): kept through a compaction, worked
     /// out again from the history when it is replaced, rewound or cleared.
     bin_told: bool,
+    /// The same for the line that names a `debug` call (see `dbg_hint.rs`).
+    dbg_told: bool,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
     epoch: u64,
     /// The one-run slot of a workflow started by name: 0 when free, else the number of the start that holds it.
@@ -375,6 +377,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         },
     };
     let bin_told = crate::bin_hint::told(&history);
+    let dbg_told = crate::dbg_hint::told(&history);
     let prefix = prefix::settle(&mut session, &cwd, &config.agent, &mut tools);
     let system = prompt::system_prompt_with(&cwd, &config.agent, &tools, window_of(&limits), &prefix.volatile);
     let policy = context::from_config(&config.context);
@@ -492,6 +495,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         post: Default::default(),
         repeats: Default::default(),
         bin_told,
+        dbg_told,
         epoch: 0,
         flow_slot: Default::default(),
         plan,

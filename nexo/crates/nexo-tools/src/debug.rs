@@ -14,7 +14,8 @@ use serde_json::{json, Value};
 pub const MAX_WAIT_SECS: u64 = 60;
 
 const COMMANDS: &str = "\
-run <path> [args]  start under the debugger, stop at entry
+run [--main] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); input is sent, then closed
+a; b  several commands in one call (`run ./p <<< \"1 2\"; cont` runs to the crash)
 attach <pid>  attach (asks)
 break <addr|name|fn+off> [if expr] [after N] [log {expr}]  breakpoint; tbreak once
 breaks, delete <id>, enable|disable <id>
@@ -109,7 +110,8 @@ impl Tool for Debug {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Debugger: `run <path>`, break, cont, step, bt, regs, print. `help` lists all.",
+            description:
+                "Debug a crash in a local program: `run ./p <<< \"in\"; cont` gives file:line, cause, locals. `help`",
             params: &[],
         })
     }
@@ -145,20 +147,69 @@ impl Tool for Debug {
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
-        let mut words = match Debug::words(&args) {
+        let words = match Debug::words(&args) {
             Ok(w) => w,
             Err(e) => return ToolOutput::error(e),
         };
+        // `a; b` at the top is a script; `run ...; b` starts the session, then runs the rest in it
+        let line = args.get("command").and_then(Value::as_str).unwrap_or("");
+        let parts = split_script(line);
+        if parts.len() < 2 || words.first().is_some_and(|w| w == "do") {
+            return self.one(words, &args, ctx).await;
+        }
+        let first = nexo_dbg::split_words(parts[0]);
+        if !matches!(first.first().map(String::as_str), Some("run" | "attach" | "core")) {
+            return self.one(vec!["do".into(), parts.join("; ")], &args, ctx).await;
+        }
+        let started = self.one(first, &args, ctx).await;
+        let id = started.content.split_whitespace().nth(1).map(str::to_string);
+        let (true, Some(id)) = (!started.is_error, id) else { return started };
+        let rest = self.one(vec!["-s".into(), id, "do".into(), parts[1..].join("; ")], &json!({}), ctx).await;
+        let text = format!("{}\n{}", started.content, rest.content);
+        if rest.is_error {
+            ToolOutput::error(text)
+        } else {
+            ToolOutput::ok(text)
+        }
+    }
+}
+
+/// The parts of a command line split at `;` outside double quotes.
+fn split_script(line: &str) -> Vec<&str> {
+    let (mut out, mut from, mut q) = (Vec::new(), 0, false);
+    for (i, c) in line.char_indices() {
+        match c {
+            '"' => q = !q,
+            ';' if !q => {
+                out.push(line[from..i].trim());
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(line[from..].trim());
+    out.retain(|p| !p.is_empty());
+    out
+}
+
+impl Debug {
+    async fn one(&self, mut words: Vec<String>, args: &Value, ctx: &ToolContext) -> ToolOutput {
         if self.steer_only && nexo_dbg::dbg_class(&words) != DbgClass::Control {
             return ToolOutput::error(
                 "this agent can only look at a session: use regs, bt, mem, print, threads, maps or history",
             );
         }
-        // `run ./prog` is relative to the project, as in the shell
+        // `run ./prog` and its `< file` are relative to the project, as in the shell
         if words.first().map(String::as_str) == Some("run") {
-            if let Some(p) = words.get(1).cloned() {
+            let at = if words.get(1).is_some_and(|w| w == "--main") { 2 } else { 1 };
+            if let Some(p) = words.get(at).cloned() {
                 if Path::new(&p).is_relative() && (p.contains('/') || ctx.cwd.join(&p).is_file()) {
-                    words[1] = ctx.cwd.join(&p).display().to_string();
+                    words[at] = ctx.cwd.join(&p).display().to_string();
+                }
+            }
+            if let Some(i) = words.iter().position(|w| w == "<") {
+                if let Some(f) = words.get(i + 1).filter(|f| Path::new(f).is_relative()).cloned() {
+                    words[i + 1] = ctx.cwd.join(f).display().to_string();
                 }
             }
         }
@@ -202,7 +253,7 @@ mod tests {
         )
         .unwrap();
         eprintln!("debug tool as offered: {} chars: {sent}", sent.len());
-        assert!(sent.len() <= 210, "{} chars: {sent}", sent.len());
+        assert!(sent.len() <= 230, "{} chars: {sent}", sent.len());
         // the full text keeps every argument, and the flags the short one leaves out parse at the head of a command
         let full = set.specs_for(true).len() + Debug::new().spec().parameters["properties"].as_object().unwrap().len();
         assert!(full >= 5);
@@ -271,6 +322,30 @@ mod tests {
         assert!(shown.content.starts_with("debug "), "{}", shown.content);
         assert!(shown.content.contains("exit_group(0) = ?"), "{}", shown.content);
         call(&t, "end").await;
+    }
+
+    #[tokio::test]
+    async fn a_run_with_input_and_more_commands_after_a_semicolon_is_one_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Debug::in_dir(dir.path());
+        let cat = ["/usr/bin/cat", "/bin/cat"].iter().find(|p| Path::new(p).is_file()).expect("cat");
+        let o = call(&t, &format!("run {cat} <<< \"hello there\"; cont")).await;
+        assert!(!o.is_error, "{}", o.content);
+        assert!(o.content.contains("started pid") && o.content.contains("closed the input"), "{}", o.content);
+        assert!(o.content.contains("hello there") && o.content.contains("exited with code 0"), "{}", o.content);
+        // a script without `run` in front runs in the live session
+        let o = call(&t, &format!("run {} 30", sleep_bin())).await;
+        let id = o.content.split_whitespace().nth(1).unwrap().to_string();
+        let o = t.run(json!({"command": "regs; bt 1", "session": id}), &ToolContext::new(std::env::temp_dir())).await;
+        assert!(
+            o.content.contains("> regs") && o.content.contains("rip") && o.content.contains("> bt 1"),
+            "{}",
+            o.content
+        );
+        assert_eq!(
+            split_script(r#"break f if x == 1; stdin "a;b"; cont"#),
+            [r#"break f if x == 1"#, r#"stdin "a;b""#, "cont"]
+        );
     }
 
     #[test]

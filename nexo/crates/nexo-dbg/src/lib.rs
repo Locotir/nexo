@@ -12,11 +12,13 @@ mod expr;
 mod knowledge;
 mod lines;
 mod modules;
+mod places;
 mod platform;
 mod regs;
 mod server;
 mod syscalls;
 mod trace;
+mod vars;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux;

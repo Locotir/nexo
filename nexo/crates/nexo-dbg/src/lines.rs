@@ -183,6 +183,62 @@ impl Lines {
     }
 }
 
+impl Lines {
+    /// The first address of `line` in a file whose path ends with `file`; a line with no code moves to the next
+    /// one that has some (up to 10 on). Says which files there are when none matches, or which when several do.
+    pub fn line_addr(&self, file: &str, line: u32) -> Result<(u64, u32), String> {
+        let ends = |p: &str| p == file || p.ends_with(&format!("/{file}"));
+        let mut hit: Vec<usize> = (0..self.files.len()).filter(|&i| ends(&self.files[i])).collect();
+        let used = |i: &usize| self.rows.iter().any(|r| r.file as usize == *i);
+        hit.retain(used);
+        let mut names: Vec<&str> = hit.iter().map(|&i| self.files[i].as_str()).collect();
+        names.sort();
+        names.dedup();
+        if names.len() > 1 {
+            return Err(format!("{file} matches {}: give more of the path", names.join(", ")));
+        }
+        if names.is_empty() {
+            let mut all: Vec<String> = (0..self.files.len())
+                .filter(|i| used(i) && !self.files[*i].starts_with("/usr/"))
+                .map(|i| short_path(&self.files[i]))
+                .collect();
+            all.sort();
+            all.dedup();
+            all.truncate(8);
+            return Err(format!("no code from a file named {file}; the program's source files: {}", all.join(", ")));
+        }
+        let best = self
+            .rows
+            .iter()
+            .filter(|r| !r.end && hit.contains(&(r.file as usize)) && r.line >= line && r.line <= line + 10)
+            .min_by_key(|r| (r.line, r.addr));
+        best.map(|r| (r.addr, r.line)).ok_or_else(|| format!("{file}:{line} and the 10 lines after it hold no code"))
+    }
+
+    /// The address after a function's prologue: the next row of the line table after its first one, when that
+    /// is close by. `None` when the table says nothing about the function.
+    pub fn after_prologue(&self, lo: u64) -> Option<u64> {
+        let i = self.rows.partition_point(|r| r.addr < lo);
+        let first = self.rows.get(i).filter(|r| r.addr == lo && !r.end)?;
+        let next = self.rows[i..].iter().find(|r| r.addr > first.addr)?;
+        (!next.end && next.addr - lo < 0x80).then_some(next.addr)
+    }
+}
+
+/// The text of `line` in `file`, trimmed, when the file is on this machine.
+pub fn source_text(file: &str, line: u32) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let t = text.lines().nth(line.checked_sub(1)? as usize)?.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let mut t: String = t.chars().take(160).collect();
+    if t.len() < text.lines().nth(line as usize - 1)?.trim().len() {
+        t.push_str(" ...");
+    }
+    Some(t)
+}
+
 /// A path as a person reads it in a call chain: the last two parts (`src/main.rs`).
 pub fn short_path(p: &str) -> String {
     let parts: Vec<&str> = p.split(['/', '\\']).filter(|s| !s.is_empty()).collect();

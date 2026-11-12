@@ -39,10 +39,10 @@ pub enum DbgClass {
 }
 
 const CONTROL: &[&str] = &[
-    "status", "info", "regs", "mem", "x", "print", "p", "args", "bt", "threads", "thread", "breaks", "watches", "maps",
-    "modules", "find", "history", "out", "log", "dis", "disasm", "sessions", "help", "catches", "break", "b", "tbreak",
-    "delete", "del", "enable", "disable", "cont", "c", "continue", "step", "s", "next", "n", "finish", "until", "wait",
-    "stop", "kill", "detach", "end", "stdin", "catch", "watch", "core", "strace",
+    "status", "info", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "thread", "breaks",
+    "watches", "maps", "modules", "find", "history", "out", "log", "dis", "disasm", "sessions", "help", "catches",
+    "break", "b", "tbreak", "delete", "del", "enable", "disable", "cont", "c", "continue", "step", "s", "next", "n",
+    "finish", "until", "wait", "stop", "kill", "detach", "end", "stdin", "catch", "watch", "core", "strace",
 ];
 
 /// Classify the words after `nexo dbg`. A `do "a; b"` script is as strong as its strongest command.
@@ -110,19 +110,77 @@ pub fn parse(words: &[String]) -> Result<Call, Error> {
     Ok(o)
 }
 
+/// What `run` was given: `run [--main] <path> [args] [< file | <<< text]`.
+struct RunWords {
+    exe: String,
+    args: Vec<String>,
+    /// What goes to the program's input before it runs; the input is closed after it.
+    input: Option<String>,
+    to_main: bool,
+}
+
+/// The input is read up to this much; a pipe holds about this much before the program reads it.
+const MAX_INPUT: u64 = 60 << 10;
+
+fn run_words(words: &[String]) -> Result<RunWords, Error> {
+    let mut w = words;
+    let to_main = w.first().is_some_and(|x| x == "--main");
+    if to_main {
+        w = &w[1..];
+    }
+    let Some((exe, rest)) = w.split_first() else {
+        return Err(Error::Usage("usage: run [--main] <path> [args] [< file | <<< text]".into()));
+    };
+    let mut args: Vec<String> = rest.iter().filter(|x| *x != "--").cloned().collect();
+    let mut input = None;
+    if let Some(i) = args.iter().position(|x| x == "<" || x == "<<<") {
+        let Some(src) = args.get(i + 1).cloned() else {
+            return Err(Error::Usage(format!("{} needs a file or a text after it", args[i])));
+        };
+        input = Some(if args[i] == "<<<" {
+            format!("{}\n", src.replace("\\n", "\n").replace("\\t", "\t"))
+        } else {
+            let mut b = Vec::new();
+            let f = std::fs::File::open(&src).map_err(|e| Error::Fail(format!("cannot read {src}: {e}")))?;
+            std::io::Read::read_to_end(&mut std::io::Read::take(f, MAX_INPUT + 1), &mut b)?;
+            if b.len() as u64 > MAX_INPUT {
+                return Err(Error::Fail(format!(
+                    "{src} is over {} KiB: start with `run <path>` and feed it with `stdin <text>` in parts",
+                    MAX_INPUT >> 10
+                )));
+            }
+            String::from_utf8(b).map_err(|_| {
+                Error::Fail(format!("{src} is not text: send its bytes with `write`, or feed text with `stdin`"))
+            })?
+        });
+        args.drain(i..i + 2);
+    }
+    Ok(RunWords { exe: exe.clone(), args, input, to_main })
+}
+
 fn pick_session(dir: &Path, want: &Option<String>) -> Result<String, Error> {
     if let Some(s) = want {
         return Ok(s.clone());
     }
     let live = crate::sessions(dir);
-    match live.len() {
-        1 => Ok(live[0].0.clone()),
-        0 => Err(Error::Fail("no debug session: use `run <path>` or `attach <pid>`".into())),
+    // a session whose program ended still answers (out, history), but it is never the one meant by default
+    let running: Vec<&(String, String, u64)> = live.iter().filter(|s| crate::server::alive(s.2 as u32)).collect();
+    match (live.len(), running.len()) {
+        (1, _) => Ok(live[0].0.clone()),
+        (0, _) => Err(Error::Fail("no debug session: use `run <path>` or `attach <pid>`".into())),
+        (_, 1) => Ok(running[0].0.clone()),
         _ => Err(Error::Fail(format!(
-            "more than one debug session is live ({}): add `-s <id>` to the command",
-            live.iter().map(|s| s.0.as_str()).collect::<Vec<_>>().join(", ")
+            "more than one debug session is live ({}): add `-s <id>` to the command, or `end -s <id>` the others",
+            live.iter().map(session_text).collect::<Vec<_>>().join(", ")
         ))),
     }
+}
+
+/// `ab12cd ./prog`, with ` (ended)` when its program is gone.
+fn session_text(s: &(String, String, u64)) -> String {
+    let name = s.1.rsplit('/').next().unwrap_or(&s.1);
+    let ended = if crate::server::alive(s.2 as u32) { "" } else { " (ended)" };
+    format!("{} {name}{ended}", s.0)
 }
 
 fn shell_word(s: &str) -> String {
@@ -227,6 +285,7 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
     };
     match cmd {
         "run" | "attach" | "core" => {
+            let (mut input, mut to_main) = (None, false);
             let kind = if cmd == "core" {
                 let Some(file) = o.words.get(1) else {
                     return Err(Error::Usage("usage: core <file> [--exe <path>]".into()));
@@ -234,9 +293,10 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
                 let exe = o.words.iter().position(|w| w == "--exe").and_then(|i| o.words.get(i + 1)).map(PathBuf::from);
                 Kind::Core { file: PathBuf::from(file), exe }
             } else if cmd == "run" {
-                let Some(exe) = o.words.get(1) else { return Err(Error::Usage("usage: run <path> [args]".into())) };
-                let args = o.words[2..].iter().filter(|w| *w != "--").cloned().collect();
-                Kind::Run { exe: PathBuf::from(exe), args }
+                let r = run_words(&o.words[1..])?;
+                input = r.input;
+                to_main = r.to_main;
+                Kind::Run { exe: PathBuf::from(r.exe), args: r.args }
             } else {
                 let pid = o
                     .words
@@ -249,7 +309,28 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
                 Host::Process(me) => crate::spawn(me, dir, &kind)?,
                 Host::Thread => crate::spawn_thread(dir, &kind)?,
             };
-            let r = crate::request(dir, &id, &["__first".to_string()])?;
+            let mut r = crate::request(dir, &id, &["__first".to_string()])?;
+            let mut extra = Vec::new();
+            if let Some(bytes) = input {
+                let mut w = vec!["stdin".to_string(), "--exact".into(), "--raw".into(), bytes];
+                let sent = crate::request(dir, &id, &w)?;
+                extra.extend(sent.out.rows.into_iter().map(|r| format!("{} and closed the input", r.text)));
+                w.truncate(1);
+                w.push("--close".into());
+                crate::request(dir, &id, &w)?;
+            }
+            if to_main && r.state == "stopped" {
+                crate::request(dir, &id, &["tbreak".to_string(), "main".into()])?;
+                let started = r.out.rows.first().map(|r| r.text.clone());
+                r = crate::request(dir, &id, &["cont".to_string()])?;
+                extra.splice(0..0, started);
+            }
+            for (i, t) in extra.into_iter().enumerate() {
+                r.out.rows.insert(i, nexo_bin::Row { key: 0, text: t, json: None });
+            }
+            for (i, row) in r.out.rows.iter_mut().enumerate() {
+                row.key = i as u64;
+            }
             let head = header_of(&id, r.stop.as_ref(), &r.state, true, "run");
             Ok(print(r.out, &id, &["status".to_string()], o, Some(head), &r.state, prefix))
         }
@@ -260,7 +341,13 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
             }
             Ok(format!(
                 "debug - #0 sessions\n{}",
-                l.iter().map(|(id, exe, pid)| format!("{id}  pid {pid}  {exe}")).collect::<Vec<_>>().join("\n")
+                l.iter()
+                    .map(|(id, exe, pid)| {
+                        let ended = if crate::server::alive(*pid as u32) { "" } else { "  (program ended)" };
+                        format!("{id}  pid {pid}  {exe}{ended}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ))
         }
         "end" => {

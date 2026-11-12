@@ -72,7 +72,7 @@ pub fn new_id() -> String {
     random_hex()[..6].to_string()
 }
 
-fn alive(pid: u32) -> bool {
+pub(crate) fn alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // SAFETY: signal 0 only asks whether the process exists.
@@ -482,6 +482,11 @@ pub fn sessions(dir: &Path) -> Vec<(String, String, u64)> {
         let Ok(text) = std::fs::read_to_string(&p) else { continue };
         let Ok(j) = serde_json::from_str::<Value>(&text) else { continue };
         if j["port"].is_null() {
+            continue;
+        }
+        // a server that is gone (its nexo ended) left its file behind: it is no session
+        if j["server"].as_u64().is_some_and(|s| !alive(s as u32)) {
+            let _ = std::fs::remove_file(&p);
             continue;
         }
         v.push((id.to_string(), j["exe"].as_str().unwrap_or("").to_string(), j["pid"].as_u64().unwrap_or(0)));

@@ -32,14 +32,16 @@ pub struct Mods {
     main_idx: usize,
     others: HashMap<String, Option<Image>>,
     lines: HashMap<usize, Option<crate::lines::Lines>>,
+    /// The program's variables and types, built on first use.
+    vars: Option<Option<crate::vars::Vars>>,
 }
 
 /// DWARF register number to the index in `Regs::gp`.
-const DW2GP: [usize; 16] = [0, 3, 2, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+pub(crate) const DW2GP: [usize; 16] = [0, 3, 2, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 impl Mods {
     pub fn new(main: Image) -> Mods {
-        Mods { list: Vec::new(), main, main_idx: 0, others: HashMap::new(), lines: HashMap::new() }
+        Mods { list: Vec::new(), main, main_idx: 0, others: HashMap::new(), lines: HashMap::new(), vars: None }
     }
 
     /// The program's image, with the names and notes kept for it.
@@ -137,6 +139,34 @@ impl Mods {
             Some((n, off)) => format!("{short}!{n}+{off:#x}"),
             None => format!("{short}+{:#x}", addr - self.list[idx].base),
         })
+    }
+
+    /// The line table of the program itself, built once, with the bias to add to its addresses.
+    pub fn main_lines(&mut self) -> Option<(&crate::lines::Lines, u64)> {
+        let (idx, bias) = (self.main_idx, self.main_bias());
+        if !self.lines.contains_key(&idx) {
+            let t = crate::lines::Lines::of(&self.main);
+            self.lines.insert(idx, t);
+        }
+        Some((self.lines.get(&idx)?.as_ref()?, bias))
+    }
+
+    /// The program's variables, built once, with the bias to add to its addresses.
+    pub fn main_vars(&mut self) -> Option<(&crate::vars::Vars, u64)> {
+        let bias = self.main_bias();
+        if self.vars.is_none() {
+            self.vars = Some(crate::vars::Vars::of(&self.main));
+        }
+        Some((self.vars.as_ref()?.as_ref()?, bias))
+    }
+
+    /// The text of the source line of the code at `addr`, when the file is on this machine.
+    pub fn source_text(&mut self, addr: u64) -> Option<String> {
+        let idx = self.locate(addr)?;
+        let bias = self.bias(idx);
+        let w = self.lines.get(&idx)?.as_ref()?.at(addr.wrapping_sub(bias))?;
+        let (file, line) = w.inside.clone().unwrap_or((w.file.clone(), w.line));
+        crate::lines::source_text(&file, line).map(|t| format!("{line}  {t}"))
     }
 
     /// `src/main.rs:42` for the code at `addr`, when the file that holds it carries line info.
