@@ -88,7 +88,14 @@ fn instr_row(
     function: Option<&str>,
 ) -> Row {
     let line = ins.text(fmt);
-    let note = ins.comment(img);
+    let mut note = ins.comment(img);
+    let src = img.src_line(ins.ip());
+    if let Some(l) = &src {
+        note = Some(match note {
+            Some(n) => format!("{n} | {l}"),
+            None => l.clone(),
+        });
+    }
     let mut text = String::new();
     if let Some(m) = mark {
         text.push_str(if m { "> " } else { "  " });
@@ -102,7 +109,7 @@ fn instr_row(
         text.push_str("  ; ");
         text.push_str(n);
     }
-    let mut j = json!({"addr": ins.ip(), "bytes": hex(raw), "text": line, "comment": note});
+    let mut j = json!({"addr": ins.ip(), "bytes": hex(raw), "text": line, "comment": note, "source": src});
     if mark == Some(true) {
         j["asked"] = json!(true);
     }

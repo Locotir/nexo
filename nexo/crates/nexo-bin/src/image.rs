@@ -154,6 +154,8 @@ pub struct Image {
     pub(crate) sigs: crate::sigs::SigSet,
     /// Things wrong with the file that did not stop it from opening (cut short, a table that points out).
     pub warnings: Vec<String>,
+    /// What the .pdb next to a PE file gave (names, lines, types), when there is one.
+    pub(crate) pdb: Option<crate::pdbread::Pdb>,
 }
 
 impl Image {
@@ -187,9 +189,34 @@ impl Image {
         }
         img.path = path;
         img.sha256 = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        if img.format == Format::Pe {
+            img.attach_pdb(&data);
+        }
         img.data = data;
         img.finish();
         Ok(img)
+    }
+
+    /// Read the .pdb next to the file: its function names come before the exported and public ones.
+    fn attach_pdb(&mut self, data: &[u8]) {
+        let Some(path) = crate::pdbread::find(&self.path, data) else { return };
+        let p = crate::pdbread::read(&path, self.image_base);
+        let mut named: Vec<Symbol> = Vec::new();
+        for (addr, size, raw) in &p.funcs {
+            let name = demangle(raw);
+            named.push(Symbol { raw: raw_of(raw, &name), name, addr: *addr, size: *size, func: true });
+        }
+        self.symbols.splice(0..0, named);
+        self.pdb = Some(p);
+    }
+
+    /// `file.c:12` when a line of source starts exactly at `addr` (needs a .pdb).
+    pub fn src_line(&self, addr: u64) -> Option<String> {
+        let p = self.pdb.as_ref()?;
+        let i = p.lines.binary_search_by_key(&addr, |l| l.addr).ok()?;
+        let l = p.lines[i];
+        let f = p.files.get(l.file as usize)?;
+        Some(format!("{}:{}", f.rsplit(['\\', '/']).next().unwrap_or(f), l.line))
     }
 
     fn finish(&mut self) {
@@ -318,7 +345,18 @@ impl Image {
 
     /// Names and types the file carries as DWARF (empty when it has none).
     pub(crate) fn dwarf(&self) -> &crate::dwarf::Dwarf {
-        self.dwarf.get_or_init(|| crate::dwarf::read(&self.data))
+        self.dwarf.get_or_init(|| {
+            let mut d = crate::dwarf::read(&self.data);
+            if let Some(p) = &self.pdb {
+                for (k, v) in &p.types.protos {
+                    d.protos.entry(*k).or_insert_with(|| v.clone());
+                }
+                for (k, v) in &p.types.structs {
+                    d.structs.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            d
+        })
     }
 
     /// The strings found in the data sections, sorted by address.
@@ -529,6 +567,7 @@ fn blank(format: Format) -> Image {
         dwarf: OnceLock::new(),
         sigs: Default::default(),
         warnings: Vec::new(),
+        pdb: None,
     }
 }
 

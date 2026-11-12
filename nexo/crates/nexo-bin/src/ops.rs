@@ -68,6 +68,18 @@ pub fn info(img: &Image) -> Output {
     ));
     let hard: Vec<String> = img.hardening.items.iter().map(|(k, v)| format!("{}: {v}", k.replace('_', " "))).collect();
     l.text(format!("hardening   {}", hard.join(" | ")));
+    if let Some(p) = &img.pdb {
+        l.text(match &p.note {
+            None => format!(
+                "pdb         {} ({} functions, {} source lines, {} types)",
+                p.path.display(),
+                p.funcs.len(),
+                p.lines.len(),
+                p.types.structs.len()
+            ),
+            Some(n) => format!("pdb         {n}"),
+        });
+    }
     l.text(format!("sections    {}", img.sections.len()));
     for s in &img.sections {
         l.item(

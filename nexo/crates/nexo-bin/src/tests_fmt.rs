@@ -107,3 +107,75 @@ fn msvc_names_are_demangled() {
 fn a_macho_underscore_before_an_itanium_name_is_dropped() {
     assert_eq!(crate::image::demangle("__ZN3foo3barEv"), "foo::bar()");
 }
+
+/// A freestanding Windows program with CodeView debug info and a .pdb, built with clang and lld-link.
+fn pdb_image(dir: &Path) -> Option<Image> {
+    let src = dir.join("p.c");
+    std::fs::write(
+        &src,
+        "struct item { int id; long long score; };\n\
+         __attribute__((noinline)) int score_item(struct item *it, int k) {\n\
+             return (int)(it->score * k) + it->id;\n\
+         }\n\
+         int mainCRTStartup(void) {\n\
+             struct item it = {3, 40};\n\
+             return score_item(&it, 2);\n\
+         }\n",
+    )
+    .ok()?;
+    let obj = dir.join("p.obj");
+    let exe = dir.join("p.exe");
+    let ok = run_ok(
+        Command::new("clang")
+            .args(["-c", "--target=x86_64-pc-windows-msvc", "-O0", "-g", "-gcodeview", "-o"])
+            .arg(&obj)
+            .arg(&src),
+    ) && run_ok(
+        Command::new("lld-link")
+            .args(["/entry:mainCRTStartup", "/nodefaultlib", "/debug", "/subsystem:console"])
+            .arg(&obj)
+            .arg(format!("/out:{}", exe.display())),
+    );
+    if !ok || !dir.join("p.pdb").is_file() {
+        eprintln!("skipped: no clang with lld-link");
+        return None;
+    }
+    Some(Image::open(&exe).unwrap())
+}
+
+#[test]
+fn a_pdb_next_to_a_pe_gives_names_lines_and_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(img) = pdb_image(dir.path()) else { return };
+    let i = whole(&info(&img));
+    assert!(i.contains("pdb ") && i.contains("p.pdb") && i.contains("source lines"), "{i}");
+    let f = whole(&func(&img, "score_item", false).unwrap());
+    assert!(f.starts_with("fn score_item"), "{f}");
+    assert!(f.contains("p.c:3"), "source lines show up in fn:\n{f}");
+    let main = whole(&func(&img, "mainCRTStartup", false).unwrap());
+    assert!(main.contains("score_item"), "{main}");
+    let d = whole(&decomp_window(&img, dir.path(), &["score_item".to_string()], false, None, usize::MAX).unwrap());
+    assert!(
+        d.contains("struct item *it") || d.contains("it->") || d.contains("item"),
+        "types from the pdb reach the decompiler:\n{d}"
+    );
+    assert!(img.dwarf().structs.get("item").is_some_and(|s| s.contains("0x8:i64:score")), "{:?}", img.dwarf().structs);
+    assert!(
+        img.dwarf().protos.values().any(|p| p.contains("score_item(struct item *it, i32 k)")),
+        "{:?}",
+        img.dwarf().protos
+    );
+}
+
+#[test]
+fn a_missing_or_broken_pdb_is_said_not_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(img) = pdb_image(dir.path()) else { return };
+    let exe = img.path.clone();
+    std::fs::write(dir.path().join("p.pdb"), b"not a pdb at all").unwrap();
+    let broken = Image::open(&exe).unwrap();
+    let i = whole(&info(&broken));
+    assert!(i.contains("pdb ") && i.contains("only in part"), "{i}");
+    // still opens and still has its (stripped) functions
+    assert!(!broken.funcs().is_empty());
+}

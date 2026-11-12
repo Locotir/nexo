@@ -25,6 +25,7 @@ mod names;
 mod ops;
 mod overview;
 mod page;
+mod pdbread;
 mod refs;
 mod sigs;
 mod slice;
