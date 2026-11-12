@@ -140,8 +140,8 @@ fn refusal_in(words: &[String], depth: usize) -> Option<String> {
         "hook" if rest.iter().any(|w| w == "set" || w == "ret") => {
             Some("a hook that sets an argument or the result changes the program".to_string())
         }
-        "catch" if rest.first().is_some_and(|w| w == "add" || w == "del") => {
-            Some("`catch add|del` changes how signals reach the program".to_string())
+        "catch" | "catches" if rest.first().is_some_and(|w| w != "syscall") => {
+            Some("`catch` with add, del, on, off or all changes how signals reach the program".to_string())
         }
         "cover" if rest.first().is_some_and(|w| w == "save") => Some("`cover save` saves a file".to_string()),
         _ => None,
@@ -449,6 +449,25 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catch_on_off_and_all_are_refused_like_add_and_del_without_the_flag() {
+        for c in [
+            "catch on SIGSEGV",
+            "catch off SIGSEGV",
+            "catch all",
+            "catch add SIGSEGV",
+            "catches on SIGSEGV",
+            "catches all",
+            "do catch off 11",
+        ] {
+            let w = crate::split_words(c);
+            assert!(read_only_refusal(&w).is_some(), "{c} must be refused");
+        }
+        for c in ["catch", "catches", "catch syscall"] {
+            assert!(read_only_refusal(&crate::split_words(c)).is_none(), "{c} only reads");
+        }
+    }
 
     fn words(s: &str) -> Vec<String> {
         s.split(' ').map(str::to_string).collect()
