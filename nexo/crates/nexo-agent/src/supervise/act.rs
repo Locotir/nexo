@@ -76,9 +76,10 @@ impl Supervisor {
         }
         let (name, state) =
             self.entries.get(key).map_or((key.to_string(), "unknown"), |e| (display_name(&e.track), e.state.label()));
-        let _ = run_alert(&self.policy.alert.command, &name, state, why);
+        // The audit line goes first: whoever sees the command's effect can then rely on the log already holding it.
         self.ledgers.entry(key.to_string()).or_default().alerted = Some((rule.to_string(), now));
         self.record(now, key, via, "alert", rule, why, true);
+        let _ = run_alert(&self.policy.alert.command, &name, state, why);
         self.say(key, format!("alerted: {why}"), now);
         true
     }
