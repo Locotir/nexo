@@ -47,6 +47,8 @@ pub struct Death {
     pub signal: u32,
     pub code: i32,
     pub addr: Option<u64>,
+    /// What the faulting instruction was doing with `addr`, when the dump says (a Windows minidump does).
+    pub touch: Option<crate::platform::Touch>,
 }
 
 pub struct Core {
@@ -122,7 +124,7 @@ impl Core {
         // the signal that killed it: the siginfo note when there is one, else the first thread's
         if core.death.is_none() {
             let signal = core.threads[0].signal;
-            core.death = (signal != 0).then_some(Death { signal, code: 0, addr: None });
+            core.death = (signal != 0).then_some(Death { signal, code: 0, addr: None, touch: None });
         }
         Ok(core)
     }
@@ -157,7 +159,7 @@ impl Core {
                         let code = u32_at(desc, 8).unwrap_or(0) as i32;
                         // a fault carries the address it is about; a signal sent by a process carries a pid there
                         let addr = u64_at(desc, 16).filter(|_| matches!(signal, 4 | 7 | 8 | 11));
-                        self.death = (signal != 0).then_some(Death { signal, code, addr });
+                        self.death = (signal != 0).then_some(Death { signal, code, addr, touch: None });
                     }
                     NT_FILE => self.files(desc),
                     _ => {}

@@ -273,3 +273,78 @@ fn attach_stops_a_running_program_and_detach_lets_it_go() {
     child.wait().unwrap();
     assert!(gone(pid));
 }
+
+/// Write a minidump of the stopped program with the system's own writer, as the crash reporter does.
+/// `None` (with a message) when the writer refuses, which some Windows-on-Linux layers do.
+fn dump_of(s: &mut Session, file: &std::path::Path) -> Option<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL};
+    use windows_sys::Win32::System::Diagnostics::Debug::*;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, OpenThread, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, THREAD_ALL_ACCESS,
+    };
+    let (pid, tid) = (s.t.pid(), s.t.threads()[0]);
+    // SAFETY: plain Win32 calls on handles opened here and closed below; the structures are local.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+        let thread = OpenThread(THREAD_ALL_ACCESS, 0, tid);
+        let wide: Vec<u16> = file.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let out = CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        );
+        let mut ctx: Box<CONTEXT> = Box::new(std::mem::zeroed());
+        ctx.ContextFlags = CONTEXT_ALL_AMD64;
+        let got = !thread.is_null() && GetThreadContext(thread, &mut *ctx) != 0;
+        let mut rec: EXCEPTION_RECORD = std::mem::zeroed();
+        rec.ExceptionCode = 0xC000_0005u32 as i32;
+        rec.ExceptionAddress = ctx.Rip as *mut _;
+        rec.NumberParameters = 2;
+        let mut ptrs = EXCEPTION_POINTERS { ExceptionRecord: &mut rec, ContextRecord: &mut *ctx };
+        let info = MINIDUMP_EXCEPTION_INFORMATION { ThreadId: tid, ExceptionPointers: &mut ptrs, ClientPointers: 0 };
+        let ok = got
+            && !process.is_null()
+            && out as isize != -1
+            && MiniDumpWriteDump(process, pid, out, MiniDumpNormal, &info, std::ptr::null(), std::ptr::null()) != 0;
+        for h in [process, thread, out] {
+            if !h.is_null() && h as isize != -1 {
+                CloseHandle(h);
+            }
+        }
+        if !ok {
+            eprintln!("skipped: this system could not write a minidump");
+        }
+        ok.then_some(())
+    }
+}
+
+#[test]
+fn a_minidump_of_a_crash_is_read_with_cause_function_and_stack() {
+    let Some((mut s, _)) = start("crash") else { return };
+    let stop = run(&mut s, "cont --wait 20");
+    assert!(stop.contains("ACCESS_VIOLATION"), "{stop}");
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("crash.dmp");
+    if dump_of(&mut s, &file).is_none() {
+        return;
+    }
+    run(&mut s, "kill");
+    let (mut d, first) = open(&Kind::Core { file: file.clone(), exe: Some(target()) }).expect("open the dump");
+    let first = first.text_all();
+    assert!(first.contains("ACCESS_VIOLATION"), "{first}");
+    assert!(first.contains("null pointer") && first.contains("dbg_crash"), "{first}");
+    assert!(first.contains("backtrace:") && first.contains("dbg_target::main"), "{first}");
+    // a dump is read, never run
+    let err = d.exec(&split_words("cont")).map(|o| o.text_all()).unwrap_or_else(|e| e.to_string());
+    assert!(err.contains("minidump") || err.contains("not running") || err.contains("cannot"), "{err}");
+    let mods = run(&mut d, "modules");
+    assert!(mods.contains("dbg_target.exe"), "{mods}");
+    let regs = run(&mut d, "regs rip");
+    assert!(regs.contains("rip ="), "{regs}");
+}

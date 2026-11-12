@@ -12,6 +12,7 @@ mod expr;
 mod hooks;
 mod knowledge;
 mod lines;
+mod minidump;
 mod modules;
 mod pe_unwind;
 mod places;

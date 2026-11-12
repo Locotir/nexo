@@ -142,6 +142,17 @@ pub fn out_from_json(v: &Value) -> Output {
 
 fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)> {
     if let Kind::Core { file, exe } = kind {
+        if crate::minidump::is_minidump(file) {
+            let mut dump = crate::minidump::Minidump::open(file)?;
+            let death = dump.death();
+            let Some(path) = exe.clone().or_else(|| dump.exe()) else {
+                return fail("the minidump does not name its program: give it with `--exe <path>`");
+            };
+            dump.exe_first();
+            let img = Image::open(&path)
+                .map_err(|e| Error::Fail(format!("cannot read {} as a program: {e}", path.display())))?;
+            return Ok((Session::new(Box::new(dump), img), death));
+        }
         let core = crate::corefile::Core::open(file)?;
         let death = core.death();
         let Some(path) = exe.clone().or_else(|| core.exe()) else {
@@ -294,7 +305,7 @@ fn core_report(s: &mut Session, file: &Path, death: Option<crate::corefile::Deat
             number: d.signal,
             code: d.code,
             addr: d.addr,
-            touch: None,
+            touch: d.touch,
             first_chance: false,
         }),
         None => crate::engine::Why::Interrupt,
