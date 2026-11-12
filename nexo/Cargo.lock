@@ -1696,6 +1696,7 @@ dependencies = [
  "cpp_demangle",
  "gimli",
  "iced-x86",
+ "miniz_oxide 0.8.9",
  "msvc-demangler",
  "object",
  "pdb",

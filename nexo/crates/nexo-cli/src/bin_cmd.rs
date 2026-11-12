@@ -323,6 +323,23 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// JVM .class and .jar files: types, members, bytecode with resolved names, strings, call sites.
+    Managed {
+        file: PathBuf,
+        /// A type (lists its members) or a method like Type.name or Type.name(II)I (disassembles it).
+        target: Option<String>,
+        /// List the strings: constant-pool ones and the ones code loads.
+        #[arg(long)]
+        strings: bool,
+        /// List every call site of a method: Owner.name (descriptor optional).
+        #[arg(long, value_name = "OWNER.NAME")]
+        callers: Option<String>,
+        /// A regular expression that keeps matching types, members or strings.
+        #[arg(long, value_name = "REGEX")]
+        grep: Option<String>,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Find hex bytes (?? matches any byte) or, with --imm, a number used as an immediate or stored as data.
     Find {
         file: PathBuf,
@@ -364,6 +381,7 @@ impl BinOp {
             | BinOp::Note { file, .. }
             | BinOp::Names { file, .. }
             | BinOp::Find { file, .. }
+            | BinOp::Managed { file, .. }
             | BinOp::Emu { file, .. } => file,
             BinOp::Sigs { .. } => Path::new(""),
         }
@@ -392,6 +410,7 @@ impl BinOp {
             | BinOp::Names { common, .. }
             | BinOp::Find { common, .. }
             | BinOp::Sigs { common, .. }
+            | BinOp::Managed { common, .. }
             | BinOp::Emu { common, .. } => common,
         }
     }
@@ -407,6 +426,9 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     let t0 = std::time::Instant::now();
     if let BinOp::Sigs { libs, all, out, .. } = &a.op {
         return make_sigs(libs, *all, out.as_deref(), data_dir);
+    }
+    if let Some(r) = crate::bin_managed::try_managed(a) {
+        return r;
     }
     if nexo_bin::is_wasm(a.op.file()) {
         return wasm_in(a);
@@ -495,6 +517,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
                 },
             )?
         }
+        BinOp::Managed { .. } => unreachable!("answered by bin_managed before the image is opened"),
         BinOp::Find { pattern, imm, .. } => match imm {
             Some(n) => nexo_bin::find_imm(&img, nexo_bin::parse_number(n)?)?,
             None => nexo_bin::find_bytes(&img, &pattern.join(" "))?,

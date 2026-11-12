@@ -8,6 +8,7 @@ mod audit_cmd;
 #[cfg(feature = "bench")]
 mod bench_cmd;
 mod bin_cmd;
+mod bin_managed;
 mod cli;
 mod dbg_cmd;
 mod export_cmd;

@@ -21,6 +21,7 @@ mod hookinfo;
 mod image;
 mod live;
 mod mainfind;
+mod managed;
 mod names;
 mod ops;
 mod overview;
@@ -65,6 +66,9 @@ pub use live::{
     decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, LiveIns, LiveMem,
     Place, MAX_INDIRECT_CALLS,
 };
+#[cfg(any(test, feature = "fixtures"))]
+pub use managed::testkit as managed_fixtures;
+pub use managed::{is_managed, managed_window, ManagedQuery};
 pub use names::{attach as attach_names, brief as names_brief, file_path as names_path, MAX_ENTRIES as MAX_NAMES};
 pub use ops::{
     bytes, find_bytes, find_imm, func, func_window, info, parse_pattern, strings, strings_window, typed_rows, ElemType,
