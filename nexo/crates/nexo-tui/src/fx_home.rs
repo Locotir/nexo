@@ -1,7 +1,8 @@
-//! Faint stars drifting across an empty session: while the home is open and nothing has been sent yet,
-//! a slow field of braille dots crosses the transcript in three depths, the far ones dim and slow, the
-//! near ones brighter and faster. Now and then one twinkles into a small cross, and once in a while a
-//! shooting star runs down the sky. The field keeps clear of text: it draws on blank cells only, and
+//! Faint stars on an empty session: while the home is open and nothing has been sent yet, a field of
+//! braille dots twinkles over the transcript in three depths, the far ones dim, the near ones brighter.
+//! Each star fades in, shines, fades out, rests dark and comes back somewhere else on a cycle of its own
+//! (`fx_stars::twinkle`); none of them drift. The near ones flare into a small cross at the peak, and once
+//! in a while a shooting star runs down the sky. The field keeps clear of text: it draws on blank cells only, and
 //! not on the ones beside a line of text or above and below it.
 //!
 //! Each frame is a pure function of the drift's phase, like the welcome figure (`fx_stars`): fixed
@@ -19,7 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::anim::progress;
 use crate::app::App;
-use crate::fx_stars::{cos, sin, unit, Canvas, FigCell, Grid, StarsFx, PI};
+use crate::fx_stars::{cos, sin, twinkle, unit, Canvas, FigCell, Grid, StarsFx};
 use crate::motion::{fade, within};
 use crate::theme::Theme;
 
@@ -39,13 +40,8 @@ const MARGIN_Y: u16 = 1;
 /// About one star in this many cells.
 const CELLS_PER_STAR: usize = 24;
 const MAX_STARS: usize = 300;
-/// The depths, far to near: share of the stars, speed (dots a second), brightness from and to.
-const LAYERS: [(f32, f32, f32, f32); 3] =
-    [(0.62, 0.30, 0.20, 0.36), (0.27, 0.80, 0.42, 0.62), (0.11, 1.70, 0.74, 0.96)];
-/// The drift heads left and this much down for each dot it goes left.
-const SLOPE: f32 = 0.16;
-/// The dots near an edge fade, so a star that wraps does not pop in.
-const EDGE: f32 = 5.0;
+/// The depths, far to near: share of the stars, brightness from and to.
+const LAYERS: [(f32, f32, f32); 3] = [(0.62, 0.20, 0.36), (0.27, 0.42, 0.62), (0.11, 0.74, 0.96)];
 
 // ---- the field ----
 
@@ -58,26 +54,22 @@ pub fn field(phase_ms: f64, shown: f32, shoot: f32, cols: u16, rows: u16, ascii:
         return cv.finish();
     }
     let (w, h) = cv.dots();
-    let secs = phase_ms / 1000.0;
     let n = (cols as usize * rows as usize / CELLS_PER_STAR).clamp(4, MAX_STARS);
     for i in 0..n {
         let s = 40_000 + i as u32 * 8;
-        let (layer, (_, speed, lo, hi)) = layer_of(unit(s));
-        let went = (speed * (0.8 + 0.4 * unit(s + 1))) as f64 * secs;
-        let x = (unit(s + 2) as f64 * w as f64 - went).rem_euclid(w as f64) as f32;
-        let y = (unit(s + 3) as f64 * h as f64 + went * SLOPE as f64).rem_euclid(h as f64) as f32;
+        let (layer, (_, lo, hi)) = layer_of(unit(s));
+        let st = twinkle(s + 2, phase_ms);
+        if st.level <= 0.0 {
+            continue;
+        }
+        let (x, y) = (st.x * w, st.y * h);
         // the stars come in (and go) one by one over the fade
         let late = unit(s + 4) * 0.5;
         let k = ((shown - late) / 0.5).clamp(0.0, 1.0);
-        let edge = (x.min(w - 1.0 - x).min(y).min(h - 1.0 - y) / EDGE).clamp(0.0, 1.0);
         let base = lo + (hi - lo) * unit(s + 5);
-        // one in four twinkles (one in eight of the far ones), each on its own period
-        let tw = if unit(s + 6) < if layer == 0 { 0.12 } else { 0.25 } {
-            twinkle(phase_ms, 3200.0 + 4200.0 * unit(s + 7) as f64, unit(s + 8))
-        } else {
-            0.0
-        };
-        let level = (base * (0.8 + 0.2 * tw) + 0.32 * tw).min(1.0) * k * edge;
+        // the cycle's full glow is the star's own brightness; the steps below it are dimmer
+        let glow = st.level / 0.8;
+        let level = base * glow * k;
         let near = layer == 2;
         cv.plot_kind(x, y, level, near, false);
         // a third of the near stars are two dots wide
@@ -85,10 +77,9 @@ pub fn field(phase_ms: f64, shown: f32, shoot: f32, cols: u16, rows: u16, ascii:
             cv.plot_kind(x + 1.0, y, level * 0.8, true, false);
         }
         // the peak of a twinkle: a small cross
-        if tw > 0.6 && layer > 0 && !ascii {
-            let arm = level * (tw - 0.6) / 0.4 * 0.7;
+        if st.level >= 0.8 && layer > 0 && !ascii {
             for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-                cv.plot_kind(x + dx, y + dy, arm, near, false);
+                cv.plot_kind(x + dx, y + dy, level * 0.5, near, false);
             }
         }
     }
@@ -101,7 +92,7 @@ pub fn field(phase_ms: f64, shown: f32, shoot: f32, cols: u16, rows: u16, ascii:
 }
 
 /// The depth a star falls in, from `pick` (0..1), with that depth's numbers.
-fn layer_of(pick: f32) -> (usize, (f32, f32, f32, f32)) {
+fn layer_of(pick: f32) -> (usize, (f32, f32, f32)) {
     let mut acc = 0.0;
     for (i, l) in LAYERS.iter().enumerate() {
         acc += l.0;
@@ -110,17 +101,6 @@ fn layer_of(pick: f32) -> (usize, (f32, f32, f32, f32)) {
         }
     }
     (LAYERS.len() - 1, LAYERS[LAYERS.len() - 1])
-}
-
-/// 0 most of the time; a soft rise and fall (0..1..0) over the first sixth of each `period_ms`.
-fn twinkle(phase_ms: f64, period_ms: f64, offset: f32) -> f32 {
-    let k = ((phase_ms / period_ms) as f32 + offset).fract();
-    if k < 1.0 / 6.0 {
-        let s = sin(k * 6.0 * PI);
-        s * s
-    } else {
-        0.0
-    }
 }
 
 /// A shooting star in flight: how far along (0..1), where it set out, its heading and how far it goes (dots).
@@ -400,22 +380,24 @@ mod tests {
     }
 
     #[test]
-    fn the_field_drifts_and_wraps_round() {
+    fn the_stars_twinkle_in_place_instead_of_drifting() {
         let (cols, rows) = (60u16, 20u16);
-        let a = field(0.0, 1.0, 0.0, cols, rows, false);
-        let b = field(6000.0, 1.0, 0.0, cols, rows, false);
-        assert_ne!(dots(&a), dots(&b), "six seconds later the stars have moved");
-        // a near star goes about 1.7 dots a second: in a long while it has gone round the room
-        // more than once, and it is still inside the room
-        let far = field(3_600_000.0, 1.0, 0.0, cols, rows, false);
-        assert_eq!(far.cells.len(), cols as usize * rows as usize);
-        assert!(dots(&far).len() > 10, "the stars wrap round instead of leaving");
+        let at = |t: f64| dots(&field(t, 1.0, 0.0, cols, rows, false));
+        assert_ne!(at(0.0), at(1500.0), "the field changes as stars come and go");
+        // one star keeps its place through a cycle, then reappears elsewhere
+        let seed = 40_002u32;
+        let (a, b) = (twinkle(seed, 10_000.0), twinkle(seed, 10_010.0));
+        assert_eq!((a.x, a.y), (b.x, b.y));
+        let later = twinkle(seed, 10_000.0 + 5_000.0);
+        assert_ne!((a.x, a.y), (later.x, later.y));
+        // a long while on, the field is as full as ever (stars reappear, none leave)
+        let far = at(3_600_000.0);
+        assert!(far.len() > 10 && far.len() * 2 > at(0.0).len());
     }
 
     #[test]
-    fn the_far_stars_are_dimmer_and_slower_than_the_near_ones() {
-        assert!(LAYERS[0].1 < LAYERS[1].1 && LAYERS[1].1 < LAYERS[2].1);
-        assert!(LAYERS[0].3 < LAYERS[2].2);
+    fn the_far_stars_are_dimmer_than_the_near_ones() {
+        assert!(LAYERS[0].2 < LAYERS[2].1);
         let shares: f32 = LAYERS.iter().map(|l| l.0).sum();
         assert!((shares - 1.0).abs() < 1e-4);
     }

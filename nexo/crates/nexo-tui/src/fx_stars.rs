@@ -6,6 +6,9 @@
 //! phase it is asked about; no randomness and no libm at run time (`sin` and `cos` here use only
 //! IEEE operations), so the same phase gives the same frame on every machine.
 //!
+//! The faint stars do not turn or drift: each one fades in, shines, fades out, rests dark and comes back
+//! somewhere else, on a cycle of its own (`twinkle`), and never on a cell the figure uses.
+//!
 //! The figure turns on the spinner beat while someone is at the keys. After `REST_AFTER_MS` with no key
 //! or mouse event it eases to a stop over `STOP_MS` and asks for no more frames; the next input wakes it.
 
@@ -48,8 +51,11 @@ const ROLL: f32 = 0.30;
 /// How far the ring is tilted against the equator.
 const RING_TILT: f32 = 0.25;
 const RING_R: f32 = 1.22;
-/// A star twinkles once in this long, offset by its own phase.
-const TWINKLE_MS: f64 = 2600.0;
+/// A faint star's whole cycle (glow in, shine, fade out, dark gap) lasts between these, each its own.
+const CYCLE_MIN_MS: f64 = 2000.0;
+const CYCLE_SPAN_MS: f64 = 3000.0;
+/// The steps of a star's brightness, dimmest to brightest, and the dip of its flicker.
+const GLOW: [f32; 4] = [0.22, 0.45, 0.62, 0.8];
 
 // ---- maths without libm ----
 
@@ -85,19 +91,58 @@ pub(crate) fn unit(seed: u32) -> f32 {
     (mix(seed) >> 8) as f32 / 16_777_216.0
 }
 
-// ---- the scene ----
+// ---- the faint stars ----
 
-struct Star {
-    p: [f32; 3],
-    /// 0..1: where in the twinkle this star is at phase 0.
-    phase: f32,
-    twinkles: bool,
-    /// 0..1 each: where it starts before the gather.
-    from: (f32, f32),
+/// A faint star at one moment: where (0..1 each way across the room) and how bright (0 while dark).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Twinkle {
+    pub x: f32,
+    pub y: f32,
+    pub level: f32,
+    /// How many times it has come and gone.
+    pub cycle: u32,
 }
 
+/// Star number `seed` at `phase_ms`: it fades in, shines with a slight flicker, fades out, stays dark a
+/// short while and comes back somewhere else. Its cycle is its own length (2 to 5 s) and offset, so no two
+/// stars pulse together; where it comes back and how long it rests come from a hash of the seed and the
+/// cycle number, so the same phase always gives the same star.
+pub(crate) fn twinkle(seed: u32, phase_ms: f64) -> Twinkle {
+    let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
+    let t = phase_ms.max(0.0) / period + unit(seed.wrapping_add(1)) as f64;
+    let cycle = t.floor() as u32;
+    let k = t.fract() as f32;
+    let key = mix(seed ^ mix(cycle.wrapping_add(0x9e37_79b9)));
+    let (x, y) = (unit(key.wrapping_add(1)), unit(key.wrapping_add(2)));
+    let life = 1.0 - (0.12 + 0.20 * unit(key.wrapping_add(3)));
+    let level = if k >= life {
+        0.0
+    } else {
+        let u = k / life;
+        if u < 0.12 {
+            GLOW[0]
+        } else if u < 0.28 {
+            GLOW[1]
+        } else if u < 0.66 {
+            // a dip now and then, about every tenth of a second
+            let beat = (phase_ms.max(0.0) / 110.0) as u32;
+            if unit(seed.wrapping_add(7).wrapping_add(beat.wrapping_mul(31))) < 0.1 {
+                GLOW[2]
+            } else {
+                GLOW[3]
+            }
+        } else if u < 0.82 {
+            GLOW[1]
+        } else {
+            GLOW[0]
+        }
+    };
+    Twinkle { x, y, level, cycle }
+}
+
+// ---- the scene ----
+
 struct Scene {
-    stars: Vec<Star>,
     nodes: [[f32; 3]; NODES],
     edges: Vec<(usize, usize)>,
 }
@@ -119,16 +164,6 @@ fn sphere(n: usize, shake: f32, seed: u32) -> Vec<[f32; 3]> {
 fn scene() -> &'static Scene {
     static S: OnceLock<Scene> = OnceLock::new();
     S.get_or_init(|| {
-        let stars = sphere(STARS, 0.05, 1000)
-            .into_iter()
-            .enumerate()
-            .map(|(i, p)| Star {
-                p,
-                phase: unit(5000 + i as u32),
-                twinkles: mix(9000 + i as u32).is_multiple_of(6),
-                from: (unit(7000 + i as u32 * 2), unit(7001 + i as u32 * 2)),
-            })
-            .collect();
         let pts = sphere(NODES, 0.25, 40);
         let mut nodes = [[0.0; 3]; NODES];
         nodes.copy_from_slice(&pts);
@@ -145,7 +180,7 @@ fn scene() -> &'static Scene {
                 }
             }
         }
-        Scene { stars, nodes, edges }
+        Scene { nodes, edges }
     })
 }
 
@@ -235,6 +270,16 @@ impl Canvas {
         }
     }
 
+    /// Nothing is drawn yet in the cell holding the dot at `x`, `y`.
+    fn free(&self, x: f32, y: f32) -> bool {
+        let (w, h) = self.dots();
+        x >= 0.0
+            && y >= 0.0
+            && x < w
+            && y < h
+            && self.bits[(y as usize / self.dy) * self.cols + x as usize / self.dx] == 0
+    }
+
     pub(crate) fn dots(&self) -> (f32, f32) {
         ((self.cols * self.dx) as f32, (self.rows * self.dy) as f32)
     }
@@ -285,16 +330,13 @@ pub(crate) fn lit(z: f32) -> f32 {
     0.12 + 0.88 * d
 }
 
-/// The twinkle of a star: 1 most of the time, a brief dip and flare once per `TWINKLE_MS`.
-fn twinkle(phase_ms: f64, star: &Star) -> f32 {
-    let k = ((phase_ms / TWINKLE_MS) as f32 + star.phase).fract();
-    // a hump (0..1..0) over the first fifth of the period
-    let h = if k < 0.2 { sin(k / 0.2 * PI) } else { 0.0 };
-    0.62 + 0.38 * h
-}
-
 /// The figure at `phase_ms` of its turn, with the dots `gather` (0 scattered, 1 gathered) of the way in.
 pub fn grid(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool) -> Grid {
+    build(phase_ms, gather, cols, rows, ascii, true)
+}
+
+/// `grid`, with or without the faint stars.
+fn build(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool, faint: bool) -> Grid {
     let mut cv = Canvas::new(cols, rows, ascii);
     if cols == 0 || rows == 0 {
         return cv.finish();
@@ -314,14 +356,6 @@ pub fn grid(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool) -> Gr
     };
     let place =
         |x: f32, y: f32, from: (f32, f32)| (from.0 * w + (x - from.0 * w) * g, from.1 * h + (y - from.1 * h) * g);
-    // fewer stars in a small room
-    let stars = ((cols as usize * rows as usize) / 4).min(STARS);
-    for st in sc.stars.iter().take(stars) {
-        let (x, y, z) = project(st.p);
-        let (x, y) = place(x, y, st.from);
-        let l = lit(z) * if st.twinkles { twinkle(phase_ms, st) } else { 0.8 };
-        cv.plot(x, y, l * seen, false);
-    }
     // the ring
     let (cr, sr) = (cos(RING_TILT), sin(RING_TILT));
     let ring = if (cols as usize * rows as usize) < 300 { RING_DOTS / 2 } else { RING_DOTS };
@@ -361,6 +395,15 @@ pub fn grid(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool) -> Gr
             cv.plot(x + 1.0, y, l, true);
             cv.plot(x, y + 1.0, l, true);
             cv.plot(x + 1.0, y + 1.0, l, true);
+        }
+    }
+    // the faint stars come last, in screen space and only on cells the figure has left empty
+    let stars = if faint { ((cols as usize * rows as usize) / 4).min(STARS) } else { 0 };
+    for i in 0..stars {
+        let st = twinkle(5000 + i as u32 * 4, phase_ms);
+        let (x, y) = (st.x * w, st.y * h);
+        if st.level > 0.0 && cv.free(x, y) {
+            cv.plot(x, y, st.level * seen, false);
         }
     }
     cv.finish()
@@ -589,7 +632,130 @@ mod tests {
 
     #[test]
     fn the_turn_comes_round_after_a_period() {
-        assert_eq!(frame(100, 36, 16), frame(100 + TURN_MS as u32, 36, 16));
+        // the figure itself (nodes) comes round; the faint stars follow their own cycles
+        let nodes = |t: f64| -> Vec<bool> { grid(t, 1.0, 36, 16, false).cells.iter().map(|c| c.node).collect() };
+        assert_eq!(nodes(100.0), nodes(100.0 + TURN_MS));
+        assert_ne!(nodes(100.0), nodes(2600.0));
+    }
+
+    #[test]
+    fn a_star_rises_holds_and_falls_within_its_cycle() {
+        for seed in [5000u32, 5004, 5008, 5012] {
+            let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
+            // sample one whole cycle that starts at a cycle boundary
+            let t0 = (1.0 - unit(seed + 1) as f64) * period + 3.0 * period + 1.0;
+            let lv: Vec<f32> = (0..400).map(|i| twinkle(seed, t0 + (period - 2.0) * i as f64 / 400.0).level).collect();
+            assert_eq!(lv[0], GLOW[0], "starts dim");
+            let peak = lv.iter().position(|&l| l == GLOW[3]).expect("it reaches full glow");
+            let last_peak = lv.iter().rposition(|&l| l == GLOW[3]).unwrap();
+            assert!(last_peak - peak > 40, "and holds there a while");
+            assert!(lv[..peak].windows(2).all(|w| w[1] >= w[0]), "rises only");
+            let after = &lv[last_peak..];
+            assert!(after.windows(2).all(|w| w[1] <= w[0]), "falls only");
+            assert_eq!(*lv.last().unwrap(), 0.0, "ends dark");
+            assert!(lv.iter().rev().take_while(|&&l| l == 0.0).count() > 20, "after a dark gap");
+            assert!((CYCLE_MIN_MS..=CYCLE_MIN_MS + CYCLE_SPAN_MS).contains(&period));
+        }
+    }
+
+    #[test]
+    fn a_star_comes_back_somewhere_else() {
+        for seed in [5000u32, 5004, 5008, 5012, 5016] {
+            let at = |n: u32| {
+                let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
+                let t = twinkle(seed, (n as f64 + 1.0 - unit(seed + 1) as f64 + 0.01) * period);
+                (t.cycle, t.x, t.y)
+            };
+            for n in 1..6 {
+                let (a, b) = (at(n), at(n + 1));
+                assert_eq!(b.0, a.0 + 1);
+                assert!((a.1, a.2) != (b.1, b.2), "seed {seed} cycle {n}");
+            }
+            // and it stays put through one cycle
+            let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
+            let t0 = (1.0 - unit(seed + 1) as f64) * period + 2.0 * period + 1.0;
+            let (p, q) = (twinkle(seed, t0), twinkle(seed, t0 + period * 0.5));
+            assert_eq!((p.x, p.y), (q.x, q.y));
+        }
+    }
+
+    #[test]
+    fn two_stars_are_not_in_phase() {
+        let level = |seed: u32, t: f64| twinkle(seed, t).level;
+        let mut same = 0;
+        for i in 0..300 {
+            let t = i as f64 * 50.0;
+            same += usize::from(level(5000, t) == level(5004, t));
+        }
+        assert!(same < 200, "{same} of 300 samples equal");
+        let offs: Vec<u32> = (0..20).map(|i| (unit(5000 + i * 4 + 1) * 100.0) as u32).collect();
+        let mut sorted = offs.clone();
+        sorted.dedup();
+        assert!(sorted.len() > 10);
+        // at any moment the field holds stars at every step, not all in one
+        for t in [0.0, 1234.0, 7777.0] {
+            let n = (0..140).filter(|&i| twinkle(5000 + i * 4, t).level > 0.0).count();
+            assert!((60..140).contains(&n), "{n} lit at {t}");
+        }
+    }
+
+    #[test]
+    fn no_star_sits_on_the_figure() {
+        for ascii in [false, true] {
+            let mut added = 0;
+            for t in (0..9000).step_by(300) {
+                let bare = build(t as f64, 1.0, 36, 16, ascii, false);
+                let with = build(t as f64, 1.0, 36, 16, ascii, true);
+                for (a, b) in bare.cells.iter().zip(&with.cells) {
+                    if a.ch != ' ' {
+                        assert_eq!(a, b, "a cell of the figure or ring was touched at {t}");
+                    } else if b.ch != ' ' {
+                        added += 1;
+                        assert!(!b.node && !b.core);
+                    }
+                }
+            }
+            assert!(added > 100, "stars fill the empty cells: {added}");
+        }
+    }
+
+    #[test]
+    fn ascii_steps_go_dot_colon_star_colon_dot() {
+        let mut seq: Vec<char> = Vec::new();
+        for i in 0..600 {
+            let l = twinkle(5000, 10_000.0 + i as f64 * 10.0).level;
+            let ch = if l >= 0.72 {
+                '*'
+            } else if l >= 0.42 {
+                ':'
+            } else if l > 0.0 {
+                '.'
+            } else {
+                ' '
+            };
+            if seq.last() != Some(&ch) {
+                seq.push(ch);
+            }
+        }
+        assert!(seq.windows(2).all(|w| w[0] != w[1]));
+        let s: String = seq.iter().collect();
+        assert!(s.contains(" .:*"), "{s}");
+        assert!(s.contains("*:. "), "{s}");
+    }
+
+    #[test]
+    fn resting_asks_for_no_frames_and_freezes_the_stars() {
+        let t0 = Instant::now();
+        let mut fx = StarsFx::default();
+        fx.begin(t0);
+        let late = t0 + Duration::from_millis(REST_AFTER_MS + STOP_MS + 500);
+        assert!(fx.at_rest(late));
+        let (a, b) = (fx.phase(late), fx.phase(late + Duration::from_secs(60)));
+        assert_eq!(a, b);
+        assert_eq!(grid(a, 1.0, 36, 16, false).cells, grid(b, 1.0, 36, 16, false).cells);
+        fx.input(late);
+        assert!(!fx.at_rest(late + Duration::from_secs(1)));
+        assert!(fx.phase(late + Duration::from_secs(2)) > a);
     }
 
     #[test]
