@@ -267,11 +267,18 @@ pub fn slice_forward(
                     }
                 }
             }
-            let all_hit: Vec<Loc> = rd.iter().filter(|l| set.iter().any(|s| overlaps(s, l))).copied().collect();
+            let mut all_hit: Vec<Loc> = Vec::new();
+            for l in rd.iter().filter(|l| set.iter().any(|s| overlaps(s, l))) {
+                if !all_hit.contains(l) {
+                    all_hit.push(*l);
+                }
+            }
             // a register that is only the address of a memory operand is dereferenced, not copied: what the
             // instruction loads through it is another value, and the register itself is unchanged
+            // (a register operand that is only written, like the destination of `mov rax,[rax]`, does not count:
+            // its old value is not read as a value)
             let value_regs: Vec<Register> = (0..ins.op_count())
-                .filter(|n| ins.op_kind(*n) == OpKind::Register)
+                .filter(|n| ins.op_kind(*n) == OpKind::Register && reads(i.op_access(*n)))
                 .map(|n| ins.op_register(n).full_register())
                 .collect();
             let has_mem = ins.op_kinds().any(|k| k == OpKind::Memory) && ins.mnemonic() != Mnemonic::Lea;
@@ -297,13 +304,14 @@ pub fn slice_forward(
                     .used_memory()
                     .iter()
                     .fold((false, false), |(r, w), m| (r || reads(m.access()), w || writes(m.access())));
-                let dests: Vec<String> = wr
-                    .iter()
-                    .map(|(l, _)| *l)
-                    .filter(|l| matches!(l, Loc::Reg(_)))
-                    .map(|l| loc_text(img, &l))
-                    .collect();
+                let reg_dests: Vec<&(Loc, bool)> = wr.iter().filter(|(l, _)| matches!(l, Loc::Reg(_))).collect();
+                let dests: Vec<String> = reg_dests.iter().map(|(l, _)| loc_text(img, l)).collect();
+                // an add / and / or into a register that is also read accumulates; it does not just load
+                let combines = !reg_dests.is_empty() && reg_dests.iter().all(|(l, pure)| !*pure && rd.contains(l));
                 let why = match (mem_read, mem_write) {
+                    (_, false) if combines => {
+                        format!("the value at {mem} is combined into {}", dests.join(", "))
+                    }
                     (_, false) if !dests.is_empty() => {
                         format!("the value at {mem} is loaded into {}", dests.join(", "))
                     }

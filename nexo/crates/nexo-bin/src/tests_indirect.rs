@@ -176,6 +176,22 @@ __asm__(
     "  mov rsi, rax\n"           /* a real copy */
     "  ret\n"
     ".size deref,.-deref\n"
+    ".globl chain\n.type chain,@function\n"
+    "chain:\n"
+    "  mov rax, rdi\n"
+    "  mov rax, [rax]\n"        /* the register is both the address and the destination: now the pointee */
+    "  mov rsi, rax\n"
+    "  ret\n"
+    ".size chain,.-chain\n"
+    ".globl chainb\n.type chainb,@function\n"
+    "chainb:\n"
+    "  mov rax, rdi\n"
+    "  mov al, [rax]\n"         /* low byte replaced by a loaded byte, upper bytes still the value */
+    "  mov rsi, rax\n"
+    "  add rdx, [rax+rcx*8]\n"
+    "  mov [rax+8], rax\n"
+    "  ret\n"
+    ".size chainb,.-chainb\n"
     ".globl partial\n.type partial,@function\n"
     "partial:\n"
     "  mov rax, rdi\n"
@@ -218,6 +234,27 @@ fn a_register_used_only_as_an_address_is_dereferenced_not_copied() {
     );
     assert!(t.contains("rax is the address of a store"), "{t}");
     assert!(t.contains("rax is copied to rsi"), "a real copy is still a copy\n{t}");
+}
+
+#[test]
+fn a_register_that_is_both_address_and_destination_is_not_followed_as_the_old_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(exe) = sample(dir.path(), ASM, &["-O0", "-fno-pie", "-no-pie"], "a_register_that_is_both_address") else {
+        return;
+    };
+    let img = Image::open(&exe).unwrap();
+    let t = rows_of(&img, "chain");
+    println!("{t}");
+    assert!(t.contains("the value at [rax] is loaded into rax"), "{t}");
+    assert!(!t.contains("rax is copied to rsi"), "after the load rax is the pointee\n{t}");
+    assert!(!t.contains("rax is returned"), "{t}");
+    let b = rows_of(&img, "chainb");
+    println!("{b}");
+    assert!(!b.contains("rax is copied to rax"), "{b}");
+    assert!(b.contains("the low byte (al) of rax is overwritten"), "{b}");
+    assert!(b.contains("rax is copied to rsi"), "upper bytes are still the value\n{b}");
+    assert!(!b.contains("rax, rax"), "a register is named once\n{b}");
+    assert!(b.contains("is added into rdx") || b.contains("is combined into rdx"), "add accumulates\n{b}");
 }
 
 #[test]
