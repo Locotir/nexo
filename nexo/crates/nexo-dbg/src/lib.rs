@@ -10,6 +10,7 @@ mod corefile;
 mod engine;
 mod expr;
 mod knowledge;
+mod lines;
 mod modules;
 mod platform;
 mod regs;

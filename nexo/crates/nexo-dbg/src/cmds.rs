@@ -560,7 +560,8 @@ impl Session {
             .map(|(i, fr)| {
                 let look = if i == 0 { fr.pc } else { fr.pc.wrapping_sub(1) };
                 let name = self.mods.label(look, false).unwrap_or_default();
-                format!("#{i:<2} {:#x} {name}", fr.pc)
+                let at = self.mods.source(look).map(|s| format!("  ({s})")).unwrap_or_default();
+                format!("#{i:<2} {:#x} {name}{at}", fr.pc)
             })
             .collect()
     }
@@ -940,7 +941,8 @@ impl Session {
         l.push(format!("{headline} (thread {tid})"));
         if let Ok(r) = self.t.regs(tid) {
             let name = self.mods.label(r.rip, false).unwrap_or_default();
-            l.push(format!("pc {:#x} {name}", r.rip));
+            let at = self.mods.source(r.rip).map(|s| format!("  ({s})")).unwrap_or_default();
+            l.push(format!("pc {:#x} {name}{at}", r.rip));
             self.last_stop = Some(StopInfo {
                 n: self.nstop,
                 event: event.into(),

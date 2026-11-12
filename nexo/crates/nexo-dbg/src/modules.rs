@@ -31,6 +31,7 @@ pub struct Mods {
     main: Image,
     main_idx: usize,
     others: HashMap<String, Option<Image>>,
+    lines: HashMap<usize, Option<crate::lines::Lines>>,
 }
 
 /// DWARF register number to the index in `Regs::gp`.
@@ -38,7 +39,7 @@ const DW2GP: [usize; 16] = [0, 3, 2, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 
 impl Mods {
     pub fn new(main: Image) -> Mods {
-        Mods { list: Vec::new(), main, main_idx: 0, others: HashMap::new() }
+        Mods { list: Vec::new(), main, main_idx: 0, others: HashMap::new(), lines: HashMap::new() }
     }
 
     /// The program's image, with the names and notes kept for it.
@@ -136,6 +137,18 @@ impl Mods {
             Some((n, off)) => format!("{short}!{n}+{off:#x}"),
             None => format!("{short}+{:#x}", addr - self.list[idx].base),
         })
+    }
+
+    /// `src/main.rs:42` for the code at `addr`, when the file that holds it carries line info.
+    pub fn source(&mut self, addr: u64) -> Option<String> {
+        let idx = self.locate(addr)?;
+        self.ensure(idx);
+        let bias = self.bias(idx);
+        if !self.lines.contains_key(&idx) {
+            let t = self.image(idx).and_then(crate::lines::Lines::of);
+            self.lines.insert(idx, t);
+        }
+        Some(self.lines.get(&idx)?.as_ref()?.at(addr.wrapping_sub(bias))?.text())
     }
 
     /// What a person typed as a place: a number, a name, or `name+off`. A number inside a section of

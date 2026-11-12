@@ -125,6 +125,23 @@ fn a_crash_is_explained() {
     assert!(stop.contains("SIGSEGV"), "{stop}");
     assert!(stop.contains("null pointer"), "{stop}");
     assert!(stop.contains("backtrace:") && stop.contains("dbg_crash"), "{stop}");
+    // the source line comes from the program's own debug info: the pc line and the first frame name it
+    let at =
+        |text: &str| text.lines().find(|l| l.contains("dbg_crash") && l.contains("dbg_target.rs:")).map(str::to_string);
+    let pc = stop.lines().find(|l| l.starts_with("pc ")).unwrap_or_default();
+    assert!(pc.contains("(examples/dbg_target.rs:"), "{stop}");
+    assert!(at(&stop).is_some(), "{stop}");
+    let line: u32 = pc
+        .split_once("dbg_target.rs:")
+        .unwrap()
+        .1
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap();
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/dbg_target.rs")).unwrap();
+    assert!(src.lines().nth(line as usize - 1).unwrap().contains("read_volatile"), "line {line}: {pc}");
     run(&mut s, "kill");
 }
 
