@@ -240,7 +240,8 @@ fn box_piece(info: &LineInfo, from: usize, to: usize, single: bool) -> String {
 /// The cells of a piece of a drawn table row: the border and rule glyphs go, each cell loses its padding,
 /// and the cells come out joined by a tab.
 fn cells_of(piece: &str) -> String {
-    let is_border = |c: char| "│┃|║┌┐└┘├┤┬┴┼╭╮╰╯─╌═".contains(c);
+    // `|` is not a border: the table draws `│`, and a cell may hold a literal pipe
+    let is_border = |c: char| "│┃║┌┐└┘├┤┬┴┼╭╮╰╯─╌═".contains(c);
     let mut cells: Vec<&str> = piece.split(is_border).map(str::trim).collect();
     while cells.last().is_some_and(|c| c.is_empty()) {
         cells.pop();
@@ -484,6 +485,12 @@ mod tests {
         let infos = [table_row(ROW, "alpha\t42\tbeta")];
         assert_eq!(drag((0, 2), (0, 18)).extract_clean(&infos), "pha\t42\tbet");
         assert_eq!(drag((0, 0), (0, usize::MAX - 1)).extract_clean(&infos), "alpha\t42\tbeta");
+    }
+
+    #[test]
+    fn a_pipe_inside_a_cell_stays_in_the_value() {
+        let infos = [table_row("x │ a|b │ y", "x\ta|b\ty")];
+        assert_eq!(drag((0, 4), (0, 6)).extract_clean(&infos), "a|b");
     }
 
     #[test]
