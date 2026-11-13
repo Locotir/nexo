@@ -1,0 +1,12 @@
+nexo
+Copyright 2026 Marcos Garcia Zorin
+
+This product includes software developed by Marcos Garcia Zorin (https://github.com/Locotir/nexo).
+
+Portions of this software are derived from third-party works under their own
+licenses; those notices are retained in the source files that incorporate them
+and in THIRD-PARTY-NOTICES.txt shipped with each release. In particular,
+nexo/crates/nexo-bench/src/llmb/flux.rs is ported from SWE-Flux
+(https://github.com/HamedTaherkhani/SWE-Flux), Copyright (c) 2023 Hamed
+Taherkhani, Hadi Hemmati, Mohammad Abdollahi, Melika Sepidband, under the MIT
+License; its original notice is kept in that file.

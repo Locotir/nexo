@@ -19,7 +19,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.89"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/Locotir/nexo"
 
 # One version of everything, declared once. A crate takes what it needs with

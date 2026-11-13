@@ -34,7 +34,7 @@ trap 'rm -f "$tmp"' EXIT
   cat <<'HEAD'
 THIRD-PARTY NOTICES FOR NEXO
 
-nexo is licensed under the MIT License (see the LICENSE file of the release). It is built from the Rust
+nexo is licensed under the Apache License 2.0 (see the LICENSE and NOTICE files of the release). It is built from the Rust
 packages listed below. For each one this file gives its name, version, SPDX licence expression, repository
 and the text of the licence and notice files found in the package source. Where a package offers a choice
 of licences (OR), you may use it under any one of them.

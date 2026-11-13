@@ -14,7 +14,7 @@
 
 [![CI](https://github.com/Locotir/nexo/actions/workflows/ci.yml/badge.svg)](https://github.com/Locotir/nexo/actions/workflows/ci.yml)
 [![Rust 1.89+](https://img.shields.io/badge/Rust-1.89%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-2a78d6)](LICENSE)
 [![Linux | Windows](https://img.shields.io/badge/Linux%20%7C%20Windows-supported-52514e)](#install)
 [![Providers](https://img.shields.io/badge/providers-21%20built--in%20%2B%20200%2B-1baf7a)](#providers)
 [![PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
@@ -184,13 +184,13 @@ tools the agent uses; sessions in `~/.nexo/sessions/` hold what passed through, 
 
 ## Support
 
-nexo is free and MIT-licensed. [![Support nexo on PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
+nexo is free and licensed under Apache 2.0. [![Support nexo on PayPal](https://img.shields.io/badge/PayPal-support%20nexo-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.me/locotir)
 
 Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as [SECURITY.md](SECURITY.md) explains.
 
 ## License
 
-[MIT](LICENSE). nexo is an independent project, not affiliated with or endorsed by Anthropic, OpenAI,
+[Apache 2.0](LICENSE). nexo is an independent project, not affiliated with or endorsed by Anthropic, OpenAI,
 Google, DeepSeek or any other provider. Product names are trademarks of their owners.
 
 Each release carries `LICENSE` and `THIRD-PARTY-NOTICES.txt` (the licences of the packages nexo is built from).

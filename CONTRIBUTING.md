@@ -46,6 +46,6 @@ cargo test --workspace                        # must pass without the variable
 One topic per commit, a short imperative subject (`tui: keep the draft when a modal opens`), and
 the four checks green before you push.
 
-By contributing you agree that your work is released under the [MIT license](LICENSE).
+By contributing you agree that your work is released under the [Apache License 2.0](LICENSE).
 
 See also the [code of conduct](CODE_OF_CONDUCT.md) and the [changelog](CHANGELOG.md).
