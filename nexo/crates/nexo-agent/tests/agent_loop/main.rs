@@ -164,6 +164,7 @@ mod checkpoints;
 mod compaction;
 mod cut_replies;
 mod goals_and_todo;
+#[cfg(unix)]
 mod hooks;
 mod loop_guards;
 mod mail;
