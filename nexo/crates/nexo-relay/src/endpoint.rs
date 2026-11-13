@@ -57,6 +57,7 @@ pub struct Found {
 }
 
 /// The id inside an endpoint name, when the name is one of ours.
+#[cfg(unix)]
 fn id_of(name: &str) -> Option<&str> {
     let id = name.strip_prefix("browser-")?;
     let id = id.strip_suffix(".sock").unwrap_or(id);
@@ -227,15 +228,35 @@ mod windows {
     use super::*;
     use std::ffi::c_void;
     use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, LocalFree, HANDLE};
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     const ERROR_PIPE_BUSY: i32 = 231;
-    const PREFIX: &str = r"\\.\pipe\nexo-browser-";
+    const PIPES: &str = r"\\.\pipe\";
+
+    /// The start of the pipe names for these folders: `nexo-browser-<hash of the run folder>-`. Pipe names are global
+    /// to the machine, while on Unix the sockets live in the run folder; the hash gives each run folder its own pipes
+    /// the same way, so two installs (or two tests) with different folders never see or take each other's browsers.
+    /// The folder is resolved first when it exists, so a short `RUNNER~1` path and its long form give the same name.
+    fn stem(dirs: &Dirs) -> String {
+        let run = std::fs::canonicalize(dirs.run()).unwrap_or_else(|_| dirs.run().to_path_buf());
+        // FNV-1a over the lowercased path: stable across processes and Rust versions; Windows paths ignore case.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in run.to_string_lossy().to_lowercase().bytes() {
+            hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("nexo-browser-{hash:016x}-")
+    }
+
+    fn pipe_name(dirs: &Dirs, id: &str) -> io::Result<String> {
+        check_id(id)?;
+        Ok(format!("{PIPES}{}{id}", stem(dirs)))
+    }
 
     /// On Windows the token file sits in the user's own profile folder, which the default access list already limits
     /// to that user, SYSTEM and the administrators: nothing more to do than make the folder.
@@ -316,27 +337,50 @@ mod windows {
         }
     }
 
+    /// The file in the run folder that says a host serves browser `id` here. `\\.\pipe\` can be listed on
+    /// Windows but not everywhere the program runs (Wine), so `list` reads these and asks each pipe if it is there.
+    fn marker(dirs: &Dirs, id: &str) -> PathBuf {
+        dirs.run().join(format!("browser-{id}.pipe"))
+    }
+
+    /// Whether a server holds the pipe `name`. `WaitNamedPipeW` only waits for a free instance: it does not connect,
+    /// so the host sees nothing. A pipe whose instances are all busy for that moment is there too.
+    fn alive(name: &str) -> bool {
+        const ERROR_SEM_TIMEOUT: u32 = 121;
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call; GetLastError has no preconditions.
+        unsafe { WaitNamedPipeW(wide.as_ptr(), 1) != 0 || GetLastError() == ERROR_SEM_TIMEOUT }
+    }
+
     pub struct Listener {
         name: String,
         sid: String,
         next: NamedPipeServer,
+        marker: PathBuf,
     }
 
     impl Listener {
         /// Starts listening for browser `id`. The first instance is created with `first_pipe_instance`, so a pipe
         /// that somebody else already made under this name is an error and not a trap.
-        pub fn bind(_dirs: &Dirs, id: &str) -> io::Result<Listener> {
+        pub fn bind(dirs: &Dirs, id: &str) -> io::Result<Listener> {
             check_id(id)?;
-            let name = format!("{PREFIX}{id}");
+            // Made so its resolved path, and so the pipe name, is the one `list` and `connect` compute.
+            ensure_private_dir(dirs.run())?;
+            let name = pipe_name(dirs, id)?;
+            let taken =
+                || io::Error::new(io::ErrorKind::AddrInUse, format!("another nexo host already serves browser {id}"));
+            // Asked first as well: Wine lets a second "first" instance be made when the pipe has a security descriptor.
+            if alive(&name) {
+                return Err(taken());
+            }
             let sid = user_sid()?;
-            let next = instance(&name, true, &sid).map_err(|e| {
-                if e.kind() == io::ErrorKind::PermissionDenied {
-                    io::Error::new(io::ErrorKind::AddrInUse, format!("another nexo host already serves browser {id}"))
-                } else {
-                    e
-                }
+            let next = instance(&name, true, &sid).map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied | io::ErrorKind::AlreadyExists => taken(),
+                _ => e,
             })?;
-            Ok(Listener { name, sid, next })
+            let marker = marker(dirs, id);
+            std::fs::write(&marker, &name)?;
+            Ok(Listener { name, sid, next, marker })
         }
 
         pub async fn accept(&mut self) -> io::Result<BoxStream> {
@@ -350,22 +394,30 @@ mod windows {
         }
     }
 
-    pub fn list(_dirs: &Dirs) -> Vec<Found> {
-        let Ok(rd) = std::fs::read_dir(r"\\.\pipe\") else { return Vec::new() };
+    impl Drop for Listener {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.marker);
+        }
+    }
+
+    /// The browsers whose hosts are listening for these folders, by id. A marker left by a host that died is skipped.
+    pub fn list(dirs: &Dirs) -> Vec<Found> {
+        let Ok(rd) = std::fs::read_dir(dirs.run()) else { return Vec::new() };
         let mut found: Vec<Found> = rd
             .flatten()
             .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                id_of(&name).map(|id| Found { id: id.to_string(), location: format!("{PREFIX}{id}") })
+                let file = e.file_name().to_string_lossy().into_owned();
+                let id = file.strip_prefix("browser-")?.strip_suffix(".pipe")?;
+                let name = pipe_name(dirs, id).ok()?;
+                alive(&name).then(|| Found { id: id.to_string(), location: name })
             })
             .collect();
         found.sort_by(|a, b| a.id.cmp(&b.id));
         found
     }
 
-    pub async fn connect(_dirs: &Dirs, id: &str) -> io::Result<BoxStream> {
-        check_id(id)?;
-        let name = format!("{PREFIX}{id}");
+    pub async fn connect(dirs: &Dirs, id: &str) -> io::Result<BoxStream> {
+        let name = pipe_name(dirs, id)?;
         for _ in 0..40 {
             match ClientOptions::new().open(&name) {
                 Ok(c) => return Ok(Box::new(c)),
@@ -459,5 +511,60 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let d = Dirs::new(tmp.path().join("d"), tmp.path().join("r".repeat(120)));
         assert_eq!(Listener::bind(&d, "b-4").err().unwrap().kind(), io::ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn dirs(tmp: &tempfile::TempDir) -> Dirs {
+        Dirs::new(tmp.path().join("data"), tmp.path().join("run"))
+    }
+
+    #[tokio::test]
+    async fn a_pipe_is_listed_for_its_own_folders_only_and_carries_bytes() {
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (d1, d2) = (dirs(&one), dirs(&two));
+        // The same browser id under two installs: pipe names are global, the folders keep them apart.
+        let mut l = Listener::bind(&d1, "w-1").unwrap();
+        let other = Listener::bind(&d2, "w-1").unwrap();
+        assert_eq!(list(&d1), vec![Found { id: "w-1".into(), location: l.location() }]);
+        assert_eq!(list(&d2), vec![Found { id: "w-1".into(), location: other.location() }]);
+        assert_ne!(l.location(), other.location());
+        let server = tokio::spawn(async move {
+            let mut s = l.accept().await.unwrap();
+            let mut b = [0u8; 4];
+            s.read_exact(&mut b).await.unwrap();
+            s.write_all(&b).await.unwrap();
+            l
+        });
+        let mut c = connect(&d1, "w-1").await.unwrap();
+        c.write_all(b"ping").await.unwrap();
+        let mut back = [0u8; 4];
+        c.read_exact(&mut back).await.unwrap();
+        assert_eq!(&back, b"ping");
+        drop(server.await.unwrap());
+        assert!(list(&d1).is_empty(), "the browser goes away with the listener");
+        assert_eq!(list(&d2).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_listener_for_the_same_browser_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        let _first = Listener::bind(&d, "w-2").unwrap();
+        let err = Listener::bind(&d, "w-2").err().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{err}");
+    }
+
+    #[test]
+    fn a_marker_left_by_a_dead_host_is_not_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = dirs(&tmp);
+        std::fs::create_dir_all(d.run()).unwrap();
+        std::fs::write(d.run().join("browser-w-3.pipe"), "stale").unwrap();
+        assert!(list(&d).is_empty());
     }
 }

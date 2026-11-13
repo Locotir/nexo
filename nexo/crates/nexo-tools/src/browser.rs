@@ -1075,7 +1075,7 @@ mod tests {
 
         let out = run(json!({"action": "export_gif", "value": "out/demo.gif", "gif": {"quality": 20}})).await;
         assert!(!out.is_error, "{}", out.content);
-        let file = dir.path().join("out/demo.gif");
+        let file = dir.path().join("out").join("demo.gif");
         let bytes = std::fs::read(&file).unwrap();
         assert!(bytes.starts_with(b"GIF8"));
         assert!(
