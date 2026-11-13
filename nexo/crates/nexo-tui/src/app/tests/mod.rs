@@ -208,10 +208,21 @@ fn docs_server() -> nexo_core::agent::McpServerInfo {
     }
 }
 
-mod agent_a;
-mod agent_b;
-mod agent_c;
+mod blocks_stream_and_replay;
 mod bursts;
+mod commands_and_mcp_window;
+mod commands_sessions_and_models;
+mod custom_commands_history_and_cost;
 mod effort_fx;
+mod goal_window_and_additions;
+mod goals_todo_strip_and_flashes;
+mod keys_row_and_fades;
 mod outside_click;
+mod pastes_questions_and_plans;
+mod scrollbar_titles_and_status_bar;
+mod session_lists_changes_and_selection;
+mod setup_save_and_scroll_news;
+mod steps_banner_gauge_and_pricing;
 mod sub;
+mod suggestions_links_and_errors;
+mod tool_group_cards;
