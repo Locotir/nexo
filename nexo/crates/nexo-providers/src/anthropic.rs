@@ -54,6 +54,12 @@ pub fn modern(model: &str) -> bool {
     family_version(model).is_some_and(|(_, major, minor)| (major, minor) >= (5, 5))
 }
 
+/// Reasoning off is a request for less thinking: before 5.5 it is no thinking, and on 5.5 Sonnet has a lowest
+/// setting; the other 5.5 models take nothing for it and think at the server's default effort.
+pub fn off_thinks_less(model: &str) -> bool {
+    !modern(model) || family(model) == Some("sonnet")
+}
+
 impl Anthropic {
     pub fn url(cfg: &ProviderConfig) -> String {
         http::join_versioned(&cfg.base_url, "v1", "messages")

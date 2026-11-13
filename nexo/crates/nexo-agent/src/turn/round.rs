@@ -100,7 +100,9 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         if calm && req.reasoning.is_none() {
             let mut st = state.lock().await;
             let (_, pcfg, model) = st.target.get();
-            req.reasoning = calm_level(pcfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]));
+            let levels = pcfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]);
+            req.reasoning = calm_level(levels, nexo_providers::probe::off_thinks_less(&pcfg.protocol, &model));
+            // a level is set only where it changes the request: none left means the same request again
             lowered = req.reasoning.is_some();
             if let Some(last) = st.last_request.as_mut() {
                 last.reasoning = req.reasoning;
@@ -675,12 +677,14 @@ pub(super) const MUTE_ASKS: u32 = 2;
 /// is asked twice more. Every reply stays under `agent.reasoning_budget`.
 pub(super) const MUTE_ASKS_ALONE: u32 = 4;
 
-/// The least reasoning a model lists among its levels (`efforts`): off, then minimal, then low, as `lean` picks;
-/// for the asks after a cut at `agent.reasoning_budget`. None when the model lists none of them, as a provider
-/// that takes no level may refuse one.
-pub(super) fn calm_level(levels: &[String]) -> Option<ReasoningConfig> {
+/// The least reasoning a model lists among its levels (`efforts`): off, then minimal, then low; for the asks
+/// after a cut at `agent.reasoning_budget`. Off only where the request acts on it (`off_thinks_less`): an
+/// OpenAI protocol sends nothing for it, the same request again, and Opus 5.5 thinks at the server's default
+/// effort, more than with no level. None when nothing lower is left, as a provider that takes no level may
+/// refuse one; a level returned always asks for less thinking than the first request.
+pub(super) fn calm_level(levels: &[String], off_thinks_less: bool) -> Option<ReasoningConfig> {
     let has = |l: &str| levels.iter().any(|x| x == l);
-    if has("off") || has("none") {
+    if off_thinks_less && (has("off") || has("none")) {
         Some(ReasoningConfig::Off)
     } else if has("minimal") {
         Some(ReasoningConfig::Effort(Effort::Minimal))
@@ -772,7 +776,22 @@ mod tests {
     use super::*;
 
     fn pick(levels: &[&str]) -> Option<ReasoningConfig> {
-        calm_level(&levels.iter().map(|l| l.to_string()).collect::<Vec<_>>())
+        calm_level(&levels.iter().map(|l| l.to_string()).collect::<Vec<_>>(), true)
+    }
+
+    fn pick_no_off(levels: &[&str]) -> Option<ReasoningConfig> {
+        calm_level(&levels.iter().map(|l| l.to_string()).collect::<Vec<_>>(), false)
+    }
+
+    /// Where off changes nothing in the request (an OpenAI protocol) or thinks more (Opus 5.5), it is not the
+    /// calm level: the next lowest is, and a model with only off and on gets none, so its asks run free.
+    #[test]
+    fn off_is_the_calm_level_only_where_it_thinks_less() {
+        let low = Some(ReasoningConfig::Effort(Effort::Low));
+        assert_eq!(pick_no_off(&["off", "low", "medium", "high"]), low);
+        assert_eq!(pick_no_off(&["none", "minimal", "low"]), Some(ReasoningConfig::Effort(Effort::Minimal)));
+        assert_eq!(pick_no_off(&["off", "on"]), None);
+        assert_eq!(pick(&["off", "on"]), Some(ReasoningConfig::Off));
     }
 
     #[test]

@@ -300,6 +300,60 @@ async fn a_model_with_no_level_to_lower_runs_free_after_two_cuts() {
     r.stop().await;
 }
 
+/// `cfg` for a model of this protocol that lists these reasoning levels.
+fn speaking(cfg: Config, protocol: &str, levels: &[&str]) -> Config {
+    let mut cfg = with_levels(cfg, levels);
+    cfg.providers.get_mut("mock").unwrap().protocol = protocol.into();
+    cfg
+}
+
+/// An Ollama model (qwen3) lists off and on, but the OpenAI protocol sends nothing for off: an ask at off would
+/// be the first request again. So none is sent, and as with no level to lower its reply runs free after two cuts.
+#[tokio::test]
+async fn a_model_whose_off_changes_nothing_runs_free_after_two_cuts() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("the answer"))),
+    ]);
+    let cfg = speaking(config(PermissionMode::Ask), "openai-chat", &["off", "on"]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "make a snake game".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3, "{:?}", notices(&evs));
+    assert!(reqs.iter().all(|q| q.reasoning.is_none()), "{:?}", reqs.iter().map(|q| q.reasoning).collect::<Vec<_>>());
+    assert!(text_of(&evs).contains("the answer"), "{}", text_of(&evs));
+    assert!(!notices(&evs).iter().any(|n| n.contains("stopped")), "{:?}", notices(&evs));
+    r.stop().await;
+}
+
+/// Off where the protocol acts on it (Gemini's budget of 0) is the calm level; where it does not (an OpenAI
+/// protocol, or Opus 5.5 that thinks at the server's default for it) the asks go out at low.
+#[tokio::test]
+async fn the_asks_go_out_at_off_only_where_off_thinks_less() {
+    let low = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::Low));
+    for (protocol, calm) in [("gemini", Some(nexo_core::ReasoningConfig::Off)), ("openai-chat", low)] {
+        let d = test_tmpdir().unwrap();
+        let client = Scripted::new(vec![
+            Reply::Events(long_thought(40_000, then_text("never read"))),
+            Reply::Events(text("done")),
+        ]);
+        let cfg = speaking(config(PermissionMode::Ask), protocol, &["off", "low", "medium", "high"]);
+        let mut r = start(client.clone(), cfg, None, d.path()).await;
+        r.next().await;
+        r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+        let evs = r.turn().await;
+        assert_eq!(end_of(&evs), TurnEnd::Done);
+        let levels: Vec<_> = client.requests().iter().map(|q| q.reasoning).collect();
+        assert_eq!(levels, vec![None, calm], "{protocol}");
+        r.stop().await;
+    }
+}
+
 #[tokio::test]
 async fn a_run_with_nobody_there_stops_after_five_cuts_at_the_budget() {
     let d = test_tmpdir().unwrap();

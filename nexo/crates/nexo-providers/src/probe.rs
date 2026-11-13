@@ -530,6 +530,20 @@ pub fn effort_levels(protocol: &str, kind: &str, base_url: &str, model: &str, re
     }
 }
 
+/// Whether a request with reasoning off thinks less than one with no level, by protocol: Gemini sends a
+/// thinking budget of 0, Anthropic as `anthropic::off_thinks_less` says (Copilot serves Claude by it); the
+/// OpenAI protocols send nothing for off, the same request as no level.
+pub fn off_thinks_less(protocol: &str, model: &str) -> bool {
+    match protocol {
+        gemini::ID => true,
+        anthropic::ID => anthropic::off_thinks_less(model),
+        crate::copilot::ID => {
+            crate::copilot::route(model) == crate::copilot::Route::Messages && anthropic::off_thinks_less(model)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +551,25 @@ mod tests {
 
     fn cfg(protocol: &str, base: &str) -> ProviderConfig {
         ProviderConfig::new(protocol, base, None)
+    }
+
+    #[test]
+    fn off_thinks_less_only_where_the_request_acts_on_it() {
+        // Gemini's budget of 0, Sonnet 5.5's lowest setting, and no thinking before 5.5
+        assert!(off_thinks_less("gemini", "gemini-2.5-flash"));
+        assert!(off_thinks_less("anthropic", "claude-sonnet-5-5"));
+        assert!(off_thinks_less("anthropic", "claude-sonnet-4-5"));
+        assert!(off_thinks_less("anthropic", "claude-opus-4-1"));
+        // the other 5.5 models take nothing for off: the server's default effort
+        assert!(!off_thinks_less("anthropic", "claude-opus-5-5"));
+        assert!(!off_thinks_less("anthropic", "claude-haiku-5-5"));
+        assert!(!off_thinks_less("copilot", "claude-opus-5.5"));
+        assert!(off_thinks_less("copilot", "claude-sonnet-5.5"));
+        // the OpenAI protocols send nothing for off (Ollama's qwen3 lists off and on)
+        assert!(!off_thinks_less("openai-chat", "qwen3:8b"));
+        assert!(!off_thinks_less("openai-responses", "gpt-5"));
+        assert!(!off_thinks_less("copilot", "gpt-5"));
+        assert!(!off_thinks_less("mock", "m1"));
     }
 
     #[test]
