@@ -296,17 +296,26 @@ pub fn sparkline(values: &[u64], w: usize, t: f64) -> String {
         .collect()
 }
 
-/// What is left of the subscription plan: each window with its bar, the share used and when it starts over.
+/// What is left of the subscription plan: each window with its bar, the share left and when it starts over.
 fn plan_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
-    let (theme, Some(plan)) = (&app.theme, &app.plan_usage) else { return Vec::new() };
+    let theme = &app.theme;
+    let Some(plan) = &app.plan_usage else {
+        // nothing came back for this provider: one line, in the row the figures would have followed
+        return vec![Line::from(Span::styled(
+            format!("no plan or rate-limit figure from {}", app.provider),
+            theme.dim(),
+        ))];
+    };
     let now = nexo_core::auth::now() as i64;
     let mut out = vec![Line::default()];
     let mut head = plan.detail(now).remove(0);
-    head.push_str(" plan");
+    if !plan.is_limits() {
+        head.push_str(" plan");
+    }
     out.push(Line::from(Span::styled(head, theme.bold(theme.fg))));
     let cells = w.saturating_sub(40).clamp(8, 24);
     for m in &plan.meters {
-        let share = (m.used_pct / 100.0).clamp(0.0, 1.0);
+        let share = m.left_pct() / 100.0;
         let (fill, rest) = bar(share * t, cells);
         let colour = if m.used_pct >= 100.0 {
             theme.error
@@ -324,10 +333,10 @@ fn plan_lines(app: &App, w: usize, t: f64) -> Vec<Line<'static>> {
             Span::raw(format!("{:<9}", m.label)),
             Span::styled(fill, Style::default().fg(colour)),
             Span::styled(rest, theme.dim2()),
-            Span::styled(format!(" {:>3.0}%  ", m.used_pct), theme.style(colour)),
+            Span::styled(format!(" {:>3.0}% left  ", m.left_pct()), theme.style(colour)),
             Span::styled(
                 match m.counts {
-                    Some((u, n)) => format!("{u}/{n}  {when}"),
+                    Some((u, n)) => format!("{}/{n}  {when}", n.saturating_sub(u)),
                     None => when,
                 },
                 theme.dim(),
@@ -347,14 +356,16 @@ fn usage_lines(app: &App, w: usize, t: f64, period: Period) -> Vec<Line<'static>
     if app.on_plan() {
         out.push(Line::from(Span::styled(crate::app::plan_value(app.cost * t), theme.dim())));
         out.push(Line::from(Span::styled("this session".to_string(), theme.dim())));
-        out.extend(plan_lines(app, w, t));
     } else {
         out.push(Line::from(vec![
             Span::styled(format!("${:.4}", app.cost * t), theme.bold(theme.money)),
             Span::styled("  this session".to_string(), theme.dim()),
         ]));
     }
-    out.push(Line::default());
+    out.extend(plan_lines(app, w, t));
+    if app.plan_usage.is_some() {
+        out.push(Line::default());
+    }
     let input = u.total_input();
     let rows = [
         ("sent", input, theme.accent),

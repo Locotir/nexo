@@ -3,7 +3,7 @@
               │  1 Context   2 Usage   3 Session                 │
               │ ──────────────────────────────────────────────── │
               │ $0.0000  this session                            │
-              │                                                  │
+              │ no plan or rate-limit figure from deepseek       │
               │ sent               0  ░░░░░░░░░░░░░░░░░░░░░░░░   │
               │   from cache       0  ░░░░░░░░░░░░░░░░░░░░░░░░   │
               │ written            0  ░░░░░░░░░░░░░░░░░░░░░░░░   │

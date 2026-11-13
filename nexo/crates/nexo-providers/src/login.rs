@@ -43,6 +43,8 @@ pub struct Endpoints {
     pub github_api: String,
     pub openai_issuer: String,
     pub xai_issuer: String,
+    /// Where SuperGrok's plan credits are read: the Grok CLI's chat proxy.
+    pub xai_billing: String,
     /// The Codex CLI's login file (None: its usual place).
     pub codex_auth: Option<std::path::PathBuf>,
     /// The ports tried for the browser callback.
@@ -58,6 +60,7 @@ impl Default for Endpoints {
             github_api: "https://api.github.com".into(),
             openai_issuer: "https://auth.openai.com".into(),
             xai_issuer: "https://auth.x.ai/oauth2".into(),
+            xai_billing: "https://cli-chat-proxy.grok.com/v1".into(),
             codex_auth: None,
             callback_ports: crate::codex::CALLBACK_PORTS.to_vec(),
             pad: Duration::from_secs(3),
@@ -606,6 +609,7 @@ mod tests {
             github_api: s.base_url(),
             openai_issuer: s.base_url(),
             xai_issuer: s.base_url(),
+            xai_billing: s.base_url(),
             codex_auth: Some(std::path::PathBuf::from("/nonexistent/nexo-test/auth.json")),
             callback_ports: vec![0],
             pad: Duration::ZERO,

@@ -414,16 +414,15 @@ impl App {
         self.opts.providers.iter().any(|(n, c)| *n == self.provider && c.login.is_some())
     }
 
-    /// Takes the latest reading of the current provider's plan from the store the providers fill. A
-    /// provider on a key has no plan, and a reading that did not change costs nothing.
+    /// Takes the latest reading of the current provider's plan (or, failing that, of the rate limits its
+    /// host reported) from the store the providers fill. A reading that did not change costs nothing.
     pub fn sync_plan_usage(&mut self) {
-        let kind = self
+        let now = self
             .opts
             .providers
             .iter()
             .find(|(n, _)| *n == self.provider)
-            .and_then(|(_, c)| nexo_providers::usage::kind_of(c));
-        let now = kind.and_then(nexo_providers::usage::get);
+            .and_then(|(_, c)| nexo_providers::usage::reading_for(c));
         if now != self.plan_usage {
             self.plan_usage = now;
             self.dirty = true;

@@ -11,8 +11,13 @@
 //!   (openai/codex, `codex-rs/backend-client`) and `GET api.github.com/copilot_internal/user` for Copilot
 //!   (`quota_snapshots`, as the Copilot Chat extension reads it).
 //!
-//! Only a subscription login has a plan: a provider that runs on a key has none, and nothing is kept
-//! for it. SuperGrok has no endpoint documented or read by an open-source client, so it is not covered.
+//! SuperGrok is read from the endpoint the Grok CLI's own `/usage` reads: `GET {chat proxy}/billing?format=credits`
+//! answers with the share of the credits used in the current period and when the period ends.
+//!
+//! Besides the plans, any provider's rate-limit headers are kept (`x-ratelimit-*` of the OpenAI-style
+//! APIs, `anthropic-ratelimit-*`), per host, under the kind `limits:{host}`: what is left of the requests
+//! and tokens of the current minute.
+//!
 //! No token is ever stored in, or printed from, anything here.
 
 use std::collections::BTreeMap;
@@ -28,6 +33,9 @@ use crate::login::{self, Endpoints};
 /// The two plans that can be read: ChatGPT's (`codex`) and GitHub Copilot's.
 pub const CODEX: &str = "codex";
 pub const COPILOT: &str = "copilot";
+pub const XAI: &str = "xai";
+/// The kind of a reading made from the rate-limit headers of a host: `limits:api.openai.com`.
+pub const LIMITS: &str = "limits:";
 
 /// One gauge of a plan: a window of time (`5h`, `wk`) or a count of requests (`premium`).
 #[derive(Debug, Clone, PartialEq)]
@@ -53,11 +61,16 @@ impl Meter {
         self.resets_at.is_some_and(|r| r <= now)
     }
 
-    /// `5h 37%` or `premium 210/300`.
+    /// The share still free, 0 to 100.
+    pub fn left_pct(&self) -> f64 {
+        (100.0 - self.used_pct).clamp(0.0, 100.0)
+    }
+
+    /// What is left: `5h 63% left` or `premium 90/300 left`.
     pub fn short(&self) -> String {
         match self.counts {
-            Some((used, total)) => format!("{} {used}/{total}", self.label),
-            None => format!("{} {:.0}%", self.label, self.used_pct),
+            Some((used, total)) => format!("{} {}/{total} left", self.label, total.saturating_sub(used)),
+            None => format!("{} {:.0}% left", self.label, self.left_pct()),
         }
     }
 
@@ -70,7 +83,7 @@ impl Meter {
 /// What the plan of one login allows and how much of it is used.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlanUsage {
-    /// `codex` or `copilot`.
+    /// `codex`, `copilot`, `xai` or `limits:{host}`.
     pub kind: String,
     /// The plan's name as the vendor gives it (`plus`, `pro`, `individual`).
     pub plan: Option<String>,
@@ -89,7 +102,25 @@ pub struct Item {
 }
 
 impl PlanUsage {
-    /// The figures that matter on one line each: the windows still running, `5h 37% ↻2h`. The reset
+    /// A reading made of the rate-limit headers of a host, not of a plan.
+    pub fn is_limits(&self) -> bool {
+        self.kind.starts_with(LIMITS)
+    }
+
+    /// The name of the plan or of the host's limits, as shown.
+    pub fn name(&self) -> String {
+        match self.kind.as_str() {
+            CODEX => "ChatGPT".to_string(),
+            COPILOT => "GitHub Copilot".to_string(),
+            XAI => "SuperGrok".to_string(),
+            k => match k.strip_prefix(LIMITS) {
+                Some(host) => format!("{host} rate limits"),
+                None => k.to_string(),
+            },
+        }
+    }
+
+    /// The figures that matter on one line each: the windows still running, `5h 63% left ↻2h`. The reset
     /// is left out when `with_reset` is false.
     pub fn items(&self, now: i64, with_reset: bool) -> Vec<Item> {
         self.meters
@@ -108,19 +139,15 @@ impl PlanUsage {
     /// The full detail, one line per window and a line for the plan and the credits.
     pub fn detail(&self, now: i64) -> Vec<String> {
         let mut out = Vec::new();
-        let name = match self.kind.as_str() {
-            CODEX => "ChatGPT",
-            COPILOT => "GitHub Copilot",
-            other => other,
-        };
+        let name = self.name();
         out.push(match &self.plan {
             Some(p) => format!("{name} · {p}"),
-            None => name.to_string(),
+            None => name,
         });
         for m in &self.meters {
             let used = match m.counts {
-                Some((u, t)) => format!("{u} of {t} used ({:.0}%)", m.used_pct),
-                None => format!("{:.0}% used", m.used_pct),
+                Some((u, t)) => format!("{} of {t} left ({u} used)", t.saturating_sub(u)),
+                None => format!("{:.0}% left ({:.0}% used)", m.left_pct(), m.used_pct),
             };
             let span = m.window_minutes.map(|w| format!(" ({} window)", long_span(w as i64 * 60))).unwrap_or_default();
             let reset = match (m.resets_in(now), m.resets_at) {
@@ -399,6 +426,110 @@ pub fn copilot_from_header(h: &HeaderMap, now: i64) -> Option<PlanUsage> {
     Some(PlanUsage { kind: COPILOT.into(), plan: None, meters: vec![meter], credits: None, seen: now })
 }
 
+// ---- SuperGrok ----
+
+/// The answer of `GET /billing?format=credits`: `{"config": {"creditUsagePercent": 8.0,
+/// "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "...", "end": "..."}, ...}}`.
+pub fn xai_from_billing(v: &Value, now: i64) -> Option<PlanUsage> {
+    let c = v.get("config").filter(|c| c.is_object()).unwrap_or(v);
+    let used_pct = c["creditUsagePercent"].as_f64().filter(|p| p.is_finite())?;
+    let at = |a: &Value, b: &Value| a.as_str().and_then(date_secs).or_else(|| b.as_str().and_then(date_secs));
+    let p = &c["currentPeriod"];
+    let start = at(&p["start"], &c["billingPeriodStart"]);
+    let end = at(&p["end"], &c["billingPeriodEnd"]);
+    let minutes = start.zip(end).map(|(a, b)| (b - a).max(0) as u64 / 60).filter(|m| *m > 0);
+    let label = match p["type"].as_str().unwrap_or_default() {
+        "USAGE_PERIOD_TYPE_DAILY" => "day".to_string(),
+        "USAGE_PERIOD_TYPE_WEEKLY" => "wk".to_string(),
+        "USAGE_PERIOD_TYPE_MONTHLY" => "mo".to_string(),
+        _ => window_label(minutes, "plan"),
+    };
+    let meter =
+        Meter { slot: "primary".into(), label, used_pct, counts: None, window_minutes: minutes, resets_at: end };
+    let plan = v["subscription_tier"].as_str().or_else(|| c["subscription_tier"].as_str()).map(String::from);
+    Some(PlanUsage { kind: XAI.into(), plan, meters: vec![meter], credits: None, seen: now })
+}
+
+// ---- rate-limit headers of any provider ----
+
+/// `1s`, `6m0s`, `20ms`, `1h2m3.5s`, or plain seconds.
+fn duration_secs(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<f64>() {
+        return Some(n).filter(|n| n.is_finite() && *n >= 0.0);
+    }
+    let (mut total, mut num) = (0.0, String::new());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() || c == '.' {
+            num.push(c);
+            continue;
+        }
+        let unit = match (c, chars.peek()) {
+            ('m', Some('s')) => {
+                chars.next();
+                0.001
+            }
+            ('s', _) => 1.0,
+            ('m', _) => 60.0,
+            ('h', _) => 3600.0,
+            ('d', _) => 86_400.0,
+            _ => return None,
+        };
+        total += num.parse::<f64>().ok()? * unit;
+        num.clear();
+    }
+    num.is_empty().then_some(total)
+}
+
+fn limit_meter(h: &HeaderMap, slot: &str, label: &str, names: [&str; 3], now: i64) -> Option<Meter> {
+    let [limit, remaining, reset] = names.map(|n| header(h, n));
+    let limit: f64 = limit?.parse().ok().filter(|l: &f64| *l > 0.0)?;
+    let left: f64 = remaining?.parse().ok().filter(|r: &f64| r.is_finite() && *r >= 0.0)?;
+    let used = (limit - left).max(0.0);
+    let resets_at = reset.and_then(|r| {
+        date_secs(r).filter(|_| r.contains('T')).or_else(|| duration_secs(r).map(|s| now + s.ceil() as i64))
+    });
+    Some(Meter {
+        slot: slot.into(),
+        label: label.into(),
+        used_pct: used / limit * 100.0,
+        counts: Some((used.round() as u64, limit.round() as u64)),
+        window_minutes: None,
+        resets_at,
+    })
+}
+
+/// What is left of the requests and tokens of the current window, from the headers of a response of
+/// `host`: `x-ratelimit-{limit,remaining,reset}-{requests,tokens}` (OpenAI and the APIs that copy it) and
+/// `anthropic-ratelimit-{requests,tokens,input-tokens,output-tokens}-{limit,remaining,reset}`.
+pub fn limits_from_headers(host: &str, h: &HeaderMap, now: i64) -> Option<PlanUsage> {
+    let mut meters = Vec::new();
+    for (slot, label) in [("requests", "req"), ("tokens", "tok")] {
+        let names = [
+            format!("x-ratelimit-limit-{slot}"),
+            format!("x-ratelimit-remaining-{slot}"),
+            format!("x-ratelimit-reset-{slot}"),
+        ];
+        meters.extend(limit_meter(h, slot, label, [&names[0], &names[1], &names[2]], now));
+    }
+    for (slot, label) in [("requests", "req"), ("tokens", "tok"), ("input-tokens", "in"), ("output-tokens", "out")] {
+        let names = [
+            format!("anthropic-ratelimit-{slot}-limit"),
+            format!("anthropic-ratelimit-{slot}-remaining"),
+            format!("anthropic-ratelimit-{slot}-reset"),
+        ];
+        // both families on one response: the first one read keeps the slot
+        if meters.iter().all(|m| m.slot != slot) {
+            meters.extend(limit_meter(h, slot, label, [&names[0], &names[1], &names[2]], now));
+        }
+    }
+    if meters.is_empty() || host.is_empty() {
+        return None;
+    }
+    Some(PlanUsage { kind: format!("{LIMITS}{host}"), plan: None, meters, credits: None, seen: now })
+}
+
 // ---- the shared state ----
 
 static STORE: Mutex<BTreeMap<String, PlanUsage>> = Mutex::new(BTreeMap::new());
@@ -430,10 +561,23 @@ pub fn get(kind: &str) -> Option<PlanUsage> {
     STORE.lock().unwrap_or_else(|e| e.into_inner()).get(kind).cloned()
 }
 
-/// Takes the plan figures out of the headers of a response, if it had any.
-pub fn record_headers(h: &HeaderMap) {
+/// Every reading kept, plans first.
+pub fn all() -> Vec<PlanUsage> {
+    let mut v: Vec<PlanUsage> = STORE.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+    v.sort_by_key(PlanUsage::is_limits);
+    v
+}
+
+/// The host of a URL: the key of the rate limits it answers with.
+pub fn host_of(url: &str) -> String {
+    reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default()
+}
+
+/// Takes the plan figures and the rate limits out of the headers of a response of `url`, if it had any.
+pub fn record_headers(url: &str, h: &HeaderMap) {
     let now = auth::now() as i64;
-    for u in [codex_from_headers(h, now), copilot_from_header(h, now)].into_iter().flatten() {
+    let limits = limits_from_headers(&host_of(url), h, now);
+    for u in [codex_from_headers(h, now), copilot_from_header(h, now), limits].into_iter().flatten() {
         record(u);
     }
 }
@@ -445,11 +589,17 @@ pub fn record_event(v: &Value) {
     }
 }
 
+/// What is known of the plan of `cfg`'s login, else of the rate limits its host reported.
+pub fn reading_for(cfg: &ProviderConfig) -> Option<PlanUsage> {
+    kind_of(cfg).and_then(get).or_else(|| get(&format!("{LIMITS}{}", host_of(&cfg.base_url))))
+}
+
 /// Which plan a provider's login opens, if it is one that can be read.
 pub fn kind_of(cfg: &ProviderConfig) -> Option<&'static str> {
     match cfg.login.as_deref()? {
         "codex" | "chatgpt" => Some(CODEX),
         "copilot" => Some(COPILOT),
+        "xai" => Some(XAI),
         _ => None,
     }
 }
@@ -491,6 +641,7 @@ pub async fn fetch_in(
             let v = crate::http::get_json(&format!("{root}/wham/usage"), h).await?;
             codex_from_usage(&v, now)
         }
+        XAI => xai_from_billing(&xai_billing(at, &key).await?, now),
         _ => {
             let v = copilot_user(at, &key).await?;
             copilot_from_user(&v, now)
@@ -516,6 +667,16 @@ async fn copilot_user(at: &Endpoints, token: &str) -> Result<Value, ProviderErro
         return Err(ProviderError::from_http(status, "GitHub did not give the Copilot plan"));
     }
     resp.json::<Value>().await.map_err(crate::http::net_error)
+}
+
+/// `GET {chat proxy}/billing?format=credits`, the request the Grok CLI's `/usage` makes.
+async fn xai_billing(at: &Endpoints, token: &str) -> Result<Value, ProviderError> {
+    let mut h = HeaderMap::new();
+    h.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("application/json"));
+    if let Ok(v) = format!("Bearer {token}").parse() {
+        h.insert(reqwest::header::AUTHORIZATION, v);
+    }
+    crate::http::get_json(&format!("{}/billing?format=credits", at.xai_billing.trim_end_matches('/')), h).await
 }
 
 #[cfg(test)]
@@ -557,9 +718,9 @@ mod tests {
         assert_eq!((u.meters[1].label.as_str(), u.meters[1].resets_at), ("wk", Some(NOW + 345_600)));
         assert_eq!(u.credits.as_deref(), Some("12.50"));
         let items: Vec<String> = u.items(NOW, true).into_iter().map(|i| i.text).collect();
-        assert_eq!(items, ["5h 37% ↻2h", "wk 12% ↻4d"]);
+        assert_eq!(items, ["5h 63% left ↻2h", "wk 88% left ↻4d"]);
         let plain: Vec<String> = u.items(NOW, false).into_iter().map(|i| i.text).collect();
-        assert_eq!(plain, ["5h 37%", "wk 12%"]);
+        assert_eq!(plain, ["5h 63% left", "wk 88% left"]);
     }
 
     #[test]
@@ -584,7 +745,7 @@ mod tests {
         let u = codex_from_headers(&h, NOW).unwrap();
         let items = u.items(NOW, true);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].text, "wk 1% ↻6d14h");
+        assert_eq!(items[0].text, "wk 99% left ↻6d14h");
         assert!(u.credits.is_none());
     }
 
@@ -596,7 +757,7 @@ mod tests {
             "credits": {"has_credits": false, "unlimited": false, "balance": null}});
         let u = codex_from_event(&ev, NOW).unwrap();
         assert_eq!(u.plan.as_deref(), Some("plus"));
-        assert_eq!(u.meters[0].short(), "5h 91%");
+        assert_eq!(u.meters[0].short(), "5h 9% left");
         assert_eq!(u.meters[1].resets_at, Some(NOW + 90_000));
         assert!(u.credits.is_none());
         assert!(codex_from_event(&json!({"type": "response.created"}), NOW).is_none());
@@ -626,11 +787,11 @@ mod tests {
         let u = copilot_from_user(&v, NOW).unwrap();
         assert_eq!(u.plan.as_deref(), Some("individual_pro"));
         assert_eq!(u.meters.len(), 1, "an unlimited chat is no gauge");
-        assert_eq!(u.meters[0].short(), "premium 210/300");
+        assert_eq!(u.meters[0].short(), "premium 90/300 left");
         assert_eq!(u.meters[0].used_pct, 70.0);
         assert_eq!(u.meters[0].resets_at, Some(1_799_971_200));
         let d = u.detail(1_799_971_200 - 3 * 86_400 - 2 * 3600).join("\n");
-        assert!(d.contains("premium: 210 of 300 used (70%), resets in 3d 2h"), "{d}");
+        assert!(d.contains("premium: 90 of 300 left (210 used), resets in 3d 2h"), "{d}");
     }
 
     #[test]
@@ -640,7 +801,7 @@ mod tests {
             "ent=300&ov=0.0&ovPerm=false&rem=10&rst=2027-01-15T00:00:00Z",
         )]);
         let u = copilot_from_header(&h, NOW).unwrap();
-        assert_eq!(u.meters[0].short(), "premium 270/300");
+        assert_eq!(u.meters[0].short(), "premium 30/300 left");
         assert_eq!(u.meters[0].resets_at, Some(1_799_971_200));
         assert!(copilot_from_header(&headers(&[]), NOW).is_none());
     }
@@ -671,6 +832,115 @@ mod tests {
     }
 
     #[test]
+    fn supergrok_credits_come_from_the_billing_answer() {
+        // the answer of the chat proxy, as the Grok CLI's `/usage` reads it
+        let v = json!({"config": {
+            "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2027-01-15T00:00:00.000+00:00", "end": "2027-01-22T00:00:00.000+00:00"},
+            "creditUsagePercent": 8.0, "productUsage": [{"product": "GrokBot", "usagePercent": 8.0}],
+            "isUnifiedBillingUser": true, "prepaidBalance": {"val": 0}}});
+        let u = xai_from_billing(&v, NOW).unwrap();
+        assert_eq!((u.kind.as_str(), u.meters.len()), ("xai", 1));
+        let m = &u.meters[0];
+        assert_eq!(
+            (m.label.as_str(), m.used_pct, m.window_minutes, m.resets_at),
+            ("wk", 8.0, Some(10_080), Some(1_800_576_000))
+        );
+        let items = u.items(1_800_576_000 - 3 * 86_400, true);
+        assert_eq!(items[0].text, "wk 92% left ↻3d");
+        let d = u.detail(1_800_576_000 - 3 * 86_400).join("\n");
+        assert!(d.starts_with("SuperGrok") && d.contains("wk (7d window): 92% left (8% used), resets in 3d"), "{d}");
+        // a monthly period, and an answer with no figure
+        let monthly = json!({"creditUsagePercent": 50, "currentPeriod": {"type": "USAGE_PERIOD_TYPE_MONTHLY"}});
+        assert_eq!(xai_from_billing(&monthly, NOW).unwrap().meters[0].label, "mo");
+        assert!(xai_from_billing(&json!({"config": {"isUnifiedBillingUser": false}}), NOW).is_none());
+        assert!(xai_from_billing(&json!({}), NOW).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_supergrok_plan_is_asked_with_the_stored_login() {
+        use httpmock::prelude::*;
+        let s = MockServer::start();
+        let m = s.mock(|w, t| {
+            w.method(GET).path("/v1/billing").query_param("format", "credits").header("authorization", "Bearer xai-tok");
+            t.status(200).json_body(json!({"config": {"creditUsagePercent": 37.0,
+                "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2099-01-01T00:00:00Z", "end": "2099-01-08T00:00:00Z"}}}));
+        });
+        let (_dir, store) = store_with("xai", "xai-tok");
+        let mut cfg = ProviderConfig::new("openai-chat", "https://api.x.ai/v1", None);
+        cfg.login = Some("xai".into());
+        cfg.auth = Some("xai".into());
+        let u = fetch_in(&store, &endpoints(&s), "xai", &cfg).await.unwrap().unwrap();
+        m.assert();
+        assert_eq!(u.meters[0].short(), "wk 63% left");
+        assert_eq!(reading_for(&cfg).map(|r| r.kind), Some("xai".to_string()));
+        // a refusal is an error the caller can show, not a figure
+        let s2 = MockServer::start();
+        s2.mock(|w, t| {
+            w.method(GET).path("/v1/billing");
+            t.status(403).body("{\"error\": \"no\"}");
+        });
+        assert!(fetch_in(&store, &endpoints(&s2), "xai", &cfg).await.is_err());
+    }
+
+    #[test]
+    fn the_openai_style_rate_limit_headers_say_what_is_left() {
+        let h = headers(&[
+            ("x-ratelimit-limit-requests", "60"),
+            ("x-ratelimit-remaining-requests", "59"),
+            ("x-ratelimit-reset-requests", "1s"),
+            ("x-ratelimit-limit-tokens", "150000"),
+            ("x-ratelimit-remaining-tokens", "149984"),
+            ("x-ratelimit-reset-tokens", "6m0s"),
+        ]);
+        let u = limits_from_headers("api.example.com", &h, NOW).unwrap();
+        assert_eq!(u.kind, "limits:api.example.com");
+        assert!(u.is_limits());
+        assert_eq!(u.meters.iter().map(Meter::short).collect::<Vec<_>>(), ["req 59/60 left", "tok 149984/150000 left"]);
+        assert_eq!((u.meters[0].resets_at, u.meters[1].resets_at), (Some(NOW + 1), Some(NOW + 360)));
+        assert_eq!(u.detail(NOW)[0], "api.example.com rate limits");
+        // a response with no limit headers, or a remaining figure with no limit to measure it by
+        assert!(limits_from_headers("h", &headers(&[("content-type", "text/plain")]), NOW).is_none());
+        assert!(limits_from_headers("h", &headers(&[("x-ratelimit-remaining-requests", "5")]), NOW).is_none());
+        assert!(limits_from_headers("", &h, NOW).is_none());
+    }
+
+    #[test]
+    fn the_anthropic_rate_limit_headers_say_what_is_left() {
+        let h = headers(&[
+            ("anthropic-ratelimit-requests-limit", "50"),
+            ("anthropic-ratelimit-requests-remaining", "0"),
+            ("anthropic-ratelimit-requests-reset", "2027-01-15T00:00:00Z"),
+            ("anthropic-ratelimit-input-tokens-limit", "30000"),
+            ("anthropic-ratelimit-input-tokens-remaining", "12000"),
+        ]);
+        let u = limits_from_headers("api.anthropic.com", &h, NOW).unwrap();
+        assert_eq!(u.meters.iter().map(Meter::short).collect::<Vec<_>>(), ["req 0/50 left", "in 12000/30000 left"]);
+        assert_eq!(u.meters[0].resets_at, Some(1_799_971_200));
+        assert_eq!(u.meters[0].used_pct, 100.0);
+    }
+
+    #[test]
+    fn durations_read_as_the_apis_write_them() {
+        assert_eq!(duration_secs("1s"), Some(1.0));
+        assert_eq!(duration_secs("6m0s"), Some(360.0));
+        assert_eq!(duration_secs("20ms"), Some(0.02));
+        assert_eq!(duration_secs("1h2m3.5s"), Some(3723.5));
+        assert_eq!(duration_secs("45"), Some(45.0));
+        assert_eq!(duration_secs("soon"), None);
+    }
+
+    #[test]
+    fn rate_limits_are_kept_per_host_and_a_plan_wins_over_them() {
+        let h = headers(&[("x-ratelimit-limit-requests", "10"), ("x-ratelimit-remaining-requests", "4")]);
+        record_headers("https://limits-test-a.example/v1/chat", &h);
+        let cfg = ProviderConfig::new("openai-chat", "https://limits-test-a.example/v1", None);
+        assert_eq!(reading_for(&cfg).map(|u| u.meters[0].short()), Some("req 4/10 left".to_string()));
+        let other = ProviderConfig::new("openai-chat", "https://limits-test-b.example/v1", None);
+        assert!(reading_for(&other).is_none(), "another host has its own figures");
+        assert!(all().iter().any(|u| u.kind == "limits:limits-test-a.example"));
+    }
+
+    #[test]
     fn spans_read_short() {
         assert_eq!(short_span(20), "<1m");
         assert_eq!(short_span(45 * 60), "45m");
@@ -688,7 +958,7 @@ mod tests {
     }
 
     fn endpoints(s: &httpmock::MockServer) -> Endpoints {
-        Endpoints { github_api: s.base_url(), ..Endpoints::default() }
+        Endpoints { github_api: s.base_url(), xai_billing: s.url("/v1"), ..Endpoints::default() }
     }
 
     fn store_with(flow: &str, token: &str) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -718,7 +988,7 @@ mod tests {
         let u = fetch_in(&store, &endpoints(&s), "codex", &cfg).await.unwrap().unwrap();
         m.assert();
         assert_eq!((u.plan.as_deref(), u.meters.len()), (Some("plus"), 1));
-        assert_eq!(u.meters[0].short(), "5h 41%");
+        assert_eq!(u.meters[0].short(), "5h 59% left");
     }
 
     #[tokio::test]
@@ -735,7 +1005,7 @@ mod tests {
         cfg.login = Some("copilot".into());
         cfg.auth = Some("copilot".into());
         let u = fetch_in(&store, &endpoints(&s), "copilot", &cfg).await.unwrap().unwrap();
-        assert_eq!(u.meters[0].short(), "premium 240/300");
+        assert_eq!(u.meters[0].short(), "premium 60/300 left");
         assert_eq!(get("copilot").map(|g| g.plan), Some(Some("business".to_string())));
     }
 
@@ -755,7 +1025,7 @@ mod tests {
         let mut nologin = ProviderConfig::new("copilot", &s.url("/x"), None);
         nologin.login = Some("copilot".into());
         assert!(fetch_in(&store, &endpoints(&s), "copilot", &nologin).await.unwrap().is_none());
-        // SuperGrok: logged in, but nothing to read
+        // SuperGrok configured, no login stored
         let mut xai = ProviderConfig::new("openai-chat", &s.url("/x"), None);
         xai.login = Some("xai".into());
         assert!(fetch_in(&store, &endpoints(&s), "xai", &xai).await.unwrap().is_none());
@@ -767,7 +1037,7 @@ mod tests {
         let mut c = ProviderConfig::new("openai-chat", "https://api.example", None);
         assert_eq!(kind_of(&c), None);
         c.login = Some("xai".into());
-        assert_eq!(kind_of(&c), None, "SuperGrok has no usage endpoint to read");
+        assert_eq!(kind_of(&c), Some("xai"));
         c.login = Some("codex".into());
         assert_eq!(kind_of(&c), Some("codex"));
         c.login = Some("copilot".into());

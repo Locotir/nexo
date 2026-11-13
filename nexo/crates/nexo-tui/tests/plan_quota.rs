@@ -68,12 +68,12 @@ fn the_status_bar_shows_both_windows_with_their_reset() {
     let mut a = app(Some("codex"));
     a.plan_usage = Some(plan(37.0, 12.0));
     let s = screen(&mut a, 140);
-    assert!(s.contains("5h 37% ↻2h · wk 12% ↻4d"), "{s}");
+    assert!(s.contains("5h 63% left ↻2h · wk 88% left ↻4d"), "{s}");
     // a narrower bar keeps the figures and drops the resets; a very narrow one drops the item
     let s = screen(&mut a, 80);
-    assert!(s.contains("5h 37% · wk 12%") && !s.contains('↻'), "{s}");
+    assert!(s.contains("5h 63% left · wk 88% left") && !s.contains('↻'), "{s}");
     let s = screen(&mut a, 50);
-    assert!(!s.contains("5h 37%"), "{s}");
+    assert!(!s.contains("5h 63%"), "{s}");
 }
 
 #[test]
@@ -83,13 +83,13 @@ fn a_window_over_80_percent_turns_warm_and_a_spent_one_red() {
     a.plan_usage = Some(plan(85.0, 100.0));
     let t = draw(&mut a, 140);
     let rows = rows_of(t.backend().buffer());
-    let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains("5h 85%")).expect("the item");
+    let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains("5h 15% left")).expect("the item");
     let colour_of = |needle: &str| {
         let x = row[..row.find(needle).unwrap()].chars().count() as u16;
         t.backend().buffer()[(x, y as u16)].fg
     };
-    assert_eq!(colour_of("5h 85%"), theme.warn);
-    assert_eq!(colour_of("wk 100%"), theme.error);
+    assert_eq!(colour_of("5h 15% left"), theme.warn);
+    assert_eq!(colour_of("wk 0% left"), theme.error);
 }
 
 #[test]
@@ -99,8 +99,8 @@ fn the_usage_window_has_the_detail_of_each_window() {
     a.run_command(Command::Cost);
     let s = screen(&mut a, 140);
     assert!(s.contains("plus plan") || s.contains("ChatGPT · plus plan"), "{s}");
-    assert!(s.contains("37%") && s.contains("resets in 2h"), "{s}");
-    assert!(s.contains("12%") && s.contains("resets in 4d"), "{s}");
+    assert!(s.contains("63% left") && s.contains("resets in 2h"), "{s}");
+    assert!(s.contains("88% left") && s.contains("resets in 4d"), "{s}");
 }
 
 #[test]
@@ -119,5 +119,56 @@ fn a_reset_window_leaves_the_bar() {
     p.meters[0].resets_at = Some(nexo_core::auth::now() as i64 - 60);
     a.plan_usage = Some(p);
     let s = screen(&mut a, 140);
-    assert!(!s.contains("5h 37%") && s.contains("wk 12%"), "{s}");
+    assert!(!s.contains("5h 63%") && s.contains("wk 88% left"), "{s}");
+}
+
+fn xai_plan(used: f64) -> PlanUsage {
+    PlanUsage {
+        kind: "xai".into(),
+        plan: None,
+        meters: vec![meter("primary", "wk", used, 10_080, 3 * 86_400)],
+        credits: None,
+        seen: 0,
+    }
+}
+
+#[test]
+fn a_supergrok_login_shows_what_is_left_in_the_bar_and_in_usage() {
+    let mut a = app(Some("xai"));
+    a.plan_usage = Some(xai_plan(8.0));
+    let s = screen(&mut a, 140);
+    assert!(s.contains("wk 92% left ↻3d"), "{s}");
+    a.run_command(Command::Cost);
+    let s = screen(&mut a, 140);
+    assert!(s.contains("SuperGrok plan") && s.contains("92% left") && s.contains("resets in 3d"), "{s}");
+}
+
+#[test]
+fn per_minute_limits_of_a_key_show_in_usage_but_not_in_the_bar() {
+    let mut a = app(None);
+    let mut limits = xai_plan(0.0);
+    limits.kind = "limits:api.example".into();
+    limits.meters = vec![Meter {
+        slot: "requests".into(),
+        label: "req".into(),
+        used_pct: 10.0,
+        counts: Some((6, 60)),
+        window_minutes: None,
+        resets_at: None,
+    }];
+    a.plan_usage = Some(limits);
+    let s = screen(&mut a, 140);
+    assert!(!s.contains("req 54/60"), "{s}");
+    a.run_command(Command::Cost);
+    let s = screen(&mut a, 140);
+    assert!(s.contains("api.example rate limits") && s.contains("54/60"), "{s}");
+}
+
+#[test]
+fn usage_says_so_in_one_line_when_there_is_no_figure() {
+    let mut a = app(Some("xai"));
+    a.run_command(Command::Cost);
+    let s = screen(&mut a, 140);
+    assert!(s.contains("no plan or rate-limit figure from p"), "{s}");
+    assert!(s.contains("this session"), "{s}");
 }

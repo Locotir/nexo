@@ -234,17 +234,15 @@ pub async fn usage_cmd(cfg: &mut Config) -> anyhow::Result<i32> {
             continue;
         }
         let p = cfg.providers[&name].clone();
-        if p.login.as_deref() == Some("xai") {
-            println!("SuperGrok (xai): xAI documents no usage endpoint, so there is nothing to read");
-            shown += 1;
-            continue;
-        }
         match nexo_providers::usage::fetch(&name, &p).await {
             Ok(Some(u)) => {
                 println!("{}", u.detail(now).join("\n  "));
                 shown += 1;
             }
-            Ok(None) => {}
+            Ok(None) => {
+                println!("{name}: its answer has no plan figure to show");
+                shown += 1;
+            }
             Err(e) => {
                 println!("{name}: the plan could not be read ({})", e.message);
                 shown += 1;
@@ -252,7 +250,7 @@ pub async fn usage_cmd(cfg: &mut Config) -> anyhow::Result<i32> {
         }
     }
     if shown == 0 {
-        println!("no subscription login stored: `nexo auth login codex` or `nexo auth login copilot` adds one");
+        println!("no subscription login stored: `nexo auth login codex`, `copilot` or `xai` adds one");
         return Ok(1);
     }
     Ok(0)

@@ -116,7 +116,7 @@ pub type BodyStream = std::pin::Pin<Box<dyn Stream<Item = ByteResult> + Send>>;
 pub async fn post_stream(url: &str, headers: HeaderMap, body: &Value) -> Result<BodyStream, ProviderError> {
     let resp = client()?.post(url).headers(headers).json(body).send().await.map_err(net_error)?;
     // the plan figures ride on every response, an error one (the limit reached) included
-    crate::usage::record_headers(resp.headers());
+    crate::usage::record_headers(url, resp.headers());
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
         let retry_after = retry_after(resp.headers());

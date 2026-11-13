@@ -559,8 +559,10 @@ pub(super) fn draw_title(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let pieces = status_pieces(&app.opts.status_line);
-    // what is left of the subscription plan: `5h 37% ↻2h · wk 12% ↻4d`, warm from 80%, red when spent
-    if let (true, true, Some(plan)) = (pieces.contains(&"plan"), area.width >= 60, &app.plan_usage) {
+    // what is left of the subscription plan: `5h 63% left ↻2h · wk 88% left ↻4d`, warm from 80%, red when spent
+    // (a provider on a key shows its per-minute limits in /usage only)
+    let plan = app.plan_usage.as_ref().filter(|p| !p.is_limits() || app.on_plan());
+    if let (true, true, Some(plan)) = (pieces.contains(&"plan"), area.width >= 60, plan) {
         let now = nexo_core::auth::now() as i64;
         for it in plan.items(now, area.width >= 100).into_iter().take(2) {
             if !right.is_empty() {
