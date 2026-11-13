@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn every_command_the_session_takes_is_in_the_map() {
         let known = spellings();
-        let found = arms(include_str!("cmds.rs"), "match cmd.as_str() {", "other =>");
+        let found = arms(include_str!("cmds/mod.rs"), "match cmd.as_str() {", "other =>");
         assert!(found.len() > 40, "the arms were not found: {found:?}");
         for n in found {
             assert!(known.contains(&n.as_str()), "{n} is a debugger command but not in COMMANDS");
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn every_row_names_a_real_command() {
-        let mut real = arms(include_str!("cmds.rs"), "match cmd.as_str() {", "other =>");
+        let mut real = arms(include_str!("cmds/mod.rs"), "match cmd.as_str() {", "other =>");
         real.extend(["run", "attach", "core", "connect", "serve", "sessions", "end"].map(String::from));
         for n in spellings() {
             assert!(real.iter().any(|r| r == n), "{n} is in COMMANDS but the debugger does not take it");
