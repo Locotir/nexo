@@ -64,14 +64,34 @@ pub struct Reads {
     seen: HashMap<PathBuf, Seen>,
     /// The anchors whose content the last model call saw whole.
     in_view: HashSet<String>,
-    /// The files `edit` and `write` changed: what the file held then and the call that did it.
-    wrote: HashMap<PathBuf, (u64, String)>,
+    /// The files `edit` and `write` changed: what the file held then, the call that did it, and whether that
+    /// call holds the whole file (a `write`) or only the change (an `edit`).
+    wrote: HashMap<PathBuf, (u64, String, bool)>,
 }
 
 fn digest(bytes: &[u8]) -> u64 {
     let mut h = DefaultHasher::new();
     bytes.hash(&mut h);
     h.finish()
+}
+
+/// Whether `pieces` together hold every line of `bytes` (a part of a file is not the file); with `view`, only
+/// the pieces whose anchor is in it count.
+fn covers(pieces: &[Piece], bytes: &[u8], view: Option<&HashSet<String>>) -> bool {
+    let total = String::from_utf8_lossy(bytes).lines().count();
+    let mut at = 1;
+    while at <= total {
+        let next = pieces
+            .iter()
+            .filter(|p| p.start <= at && at <= p.end && view.is_none_or(|v| v.contains(&p.anchor)))
+            .map(|p| p.end)
+            .max();
+        match next {
+            Some(e) => at = e + 1,
+            None => return false,
+        }
+    }
+    true
 }
 
 impl Reads {
@@ -111,23 +131,21 @@ impl Reads {
         if digest(&b) != s.hash {
             return false;
         }
-        // every line must lie in something the model was shown: a part of a file is not the file
-        let total = String::from_utf8_lossy(&b).lines().count();
-        let mut at = 1;
-        while at <= total {
-            match s.pieces.iter().filter(|p| p.start <= at && at <= p.end).map(|p| p.end).max() {
-                Some(e) => at = e + 1,
-                None => return false,
-            }
-        }
-        true
+        covers(&s.pieces, &b, None)
     }
 
-    /// The call that wrote `path` when the file still holds, byte for byte (`bytes`), what that call left and
-    /// the result of the call is still in what the model sees: it has the file, and need not be given it again.
-    pub fn wrote_unchanged(&self, path: &Path, bytes: &[u8]) -> Option<&str> {
-        let (hash, call) = self.wrote.get(path)?;
-        (*hash == digest(bytes) && self.in_view.contains(call)).then_some(call.as_str())
+    /// Why the model holds the whole of `path`, as it is now (`bytes`), in what it sees: a `write` of it, whose
+    /// result is still in view, with the file unchanged since; or, for a file its own commands made (`made`),
+    /// an output of it in full that is still in view. None for a file only `edit`ed (the view holds the change,
+    /// not the file) and for anything changed since.
+    pub fn held_whole(&self, path: &Path, bytes: &[u8], made: bool) -> Option<String> {
+        let hash = digest(bytes);
+        if let Some((_, call, whole)) = self.wrote.get(path).filter(|w| w.0 == hash) {
+            return (*whole && self.in_view.contains(call)).then(|| format!("the file you wrote in call {call}"));
+        }
+        let s = self.seen.get(path).filter(|s| made && s.hash == hash)?;
+        covers(&s.pieces, bytes, Some(&self.in_view))
+            .then(|| "a file your own commands made, shown in full above".into())
     }
 
     /// A file attached whole to a request, under `header`.
@@ -138,15 +156,16 @@ impl Reads {
     }
 
     /// After `edit` or `write` changed `path`: what the model knew of it is gone, and when the result of
-    /// call `call_id` holds the file whole (a short one) the model has all of it.
-    pub fn after_change(&mut self, path: &Path, call_id: &str) {
+    /// call `call_id` holds the file whole (a short one) the model has all of it. `whole`: the call itself
+    /// holds the whole file (a `write`), not only a change.
+    pub fn after_change(&mut self, path: &Path, call_id: &str, whole: bool) {
         let Ok(bytes) = std::fs::read(path) else { return };
         let text = String::from_utf8_lossy(&bytes);
         let pieces = match nexo_tools::edit::whole(&text) {
             Some(_) => vec![Piece { start: 1, end: text.lines().count(), anchor: call_id.to_string() }],
             None => Vec::new(),
         };
-        self.wrote.insert(path.to_path_buf(), (digest(&bytes), call_id.to_string()));
+        self.wrote.insert(path.to_path_buf(), (digest(&bytes), call_id.to_string(), whole));
         self.seen.insert(path.to_path_buf(), Seen { hash: digest(&bytes), pieces, noted: false });
     }
 

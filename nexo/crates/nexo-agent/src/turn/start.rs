@@ -626,8 +626,8 @@ const NAMED_FILES: usize = 3;
 /// includes under its own header (never as the person's `@path`), so the model starts with them and needs no
 /// step to read them.
 ///
-/// A named file the model wrote in this session (or one of its commands made), unchanged since, is not
-/// attached again: it comes back as a line saying so, for the start note.
+/// A named file the view already holds whole and unchanged (a `write` of it, not an `edit`) is not attached again:
+/// it comes back as a line saying so, for the start note.
 fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> (Vec<Attachment>, Vec<String>) {
     if !st.config.agent.attach_named_files {
         return (Vec::new(), Vec::new());
@@ -681,15 +681,9 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> (Vec<Attachme
         if said.contains(word) {
             continue;
         }
-        // written by the model, or made by its command, and not changed since: it has the file
-        let how = if let Some(call) = st.reads.wrote_unchanged(&real, &bytes) {
-            Some(format!("the file you wrote in call {call}"))
-        } else if orient::made_in_work(&st.worked, &real) {
-            Some("a file your own commands made".to_string())
-        } else {
-            None
-        };
-        if let Some(how) = how {
+        // the model holds the whole file (it wrote it, or its command made it and printed it) and it is unchanged
+        let made = orient::made_in_work(&st.worked, &real);
+        if let Some(how) = st.reads.held_whole(&real, &bytes, made) {
             known.push(format!("{word}: {how}, unchanged since; not attached again. Read it if you need its lines."));
             seen.push(real);
             continue;

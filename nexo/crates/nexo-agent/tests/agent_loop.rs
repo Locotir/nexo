@@ -314,6 +314,32 @@ async fn a_named_file_the_model_wrote_is_not_attached_again_until_it_changes() {
     r.stop().await;
 }
 
+/// A file the model only `edit`ed holds just the change in the view: naming it attaches the file as before.
+#[tokio::test]
+async fn a_named_file_the_model_only_edited_is_attached() {
+    let d = test_tmpdir().unwrap();
+    std::fs::write(d.path().join("old.rs"), "fn old() {}\n").unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(call("e1", "edit", json!({"path": "old.rs", "old_string": "old", "new_string": "newer"}))),
+        Reply::Events(text("edited")),
+        Reply::Events(text("seen")),
+    ]);
+    let cfg = config(PermissionMode::Auto);
+    let set = tools().with(Arc::new(nexo_tools::edit::Edit));
+    let mut r = start_with(client.clone(), cfg, None, d.path(), set).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "rename it".into(), attachments: vec![] });
+    r.turn().await;
+    assert_eq!(std::fs::read_to_string(d.path().join("old.rs")).unwrap(), "fn newer() {}\n");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    r.send(AgentCommand::Submit { text: "explain old.rs".into(), attachments: vec![] });
+    r.turn().await;
+    let sent = client.requests().last().unwrap().messages.last().unwrap().text();
+    assert!(sent.contains("old.rs (project file, included in full by nexo, as it is now):"), "{sent}");
+    assert!(sent.contains("fn newer() {}") && !sent.contains("not attached again"), "{sent}");
+    r.stop().await;
+}
+
 /// A file the model's own command made during a request (generated data) is not attached again by the token
 /// budget at the next request; a file the person made between requests is.
 #[cfg(unix)]

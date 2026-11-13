@@ -609,7 +609,7 @@ pub(super) async fn run_call(
                         // the result carries a short file whole: a later read of it, unchanged, needs no lines
                         for p in changed_paths(args) {
                             let path = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { cwd.join(&p) };
-                            st.reads.after_change(&path, id);
+                            st.reads.after_change(&path, id, name == "write");
                         }
                         None
                     }
