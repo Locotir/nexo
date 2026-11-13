@@ -468,28 +468,42 @@ fn truncated_files_give_ok_or_err_never_a_panic() {
 
 #[test]
 fn damaged_headers_give_ok_or_err_never_a_panic() {
-    for f in [fixtures::elf64(true), fixtures::pe64(true), fixtures::elf64_xref(), fixtures::pe64_xref()] {
-        let n = f.bytes.len();
-        for round in 0..3u8 {
-            for i in 0..n.min(0x500) {
-                let mut data = f.bytes.clone();
-                data[i] ^= [0xff, 0x80, 0x01][round as usize];
-                if let Ok(img) = Image::from_bytes(data, "/x".into()) {
-                    ask_everything(&img);
-                }
-            }
+    // One thread per fixture: the same damage on the same files, a quarter of the wall time.
+    let makers: [fn() -> fixtures::Fixture; 4] =
+        [|| fixtures::elf64(true), || fixtures::pe64(true), fixtures::elf64_xref, fixtures::pe64_xref];
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = makers
+            .iter()
+            .map(|mk| {
+                sc.spawn(move || {
+                    let f = mk();
+                    let n = f.bytes.len();
+                    for round in 0..3u8 {
+                        for i in 0..n.min(0x500) {
+                            let mut data = f.bytes.clone();
+                            data[i] ^= [0xff, 0x80, 0x01][round as usize];
+                            if let Ok(img) = Image::from_bytes(data, "/x".into()) {
+                                ask_everything(&img);
+                            }
+                        }
+                    }
+                    // the header fields that hold sizes and counts, set to the largest values
+                    for i in (0..n.min(0x500)).step_by(4) {
+                        let mut data = f.bytes.clone();
+                        for b in data.iter_mut().skip(i).take(4) {
+                            *b = 0xff;
+                        }
+                        if let Ok(img) = Image::from_bytes(data, "/x".into()) {
+                            ask_everything(&img);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().expect("no panic on a damaged header");
         }
-        // the header fields that hold sizes and counts, set to the largest values
-        for i in (0..n.min(0x500)).step_by(4) {
-            let mut data = f.bytes.clone();
-            for b in data.iter_mut().skip(i).take(4) {
-                *b = 0xff;
-            }
-            if let Ok(img) = Image::from_bytes(data, "/x".into()) {
-                ask_everything(&img);
-            }
-        }
-    }
+    });
 }
 
 #[test]
