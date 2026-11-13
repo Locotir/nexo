@@ -2,7 +2,7 @@
 //! a quiet machine): `cargo test --release -p nexo-curator --test scale -- --ignored --nocapture`.
 //! `SCALE_RUNS` sets the number of runs per shape (median taken; default 5).
 
-#[path = "support/scale_gen.rs"]
+#[path = "support/scale_gen/mod.rs"]
 mod scale_gen;
 
 use scale_gen::{median, run, Plan};

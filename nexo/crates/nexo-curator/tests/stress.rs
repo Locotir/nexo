@@ -6,7 +6,7 @@
 //! `STRESS_STEPS` sets the steps of the agent (default 20000), `STRESS_SPEC` the settings over the defaults
 //! (`pockets=1`), `STRESS_SEED` the seed.
 
-#[path = "support/scale_gen.rs"]
+#[path = "support/scale_gen/mod.rs"]
 mod scale_gen;
 
 use std::time::Instant;

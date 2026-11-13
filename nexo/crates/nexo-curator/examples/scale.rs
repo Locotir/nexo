@@ -24,7 +24,7 @@
 //! tokens (hops 1, 2, 3 in turn), generated on the fly from the seed and never written to disk; a step over the
 //! limits stops the ladder and says where the time and the memory went.
 
-#[path = "../tests/support/scale_gen.rs"]
+#[path = "../tests/support/scale_gen/mod.rs"]
 mod scale_gen;
 
 use scale_gen::{run, run_cold, run_saw, ColdParams, Gen, Plan, KINDS};
