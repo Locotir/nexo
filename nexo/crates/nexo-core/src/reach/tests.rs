@@ -37,7 +37,12 @@ fn a_process_with_no_way_in_is_said_plainly() {
     let e = r.send(&Target::Pid(std::process::id()), "hi").unwrap_err();
     assert!(e.contains("does not run inside tmux"), "{e}");
     let e = r.send(&Target::Claude(std::process::id()), "hi").unwrap_err();
+    // The Claude inbox is reachable only on unix (local sockets); on Windows the send path
+    // says so plainly instead, so the "no way in" wording differs by platform.
+    #[cfg(unix)]
     assert!(e.contains("has no inbox"), "{e}");
+    #[cfg(not(unix))]
+    assert!(e.contains("works on Linux and macOS only"), "{e}");
     assert!(r.send(&Target::Claude(1), "  ").unwrap_err().contains("empty"));
     assert!(r.send(&Target::Claude(1), &"x".repeat(TYPE_MAX_BYTES + 1)).unwrap_err().contains("too big"));
 }
