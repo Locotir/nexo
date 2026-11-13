@@ -24,7 +24,6 @@ const FORM: &str = r##"<!doctype html><html><body>
 <script>
 window.log = [];
 for (const t of ['input', 'change']) document.addEventListener(t, (e) => window.log.push(t + ':' + e.target.id));
-setTimeout(() => { const p = document.createElement('p'); p.id = 'late'; p.textContent = 'arrived'; document.body.appendChild(p); }, 300);
 </script>
 </body></html>"##;
 
@@ -153,9 +152,14 @@ async fn fills_and_submits_a_form() {
     let res = browser.read_text(Some("#res")).await.unwrap();
     assert!(res.starts_with("sent ") && res.contains("name=Ada") && res.contains("country=us"), "{res}");
 
-    // Wait for something that arrives after 300 ms, then for something that never does.
+    // Wait for something that arrives 1.5 s after it is armed, then for something that never does. Armed here
+    // and not at page load: on a loaded machine the steps above took longer than a load-time delay.
+    browser
+        .eval("setTimeout(() => { const p = document.createElement('p'); p.id = 'late'; p.textContent = 'arrived'; document.body.appendChild(p); }, 1500); 0")
+        .await
+        .unwrap();
     assert!(matches!(browser.read_text(Some("#late")).await, Err(Error::NotFound(_))));
-    browser.wait(Wait::Selector("#late", 3_000)).await.unwrap();
+    browser.wait(Wait::Selector("#late", 5_000)).await.unwrap();
     assert_eq!(browser.read_text(Some("#late")).await.unwrap(), "arrived");
     assert!(matches!(browser.wait(Wait::Selector("#never", 200)).await, Err(Error::NotFound(_))));
     browser.wait(Wait::Millis(10)).await.unwrap();
