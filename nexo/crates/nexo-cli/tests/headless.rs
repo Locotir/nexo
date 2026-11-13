@@ -652,6 +652,16 @@ fn a_request_sent_again_after_a_cut_in_the_reasoning_starts_a_new_reply_in_the_r
 fn the_init_event_lists_the_tools_the_model_is_offered() {
     let tools_at = |window: u32| -> Vec<String> {
         let d = tempfile::tempdir().unwrap();
+        // Seed one project skill in the sandbox (cwd is this temp dir) so the `skill` tool is
+        // discovered deterministically. Without it the tool is still window-gated but only offered
+        // when some skill exists, so the 32k assertion below passes on a machine whose $HOME holds
+        // skills and fails on CI, which has none.
+        std::fs::create_dir_all(d.path().join(".nexo/skills/demo")).unwrap();
+        std::fs::write(
+            d.path().join(".nexo/skills/demo/SKILL.md"),
+            "---\nname: demo\ndescription: A demo skill for the tool-list test.\n---\nGo.\n",
+        )
+        .unwrap();
         let cfg = format!("{MOCK}[providers.mock.context_window]\nmock = {window}\n[context]\npolicy = \"plain\"\n");
         let out = nexo_with(d.path(), &cfg, &["-p", "hi", "--output-format", "stream-json"]);
         let v = lines(&out);
