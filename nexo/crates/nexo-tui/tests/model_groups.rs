@@ -8,6 +8,8 @@ use nexo_tui::modal::setup::{Setup, SetupOut};
 use nexo_tui::theme::Theme;
 
 fn setup() -> Setup {
+    // the person running the tests may be logged in to one of these providers
+    std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json");
     let cfg = |url: &str, env: &str| ProviderConfig::new("openai-chat", url, Some(env));
     let providers = vec![
         ("deepseek".to_string(), cfg("https://api.deepseek.com", "NEXO_T_NO_KEY_1")),
