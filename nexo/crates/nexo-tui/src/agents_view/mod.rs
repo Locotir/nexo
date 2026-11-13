@@ -271,6 +271,15 @@ struct RowFx {
     changed: Option<Instant>,
 }
 
+/// A message for a session of another program, asked about before it is typed in.
+#[derive(Debug, Clone)]
+struct Typing {
+    key: String,
+    name: String,
+    address: String,
+    text: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentsView {
     pub selected: usize,
@@ -320,6 +329,10 @@ pub struct AgentsView {
     edit_for: Option<(String, String)>,
     /// Nudges put aside with Esc, by session, so `n` picks them up again.
     drafts: HashMap<String, String>,
+    /// Where sessions of other programs can be typed into.
+    reach: nexo_core::reach::Reach,
+    /// A message waiting for the person's yes before it is typed into another program.
+    confirm: Option<Typing>,
     /// The column the arrows hold while the selection goes up and down over rows of different lengths.
     want_col: Option<usize>,
     /// The view keeps the selection in sight; the wheel lets go of it until the selection moves again.
@@ -366,6 +379,8 @@ impl AgentsView {
             still,
             edit: None,
             edit_for: None,
+            reach: nexo_core::reach::Reach::default(),
+            confirm: None,
             drafts: HashMap::new(),
             want_col: None,
             follow: true,
@@ -494,6 +509,11 @@ impl AgentsView {
         v.rows = rows;
         v.clock = clock;
         v
+    }
+
+    /// Looks for sessions of other programs here instead of the usual places (tests).
+    pub fn set_reach(&mut self, reach: nexo_core::reach::Reach) {
+        self.reach = reach;
     }
 
     /// Replaces the rows as a poll would (tests drive the motion with it).

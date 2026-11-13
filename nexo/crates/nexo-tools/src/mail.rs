@@ -11,9 +11,12 @@ use nexo_core::mailbox::Mailbox;
 use nexo_core::{paths, Tool, ToolContext, ToolKind, ToolOutput, ToolSet, ToolSpec};
 use serde_json::{json, Value};
 
-/// The two tools, bound to this session's mailbox.
+/// The tools, bound to this session's mailbox: `send_to_session` also types into sessions of other programs.
 pub fn tools(mailbox: Arc<Mailbox>) -> ToolSet {
-    ToolSet::new().with(Arc::new(SendMessage { mailbox: mailbox.clone() })).with(Arc::new(ListSessions { mailbox }))
+    ToolSet::new()
+        .with(Arc::new(SendMessage { mailbox: mailbox.clone() }))
+        .with(Arc::new(crate::send::SendToSession::new(Some(mailbox.clone()), nexo_core::reach::Reach::default())))
+        .with(Arc::new(ListSessions { mailbox }))
 }
 
 pub struct SendMessage {

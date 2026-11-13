@@ -24,6 +24,8 @@ regex = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+# the key file of a Claude Code inbox is named after the sha-256 of its socket path
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

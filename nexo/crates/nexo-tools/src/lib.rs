@@ -31,6 +31,7 @@ pub mod project;
 pub mod read;
 pub mod recall;
 pub mod sandbox;
+pub mod send;
 pub mod skill;
 pub mod todo;
 pub mod util;

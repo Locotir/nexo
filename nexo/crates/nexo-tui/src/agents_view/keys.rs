@@ -4,6 +4,10 @@ use super::*;
 
 impl AgentsView {
     pub fn key(&mut self, key: KeyEvent) -> ModalOut {
+        if let Some(t) = self.confirm.take() {
+            self.answer_typing(t, matches!(key.code, KeyCode::Enter | KeyCode::Char('y')));
+            return ModalOut::Nothing;
+        }
         if self.edit.is_some() {
             return self.edit_key(key);
         }
@@ -155,14 +159,59 @@ impl AgentsView {
         self.note = Some("messages and pauses need the supervisor: run `nexo supervise` in another terminal".into());
     }
 
+    /// Where a message for `row` can be typed in: a session of another program with exactly one live match
+    /// (same program, same folder) that has an inbox or a tmux pane. Nexo sessions go through the mailbox.
+    pub(super) fn typing_address(&self, row: &AgentRow) -> Option<String> {
+        if row.source == SourceKind::Nexo {
+            return None;
+        }
+        let mut found = self.reach.find(&row.program, row.cwd.as_deref().unwrap_or(""));
+        (found.len() == 1).then(|| found.remove(0).address)
+    }
+
+    /// The person answered the question before typing into another program: yes types it in, no keeps it.
+    pub(super) fn answer_typing(&mut self, t: Typing, yes: bool) {
+        if !yes {
+            self.drafts.insert(t.key, t.text);
+            self.note = Some("not sent; message kept: n picks it up again".into());
+            return;
+        }
+        let sent = match nexo_core::reach::parse(&t.address) {
+            Some(Ok(target)) => self.reach.send(&target, &t.text),
+            _ => Err(format!("Not sent: {} is not an address nexo can type into", t.address)),
+        };
+        self.note = Some(match sent {
+            Ok(_) => {
+                self.fly_key = Some(t.key);
+                format!("typed into {} and pressed Enter", t.name)
+            }
+            Err(e) => {
+                self.drafts.insert(t.key, t.text);
+                e
+            }
+        });
+        self.refresh();
+    }
+
     pub(super) fn start_nudge(&mut self) {
-        let Some(panel) = &self.panel else { return self.needs_supervisor() };
-        let Some(row) = self.selected_row() else { return self.note = Some("no session selected".into()) };
+        let Some(row) = self.selected_row() else {
+            return if self.panel.is_none() {
+                self.needs_supervisor()
+            } else {
+                self.note = Some("no session selected".into())
+            };
+        };
         if row.parent.is_some() {
             self.note = Some("a sub-agent takes no message; write to its session".into());
             return;
         }
-        let text = self.drafts.remove(&row.key).unwrap_or_else(|| panel.template(&row.key));
+        // a session of another program that can be typed into needs no supervisor
+        let template = match &self.panel {
+            Some(panel) => panel.template(&row.key),
+            None if self.typing_address(&row).is_some() => String::new(),
+            None => return self.needs_supervisor(),
+        };
+        let text = self.drafts.remove(&row.key).unwrap_or(template);
         self.edit_for = Some((row.key.clone(), row.name.clone()));
         self.edit = Some(text);
     }
@@ -194,10 +243,20 @@ impl AgentsView {
                 let for_key = self.edit_for.as_ref().map(|(k, _)| k.clone());
                 let target = for_key.and_then(|k| self.rows.iter().find(|r| r.key == k).cloned());
                 // that session went away meanwhile: the field stays open, nothing is sent
-                let (Some(row), Some(panel)) = (target, self.panel.clone()) else { return ModalOut::Nothing };
+                let Some(row) = target else { return ModalOut::Nothing };
                 let text = self.edit.take().unwrap_or_default();
                 self.edit_for = None;
-                if !text.trim().is_empty() {
+                if text.trim().is_empty() {
+                    self.refresh();
+                    return ModalOut::Nothing;
+                }
+                // another program gets it as typed input, and only after a yes
+                if let Some(address) = self.typing_address(&row) {
+                    self.note = Some(format!("type it into {} ({address}) as its input? Enter yes · Esc no", row.name));
+                    self.confirm = Some(Typing { key: row.key, name: row.name, address, text });
+                    return ModalOut::Nothing;
+                }
+                if let Some(panel) = self.panel.clone() {
                     panel.nudge(&row.key, &text);
                     self.fly_key = Some(row.key.clone());
                     self.note = Some(if row.source == SourceKind::Nexo {
@@ -205,6 +264,10 @@ impl AgentsView {
                     } else {
                         format!("nudge queued for {}; it goes out when the session stops", row.name)
                     });
+                } else {
+                    self.drafts.insert(row.key, text);
+                    self.note =
+                        Some(format!("{} cannot be typed into now; message kept: n picks it up again", row.name));
                 }
                 self.refresh();
             }
@@ -256,9 +319,9 @@ impl AgentsView {
             return ModalOut::Close;
         }
         if !contains(self.window, x, y) {
-            return if self.edit.is_some() { ModalOut::Nothing } else { ModalOut::Close };
+            return if self.edit.is_some() || self.confirm.is_some() { ModalOut::Nothing } else { ModalOut::Close };
         }
-        if self.edit.is_some() || self.policy_page {
+        if self.edit.is_some() || self.confirm.is_some() || self.policy_page {
             return ModalOut::Nothing;
         }
         if let Some(i) = self.cards.iter().find(|(_, r)| contains(*r, x, y)).map(|(i, _)| *i) {
@@ -290,3 +353,7 @@ impl AgentsView {
         self.follow = false;
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "typing_tests.rs"]
+mod typing_tests;
