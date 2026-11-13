@@ -144,6 +144,7 @@ fn nexo_bin_reads_are_read_kind_and_what_saves_or_follows_is_judged_as_before() 
         "nexo bin find a.out 48 8d 05",
         "nexo bin names a.out",
         "nexo bin bytes a.out 0x402000 64 --as u32",
+        "nexo bin diff old.out new.out get_item --all",
         "nexo bin fn a.out main 2>&1 | head -40",
         "cd src && nexo bin info a.out",
     ] {

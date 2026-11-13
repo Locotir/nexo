@@ -355,6 +355,23 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// Compare two builds function by function: the changed, added and removed ones, with the size change.
+    Diff {
+        /// The old build.
+        file: PathBuf,
+        /// The new build.
+        other: PathBuf,
+        /// One function (a name, an address in the old build, or b:ADDR in the new one): its instructions side by side.
+        target: Option<String>,
+        /// A regular expression that keeps the functions whose name matches.
+        #[arg(long, value_name = "REGEX")]
+        grep: Option<String>,
+        /// List the same functions too (with a function: every instruction, none folded).
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        common: Common,
+    },
 }
 
 fn parse_addr(s: &str) -> Result<u64, String> {
@@ -384,6 +401,7 @@ impl BinOp {
             | BinOp::Note { file, .. }
             | BinOp::Names { file, .. }
             | BinOp::Find { file, .. }
+            | BinOp::Diff { file, .. }
             | BinOp::Managed { file, .. }
             | BinOp::Emu { file, .. } => file,
             BinOp::Sigs { .. } => Path::new(""),
@@ -412,6 +430,7 @@ impl BinOp {
             | BinOp::Note { common, .. }
             | BinOp::Names { common, .. }
             | BinOp::Find { common, .. }
+            | BinOp::Diff { common, .. }
             | BinOp::Sigs { common, .. }
             | BinOp::Managed { common, .. }
             | BinOp::Emu { common, .. } => common,
@@ -437,7 +456,15 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         return wasm_in(a);
     }
     let mut img = Image::open(a.op.file())?;
-    let warning = nexo_bin::attach_names(&mut img, data_dir);
+    let mut warning = nexo_bin::attach_names(&mut img, data_dir);
+    let mut other = None;
+    if let BinOp::Diff { other: path, .. } = &a.op {
+        let mut b = Image::open(path)?;
+        if let Some(w) = nexo_bin::attach_names(&mut b, data_dir).filter(|w| warning.as_ref() != Some(w)) {
+            warning = Some(warning.map_or(w.clone(), |v| format!("{v}\n{w}")));
+        }
+        other = Some(b);
+    }
     let c = a.op.common();
     let (from, lines) = (c.from, c.lines.max(MIN_LINES));
     let out: Output = match &a.op {
@@ -527,6 +554,10 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Find { pattern, imm, .. } => match imm {
             Some(n) => nexo_bin::find_imm(&img, nexo_bin::parse_number(n)?)?,
             None => nexo_bin::find_bytes(&img, &pattern.join(" "))?,
+        },
+        BinOp::Diff { target, grep, all, .. } => match &other {
+            Some(b) => nexo_bin::diff_window(&img, b, target.as_deref(), grep.as_deref(), *all, from, lines)?,
+            None => unreachable!("the second build is opened with the first"),
         },
     };
     let page = out.page_as(from, lines, c.json);
@@ -712,6 +743,23 @@ mod tests {
         assert!(t.contains("second string") && t.contains("<- func[4]"), "{t}");
         let e = ask(&["decomp", &path, "greet"]).unwrap_err().to_string();
         assert!(e.contains("does not read WebAssembly modules yet; use one of: info, overview"), "{e}");
+    }
+
+    #[test]
+    fn diff_takes_two_builds_through_the_parser() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixtures::elf64(false);
+        let (a, b) = (file(&dir, "old", &f), file(&dir, "new", &f));
+        let t = ask(&["diff", &a, &b]).unwrap();
+        assert!(t.contains("0 changed, 0 added, 0 removed, 3 same") && t.contains("no function differs"), "{t}");
+        let t = ask(&["diff", &a, &b, "--all", "--json"]).unwrap();
+        let j: serde_json::Value = serde_json::from_str(&t).unwrap();
+        assert_eq!(j["op"], "diff");
+        assert_eq!(j["items"].as_array().map(Vec::len), Some(3), "{t}");
+        let t = ask(&["diff", &a, &b, &format!("{:#x}", f.b)]).unwrap();
+        assert!(t.contains("matched by name; same once addresses are set aside"), "{t}");
+        let e = ask(&["diff", &a, &dir.path().join("missing").display().to_string()]).unwrap_err();
+        assert_eq!(e.exit_code(), 2, "{e}");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! `nexo-bin`: reads ELF and PE x86-64 files as bytes and answers questions about them in
-//! bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search.
+//! bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search, and
+//! what changed between two builds of one program.
 //!
 //! The file is only read. It is never run, loaded or handed to another program (`nexo-dbg` is the
 //! crate that runs programs; it asks this one for names and instruction text). No function here
@@ -7,6 +8,7 @@
 //! [`Output::page`] cuts either one to a line budget, saying exactly what is left and how to get it.
 
 mod a64;
+mod bindiff;
 mod caps;
 mod crypto;
 mod damage;
@@ -43,6 +45,8 @@ pub mod fixtures;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_diff;
+#[cfg(test)]
 mod tests_fmt;
 #[cfg(test)]
 mod tests_harden;
@@ -61,6 +65,7 @@ mod tests_x86_32;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod wasm_fixture;
 
+pub use bindiff::diff_window;
 pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
 pub use emu::{emulate, limits as emu_limits, EmuSpec};

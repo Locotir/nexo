@@ -130,6 +130,7 @@ pub(super) fn reads_only(words: &[String]) -> bool {
                             | "find"
                             | "names"
                             | "bytes"
+                            | "diff"
                     )
                 ) || (words.get(2).map(String::as_str) == Some("crypto") && !words.iter().any(|w| w == "--save")))
         }
