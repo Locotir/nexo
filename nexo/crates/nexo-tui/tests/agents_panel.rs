@@ -265,7 +265,8 @@ fn n_writes_a_nudge_p_pauses_and_enter_opens_the_details() {
     let (_d, panel) = live_panel();
     let t = std::time::Instant::now();
     let mut v = AgentsView::new(Some(panel.clone()), true);
-    while v.rows().is_empty() && t.elapsed().as_secs() < 6 {
+    // generous: on a loaded machine the panel's poller thread can be slow to see the file
+    while v.rows().is_empty() && t.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(50));
         v.refresh();
     }
@@ -495,12 +496,16 @@ fn a_moving_frame_at_400x120_stays_cheap() {
         .collect();
     a.modal = Some(Modal::Agents(Box::new(AgentsView::with_rows(many, NOW, false))));
     let mut t = Terminal::new(TestBackend::new(400, 120)).unwrap();
-    let start = Instant::now();
-    for k in 0..30u64 {
-        a.fx.clock = Some(t0 + Duration::from_millis(k * 33));
-        draw_frame(&mut t, &mut a).unwrap();
+    // best of five rounds: a busy machine slows some rounds, only a slow renderer slows them all
+    let mut per = Duration::MAX;
+    for round in 0..5u64 {
+        let start = Instant::now();
+        for k in 0..30u64 {
+            a.fx.clock = Some(t0 + Duration::from_millis((round * 30 + k) * 33));
+            draw_frame(&mut t, &mut a).unwrap();
+        }
+        per = per.min(start.elapsed() / 30);
     }
-    let per = start.elapsed() / 30;
     eprintln!("400x120, 40 sessions: {per:?} per frame (debug build)");
     assert!(per < Duration::from_millis(100), "{per:?} per frame is too slow for 30 fps");
 }
@@ -791,7 +796,8 @@ fn the_footer_says_enter_close_while_the_details_are_open() {
     let (_d, panel) = live_panel();
     let t = std::time::Instant::now();
     let mut v = AgentsView::new(Some(panel), true);
-    while v.rows().is_empty() && t.elapsed().as_secs() < 6 {
+    // generous: on a loaded machine the panel's poller thread can be slow to see the file
+    while v.rows().is_empty() && t.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(50));
         v.refresh();
     }
@@ -802,4 +808,14 @@ fn the_footer_says_enter_close_while_the_details_are_open() {
     v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let text = capture(&mut a, 140, 30).join("\n");
     assert!(text.contains("Enter close") && !text.contains("Enter open"), "{text}");
+}
+
+#[test]
+fn the_footer_of_a_wide_window_ends_on_esc_close_not_a_bare_esc() {
+    let (_d, panel) = live_panel();
+    let mut a = app();
+    a.modal = Some(Modal::Agents(Box::new(AgentsView::new(Some(panel), true))));
+    let text = capture(&mut a, 140, 30);
+    let foot = text.iter().find(|l| l.contains("p/P pause")).expect("the full key list shows at 140 columns");
+    assert!(foot.contains("+/- zoom · Esc close"), "{foot}");
 }

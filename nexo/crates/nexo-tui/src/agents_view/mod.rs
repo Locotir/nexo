@@ -795,9 +795,9 @@ impl AgentsView {
             let hints: &[&str] = if self.panel.is_some() {
                 &[
                     if self.open {
-                        "←↑↓→ move · s source · Enter close · n message · o policy · p/P pause · +/- zoom · Esc"
+                        "←↑↓→ move · s source · Enter close · n message · o policy · p/P pause · +/- zoom · Esc close"
                     } else {
-                        "←↑↓→ move · s source · Enter open · n message · o policy · p/P pause · +/- zoom · Esc"
+                        "←↑↓→ move · s source · Enter open · n message · o policy · p/P pause · +/- zoom · Esc close"
                     },
                     "←↑↓→ move · s source · n message · o policy · p pause · +/- zoom · Esc close",
                     "s source · n message · p pause · Esc close",
