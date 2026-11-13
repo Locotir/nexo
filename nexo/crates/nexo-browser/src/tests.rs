@@ -349,3 +349,44 @@ async fn upload_keys_and_raw_input() {
 
     browser.close().await.unwrap();
 }
+
+const ANIMATED: &str = r##"<!doctype html><html><body style="margin:0">
+<div id="box" style="width:200px;height:120px"></div>
+<script>
+let n = 0;
+setInterval(() => { document.getElementById('box').style.background = ['#e22', '#2e2', '#22e'][n++ % 3]; }, 40);
+</script>
+</body></html>"##;
+
+#[tokio::test]
+async fn records_a_gif() {
+    if find_browser().is_none() {
+        eprintln!("skipped: no chrome");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("anim.html");
+    std::fs::write(&file, ANIMATED).unwrap();
+    let out = dir.path().join("rec.gif");
+
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&format!("file://{}", file.display())).await.unwrap();
+    assert!(matches!(browser.record_stop_gif(&out).await, Err(Error::Unusable { .. })));
+    browser.record_start(RecordOptions::default()).await.unwrap();
+    assert!(matches!(browser.record_start(RecordOptions::default()).await, Err(Error::Unusable { .. })));
+    browser.wait(Wait::Millis(500)).await.unwrap();
+    let summary = browser.record_stop_gif(&out).await.unwrap();
+
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(bytes.starts_with(b"GIF8"));
+    assert_eq!(summary.bytes, bytes.len() as u64);
+    let mut decoder = gif::DecodeOptions::new().read_info(std::io::Cursor::new(&bytes)).unwrap();
+    let mut frames = 0;
+    while decoder.read_next_frame().unwrap().is_some() {
+        frames += 1;
+    }
+    assert!(frames > 1, "expected several frames, got {frames}");
+    assert_eq!(frames, summary.frames);
+
+    browser.close().await.unwrap();
+}

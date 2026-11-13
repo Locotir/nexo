@@ -19,6 +19,8 @@ pub enum Error {
     Reply(#[from] serde_json::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("could not encode the recording: {0}")]
+    Encode(String),
     /// A ref, selector or text that matches nothing on the current page.
     #[error("nothing on the page matches {0:?}")]
     NotFound(String),

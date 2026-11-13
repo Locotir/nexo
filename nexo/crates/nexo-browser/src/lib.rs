@@ -4,6 +4,7 @@
 mod error;
 mod events;
 mod input;
+mod record;
 mod snapshot;
 mod tabs;
 #[cfg(test)]
@@ -11,6 +12,7 @@ mod tests;
 
 pub use error::{Error, Result};
 pub use events::{ConsoleEntry, NetEntry};
+pub use record::{RecordOptions, RecordSummary};
 pub use snapshot::{Element, Snapshot};
 pub use tabs::TabInfo;
 
@@ -109,6 +111,7 @@ pub struct Browser {
     tabs: Mutex<Tabs>,
     buffers: events::Buffers,
     handler: JoinHandle<()>,
+    recorder: Mutex<Option<record::Recorder>>,
     _profile: Option<TempDir>,
 }
 
@@ -151,7 +154,14 @@ impl Browser {
                         let _ = other.close().await;
                     }
                 }
-                Ok(Browser { chrome, tabs: Mutex::new(Tabs::new(page, tasks)), buffers, handler, _profile: profile })
+                Ok(Browser {
+                    chrome,
+                    tabs: Mutex::new(Tabs::new(page, tasks)),
+                    buffers,
+                    handler,
+                    recorder: Mutex::new(None),
+                    _profile: profile,
+                })
             }
             Err(e) => {
                 handler.abort();
@@ -309,11 +319,37 @@ impl Browser {
         }
     }
 
+    /// Starts recording the active tab. Frames are captured as the page changes until [`Browser::record_stop_gif`].
+    /// Only one recording runs at a time.
+    pub async fn record_start(&self, opts: RecordOptions) -> Result<()> {
+        if lock(&self.recorder).is_some() {
+            return Err(Error::Unusable { target: "recording".to_string(), reason: "already recording".to_string() });
+        }
+        let recorder = record::Recorder::start(self.page(), &opts).await?;
+        *lock(&self.recorder) = Some(recorder);
+        Ok(())
+    }
+
+    /// Stops the recording and writes it to `path` as a looping animated GIF, with each frame shown for as long as
+    /// it was on screen.
+    pub async fn record_stop_gif(&self, path: impl AsRef<Path>) -> Result<RecordSummary> {
+        let recorder = lock(&self.recorder).take().ok_or_else(|| Error::Unusable {
+            target: "recording".to_string(),
+            reason: "no recording in progress".to_string(),
+        })?;
+        let frames = recorder.stop().await?;
+        let path = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || record::encode_gif(&frames, &path))
+            .await
+            .map_err(|e| Error::Encode(e.to_string()))?
+    }
+
     /// Closes the browser. An ephemeral profile is deleted; a persistent one is kept.
     pub async fn close(mut self) -> Result<()> {
         let closed = self.chrome.close().await;
         let _ = self.chrome.wait().await;
         lock(&self.tabs).tasks.iter().for_each(JoinHandle::abort);
+        drop(lock(&self.recorder).take());
         self.handler.abort();
         closed?;
         Ok(())
