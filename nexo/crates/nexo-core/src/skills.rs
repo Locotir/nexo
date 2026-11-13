@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 pub const MAX_LISTED: usize = 100;
 /// The most characters of one description in the list.
 pub const MAX_DESCRIPTION: usize = 200;
+/// The characters of the compact list that carry descriptions; the skills after them are named only.
+pub const COMPACT_LISTING: usize = 300;
+/// The most characters of one description in the compact list.
+pub const COMPACT_DESCRIPTION: usize = 40;
 /// The most characters of a skill body handed to the model.
 pub const MAX_BODY: usize = 100_000;
 
@@ -258,6 +262,27 @@ pub fn listing(skills: &[Skill]) -> String {
     out.trim_end().to_string()
 }
 
+/// [`listing`] for a small window: the first skills with a short description until [`COMPACT_LISTING`]
+/// characters are used, the rest by name only, so every skill can still be asked for.
+pub fn compact_listing(skills: &[Skill]) -> String {
+    let mut sorted: Vec<&Skill> = skills.iter().collect();
+    sorted.sort_by_key(|s| s.name.to_ascii_lowercase());
+    let (mut out, mut names) = (String::new(), Vec::new());
+    for s in sorted.iter().take(MAX_LISTED) {
+        if out.len() >= COMPACT_LISTING {
+            names.push(s.name.as_str());
+            continue;
+        }
+        let d: String = s.description.chars().take(COMPACT_DESCRIPTION).collect();
+        let dots = if s.description.chars().count() > COMPACT_DESCRIPTION { "..." } else { "" };
+        out.push_str(&format!("- {}: {}{dots}\n", s.name, d.trim_end()));
+    }
+    if !names.is_empty() {
+        out.push_str(&format!("- also: {}\n", names.join(", ")));
+    }
+    out.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +446,25 @@ mod tests {
         };
         assert_eq!(names(true), ["a", "p", "h"]);
         assert_eq!(names(false), ["a"]);
+    }
+
+    #[test]
+    fn the_compact_list_keeps_every_name_and_cuts_the_descriptions() {
+        let skill = |n: usize| Skill {
+            name: format!("skill-{n:02}"),
+            description: "Use this when the person wants the long and careful steps of a certain kind of job.".into(),
+            dir: PathBuf::from("/s"),
+            allowed_tools: vec![],
+            source: String::new(),
+        };
+        let all: Vec<Skill> = (0..20).map(skill).collect();
+        let c = compact_listing(&all);
+        assert!(c.len() < listing(&all).len() / 3, "{c}");
+        assert!(c.starts_with("- skill-00: Use this when the person wants the long..."), "{c}");
+        for s in &all {
+            assert!(c.contains(&s.name), "{} is not named: {c}", s.name);
+        }
+        assert!(c.contains("- also: skill-"), "{c}");
+        assert_eq!(compact_listing(&all[..1]), "- skill-00: Use this when the person wants the long...");
     }
 }

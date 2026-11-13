@@ -89,6 +89,6 @@ fn window_selects_the_compact_text_for_a_small_model() {
     assert!(tools.len() * 5 < run(&["prompt", "--tools"]).len() * 3, "{tools}");
     // above 32k, or without the flag: today's text
     assert_eq!(run(&["prompt", "--builtin", "--window", "200000"]), run(&["prompt", "--builtin"]));
-    assert_eq!(run(&["prompt", "--tools", "--window", "32001"]), run(&["prompt", "--tools"]));
+    assert_eq!(run(&["prompt", "--tools", "--window", "32769"]), run(&["prompt", "--tools"]));
     assert!(run(&["prompt", "--builtin"]).contains("How to write code"));
 }

@@ -1730,6 +1730,12 @@ mod provider_tests {
         }
     }
 
+    /// The most tokens the fixed part of a request may take in a window of 8k and 16k, and in one of 32k
+    /// (3375 in all three before the tools a small window cannot use well were left out; `ask_user`, which a
+    /// session adds, takes about 115 more than these tools).
+    const FIXED_8K: u64 = 1_900;
+    const FIXED_32K: u64 = 2_400;
+
     /// The most characters the tools of a new session may take in a request (see the test that reads it).
     const SCHEMA_CEILING: usize = 11_472;
     /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
@@ -1991,6 +1997,104 @@ mod provider_tests {
         let each: Vec<String> =
             specs.iter().map(|s| format!("{} {}", s.name, wire_chars(std::slice::from_ref(s)))).collect();
         assert!(chars <= ceiling, "the tools take {chars} characters, over {ceiling}: {}", each.join(", "));
+    }
+
+    /// The tokens (nexo's estimator) of what every request carries whatever the work: the built-in text with
+    /// its tool guidance, and the tools as the wire gets them, for a model with context window `window`. The
+    /// directory, date and project block and the person's instruction files are not in it.
+    fn fixed_tokens(tools: &ToolSet, window: u64) -> u64 {
+        let cfg = nexo_core::config::AgentConfig { hermetic: true, ..Default::default() };
+        let system = crate::prompt::system_prompt_with(
+            std::path::Path::new("/w"),
+            &cfg,
+            tools,
+            Some(window),
+            &crate::prompt::Volatile::default(),
+        );
+        let specs: Vec<ToolSpec> = tools
+            .specs_for(crate::prompt::is_compact(Some(window)))
+            .into_iter()
+            .filter(|s| !crate::prompt::left_out(Some(window), &s.name))
+            .collect();
+        let wire: Vec<_> = specs.iter().map(|s| json!({"type": "function", "function": s})).collect();
+        nexo_core::message::estimate_tokens(&[
+            nexo_core::message::Message::user(system),
+            nexo_core::message::Message::user(json!(wire).to_string()),
+        ])
+    }
+
+    /// The tools of a session with sub-agents and sixteen skills the way a person keeps them.
+    fn session_tools() -> ToolSet {
+        let mut tools = default_tools();
+        let skills = (0..16)
+            .map(|i| nexo_core::skills::Skill {
+                name: format!("skill-number-{i}"),
+                description: "Use when the person asks for something of this kind and wants the steps spelled out for it, with the usual checks and the files it touches.".into(),
+                dir: std::path::PathBuf::from("/skills"),
+                allowed_tools: vec![],
+                source: ".claude/skills".into(),
+            })
+            .collect();
+        tools.add(nexo_tools::skill::tool(skills).unwrap());
+        tools
+    }
+
+    #[test]
+    fn the_fixed_part_of_a_request_is_small_in_a_small_window_and_the_same_as_before_in_a_large_one() {
+        let tools = session_tools();
+        let (w8, w16, w32, w33, w128) = (
+            fixed_tokens(&tools, 8_000),
+            fixed_tokens(&tools, 16_000),
+            fixed_tokens(&tools, crate::prompt::COMPACT_WINDOW),
+            fixed_tokens(&tools, crate::prompt::COMPACT_WINDOW + 1),
+            fixed_tokens(&tools, 128_000),
+        );
+        eprintln!("fixed tokens: 8k {w8}, 16k {w16}, 32k {w32}, 33k {w33}, 128k {w128}");
+        assert!(w8 <= FIXED_8K && w16 <= FIXED_8K, "8k {w8}, 16k {w16}, over {FIXED_8K}");
+        assert!(w32 <= FIXED_32K, "32k {w32} over {FIXED_32K}");
+        // above 32k nothing is shortened and no tool is left out: the request is the one of a window that
+        // is not known (the prompt cache and every current user keep their bytes)
+        assert_eq!(w33, w128);
+        assert!(w128 > 2 * w32, "{w128} {w32}");
+        let unknown = tools.specs_for(false);
+        for w in [crate::prompt::COMPACT_WINDOW + 1, 128_000, 1_000_000] {
+            let offered: Vec<ToolSpec> = tools
+                .specs_for(crate::prompt::is_compact(Some(w)))
+                .into_iter()
+                .filter(|s| !crate::prompt::left_out(Some(w), &s.name))
+                .collect();
+            assert_eq!(json!(offered), json!(unknown), "{w}");
+        }
+        let cfg = nexo_core::config::AgentConfig { hermetic: true, ..Default::default() };
+        let (cwd, vol) = (std::path::Path::new("/w"), crate::prompt::Volatile::default());
+        let none = crate::prompt::system_prompt_with(cwd, &cfg, &tools, None, &vol);
+        for w in [crate::prompt::COMPACT_WINDOW + 1, 128_000] {
+            assert_eq!(crate::prompt::system_prompt_with(cwd, &cfg, &tools, Some(w), &vol), none, "{w}");
+        }
+    }
+
+    #[test]
+    fn a_small_window_is_not_offered_sub_agents_notes_or_the_task_list_and_a_tiny_one_no_skills_or_web() {
+        let tools = session_tools();
+        let names = |w: u64| -> Vec<String> {
+            tools
+                .specs_for(true)
+                .into_iter()
+                .filter(|s| !crate::prompt::left_out(Some(w), &s.name))
+                .map(|s| s.name)
+                .collect()
+        };
+        let tiny = names(crate::prompt::TINY_WINDOW);
+        for kept in ["bash", "read", "write", "edit", "grep", "glob", "ls", "jobs", "recall"] {
+            assert!(tiny.iter().any(|n| n == kept), "{kept} is missing: {tiny:?}");
+        }
+        for gone in ["task", "workflow", "skill", "todo", "note", "debug", "diagnostics", "web_search", "web_fetch"] {
+            assert!(!tiny.iter().any(|n| n == gone), "{gone} is offered: {tiny:?}");
+        }
+        // a window of 32k keeps the skills and the web, and not the sub-agents and the notes
+        let small = names(crate::prompt::COMPACT_WINDOW);
+        assert!(["skill", "web_search", "bash", "jobs"].iter().all(|k| small.iter().any(|n| n == k)), "{small:?}");
+        assert!(["task", "todo", "note"].iter().all(|k| !small.iter().any(|n| n == k)), "{small:?}");
     }
 
     #[tokio::test]

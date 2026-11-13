@@ -163,7 +163,7 @@ pub enum Cmd {
         /// Print only nexo's own part of the prompt: the built-in text and tool guidance, no instruction files or preferences.
         #[arg(long, conflicts_with_all = ["edit", "tools"])]
         builtin: bool,
-        /// Print what a model with this context window (tokens) would get: the compact text at 32000 or less.
+        /// Print what a model with this context window (tokens) would get: the compact text at 32768 or less (and some tools left out).
         #[arg(long, value_name = "TOKENS", conflicts_with = "edit")]
         window: Option<u64>,
     },
@@ -546,7 +546,11 @@ async fn run_in(args: Args, cwd: PathBuf) -> anyhow::Result<i32> {
         Some(Cmd::Prompt { edit: false, tools: show_tools, builtin, window }) => {
             let tools = setup::prompt_tools(&config, &cwd);
             // what the session would get: `auto` is the built-in curator, told which tools there are
-            let specs = tools.specs_for(nexo_agent::prompt::is_compact(*window));
+            let specs: Vec<_> = tools
+                .specs_for(nexo_agent::prompt::is_compact(*window))
+                .into_iter()
+                .filter(|s| !nexo_agent::prompt::left_out(*window, &s.name))
+                .collect();
             let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
             let policy = nexo_agent::context::from_config(&config.context);
             let directives = policy.directives(&names);

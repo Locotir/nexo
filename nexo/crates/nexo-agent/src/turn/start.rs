@@ -433,11 +433,13 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
     // out, and it offers the tool unless `recall=0` (which keeps the tool list the same as without the
     // curator, so that a comparison measures the view alone)
     let curator = st.policy.recall();
-    let specs = st.tools.specs_for(prompt::is_compact(window_of(&st.limits)));
+    let window = window_of(&st.limits);
+    let specs = st.tools.specs_for(prompt::is_compact(window));
     specs
         .into_iter()
         .filter(|s| {
-            (plan || s.name != "exit_plan")
+            !prompt::left_out(window, &s.name)
+                && (plan || s.name != "exit_plan")
                 && (curator || s.name != "recall")
                 && (st.goal.is_some() || s.name != "goal_brief")
         })

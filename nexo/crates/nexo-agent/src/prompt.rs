@@ -15,11 +15,29 @@ const BUILT_IN: &str = include_str!("prompt.md");
 const BUILT_IN_COMPACT: &str = include_str!("prompt_compact.md");
 
 /// A model whose context window is at most this many tokens gets the compact prompt and compact tool text.
-pub const COMPACT_WINDOW: u64 = 32_000;
+pub const COMPACT_WINDOW: u64 = 32_768;
 
 /// Whether a model with context window `window` (tokens; `None` when unknown) gets the compact text.
 pub fn is_compact(window: Option<u64>) -> bool {
     window.is_some_and(|w| w <= COMPACT_WINDOW)
+}
+
+/// A model whose window is at most this many tokens is not offered the tools in [`TINY_LEAVES_OUT`] either.
+pub const TINY_WINDOW: u64 = 16_384;
+
+/// The tools a window of [`COMPACT_WINDOW`] tokens or less is not offered: each costs a description in every
+/// request and starts work (a second context, a list to keep, notes) that there is no room for.
+const SMALL_LEAVES_OUT: [&str; 6] = ["task", "workflow", "todo", "note", "debug", "diagnostics"];
+
+/// The tools a window of [`TINY_WINDOW`] tokens or less is not offered besides those: skills and the web.
+const TINY_LEAVES_OUT: [&str; 3] = ["skill", "web_fetch", "web_search"];
+
+/// Whether the tool `name` is left out for a model with context window `window` (`None`: unknown, nothing is).
+pub fn left_out(window: Option<u64>, name: &str) -> bool {
+    window.is_some_and(|w| {
+        (w <= COMPACT_WINDOW && SMALL_LEAVES_OUT.contains(&name))
+            || (w <= TINY_WINDOW && TINY_LEAVES_OUT.contains(&name))
+    })
 }
 
 /// A prompt file whose first line is this is sent as it is: no tool guidance,

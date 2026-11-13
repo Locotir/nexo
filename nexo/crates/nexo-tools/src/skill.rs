@@ -13,6 +13,8 @@ use serde_json::{json, Value};
 pub struct SkillTool {
     skills: Arc<Vec<Skill>>,
     description: String,
+    /// The same for a small window: the list shortened.
+    compact: String,
 }
 
 /// The tool for `skills`; None when there are none, so the model is not offered an empty tool.
@@ -26,7 +28,11 @@ pub fn tool(skills: Vec<Skill>) -> Option<Arc<dyn Tool>> {
          mentions are relative to its folder (read them with `read`). Skills:\n{}",
         skills::listing(&skills)
     );
-    Some(Arc::new(SkillTool { skills: Arc::new(skills), description }))
+    let compact = format!(
+        "Load a skill (steps for a kind of task) by name; call it first when the task matches one. Skills:\n{}",
+        skills::compact_listing(&skills)
+    );
+    Some(Arc::new(SkillTool { skills: Arc::new(skills), description, compact }))
 }
 
 #[async_trait]
@@ -48,6 +54,10 @@ impl Tool for SkillTool {
                 "required": ["name"]
             }),
         }
+    }
+
+    fn compact(&self) -> Option<nexo_core::Compact<'_>> {
+        Some(nexo_core::Compact { description: &self.compact, params: &[] })
     }
 
     fn kind(&self) -> ToolKind {
