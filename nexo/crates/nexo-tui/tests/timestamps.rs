@@ -12,7 +12,9 @@ use ratatui::Terminal;
 use tokio::sync::mpsc;
 
 fn app(timestamps: bool) -> App {
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::unbounded_channel();
+    // the agent's end stays open: a request with no agent to take it is kept in the box
+    std::mem::forget(rx);
     let opts = TuiOptions {
         cwd: PathBuf::from("/tmp/project"),
         provider: "deepseek".into(),

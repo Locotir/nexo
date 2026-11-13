@@ -264,6 +264,7 @@ impl App {
             self.spinner = self.spinner.wrapping_add(1);
         }
         self.deliver_supervisor_nudges();
+        self.check_unechoed();
         self.poll_status_cmd();
         self.poll_mailbox();
         self.poll_diffview();
@@ -443,6 +444,8 @@ impl App {
             || self.home_alive(self.now())
             // the memory figure waits on the curator: its spinner needs the beat
             || self.context_wait
+            // a request sent that the agent has not echoed: the clock must wake to say so
+            || self.unechoed.iter().any(|(_, _, said)| !said)
             // the answer of the /diff collection is taken on a tick: an idle clock would hold it for seconds
             || self.diffview.as_ref().is_some_and(|v| v.loading)
             || self.tail_is_live()
@@ -481,12 +484,14 @@ impl App {
     }
 
     pub fn send(&self, cmd: AgentCommand) {
+        crate::trace::command(&cmd);
         let _ = self.commands.send(cmd);
     }
 
     // ------------------------------------------------------------ agent events
 
     pub fn handle_agent(&mut self, ev: AgentEvent) {
+        crate::trace::agent_event(&ev);
         // the conversations of sub-agents draw nothing, and cause no redraw, unless one is open
         if ev.is_sub() {
             return self.handle_sub(ev);
@@ -600,9 +605,10 @@ impl App {
                         }
                         None => None,
                     };
+                    let mut pending = self.take_pending(words);
                     let pieces = crate::replay::split_user(&text);
                     if pieces.len() == 1 && matches!(&pieces[0], crate::replay::Piece::Text(t) if *t == text) {
-                        self.push(Block::User { text, at });
+                        self.put_user(text, at, &mut pending);
                     } else {
                         let mut at = at;
                         // what nexo put around the words stays behind one folded line, not in the message
@@ -630,10 +636,12 @@ impl App {
                                     };
                                     self.push(Block::Notice { level: Level::Info, text });
                                 }
-                                Piece::Text(t) => {
-                                    self.push(Block::User { text: t, at: at.take() });
-                                }
+                                Piece::Text(t) => self.put_user(t, at.take(), &mut pending),
                             }
+                        }
+                        // the words were sent but the echo has none of its own: the dim line becomes the message
+                        if pending.is_some() {
+                            self.put_user(words.to_string(), None, &mut pending);
                         }
                         if !extra.is_empty() {
                             self.push(Block::Added { parts: extra, folded: true });

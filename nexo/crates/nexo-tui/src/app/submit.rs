@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// How long a sent request may go unechoed before the screen says so.
+const UNECHOED_AFTER: Duration = Duration::from_secs(3);
+
 impl App {
     /// Esc Esc or `/rewind`: pick an earlier message to go back to.
     pub fn open_rewind_picker(&mut self) {
@@ -218,9 +221,18 @@ impl App {
             return;
         }
         self.input.push_history(trimmed);
+        // the agent is gone (its end of the channel is closed): nothing would take the request, so the draft stays
+        if !self.locked && self.commands.is_closed() {
+            self.notice(
+                Level::Error,
+                "the agent has stopped, so nothing was sent. Your text is still in the box: restart nexo to go on",
+            );
+            return;
+        }
         self.input.clear();
         // no model yet: a request has nowhere to go, the setup opens
         if self.locked {
+            crate::trace::note("submit: locked, setup opens");
             return self.open_setup();
         }
         let attachments = self.attachments_in(trimmed);
@@ -233,8 +245,61 @@ impl App {
         if self.pending_stamps.len() > 20 {
             self.pending_stamps.pop_front();
         }
+        // shown at once, dim, until the agent echoes it back: a sent message never vanishes (a queued one has its own line)
+        if !self.busy {
+            self.unechoed.push((trimmed.to_string(), self.now(), false));
+            self.push(Block::Pending { text: trimmed.to_string() });
+        }
         self.send(AgentCommand::Submit { text: trimmed.to_string(), attachments });
         self.scroll_to_end();
+    }
+
+    /// The agent's echo of a request sent from here: the dim line it was shown as becomes the message
+    /// (its place in the transcript, if still there).
+    pub(super) fn take_pending(&mut self, words: &str) -> Option<usize> {
+        let at = self.unechoed.iter().position(|(t, _, _)| t == words)?;
+        self.unechoed.remove(at);
+        let i = self.blocks.iter().rposition(|b| matches!(b, Block::Pending { text } if text == words))?;
+        Some(i)
+    }
+
+    /// The person's message as the agent echoed it: in the place of its dim line when there is one.
+    pub(super) fn put_user(&mut self, text: String, at: Option<String>, pending: &mut Option<usize>) {
+        match pending.take() {
+            Some(i) => {
+                self.blocks[i] = Block::User { text, at };
+                self.invalidate(i);
+            }
+            None => {
+                self.push(Block::User { text, at });
+            }
+        }
+    }
+
+    /// A request the agent has not echoed after a few seconds: say so once, and what it may be waiting for.
+    pub(super) fn check_unechoed(&mut self) {
+        let now = self.now();
+        let mut late = false;
+        for (_, at, said) in self.unechoed.iter_mut() {
+            if !*said && now.saturating_duration_since(*at) >= UNECHOED_AFTER {
+                *said = true;
+                late = true;
+            }
+        }
+        if !late {
+            return;
+        }
+        let waits = if matches!(self.modal, Some(Modal::Permission(_) | Modal::Question(_))) {
+            "waiting for your answer in the open window"
+        } else if self.busy {
+            "a turn is still running"
+        } else {
+            "the agent has not answered"
+        };
+        self.notice(
+            Level::Warn,
+            format!("your message is not taken yet ({waits}); it is kept: ↑ brings it back to the box"),
+        );
     }
 
     /// The texts kept for the queue never outnumber the requests the agent says wait: what started

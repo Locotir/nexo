@@ -221,6 +221,7 @@ mod keys_row_and_fades;
 mod outside_click;
 mod pastes_questions_and_plans;
 mod scrollbar_titles_and_status_bar;
+mod sent_message_stays_visible;
 mod session_lists_changes_and_selection;
 mod setup_save_and_scroll_news;
 mod starfield;

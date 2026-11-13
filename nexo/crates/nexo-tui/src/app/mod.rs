@@ -279,6 +279,8 @@ pub struct App {
     theme_before_preview: Option<Theme>,
     /// Texts sent from this interface whose echo has not arrived yet (for the timestamps).
     pending_stamps: VecDeque<String>,
+    /// Texts shown dim as sent, with when and whether the "agent has not taken it" notice was said.
+    unechoed: Vec<(String, Instant, bool)>,
     /// The task list the model keeps (the latest `todo` output).
     pub todo: Vec<TodoItem>,
     /// A finished list stays in the strip as `✓` until its turn ends.
@@ -471,6 +473,7 @@ impl App {
             mouse_request: None,
             theme_before_preview: None,
             pending_stamps: VecDeque::new(),
+            unechoed: Vec::new(),
             todo: Vec::new(),
             todo_done_live: false,
             todo_area: Rect::default(),
@@ -539,6 +542,7 @@ impl App {
         self.call_inputs.clear();
         self.turn_cost_start = 0.0;
         self.pending_stamps.clear();
+        self.unechoed.clear();
         self.offsets.clear();
         self.total_lines = 0;
         self.seen_blocks = 0;

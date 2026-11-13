@@ -63,6 +63,7 @@ pub mod theme;
 pub mod toast;
 pub mod todo_strip;
 pub mod todo_view;
+pub mod trace;
 pub mod ui;
 
 use std::path::PathBuf;
@@ -219,6 +220,9 @@ impl Keys {
                 Ok(_) => continue,
                 Err(e) => Err(e),
             };
+            if let Ok(e) = &read {
+                trace::event(e);
+            }
             let failed = read.is_err();
             if tx.send(read).is_err() || failed {
                 break;

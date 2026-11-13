@@ -65,6 +65,10 @@ pub enum Block {
         /// `HH:MM` when the message was sent from this interface (None on a replay).
         at: Option<String>,
     },
+    /// A message just sent, shown dim until the agent echoes it back (which turns it into a `User`).
+    Pending {
+        text: String,
+    },
     Assistant {
         text: String,
         streaming: bool,
@@ -237,7 +241,7 @@ impl Block {
     pub fn copy_text(&self) -> Option<String> {
         match self {
             Block::Assistant { text, .. } => Some(text.clone()),
-            Block::User { text, .. } => Some(text.clone()),
+            Block::User { text, .. } | Block::Pending { text } => Some(text.clone()),
             Block::Tool { output: Some(o), .. } => Some(o.content.clone()),
             Block::Shell { output, .. } => Some(output.clone()),
             Block::Problem { problem, .. } => Some(problem.plain()),
@@ -270,6 +274,13 @@ impl Block {
                         s.style = band.patch(s.style);
                     }
                 }
+                lines
+            }
+            Block::Pending { text } => {
+                let dim = theme.style(theme.dim2);
+                let bar = Span::styled("▌ ", dim);
+                let (lines, conts) = wrap_plain_ex(text, w, dim, &[bar]);
+                meta.conts = conts;
                 lines
             }
             Block::Assistant { text, streaming, at, took_ms, .. } => {
