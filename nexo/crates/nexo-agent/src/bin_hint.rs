@@ -249,6 +249,11 @@ mod tests {
         std::env::current_exe().unwrap()
     }
 
+    /// A path as a command and a call write it: `/` for the separator on Windows too.
+    fn slashed(p: impl AsRef<Path>) -> String {
+        hint_cmd::slash(&p.as_ref().display().to_string())
+    }
+
     fn call(id: &str, command: &str) -> (String, String, Value) {
         (id.into(), "bash".into(), json!({"command": command}))
     }
@@ -274,7 +279,7 @@ mod tests {
     #[test]
     fn a_command_that_never_ran_gets_no_line_and_does_not_spend_it() {
         let cwd = tempfile::tempdir().unwrap();
-        let command = format!("objdump -d '{}'", this_binary().display());
+        let command = format!("objdump -d '{}'", slashed(this_binary()));
         for refusal in ["Permission denied: the person said no", "Blocked by a hook: no", "interrupted by the person"] {
             let mut told = false;
             let out = round(
@@ -298,8 +303,7 @@ mod tests {
     #[test]
     fn a_line_that_already_uses_nexo_bin_gets_none_even_with_a_reader_in_it() {
         let cwd = tempfile::tempdir().unwrap();
-        let exe = this_binary();
-        let exe = exe.display();
+        let exe = slashed(this_binary());
         assert!(wanted(&format!("echo x; xxd '{exe}'"), cwd.path()), "the same line without nexo bin asks for it");
         assert!(!wanted(&format!("nexo bin fn '{exe}' main; xxd '{exe}'"), cwd.path()));
         assert!(!wanted(&format!("nexo bin info '{exe}' | strings '{exe}'"), cwd.path()));
@@ -415,14 +419,13 @@ mod tests {
         let sub = dir.path().join("tests");
         std::fs::create_dir(&sub).unwrap();
         std::fs::copy(this_binary(), sub.join("c-lcrypt")).unwrap();
-        let abs = sub.join("c-lcrypt");
-        let abs = abs.display();
+        let abs = slashed(sub.join("c-lcrypt"));
         // an absolute path, with the output redirected and piped
         assert!(wanted(&format!("objdump -d {abs} 2>&1 | head -100"), dir.path()));
         assert!(wanted(&format!("objdump -d {abs} > /tmp/dump.txt 2>/dev/null"), dir.path()));
         // `cd` first: the file is found from there, and the call carries the whole path
         let l = line("cd tests && objdump -d c-lcrypt | head", dir.path(), TOOL).unwrap();
-        assert!(l.contains(&format!("overview {abs}")), "{l}");
+        assert!(l.contains(&format!("overview {}", hint_cmd::quoted(&abs))), "{l}");
         assert!(!wanted("objdump -d c-lcrypt", dir.path()), "from here the name is nothing");
         // wrappers, variables, a script run by the shell
         assert!(wanted(&format!("sudo -n nm {abs}"), dir.path()));
@@ -436,8 +439,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello\nworld\n").unwrap();
         std::fs::write(dir.path().join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
-        let exe = this_binary();
-        let exe = exe.display();
+        let exe = slashed(this_binary());
         for c in [
             "strings notes.txt".to_string(),
             "objdump -d run.sh".into(),
@@ -460,15 +462,16 @@ mod tests {
     fn a_hostile_name_is_only_text_nothing_runs_or_expands() {
         let dir = tempfile::tempdir().unwrap();
         let exe = this_binary();
+        let shown = slashed(&exe);
         // each of these would create `touched` if anything ran it; none is a file nexo bin opens
         for c in [
-            format!("objdump -d $(touch touched) '{}'", exe.display()),
-            format!("objdump -d `touch touched` '{}'", exe.display()),
+            format!("objdump -d $(touch touched) '{}'", shown),
+            format!("objdump -d `touch touched` '{}'", shown),
             "objdump -d '$(touch touched)'".to_string(),
             "objdump -d 'a\ntouch touched'".to_string(),
             "objdump -d\ntouch touched".to_string(),
             "objdump -d -- -rf".to_string(),
-            format!("objdump -d '-{}'", exe.display()),
+            format!("objdump -d '-{}'", shown),
             "strings ; touch touched".to_string(),
             "strings <(touch touched)".to_string(),
         ] {
@@ -504,8 +507,7 @@ mod tests {
     #[test]
     fn the_line_closes_the_first_result_that_earns_it_and_only_that_one() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = this_binary();
-        let hit = format!("objdump -d '{}'", exe.display());
+        let hit = format!("objdump -d '{}'", slashed(this_binary()));
         let calls = vec![call("a", "ls"), call("b", &hit), call("c", &hit)];
         let results = vec![result("a", "files"), result("b", "disassembly"), result("c", "again")];
         let mut told = false;
@@ -522,7 +524,7 @@ mod tests {
     #[test]
     fn a_failed_command_still_gets_the_line_and_a_background_one_does_not() {
         let dir = tempfile::tempdir().unwrap();
-        let hit = format!("objdump -d '{}'", this_binary().display());
+        let hit = format!("objdump -d '{}'", slashed(this_binary()));
         let mut told = false;
         let bg = vec![("a".to_string(), "bash".to_string(), json!({"command": hit, "background": true}))];
         let out = round(&mut told, &bg, vec![result("a", "job started")], dir.path(), TOOL);
@@ -538,7 +540,7 @@ mod tests {
     #[test]
     fn only_bash_calls_are_looked_at() {
         let dir = tempfile::tempdir().unwrap();
-        let hit = format!("objdump -d '{}'", this_binary().display());
+        let hit = format!("objdump -d '{}'", slashed(this_binary()));
         let calls = vec![("a".to_string(), "read".to_string(), json!({"command": hit}))];
         let mut told = false;
         let out = round(&mut told, &calls, vec![result("a", "x")], dir.path(), TOOL);
@@ -548,7 +550,7 @@ mod tests {
     #[test]
     fn told_finds_either_line_and_the_old_one_in_a_kept_history_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
-        let hit = format!("objdump -d '{}'", this_binary().display());
+        let hit = format!("objdump -d '{}'", slashed(this_binary()));
         for offer in [TOOL, SHELL] {
             let l = line(&hit, dir.path(), offer).unwrap();
             let with = Message::tool_results(vec![result("b", &format!("out\n\n{l}"))]);

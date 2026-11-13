@@ -78,7 +78,10 @@ pub fn line(text: &str, cwd: &Path, offer: Offer) -> Option<String> {
     }
     // no file named: the placeholder is written bare, as the model fills it in
     let (f, shell_f) = match file.as_deref() {
-        Some(f) => (hint_cmd::quoted(f), hint_cmd::shell_quoted(f)),
+        Some(f) => {
+            let f = hint_cmd::slash(f);
+            (hint_cmd::quoted(&f), hint_cmd::shell_quoted(&f))
+        }
         None => ("<file>".to_string(), "<file>".to_string()),
     };
     let bin = if offer.bin {
@@ -114,7 +117,9 @@ fn name_words(text: &str) -> Vec<&str> {
                 || w.len() > 300
                 || w.starts_with(['@', '-', '~'])
                 || w.contains("://")
-                || w.contains(['*', '"', '\\']))
+                || w.contains(['*', '"'])
+                // a backslash is a character of a name elsewhere; on Windows it is the separator of a path
+                || (!cfg!(windows) && w.contains('\\')))
         })
         .take(STATS)
         .collect()
@@ -199,7 +204,11 @@ mod tests {
         );
         let abs = d.path().join("c-lcrypt");
         let l = line(&format!("look at {} please.", abs.display()), d.path(), BOTH).unwrap();
-        assert!(l.contains(&format!("overview {}\"", abs.display())), "{l}");
+        let call = hint_cmd::tool_call(
+            "bin",
+            &format!("overview {}", hint_cmd::quoted(&hint_cmd::slash(&abs.display().to_string()))),
+        );
+        assert!(l.contains(&call), "{l}");
         // a name with a space is not split by this reading, and a quoted one is whole only in the shell form
         assert!(line("read ./c-lcrypt.", d.path(), BOTH).unwrap().contains("overview ./c-lcrypt\""));
     }
@@ -209,12 +218,22 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         exe_in(d.path(), "c-lcrypt");
         // the file as it is, not as it was typed, so the call works where names are case-sensitive
-        let l = line("prueba nexo contra mi programa opensource C-LCRYPT", d.path(), BOTH).unwrap();
-        assert!(l.contains("overview c-lcrypt\"") && l.contains("run c-lcrypt; cont"), "{l}");
-        assert_eq!(named("C-LCRYPT.", d.path()), Some("c-lcrypt".to_string()));
-        // a path is taken as written; a word that is no file of the folder, or a text file, is nothing
-        assert_eq!(named("./C-LCRYPT", d.path()), None);
-        std::fs::write(d.path().join("notes.txt"), "hello\n").unwrap();
+        #[cfg(unix)]
+        {
+            let l = line("prueba nexo contra mi programa opensource C-LCRYPT", d.path(), BOTH).unwrap();
+            assert!(l.contains("overview c-lcrypt\"") && l.contains("run c-lcrypt; cont"), "{l}");
+            assert_eq!(named("C-LCRYPT.", d.path()), Some("c-lcrypt".to_string()));
+            // a path is taken as written
+            assert_eq!(named("./C-LCRYPT", d.path()), None);
+        }
+        // names are not case-sensitive on Windows: the word as typed is already a file there, and the call works
+        #[cfg(windows)]
+        {
+            let l = line("prueba nexo contra mi programa opensource C-LCRYPT", d.path(), BOTH).unwrap();
+            assert!(l.contains("overview C-LCRYPT\"") && l.contains("run C-LCRYPT; cont"), "{l}");
+            assert_eq!(named("./C-LCRYPT", d.path()), Some("./C-LCRYPT".to_string()));
+        }
+        // a word that is no file of the folder, or a text file, is nothing        std::fs::write(d.path().join("notes.txt"), "hello\n").unwrap();
         assert_eq!(named("NOTES.txt Other", d.path()), None);
     }
 

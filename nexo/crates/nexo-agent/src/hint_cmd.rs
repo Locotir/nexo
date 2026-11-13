@@ -77,9 +77,20 @@ pub fn reads(dir: &Path, w: &str) -> bool {
 /// whole path when a `cd` moved it.
 pub fn shown(cwd: &Path, dir: &Path, w: &str) -> String {
     if Path::new(w).is_absolute() || dir == cwd {
-        w.to_string()
+        slash(w)
     } else {
-        dir.join(w).display().to_string()
+        slash(&dir.join(w).display().to_string())
+    }
+}
+
+/// A path as a call writes it. On Windows the separator is `/`, which every Windows program and the shell there
+/// take, so a name never carries a backslash the call languages would read as an escape; elsewhere a backslash is
+/// a character of the name and stays (the callers then leave such a name out).
+pub fn slash(w: &str) -> String {
+    if cfg!(windows) {
+        w.replace('\\', "/")
+    } else {
+        w.to_string()
     }
 }
 

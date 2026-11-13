@@ -712,6 +712,11 @@ mod tests {
         d
     }
 
+    /// A path as a command and a call write it: `/` for the separator on Windows too.
+    fn slashed(p: impl AsRef<Path>) -> String {
+        hint_cmd::slash(&p.as_ref().display().to_string())
+    }
+
     fn fresh(command: &str, result: &str, cwd: &Path) -> Option<(Kind, String)> {
         line(command, result, cwd, &Told::default())
     }
@@ -744,20 +749,22 @@ mod tests {
         assert!(l.contains(r#"run ./paint <<< \"3 4\"; cont"#), "{l}");
         assert!(fresh("./paint big > out.txt 2>&1", SEGV, d.path()).unwrap().1.contains(r#""run ./paint big; cont""#));
         let abs = d.path().join("paint");
-        let l = fresh(&format!("timeout 5 {}", abs.display()), SEGV, d.path()).unwrap().1;
-        assert!(l.contains(&format!("run {}; cont", abs.display())), "{l}");
+        let l = fresh(&format!("timeout 5 {}", slashed(&abs)), SEGV, d.path()).unwrap().1;
+        assert!(l.contains(&format!("run {}; cont", hint_cmd::quoted(&slashed(&abs)))), "{l}");
         let sub = d.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::copy(abs, sub.join("tool")).unwrap();
         let l = fresh("cd sub && ./tool", SEGV, d.path()).unwrap().1;
-        assert!(l.contains(&format!("run {}/sub/./tool; cont", d.path().display())), "{l}");
+        assert!(
+            l.contains(&format!("run {}; cont", hint_cmd::quoted(&format!("{}/sub/./tool", slashed(d.path()))))),
+            "{l}"
+        );
     }
 
     #[test]
     fn the_shapes_of_the_paste_one_script_in_a_heredoc_and_gdb_on_an_absolute_path() {
         let d = dir_with_prog();
-        let abs = d.path().join("paint");
-        let abs = abs.display();
+        let abs = slashed(d.path().join("paint"));
         let command = format!(
             "cat > g1.gdb <<'EOF'\nset pagination off\nbreak *(_ZN6LCRYPT7encryptERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEi+0x170)\ncommands\nsilent\nx/s $rdi\ninfo registers rax\ncontinue\nend\nrun -e t.bin -p 0 -P test123\nEOF\ngdb -q -batch -x g1.gdb {abs} 2>&1 | tail -40"
         );
@@ -812,7 +819,10 @@ mod tests {
         let sub = d.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::copy(d.path().join("paint"), sub.join("paint")).unwrap();
-        assert_eq!(call("cd sub; gdb -batch ./paint"), format!("run {}/sub/./paint; cont", d.path().display()));
+        assert_eq!(
+            call("cd sub; gdb -batch ./paint"),
+            format!("run {}; cont", hint_cmd::quoted(&format!("{}/sub/./paint", slashed(d.path()))))
+        );
     }
 
     #[test]

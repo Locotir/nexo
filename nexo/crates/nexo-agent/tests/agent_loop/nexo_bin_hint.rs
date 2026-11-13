@@ -52,13 +52,13 @@ async fn run_with(
 #[tokio::test]
 async fn the_first_time_a_compiled_program_is_read_by_hand_the_result_says_nexo_bin_exists_once() {
     let d = test_tmpdir().unwrap();
-    let exe = std::env::current_exe().unwrap();
-    let (first, second) = (format!("objdump -d '{}' | head", exe.display()), format!("strings '{}'", exe.display()));
+    // on Windows a call writes the path with `/`, which every program and the shell there take
+    let exe = std::env::current_exe().unwrap().display().to_string().replace('\\', "/");
+    let (first, second) = (format!("objdump -d '{exe}' | head"), format!("strings '{exe}'"));
     let (reqs, sid) = run_commands(&["ls", &first, &second, "ls"], d.path(), None).await;
     // no `bin` tool in this session: the line names the same call through the shell
     let line = format!(
-        "[nexo: nexo bin reads this file in pages, with names and references: nexo bin overview {}, then fn|funcs|xref|decomp|strings]",
-        exe.display()
+        "[nexo: nexo bin reads this file in pages, with names and references: nexo bin overview {exe}, then fn|funcs|xref|decomp|strings]"
     );
     let line = line.as_str();
     let last = result_texts(reqs.last().unwrap());
@@ -73,7 +73,7 @@ async fn the_first_time_a_compiled_program_is_read_by_hand_the_result_says_nexo_
         [0, 0, 1, 1, 1]
     );
     // a session resumed from disk has it already: the next command on a binary does not repeat it
-    let again = format!("xxd '{}'", exe.display());
+    let again = format!("xxd '{exe}'");
     let (reqs, _) = run_commands(&[&again], d.path(), Some(sid)).await;
     let texts = result_texts(reqs.last().unwrap());
     assert_eq!(texts.iter().filter(|t| t.contains(line)).count(), 1, "{texts:?}");
@@ -84,8 +84,8 @@ async fn the_first_time_a_compiled_program_is_read_by_hand_the_result_says_nexo_
 async fn the_line_is_not_added_for_text_a_missing_file_or_nexo_bin_itself() {
     let d = test_tmpdir().unwrap();
     std::fs::write(d.path().join("notes.txt"), "plain words\n").unwrap();
-    let exe = std::env::current_exe().unwrap();
-    let nb = format!("nexo bin fn '{}' main", exe.display());
+    let exe = std::env::current_exe().unwrap().display().to_string().replace('\\', "/");
+    let nb = format!("nexo bin fn '{exe}' main");
     let cmds = ["strings notes.txt", "objdump -d missing.out", nb.as_str(), "cat notes.txt"];
     let (reqs, _) = run_commands(&cmds, d.path(), None).await;
     let last = result_texts(reqs.last().unwrap());
