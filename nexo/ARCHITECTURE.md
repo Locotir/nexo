@@ -172,8 +172,13 @@ or a new `/goal`. `/goal pause` (`PauseGoal`) holds it. An active goal whose
 reply declared nothing gets `[goal: continue]`, once per round, up to `max`
 rounds (5; `NEXO_GOAL_ROUNDS`); the rules for that mark live in the pinned
 goal, so the request stays one short line and the TUI shows it as a notice,
-not as the person's message. A continuation round that called no tool did
-nothing new and pauses the goal; after the last round it pauses too. The
+not as the person's message. A continuation round that changed nothing (no
+successful edit, write or command that is not read-only or a plain check) pauses
+the goal; after the last round it pauses too. Within a goal's work, two
+supervisor notes (or 36 steps) with no change take the read and search tools
+away for the next requests, so the model acts or reports; a step that still
+changes nothing ends the turn and pauses the goal (`N steps without a change`).
+The pinned goal says that what the person wrote before `[goal set]` is answered. The
 state persists in the session and comes back on resume. Queued requests run
 before a continuation.
 

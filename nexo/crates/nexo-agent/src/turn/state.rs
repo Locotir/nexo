@@ -47,6 +47,8 @@ pub(super) struct State {
     pub(super) goal_log: GoalLog,
     /// The session's cost when the goal was set, to tell what the goal spent.
     pub(super) goal_cost0: f64,
+    /// Whether the goal's work changed nothing lately (see `goal_watch`): reset by a change, the person or a goal set.
+    pub(super) goal_idle: GoalIdle,
     /// What files looked like before the agent wrote them: `(history length at the time, file,
     /// its bytes then or None when it did not exist)`, so a rewind can put them back.
     pub(super) checkpoints: Vec<(usize, PathBuf, Option<Vec<u8>>)>,

@@ -273,6 +273,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         turns: 0,
         goal_log: resumed_log(goal.as_deref()),
         goal_cost0: cost,
+        goal_idle: GoalIdle::default(),
         goal,
         goal_round: 0,
         goal_state,

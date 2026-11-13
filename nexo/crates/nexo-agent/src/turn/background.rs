@@ -138,17 +138,21 @@ pub(super) fn attach_hidden(messages: &mut Vec<Message>, text: String) {
 
 /// The supervisor's plain counting over the request in progress, after a tool round: what it sees for the first
 /// time goes on the next request as a hidden note (`agent.watch`).
-pub(super) async fn watch_round(state: &Shared) {
+/// Gives back how many notes it added.
+pub(super) async fn watch_round(state: &Shared) -> u32 {
     let mut st = state.lock().await;
     if !st.config.agent.watch {
-        return;
+        return 0;
     }
     let from = st.turn_start.min(st.history.len());
+    let mut added = 0;
     for f in crate::supervise::watch::scan_rounds(&st.history[from..]) {
         if st.noticed.insert(f.key) {
             st.hidden.push(f.text);
+            added += 1;
         }
     }
+    added
 }
 
 /// A stopped session whose work looks unfinished (or that the supervisor asks to look at itself): one background

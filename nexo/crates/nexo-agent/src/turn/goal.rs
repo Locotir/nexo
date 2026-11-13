@@ -61,8 +61,9 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
          single line GOAL DONE; if nothing is left to do, say so and end with that line. When you cannot go on \
          without the person (a question only they can answer, a decision, an approval, access you lack), ask it and \
          end your reply with the single line GOAL WAIT: the work waits for their answer. Do not stop for what you \
-         can decide or check yourself. A message from the person comes before the goal: answer it first, plainly, \
-         then go on; call `goal_brief` again when they change what they want."
+         can decide or check yourself. The goal is the task in progress: what the person wrote before \
+         `{GOAL_SET_MARK}` was answered already, so do not answer it again. A message they send after it comes \
+         first: answer it plainly, then go on; call `goal_brief` again when they change what they want."
     )
 }
 
@@ -110,6 +111,7 @@ pub(super) async fn set_goal(state: &Shared, text: Option<String>) -> Option<Str
         None => GoalLog::default(),
     };
     st.goal_cost0 = st.cost;
+    st.goal_idle = GoalIdle::default();
     if let Err(e) = st.session.record_goal(text.as_deref()) {
         notice(&st.events, Level::Warn, format!("cannot save the goal: {e}"));
     }
@@ -193,6 +195,10 @@ pub(super) fn emit_goal(st: &State) {
 pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
     st.goal_state = to.clone();
     st.goal_round = 0;
+    // a goal that runs again (resumed, or with the person's answer) starts with all its reading tools
+    if to.is_active() {
+        st.goal_idle = GoalIdle::default();
+    }
     // every pause is remembered with its time and reason (Esc, a guard, a limit, an error), for the goal panel
     if let GoalState::Paused(why) = &to {
         let stops = &mut st.goal_log.stops;
@@ -210,6 +216,8 @@ pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
 /// A message of the person starts a turn: a goal waiting for their answer has it, and runs again.
 pub(super) fn person_spoke(st: &mut State) {
     st.checked_in = false;
+    // what the person says is news: the goal's work gets its reading tools back
+    st.goal_idle = GoalIdle::default();
     // only a person's message gives a request its checkpoints back: a goal's rounds, a mail or a job's end do not
     st.ck_used = 0;
     if st.goal.is_some() && st.goal_state == GoalState::Waiting {
@@ -269,10 +277,14 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
         return None;
     }
     let max = goal_rounds();
-    let worked = st.history[st.turn_start.min(st.history.len())..].iter().any(Message::has_tool_calls);
-    if st.goal_round > 0 && !worked {
-        let say = "goal paused: the last round did nothing new · /goal resume goes on, or say what next";
-        goal_to(&mut st, GoalState::Paused("the last round did nothing new".into()), say.into());
+    // a round counts by what it changed, not by its calls: a round of reads alone did nothing new either
+    if st.goal_round > 0 && !st.goal_idle.changed {
+        let why = match st.goal_idle.steps {
+            0 => "the last round did nothing new".to_string(),
+            n => format!("the last round changed nothing ({n} steps without a change)"),
+        };
+        let say = format!("goal paused: {why} · /goal resume goes on, or say what next");
+        goal_to(&mut st, GoalState::Paused(why), say);
         return None;
     }
     if st.goal_round >= max {
@@ -284,6 +296,76 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
     st.goal_round += 1;
     emit_goal(&st);
     Some(GOAL_CONTINUE.to_string())
+}
+
+/// Supervisor notes left unheeded, with no change since the first of them, before the goal's work is narrowed.
+pub(super) const GOAL_NOTES_IGNORED: u32 = 2;
+/// Steps without a change after which the work is narrowed even when no note fired (`agent.watch` off, or reads
+/// mixed with other calls so that no run of reads grows long): three runs of reads as the watch counts them.
+pub(super) const GOAL_IDLE_STEPS: u32 = 3 * crate::supervise::watch::READ_RUN as u32;
+
+/// How much of a goal's recent work changed nothing: steps (tool calls) and supervisor notes since the last
+/// change, whether the reading tools are off now (`narrowed`), and whether the turn in progress changed anything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct GoalIdle {
+    pub(super) steps: u32,
+    pub(super) notes: u32,
+    pub(super) narrowed: bool,
+    pub(super) changed: bool,
+}
+
+/// What a step of an active goal leads to (see [`goal_watch`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GoalStep {
+    /// Go on as before.
+    Go,
+    /// The reading tools are off from the next request on; the line tells the model why.
+    Narrow(String),
+    /// The model was narrowed and still changed nothing: the turn ends and the goal pauses, for this reason.
+    Stop(String),
+}
+
+/// One tool round of an active goal: `changed` tells whether one of its calls changed something (an edit, a
+/// write or a command that is not read-only and not a plain check, that succeeded), `calls` how many calls it
+/// made and `notes` how many supervisor notes it raised. Reading what is already known is not progress: after
+/// [`GOAL_NOTES_IGNORED`] notes (or [`GOAL_IDLE_STEPS`] steps) with no change the reading tools go away, so the
+/// model must act or report; a step that still changes nothing then ends the turn and pauses the goal. Any model,
+/// any task: only calls and their kinds are counted, never words.
+pub(super) fn goal_watch(idle: &mut GoalIdle, changed: bool, calls: u32, notes: u32) -> GoalStep {
+    if changed {
+        *idle = GoalIdle { changed: true, ..GoalIdle::default() };
+        return GoalStep::Go;
+    }
+    idle.steps += calls;
+    idle.notes += notes;
+    if idle.narrowed {
+        return GoalStep::Stop(format!("{} steps without a change", idle.steps));
+    }
+    if idle.notes >= GOAL_NOTES_IGNORED || idle.steps >= GOAL_IDLE_STEPS {
+        idle.narrowed = true;
+        return GoalStep::Narrow(format!(
+            "{} steps since the last change and {} notes about it: reading and search tools are off until \
+             something changes. Make the change now with the tools left, or, if you cannot, report in a few lines \
+             what you found and what blocks you, and end with GOAL WAIT. Another step that changes nothing ends \
+             this turn and pauses the goal.",
+            idle.steps, idle.notes
+        ));
+    }
+    GoalStep::Go
+}
+
+/// Whether a reply's calls changed something: `ok` tells, call by call, whether it succeeded.
+pub(super) fn round_changed(st: &State, calls: &[(String, String, Value)], ok: &[bool]) -> bool {
+    calls.iter().zip(ok).any(|(c, &ok)| {
+        ok && verify::judge(std::slice::from_ref(c), &[true], |n, a| st.tools.get(n).map(|t| t.call_kind(a))).changed
+    })
+}
+
+/// Whether a tool is taken away while the goal's work is narrowed: the ones that only read or search.
+pub(super) fn narrowed_out(st: &State, name: &str) -> bool {
+    st.goal_idle.narrowed
+        && st.goal.is_some()
+        && st.tools.get(name).is_some_and(|t| matches!(t.kind(), ToolKind::Read | ToolKind::Search))
 }
 
 /// `/goal pause`: nothing more starts for the goal; a turn in progress finishes as it is.

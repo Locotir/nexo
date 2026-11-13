@@ -133,6 +133,7 @@ async fn begin_turn(
         }
         st.system = full_system(&st);
         st.turn_start = st.history.len();
+        st.goal_idle.changed = false;
         st.noticed.clear();
         st.turns += 1;
         st.ck_stop = None;
@@ -454,6 +455,7 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
                 && (plan || s.name != "exit_plan")
                 && (curator || s.name != "recall")
                 && (st.goal.is_some() || s.name != "goal_brief")
+                && !narrowed_out(st, &s.name)
         })
         .collect()
 }

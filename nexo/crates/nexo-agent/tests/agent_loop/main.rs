@@ -163,6 +163,7 @@ mod background_jobs;
 mod checkpoints;
 mod compaction;
 mod cut_replies;
+mod goal_progress;
 mod goals_and_todo;
 #[cfg(unix)]
 mod hooks;

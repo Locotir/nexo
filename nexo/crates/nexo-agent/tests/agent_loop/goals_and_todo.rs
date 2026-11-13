@@ -33,9 +33,9 @@ async fn a_goal_starts_the_work_and_keeps_going_until_it_says_goal_done() {
     let client = Scripted::new(vec![
         Reply::Events(text("working on it")),
         // the first continuation does real work: a call, then its reply
-        Reply::Events(call("c1", "read", json!({"path": "a.rs"}))),
+        Reply::Events(call("c1", "write", json!({"path": "a.rs"}))),
         Reply::Events(text("more work")),
-        Reply::Events(call("c2", "read", json!({"path": "b.rs"}))),
+        Reply::Events(call("c2", "write", json!({"path": "b.rs"}))),
         Reply::Events(text("all set\nGOAL DONE. Thanks!")),
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Auto), None, dir.path()).await;
@@ -183,10 +183,10 @@ async fn a_continuation_without_tool_calls_ends_the_goal_loop() {
 #[tokio::test]
 async fn the_goal_stops_after_its_rounds_and_when_cleared() {
     let dir = test_tmpdir().unwrap();
-    // every round calls a tool, so the loop only stops at the cap
+    // every round changes a file, so the loop only stops at the cap
     let mut replies = vec![Reply::Events(text("still at it"))];
     for i in 0..5 {
-        replies.push(Reply::Events(call(&format!("c{i}"), "read", json!({"path": "a.rs"}))));
+        replies.push(Reply::Events(call(&format!("c{i}"), "write", json!({"path": "a.rs"}))));
         replies.push(Reply::Events(text("still at it")));
     }
     replies.push(Reply::Events(text("again")));

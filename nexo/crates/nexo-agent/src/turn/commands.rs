@@ -70,6 +70,7 @@ pub(super) fn install_session(st: &mut State, session: Session) {
     st.goal_round = 0;
     st.goal_log = resumed_log(st.goal.as_deref());
     st.goal_cost0 = st.cost;
+    st.goal_idle = GoalIdle::default();
     emit(&st.events, AgentEvent::HistoryCleared);
     emit(
         &st.events,
