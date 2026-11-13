@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use object::read::pe::{ImageNtHeaders, ImageOptionalHeader, PeFile64};
+use object::read::elf::FileHeader;
+use object::read::pe::{ImageNtHeaders, ImageOptionalHeader, PeFile};
 use object::{
     pe, Architecture, BinaryFormat, Endianness, FileKind, LittleEndian as LE, Object, ObjectSection, ObjectSegment,
     ObjectSymbol, ObjectSymbolTable, SectionFlags, SegmentFlags, SymbolKind,
@@ -122,6 +123,8 @@ pub struct Image {
     pub format: Format,
     /// AArch64 code (the default is x86-64).
     pub arm64: bool,
+    /// 32 for x86-32 code (ELF32 i386, PE32), 64 otherwise: the width of an address and of the code.
+    pub bits: u32,
     pub entry: u64,
     pub image_base: u64,
     pub sections: Vec<Section>,
@@ -141,6 +144,9 @@ pub struct Image {
     pub(crate) slots: HashMap<u64, usize>,
     /// PE exception directory (RVA, size).
     pub(crate) exception_dir: Option<(u64, u64)>,
+    /// ELF32 x86: the address the PLT and position-independent code keep in a register (DT_PLTGOT, the
+    /// start of `.got.plt`), so `[ebx+0xc]` in a PLT stub names its import slot.
+    pub(crate) got: Option<u64>,
     sorted: Vec<usize>,
     /// Pointers the loader writes (ELF relative relocations): (slot, value).
     pub(crate) rel_ptrs: Vec<(u64, u64)>,
@@ -185,14 +191,16 @@ impl Image {
         }
         let kind = FileKind::parse(&data[..]).map_err(|_| not_a_binary(&data))?;
         let mut img = match kind {
-            FileKind::Elf64 => load_elf(&data).map_err(|e| explain(e, &data))?,
-            FileKind::Pe64 => load_pe(&data).map_err(|e| explain(e, &data))?,
+            FileKind::Elf64 => load_elf::<object::elf::FileHeader64<Endianness>>(&data).map_err(|e| explain(e, &data))?,
+            FileKind::Elf32 => load_elf::<object::elf::FileHeader32<Endianness>>(&data).map_err(|e| explain(e, &data))?,
+            FileKind::Pe64 => load_pe::<pe::ImageNtHeaders64>(&data).map_err(|e| explain(e, &data))?,
             FileKind::Pe32 if crate::is_mixed_mode(&data[..data.len().min(crate::MANAGED_HEAD)]) => {
                 return Err(Error::NotRead(format!(
                     "{} is a mixed-mode .NET assembly (C++/CLI), not read natively: `nexo bin managed FILE` reads its .NET metadata and IL",
                     describe_kind(kind, &data)
                 )))
             }
+            FileKind::Pe32 => load_pe::<pe::ImageNtHeaders32>(&data).map_err(|e| explain(e, &data))?,
             other => return Err(Error::NotRead(format!("{} is not read yet", describe_kind(other, &data)))),
         };
         if let Some(w) = crate::damage::extent_problem(&data) {
@@ -455,8 +463,19 @@ impl Image {
     pub fn arch_name(&self) -> &'static str {
         if self.arm64 {
             "arm64"
+        } else if self.bits == 32 {
+            "x86"
         } else {
             "x86-64"
+        }
+    }
+
+    /// The format with its class: `ELF64`, `ELF32`, `PE32+` or `PE32`.
+    pub fn format_name(&self) -> &'static str {
+        match (self.format, self.bits) {
+            (Format::Elf, 32) => "ELF32",
+            (Format::Pe, 32) => "PE32",
+            (f, _) => f.name(),
         }
     }
 
@@ -467,7 +486,22 @@ impl Image {
                 "{what} does not read AArch64 code yet (fn, funcs, xref and calls do); no output is better than a wrong one"
             )));
         }
+        if self.bits == 32 {
+            return Err(Error::Bad(format!(
+                "{what}: x86-32 is not supported yet (info, overview, funcs, fn, xref, calls, strings, bytes and find \
+                 read it); no output is better than a wrong one"
+            )));
+        }
         Ok(())
+    }
+
+    /// The bytes of an address in this file (4 for x86-32, 8 otherwise).
+    pub fn ptr_size(&self) -> usize {
+        if self.bits == 32 {
+            4
+        } else {
+            8
+        }
     }
 
     pub fn code_sections(&self) -> impl Iterator<Item = &Section> {
@@ -479,7 +513,8 @@ impl Image {
 const HEAD: u64 = 4096;
 
 /// Whether `Image::open` would take the file at `path`: an ELF64 or PE32+ x86-64 file (not a
-/// relocatable object). Only the headers in the first 4096 bytes are read, as bytes: the file is not
+/// relocatable object), or an ELF64 arm64 one. 32-bit x86 files open too but are left out here: the
+/// hints this answer feeds lead to the debugger, which runs 64-bit programs only. Only the headers in the first 4096 bytes are read, as bytes: the file is not
 /// run, not loaded and not read whole, so a large file costs the same as a small one. A path that
 /// leaves through a symlink is read the same way. `false` for anything else, including a missing file.
 /// The kind of file is asked before it is opened: opening a named pipe that nobody writes to never returns.
@@ -561,6 +596,7 @@ fn blank(format: Format) -> Image {
         path: PathBuf::new(),
         format,
         arm64: false,
+        bits: 64,
         entry: 0,
         image_base: 0,
         sections: Vec::new(),
@@ -575,6 +611,7 @@ fn blank(format: Format) -> Image {
         raws: HashMap::new(),
         slots: HashMap::new(),
         exception_dir: None,
+        got: None,
         sorted: Vec::new(),
         rel_ptrs: Vec::new(),
         user: UserNames::default(),
@@ -613,6 +650,22 @@ pub(crate) fn demangle(raw: &str) -> String {
         }
     }
     cut(&raw)
+}
+
+/// The C name in a 32-bit Windows symbol: `_main` and `_WinMain@16` (cdecl, stdcall) and `@f@8` (fastcall)
+/// name `main`, `WinMain` and `f`. None when the name carries no such decoration.
+fn undecorate_x86(raw: &str) -> Option<String> {
+    let at_n = |s: &str| -> Option<usize> {
+        let i = s.rfind('@')?;
+        (i > 0 && s.len() > i + 1 && s[i + 1..].bytes().all(|b| b.is_ascii_digit())).then_some(i)
+    };
+    let body = if let Some(r) = raw.strip_prefix('@') {
+        &r[..at_n(r)?]
+    } else {
+        let r = raw.strip_prefix('_')?;
+        at_n(r).map_or(r, |i| &r[..i])
+    };
+    (!body.is_empty() && !body.contains('@')).then(|| body.to_string())
 }
 
 /// The mangled name to keep next to a demangled one: empty when demangling changed nothing.
@@ -736,21 +789,34 @@ pub(crate) fn reloc_pointer(r_type: object::elf::RelocationType, defined: Option
     }
 }
 
-fn load_elf(data: &[u8]) -> Result<Image> {
-    let elf = object::read::elf::ElfFile64::<Endianness>::parse(data)
+fn load_elf<Elf: FileHeader<Endian = Endianness>>(data: &[u8]) -> Result<Image> {
+    let elf = object::read::elf::ElfFile::<Elf>::parse(data)
         .map_err(|e| Error::NotRead(format!("not a readable ELF file: {e}")))?;
-    if !matches!(elf.architecture(), Architecture::X86_64 | Architecture::Aarch64) {
-        return Err(Error::NotRead(format!(
-            "ELF64 {} is not read yet (only x86-64 and arm64 are)",
-            arch_word(elf.architecture())
-        )));
+    let bits = if elf.is_64() { 64 } else { 32 };
+    match (bits, elf.architecture()) {
+        (64, Architecture::X86_64 | Architecture::Aarch64) | (32, Architecture::I386) => {}
+        (64, a) => {
+            return Err(Error::NotRead(format!("ELF64 {} is not read yet (only x86-64 and arm64 are)", arch_word(a))))
+        }
+        (_, Architecture::X86_64_X32) => {
+            return Err(Error::NotRead(
+                "ELF32 x86-64 (the x32 ABI) is not read yet (32-bit ELF files are read for x86 only)".into(),
+            ))
+        }
+        (_, a) => {
+            return Err(Error::NotRead(format!(
+                "ELF32 {} is not read yet (32-bit ELF files are read for x86 only)",
+                arch_word(a)
+            )))
+        }
     }
-    if elf.elf_header().e_type.get(elf.endian()) == object::elf::ET_REL {
+    if elf.elf_header().e_type(elf.endian()) == object::elf::ET_REL {
         return Err(Error::NotRead(
             "ELF relocatable object is not read yet (a .o or .ko file has no addresses)".into(),
         ));
     }
     let mut img = blank(Format::Elf);
+    img.bits = bits;
     img.arm64 = elf.architecture() == Architecture::Aarch64;
     common(&elf, &mut img);
     // imports: undefined dynamic symbols; the slot comes from the relocation that fills it
@@ -768,7 +834,12 @@ fn load_elf(data: &[u8]) -> Result<Image> {
                     .filter(|s| !s.is_undefined())
                     .map(|s| s.address());
             }
+            // the numbers of relocation types are per machine; an ELF32 REL relocation keeps its value
+            // in the slot itself, which the scan of 4-byte data words already reads
             let object::RelocationFlags::Elf { r_type } = r.flags() else { continue };
+            if bits == 32 {
+                continue;
+            }
             if let Some(v) = reloc_pointer(r_type, defined, r.addend()) {
                 if img.rel_ptrs.len() < MAX_RELOCS {
                     img.rel_ptrs.push((off, v));
@@ -794,7 +865,8 @@ fn load_elf(data: &[u8]) -> Result<Image> {
     }
     // headers
     use object::elf::{
-        DF_1_NOW, DF_BIND_NOW, DT_BIND_NOW, DT_FLAGS, DT_FLAGS_1, ET_DYN, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK,
+        DF_1_NOW, DF_BIND_NOW, DT_BIND_NOW, DT_FLAGS, DT_FLAGS_1, DT_PLTGOT, ET_DYN, PF_X, PT_DYNAMIC, PT_GNU_RELRO,
+        PT_GNU_STACK,
     };
     use object::read::elf::{Dyn, ProgramHeader};
     let e = elf.endian();
@@ -803,7 +875,7 @@ fn load_elf(data: &[u8]) -> Result<Image> {
     for ph in elf.elf_program_headers() {
         let t = ph.p_type(e);
         if t == object::elf::PT_LOAD {
-            base = base.min(ph.p_vaddr(e));
+            base = base.min(ph.p_vaddr(e).into());
         } else if t == PT_GNU_STACK {
             stack = Some(ph.p_flags(e).0 & PF_X.0 != 0);
         } else if t == PT_GNU_RELRO {
@@ -815,7 +887,10 @@ fn load_elf(data: &[u8]) -> Result<Image> {
     let mut now = false;
     for d in dynamic.unwrap_or(&[]).iter().take(4096) {
         let tag = d.d_tag(e);
-        let val = d.d_val(e);
+        let val: u64 = d.d_val(e).into();
+        if tag == DT_PLTGOT && bits == 32 && val != 0 {
+            img.got = Some(val);
+        }
         if tag == DT_BIND_NOW
             || (tag == DT_FLAGS && val & DF_BIND_NOW.0 != 0)
             || (tag == DT_FLAGS_1 && val & DF_1_NOW.0 != 0)
@@ -824,7 +899,7 @@ fn load_elf(data: &[u8]) -> Result<Image> {
         }
     }
     img.image_base = if base == u64::MAX { 0 } else { base };
-    let pie = elf.elf_header().e_type.get(e) == ET_DYN;
+    let pie = elf.elf_header().e_type(e) == ET_DYN;
     img.hardening.items = vec![
         ("pie", if pie { "yes (position independent)".into() } else { "no (fixed base)".into() }),
         (
@@ -849,13 +924,27 @@ fn load_elf(data: &[u8]) -> Result<Image> {
     Ok(img)
 }
 
-fn load_pe(data: &[u8]) -> Result<Image> {
-    let pe = PeFile64::parse(data).map_err(|e| Error::NotRead(format!("not a readable PE file: {e}")))?;
-    if pe.architecture() != Architecture::X86_64 {
-        return Err(Error::NotRead(format!("PE32+ {} is not read yet (only x86-64 is)", arch_word(pe.architecture()))));
+fn load_pe<Pe: ImageNtHeaders>(data: &[u8]) -> Result<Image> {
+    let pe = PeFile::<Pe>::parse(data).map_err(|e| Error::NotRead(format!("not a readable PE file: {e}")))?;
+    let bits: u32 = if pe.is_64() { 64 } else { 32 };
+    let (class, want) = if bits == 64 { ("PE32+", Architecture::X86_64) } else { ("PE32", Architecture::I386) };
+    if pe.architecture() != want {
+        return Err(Error::NotRead(format!(
+            "{class} {} is not read yet (only {} is)",
+            arch_word(pe.architecture()),
+            arch_word(want)
+        )));
     }
     let mut img = blank(Format::Pe);
+    img.bits = bits;
     common(&pe, &mut img);
+    if bits == 32 {
+        for s in img.symbols.iter_mut().filter(|s| s.raw.is_empty()) {
+            if let Some(n) = undecorate_x86(&s.name) {
+                s.raw = std::mem::replace(&mut s.name, n);
+            }
+        }
+    }
     // the loader maps a section whose virtual size is 0 with the size of its raw data; the generic
     // reader reports 0 bytes for it, so read the raw header
     for (i, h) in pe.section_table().iter().enumerate().take(MAX_SECTIONS) {
@@ -871,7 +960,8 @@ fn load_pe(data: &[u8]) -> Result<Image> {
     }
     let oh = pe.nt_headers().optional_header();
     img.image_base = oh.image_base();
-    if let Some(d) = pe.data_directory(pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
+    // x86-32 has no exception directory of function ranges (its SEH is a chain on the stack)
+    if let Some(d) = pe.data_directory(pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION).filter(|_| bits == 64) {
         let (rva, size) = (u64::from(d.virtual_address.get(LE)), u64::from(d.size.get(LE)));
         if rva != 0 && size != 0 {
             img.exception_dir = Some((rva, size));
@@ -892,8 +982,9 @@ fn load_pe(data: &[u8]) -> Result<Image> {
                 };
                 let Ok(mut thunks) = table.thunks(lookup) else { continue };
                 let mut i = 0u64;
-                while let Ok(Some(t)) = thunks.next::<pe::ImageNtHeaders64>() {
-                    let name = match table.import::<pe::ImageNtHeaders64>(t) {
+                let width = u64::from(bits / 8);
+                while let Ok(Some(t)) = thunks.next::<Pe>() {
+                    let name = match table.import::<Pe>(t) {
                         Ok(object::read::pe::Import::Name(_, n)) => {
                             String::from_utf8_lossy(n).chars().take(MAX_NAME).collect()
                         }
@@ -904,7 +995,7 @@ fn load_pe(data: &[u8]) -> Result<Image> {
                         lib: lib.clone(),
                         raw: String::new(),
                         name,
-                        slot: Some(img.image_base.wrapping_add(first).wrapping_add(i * 8)),
+                        slot: Some(img.image_base.wrapping_add(first).wrapping_add(i * width)),
                     });
                     i += 1;
                     if img.imports.len() >= MAX_IMPORTS {
@@ -922,6 +1013,10 @@ fn load_pe(data: &[u8]) -> Result<Image> {
         ("dep", yes_no(pe::IMAGE_DLLCHARACTERISTICS_NX_COMPAT)),
         ("cfg", yes_no(pe::IMAGE_DLLCHARACTERISTICS_GUARD_CF)),
     ];
+    if bits == 32 {
+        // a 64-bit address space only
+        img.hardening.items.retain(|(k, _)| *k != "high_entropy_aslr");
+    }
     Ok(img)
 }
 

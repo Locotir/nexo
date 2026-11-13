@@ -3,7 +3,7 @@
 use iced_x86::{Formatter, Instruction, OpKind};
 use serde_json::{json, Value};
 
-use crate::disasm::{describe, formatter, walk};
+use crate::disasm::{describe, formatter, walk_bits};
 use crate::image::Section;
 use crate::page::{shell_word, Output, Row, MIN_LINES};
 use crate::strings::shorten;
@@ -53,7 +53,7 @@ pub fn info(img: &Image) -> Output {
         None => format!("{:#x}", img.entry),
     };
     let mut l = Lines(Vec::new());
-    l.text(format!("format      {} little-endian, {}", img.format.name(), img.arch_name()));
+    l.text(format!("format      {} little-endian, {}", img.format_name(), img.arch_name()));
     l.text(format!("file        {size} bytes, sha256 {}", img.sha256));
     for w in &img.warnings {
         l.text(format!("warning     {w}"));
@@ -101,9 +101,9 @@ pub fn info(img: &Image) -> Output {
         img.hardening.items.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
     let meta = json!({
         "file": img.path.display().to_string(),
-        "format": img.format.name(),
+        "format": img.format_name(),
         "arch": img.arch_name(),
-        "bits": 64,
+        "bits": img.bits,
         "endian": "little",
         "size": size,
         "sha256": img.sha256,
@@ -268,7 +268,11 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
         }
         None => Error::Bad(format!("{addr:#x} is not inside any section")),
     })?;
-    let mut rows = typed_rows(data, addr, ty, &|v| describe(img, v, false));
+    let mut rows = if ty == ElemType::Ptr && img.ptr_size() == 4 {
+        ptr32_rows(data, addr, &|v| describe(img, v, false))
+    } else {
+        typed_rows(data, addr, ty, &|v| describe(img, v, false))
+    };
     if (data.len() as u64) < len {
         let a = addr + data.len() as u64;
         rows.push(Row {
@@ -285,6 +289,35 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
         tail: 0,
         command: command(img, "bytes", &format!("{addr:#x} {len} --as {}", ty.name())),
     })
+}
+
+/// `--as ptr` for an x86-32 file: one 4-byte pointer a row, with what it points at.
+fn ptr32_rows(data: &[u8], addr: u64, name: &dyn Fn(u64) -> Option<String>) -> Vec<Row> {
+    let words = data.as_chunks::<4>().0;
+    let mut rows: Vec<Row> = words
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let a = addr + (i * 4) as u64;
+            let v = u64::from(u32::from_le_bytes(*b));
+            let what = name(v);
+            let mut text = format!("{a:#010x}  {v:#010x}");
+            if let Some(w) = &what {
+                text.push_str(&format!("  {w}"));
+            }
+            Row { key: a, text, json: Some(json!({"addr": a, "values": [v], "target": what})) }
+        })
+        .collect();
+    let rest = data.len() % 4;
+    if rest > 0 {
+        let a = addr + (data.len() - rest) as u64;
+        rows.push(Row {
+            key: a,
+            text: format!("{a:#010x}  ({rest} trailing bytes not shown: not a whole ptr)"),
+            json: None,
+        });
+    }
+    rows
 }
 
 /// The typed table for bytes that start at `addr`, wherever they were read from (the file, or the
@@ -618,7 +651,9 @@ fn imm_matches(ins: &Instruction, v: i128) -> bool {
 /// operand (`[rdx+0x429a80]`, kind `disp` in JSON), and every place the data sections hold it as a
 /// 4-byte (or, for a larger number, 8-byte) little-endian value.
 pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
-    img.require_x86("find-imm")?;
+    if img.arm64 {
+        img.require_x86("find-imm")?;
+    }
     if value < i128::from(i64::MIN) || value > i128::from(u64::MAX) {
         return Err(Error::Bad("the number does not fit in 64 bits".into()));
     }
@@ -640,7 +675,7 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
     'code: for (start, end) in ranges {
         let Some(code) = img.read_at(start, (end - start) as usize) else { continue };
         let mut full = false;
-        walk(code, start, |ins, _| {
+        walk_bits(img.bits, code, start, |ins, _| {
             if full {
                 return;
             }

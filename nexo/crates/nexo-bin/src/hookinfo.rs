@@ -24,7 +24,8 @@ pub struct ImportSite {
 /// Every stub an import goes through, and every `call [slot]` of an import in the program's code
 /// (programs built without stubs, and every PE file). Sorted by address.
 pub fn import_sites(img: &Image) -> Vec<ImportSite> {
-    if img.arm64 {
+    // the debugger runs 64-bit programs only
+    if img.arm64 || img.bits == 32 {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -63,7 +64,8 @@ pub fn import_sites(img: &Image) -> Vec<ImportSite> {
 /// not come back. Read from `start` to `end` in one pass; only addresses where an instruction of that
 /// pass begins are given, so a breakpoint on one never lands inside an instruction of that reading.
 pub fn block_starts(img: &Image, start: u64, end: u64) -> Vec<u64> {
-    if img.arm64 {
+    // the debugger runs 64-bit programs only
+    if img.arm64 || img.bits == 32 {
         return Vec::new();
     }
     let Some(bytes) = img.read_at(start, end.saturating_sub(start) as usize) else { return Vec::new() };

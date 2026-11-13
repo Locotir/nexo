@@ -27,6 +27,7 @@ mod ops;
 mod overview;
 mod page;
 mod pdbread;
+mod pic32;
 mod refs;
 mod sigs;
 mod slice;
@@ -55,6 +56,8 @@ mod tests_sigs;
 mod tests_wasm;
 #[cfg(test)]
 mod tests_x;
+#[cfg(test)]
+mod tests_x86_32;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod wasm_fixture;
 

@@ -404,10 +404,11 @@ fn other_files_are_named_not_read() {
     pe[0x45] = 0xaa;
     let e = Image::from_bytes(pe, "/x".into()).err().unwrap();
     assert!(e.to_string().contains("is not read yet (only x86-64 is)"), "{e}");
-    // 32-bit ELF
+    // a 64-bit ELF whose header says 32-bit: its 64-bit section headers do not parse as 32-bit ones
     let mut elf32 = fixtures::elf64(false).bytes;
     elf32[4] = 1;
-    assert!(Image::from_bytes(elf32, "/x".into()).err().unwrap().to_string().contains("is not read yet"));
+    let e = Image::from_bytes(elf32, "/x".into()).err().unwrap().to_string();
+    assert!(e.starts_with("not a readable ELF file"), "{e}");
 }
 
 /// Every op on whatever opened. Nothing may panic.

@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use iced_x86::{FlowControl, Mnemonic, OpKind};
 
-use crate::disasm::{target, walk, walk_code};
+use crate::disasm::{target, walk_bits, walk_code};
 use crate::image::Section;
 use crate::refs::Collector;
 use crate::{Format, Image};
@@ -67,11 +67,11 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
         });
     }
     match img.format {
-        Format::Pe if !img.arm64 => pdata(img, &mut starts),
+        Format::Pe if !img.arm64 && img.bits == 64 => pdata(img, &mut starts),
         Format::Pe => {}
         Format::Elf => {
             for sec in img.sections.iter().filter(|s| s.alloc && s.name == ".eh_frame" && s.file_size > 0) {
-                eh_frame(img, sec, &mut starts);
+                eh_frame(img, sec, img.ptr_size(), &mut starts);
             }
         }
     }
@@ -95,6 +95,8 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
 }
 
 /// A jump through an import slot in the first instructions: the stub the loader's import goes through.
+/// In x86-32 code the slot is at a fixed address (`jmp [0x804c004]`) or, in a PIE's PLT, next to the
+/// GOT the caller keeps in ebx (`jmp [ebx+0x10]`).
 fn stub_name(img: &Image, start: u64, end: u64) -> Option<String> {
     if img.arm64 {
         return crate::a64::scan::stub_name(img, start, end);
@@ -102,13 +104,24 @@ fn stub_name(img: &Image, start: u64, end: u64) -> Option<String> {
     let bytes = img.read_at(start, ((end - start) as usize).min(24))?;
     let mut seen = 0;
     let mut found = None;
-    walk(bytes, start, |ins, _| {
+    let mut pic = crate::pic32::Pic32::new();
+    walk_bits(img.bits, bytes, start, |ins, _| {
         seen += 1;
         if found.is_some() || seen > 3 {
             return;
         }
-        if ins.mnemonic() == Mnemonic::Jmp && ins.op0_kind() == OpKind::Memory && ins.is_ip_rel_memory_operand() {
-            found = img.slots.get(&ins.ip_rel_memory_address()).map(|&i| img.imports[i].name.clone());
+        if ins.mnemonic() == Mnemonic::Jmp && ins.op0_kind() == OpKind::Memory {
+            let slot = if ins.is_ip_rel_memory_operand() {
+                Some(ins.ip_rel_memory_address())
+            } else if img.bits == 32 {
+                pic.resolve(img, ins).or_else(|| crate::refs::written_address(ins)).filter(|x| x.1).map(|x| x.0)
+            } else {
+                None
+            };
+            found = slot.and_then(|a| img.slots.get(&a)).map(|&i| img.imports[i].name.clone());
+        }
+        if img.bits == 32 {
+            pic.step(img, ins);
         }
     });
     found.map(|n| if img.format == Format::Elf { format!("{n}@plt") } else { n })
@@ -183,14 +196,16 @@ fn sleb(d: &[u8], p: &mut usize) -> Option<i64> {
 }
 
 /// A DW_EH_PE value: the format in the low nibble, how to apply it in the high one.
-/// `field_addr` is the address of the first byte read (for pc-relative values).
-fn encoded(d: &[u8], p: &mut usize, enc: u8, field_addr: u64) -> Option<u64> {
+/// `field_addr` is the address of the first byte read (for pc-relative values); `ptr` is the size of an
+/// address in the file (an absolute pointer takes that many bytes).
+fn encoded(d: &[u8], p: &mut usize, enc: u8, field_addr: u64, ptr: usize) -> Option<u64> {
     let take = |p: &mut usize, n: usize| -> Option<&[u8]> {
         let s = d.get(*p..p.checked_add(n)?)?;
         *p += n;
         Some(s)
     };
     let v: u64 = match enc & 0x0f {
+        0x00 if ptr == 4 => u64::from(u32::from_le_bytes(take(p, 4)?.try_into().ok()?)),
         0x00 | 0x04 | 0x0c => u64::from_le_bytes(take(p, 8)?.try_into().ok()?),
         0x01 => uleb(d, p)?,
         0x02 => u64::from(u16::from_le_bytes(take(p, 2)?.try_into().ok()?)),
@@ -200,15 +215,16 @@ fn encoded(d: &[u8], p: &mut usize, enc: u8, field_addr: u64) -> Option<u64> {
         0x0b => i64::from(i32::from_le_bytes(take(p, 4)?.try_into().ok()?)) as u64,
         _ => return None,
     };
+    let mask = if ptr == 4 { u64::from(u32::MAX) } else { u64::MAX };
     match enc & 0x70 {
-        0x00 => Some(v),
-        0x10 => Some(field_addr.wrapping_add(v)),
+        0x00 => Some(v & mask),
+        0x10 => Some(field_addr.wrapping_add(v) & mask),
         _ => None,
     }
 }
 
 /// The pointer encoding FDEs use, from a CIE body (after its id).
-fn cie_encoding(c: &[u8]) -> Option<u8> {
+fn cie_encoding(c: &[u8], ptr: usize) -> Option<u8> {
     let mut p = 0usize;
     let version = *c.get(p)?;
     p += 1;
@@ -219,7 +235,7 @@ fn cie_encoding(c: &[u8]) -> Option<u8> {
     let aug = &c[aug_start..p];
     p += 1;
     if aug.starts_with(b"eh") {
-        p += 8;
+        p += ptr;
     }
     uleb(c, &mut p)?;
     sleb(c, &mut p)?;
@@ -241,7 +257,7 @@ fn cie_encoding(c: &[u8]) -> Option<u8> {
                 b'P' => {
                     let penc = *c.get(p)?;
                     p += 1;
-                    encoded(c, &mut p, penc & 0x0f, 0)?;
+                    encoded(c, &mut p, penc & 0x0f, 0, ptr)?;
                 }
                 b'S' | b'B' => {}
                 _ => break,
@@ -251,7 +267,7 @@ fn cie_encoding(c: &[u8]) -> Option<u8> {
     Some(enc)
 }
 
-fn eh_frame(img: &Image, sec: &Section, starts: &mut BTreeSet<u64>) {
+fn eh_frame(img: &Image, sec: &Section, ptr: usize, starts: &mut BTreeSet<u64>) {
     let d = img.section_bytes(sec);
     let mut cies: HashMap<usize, Option<u8>> = HashMap::new();
     let mut pos = 0usize;
@@ -275,18 +291,18 @@ fn eh_frame(img: &Image, sec: &Section, starts: &mut BTreeSet<u64>) {
         };
         let Some(id) = u32le(d, body) else { break };
         if id == 0 {
-            cies.insert(pos, d.get(body + 4..end).and_then(cie_encoding));
+            cies.insert(pos, d.get(body + 4..end).and_then(|c| cie_encoding(c, ptr)));
         } else if let Some(cie_pos) = body.checked_sub(id as usize) {
             let enc = *cies.entry(cie_pos).or_insert_with(|| {
                 // a CIE that comes later in the section: parse it where it is
                 let l = u32le(d, cie_pos)? as usize;
                 let b = cie_pos.checked_add(4)?;
-                d.get(b + 4..b.checked_add(l)?).and_then(cie_encoding)
+                d.get(b + 4..b.checked_add(l)?).and_then(|c| cie_encoding(c, ptr))
             });
             if let Some(enc) = enc {
                 let mut p = body + 4;
                 let field = sec.addr + p as u64;
-                if let Some(a) = encoded(d, &mut p, enc, field) {
+                if let Some(a) = encoded(d, &mut p, enc, field, ptr) {
                     starts.insert(a);
                 }
             }
@@ -309,6 +325,10 @@ pub(crate) fn decode_refs(img: &Image, c: &mut Collector) {
 /// Unnamed functions that a library signature recognizes: an exact match gives the library name, a
 /// partial or ambiguous one only a note (the function stays `sub_<addr>`).
 fn name_by_signature(img: &Image, funcs: &mut [Func]) {
+    // the signatures are of x86-64 code: on other code a match would only be a wrong name
+    if img.bits != 64 {
+        return;
+    }
     let sets = [crate::sigs::SigSet::builtin(), &img.sigs];
     for f in funcs.iter_mut().filter(|f| f.name.starts_with("sub_")) {
         let Some(hit) = crate::sigs::identify(img, &sets, f.start, f.end) else { continue };

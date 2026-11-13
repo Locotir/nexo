@@ -105,7 +105,8 @@ pub const MAX_INDIRECT_CALLS: usize = 4000;
 /// (`call rax`, `call [rbx+8]`), found by reading the code sections once from start to end. At most
 /// `MAX_INDIRECT_CALLS`; the second value is how many more there were.
 pub fn indirect_calls(img: &Image) -> (Vec<u64>, usize) {
-    if img.arm64 {
+    // the debugger runs 64-bit programs only
+    if img.arm64 || img.bits == 32 {
         return (Vec::new(), 0);
     }
     let (mut out, mut more) = (Vec::new(), 0usize);

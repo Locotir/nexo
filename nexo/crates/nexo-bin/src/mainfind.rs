@@ -10,8 +10,9 @@ use iced_x86::{
     FlowControl, Instruction, InstructionInfoFactory, InstructionInfoOptions, Mnemonic, OpAccess, OpKind, Register,
 };
 
-use crate::disasm::walk;
-use crate::refs::Kind;
+use crate::disasm::{walk, walk_bits};
+use crate::pic32::Pic32;
+use crate::refs::{written_address, Kind};
 use crate::{Format, Image};
 
 /// One candidate for the program's own entry point, with the reason it is believed.
@@ -87,6 +88,90 @@ pub(crate) fn reg_const_before(img: &Image, start: u64, at: u64, reg: Register) 
         return None;
     }
     Some((v, at_ins))
+}
+
+/// x86-32: the value given as the first argument of the call at `at` (inside the function that starts at
+/// `start`), when it is a plain address or number: `(value, address of the instruction that gives it)`.
+/// The first argument of a cdecl or stdcall call is the last one pushed (or stored at `[esp]`); a
+/// register or a memory slot counts when position-independent code makes its value known. None when a
+/// call in between takes the pushes, or a branch from elsewhere lands between the push and `at`.
+pub(crate) fn first_push_before(img: &Image, start: u64, at: u64) -> Option<(u64, u64)> {
+    let len = usize::try_from(at.checked_sub(start)?).ok()?.min(1 << 20);
+    let bytes = img.read_at(start, len)?;
+    let mut pic = Pic32::new();
+    let mut targets: BTreeSet<u64> = BTreeSet::new();
+    let mut last: Option<(Option<u64>, u64)> = None;
+    let word = |a: u64| img.read_at(a, 4).and_then(|b| b.try_into().ok()).map(|b| u64::from(u32::from_le_bytes(b)));
+    walk_bits(32, bytes, start, |ins, _| {
+        if !ins.is_invalid() {
+            if matches!(ins.flow_control(), FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch)
+                && ins.op0_kind() == OpKind::NearBranch32
+            {
+                targets.insert(ins.near_branch_target());
+            }
+            if matches!(ins.flow_control(), FlowControl::Call | FlowControl::IndirectCall) {
+                last = None;
+            }
+            let operand = |op: u32| match ins.op_kind(op) {
+                OpKind::Immediate32 | OpKind::Immediate8to32 => Some(ins.immediate(op) & 0xffff_ffff),
+                OpKind::Register => pic.value(ins.op_register(op)).map(u64::from),
+                _ => None,
+            };
+            if ins.mnemonic() == Mnemonic::Push {
+                let v = match ins.op0_kind() {
+                    OpKind::Memory => {
+                        pic.resolve(img, ins).or_else(|| written_address(ins)).filter(|x| x.1).and_then(|x| word(x.0))
+                    }
+                    _ => operand(0),
+                };
+                last = Some((v, ins.ip()));
+            } else if ins.mnemonic() == Mnemonic::Mov
+                && ins.op0_kind() == OpKind::Memory
+                && ins.memory_base() == Register::ESP
+                && ins.memory_index() == Register::None
+                && ins.memory_displacement32() == 0
+            {
+                last = Some((operand(1), ins.ip()));
+            }
+        }
+        pic.step(img, ins);
+    });
+    let (Some(v), at_ins) = last? else { return None };
+    if targets.range(at_ins + 1..=at).next().is_some() {
+        return None;
+    }
+    Some((v, at_ins))
+}
+
+/// The first argument of the call at `at` when it is a constant, with the words that say how it is given:
+/// `(value, address of the instruction, "sets rdi = 0x401136")`. `reg` is the register of that argument
+/// in x86-64 code; x86-32 code pushes it.
+fn first_arg(img: &Image, start: u64, at: u64, reg: Register) -> Option<(u64, u64, String)> {
+    if img.bits == 32 {
+        let (v, w) = first_push_before(img, start, at)?;
+        return Some((v, w, format!("pushes {v:#x} as the first argument")));
+    }
+    let (v, w) = reg_const_before(img, start, at, reg)?;
+    Some((v, w, format!("sets {} = {v:#x}", format!("{reg:?}").to_lowercase())))
+}
+
+/// Where a jump that is not a function of its own goes (`__wrap_main: jmp main` in the start code of
+/// x86-32 glibc): the target of an unconditional near jump at `a` when `a` starts no function, else `a`
+/// itself, with a note for the evidence.
+fn through_jump(img: &Image, a: u64) -> (u64, String) {
+    let starts = |x: u64| img.funcs().binary_search_by_key(&x, |f| f.start).is_ok();
+    if starts(a) {
+        return (a, String::new());
+    }
+    let Some(b) = img.read_at(a, 15).or_else(|| img.read_at(a, 5)) else { return (a, String::new()) };
+    let ins = iced_x86::Decoder::with_ip(img.bits, b, a, iced_x86::DecoderOptions::NONE).decode();
+    if ins.mnemonic() == Mnemonic::Jmp && matches!(ins.op0_kind(), OpKind::NearBranch32 | OpKind::NearBranch64) {
+        let t = ins.near_branch_target();
+        if starts(t) {
+            return (t, format!(", which jumps to {t:#x}"));
+        }
+    }
+    (a, String::new())
 }
 
 /// The constant an instruction puts in `reg` (a number or an address), when it is one.
@@ -213,16 +298,14 @@ pub fn find_main(img: &Image) -> Vec<MainHit> {
         for r in refs.at(t).iter().filter(|r| r.kind == Kind::Call) {
             let Some(h) = img.func_at(r.src) else { continue };
             let reg = if img.format == Format::Pe { Register::RCX } else { Register::RDI };
-            if let Some((v, w)) = reg_const_before(img, h.start, r.src, reg) {
+            if let Some((v, w, what)) = first_arg(img, h.start, r.src, reg) {
                 if code_start(v) {
                     hits.push(MainHit {
                         addr: v,
                         role: "Rust main",
                         strength: "proven",
                         evidence: format!(
-                            "{:#x} sets {} = {v:#x} before the call to std::rt::lang_start at {:#x} (in {})",
-                            w,
-                            format!("{reg:?}").to_lowercase(),
+                            "{w:#x} {what} before the call to std::rt::lang_start at {:#x} (in {})",
                             r.src,
                             name_of(img, h.start)
                         ),
@@ -240,14 +323,15 @@ pub fn find_main(img: &Image) -> Vec<MainHit> {
             for r in refs.at(t).iter().filter(|r| r.kind == Kind::Call) {
                 found_call = true;
                 let Some(h) = img.func_at(r.src) else { continue };
-                if let Some((v, w)) = reg_const_before(img, h.start, r.src, Register::RDI) {
+                if let Some((v, w, what)) = first_arg(img, h.start, r.src, Register::RDI) {
+                    let (v, via) = through_jump(img, v);
                     if code_start(v) {
                         hits.push(MainHit {
                             addr: v,
                             role: "main",
                             strength: "proven",
                             evidence: format!(
-                                "{w:#x} sets rdi = {v:#x} before the call to __libc_start_main at {:#x} (in {})",
+                                "{w:#x} {what}{via} before the call to __libc_start_main at {:#x} (in {})",
                                 r.src,
                                 name_of(img, h.start)
                             ),
@@ -301,18 +385,20 @@ pub fn find_main(img: &Image) -> Vec<MainHit> {
     out
 }
 
-/// A stripped static file: the entry function passes a function address in rdi to its last call. Inferred only.
+/// A stripped static file: the entry function passes a function address as the first argument of its
+/// last call (in rdi, or pushed in x86-32 code). Inferred only.
 fn entry_fallback(img: &Image) -> Option<MainHit> {
     let f = img.func_at(img.entry)?;
     let r = img.refs().from(f.start, f.end).filter(|r| r.kind == Kind::Call).last()?;
-    let (v, w) = reg_const_before(img, f.start, r.src, Register::RDI)?;
+    let (v, w, what) = first_arg(img, f.start, r.src, Register::RDI)?;
+    let (v, via) = through_jump(img, v);
     img.funcs().binary_search_by_key(&v, |x| x.start).ok()?;
     Some(MainHit {
         addr: v,
         role: "main",
         strength: "inferred",
         evidence: format!(
-            "the entry function sets rdi = {v:#x} at {w:#x} before its last call at {:#x}; that call has no name \
+            "the entry function {what}{via} at {w:#x} before its last call at {:#x}; that call has no name \
              (stripped), probably __libc_start_main",
             r.src
         ),
@@ -384,8 +470,8 @@ fn pe_crt_main(img: &Image) -> Vec<MainHit> {
         }
     }
     // no argv call to anchor on (the runtime reads them another way): the call that is given argc, argv and
-    // envp (rcx, rdx, r8) in a function that goes on to call exit
-    for &s in &order {
+    // envp (rcx, rdx, r8) in a function that goes on to call exit; x86-64 only (x86-32 pushes them)
+    for &s in order.iter().filter(|_| img.bits == 64) {
         let Some(f) = img.func_at(s) else { continue };
         let calls: Vec<_> = refs.from(f.start, f.end).filter(|r| r.kind == Kind::Call).collect();
         let exit_at = calls.iter().position(|r| import_named(img, r.target).is_some_and(|n| EXITS.contains(&n)));

@@ -158,6 +158,8 @@ pub(crate) struct Collector {
     /// AArch64: a load from an import slot into a register, waiting for the `blr`/`br` that uses it:
     /// (register, slot, address of the load).
     pub(crate) a64_load: Option<(u8, u64, u64)>,
+    /// x86-32: the registers that hold the GOT or another known address.
+    pic: crate::pic32::Pic32,
 }
 
 impl Collector {
@@ -171,6 +173,7 @@ impl Collector {
             indirect_jumps: 0,
             info: InstructionInfoFactory::new(),
             a64_load: None,
+            pic: crate::pic32::Pic32::new(),
         }
     }
 
@@ -189,6 +192,18 @@ impl Collector {
     /// Record what one instruction refers to. A jump is kept here whatever it jumps to; `build`
     /// drops the ones that stay inside their own function once the functions are known.
     pub fn instruction(&mut self, img: &Image, ins: &Instruction) {
+        if img.bits == 32 {
+            let pic = self.pic.resolve(img, ins).filter(|&(a, _)| a >= MIN_ADDR);
+            self.record(img, ins, pic);
+            self.pic.step(img, ins);
+        } else {
+            self.record(img, ins, None);
+        }
+    }
+
+    /// [`instruction`](Self::instruction), with the address x86-32 position-independent code names
+    /// through a register of known value (`pic`).
+    fn record(&mut self, img: &Image, ins: &Instruction, pic: Option<(u64, bool)>) {
         if ins.is_invalid() {
             return;
         }
@@ -197,7 +212,7 @@ impl Collector {
         match ins.flow_control() {
             FlowControl::Call | FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch => {
                 let kind = if ins.flow_control() == FlowControl::Call { Kind::Call } else { Kind::Jump };
-                if ins.op0_kind() == OpKind::NearBranch64 {
+                if matches!(ins.op0_kind(), OpKind::NearBranch64 | OpKind::NearBranch32) {
                     let t = ins.near_branch_target();
                     if mapped(t) {
                         self.push(t, src, kind);
@@ -214,7 +229,7 @@ impl Collector {
                         self.push(slot, src, kind);
                     }
                 } else {
-                    match written_address(ins).filter(|&(a, _)| mapped(a)) {
+                    match pic.or_else(|| written_address(ins)).filter(|&(a, _)| mapped(a)) {
                         // through a slot at a fixed address, as above
                         Some((slot, true)) => {
                             self.push(slot, src, kind);
@@ -239,7 +254,7 @@ impl Collector {
         let named = if ins.is_ip_rel_memory_operand() {
             Some((ins.ip_rel_memory_address(), true))
         } else {
-            written_address(ins)
+            pic.or_else(|| written_address(ins))
         };
         if let Some((a, alone)) = named.filter(|&(a, _)| mapped(a)) {
             let kind = if !alone {
@@ -251,7 +266,10 @@ impl Collector {
                 match info
                     .used_memory()
                     .iter()
-                    .find(|m| m.displacement() == a && m.index() == Register::None)
+                    .find(|m| {
+                        m.index() == Register::None
+                            && if pic.is_some() { m.base() == ins.memory_base() } else { m.displacement() == a }
+                    })
                     .map(|m| m.access())
                 {
                     Some(OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite) => {
@@ -276,6 +294,7 @@ impl Collector {
                 | Mnemonic::Imul
         ) {
             for i in 0..ins.op_count() {
+                // x86-32 code passes addresses as plain numbers (`push 0x804a008`)
                 if matches!(ins.op_kind(i), OpKind::Immediate32 | OpKind::Immediate32to64 | OpKind::Immediate64) {
                     let v = ins.immediate(i);
                     if v >= MIN_ADDR && mapped(v) {
@@ -298,7 +317,8 @@ pub(crate) fn written_address(ins: &Instruction) -> Option<(u64, bool)> {
     if !(0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory) {
         return None;
     }
-    if ins.memory_base() == Register::RSP || matches!(ins.memory_segment(), Register::FS | Register::GS) {
+    if ins.memory_base().full_register() == Register::RSP || matches!(ins.memory_segment(), Register::FS | Register::GS)
+    {
         return None;
     }
     let a = ins.memory_displacement64();
@@ -306,31 +326,25 @@ pub(crate) fn written_address(ins: &Instruction) -> Option<(u64, bool)> {
     (a >= MIN_ADDR).then_some((a, alone))
 }
 
-/// Sections whose 8-byte words are not pointers of the program (tables the loader reads).
+/// Sections whose words are not pointers of the program (tables the loader reads).
 fn skipped(name: &str) -> bool {
     name.starts_with(".rela") || name.starts_with(".rel.") || name == ".dynsym" || name.starts_with(".eh_frame")
 }
 
-/// Every aligned 8-byte word of the data sections that lands inside a mapped section, plus the
-/// pointers the loader fills in (ELF relative relocations).
+/// Every aligned pointer-sized word (8 bytes, 4 in x86-32 files) of the data sections that lands
+/// inside a mapped section, plus the pointers the loader fills in (ELF relative relocations).
 fn data_pointers(img: &Image, c: &mut Collector) {
+    let w = img.ptr_size();
     for sec in img.sections.iter().filter(|s| s.alloc && !s.exec && s.file_size > 0 && !skipped(&s.name)) {
         let data = img.section_bytes(sec);
-        let first = (8 - (sec.addr % 8) as usize) % 8;
+        let first = (w - (sec.addr % w as u64) as usize) % w;
         let mut i = first;
-        while i + 8 <= data.len() {
+        while i + w <= data.len() {
             #[cfg(test)]
             SCANNED.with(|c| c.set(c.get() + 1));
-            let v = u64::from_le_bytes([
-                data[i],
-                data[i + 1],
-                data[i + 2],
-                data[i + 3],
-                data[i + 4],
-                data[i + 5],
-                data[i + 6],
-                data[i + 7],
-            ]);
+            let mut b = [0u8; 8];
+            b[..w].copy_from_slice(&data[i..i + w]);
+            let v = u64::from_le_bytes(b);
             if v >= MIN_ADDR && img.section_at(v).is_some() {
                 if let Some(src) = sec.addr.checked_add(i as u64) {
                     if !c.push(v, src, Kind::Ptr) {
@@ -338,7 +352,7 @@ fn data_pointers(img: &Image, c: &mut Collector) {
                     }
                 }
             }
-            i += 8;
+            i += w;
         }
     }
     for &(slot, value) in &img.rel_ptrs {

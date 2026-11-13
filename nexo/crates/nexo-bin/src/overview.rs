@@ -65,7 +65,7 @@ pub fn overview_window(img: &Image, from: Option<u64>, budget: usize) -> Result<
     head.lines.push(format!(
         "overview {}  {} {}, {} bytes, sha256 {}",
         img.path.display(),
-        img.format.name(),
+        img.format_name(),
         img.arch_name(),
         img.data.len(),
         &img.sha256[..16.min(img.sha256.len())]
@@ -263,7 +263,7 @@ fn meta_json(
         })
         .collect();
     json!({
-        "file": img.path.display().to_string(), "format": img.format.name(), "arch": img.arch_name(),
+        "file": img.path.display().to_string(), "format": img.format_name(), "arch": img.arch_name(),
         "size": img.data.len(), "sha256": img.sha256, "entry": img.entry, "hardening": hardening,
         "main": mains.iter().map(|h| json!({"addr": h.addr, "role": h.role, "strength": h.strength, "evidence": h.evidence})).collect::<Vec<_>>(),
         "imports": imports, "imports_other": other,
