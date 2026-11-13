@@ -69,6 +69,12 @@ pub struct Reads {
     wrote: HashMap<PathBuf, (u64, String, bool)>,
 }
 
+/// The key a file is kept under: its canonical path, so the same file reached by a symlink, a short Windows
+/// name, a `\\?\` prefix or another drive letter case is one entry. A path that cannot be resolved is kept as given.
+fn key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn digest(bytes: &[u8]) -> u64 {
     let mut h = DefaultHasher::new();
     bytes.hash(&mut h);
@@ -126,7 +132,7 @@ impl Reads {
     /// Whether the model already met `path` as it is now: it read, wrote or was given it in this session
     /// and the file has not changed since. Such a file is not attached again by the token budget.
     pub fn met_unchanged(&self, path: &Path) -> bool {
-        let Some(s) = self.seen.get(path) else { return false };
+        let Some(s) = self.seen.get(&key(path)) else { return false };
         let Ok(b) = std::fs::read(path) else { return false };
         if digest(&b) != s.hash {
             return false;
@@ -140,10 +146,10 @@ impl Reads {
     /// not the file) and for anything changed since.
     pub fn held_whole(&self, path: &Path, bytes: &[u8], made: bool) -> Option<String> {
         let hash = digest(bytes);
-        if let Some((_, call, whole)) = self.wrote.get(path).filter(|w| w.0 == hash) {
+        if let Some((_, call, whole)) = self.wrote.get(&key(path)).filter(|w| w.0 == hash) {
             return (*whole && self.in_view.contains(call)).then(|| format!("the file you wrote in call {call}"));
         }
-        let s = self.seen.get(path).filter(|s| made && s.hash == hash)?;
+        let s = self.seen.get(&key(path)).filter(|s| made && s.hash == hash)?;
         covers(&s.pieces, bytes, Some(&self.in_view))
             .then(|| "a file your own commands made, shown in full above".into())
     }
@@ -152,7 +158,7 @@ impl Reads {
     pub fn attached(&mut self, path: PathBuf, bytes: &[u8], header: String) {
         let end = String::from_utf8_lossy(bytes).lines().count();
         let pieces = vec![Piece { start: 1, end, anchor: header }];
-        self.seen.insert(path, Seen { hash: digest(bytes), pieces, noted: false });
+        self.seen.insert(key(&path), Seen { hash: digest(bytes), pieces, noted: false });
     }
 
     /// After `edit` or `write` changed `path`: what the model knew of it is gone, and when the result of
@@ -165,8 +171,8 @@ impl Reads {
             Some(_) => vec![Piece { start: 1, end: text.lines().count(), anchor: call_id.to_string() }],
             None => Vec::new(),
         };
-        self.wrote.insert(path.to_path_buf(), (digest(&bytes), call_id.to_string(), whole));
-        self.seen.insert(path.to_path_buf(), Seen { hash: digest(&bytes), pieces, noted: false });
+        self.wrote.insert(key(path), (digest(&bytes), call_id.to_string(), whole));
+        self.seen.insert(key(path), Seen { hash: digest(&bytes), pieces, noted: false });
     }
 
     /// After a successful `read` of `path` (lines from `offset`, `limit` of them):
@@ -208,7 +214,7 @@ impl Reads {
             return None;
         }
         let in_view = &self.in_view;
-        let seen = self.seen.entry(path.to_path_buf()).or_insert(Seen { hash, pieces: Vec::new(), noted: false });
+        let seen = self.seen.entry(key(path)).or_insert(Seen { hash, pieces: Vec::new(), noted: false });
         if seen.hash != hash {
             *seen = Seen { hash, pieces: Vec::new(), noted: false };
         }
@@ -329,6 +335,23 @@ fn words(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_is_one_entry_however_its_path_is_spelled() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        let p = d.path().join("a.txt");
+        std::fs::write(&p, "one\n").unwrap();
+        // the path a tool call builds (not canonical) and the one a named file resolves to (canonical)
+        let spelled = d.path().join("sub").join("..").join("a.txt");
+        let real = p.canonicalize().unwrap();
+        let mut r = Reads::default();
+        r.after_change(&spelled, "w1", true);
+        r.note_view(&[result("w1", "wrote a.txt")]);
+        assert!(r.met_unchanged(&real));
+        assert!(r.held_whole(&real, b"one\n", false).is_some_and(|how| how.contains("call w1")));
+        assert!(r.held_whole(&spelled, b"one\n", false).is_some());
+    }
 
     #[test]
     fn a_file_read_only_in_part_is_not_met_whole() {
