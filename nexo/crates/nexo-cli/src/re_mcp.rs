@@ -15,7 +15,7 @@ use crate::dbg_cmd::DbgArgs;
 const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Ops of `nexo bin` that save names, notes, types or files; `crypto --save` does too.
-const SAVING_OPS: &[&str] = &["name", "note", "proto", "struct", "var", "sigs"];
+const SAVING_OPS: &[&str] = &["name", "note", "proto", "struct", "var", "sigs", "patch"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kind {
@@ -619,6 +619,29 @@ mod tests {
         let info = tools.iter().find(|t| t["name"] == "bin_info").unwrap();
         assert_eq!(info["inputSchema"]["required"], json!(["file"]));
         assert_eq!(info["inputSchema"]["properties"]["lines"]["type"], json!(["integer", "string"]));
+    }
+
+    #[test]
+    fn assembly_is_read_only_and_copy_patches_need_allow_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = nexo_bin::fixtures::elf64(false);
+        let input = dir.path().join("input");
+        let out = dir.path().join("output");
+        std::fs::write(&input, &f.bytes).unwrap();
+        let args = json!({"file": input, "out": out, "at": format!("{:#x}", f.b), "asm": "mov eax, 7; ret"});
+        let a = talk(
+            false,
+            &[call(1, "bin_asm", json!({"source": "nop; ret", "at": "0x401000"})), call(2, "bin_patch", args.clone())],
+        );
+        assert_eq!(a[0]["result"]["isError"], false, "{a:?}");
+        assert!(result_text(&a[0]).contains("90 c3"));
+        assert_eq!(a[1]["result"]["isError"], true);
+        assert!(result_text(&a[1]).contains("--allow-changes"));
+        assert!(!out.exists());
+        let a = talk(true, &[call(3, "bin_patch", args)]);
+        assert_eq!(a[0]["result"]["isError"], false, "{a:?}");
+        assert_eq!(nexo_bin::Image::open(&out).unwrap().read_at(f.b, 6).unwrap(), [0xb8, 7, 0, 0, 0, 0xc3]);
+        assert_eq!(std::fs::read(input).unwrap(), f.bytes);
     }
 
     #[test]

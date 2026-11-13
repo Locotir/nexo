@@ -2,12 +2,13 @@
 //! bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search, and
 //! what changed between two builds of one program.
 //!
-//! The file is only read. It is never run, loaded or handed to another program (`nexo-dbg` is the
+//! The input file is only read; `patch` writes a new copy. It is never run, loaded or handed to another program (`nexo-dbg` is the
 //! crate that runs programs; it asks this one for names and instruction text). No function here
 //! prints: each op returns an [`Output`] that has a text form and a JSON form, and
 //! [`Output::page`] cuts either one to a line budget, saying exactly what is left and how to get it.
 
 mod a64;
+mod asm;
 mod bindiff;
 mod caps;
 mod crypto;
@@ -30,6 +31,7 @@ mod names;
 mod ops;
 mod overview;
 mod page;
+mod patch;
 mod pdbread;
 mod pic32;
 mod refs;
@@ -59,6 +61,8 @@ mod tests_macho;
 #[cfg(test)]
 mod tests_map;
 #[cfg(test)]
+mod tests_patch;
+#[cfg(test)]
 mod tests_sigs;
 #[cfg(test)]
 mod tests_wasm;
@@ -69,6 +73,7 @@ mod tests_x86_32;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod wasm_fixture;
 
+pub use asm::{assemble, assembly};
 pub use bindiff::diff_window;
 pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
@@ -94,6 +99,7 @@ pub use ops::{
 };
 pub use overview::{overview, overview_window};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES};
+pub use patch::{patch, PatchData, PatchTarget};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
 pub use sigs::{
     find_libraries as sig_libraries, generate as sig_generate, Keep as SigKeep, SigHit, SigSet, Strength as SigStrength,

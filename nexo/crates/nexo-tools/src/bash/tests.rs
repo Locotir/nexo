@@ -135,6 +135,8 @@ fn nexo_dbg_steering_is_a_read_and_starting_or_writing_is_not() {
 fn nexo_bin_reads_are_read_kind_and_what_saves_or_follows_is_judged_as_before() {
     let kind = |c: &str| Bash.call_kind(&json!({"command": c}));
     for c in [
+        "nexo bin asm 'mov eax, 7; ret' --at 0x401000",
+        "nexo re asm 'nop'",
         "nexo bin info a.out",
         "nexo bin funcs a.out --sort size --lines 20",
         "nexo bin fn a.out main --bytes",
@@ -153,6 +155,8 @@ fn nexo_bin_reads_are_read_kind_and_what_saves_or_follows_is_judged_as_before() 
     }
     for c in [
         // saves into nexo's data folder: asks, as a command that writes does
+        "nexo bin patch a.out --out patched --at 0x401000 --nop 4",
+        "nexo re patch a.out --out patched --fn main+1 --asm 'nop'",
         "nexo bin name a.out main entry",
         "nexo bin note a.out main starts here",
         "nexo bin name a.out main --clear",

@@ -7,9 +7,16 @@ use clap::{Args, Subcommand};
 use nexo_bin::{ElemType, Error, FnQuery, FuncSort, Image, Output, StrSort, DEFAULT_LINES, MIN_LINES};
 
 #[derive(Args, Debug)]
+#[command(arg_required_else_help = true, args_conflicts_with_subcommands = true)]
 pub struct BinArgs {
     #[command(subcommand)]
-    pub op: BinOp,
+    pub op: Option<BinOp>,
+    /// Serve binary tools over MCP on stdio.
+    #[arg(long)]
+    pub mcp: bool,
+    /// With --mcp: allow tools that write files or saved state.
+    #[arg(long, requires = "mcp")]
+    pub allow_changes: bool,
 }
 
 /// Options every op takes.
@@ -34,6 +41,36 @@ pub struct Common {
 
 #[derive(Subcommand, Debug)]
 pub enum BinOp {
+    /// Assemble Intel x86 instructions (semicolon/newline separated); labels and rel32 branches supported.
+    Asm {
+        source: String,
+        #[arg(long, default_value = "0", value_parser = parse_addr)]
+        at: u64,
+        #[arg(long, default_value = "64", value_parser = ["64", "32"])]
+        bits: String,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Patch generic bytes into a new copy; never modifies the input or overwrites an existing output.
+    #[command(group(clap::ArgGroup::new("location").required(true).args(["at", "function"])),
+              group(clap::ArgGroup::new("replacement").required(true).args(["bytes", "asm", "nop"])))]
+    Patch {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, value_parser = parse_addr)]
+        at: Option<u64>,
+        #[arg(long = "fn", value_name = "NAME+OFF")]
+        function: Option<String>,
+        #[arg(long, value_name = "HEX")]
+        bytes: Option<String>,
+        #[arg(long, value_name = "INTEL")]
+        asm: Option<String>,
+        #[arg(long, value_name = "N")]
+        nop: Option<usize>,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Format, entry, sections, counts and what the headers say about hardening.
     Info {
         file: PathBuf,
@@ -384,7 +421,8 @@ fn parse_addr(s: &str) -> Result<u64, String> {
 impl BinOp {
     fn file(&self) -> &Path {
         match self {
-            BinOp::Info { file, .. }
+            BinOp::Patch { file, .. }
+            | BinOp::Info { file, .. }
             | BinOp::Overview { file, .. }
             | BinOp::Path { file, .. }
             | BinOp::Slice { file, .. }
@@ -407,13 +445,15 @@ impl BinOp {
             | BinOp::Diff { file, .. }
             | BinOp::Managed { file, .. }
             | BinOp::Emu { file, .. } => file,
-            BinOp::Sigs { .. } => Path::new(""),
+            BinOp::Sigs { .. } | BinOp::Asm { .. } => Path::new(""),
         }
     }
 
     fn common(&self) -> &Common {
         match self {
-            BinOp::Info { common, .. }
+            BinOp::Asm { common, .. }
+            | BinOp::Patch { common, .. }
+            | BinOp::Info { common, .. }
             | BinOp::Overview { common, .. }
             | BinOp::Path { common, .. }
             | BinOp::Slice { common, .. }
@@ -448,29 +488,49 @@ pub fn execute(a: &BinArgs) -> Result<String, Error> {
 
 /// Like [`execute`], with the data dir given (tests use a temporary one).
 pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
+    let op = a.op.as_ref().ok_or_else(|| Error::Usage("choose a bin operation or use --mcp".into()))?;
     let t0 = std::time::Instant::now();
-    if let BinOp::Sigs { libs, all, out, .. } = &a.op {
+    if let BinOp::Asm { source, at, bits, .. } = op {
+        let output = nexo_bin::assembly(source, *at, if bits == "32" { 32 } else { 64 })?;
+        return render_copy_op(&output, op.common().json);
+    }
+    if let BinOp::Sigs { libs, all, out, .. } = op {
         return make_sigs(libs, *all, out.as_deref(), data_dir);
     }
-    if let Some(r) = crate::bin_managed::try_managed(a) {
+    if let Some(r) = crate::bin_managed::try_managed(op) {
         return r;
     }
-    if nexo_bin::is_wasm(a.op.file()) {
-        return wasm_in(a);
+    if nexo_bin::is_wasm(op.file()) {
+        return wasm_in(op);
     }
-    let mut img = Image::open_arch(a.op.file(), a.op.common().arch.as_deref())?;
+    let mut img = Image::open_arch(op.file(), op.common().arch.as_deref())?;
     let mut warning = nexo_bin::attach_names(&mut img, data_dir);
     let mut other = None;
-    if let BinOp::Diff { other: path, .. } = &a.op {
+    if let BinOp::Diff { other: path, .. } = op {
         let mut b = Image::open(path)?;
         if let Some(w) = nexo_bin::attach_names(&mut b, data_dir).filter(|w| warning.as_ref() != Some(w)) {
             warning = Some(warning.map_or(w.clone(), |v| format!("{v}\n{w}")));
         }
         other = Some(b);
     }
-    let c = a.op.common();
+    let c = op.common();
     let (from, lines) = (c.from, c.lines.max(MIN_LINES));
-    let out: Output = match &a.op {
+    let out: Output = match op {
+        BinOp::Asm { .. } => unreachable!("assembled before opening an image"),
+        BinOp::Patch { out, at, function, bytes, asm, nop, .. } => {
+            let target = match (at, function) {
+                (Some(at), None) => nexo_bin::PatchTarget::Address(*at),
+                (None, Some(name)) => nexo_bin::PatchTarget::Function(name),
+                _ => return Err(Error::Usage("give exactly one of --at or --fn".into())),
+            };
+            let data = match (bytes, asm, nop) {
+                (Some(bytes), None, None) => nexo_bin::PatchData::Bytes(bytes),
+                (None, Some(asm), None) => nexo_bin::PatchData::Asm(asm),
+                (None, None, Some(n)) => nexo_bin::PatchData::Nop(*n),
+                _ => return Err(Error::Usage("give exactly one of --bytes, --asm or --nop".into())),
+            };
+            return render_copy_op(&nexo_bin::patch(&img, out, target, data)?, c.json);
+        }
         BinOp::Info { .. } => nexo_bin::info(&img),
         BinOp::Overview { .. } => nexo_bin::overview_window(&img, from, lines)?,
         BinOp::Crypto { save, .. } => nexo_bin::crypto_window(&img, save.then_some(data_dir), from, lines)?,
@@ -587,12 +647,21 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     }
 }
 
+// Copy operations print their complete receipt; pagination must never suggest repeating a write.
+fn render_copy_op(out: &Output, json: bool) -> Result<String, Error> {
+    if json {
+        serde_json::to_string_pretty(&out.page(None, usize::MAX).value).map_err(|e| Error::Bad(e.to_string()))
+    } else {
+        Ok(out.text_all())
+    }
+}
+
 /// The ops that read a WebAssembly module (found by its signature, not its name).
-fn wasm_in(a: &BinArgs) -> Result<String, Error> {
-    let c = a.op.common();
+fn wasm_in(op: &BinOp) -> Result<String, Error> {
+    let c = op.common();
     let (from, lines) = (c.from, c.lines.max(MIN_LINES));
     let mut ask = nexo_bin::WasmAsk { from, budget: lines, ..Default::default() };
-    match &a.op {
+    match op {
         BinOp::Info { .. } => ask.op = "info",
         BinOp::Overview { .. } => ask.op = "overview",
         BinOp::Funcs { sort, grep, min_size, .. } => {
@@ -612,7 +681,7 @@ fn wasm_in(a: &BinArgs) -> Result<String, Error> {
             )))
         }
     }
-    let out = nexo_bin::wasm_answer(a.op.file(), &ask)?;
+    let out = nexo_bin::wasm_answer(op.file(), &ask)?;
     let page = out.page_as(from, lines, c.json);
     if c.json {
         serde_json::to_string_pretty(&page.value).map_err(|e| Error::Bad(e.to_string()))
@@ -623,6 +692,9 @@ fn wasm_in(a: &BinArgs) -> Result<String, Error> {
 
 /// Print the answer; the exit code is 0, 1 for a question that cannot be answered, 2 for a file that is not read.
 pub fn run(a: &BinArgs) -> i32 {
+    if a.mcp {
+        return crate::re_mcp::run_stdio(a.allow_changes);
+    }
     match execute(a) {
         Ok(text) => {
             println!("{text}");
@@ -746,6 +818,51 @@ mod tests {
         assert!(t.contains("second string") && t.contains("<- func[4]"), "{t}");
         let e = ask(&["decomp", &path, "greet"]).unwrap_err().to_string();
         assert!(e.contains("does not read WebAssembly modules yet; use one of: info, overview"), "{e}");
+    }
+
+    #[test]
+    fn bin_mcp_parses_the_same_change_gate_as_re_mcp() {
+        for root in ["bin", "re"] {
+            for allow in [false, true] {
+                let mut argv = vec!["nexo", root, "--mcp"];
+                if allow {
+                    argv.push("--allow-changes");
+                }
+                let parsed = crate::cli::Args::try_parse_from(argv).unwrap();
+                match parsed.cmd {
+                    Some(crate::cli::Cmd::Bin(b)) => assert!(b.op.is_none() && b.mcp && b.allow_changes == allow),
+                    Some(crate::cli::Cmd::Re(r)) => assert!(r.mcp && r.allow_changes == allow),
+                    _ => panic!("wrong command"),
+                }
+            }
+            assert!(crate::cli::Args::try_parse_from(["nexo", root, "--allow-changes"]).is_err());
+        }
+        assert!(crate::cli::Args::try_parse_from(["nexo", "bin", "--mcp", "asm", "nop"]).is_err());
+    }
+
+    #[test]
+    fn assembly_and_copy_patch_parse_exclusive_arguments() {
+        assert!(ask(&["asm", "nop; ret", "--bits", "32"]).unwrap().contains("90 c3"));
+        let dir = tempfile::tempdir().unwrap();
+        let f = fixtures::elf64(false);
+        let input = file(&dir, "input", &f);
+        let out = dir.path().join("output").display().to_string();
+        let at = format!("{:#x}", f.b);
+        let receipt = ask(&["patch", &input, "--out", &out, "--at", &at, "--bytes", "90 90", "--json"]).unwrap();
+        let j: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+        assert_eq!(j["new"], "90 90");
+        assert_eq!(j["file_offset"], Image::open(Path::new(&input)).unwrap().addr_to_offset(f.b).unwrap());
+        for args in [
+            vec!["patch", &input, "--out", &out, "--nop", "1"],
+            vec!["patch", &input, "--out", &out, "--at", &at],
+            vec!["patch", &input, "--out", &out, "--at", &at, "--fn", "main", "--nop", "1"],
+            vec!["patch", &input, "--out", &out, "--at", &at, "--bytes", "90", "--nop", "1"],
+            vec!["asm", "nop", "--bits", "16"],
+        ] {
+            let mut argv = vec!["nexo", "bin"];
+            argv.extend(args);
+            assert!(crate::cli::Args::try_parse_from(argv).is_err());
+        }
     }
 
     #[test]

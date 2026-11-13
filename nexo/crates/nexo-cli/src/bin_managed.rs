@@ -1,12 +1,12 @@
 //! `nexo bin managed`: JVM `.class` and `.jar` files (and `info` on them), answered by the
 //! `nexo-bin` crate without opening the file as a native image.
 
-use crate::bin_cmd::{BinArgs, BinOp};
+use crate::bin_cmd::BinOp;
 use nexo_bin::{Error, ManagedQuery, MIN_LINES};
 
 /// `Some(answer)` when this command is about managed bytecode, `None` for the native ops.
-pub fn try_managed(a: &BinArgs) -> Option<Result<String, Error>> {
-    let (query, common, file) = match &a.op {
+pub fn try_managed(op: &BinOp) -> Option<Result<String, Error>> {
+    let (query, common, file) = match op {
         BinOp::Managed { file, target, strings, callers, grep, common } => (
             ManagedQuery {
                 target: target.as_deref(),
