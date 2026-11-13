@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn the_colours_follow_the_theme_and_mono_uses_weight() {
         let t = Theme::dark();
-        let hot = FigCell { ch: '⠁', level: 1.0, node: false, core: false };
+        let hot = FigCell { ch: '⠁', level: 1.0, node: false, core: false, soft: false };
         assert_eq!(look(&t, Kind::Met, &hot).fg, Some(t.success));
         assert_eq!(look(&t, Kind::Failed, &FigCell { level: 1.0, ..hot }).fg, Some(fade(&t, t.bg, t.error, 0.95)));
         let m = Theme::mono();

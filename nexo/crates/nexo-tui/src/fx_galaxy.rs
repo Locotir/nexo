@@ -18,10 +18,10 @@ use crate::fx_stars::{cos, lit, sin, unit, Canvas, Grid, PI, TAU};
 pub const FULL: (u16, u16) = (40, 12);
 pub const SMALL: (u16, u16) = (27, 8);
 /// One turn around its own axis, and the breath of the tilt.
-pub const TURN_MS: f64 = 14_000.0;
-pub const BREATH_MS: f64 = 23_000.0;
+pub const TURN_MS: f64 = 21_000.0;
+pub const BREATH_MS: f64 = 34_500.0;
 /// The phase of the still frame (animations off, mono): both arms read clearly.
-pub const NICE_MS: f64 = 1000.0;
+pub const NICE_MS: f64 = 1500.0;
 
 const CORE: usize = 70;
 const ARM_BODY: usize = 150;
@@ -37,8 +37,8 @@ const ARM_TURNS: f32 = 1.25;
 const FACE_TILT: f32 = 1.0821;
 const BREATH: f32 = 0.0611;
 const LEAN: f32 = 0.3142;
-/// A twinkle once in this long, as the constellation's.
-const TWINKLE_MS: f64 = 2600.0;
+/// A twinkle once in this long (slow, like the constellation's breathing stars).
+const TWINKLE_MS: f64 = 3900.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Kind {
@@ -164,10 +164,10 @@ pub(crate) fn polar(p: &Pt, gather: f32) -> (f32, f32) {
     (p.r * (1.0 + 0.8 * (1.0 - g)), p.th + 0.9 * (1.0 - g))
 }
 
-/// A knot's brightness: 1 most of the time, a brief dip and flare once per `TWINKLE_MS`.
+/// A knot's brightness: 0.62 most of the time, a slow swell to 1 and back once per `TWINKLE_MS`.
 fn twinkle(phase_ms: f64, p: &Pt) -> f32 {
     let k = ((phase_ms / TWINKLE_MS) as f32 + p.phase).fract();
-    let h = if k < 0.2 { sin(k / 0.2 * PI) } else { 0.0 };
+    let h = if k < 0.3 { sin(k / 0.3 * PI) } else { 0.0 };
     0.62 + 0.38 * h
 }
 
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(knots.len(), 10);
         // one knot over one period: it dips and flares, inside the range the level code expects, and repeats
         let k = knots[0];
-        let v: Vec<f32> = (0..26).map(|i| twinkle(i as f64 * 100.0, k)).collect();
+        let v: Vec<f32> = (0..39).map(|i| twinkle(i as f64 * 100.0, k)).collect();
         assert!(v.iter().all(|&x| (0.6..=1.0 + 1e-4).contains(&x)), "{v:?}");
         let (lo, hi) = v.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
         assert!(hi > 0.95 && lo < 0.7 && hi - lo > 0.3, "{lo}..{hi}");
@@ -493,7 +493,7 @@ mod tests {
             .flat_map(|a| knots.iter().map(move |b| (*a, *b)))
             .find(|(a, b)| (0.15..0.85).contains(&(b.phase - a.phase).rem_euclid(1.0)))
             .expect("two knots with different offsets");
-        let t = ((0.1 - a.phase as f64).rem_euclid(1.0)) * TWINKLE_MS;
+        let t = ((0.15 - a.phase as f64).rem_euclid(1.0)) * TWINKLE_MS;
         assert!(twinkle(t, a) > 0.99 && twinkle(t, b) < 0.7, "{} against {}", twinkle(t, a), twinkle(t, b));
     }
 

@@ -6,8 +6,10 @@
 //! phase it is asked about; no randomness and no libm at run time (`sin` and `cos` here use only
 //! IEEE operations), so the same phase gives the same frame on every machine.
 //!
-//! The faint stars do not turn or drift: each one fades in, shines, fades out, rests dark and comes back
-//! somewhere else, on a cycle of its own (`twinkle`), and never on a cell the figure uses.
+//! The faint stars do not turn or drift: each one breathes (`twinkle`): its brightness follows a raised
+//! cosine, from invisible up to its peak and just as slowly back down, then it rests dark and comes back
+//! somewhere else, on a cycle of its own of 8 to 12 s, and never on a cell the figure uses. Their colour
+//! is drawn from the ground up (no floor), so a star starts and ends fully invisible.
 //!
 //! The figure turns on the spinner beat while someone is at the keys. After `REST_AFTER_MS` with no key
 //! or mouse event it eases to a stop over `STOP_MS` and asks for no more frames; the next input wakes it.
@@ -32,7 +34,7 @@ use crate::motion::fade;
 pub const FULL: (u16, u16) = (36, 16);
 pub const SMALL: (u16, u16) = (20, 9);
 /// One turn around the axis.
-pub const TURN_MS: f64 = 9000.0;
+pub const TURN_MS: f64 = 13_500.0;
 /// The dots gather from scattered to the figure in this long, once per start.
 pub const GATHER_MS: u64 = 600;
 /// With no key or mouse event for this long the figure comes to rest.
@@ -40,7 +42,7 @@ pub const REST_AFTER_MS: u64 = 20_000;
 /// ... easing to a stop over this long.
 pub const STOP_MS: u64 = 1000;
 /// The phase of the still frame (animations off, mono): the nicest angle.
-pub const NICE_MS: f64 = 1500.0;
+pub const NICE_MS: f64 = 2250.0;
 
 const NODES: usize = 9;
 const STARS: usize = 150;
@@ -51,11 +53,11 @@ const ROLL: f32 = 0.30;
 /// How far the ring is tilted against the equator.
 const RING_TILT: f32 = 0.25;
 const RING_R: f32 = 1.22;
-/// A faint star's whole cycle (glow in, shine, fade out, dark gap) lasts between these, each its own.
-const CYCLE_MIN_MS: f64 = 2000.0;
-const CYCLE_SPAN_MS: f64 = 3000.0;
-/// The steps of a star's brightness, dimmest to brightest, and the dip of its flicker.
-const GLOW: [f32; 4] = [0.22, 0.45, 0.62, 0.8];
+/// A faint star's whole cycle (one breath, then a dark gap) lasts between these, each its own.
+const CYCLE_MIN_MS: f64 = 8000.0;
+const CYCLE_SPAN_MS: f64 = 4000.0;
+/// The brightness of a figure's faint star at the top of its breath.
+const PEAK: f32 = 0.85;
 
 // ---- maths without libm ----
 
@@ -93,7 +95,7 @@ pub(crate) fn unit(seed: u32) -> f32 {
 
 // ---- the faint stars ----
 
-/// A faint star at one moment: where (0..1 each way across the room) and how bright (0 while dark).
+/// A faint star at one moment: where (0..1 each way across the room) and how bright (0..1, 0 while dark).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Twinkle {
     pub x: f32,
@@ -103,10 +105,11 @@ pub(crate) struct Twinkle {
     pub cycle: u32,
 }
 
-/// Star number `seed` at `phase_ms`: it fades in, shines with a slight flicker, fades out, stays dark a
-/// short while and comes back somewhere else. Its cycle is its own length (2 to 5 s) and offset, so no two
-/// stars pulse together; where it comes back and how long it rests come from a hash of the seed and the
-/// cycle number, so the same phase always gives the same star.
+/// Star number `seed` at `phase_ms`: it breathes (a raised cosine from 0 up to 1 and back to 0, the same
+/// slow way both ways), stays dark a short while and comes back somewhere else. Its cycle is its own length
+/// (8 to 12 s, a breath of 5 to 12 s inside it) and offset, so no two stars pulse together; where it comes
+/// back and how long it rests come from a hash of the seed and the cycle number, so the same phase always
+/// gives the same star.
 pub(crate) fn twinkle(seed: u32, phase_ms: f64) -> Twinkle {
     let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
     let t = phase_ms.max(0.0) / period + unit(seed.wrapping_add(1)) as f64;
@@ -115,29 +118,25 @@ pub(crate) fn twinkle(seed: u32, phase_ms: f64) -> Twinkle {
     let key = mix(seed ^ mix(cycle.wrapping_add(0x9e37_79b9)));
     let (x, y) = (unit(key.wrapping_add(1)), unit(key.wrapping_add(2)));
     let life = 1.0 - (0.12 + 0.20 * unit(key.wrapping_add(3)));
-    let level = if k >= life {
-        0.0
-    } else {
-        let u = k / life;
-        if u < 0.12 {
-            GLOW[0]
-        } else if u < 0.28 {
-            GLOW[1]
-        } else if u < 0.66 {
-            // a dip now and then, about every tenth of a second
-            let beat = (phase_ms.max(0.0) / 110.0) as u32;
-            if unit(seed.wrapping_add(7).wrapping_add(beat.wrapping_mul(31))) < 0.1 {
-                GLOW[2]
-            } else {
-                GLOW[3]
-            }
-        } else if u < 0.82 {
-            GLOW[1]
-        } else {
-            GLOW[0]
-        }
-    };
+    let level = if k >= life { 0.0 } else { breath(k / life) };
     Twinkle { x, y, level, cycle }
+}
+
+/// A breath at `u` (0..1 through it): 0 at both ends, 1 in the middle, a raised cosine.
+pub(crate) fn breath(u: f32) -> f32 {
+    (0.5 - 0.5 * cos(u.clamp(0.0, 1.0) * TAU)).clamp(0.0, 1.0)
+}
+
+/// 0 below `lo`, 1 above `hi`, a smooth step between.
+pub(crate) fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The colour weight (0..1) of a soft dot of brightness `level`: about the level itself, and exactly 0 at 0.
+pub(crate) fn soft_k(level: f32) -> f32 {
+    let l = level.clamp(0.0, 1.0);
+    l * (1.5 - 0.5 * l)
 }
 
 // ---- the scene ----
@@ -222,6 +221,8 @@ pub struct FigCell {
     pub node: bool,
     /// Part of the galaxy's bright core.
     pub core: bool,
+    /// A soft dot (a faint star or a comet): its colour comes up from nothing with the level, no floor.
+    pub soft: bool,
 }
 
 /// The figure as cells, `cols` x `rows`, row by row.
@@ -251,6 +252,7 @@ pub(crate) struct Canvas {
     level: Vec<f32>,
     node: Vec<bool>,
     core: Vec<bool>,
+    soft: Vec<bool>,
 }
 
 impl Canvas {
@@ -267,6 +269,7 @@ impl Canvas {
             level: vec![0.0; cols * rows],
             node: vec![false; cols * rows],
             core: vec![false; cols * rows],
+            soft: vec![false; cols * rows],
         }
     }
 
@@ -290,6 +293,16 @@ impl Canvas {
 
     /// A dot that is part of a bright node and/or of the galaxy's core (the colour follows).
     pub(crate) fn plot_kind(&mut self, x: f32, y: f32, level: f32, node: bool, core: bool) {
+        self.put(x, y, level, node, core, false);
+    }
+
+    /// Like `plot_kind`, for a faint star or a comet: if the dot opens the cell (or the cell is already soft)
+    /// its colour follows the level from nothing, with no floor.
+    pub(crate) fn plot_soft(&mut self, x: f32, y: f32, level: f32, node: bool, core: bool) {
+        self.put(x, y, level, node, core, true);
+    }
+
+    fn put(&mut self, x: f32, y: f32, level: f32, node: bool, core: bool, soft: bool) {
         let (w, h) = self.dots();
         if !(x >= 0.0 && y >= 0.0 && x < w && y < h) || level <= 0.0 {
             return;
@@ -299,6 +312,7 @@ impl Canvas {
         let (ix, iy) = (px % self.dx, py % self.dy);
         // braille dot numbers: column 0 is 1, 2, 3, 7 and column 1 is 4, 5, 6, 8
         const BIT: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+        self.soft[i] = soft && (self.bits[i] == 0 || self.soft[i]);
         self.bits[i] |= if self.ascii { 1 } else { BIT[ix][iy] };
         if level > self.level[i] {
             self.level[i] = level;
@@ -317,7 +331,7 @@ impl Canvas {
                     (_, true) => '.',
                     (b, false) => char::from_u32(0x2800 + b as u32).unwrap_or(' '),
                 };
-                FigCell { ch, level: self.level[i], node: self.node[i], core: self.core[i] }
+                FigCell { ch, level: self.level[i], node: self.node[i], core: self.core[i], soft: self.soft[i] }
             })
             .collect();
         Grid { cols: self.cols as u16, rows: self.rows as u16, cells }
@@ -403,7 +417,7 @@ fn build(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool, faint: b
         let st = twinkle(5000 + i as u32 * 4, phase_ms);
         let (x, y) = (st.x * w, st.y * h);
         if st.level > 0.0 && cv.free(x, y) {
-            cv.plot(x, y, st.level * seen, false);
+            cv.plot_soft(x, y, PEAK * st.level * seen, false, false);
         }
     }
     cv.finish()
@@ -584,7 +598,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f6
             } else {
                 theme.accent
             };
-            let k = 0.18 + 0.82 * level;
+            let k = if c.soft { soft_k(level) } else { 0.18 + 0.82 * level };
             let s = Style::default().fg(fade(theme, theme.bg, to, k));
             if level > 0.9 {
                 s.add_modifier(Modifier::BOLD)
@@ -638,24 +652,58 @@ mod tests {
         assert_ne!(nodes(100.0), nodes(2600.0));
     }
 
+    /// One whole cycle of star `seed` sampled every `step` ms from a cycle boundary: (period, levels).
+    fn one_cycle(seed: u32, step: f64) -> (f64, Vec<f32>) {
+        let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
+        let t0 = (1.0 - unit(seed + 1) as f64) * period + 3.0 * period + 0.001;
+        let n = (period / step) as usize;
+        (period, (0..n).map(|i| twinkle(seed, t0 + i as f64 * step).level).collect())
+    }
+
     #[test]
-    fn a_star_rises_holds_and_falls_within_its_cycle() {
-        for seed in [5000u32, 5004, 5008, 5012] {
-            let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
-            // sample one whole cycle that starts at a cycle boundary
-            let t0 = (1.0 - unit(seed + 1) as f64) * period + 3.0 * period + 1.0;
-            let lv: Vec<f32> = (0..400).map(|i| twinkle(seed, t0 + (period - 2.0) * i as f64 / 400.0).level).collect();
-            assert_eq!(lv[0], GLOW[0], "starts dim");
-            let peak = lv.iter().position(|&l| l == GLOW[3]).expect("it reaches full glow");
-            let last_peak = lv.iter().rposition(|&l| l == GLOW[3]).unwrap();
-            assert!(last_peak - peak > 40, "and holds there a while");
-            assert!(lv[..peak].windows(2).all(|w| w[1] >= w[0]), "rises only");
-            let after = &lv[last_peak..];
-            assert!(after.windows(2).all(|w| w[1] <= w[0]), "falls only");
-            assert_eq!(*lv.last().unwrap(), 0.0, "ends dark");
-            assert!(lv.iter().rev().take_while(|&&l| l == 0.0).count() > 20, "after a dark gap");
+    fn a_star_breathes_up_to_its_peak_and_down_to_dark_within_its_cycle() {
+        for seed in [5000u32, 5004, 5008, 5012, 5016, 5020] {
+            let (period, lv) = one_cycle(seed, 10.0);
             assert!((CYCLE_MIN_MS..=CYCLE_MIN_MS + CYCLE_SPAN_MS).contains(&period));
+            assert!(lv[0] < 0.01, "starts invisible: {}", lv[0]);
+            let top = lv.iter().cloned().fold(0.0f32, f32::max);
+            assert!(top > 0.999, "peaks at full: {top}");
+            let peak = lv.iter().position(|&l| l == top).unwrap();
+            assert!(lv[..=peak].windows(2).all(|w| w[1] >= w[0] - 1e-6), "rises only");
+            assert!(lv[peak..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "falls only");
+            assert_eq!(*lv.last().unwrap(), 0.0, "ends dark");
+            let dark = lv.iter().rev().take_while(|&&l| l == 0.0).count();
+            assert!(dark as f64 * 10.0 > 0.1 * period, "after a dark gap: {dark}");
+            // symmetric: the rise and the fall take about as long (within a frame or two)
+            let lit = lv.iter().filter(|&&l| l > 0.0).count();
+            assert!((peak as i64 * 2 - lit as i64).abs() < 6, "peak {peak} of {lit}");
+            // no hold: within 2 % of the top for under an eighth of the breath
+            let near = lv.iter().filter(|&&l| l > 0.98).count();
+            assert!(near * 8 < lit, "{near} of {lit} near the top");
         }
+    }
+
+    #[test]
+    fn the_breath_is_continuous_at_the_frame_interval() {
+        // the beat (83 ms) is the frame interval the field is drawn at; the slowest-to-fastest breaths
+        for seed in (0..200u32).map(|i| 5000 + i * 4) {
+            let (_, lv) = one_cycle(seed, 83.0);
+            let step = lv.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+            assert!(step < 0.06, "seed {seed}: a jump of {step} between frames");
+            // and the colour weight that follows it is as gentle
+            let k = lv.windows(2).map(|w| (soft_k(w[1]) - soft_k(w[0])).abs()).fold(0.0f32, f32::max);
+            assert!(k < 0.08, "seed {seed}: colour jump {k}");
+        }
+        assert_eq!(soft_k(0.0), 0.0);
+        assert!((soft_k(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn breath_is_a_raised_cosine() {
+        assert_eq!(breath(0.0), 0.0);
+        assert_eq!(breath(1.0), 0.0);
+        assert!((breath(0.5) - 1.0).abs() < 1e-4);
+        assert!((breath(0.25) - 0.5).abs() < 1e-3 && (breath(0.75) - 0.5).abs() < 1e-3);
     }
 
     #[test]
@@ -684,7 +732,7 @@ mod tests {
         let level = |seed: u32, t: f64| twinkle(seed, t).level;
         let mut same = 0;
         for i in 0..300 {
-            let t = i as f64 * 50.0;
+            let t = i as f64 * 150.0;
             same += usize::from(level(5000, t) == level(5004, t));
         }
         assert!(same < 200, "{same} of 300 samples equal");
@@ -695,7 +743,7 @@ mod tests {
         // at any moment the field holds stars at every step, not all in one
         for t in [0.0, 1234.0, 7777.0] {
             let n = (0..140).filter(|&i| twinkle(5000 + i * 4, t).level > 0.0).count();
-            assert!((60..140).contains(&n), "{n} lit at {t}");
+            assert!((70..140).contains(&n), "{n} lit at {t}");
         }
     }
 
@@ -723,7 +771,7 @@ mod tests {
     fn ascii_steps_go_dot_colon_star_colon_dot() {
         let mut seq: Vec<char> = Vec::new();
         for i in 0..600 {
-            let l = twinkle(5000, 10_000.0 + i as f64 * 10.0).level;
+            let l = PEAK * twinkle(5000, 10_000.0 + i as f64 * 30.0).level;
             let ch = if l >= 0.72 {
                 '*'
             } else if l >= 0.42 {
