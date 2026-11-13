@@ -34,6 +34,7 @@ const MAX_NAME_IN: usize = 4096;
 pub enum Format {
     Elf,
     Pe,
+    MachO,
 }
 
 impl Format {
@@ -41,6 +42,7 @@ impl Format {
         match self {
             Format::Elf => "ELF64",
             Format::Pe => "PE32+",
+            Format::MachO => "Mach-O 64-bit",
         }
     }
 }
@@ -162,11 +164,18 @@ pub struct Image {
     pub warnings: Vec<String>,
     /// What the .pdb next to a PE file gave (names, lines, types), when there is one.
     pub(crate) pdb: Option<crate::pdbread::Pdb>,
+    /// What a Mach-O file says beyond the common parts (kind, LC_MAIN, slices, libraries).
+    pub(crate) macho: Option<Box<crate::macho::Macho>>,
 }
 
 impl Image {
     /// Read the file and parse its headers.
     pub fn open(path: &Path) -> Result<Image> {
+        Image::open_arch(path, None)
+    }
+
+    /// Read the file; `arch` picks the slice of a universal (fat) Mach-O file (`x86-64`, `arm64`).
+    pub fn open_arch(path: &Path, arch: Option<&str>) -> Result<Image> {
         let meta = std::fs::metadata(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))?;
         if !meta.is_file() {
             return Err(Error::NotRead(format!("{} is not a file", path.display())));
@@ -179,11 +188,16 @@ impl Image {
             )));
         }
         let data = std::fs::read(path).map_err(|e| Error::Io(format!("cannot read {}: {e}", path.display())))?;
-        Image::from_bytes(data, path.to_path_buf())
+        Image::from_bytes_arch(data, path.to_path_buf(), arch)
     }
 
     /// Parse bytes already in memory.
     pub fn from_bytes(data: Vec<u8>, path: PathBuf) -> Result<Image> {
+        Image::from_bytes_arch(data, path, None)
+    }
+
+    /// Parse bytes already in memory; `arch` as in [`Image::open_arch`].
+    pub fn from_bytes_arch(data: Vec<u8>, path: PathBuf, arch: Option<&str>) -> Result<Image> {
         if crate::is_managed(&data[..data.len().min(crate::MANAGED_HEAD)]) {
             return Err(Error::NotRead(
                 "this is JVM bytecode, a jar or a .NET assembly: read it with `nexo bin managed FILE`".into(),
@@ -194,6 +208,9 @@ impl Image {
             FileKind::Elf64 => load_elf::<object::elf::FileHeader64<Endianness>>(&data).map_err(|e| explain(e, &data))?,
             FileKind::Elf32 => load_elf::<object::elf::FileHeader32<Endianness>>(&data).map_err(|e| explain(e, &data))?,
             FileKind::Pe64 => load_pe::<pe::ImageNtHeaders64>(&data).map_err(|e| explain(e, &data))?,
+            FileKind::MachO64 | FileKind::MachO32 | FileKind::MachOFat32 | FileKind::MachOFat64 => {
+                crate::macho::load(&data, arch).map_err(|e| crate::macho::with_extent(e, &data))?
+            }
             FileKind::Pe32 if crate::is_mixed_mode(&data[..data.len().min(crate::MANAGED_HEAD)]) => {
                 return Err(Error::NotRead(format!(
                     "{} is a mixed-mode .NET assembly (C++/CLI), not read natively: `nexo bin managed FILE` reads its .NET metadata and IL",
@@ -212,8 +229,14 @@ impl Image {
                     .into(),
             );
         }
+        if let (Some(a), None) = (arch, &img.macho) {
+            crate::macho::check_arch(&img, a)?;
+        }
         img.path = path;
-        img.sha256 = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        // a universal file: the hash is of the slice read, the one other tools name
+        let (from, to) = img.macho.as_ref().map_or((0, data.len()), |m| (m.hashed.0, m.hashed.0 + m.hashed.1));
+        let hashed = data.get(from..to).unwrap_or(&data);
+        img.sha256 = Sha256::digest(hashed).iter().map(|b| format!("{b:02x}")).collect();
         if img.format == Format::Pe {
             img.attach_pdb(&data);
         }
@@ -512,7 +535,7 @@ impl Image {
 /// The bytes of a file's start that [`opens`] looks at.
 const HEAD: u64 = 4096;
 
-/// Whether `Image::open` would take the file at `path`: an ELF64 or PE32+ x86-64 file (not a
+/// Whether `Image::open` would take the file at `path`: an ELF64, PE32+ or Mach-O 64-bit file (not a
 /// relocatable object), or an ELF64 arm64 one. 32-bit x86 files open too but are left out here: the
 /// hints this answer feeds lead to the debugger, which runs 64-bit programs only. Only the headers in the first 4096 bytes are read, as bytes: the file is not
 /// run, not loaded and not read whole, so a large file costs the same as a small one. A path that
@@ -545,6 +568,7 @@ pub fn opens(path: &Path) -> bool {
             pe::ImageNtHeaders64::parse(&head[..], &mut at)
                 .is_ok_and(|(nt, _)| nt.file_header().machine.get(LE) == pe::IMAGE_FILE_MACHINE_AMD64)
         }
+        Ok(FileKind::MachO64 | FileKind::MachOFat32 | FileKind::MachOFat64) => crate::macho::opens_head(&head),
         _ => false,
     }
 }
@@ -563,9 +587,9 @@ fn not_a_binary(data: &[u8]) -> Error {
     }
     let head = &data[..data.len().min(4096)];
     if std::str::from_utf8(head).is_ok() || head.iter().all(|b| b.is_ascii()) {
-        Error::NotRead("this is a text file, not an ELF or PE binary".into())
+        Error::NotRead("this is a text file, not an ELF, PE or Mach-O binary".into())
     } else {
-        Error::NotRead("not an ELF or PE binary (unknown file signature)".into())
+        Error::NotRead("not an ELF, PE or Mach-O binary (unknown file signature)".into())
     }
 }
 
@@ -591,7 +615,7 @@ fn describe_kind(kind: FileKind, data: &[u8]) -> String {
     }
 }
 
-fn blank(format: Format) -> Image {
+pub(crate) fn blank(format: Format) -> Image {
     Image {
         path: PathBuf::new(),
         format,
@@ -622,6 +646,7 @@ fn blank(format: Format) -> Image {
         sigs: Default::default(),
         warnings: Vec::new(),
         pdb: None,
+        macho: None,
     }
 }
 
@@ -669,7 +694,7 @@ fn undecorate_x86(raw: &str) -> Option<String> {
 }
 
 /// The mangled name to keep next to a demangled one: empty when demangling changed nothing.
-fn raw_of(raw: &str, shown: &str) -> String {
+pub(crate) fn raw_of(raw: &str, shown: &str) -> String {
     if raw == shown {
         String::new()
     } else {

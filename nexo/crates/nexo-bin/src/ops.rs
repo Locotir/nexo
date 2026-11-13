@@ -17,12 +17,18 @@ const MAX_HITS: usize = 100_000;
 const MAX_PATTERN: usize = 64;
 
 pub(crate) fn command(img: &Image, op: &str, rest: &str) -> String {
-    let path = shell_word(&img.path.display().to_string());
+    // a slice picked from a universal Mach-O file stays picked in the next command
+    let path = shell_word(&img.path.display().to_string()) + &crate::macho::arch_flag(img);
     if rest.is_empty() {
         format!("nexo bin {op} {path}")
     } else {
         format!("nexo bin {op} {path} {rest}")
     }
+}
+
+/// `nexo bin OP FILE --arch ARCH`: the same file read through another slice.
+pub(crate) fn command_arch(img: &Image, op: &str, arch: &str) -> String {
+    format!("nexo bin {op} {} --arch {arch}", shell_word(&img.path.display().to_string()))
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -68,6 +74,9 @@ pub fn info(img: &Image) -> Output {
     ));
     let hard: Vec<String> = img.hardening.items.iter().map(|(k, v)| format!("{}: {v}", k.replace('_', " "))).collect();
     l.text(format!("hardening   {}", hard.join(" | ")));
+    for t in crate::macho::info_lines(img) {
+        l.text(t);
+    }
     if let Some(p) = &img.pdb {
         l.text(match &p.note {
             None => format!(
@@ -99,7 +108,7 @@ pub fn info(img: &Image) -> Output {
     }
     let hardening: serde_json::Map<String, Value> =
         img.hardening.items.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect();
-    let meta = json!({
+    let mut meta = json!({
         "file": img.path.display().to_string(),
         "format": img.format_name(),
         "arch": img.arch_name(),
@@ -116,6 +125,9 @@ pub fn info(img: &Image) -> Output {
         "hardening": hardening,
         "warnings": img.warnings,
     });
+    if let Some(m) = crate::macho::info_json(img) {
+        meta["macho"] = m;
+    }
     Output { op: "info", meta, rows: l.0, tail: 0, command: command(img, "info", "") }
 }
 

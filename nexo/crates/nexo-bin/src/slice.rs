@@ -117,7 +117,9 @@ pub(crate) fn parse_mem(s: &str) -> Result<Loc> {
 
 pub(crate) fn arg_regs(img: &Image) -> &'static [Register] {
     match img.format {
-        Format::Elf => &[Register::RDI, Register::RSI, Register::RDX, Register::RCX, Register::R8, Register::R9],
+        Format::Elf | Format::MachO => {
+            &[Register::RDI, Register::RSI, Register::RDX, Register::RCX, Register::R8, Register::R9]
+        }
         Format::Pe => &[Register::RCX, Register::RDX, Register::R8, Register::R9],
     }
 }

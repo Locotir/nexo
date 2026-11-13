@@ -1,4 +1,4 @@
-//! `nexo-bin`: reads ELF and PE x86-64 files as bytes and answers questions about them in
+//! `nexo-bin`: reads ELF, PE and Mach-O files as bytes and answers questions about them in
 //! bounded pieces: headers, one function's disassembly, typed data bytes, strings, pattern search, and
 //! what changed between two builds of one program.
 //!
@@ -12,6 +12,7 @@ mod bindiff;
 mod caps;
 mod crypto;
 mod damage;
+mod damage_macho;
 mod decomp;
 mod disasm;
 mod dwarf;
@@ -22,6 +23,7 @@ mod graph;
 mod hookinfo;
 mod image;
 mod live;
+mod macho;
 mod mainfind;
 mod managed;
 mod names;
@@ -52,6 +54,8 @@ mod tests_fmt;
 mod tests_harden;
 #[cfg(test)]
 mod tests_indirect;
+#[cfg(test)]
+mod tests_macho;
 #[cfg(test)]
 mod tests_map;
 #[cfg(test)]

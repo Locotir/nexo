@@ -130,7 +130,7 @@ pub(crate) fn stub_name(img: &Image, start: u64, end: u64) -> Option<String> {
             }
         }
     });
-    found.map(|n| if img.format == crate::image::Format::Elf { format!("{n}@plt") } else { n })
+    found.map(|n| if img.format != crate::image::Format::Pe { format!("{n}@plt") } else { n })
 }
 
 /// What one instruction refers to: branch targets, and addresses reached through `adrp` pairs.

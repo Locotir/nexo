@@ -33,6 +33,9 @@ pub(crate) fn short_magic(data: &[u8]) -> Option<String> {
             }
         }
     }
+    if let Some(w) = crate::damage_macho::short(data) {
+        return Some(w);
+    }
     if data.starts_with(b"\x7fEL") || (data.starts_with(b"\x7fE") && len < 4) || (data.starts_with(b"M") && len < 2) {
         return Some(format!("is {len} bytes and may be the start of an ELF or PE file that was cut"));
     }
@@ -43,7 +46,13 @@ pub(crate) fn short_magic(data: &[u8]) -> Option<String> {
 /// it is N bytes, but the section header table (offset 0x.., 12 entries) ends at byte 0x..".
 pub(crate) fn extent_problem(data: &[u8]) -> Option<String> {
     let len = data.len() as u64;
-    let what = if data.starts_with(b"\x7fELF") && data.get(4) == Some(&2) { elf_reach(data) } else { pe_reach(data) };
+    let what = if data.starts_with(b"\x7fELF") && data.get(4) == Some(&2) {
+        elf_reach(data)
+    } else if crate::damage_macho::is_macho(data) {
+        crate::damage_macho::reach(data)
+    } else {
+        pe_reach(data)
+    };
     let (need, at, why) = what?;
     (need > len).then(|| {
         format!("the file is cut short or damaged: it is {len} bytes, but {why} (promised at offset {at:#x}) reaches byte {need:#x}")

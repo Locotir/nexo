@@ -74,6 +74,8 @@ pub(crate) fn find_with(img: &Image, mut collector: Option<&mut Collector>) -> V
                 eh_frame(img, sec, img.ptr_size(), &mut starts);
             }
         }
+        // LC_FUNCTION_STARTS lists every function the linker saw, stripped files too
+        Format::MachO => starts.extend(img.macho.iter().flat_map(|m| m.starts.iter().copied())),
     }
     starts.retain(|&a| in_code(a));
     let all: Vec<u64> = starts.into_iter().collect();
@@ -124,7 +126,7 @@ fn stub_name(img: &Image, start: u64, end: u64) -> Option<String> {
             pic.step(img, ins);
         }
     });
-    found.map(|n| if img.format == Format::Elf { format!("{n}@plt") } else { n })
+    found.map(|n| if img.format != Format::Pe { format!("{n}@plt") } else { n })
 }
 
 /// PE: RUNTIME_FUNCTION entries (begin, end, unwind info), each 12 bytes. Chained entries are pieces

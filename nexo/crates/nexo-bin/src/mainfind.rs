@@ -284,10 +284,17 @@ fn name_of(img: &Image, a: u64) -> String {
 
 /// Everything found for the program's main, strongest first.
 pub fn find_main(img: &Image) -> Vec<MainHit> {
+    // Mach-O: LC_MAIN names main itself
+    let lc_main = img.macho.as_ref().and_then(|m| m.main).map(|a| MainHit {
+        addr: a,
+        role: "main",
+        strength: "proven",
+        evidence: format!("LC_MAIN names {a:#x}: the loader calls main there"),
+    });
     if img.arm64 {
-        return Vec::new();
+        return lc_main.into_iter().collect();
     }
-    let mut hits: Vec<MainHit> = Vec::new();
+    let mut hits: Vec<MainHit> = lc_main.into_iter().collect();
     let _ = img.refs();
     let refs = img.refs();
     let code_start = |a: u64| img.funcs().binary_search_by_key(&a, |f| f.start).is_ok();

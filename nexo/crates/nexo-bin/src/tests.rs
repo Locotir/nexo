@@ -387,12 +387,12 @@ fn other_files_are_named_not_read() {
     assert!(matches!(e, Error::NotRead(_)) && e.exit_code() == 2);
     assert!(e.to_string().contains("text file"), "{e}");
     assert!(Image::from_bytes(Vec::new(), "/x".into()).err().unwrap().to_string().contains("empty"));
-    // Mach-O arm64: magic, cpu type arm64, file type executable, no commands
-    let mut macho = vec![0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01];
+    // 32-bit Mach-O: magic, cpu type arm, file type executable, no commands
+    let mut macho = vec![0xce, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x00];
     macho.resize(32, 0);
     macho[12] = 2;
     let e = Image::from_bytes(macho, "/x".into()).err().unwrap();
-    assert_eq!(e.to_string(), "Mach-O arm64 is not read yet");
+    assert_eq!(e.to_string(), "32-bit Mach-O is not read (only 64-bit x86-64 and arm64 are)");
     // an ELF for another machine
     let mut elf = fixtures::elf64(false).bytes;
     elf[18] = 243; // EM_RISCV

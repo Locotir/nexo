@@ -101,6 +101,7 @@ fn seeds() -> Vec<Seed> {
         seed("pe-fixture", fixtures::pe64(true).bytes),
         seed("pe-xref-fixture", fixtures::pe64_xref().bytes),
     ];
+    v.extend(macho_seeds());
     if cfg!(target_os = "linux") {
         if let Ok(b) = std::fs::read("/usr/bin/true") {
             if b.len() < 200_000 {
@@ -117,6 +118,28 @@ fn seeds() -> Vec<Seed> {
             v.push(seed("c-shared", b));
         }
     }
+    v
+}
+
+/// The Mach-O fixtures: thin x86-64 (bind opcodes) and arm64 (chained fixups), and a universal file.
+/// Mutations hit the load commands, the code and `__LINKEDIT` of each slice.
+fn macho_seeds() -> Vec<Seed> {
+    use crate::tests_macho::{thin, universal};
+    let mut v = Vec::new();
+    for (name, arm64) in [("macho-x86-64", false), ("macho-arm64", true)] {
+        let fx = thin(arm64, false);
+        let mut s = seed(name, fx.bytes);
+        s.regions.extend([(0x400, 0x60), fx.linkedit]);
+        v.push(s);
+    }
+    let mut s = seed("macho-universal", universal());
+    // universal() puts the x86-64 slice at 0x1000 and the arm64 one at 0x4000
+    for (at, arm64) in [(0x1000, false), (0x4000, true)] {
+        let le = thin(arm64, false).linkedit;
+        s.regions.extend([(at, 0x400), (at + le.0, le.1)]);
+    }
+    s.regions.retain(|&(o, n)| n > 0 && o < s.bytes.len());
+    v.push(s);
     v
 }
 

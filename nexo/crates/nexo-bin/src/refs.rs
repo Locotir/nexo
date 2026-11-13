@@ -328,7 +328,12 @@ pub(crate) fn written_address(ins: &Instruction) -> Option<(u64, bool)> {
 
 /// Sections whose words are not pointers of the program (tables the loader reads).
 fn skipped(name: &str) -> bool {
-    name.starts_with(".rela") || name.starts_with(".rel.") || name == ".dynsym" || name.starts_with(".eh_frame")
+    name.starts_with(".rela")
+        || name.starts_with(".rel.")
+        || name == ".dynsym"
+        || name.starts_with(".eh_frame")
+        || name.ends_with(",__eh_frame")
+        || name.ends_with(",__unwind_info")
 }
 
 /// Every aligned pointer-sized word (8 bytes, 4 in x86-32 files) of the data sections that lands

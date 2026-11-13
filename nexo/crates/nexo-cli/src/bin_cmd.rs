@@ -1,4 +1,4 @@
-//! `nexo bin`: read an ELF or PE x86-64 file as bytes and answer in bounded pieces.
+//! `nexo bin`: read an ELF, PE or Mach-O file as bytes and answer in bounded pieces.
 //! The file is never run or loaded. See the `nexo-bin` crate.
 
 use std::path::{Path, PathBuf};
@@ -27,6 +27,9 @@ pub struct Common {
     /// Print on stderr how long the references took to build and how long the whole answer took.
     #[arg(long)]
     pub timing: bool,
+    /// The slice of a universal (fat) Mach-O file to read: x86-64 or arm64 (default: the first of those).
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -455,7 +458,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
     if nexo_bin::is_wasm(a.op.file()) {
         return wasm_in(a);
     }
-    let mut img = Image::open(a.op.file())?;
+    let mut img = Image::open_arch(a.op.file(), a.op.common().arch.as_deref())?;
     let mut warning = nexo_bin::attach_names(&mut img, data_dir);
     let mut other = None;
     if let BinOp::Diff { other: path, .. } = &a.op {

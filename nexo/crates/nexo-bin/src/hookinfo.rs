@@ -30,7 +30,7 @@ pub fn import_sites(img: &Image) -> Vec<ImportSite> {
     }
     let mut out = Vec::new();
     for f in img.funcs() {
-        if let Some(n) = f.name.strip_suffix("@plt").filter(|_| img.format == Format::Elf) {
+        if let Some(n) = f.name.strip_suffix("@plt").filter(|_| img.format != Format::Pe) {
             out.push(ImportSite { addr: f.start, name: n.to_string(), call_len: None });
         }
     }
