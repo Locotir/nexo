@@ -42,6 +42,7 @@ impl Session {
                     log: None,
                     once: false,
                     call: true,
+                    actions: Vec::new(),
                 });
             }
             let mut l = vec![format!(
@@ -85,6 +86,7 @@ impl Session {
                 log: None,
                 once: false,
                 call: true,
+                actions: Vec::new(),
             });
         }
         let mut l = vec![format!(

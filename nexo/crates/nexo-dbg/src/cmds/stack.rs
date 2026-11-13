@@ -5,22 +5,31 @@ use super::*;
 impl Session {
     pub(super) fn cmd_print(&mut self, a: &Args) -> Result<Output> {
         if a.pos.is_empty() {
-            return usage("print <expression> [--as str]");
+            return usage("print <expression> [--as str|string|vector[:u8|u32|u64|ptr]]");
         }
         self.need_stopped()?;
         let src = a.pos.join(" ");
-        if a.flag("as").is_none() {
+        let view = a.flag("as");
+        if view.is_none() {
             if let Some(r) = self.print_var(&src) {
                 return r;
             }
         }
-        let v = self.eval(&src)?;
+        let val = self.eval_any(&src)?;
+        let v = val.v;
+        // `--as string` and `--as vector` read the object at that address as libstdc++ lays it out
+        if let Some(kind) = view.filter(|k| *k != "str") {
+            return self.std_view(kind, v);
+        }
         let mut s = format!("{src} = {v:#x} ({})", v as i64);
         if let Some(l) = self.mods.label(v, true) {
             s.push_str(&format!(" -> {l}"));
         }
-        if a.flag("as") == Some("str") {
+        // a `char *` reads as its text, as gdb shows it
+        if view == Some("str") {
             s.push_str(&format!(" {}", self.cstr(v)));
+        } else if let Some(t) = self.char_text(&val) {
+            s.push_str(&format!(" {t}"));
         }
         Ok(rows("print", vec![s], json!({"value": v})))
     }

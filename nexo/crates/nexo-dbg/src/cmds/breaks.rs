@@ -101,7 +101,18 @@ impl Session {
         if let Some(src) = self.mods.source(addr).filter(|s| !label.contains(s.as_str())) {
             label = format!("{label} ({src})");
         }
-        self.bps.push(Bp { id, addr, enabled: true, cond, after, hits: 0, log, once, call: false });
+        self.bps.push(Bp {
+            id,
+            addr,
+            enabled: true,
+            cond,
+            after,
+            hits: 0,
+            log,
+            once,
+            call: false,
+            actions: Vec::new(),
+        });
         Ok(rows("break", vec![format!("breakpoint #{id} at {addr:#x} {label}")], json!({"id": id, "addr": addr})))
     }
 
@@ -112,18 +123,18 @@ impl Session {
     pub(super) fn cmd_breaks(&mut self) -> Output {
         let mut l = Vec::new();
         #[allow(clippy::type_complexity)]
-        let bps: Vec<(u32, u64, bool, Option<String>, u64, u64, Option<String>, bool)> = self
+        let bps: Vec<(u32, u64, bool, Option<String>, u64, u64, Option<String>, bool, usize)> = self
             .bps
             .iter()
             .filter(|b| !b.call)
-            .map(|b| (b.id, b.addr, b.enabled, b.cond.clone(), b.after, b.hits, b.log.clone(), b.once))
+            .map(|b| (b.id, b.addr, b.enabled, b.cond.clone(), b.after, b.hits, b.log.clone(), b.once, b.actions.len()))
             .collect();
         let sites = self.bps.iter().filter(|b| b.call).count();
         if sites > 0 {
             let hits: u64 = self.bps.iter().filter(|b| b.call).map(|b| b.hits).sum();
             l.push(format!("indirect-call logging on {sites} sites, {hits} calls seen (`calls off`)"));
         }
-        for (id, addr, en, cond, after, hits, log, once) in bps {
+        for (id, addr, en, cond, after, hits, log, once, acts) in bps {
             let label = self.mods.label(addr, false).unwrap_or_default();
             let mut s = format!("#{id} {addr:#x} {label} hits {hits}");
             if !en {
@@ -140,6 +151,9 @@ impl Session {
             }
             if once {
                 s.push_str(" once");
+            }
+            if acts > 0 {
+                s.push_str(&format!(" commands {acts}"));
             }
             l.push(s);
         }

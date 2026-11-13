@@ -11,6 +11,7 @@ mod corefile;
 mod cover;
 mod engine;
 mod expr;
+mod gdbdialect;
 mod hooks;
 mod knowledge;
 mod lines;
@@ -41,6 +42,7 @@ pub use client::{
 pub use cmds::{help, split_words, Args, DEFAULT_WAIT, MAX_WAIT, READ_ONLY};
 pub use commands::{canonical, COMMANDS};
 pub use engine::{Session, State, StopInfo};
+pub use gdbdialect::Plan as GdbPlan;
 pub use knowledge::set_data_dir;
 pub use platform::{
     attach, launch, Access, Event, Fault, HwSlot, Launch, Map, Module, Os, Resume, Stop, Target, Tid, Touch,
@@ -50,6 +52,18 @@ pub use server::{open, owner_of, request, serve, sessions, spawn, spawn_thread, 
 pub use stub::serve_gdb;
 
 use std::fmt;
+
+/// A script cut into commands at `;` and at line ends outside double quotes (`#` lines left out): one call may carry
+/// a whole gdb script.
+pub fn script_units(text: &str) -> Vec<String> {
+    gdbdialect::units(text)
+}
+
+/// A gdb script that starts with breakpoints and ends with `run` becomes the debugger's shape: the session is
+/// started first, the commands run in it, `cont` stands for `run`. `Ok(None)` when the script needs no change.
+pub fn gdb_plan(parts: &[String]) -> std::result::Result<Option<GdbPlan>, String> {
+    gdbdialect::plan(parts, &|n| Regs::default().get(n).is_some())
+}
 
 #[derive(Debug)]
 pub enum Error {

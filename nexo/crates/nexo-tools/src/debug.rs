@@ -29,6 +29,7 @@ ltrace [names], ltrace show [names], ltrace off  library calls with typed args a
 hook <addr|name> [bt N] [stop] [set argN V] [ret V], hook show [name], hooks, hook del <id>|all  typed args, result, counters; set/ret change the program
 cover [funcs], cover show [func], cover save <A>, cover diff <A> <B>|now, cover off  basic blocks passed in the program's own code
 do \"c1; c2\"  several commands in one call
+gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info registers|breakpoints|frame|proc mappings, break *(f+0x10), `commands N ... end` (log, x, printf, continue at every hit, no round trip); a whole gdb script (newlines or `;`, `file p` or `run p args` last) is one call; `print a --as string|vector`
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
 
@@ -55,11 +56,18 @@ impl Debug {
         Debug { dir: dir.to_path_buf(), steer_only: false }
     }
 
+    fn line(args: &Value) -> Result<&str, String> {
+        args.get("command")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "debug needs `command`; `help` lists the commands".into())
+    }
+
     fn words(args: &Value) -> Result<Vec<String>, String> {
-        let Some(line) = args.get("command").and_then(Value::as_str) else {
-            return Err("debug needs `command`; `help` lists the commands".into());
-        };
-        let mut w = nexo_dbg::split_words(line);
+        let line = Debug::line(args)?;
+        // one command with a comment line or a trailing newline is still one command
+        let parts = nexo_dbg::script_units(line);
+        let text = if let [one] = parts.as_slice() { one.as_str() } else { line };
+        let mut w = nexo_dbg::split_words(text);
         // a wait past the cap is cut: the call must come back
         let mut i = 0;
         while i + 1 < w.len() {
@@ -72,6 +80,36 @@ impl Debug {
         }
         Ok(w)
     }
+
+    /// What a call may do, from every command in it: a script is as strong as its strongest command.
+    fn class(args: &Value) -> DbgClass {
+        let Ok(line) = Debug::line(args) else { return DbgClass::Other };
+        let parts = nexo_dbg::script_units(line);
+        match parts.as_slice() {
+            [] => DbgClass::Control,
+            [_] => Debug::words(args).map_or(DbgClass::Other, |w| nexo_dbg::dbg_class(&w)),
+            _ => nexo_dbg::dbg_class(&["do".to_string(), parts.join("; ")]),
+        }
+    }
+}
+
+/// A wait past the cap inside a script part is cut too: `cont --wait 9999` must come back.
+fn cap_waits(part: &str) -> String {
+    let (mut out, mut rest) = (String::new(), part);
+    while let Some(i) = rest.find("--wait ") {
+        let (head, tail) = rest.split_at(i + "--wait ".len());
+        out.push_str(head);
+        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+        if digits.is_empty() {
+            rest = tail;
+            continue;
+        }
+        let n = digits.parse::<u64>().unwrap_or(u64::MAX);
+        out.push_str(&n.min(MAX_WAIT_SECS).to_string());
+        rest = &tail[digits.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 impl Default for Debug {
@@ -136,8 +174,8 @@ impl Tool for Debug {
     }
 
     fn call_kind(&self, args: &Value) -> ToolKind {
-        match Debug::words(args) {
-            Ok(w) if nexo_dbg::dbg_class(&w) == DbgClass::Control => ToolKind::Read,
+        match Debug::class(args) {
+            DbgClass::Control => ToolKind::Read,
             _ => ToolKind::Exec,
         }
     }
@@ -154,13 +192,19 @@ impl Tool for Debug {
             Ok(w) => w,
             Err(e) => return ToolOutput::error(e),
         };
-        // `a; b` at the top is a script; `run ...; b` starts the session, then runs the rest in it
-        let line = args.get("command").and_then(Value::as_str).unwrap_or("");
-        let parts = split_script(line);
+        // `a; b` (or one command per line) at the top is a script; `run ...; b` starts the session, then runs the
+        // rest in it; a gdb script that ends with `run` is started first and then run in the session
+        let parts: Vec<String> =
+            nexo_dbg::script_units(Debug::line(&args).unwrap_or("")).iter().map(|p| cap_waits(p)).collect();
         if parts.len() < 2 || words.first().is_some_and(|w| w == "do") {
             return self.one(words, &args, ctx).await;
         }
-        let first = nexo_dbg::split_words(parts[0]);
+        match nexo_dbg::gdb_plan(&parts) {
+            Err(e) => return ToolOutput::error(e),
+            Ok(Some(plan)) => return self.gdb_shape(plan, &args, ctx).await,
+            Ok(None) => {}
+        }
+        let first = nexo_dbg::split_words(&parts[0]);
         if !matches!(first.first().map(String::as_str), Some("run" | "attach" | "core")) {
             return self.one(vec!["do".into(), parts.join("; ")], &args, ctx).await;
         }
@@ -177,25 +221,35 @@ impl Tool for Debug {
     }
 }
 
-/// The parts of a command line split at `;` outside double quotes.
-fn split_script(line: &str) -> Vec<&str> {
-    let (mut out, mut from, mut q) = (Vec::new(), 0, false);
-    for (i, c) in line.char_indices() {
-        match c {
-            '"' => q = !q,
-            ';' if !q => {
-                out.push(line[from..i].trim());
-                from = i + 1;
-            }
-            _ => {}
+impl Debug {
+    /// A gdb script that ends with `run`: the session is started (stopped at the entry), the commands before `run`
+    /// are run in it, `cont` stands for `run`, then what followed it, and a closing `quit` ends the session.
+    async fn gdb_shape(&self, plan: nexo_dbg::GdbPlan, args: &Value, ctx: &ToolContext) -> ToolOutput {
+        let started = self.one(nexo_dbg::split_words(&plan.start), args, ctx).await;
+        let id = started.content.split_whitespace().nth(1).map(str::to_string);
+        let (true, Some(id)) = (!started.is_error, id) else { return started };
+        let mut text = started.content;
+        let mut failed = false;
+        if plan.dropped > 0 {
+            text.push_str(&format!("\nleft out {} gdb setting(s) that change nothing here", plan.dropped));
+        }
+        if !plan.rest.is_empty() {
+            let rest =
+                self.one(vec!["-s".into(), id.clone(), "do".into(), plan.rest.join("; ")], &json!({}), ctx).await;
+            failed = rest.is_error;
+            text = format!("{text}\n{}", rest.content);
+        }
+        if plan.end {
+            let end = self.one(vec!["-s".into(), id, "end".into()], &json!({}), ctx).await;
+            text = format!("{text}\n{}", end.content);
+        }
+        if failed {
+            ToolOutput::error(text)
+        } else {
+            ToolOutput::ok(text)
         }
     }
-    out.push(line[from..].trim());
-    out.retain(|p| !p.is_empty());
-    out
-}
 
-impl Debug {
     async fn one(&self, mut words: Vec<String>, args: &Value, ctx: &ToolContext) -> ToolOutput {
         if self.steer_only && nexo_dbg::dbg_class(&words) != DbgClass::Control {
             return ToolOutput::error(
@@ -350,7 +404,7 @@ mod tests {
             o.content
         );
         assert_eq!(
-            split_script(r#"break f if x == 1; stdin "a;b"; cont"#),
+            nexo_dbg::script_units("break f if x == 1; stdin \"a;b\"\n# a comment\ncont"),
             [r#"break f if x == 1"#, r#"stdin "a;b""#, "cont"]
         );
     }
@@ -373,6 +427,39 @@ mod tests {
         let cover = call(&t, "cover show").await;
         assert!(cover.is_error && cover.content.contains("`cover` turns it on"), "{}", cover.content);
         call(&t, "end").await;
+    }
+
+    #[test]
+    fn a_script_is_as_strong_as_its_strongest_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Debug::in_dir(dir.path());
+        let kind = |c: &str| t.call_kind(&json!({"command": c}));
+        // looking, in gdb's words and in a block that logs and goes on, asks nothing
+        assert_eq!(kind("x/20bx $rsp"), ToolKind::Read);
+        assert_eq!(kind("p/x $rax; printf \"%d\\n\", 1; info registers rip"), ToolKind::Read);
+        assert_eq!(
+            kind("break *0x10\ncommands\nsilent\nprintf \"x\\n\"\nx/4x $rsp\ncontinue\nend\ncont"),
+            ToolKind::Read
+        );
+        assert_eq!(kind("set $v = $rsp + 8"), ToolKind::Read);
+        // a write hides in no spelling: a register, memory, a command after a look, or inside a block
+        assert_eq!(kind("set $rax = 5"), ToolKind::Exec);
+        assert_eq!(kind("set var x = 5"), ToolKind::Exec);
+        assert_eq!(kind("set {int}0x1000 = 5"), ToolKind::Exec);
+        assert_eq!(kind("bt; write 0x10 90"), ToolKind::Exec);
+        assert_eq!(kind("regs; setreg rax 1"), ToolKind::Exec);
+        assert_eq!(kind("break main\ncommands\nwrite 0x10 90\ncontinue\nend"), ToolKind::Exec);
+        assert_eq!(kind("file ./p\nbreak main\nrun"), ToolKind::Exec);
+        assert_eq!(kind("run ./p; cont"), ToolKind::Exec);
+        assert_eq!(kind("do \"bt; write 0x10 90\""), ToolKind::Exec);
+    }
+
+    #[test]
+    fn a_wait_inside_a_script_part_is_cut_to_the_cap() {
+        assert_eq!(cap_waits("cont --wait 9999"), "cont --wait 60");
+        assert_eq!(cap_waits("cont --wait 5"), "cont --wait 5");
+        assert_eq!(cap_waits("finish --wait 99999999999999999999999 --lines 3"), "finish --wait 60 --lines 3");
+        assert_eq!(cap_waits("printf \"--wait\""), "printf \"--wait\"");
     }
 
     #[test]

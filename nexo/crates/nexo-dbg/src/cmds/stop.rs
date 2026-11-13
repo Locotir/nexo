@@ -6,6 +6,8 @@ use super::*;
 /// Frames a stop report shows; one more asked for tells whether there are others.
 const BT_SHOWN: usize = 8;
 const CHANGED_SHOWN: usize = 6;
+/// Lines of logpoint and `commands` output a stop report carries; the rest stay in `log`.
+const FRESH_LOG: usize = 40;
 
 impl Session {
     /// Tell the stop: why, where, the instruction, what changed.
@@ -64,6 +66,7 @@ impl Session {
             if let Some(o) = self.new_output_line() {
                 l.push(o);
             }
+            l.extend(self.fresh_log());
             l.extend(self.trace_note());
             self.last_stop = Some(StopInfo { n: self.nstop, event: event.into(), place: "-".into(), addr: 0 });
             self.history.push_back(Rec { n: self.nstop, tid, why: short, regs: crate::Regs::default() });
@@ -152,11 +155,30 @@ impl Session {
         if let Some(o) = self.new_output_line() {
             l.push(o);
         }
-        if !self.log.is_empty() {
-            l.push(format!("log: {} lines (`log` shows them)", self.log.len()));
-        }
+        l.extend(self.fresh_log());
+        l.extend(self.display_lines());
         l.extend(self.trace_note());
         rows("stop", l, json!({"state": "stopped", "thread": tid}))
+    }
+
+    /// The logpoint and `commands` output written since the last report, so the answer carries it without a `log`
+    /// call; past `FRESH_LOG` lines the oldest stay in `log`.
+    pub(crate) fn fresh_log(&mut self) -> Vec<String> {
+        let new = (self.log_total - self.log_shown) as usize;
+        self.log_shown = self.log_total;
+        if new == 0 {
+            return Vec::new();
+        }
+        let have = self.log.len();
+        let take = new.min(have);
+        let shown = take.min(FRESH_LOG);
+        // the newest lines: what the program did last, and why it stopped, are at the end
+        let mut l: Vec<String> = Vec::new();
+        if new > shown {
+            l.push(format!("log: {} earlier lines (`log` lists the last {have})", new - shown));
+        }
+        l.extend(self.log.iter().skip(have - shown).map(|s| format!("log: {s}")));
+        l
     }
 
     /// `name <addr> <name>` and `note [<0xaddr>] <text>`: keep a finding for this binary. A note without an

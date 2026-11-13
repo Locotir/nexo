@@ -19,6 +19,10 @@ pub const HISTORY: usize = 64;
 pub const OUT_KEEP: usize = 1 << 20;
 /// Lines of logpoint output kept.
 pub const LOG_KEEP: usize = 1000;
+/// Hits a breakpoint with `commands` serves on its own before it stops so the answer comes back.
+pub const ACTION_HITS: u64 = 2000;
+/// Most bytes one `{mem:EXPR:N}` of a logpoint dumps.
+pub const LOG_BYTES: usize = 256;
 
 pub struct Bp {
     pub id: u32,
@@ -34,6 +38,9 @@ pub struct Bp {
     pub once: bool,
     /// Set by `calls`: at an indirect call, the real target goes to the log and the program goes on.
     pub call: bool,
+    /// gdb-style `commands`: read-only commands run at every hit, as words. A `continue` among them lets the
+    /// program go on without a stop; without one the breakpoint stops after them.
+    pub actions: Vec<Vec<String>>,
 }
 
 pub struct Wp {
@@ -130,6 +137,15 @@ pub struct Session {
     pub exit: Option<String>,
     /// `strace`, `ltrace`, hooks and coverage.
     pub tr: crate::trace::Tracing,
+    /// Convenience variables (`set \$v = ...`), by name without the `\$`.
+    pub conv: HashMap<String, expr::Val>,
+    /// Breakpoint ids and actions being typed after `commands`, until `end`.
+    pub recording: Option<(Vec<u32>, Vec<Vec<String>>)>,
+    /// `display` expressions shown at every stop: id and the command that shows one.
+    pub displays: Vec<(u32, Vec<String>)>,
+    /// Lines ever written to the log, and how many of them an answer already showed.
+    pub log_total: u64,
+    pub log_shown: u64,
 }
 
 /// A stop in the words of the header line of an answer: its number, the event, the place and the address.
@@ -252,6 +268,7 @@ pub struct Ev<'a> {
     pub t: &'a mut dyn Target,
     pub mods: &'a mut Mods,
     pub regs: Regs,
+    pub conv: &'a mut HashMap<String, expr::Val>,
 }
 
 impl Env for Ev<'_> {
@@ -266,6 +283,15 @@ impl Env for Ev<'_> {
     fn load(&mut self, addr: u64, size: usize) -> Option<u64> {
         let mut b = [0u8; 8];
         (size <= 8 && self.t.read(addr, &mut b[..size]) == size).then(|| u64::from_le_bytes(b))
+    }
+
+    fn var(&mut self, name: &str) -> Option<expr::Val> {
+        self.conv.get(name).copied()
+    }
+
+    fn set_var(&mut self, name: &str, v: expr::Val) -> bool {
+        self.conv.insert(name.to_string(), v);
+        true
     }
 }
 
@@ -310,6 +336,11 @@ impl Session {
             catch: default_catch(os),
             exit: None,
             tr: Default::default(),
+            conv: HashMap::new(),
+            recording: None,
+            displays: Vec::new(),
+            log_total: 0,
+            log_shown: 0,
         };
         s.cur = s.t.threads().first().copied().unwrap_or(s.t.pid());
         s.mods.refresh(&mut *s.t);
@@ -318,7 +349,7 @@ impl Session {
 
     pub fn ev(&mut self, tid: Tid) -> Result<Ev<'_>> {
         let regs = self.t.regs(tid)?;
-        Ok(Ev { t: &mut *self.t, mods: &mut self.mods, regs })
+        Ok(Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv })
     }
 
     pub fn need_stopped(&self) -> Result<()> {
@@ -344,6 +375,14 @@ impl Session {
         let tid = self.cur;
         let mut ev = self.ev(tid)?;
         expr::value(src, &mut ev)
+    }
+
+    /// An expression with its type. Without a stopped thread the registers read as zero, so names, numbers and
+    /// convenience variables still work (`set \$v = main`).
+    pub fn eval_any(&mut self, src: &str) -> Result<expr::Val> {
+        let regs = if self.state == State::Stopped { self.t.regs(self.cur)? } else { Regs::default() };
+        let mut ev = Ev { t: &mut *self.t, mods: &mut self.mods, regs, conv: &mut self.conv };
+        expr::eval(src, &mut ev)
     }
 
     pub fn new_id(&mut self) -> u32 {
@@ -585,6 +624,7 @@ impl Session {
         // the trace and the hooks see every pass, whatever a breakpoint there decides
         let traced = self.hook_hit(tid, addr)?;
         let mut stop_ids: Vec<u32> = Vec::new();
+        let mut spent: Vec<u32> = Vec::new();
         let ids: Vec<u32> = self.bps.iter().filter(|b| b.enabled && b.addr == addr).map(|b| b.id).collect();
         for id in ids {
             let Some(i) = self.bps.iter().position(|b| b.id == id) else { continue };
@@ -617,8 +657,25 @@ impl Session {
                 self.log_line(format!("#{id} {line}"));
                 continue;
             }
+            if !self.bps[i].actions.is_empty() {
+                let go_on = self.run_actions(tid, id);
+                let hits = self.bps[i].hits;
+                if go_on && hits < ACTION_HITS {
+                    if self.bps[i].once {
+                        spent.push(id);
+                    }
+                    continue;
+                }
+                if go_on {
+                    self.log_line(format!(
+                        "#{id} stops after {ACTION_HITS} hits so the answer comes back (`cont` goes on, the actions keep running)"
+                    ));
+                    self.bps[i].hits = 0;
+                }
+            }
             stop_ids.push(id);
         }
+        self.bps.retain(|b| !spent.contains(&b.id));
         if !stop_ids.is_empty() {
             self.bps.retain(|b| !(b.once && stop_ids.contains(&b.id)));
             return Ok(Some((tid, Why::Break(stop_ids))));
@@ -702,6 +759,7 @@ impl Session {
     }
 
     pub fn log_line(&mut self, s: String) {
+        self.log_total += 1;
         self.log.push_back(s);
         while self.log.len() > LOG_KEEP {
             self.log.pop_front();
@@ -720,6 +778,13 @@ impl Session {
                 break;
             };
             let e = &rest[i + 1..i + j];
+            // `{mem:EXPR:N}`: N bytes at EXPR as hex
+            if let Some(m) = e.strip_prefix("mem:") {
+                let shown = self.log_bytes(tid, m);
+                out.push_str(&shown);
+                rest = &rest[i + j + 1..];
+                continue;
+            }
             let (src, fmt) = e.rsplit_once(':').filter(|(_, f)| matches!(*f, "x" | "d" | "s")).unwrap_or((e, "x"));
             let shown = match self.ev(tid).and_then(|mut ev| expr::eval(src, &mut ev)) {
                 Ok(v) if fmt == "d" => format!("{}", v.v as i64),
@@ -732,6 +797,26 @@ impl Session {
         }
         out.push_str(rest);
         out
+    }
+
+    /// `{mem:EXPR:N}` of a logpoint: N (1 to 256, default 16) bytes at the address EXPR works out to, as hex.
+    fn log_bytes(&mut self, tid: Tid, spec: &str) -> String {
+        let (src, n) = match spec.rsplit_once(':').and_then(|(a, n)| Some((a, nexo_bin::parse_addr(n).ok()?))) {
+            Some((a, n)) => (a, n as usize),
+            None => (spec, 16),
+        };
+        if n == 0 || n > LOG_BYTES {
+            return format!("<mem takes 1 to {LOG_BYTES} bytes>");
+        }
+        let at = match self.ev(tid).and_then(|mut ev| expr::value(src, &mut ev)) {
+            Ok(a) => a,
+            Err(e) => return format!("<{e}>"),
+        };
+        let b = self.read_vec(at, n);
+        if b.is_empty() {
+            return format!("<cannot read {at:#x}>");
+        }
+        b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")
     }
 
     /// The text at an address up to a zero byte, at most 200 bytes, as a quoted string.

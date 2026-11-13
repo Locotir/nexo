@@ -13,6 +13,7 @@ use crate::{fail, usage, Result};
 mod breaks;
 mod calls;
 mod catch;
+mod gdb;
 mod help;
 mod io;
 mod memory;
@@ -94,9 +95,15 @@ impl Session {
 
     /// A place as a number: a plain number is the program's file address when it falls in the program (the numbers
     /// `nexo bin` prints) and a memory address otherwise; anything else is an expression.
+    ///
+    /// A leading `*` is an exact-place marker only in front of a plain number (`*0x401000`, as `break *ADDR`); in front
+    /// of anything else it is a dereference, as in gdb (`x/s *(char**)($rbp-8)` reads the pointer stored there).
     pub fn addr_of(&mut self, text: &str) -> Result<u64> {
         let t = text.trim();
-        let t = t.strip_prefix('*').unwrap_or(t);
+        let t = match t.strip_prefix('*') {
+            Some(r) if parse_addr(r.trim()).is_ok() => r.trim(),
+            _ => t,
+        };
         if let Some(r) = self.source_place(t, false) {
             return r;
         }
@@ -113,6 +120,12 @@ impl Session {
 
     pub fn exec(&mut self, words: &[String]) -> Result<Output> {
         let Some(cmd) = words.first() else { return usage("a command is needed: `help` lists them") };
+        if self.recording.is_some() {
+            return self.record_line(words);
+        }
+        if let Some(r) = self.gdb_exec(words) {
+            return r;
+        }
         let a = Args::new(&words[1..])?;
         match cmd.as_str() {
             "help" => Ok(help()),
@@ -155,7 +168,10 @@ impl Session {
             "modules" => self.cmd_modules(),
             "find" => self.cmd_find(&a),
             "out" => Ok(self.cmd_out(&a)),
-            "log" => Ok(rows("log", self.log.iter().cloned().collect(), json!({}))),
+            "log" => {
+                self.log_shown = self.log_total;
+                Ok(rows("log", self.log.iter().cloned().collect(), json!({})))
+            }
             "history" => Ok(self.cmd_history(&a)),
             "stdin" => self.cmd_stdin(&a),
             "catch" if a.pos.first().is_some_and(|w| w == "syscall") => self.cmd_catch_syscall(&a.pos[1..]),
@@ -169,7 +185,10 @@ impl Session {
             "detach" => self.cmd_detach(),
             "name" | "note" => self.cmd_keep(cmd == "name", &words[1..]),
             "do" => self.cmd_do(&words[1..]),
-            other => usage(format!("unknown command {other:?}: `help` lists them")),
+            other => match crate::gdbdialect::hint(other) {
+                Some(h) => usage(format!("{other}: {h}")),
+                None => usage(format!("unknown command {other:?}: `help` lists them")),
+            },
         }
     }
 }

@@ -39,14 +39,76 @@ pub enum DbgClass {
 }
 
 const CONTROL: &[&str] = &[
-    "status", "info", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "thread", "breaks",
-    "watches", "maps", "modules", "find", "history", "out", "log", "dis", "disasm", "sessions", "help", "catches",
-    "break", "b", "tbreak", "delete", "del", "enable", "disable", "cont", "c", "continue", "step", "s", "next", "n",
-    "finish", "until", "wait", "stop", "kill", "detach", "end", "stdin", "catch", "watch", "core", "strace", "ltrace",
-    "hooks", "cover",
+    "status",
+    "info",
+    "regs",
+    "mem",
+    "x",
+    "print",
+    "p",
+    "args",
+    "locals",
+    "bt",
+    "threads",
+    "thread",
+    "breaks",
+    "watches",
+    "maps",
+    "modules",
+    "find",
+    "history",
+    "out",
+    "log",
+    "dis",
+    "disasm",
+    "sessions",
+    "help",
+    "catches",
+    "break",
+    "b",
+    "tbreak",
+    "delete",
+    "del",
+    "enable",
+    "disable",
+    "cont",
+    "c",
+    "continue",
+    "step",
+    "s",
+    "next",
+    "n",
+    "finish",
+    "until",
+    "wait",
+    "stop",
+    "kill",
+    "detach",
+    "end",
+    "stdin",
+    "catch",
+    "watch",
+    "core",
+    "strace",
+    "ltrace",
+    "hooks",
+    "cover",
+    "printf",
+    "echo",
+    "output",
+    "show",
+    "display",
+    "undisplay",
+    "condition",
+    "ignore",
+    "commands",
+    "silent",
+    "quit",
 ];
 
-/// Classify the words after `nexo dbg`. A `do "a; b"` script is as strong as its strongest command.
+/// Classify the words after `nexo dbg`. A `do "a; b"` script is as strong as its strongest command. gdb's spellings
+/// count as the debugger's own (`x/20bx` is `x`, `backtrace` is `bt`); `set $v = ..` only keeps a value, while
+/// `set $rax = ..` and `set var x = ..` write into the program.
 pub fn dbg_class(words: &[String]) -> DbgClass {
     let mut it = words.iter().peekable();
     while let Some(w) = it.peek() {
@@ -61,20 +123,36 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
             _ => break,
         }
     }
-    let Some(cmd) = it.next() else { return DbgClass::Control };
-    match cmd.as_str() {
+    let rest: Vec<String> = it.cloned().collect();
+    let Some(first) = rest.first() else { return DbgClass::Control };
+    let head = crate::gdbdialect::base_name(first);
+    match head {
         "attach" | "connect" | "write" | "setreg" => DbgClass::Change,
         // a hook that sets an argument or the result changes the program
-        "hook" if it.clone().any(|w| w == "set" || w == "ret") => DbgClass::Change,
+        "hook" if rest.iter().any(|w| w == "set" || w == "ret") => DbgClass::Change,
         "hook" => DbgClass::Control,
+        "set" => match set_effect(&rest) {
+            SetEffect::Keeps => DbgClass::Control,
+            SetEffect::Writes => DbgClass::Change,
+        },
         "run" | "__serve" => DbgClass::Other,
         "do" => {
-            let rest: Vec<String> = it.cloned().collect();
-            let Ok(parts) = do_parts(&rest) else { return DbgClass::Other };
+            let Ok(parts) = do_parts(&rest[1..]) else { return DbgClass::Other };
             let mut worst = DbgClass::Control;
+            let mut block = false;
             for w in parts {
-                match (w.first().map(String::as_str), dbg_class(&w)) {
-                    (Some("do"), _) | (_, DbgClass::Other) => return DbgClass::Other,
+                let name = crate::gdbdialect::base_name(&w[0]);
+                // `commands` ... `end`: the lines between are kept for the breakpoint, and each is judged like any command
+                if !block && name == "commands" {
+                    block = true;
+                    continue;
+                }
+                if block && name == "end" {
+                    block = false;
+                    continue;
+                }
+                match (name, dbg_class(&w)) {
+                    ("do", _) | (_, DbgClass::Other) => return DbgClass::Other,
                     (_, DbgClass::Change) => worst = DbgClass::Change,
                     _ => {}
                 }
@@ -86,22 +164,97 @@ pub fn dbg_class(words: &[String]) -> DbgClass {
     }
 }
 
+enum SetEffect {
+    Keeps,
+    Writes,
+}
+
+/// What a gdb `set` does: a setting or a convenience variable changes nothing in the program; a register or memory does.
+fn set_effect(words: &[String]) -> SetEffect {
+    match crate::gdbdialect::set_kind(words, &|n| crate::Regs::default().get(n).is_some()) {
+        crate::gdbdialect::SetKind::Noise | crate::gdbdialect::SetKind::Var | crate::gdbdialect::SetKind::Args(_) => {
+            SetEffect::Keeps
+        }
+        crate::gdbdialect::SetKind::Register(..) | crate::gdbdialect::SetKind::Memory => SetEffect::Writes,
+    }
+}
+
 /// The commands a server that was not given permission to change things may run: they look at the program,
 /// or steer one the person already let the debugger start. Everything else (writes, saved names and notes,
 /// attach and connect, `calls`, `serve`, a new `run`, unknown words) is refused by name.
 const READ_ALLOWED: &[&str] = &[
-    "status", "info", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "thread", "breaks",
-    "watches", "maps", "modules", "find", "history", "out", "log", "dis", "disasm", "sessions", "help", "catches",
-    "break", "b", "tbreak", "delete", "del", "enable", "disable", "cont", "c", "continue", "step", "s", "next", "n",
-    "finish", "until", "wait", "stop", "kill", "detach", "catch", "strace", "ltrace", "hook", "hooks", "cover",
+    "status",
+    "info",
+    "regs",
+    "mem",
+    "x",
+    "print",
+    "p",
+    "args",
+    "locals",
+    "bt",
+    "threads",
+    "thread",
+    "breaks",
+    "watches",
+    "maps",
+    "modules",
+    "find",
+    "history",
+    "out",
+    "log",
+    "dis",
+    "disasm",
+    "sessions",
+    "help",
+    "catches",
+    "break",
+    "b",
+    "tbreak",
+    "delete",
+    "del",
+    "enable",
+    "disable",
+    "cont",
+    "c",
+    "continue",
+    "step",
+    "s",
+    "next",
+    "n",
+    "finish",
+    "until",
+    "wait",
+    "stop",
+    "kill",
+    "detach",
+    "catch",
+    "strace",
+    "ltrace",
+    "hook",
+    "hooks",
+    "cover",
+    "printf",
+    "echo",
+    "output",
+    "show",
+    "display",
+    "undisplay",
+    "condition",
+    "ignore",
+    "commands",
+    "silent",
+    "quit",
+    "set",
 ];
 
 /// The commands inside a `do` script, split exactly as the server splits them: the plain words after `do` are
-/// joined, cut at `;` and each part is split with `split_words` (so a quoted command word is unquoted here too).
+/// joined, cut at `;` and at line ends outside double quotes (`#` lines left out) and each part is split with
+/// `split_words` (so a quoted command word is unquoted here too).
 pub fn do_parts(words_after_do: &[String]) -> Result<Vec<Vec<String>>, String> {
     let a = crate::Args::new(words_after_do).map_err(|e| e.to_string())?;
     let script = a.pos.join(" ");
-    Ok(script.split(';').map(str::trim).filter(|p| !p.is_empty()).map(crate::split_words).collect())
+    Ok(crate::gdbdialect::units(&script).iter().map(|p| crate::split_words(p)).filter(|w| !w.is_empty()).collect())
 }
 
 /// Why a server without permission to change things must not run these words (the command first, our own
@@ -112,15 +265,35 @@ pub fn read_only_refusal(words: &[String]) -> Option<String> {
 }
 
 fn refusal_in(words: &[String], depth: usize) -> Option<String> {
-    let name = words.first()?.as_str();
+    let name = crate::gdbdialect::base_name(words.first()?.as_str());
     if name == "do" {
         if depth > 0 {
             return Some("`do` inside `do` is not allowed".to_string());
         }
         return match do_parts(&words[1..]) {
             Err(e) => Some(format!("the script cannot be read ({e})")),
-            Ok(parts) => parts.iter().find_map(|p| refusal_in(p, depth + 1)),
+            Ok(parts) => {
+                let mut block = false;
+                parts.iter().find_map(|p| {
+                    let n = crate::gdbdialect::base_name(&p[0]);
+                    if !block && n == "commands" {
+                        block = true;
+                        return None;
+                    }
+                    if block && n == "end" {
+                        block = false;
+                        return None;
+                    }
+                    refusal_in(p, depth + 1)
+                })
+            }
         };
+    }
+    if name == "set" && matches!(set_effect(words), SetEffect::Writes) {
+        return Some(
+            "`set` of a register or of memory writes into the program (`set $name = ...` only keeps a value)"
+                .to_string(),
+        );
     }
     if !READ_ALLOWED.contains(&name) {
         return Some(match name {
@@ -172,6 +345,10 @@ pub fn parse(words: &[String]) -> Result<Call, Error> {
             "--json" if ours => o.json = true,
             _ => o.words.push(w.clone()),
         }
+    }
+    // gdb's way out: `quit` as a call of its own closes the session, as `end` does
+    if matches!(o.words.as_slice(), [w] if matches!(w.as_str(), "quit" | "q" | "exit")) {
+        o.words[0] = "end".to_string();
     }
     Ok(o)
 }
@@ -523,5 +700,79 @@ mod tests {
         assert_eq!(dbg_class(&words("nosuch")), DbgClass::Other);
         assert_eq!(dbg_class(&["do".into(), "break f; cont; setreg rax 1".into()]), DbgClass::Change);
         assert_eq!(dbg_class(&["do".into(), "break f; run x".into()]), DbgClass::Other);
+    }
+
+    fn script(s: &str) -> Vec<String> {
+        vec!["do".to_string(), crate::gdbdialect::units(s).join("; ")]
+    }
+
+    #[test]
+    fn gdb_spellings_are_classed_as_the_commands_they_are() {
+        // looking and keeping a value
+        for c in [
+            "x/20bx $rsp",
+            "p/x $rax",
+            "print $rax",
+            "printf \"%d\", 1",
+            "echo hi",
+            "info registers rip",
+            "display/x $rax",
+            "output 1",
+        ] {
+            assert_eq!(dbg_class(&crate::split_words(c)), DbgClass::Control, "{c}");
+        }
+        assert_eq!(dbg_class(&crate::split_words("set $v = $rsp + 8")), DbgClass::Control);
+        assert_eq!(dbg_class(&crate::split_words("set pagination off")), DbgClass::Control);
+        assert_eq!(dbg_class(&crate::split_words("backtrace 3")), DbgClass::Control);
+        // writing into the program is a change, however it is spelled
+        for c in
+            ["set $rax = 1", "set var $rip = main", "set var x = 5", "set {int}0x1000 = 5", "set *(int*)0x1000 = 5"]
+        {
+            assert_eq!(dbg_class(&crate::split_words(c)), DbgClass::Change, "{c}");
+        }
+        // a script: the strongest part, and the lines of a `commands` block count too
+        assert_eq!(
+            dbg_class(&script("break *0x10\ncommands\nsilent\nx/4x $rsp\ncontinue\nend\ncont")),
+            DbgClass::Control
+        );
+        assert_eq!(dbg_class(&script("break *0x10\ncommands\nset $rax = 1\ncontinue\nend")), DbgClass::Change);
+        assert_eq!(dbg_class(&script("break *0x10\ncommands\nwrite 0x10 90\nend")), DbgClass::Change);
+        assert_eq!(dbg_class(&script("file ./p\nrun")), DbgClass::Other);
+    }
+
+    #[test]
+    fn a_server_that_may_not_change_things_refuses_gdbs_writes_too() {
+        for c in [
+            "set $rax = 1",
+            "set var x = 5",
+            "set {int}0x1000 = 5",
+            "do \"x/4x $rsp; set $rax = 1\"",
+            "do \"break f; commands; set var x = 1; end\"",
+            "do \"commands; write 0x10 90; end\"",
+        ] {
+            assert!(read_only_refusal(&crate::split_words(c)).is_some(), "{c} must be refused");
+        }
+        for c in [
+            "x/20bx $rsp",
+            "p/x $rax",
+            "printf \"%d\", 1",
+            "set $v = 1",
+            "info registers",
+            "display $rax",
+            "do \"break *0x10; commands; silent; x/4x $rsp; continue; end; cont\"",
+        ] {
+            assert!(
+                read_only_refusal(&crate::split_words(c)).is_none(),
+                "{c} only reads: {:?}",
+                read_only_refusal(&crate::split_words(c))
+            );
+        }
+    }
+
+    #[test]
+    fn quit_as_a_call_of_its_own_ends_the_session() {
+        assert_eq!(parse(&words("quit")).unwrap().words, words("end"));
+        assert_eq!(parse(&words("-s ab q")).unwrap().words, words("end"));
+        assert_eq!(parse(&words("bt quit")).unwrap().words, words("bt quit"));
     }
 }

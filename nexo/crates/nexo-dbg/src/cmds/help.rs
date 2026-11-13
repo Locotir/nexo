@@ -36,7 +36,9 @@ pub fn help() -> Output {
         "look:  regs [name] | bt [N] | dis [addr] [N] | mem <addr> [len] [--as u8|u32|u64|ptr|str] | print <expr|var|p->f|a[i]> [--as str] | args | locals | threads | thread <tid>",
         "       maps [filter] | modules | find <hex|\"text\"> [--in <map>] | out [--all] | log | history [N] | status",
         "change (asks): setreg <reg> <value> | write <addr> <hex> | watch <addr> [len] [r|w|x] | stdin <text> | catch add|del <SIG>",
-        "script: do \"break f; cont; args; bt\" [--keep-going]     expressions: rax+8, *(u32*)(rdi+8), main+4, rsp, sym == 3",
+        "script: do \"break f; cont; args; bt\" [--keep-going]     expressions: rax+8, *(u32*)(rdi+8), main+4, rsp, sym == 3, $rax, $v = expr, (char*)p, p+4",
+        "gdb:   x/20bx addr | p/x expr | printf \"fmt\", args | echo | set $v = expr | display/FMT expr | info registers|breakpoints|frame|sharedlibrary|proc mappings | break *(f+0x10) | commands N ... end (silent, printf, x, continue: run at every hit, no round trip) | a whole gdb script goes in one `do` call, newlines or `;` between commands",
+        "views: print <addr> --as string | --as vector[:u8|u32|u64|ptr]   (libstdc++ std::string and std::vector at that address)       logpoint: log \"{rax:x} {mem:rdi:16}\"",
         "flags, first in the command: -s <id> (the session when several are live) | --lines N (rows per answer, default 40) | --from <addr> (continue a long answer from this row)",
         "addresses: a number inside the program's sections is a file address (as `nexo bin` shows); any other number is a memory address",
     ];

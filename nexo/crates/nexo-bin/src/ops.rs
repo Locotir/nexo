@@ -166,10 +166,18 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
         return Ok(f);
     }
     let raw_has = |f: &crate::funcs::Func| img.raw_name_at(f.start).is_some_and(|r| r.contains(t));
-    let hits: Vec<_> =
+    let mut hits: Vec<_> =
         funcs.iter().filter(|f| img.func_name(f).contains(t) || f.name.contains(t) || raw_has(f)).collect();
+    // a signature written with other spacing (`const&` for `const &`) still finds the function
+    if hits.is_empty() && t.contains('(') {
+        let want = squash(t);
+        hits = funcs.iter().filter(|f| squash(img.func_name(f)).contains(&want)).collect();
+    }
     match hits.as_slice() {
         [one] => Ok(one),
+        // `ns::f` names the function itself: its `.cold` part, its lambdas and the templates that only mention
+        // it do not count when exactly one function carries that name
+        many if many.len() > 1 && hot_exact(many, img, t).len() == 1 => Ok(hot_exact(many, img, t)[0]),
         [] => {
             let hint = if t.len() >= 3 && t.chars().all(|c| c.is_ascii_hexdigit()) {
                 format!("; for an address write 0x{t}")
@@ -186,6 +194,8 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
             Err(Error::Bad(format!("no function is named {t:?}{hint}{next}")))
         }
         many => {
+            let exact = hot_exact(many, img, t);
+            let many = if exact.len() > 1 { &exact[..] } else { many };
             let list: Vec<String> =
                 many.iter().take(5).map(|f| format!("{} ({:#x})", img.func_name(f), f.start)).collect();
             let more = if many.len() > 5 { format!(" and {} more", many.len() - 5) } else { String::new() };
@@ -738,4 +748,68 @@ pub fn find_imm(img: &Image, value: i128) -> Result<Output> {
     }
     let rest = format!("--imm {value}");
     Ok(finish_hits(img, "find", rows, rest, json!({"imm": value.to_string()}), capped))
+}
+
+/// A demangled name without spaces, to compare signatures written in different styles.
+fn squash(name: &str) -> String {
+    name.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// The name before its argument list: `ns::f(int) const [clone .isra.0]` is `ns::f`.
+fn bare_name(name: &str) -> &str {
+    name[..name.find('(').unwrap_or(name.len())].trim_end()
+}
+
+/// True when `name` is the function `target` writes: the same name with or without the argument list, and not one of
+/// the pieces the compiler splits off it (`[clone .cold]`) or a lambda inside it.
+fn names_the_function(target: &str, name: &str) -> bool {
+    if name.contains(".cold") || name.contains("lambda") {
+        return false;
+    }
+    if target.contains('(') {
+        return squash(name).starts_with(&squash(target)) && !name.contains("::{");
+    }
+    bare_name(name) == target
+}
+
+/// Those of `hits` that are the function `target` names, as above.
+fn hot_exact<'a>(hits: &[&'a crate::funcs::Func], img: &Image, target: &str) -> Vec<&'a crate::funcs::Func> {
+    hits.iter()
+        .copied()
+        .filter(|f| names_the_function(target, img.func_name(f)) || names_the_function(target, &f.name))
+        .collect()
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn a_name_without_arguments_finds_the_function_itself() {
+        let hot = "LCRYPT::loadFileAsBits(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)";
+        assert!(names_the_function("LCRYPT::loadFileAsBits", hot));
+        // the compiler's clone of the same function is still the function; its cold half is not
+        assert!(names_the_function("LCRYPT::loadFileAsBits", &format!("{hot} [clone .isra.0]")));
+        assert!(!names_the_function("LCRYPT::loadFileAsBits", &format!("{hot} [clone .isra.0] [clone .cold]")));
+        assert!(!names_the_function(
+            "LCRYPT::processBytes",
+            "LCRYPT::processBytes(int)::{lambda(unsigned long)#1}::operator()(unsigned long) const"
+        ));
+        assert!(!names_the_function(
+            "LCRYPT::processBytes",
+            "std::_Sp_counted_ptr_inplace<LCRYPT::processBytes(int)>::_M_dispose()"
+        ));
+        assert!(!names_the_function("LCRYPT::encrypt", "LCRYPT::encryptAll(int)"));
+    }
+
+    #[test]
+    fn a_signature_is_compared_without_spaces() {
+        let hot = "LCRYPT::encrypt(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, int)";
+        assert!(names_the_function(
+            "LCRYPT::encrypt(std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>const&,int)",
+            hot
+        ));
+        assert!(!names_the_function("LCRYPT::encrypt(int)", hot));
+        assert_eq!(squash("a b\tc"), "abc");
+    }
 }
