@@ -1126,6 +1126,8 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
             }
         }
         let (mut add_i, mut load_i, mut lea_i) = (None, None, None);
+        // the other register of `add target, addend`: the offset may be loaded into it instead of into the target
+        let mut addend = Register::None;
         let mut k = jmp_idx;
         while k > lo {
             k -= 1;
@@ -1139,11 +1141,13 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
                         && i.op1_kind() == OpKind::Register
                         && add_i.is_none() =>
                 {
-                    add_i = Some(k)
+                    add_i = Some(k);
+                    addend = i.op1_register().full_register();
                 }
                 M::Movsxd | M::Mov
                     if i.op0_kind() == OpKind::Register
-                        && i.op0_register().full_register() == target_reg
+                        && (i.op0_register().full_register() == target_reg
+                            || i.op0_register().full_register() == addend)
                         && i.op1_kind() == OpKind::Memory
                         && load_i.is_none()
                         && add_i.is_some() =>
@@ -1157,21 +1161,51 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
         let (a, l) = (add_i?, load_i?);
         let load = &d.ins[l];
         let add = &d.ins[a];
-        if load.memory_index_scale() != 4 || load.memory_index() == Register::None {
+        if load.memory_index() == Register::None {
             return None;
         }
-        let idx = load.memory_index();
+        // a table of 32-bit offsets read as [table + idx*4], or (an unoptimised mingw build) as [scaled + table]
+        // with the index scaled by an earlier `lea scaled, [idx*4]` and the table address in a register
+        let mut scaled_i = None;
+        let idx = if load.memory_index_scale() == 4 {
+            load.memory_index()
+        } else if load.memory_index_scale() == 1 && load.memory_base() != Register::None && lea_i.is_some() {
+            let table_reg = d.ins[lea_i?].op0_register().full_register();
+            let regs = [load.memory_base().full_register(), load.memory_index().full_register()];
+            if !regs.contains(&table_reg) {
+                return None;
+            }
+            let scaled = regs.into_iter().find(|&r| r != table_reg)?;
+            let s = (lo..l).rev().take_while(|&k| d.ins[k].flow_control() == FlowControl::Next).find(|&k| {
+                let i = &d.ins[k];
+                i.mnemonic() == M::Lea && i.op0_register().full_register() == scaled
+            })?;
+            let sc = &d.ins[s];
+            if sc.memory_base() != Register::None
+                || sc.memory_index() == Register::None
+                || sc.memory_index_scale() != 4
+                || sc.memory_displacement64() != 0
+            {
+                return None;
+            }
+            scaled_i = Some(s);
+            sc.memory_index()
+        } else {
+            return None;
+        };
         // the table base: a lea, or (PE) a register holding the image base plus a displacement
         let (table, base) = if let Some(le) = lea_i {
             let lea = &d.ins[le];
-            (lea.ip_rel_memory_address(), 0u64)
+            let extra = if scaled_i.is_some() { load.memory_displacement64() } else { 0 };
+            (lea.ip_rel_memory_address().wrapping_add(extra), 0u64)
         } else if env.is_pe() {
             (env.image_base() + load.memory_displacement64(), env.image_base())
         } else {
             return None;
         };
         let _ = add;
-        let bound = find_bound(d, l, idx);
+        let from = scaled_i.unwrap_or(l);
+        let bound = find_bound(d, from, idx).or_else(|| find_bound_of_reloaded(d, from, idx));
         let count = bound.map(|x| x.0 + 1).unwrap_or(256);
         let mut targets = Vec::new();
         for k in 0..count {
@@ -1190,7 +1224,7 @@ fn find_switch(env: &dyn Env, d: &Decoded, jmp_idx: usize, start: u64, end: u64)
         if targets.is_empty() {
             return None;
         }
-        let first = lea_i.map_or(l, |x| x.min(l)).min(a);
+        let first = lea_i.map_or(l, |x| x.min(l)).min(a).min(scaled_i.unwrap_or(usize::MAX));
         return Some(SwitchInfo {
             hide_from: first,
             targets,
@@ -1240,17 +1274,41 @@ fn find_bound_of_reloaded(d: &Decoded, at: usize, idx: Register) -> Option<(u64,
             && i.op1_kind() == OpKind::Memory
     })?;
     let slot = &d.ins[reload];
+    let same_slot = |i: &Instruction| {
+        i.memory_base() == slot.memory_base()
+            && i.memory_index() == slot.memory_index()
+            && i.memory_displacement64() == slot.memory_displacement64()
+    };
     let mut k = reload;
     let mut steps = 0;
     while k > 0 && steps < 14 {
         k -= 1;
         steps += 1;
         let i = &d.ins[k];
+        // `mov reg, idx ; mov [slot], reg ; sub reg, N ; ja default` (clang): the guard works on a copy of the index
+        if i.mnemonic() == Mnemonic::Sub
+            && i.op0_kind() == OpKind::Register
+            && i.op1_kind() != OpKind::Register
+            && i.op1_kind() != OpKind::Memory
+        {
+            let j = d.ins.get(k + 1);
+            let stored = (k.saturating_sub(3)..k).any(|m| {
+                let st = &d.ins[m];
+                st.mnemonic() == Mnemonic::Mov
+                    && st.op0_kind() == OpKind::Memory
+                    && st.op1_kind() == OpKind::Register
+                    && st.op1_register().full_register() == i.op0_register().full_register()
+                    && same_slot(st)
+            });
+            if let Some(j) = j.filter(|j| stored && matches!(j.mnemonic(), Mnemonic::Ja | Mnemonic::Jae)) {
+                let n = i.immediate(1);
+                let n = if j.mnemonic() == Mnemonic::Ja { n } else { n.wrapping_sub(1) };
+                return Some((n & 0xffff_ffff, j.near_branch_target()));
+            }
+        }
         if i.mnemonic() == Mnemonic::Cmp
             && i.op0_kind() == OpKind::Memory
-            && i.memory_base() == slot.memory_base()
-            && i.memory_index() == slot.memory_index()
-            && i.memory_displacement64() == slot.memory_displacement64()
+            && same_slot(i)
             && i.op1_kind() != OpKind::Register
             && i.op1_kind() != OpKind::Memory
         {

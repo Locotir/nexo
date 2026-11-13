@@ -141,11 +141,92 @@ fn indirect_calls_and_tail_jumps_through_pointers_are_never_dropped() {
     }
 }
 
+/// The mingw cross compiler (a PE x64 target), when this machine has one: a PE with a table of 32-bit offsets.
+#[test]
+fn a_mingw_built_pe_switch_with_a_relative_table_comes_back_as_cases_at_every_optimisation_level() {
+    if std::process::Command::new("x86_64-w64-mingw32-gcc").arg("--version").output().is_err() {
+        eprintln!("SKIPPED a_mingw_built_pe_switch: no x86_64-w64-mingw32-gcc here, so nothing was checked");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let c = dir.path().join("prog.c");
+    std::fs::write(&c, PTRS).unwrap();
+    for (n, flags) in [
+        &["-O0", "-fjump-tables", "--param", "case-values-threshold=1"][..],
+        &["-O2", "-fjump-tables", "--param", "case-values-threshold=1"][..],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let exe = dir.path().join(format!("mingw{n}.exe"));
+        let built = std::process::Command::new("x86_64-w64-mingw32-gcc")
+            .args(flags)
+            .arg("-o")
+            .arg(&exe)
+            .arg(&c)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(built, "x86_64-w64-mingw32-gcc does not build the sample with {flags:?}");
+        let img = Image::open(&exe).unwrap();
+        assert!(img.format == crate::image::Format::Pe, "a PE file");
+        let sw = dec(&img, dir.path(), "sw");
+        println!("{flags:?}\n{sw}");
+        assert!(!sw.contains("jump not resolved") && !sw.contains("return (*"), "{flags:?}\n{sw}");
+        assert!((0..=5).all(|k| sw.contains(&format!("case {k}:"))), "{flags:?}\n{sw}");
+        assert!(sw.contains("a2 + 0xa"), "{flags:?}\n{sw}");
+    }
+}
+
+/// PTRS with `sw` exported where the target is Windows, so it can be found without a symbol table or a PDB.
+fn exported_sw_source() -> String {
+    format!(
+        "#ifdef _WIN32\n#define EXPORT __declspec(dllexport)\n#else\n#define EXPORT\n#endif\n{}",
+        PTRS.replace("__attribute__((noinline)) int sw(", "EXPORT __attribute__((noinline)) int sw(")
+    )
+}
+
+/// clang and lld-link can build a PE for the MSVC target on any machine (no C library needed).
+#[test]
+fn a_clang_msvc_target_pe_switch_with_a_spilled_index_comes_back_as_cases_without_a_pdb() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = dir.path().join("prog.c");
+    std::fs::write(&c, exported_sw_source().replace("#ifdef _WIN32", "#if 1")).unwrap();
+    let exe = dir.path().join("msvc_o0.exe");
+    let built = std::process::Command::new("clang")
+        .args([
+            "--target=x86_64-pc-windows-msvc",
+            "-O0",
+            "-nostdlib",
+            "-fuse-ld=lld",
+            "-Wl,/entry:main,/subsystem:console",
+        ])
+        .arg("-o")
+        .arg(&exe)
+        .arg(&c)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !built {
+        eprintln!("SKIPPED a_clang_msvc_target_pe_switch: clang with lld-link does not build a PE here, so nothing was checked");
+        return;
+    }
+    let img = Image::open(&exe).unwrap();
+    assert!(img.format == crate::image::Format::Pe, "a PE file");
+    assert!(img.symbols.iter().all(|s| s.name != "sw"), "no symbol table names sw: only the export does");
+    let sw = dec(&img, dir.path(), "sw");
+    println!("{sw}");
+    assert!(!sw.contains("jump not resolved") && !sw.contains("return (*"), "{sw}");
+    assert!((0..=5).all(|n| sw.contains(&format!("case {n}:"))), "{sw}");
+}
+
 #[test]
 fn an_unoptimised_clang_table_switch_with_a_spilled_index_comes_back_as_cases() {
     let dir = tempfile::tempdir().unwrap();
     let c = dir.path().join("prog.c");
-    std::fs::write(&c, PTRS).unwrap();
+    // clang targets MSVC on Windows: the .exe has no symbol table (the names live in a PDB), so `sw` is exported
+    // and found by the export table
+    std::fs::write(&c, exported_sw_source()).unwrap();
     let exe = dir.path().join("clang_o0.exe");
     let built = std::process::Command::new("clang")
         .args(["-O0", "-fno-pie", "-no-pie", "-o"])
