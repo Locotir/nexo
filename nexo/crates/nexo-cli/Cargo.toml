@@ -40,7 +40,9 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
 tempfile = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 nexo-bin = { workspace = true, features = ["fixtures"] }
+base64 = { workspace = true }

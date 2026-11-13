@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "nexo browser",
+  "version": "0.1.0",
+  "description": "Lets the nexo terminal agent work in this Chrome, with your consent. Talks only to the local nexo native host.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9r7VUU1d/6KgLXi5lyPTeV4n2mCTT2Zm/xIocQsRvTRv4rSIPfl9VxAUZkk+PU5uUkQSH2ET7rIZx7+vaunVqTK7aNCqfcmg6i8Lmc0BaDhWOr76bQAevXu73DZOiYpQcoyAGXEanunpHjX8zuRhjTBDQzZYFxQPBRLy1jLRyz8kPMPN9aRJCGUv6K/FhapsM06cJjumAQl7UfzapU9NS8w59h9sjpu98N62LVVOR05ApMqssR3RSl5P6bWzZdlv0flAfUEsecbAnFnsLFgwuuAVRyc925pkp2JAIiYC64qgKcNJ5sPedN2XXtmyvcFnCHOd5Jlbs27CpMFzizAPjwIDAQAB",
+  "minimum_chrome_version": "116",
+  "action": { "default_title": "nexo browser" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "permissions": ["nativeMessaging", "scripting", "tabs", "activeTab"],
+  "host_permissions": ["<all_urls>"]
+}

@@ -1,0 +1,18 @@
+[package]
+name = "nexo-browser-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: the Chrome native-messaging host the nexo browser extension talks to"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexo-browser-host"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }

@@ -9,6 +9,7 @@ members = [
     "crates/nexo-tui",
     "crates/nexo-bin",
     "crates/nexo-dbg",
+    "crates/nexo-browser-host",
     "crates/nexo-cli",
     "crates/nexo-bench",
     "crates/nexo-browser",
