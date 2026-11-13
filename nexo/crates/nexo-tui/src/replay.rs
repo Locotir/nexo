@@ -44,8 +44,11 @@ pub fn split_user(text: &str) -> Vec<Piece> {
     let t = front(text, &mut out);
     if t.starts_with("[summary]") {
         out.push(Piece::Summary(t.lines().count()));
-    } else if let Some(words) = t.strip_prefix(GOAL_SET_MARK) {
+    } else if let Some(rest) = t.strip_prefix(GOAL_SET_MARK) {
+        // the goal is the person's words: the start note and the files nexo put after them are not part of it
+        let (words, parts) = split_added(rest.trim());
         out.push(Piece::Goal(Some(words.trim().to_string())));
+        out.extend(parts.into_iter().map(Piece::Added));
     } else if t.trim_end() == GOAL_CONTINUE_MARK {
         out.push(Piece::Goal(None));
     } else if t.trim_end() == SUPERVISOR_RESUME_MARK {
@@ -215,6 +218,19 @@ mod tests {
         assert_eq!(split_user("[goal set] make it fast"), vec![Piece::Goal(Some("make it fast".into()))]);
         assert_eq!(split_user("[goal: continue]"), vec![Piece::Goal(None)]);
         assert_eq!(split_user("my [goal set] idea"), vec![Piece::Text("my [goal set] idea".into())]);
+    }
+
+    #[test]
+    fn a_goal_request_with_the_start_note_and_files_after_it_keeps_only_the_persons_words() {
+        let own = "src/x.rs (project file, included in full by nexo, as it is now):\n```rs\nfn a() {}\n```";
+        let note = "[project at the start of this request]\n\
+                    included by nexo, not attached by the person: 1 project file, 23 tokens.";
+        let p = split_user(&format!("[goal set] make it fast\nand small\n\n{note}\n\n{own}"));
+        assert_eq!(p[0], Piece::Goal(Some("make it fast\nand small".into())), "{p:?}");
+        let kinds: Vec<AddedKind> =
+            p[1..].iter().filter_map(|x| if let Piece::Added(a) = x { Some(a.kind) } else { None }).collect();
+        assert_eq!(kinds, [AddedKind::StartNote, AddedKind::File], "{p:?}");
+        assert_eq!(p.len(), 3, "{p:?}");
     }
 
     #[test]

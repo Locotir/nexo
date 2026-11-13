@@ -519,7 +519,10 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         if let Some(goal) = set_goal(&state, text).await {
                             let request = format!("{GOAL_SET_MARK} {goal}");
                             if turn.is_some() {
-                                let text = format!("goal set: {goal} · checked when this turn ends; the model reads it from the next turn");
+                                let text = format!(
+                                    "goal set: {} · checked when this turn ends; the model reads it from the next turn",
+                                    nexo_core::agent::goal_shown(&goal)
+                                );
                                 notice(&events, Level::Info, text);
                             } else {
                                 turn = Some(start_turn(&state, request, Vec::new(), cancel.child_token()).await);

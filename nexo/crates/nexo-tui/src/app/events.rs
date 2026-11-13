@@ -628,7 +628,7 @@ impl App {
                                 }
                                 Piece::Goal(words) => {
                                     let text = match words {
-                                        Some(w) => format!("◎ goal set: {w}"),
+                                        Some(w) => format!("◎ goal set: {}", nexo_core::agent::goal_shown(&w)),
                                         None => match self.goal_round_said.take() {
                                             Some((round, max)) => format!("◎ goal · round {round}/{max} · continuing"),
                                             None => "◎ goal · continuing".to_string(),

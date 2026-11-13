@@ -7,9 +7,32 @@
 
 use super::*;
 
-/// Folders that hold build output, dependencies or tool state, never attached from.
-const SKIP_DIRS: &[&str] =
-    &["target", "node_modules", ".git", "dist", "build", "out", "__pycache__", "venv", "vendor", "coverage"];
+/// Folders that hold build output, dependencies, tool state, or test data and generated files (captured screens,
+/// snapshots, fixtures, golden outputs), never attached from.
+const SKIP_DIRS: &[&str] = &[
+    "target",
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "out",
+    "__pycache__",
+    "venv",
+    "vendor",
+    "coverage",
+    "captures",
+    "snapshots",
+    "__snapshots__",
+    "fixtures",
+    "testdata",
+    "golden",
+    "goldens",
+    "generated",
+];
+/// Folders that hold tests: a file of plain data in one (not code) is test data.
+const TEST_DIRS: &[&str] = &["tests", "test", "spec", "specs", "__tests__"];
+/// What a file that is data, not code, ends in.
+const DATA_EXTS: &[&str] = &["txt", "json", "yml", "yaml", "csv", "tsv", "xml", "html", "out", "log"];
 /// A file longer than this (in lines) is listed in the tree, never attached.
 const MAX_LINES: usize = 2000;
 /// The most files attached by the budget in one request.
@@ -55,6 +78,18 @@ fn dull(name: &str) -> bool {
         || n.ends_with(".map")
         || n.starts_with("license")
         || n.starts_with("copying")
+        || n.ends_with(".snap")
+        || n.ends_with(".golden")
+        || n.contains(".generated.")
+        || n.contains(".pb.")
+}
+
+/// Whether `rel` (a path under the project, forward slashes) is plain data inside a folder of tests.
+fn test_data(rel: &str) -> bool {
+    let mut parts: Vec<&str> = rel.split('/').collect();
+    let Some(name) = parts.pop() else { return false };
+    let data = name.rsplit_once('.').is_some_and(|(_, e)| DATA_EXTS.contains(&e.to_ascii_lowercase().as_str()));
+    data && parts.iter().any(|d| TEST_DIRS.contains(&d.to_ascii_lowercase().as_str()))
 }
 
 /// Whether `root` is no project folder: the person's home folder or a filesystem root.
@@ -92,8 +127,9 @@ fn pick_in(
     let walk = ignore::WalkBuilder::new(root)
         .require_git(false)
         .filter_entry(|e| {
-            !(e.file_type().is_some_and(|t| t.is_dir())
-                && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
+            !(e.depth() > 0
+                && e.file_type().is_some_and(|t| t.is_dir())
+                && SKIP_DIRS.contains(&e.file_name().to_string_lossy().to_ascii_lowercase().as_str()))
         })
         .build();
     let mut found: Vec<(usize, String)> = Vec::new();
@@ -110,7 +146,11 @@ fn pick_in(
         if len == 0 || attached_tokens(len) > budget {
             continue;
         }
-        found.push((len, rel.to_string_lossy().replace('\\', "/")));
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if test_data(&rel) {
+            continue;
+        }
+        found.push((len, rel));
     }
     if seen >= WALK_CAP {
         return Vec::new();
@@ -372,6 +412,31 @@ mod tests {
         // the policy is asked about each file
         let got = pick(d.path(), 6000, &[], &|rel, _| rel != "notes.txt");
         assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn test_data_and_generated_files_say_nothing_about_the_code() {
+        let d = tree(&[
+            ("src/a.rs", "fn a() {}\n".into()),
+            ("tests/it.rs", "#[test]\nfn it() {}\n".into()),
+            ("tests/captures/screen_40x12.txt", "+--+\n|  |\n+--+\n".into()),
+            ("tests/data/rows.csv", "a,b\n1,2\n".into()),
+            ("tests/expected.json", "{}\n".into()),
+            ("src/__snapshots__/a.test.js.snap", "exports[`a`] = 1;\n".into()),
+            ("src/view.snap", "a\n".into()),
+            ("spec/fixtures/user.yml", "name: a\n".into()),
+            ("testdata/in.txt", "in\n".into()),
+            ("pkg/golden/out.txt", "out\n".into()),
+            ("src/snapshots/b.txt", "b\n".into()),
+            ("src/generated/api.rs", "fn api() {}\n".into()),
+            ("src/api.generated.ts", "export {}\n".into()),
+            ("src/api.pb.go", "package api\n".into()),
+            ("src/captures.rs", "fn captures() {}\n".into()),
+        ]);
+        let got = pick(d.path(), 6000, &[], &|_, _| true);
+        let mut names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["src/a.rs", "src/captures.rs", "tests/it.rs"], "{got:?}");
     }
 
     #[test]

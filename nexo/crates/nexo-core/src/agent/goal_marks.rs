@@ -43,6 +43,19 @@ pub const GOAL_CONTINUE_MARK: &str = "[goal: continue]";
 /// What the loop sends in the person's place to resume a session after the supervisor's check-in said CONTINUE;
 /// what to do next travels as hidden context of that request.
 pub const SUPERVISOR_RESUME_MARK: &str = "[supervisor: continue]";
+/// The most characters of a goal a line of the screen carries: a few lines, the rest is in the goal window.
+pub const GOAL_SHOWN: usize = 200;
+
+/// A goal as one notice line shows it: on one line, cut to [`GOAL_SHOWN`] characters with where the rest is.
+pub fn goal_shown(goal: &str) -> String {
+    let one = goal.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= GOAL_SHOWN {
+        return one;
+    }
+    let cut: String = one.chars().take(GOAL_SHOWN).collect();
+    format!("{}… · the rest is in the goal window", cut.trim_end())
+}
+
 /// How a goal the agent restated (`goal_brief`) begins.
 pub const GOAL_BRIEF_HEAD: &str = "Want: ";
 

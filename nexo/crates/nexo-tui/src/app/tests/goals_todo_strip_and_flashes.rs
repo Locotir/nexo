@@ -24,6 +24,24 @@ fn a_restated_goal_reads_as_what_the_person_wants() {
 }
 
 #[test]
+fn a_long_goal_shows_in_a_few_lines_and_the_rest_waits_in_the_goal_window() {
+    let (mut a, _rx) = app();
+    let long = format!("make it fast {}", "and keep every test green ".repeat(40));
+    a.handle_agent(AgentEvent::History { index: 0, message: Message::user(format!("[goal set] {long}")) });
+    let notice = a
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the goal shows as a notice");
+    assert!(notice.starts_with("◎ goal set: make it fast and keep every test green"), "{notice}");
+    assert!(notice.chars().count() < 260, "a few lines, not a wall: {}", notice.chars().count());
+    assert!(notice.contains("goal window"), "{notice}");
+}
+
+#[test]
 fn a_goal_round_shows_as_one_line_with_its_round() {
     let (mut a, _rx) = app();
     let goal =
