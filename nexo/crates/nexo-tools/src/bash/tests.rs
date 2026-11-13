@@ -280,7 +280,7 @@ async fn runs_and_reports_output_and_exit_code() {
     let d = tempfile::tempdir().unwrap();
     let c = ToolContext::new(d.path().to_path_buf());
     let out = Bash.run(json!({"command": "echo hi; echo err >&2; exit 3"}), &c).await;
-    assert!(out.is_error);
+    assert!(!out.is_error, "a command that ran to the end is no failure");
     assert!(out.content.contains("hi\n") && out.content.contains("err\n"), "{}", out.content);
     assert!(out.content.ends_with("[exit code 3]"));
     match out.display {
@@ -511,7 +511,7 @@ async fn a_failed_probe_in_a_chain_adds_a_note_to_the_result() {
     let d = tempfile::tempdir().unwrap();
     let c = ToolContext::new(d.path().to_path_buf());
     let out = Bash.run(json!({"command": "ls tests 2>/dev/null && echo after"}), &c).await;
-    assert!(out.is_error && out.content.contains("[exit code"), "{}", out.content);
+    assert!(!out.is_error && out.content.contains("[exit code"), "{}", out.content);
     assert!(
         out.content.contains("skipped the commands after it") && out.content.contains("`tests`"),
         "{}",
@@ -672,4 +672,48 @@ async fn detach_needs_background() {
     let c = ToolContext::new(d.path().to_path_buf());
     let out = Bash.run(json!({"command": "true", "detach": true}), &c).await;
     assert!(out.is_error && out.content.contains("background"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn only_a_command_that_did_not_run_to_the_end_is_a_failure() {
+    if nexo_core::shell::shell().kind == "powershell" {
+        eprintln!("the test writes POSIX shell; this system runs PowerShell: skipped");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a"), "1").unwrap();
+    std::fs::write(d.path().join("b"), "2").unwrap();
+    std::fs::write(d.path().join("empty"), "").unwrap();
+    let c = ToolContext::new(d.path().to_path_buf());
+    // ran to the end with a code of its own: shown as information, never as a failure
+    for (cmd, code) in [
+        ("cmp a b && echo iguales || echo distintos", None),
+        ("cmp a b", Some(1)),
+        ("grep x empty", Some(1)),
+        ("false", Some(1)),
+        ("test -e /no/such/file", Some(1)),
+        ("diff a b > /dev/null", Some(1)),
+        ("exit 42", Some(42)),
+    ] {
+        let out = Bash.run(json!({"command": cmd}), &c).await;
+        assert!(!out.is_error, "{cmd}: {}", out.content);
+        match (&out.display, code) {
+            (ToolDisplay::Shell { exit_code, .. }, Some(c)) => {
+                assert_eq!(*exit_code, Some(c), "{cmd}");
+                assert!(out.content.ends_with(&format!("[exit code {c}]")), "{cmd}: {}", out.content);
+            }
+            (ToolDisplay::Shell { exit_code, .. }, None) => assert_eq!(*exit_code, Some(0), "{cmd}"),
+            _ => panic!("{cmd}"),
+        }
+    }
+    // not found (127), not runnable (126), a signal's code and a timeout are failures
+    let out = Bash.run(json!({"command": "no_such_program_xyz"}), &c).await;
+    assert!(out.is_error && out.content.ends_with("[exit code 127]"), "{}", out.content);
+    std::fs::write(d.path().join("noexec"), "echo hi").unwrap();
+    let out = Bash.run(json!({"command": "./noexec"}), &c).await;
+    assert!(out.is_error && out.content.ends_with("[exit code 126]"), "{}", out.content);
+    let out = Bash.run(json!({"command": "sh -c 'kill -SEGV $$'"}), &c).await;
+    assert!(out.is_error, "{}", out.content);
+    let out = Bash.run(json!({"command": "echo start; sleep 30; echo never", "timeout": 1}), &c).await;
+    assert!(out.is_error && out.content.contains("timed out"), "{}", out.content);
 }

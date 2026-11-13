@@ -645,9 +645,15 @@ impl Block {
                 let mut lines = vec![Line::from(vec![
                     Span::styled("$ ", theme.style(theme.accent)),
                     Span::styled(command.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                    // the code is information; only a command that was not found, not runnable or killed by a
+                    // signal is shown as a failure
                     Span::styled(
                         exit_code.filter(|c| *c != 0).map(|c| format!("  exit {c}")).unwrap_or_default(),
-                        theme.style(theme.error),
+                        theme.style(if exit_code.is_some_and(nexo_core::shell::exit_is_failure) {
+                            theme.error
+                        } else {
+                            theme.dim
+                        }),
                     ),
                 ])];
                 let pad = [Span::styled(GUIDE, theme.style(theme.border))];

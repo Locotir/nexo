@@ -144,9 +144,12 @@ impl Tool for Bash {
         };
         let is_error = match outcome.end {
             End::Exited(0) => false,
+            // a command that ran to the end and answered with a code (`cmp`, `grep`, `diff`, `test`, a test
+            // runner) did not fail: the code is shown, and the model judges by it and the output. Not found
+            // (127), not runnable (126) and a signal's code are failures.
             End::Exited(code) => {
                 content.push_str(&format!("\n\n[exit code {code}]"));
-                true
+                nexo_core::shell::exit_is_failure(code)
             }
             End::Signalled => {
                 content.push_str("\n\n[killed by a signal]");
@@ -175,7 +178,8 @@ impl Tool for Bash {
                 content.push_str(&note);
             }
         }
-        if is_error {
+        // a denial by the sandbox is usually a plain exit 1: the note is for any non-zero end
+        if is_error || matches!(outcome.end, End::Exited(c) if c != 0) {
             if let Some(note) = crate::sandbox::note_for(&sandbox, &outcome.output) {
                 content.push_str("\n\n");
                 content.push_str(&note);

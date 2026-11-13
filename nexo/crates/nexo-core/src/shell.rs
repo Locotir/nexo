@@ -54,6 +54,20 @@ impl Shell {
     }
 }
 
+/// Whether a command that ended with the exit `code` did not run to completion in the sense that matters:
+/// the shell could not find it (127) or run it (126), a signal killed it (the shell reports 128 + the
+/// signal, 129 to 192), or, on Windows, it crashed (an NTSTATUS such as 0xC0000005 reads as a negative
+/// `i32`). Any other non-zero code is the program's own answer by design (`cmp`, `diff`, `grep`, `test`,
+/// `false`, a test runner): the command ran, and the code is information, not a failure.
+pub fn exit_is_failure(code: i32) -> bool {
+    matches!(code, 126 | 127 | 129..=192) || code < 0
+}
+
+/// The exit code a shell result ends with (`[exit code N]`, written by the `bash` tool), if it has one.
+pub fn exit_code_in(text: &str) -> Option<i32> {
+    text.lines().rev().map(str::trim).find_map(|l| l.strip_prefix("[exit code ")?.strip_suffix(']')?.parse().ok())
+}
+
 /// `name` on the PATH, with the extensions Windows runs (`.exe`, `.cmd`, `.bat`).
 pub fn find_program(name: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
@@ -246,6 +260,19 @@ mod tests {
         if !cfg!(windows) {
             assert_eq!(program("nano"), PathBuf::from("nano"));
         }
+    }
+
+    #[test]
+    fn only_a_missing_unrunnable_or_signalled_command_is_a_failure() {
+        for c in [0, 1, 2, 3, 42, 101, 124, 125, 128, 193, 255] {
+            assert!(!exit_is_failure(c), "{c}");
+        }
+        for c in [126, 127, 129, 134, 137, 139, 143, 192, -1_073_741_819] {
+            assert!(exit_is_failure(c), "{c}");
+        }
+        assert_eq!(exit_code_in("out\n\n[exit code 7]\n[note: x]"), Some(7));
+        assert_eq!(exit_code_in("out\n\n[killed by a signal]"), None);
+        assert_eq!(exit_code_in("(no output)"), None);
     }
 
     #[cfg(unix)]

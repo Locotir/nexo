@@ -163,6 +163,9 @@ impl Repeats {
             .iter()
             .filter_map(|p| if let Part::Text { text } = p { Some(text.as_str()) } else { None })
             .collect();
+        // a command that ended with a non-zero code is not marked as an error, but its failure is tracked all the same
+        let shown_error = is_error;
+        let is_error = is_error || nexo_core::shell::exit_code_in(&text).is_some_and(|c| c != 0);
         let cmd = args.get("command").and_then(Value::as_str);
         let kind = if cmd.is_some() && build_output(&text) {
             None
@@ -180,7 +183,7 @@ impl Repeats {
             if !is_error {
                 self.cleared(name, args, &text, cmd);
             }
-            return Part::ToolResult { call_id, name: n, content, is_error };
+            return Part::ToolResult { call_id, name: n, content, is_error: shown_error };
         };
         let (key, by_command) = target(name, args, &text, kind);
         let (now, round) = (self.calls, self.rounds);
@@ -193,20 +196,25 @@ impl Repeats {
         }
         if fail.times > 0 && fail.round == round {
             // the same thing twice in one round: one failure, not a retry
-            return Part::ToolResult { call_id, name: n, content, is_error };
+            return Part::ToolResult { call_id, name: n, content, is_error: shown_error };
         }
         fail.times += 1;
         fail.round = round;
         fail.text = text.clone();
         if fail.times < 2 {
-            return Part::ToolResult { call_id, name: n, content, is_error };
+            return Part::ToolResult { call_id, name: n, content, is_error: shown_error };
         }
         let line = format!(
             "[the same failure on {key} ({kind}) for the {} time, first {} calls ago: as it stands it fails again, so change the approach rather than retry it]",
             ordinal(fail.times),
             now - fail.first
         );
-        Part::ToolResult { call_id, name: n, content: vec![Part::text(format!("{text}\n\n{line}"))], is_error }
+        Part::ToolResult {
+            call_id,
+            name: n,
+            content: vec![Part::text(format!("{text}\n\n{line}"))],
+            is_error: shown_error,
+        }
     }
 
     /// A success forgets the failures of what it touched: its path, the paths its command names, the

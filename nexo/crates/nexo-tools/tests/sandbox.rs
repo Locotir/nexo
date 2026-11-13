@@ -63,7 +63,7 @@ async fn writing_in_home_outside_the_project_fails_and_the_note_appears() {
     let target = outside.path().join("x.txt");
     let cmd = format!("echo no > {}", target.display());
     let o = run(p.path(), ws(false), json!({"command": cmd})).await;
-    assert!(o.is_error, "{}", o.content);
+    assert!(o.content.contains("[exit code 1]"), "{}", o.content);
     assert!(!target.exists());
     assert!(o.content.contains("[sandbox:") && o.content.contains("unsandboxed"), "{}", o.content);
     // the same command, asked to run outside the sandbox, works
@@ -81,7 +81,7 @@ async fn read_only_mode_cannot_write_the_project_and_extra_dirs_open_up() {
     let p = in_home();
     let ro = SandboxSettings::new(SandboxMode::ReadOnly, false, vec![]);
     let o = run(p.path(), ro, json!({"command": "echo x > a.txt"})).await;
-    assert!(o.is_error && !p.path().join("a.txt").exists(), "{}", o.content);
+    assert!(o.content.contains("[exit code 1]") && !p.path().join("a.txt").exists(), "{}", o.content);
     let extra = in_home();
     let s = SandboxSettings::new(SandboxMode::WorkspaceWrite, false, vec![extra.path().to_path_buf()]);
     let cmd = format!("echo x > {}/b.txt", extra.path().display());
@@ -113,7 +113,7 @@ async fn network_off_blocks_a_connect_to_a_local_listener() {
     let p = tempfile::tempdir().unwrap();
     let cmd = format!("bash -c 'exec 3<>/dev/tcp/127.0.0.1/{port} && echo connected'");
     let o = run(p.path(), ws(false), json!({"command": cmd})).await;
-    assert!(o.is_error && !o.content.contains("connected"), "{}", o.content);
+    assert!(o.content.contains("[exit code") && !o.content.contains("connected"), "{}", o.content);
     // control: with the network on the same command reaches the listener
     let o = run(p.path(), ws(true), json!({"command": cmd})).await;
     assert!(o.content.contains("connected"), "{}", o.content);

@@ -199,6 +199,8 @@ pub fn test_counts(text: &str) -> Option<(u32, u32)> {
 
 /// The events a finished shell command stands for: tests with their outcome, a commit, a push.
 pub fn after_command(cmd: &str, output: &str, is_error: bool, at: Secs) -> Option<Ev> {
+    // a command that ended with a non-zero code is not an error result, but its tests did not pass
+    let is_error = is_error || nexo_core::shell::exit_code_in(output).is_some_and(|c| c != 0);
     let kind = command_kind(cmd)?;
     Some(match kind {
         CmdKind::Tests => {
@@ -254,6 +256,9 @@ mod tests {
         let e = after_command("cargo test", "12 passed; 0 failed", false, 5).unwrap();
         assert_eq!((e.kind, e.detail), (EvKind::TestsPass, EvDetail::Tests { pass: 12, fail: 0 }));
         let e = after_command("pytest", "boom", true, 5).unwrap();
+        assert_eq!(e.kind, EvKind::TestsFail);
+        // a non-zero exit is no error result, but the tests did not pass
+        let e = after_command("pytest", "boom\n\n[exit code 1]", false, 5).unwrap();
         assert_eq!(e.kind, EvKind::TestsFail);
         assert!(after_command("git commit -m x", "", true, 5).is_none());
     }

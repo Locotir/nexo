@@ -526,7 +526,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             let st = state.lock().await;
             if st.config.agent.close_on_verified {
                 let ok: Vec<bool> = if results.len() == kept.len() {
-                    results.iter().map(|p| matches!(p, Part::ToolResult { is_error: false, .. })).collect()
+                    results.iter().map(succeeded).collect()
                 } else {
                     vec![false; kept.len()]
                 };
@@ -685,3 +685,11 @@ pub(super) const SUMMARY_NOW: &str =
 /// Sent once when the model chose to continue at a checkpoint but called no tool.
 pub(super) const CHECKPOINT_GO_ON: &str =
     "<system-reminder>You chose to continue at the checkpoint. Go on with the next tool call.</system-reminder>";
+
+/// Whether a tool result is a success: not an error, and not a shell command that ended with a non-zero
+/// code (that is no failure to show, but a check that answered no is not a check that passed).
+fn succeeded(p: &Part) -> bool {
+    let Part::ToolResult { content, is_error: false, .. } = p else { return false };
+    let text = content.iter().filter_map(Part::as_text).collect::<Vec<_>>().join("\n");
+    nexo_core::shell::exit_code_in(&text).is_none_or(|c| c == 0)
+}

@@ -409,7 +409,8 @@ impl Tracker {
             })
             .collect();
         for (is_error, text) in &outs {
-            if **is_error {
+            // a shell command that ended with a non-zero code is not shown as an error, but it still counts here
+            if **is_error || nexo_core::shell::exit_code_in(text).is_some_and(|c| c != 0) {
                 if let Some(l) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
                     *self.errors.entry(l.chars().take(80).collect()).or_insert(0) += 1;
                 }

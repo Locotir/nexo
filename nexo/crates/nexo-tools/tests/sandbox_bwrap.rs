@@ -33,5 +33,5 @@ async fn bwrap_holds_writes_to_the_project() {
     assert!(p.path().join("in.txt").is_file());
     let cmd = format!("echo no > {}/x.txt", outside.path().display());
     let o = Bash.run(json!({"command": cmd}), &ctx).await;
-    assert!(o.is_error && o.content.contains("[sandbox:"), "{}", o.content);
+    assert!(o.content.contains("[exit code") && o.content.contains("[sandbox:"), "{}", o.content);
 }

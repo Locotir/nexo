@@ -174,7 +174,9 @@ impl Tool for TerminalBash {
             End::Exited(Some(0)) => (false, Some(0)),
             End::Exited(Some(code)) => {
                 content.push_str(&format!("\n\n[exit code {code}]"));
-                (true, i32::try_from(code).ok())
+                // it ran to the end: only a code that stands for a missing, unrunnable or signalled command fails
+                let exit = i32::try_from(code).ok();
+                (exit.is_none_or(nexo_core::shell::exit_is_failure), exit)
             }
             End::Exited(None) => {
                 content.push_str("\n\n[killed by a signal]");
