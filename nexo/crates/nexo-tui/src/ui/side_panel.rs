@@ -52,8 +52,10 @@ pub(super) fn draw_panel(f: &mut Frame, app: &App, area: Rect) {
         let first = [rail(), Span::raw("◎ ")];
         let rest = [rail(), Span::raw("  ")];
         let body = crate::render::wrap::wrap_runs(&runs, inner_w, &first, &rest);
+        // four rows of the goal, more as the panel gets taller
+        let goal_rows = (area.height as usize / 6).clamp(4, 10);
         for (k, l) in body.into_iter().enumerate() {
-            if k < 4 {
+            if k < goal_rows {
                 lines.push(l);
             }
         }

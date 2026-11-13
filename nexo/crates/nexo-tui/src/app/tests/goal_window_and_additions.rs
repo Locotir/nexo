@@ -101,6 +101,49 @@ fn the_goal_window_follows_the_agent_and_closes_when_the_goal_is_cleared() {
     assert!(a.modal.is_none() && a.goal_log == Default::default());
 }
 
+#[test]
+fn the_goal_window_gives_a_long_line_room_on_a_wide_terminal_and_stays_compact_on_a_small_one() {
+    use nexo_core::agent::GoalLog;
+    let long = "x".repeat(150);
+    let open = |cols: u16| {
+        let (mut a, _rx) = app();
+        a.opts.animations = false;
+        goal_with_log(&mut a, GoalState::Active);
+        a.handle_agent(AgentEvent::GoalLog(GoalLog { original: Some(long.clone()), ..a.goal_log.clone() }));
+        a.open_goal();
+        frame(&mut a, cols, 50);
+        a.dialog_size.modal.drawn.width
+    };
+    assert_eq!(open(100), 96, "a small terminal keeps today's window");
+    let wide = open(240);
+    assert!(wide > 96 && wide <= 160, "a wide one grows it, up to two thirds: {wide}");
+    assert!(open(200) <= wide, "and it scales with the terminal");
+}
+
+#[test]
+fn the_goal_window_grows_when_the_goal_gets_more_to_say() {
+    use nexo_core::agent::GoalStop;
+    let (mut a, _rx) = app();
+    a.opts.animations = false;
+    goal_with_log(&mut a, GoalState::Active);
+    a.open_goal();
+    frame(&mut a, 120, 50);
+    let before = a.dialog_size.modal.drawn.height;
+    let mut log = a.goal_log.clone();
+    let now = nexo_core::mailbox::now_ms();
+    log.stops.extend((0..4).map(|i| GoalStop { at_ms: now - 1000 * i, why: format!("the turn failed {i}") }));
+    // the agent tells the log, then the goal: the open window follows
+    a.handle_agent(AgentEvent::GoalLog(log));
+    a.handle_agent(AgentEvent::Goal {
+        text: Some("Want: every test passes".into()),
+        round: 3,
+        max: 5,
+        state: GoalState::Active,
+    });
+    frame(&mut a, 120, 50);
+    assert!(a.dialog_size.modal.drawn.height > before, "the new stops are not left behind a scroll");
+}
+
 /// A user message and what nexo added to it, as the agent tells them.
 fn said_with_additions(a: &mut App) {
     use nexo_core::agent::{AddedKind::*, AddedPart};

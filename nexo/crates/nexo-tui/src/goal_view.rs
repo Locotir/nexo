@@ -40,6 +40,34 @@ impl GoalView {
         moved && self.goal.state == GoalState::Active
     }
 
+    /// What the size of the window depends on: the words it holds, the stops, the button, the longest line.
+    pub fn size_key(&self) -> (bool, usize, usize, bool, usize) {
+        let l = &self.log;
+        let words = l.original.as_deref().map_or(0, str::len)
+            + l.brief.as_deref().map_or(0, str::len)
+            + self.goal.text.len()
+            + match &self.goal.state {
+                GoalState::Paused(why) => why.len(),
+                _ => 0,
+            };
+        (self.can_resume(), l.stops.len(), words, l.last.is_some(), self.natural_width())
+    }
+
+    /// The columns the window wants so its longest line sits on one row: that line, its indent and the frame.
+    pub fn natural_width(&self) -> usize {
+        let l = &self.log;
+        let longest = |s: &str| s.lines().map(width).max().unwrap_or(0);
+        let mut most = longest(&self.goal.text);
+        for s in [l.original.as_deref(), l.brief.as_deref(), l.last.as_deref()].into_iter().flatten() {
+            most = most.max(longest(s));
+        }
+        for stop in &l.stops {
+            // "12 min ago · " leads each stop
+            most = most.max(longest(&stop.why) + 13);
+        }
+        most + 7
+    }
+
     /// A goal that stopped (paused) or was met can go on from here.
     pub fn can_resume(&self) -> bool {
         matches!(self.goal.state, GoalState::Paused(_) | GoalState::Done)

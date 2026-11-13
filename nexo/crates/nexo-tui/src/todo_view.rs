@@ -100,6 +100,13 @@ impl TodoView {
         (self.items.len(), n(TodoStatus::InProgress), n(TodoStatus::Done), self.done_open)
     }
 
+    /// The columns the window wants so its longest task sits on one row: the text, the mark and number
+    /// before it, the cursor column and the frame.
+    pub fn natural_width(&self) -> usize {
+        let longest = self.items.iter().flat_map(|i| i.text.lines().map(width)).max().unwrap_or(0);
+        longest + self.items.len().to_string().len() + 11
+    }
+
     pub fn current(&self) -> Option<&TodoItem> {
         self.order().get(self.selected).map(|&i| &self.items[i])
     }
@@ -490,5 +497,13 @@ mod tests {
         let n = v.order().len();
         v.click_row(n);
         assert!(v.done_open);
+    }
+
+    #[test]
+    fn the_window_asks_for_the_room_of_its_longest_task() {
+        let short = TodoView::new(vec![it("a", TodoStatus::Pending)]);
+        let long = TodoView::new(vec![it("a", TodoStatus::Pending), it(&"w".repeat(120), TodoStatus::Pending)]);
+        assert!(short.natural_width() < 76, "a short list stays under the compact width");
+        assert_eq!(long.natural_width(), 120 + 1 + 11);
     }
 }

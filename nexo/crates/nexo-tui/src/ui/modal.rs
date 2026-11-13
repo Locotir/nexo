@@ -38,6 +38,13 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         Modal::Sent(_) => 120,
         _ => 96,
     };
+    // the to-do and goal windows give a long line its room on a wide terminal, up to two thirds of it
+    let asked = match &*modal {
+        Modal::Todo(v) => v.natural_width(),
+        Modal::Goal(v) => v.natural_width(),
+        _ => 0,
+    };
+    let cap = cap.max(asked.min(usize::from(area.width) * 2 / 3) as u16);
     let w = (area.width.saturating_sub(4)).min(cap);
     let max_h = area.height.saturating_sub(2);
     // laid out for the width it has now, so nothing is cut while it pops open
