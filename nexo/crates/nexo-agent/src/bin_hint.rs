@@ -88,15 +88,28 @@ fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>) -> String
             _ => None,
         })
     };
+    // a symbol or an address the call can carry: C++ and Rust names have `<>` and `~`, none has a `$` that a shell
+    // would read, and one that starts with `-` would be taken for an option
     let plain = |s: &str| {
-        !s.is_empty() && s.len() <= 200 && s.chars().all(|c| c.is_ascii_alphanumeric() || "_.$@:<>~+-".contains(c))
+        !s.is_empty()
+            && s.len() <= 200
+            && !s.starts_with('-')
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || "_.@:<>~+-".contains(c))
     };
+    // written as one word in the tool's language and in a shell (`<>` stay inside double quotes)
+    let word = |s: &str| hint_cmd::quoted(s);
+    // `--disassemble=SYM` only: a bare `--disassemble` takes no value, the word after it is the file
+    let eq = |long: &str| args.iter().find_map(|a| a.strip_prefix(long)?.strip_prefix('=').map(str::to_string));
     match prog {
         "objdump" => {
-            if let Some(sym) = valued("--disassemble").filter(|s| plain(s)) {
-                format!("fn {f} {sym}")
+            if let Some(sym) = eq("--disassemble").filter(|s| plain(s)) {
+                format!("fn {f} {}", word(&sym))
             } else if let Some(at) = valued("--start-address").filter(|s| plain(s)) {
-                format!("fn {f} {at}")
+                // `--stop-address` is where the same range ends: `fn --to`
+                match valued("--stop-address").filter(|s| plain(s)) {
+                    Some(to) => format!("fn {f} {} --to {}", word(&at), word(&to)),
+                    None => format!("fn {f} {}", word(&at)),
+                }
             } else if has('d', "--disassemble") || has('D', "--disassemble-all") || has('S', "--source") {
                 format!("overview {f}")
             } else if has('t', "--syms") || has('T', "--dynamic-syms") {
@@ -129,7 +142,7 @@ fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>) -> String
                         (cmd.trim().starts_with("pd") && plain(sym)).then(|| sym.to_string())
                     });
                     if let Some(sym) = at {
-                        format!("fn {f} {sym}")
+                        format!("fn {f} {}", word(&sym))
                     } else if c.iter().any(|x| x.starts_with("afl")) {
                         format!("funcs {f}")
                     } else if c.iter().any(|x| x.starts_with("iz")) {
@@ -357,6 +370,20 @@ mod tests {
         assert_eq!(op("objdump -dS p"), "overview p");
         assert_eq!(op("objdump --disassemble=main p"), "fn p main");
         assert_eq!(op("objdump --start-address=0x401000 -d p"), "fn p 0x401000");
+        // the paste: a range of one binary, both ends, either way of writing the option
+        assert_eq!(op("objdump -d --start-address=0x11950 --stop-address=0x140a0 p"), "fn p 0x11950 --to 0x140a0");
+        assert_eq!(op("objdump -d --start-address 0x11950 --stop-address 0x140a0 p"), "fn p 0x11950 --to 0x140a0");
+        assert_eq!(op("objdump -d --stop-address=0x140a0 --start-address=0x11950 p"), "fn p 0x11950 --to 0x140a0");
+        assert_eq!(op("objdump -d --start-address=0x11950 p"), "fn p 0x11950");
+        // a bare `--disassemble` has no symbol: the word after it is the file, not a name
+        assert_eq!(op("objdump --disassemble p"), "overview p");
+        // a symbol is one word for the language of the tool and for a shell: `<>` and `~` are quoted, `$` and a
+        // leading dash never get through
+        assert_eq!(op("objdump '--disassemble=foo<int>::bar' p"), "fn p \"foo<int>::bar\"");
+        assert_eq!(op("objdump --disassemble=~Foo p"), "fn p \"~Foo\"");
+        assert_eq!(op("objdump '--disassemble=a$b' p"), "overview p");
+        assert_eq!(op("objdump --disassemble=-x p"), "overview p");
+        assert_eq!(op("r2 -qc 'pdf @ sym.a<b>' p"), "fn p \"sym.a<b>\"");
         assert_eq!(op("objdump -t p"), "funcs p");
         assert_eq!(op("objdump -T p"), "funcs p");
         assert_eq!(op("objdump -x p"), "info p");

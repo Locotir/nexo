@@ -7,8 +7,10 @@
 //!
 //! Only when the `debug` tool is offered and the file is one `nexo bin` opens. Nothing is run or loaded: the command
 //! is split by `hint_cmd` (heredocs, redirections, `cd x &&`, wrappers) and a gdb script is only read as text. A
-//! script line the debugger has no word for is left out of the call; the call is what the line says it is, a way to
-//! the same stops, not a promise of every gdb feature.
+//! script line the debugger has no word for is left out of the call (a register is kept, a gdb convenience variable
+//! is not); the call is what the line says it is, a way to the same stops, not a promise of every gdb feature, and
+//! when the script's every breakpoint, watch and catch was left out there is no line at all: `run; cont` would stop
+//! nowhere the script did.
 
 use std::path::Path;
 
@@ -17,8 +19,10 @@ use serde_json::Value;
 
 use crate::hint_cmd::{self, Input, Seg};
 
-/// Starts the line for a fault; sessions saved before there were three kinds have it on every line.
+/// Started every line before there were three kinds, so a session saved then has it for a gdb and for a fault.
 pub const HEAD: &str = "[nexo: the debug tool answers this in one call:";
+/// Starts the line for a fault.
+pub const HEAD_FAULT: &str = "[nexo: the debug tool runs this to the fault in one call:";
 /// Starts the line for a gdb session.
 pub const HEAD_GDB: &str = "[nexo: the debug tool takes this gdb session in one call:";
 /// Starts the line for strace and ltrace.
@@ -125,12 +129,50 @@ fn fault(segs: &[Seg], result: &str, cwd: &Path) -> Option<String> {
     let prog = s.words.first().filter(|w| hint_cmd::opens(&s.dir, w))?;
     let run = run_text(cwd, s, prog, &s.words[1..], input_for(segs, k).as_deref())?;
     let why = format!("stops at the fault (exit {code}) with file:line, cause and locals");
-    Some(format!("{HEAD} {} {why}]", hint_cmd::tool_call("debug", &format!("{run}; cont"))))
+    Some(format!("{HEAD_FAULT} {} {why}]", hint_cmd::tool_call("debug", &format!("{run}; cont"))))
 }
 
 /// A word the call can carry: no double quote (the debug command language quotes with them), no `;`, no newline.
+/// For what the shell wrote (the program, its arguments, its input): a `$` there was never expanded.
 fn plain(w: &str) -> bool {
     !w.contains(['"', ';', '\n', '\\', '$', '`'])
+}
+
+/// A debugger command the call can carry: `plain`, except that a `$name` is fine when it is a register the debugger
+/// reads (`$rdi`, `$rsp`, `$r8d`). A gdb convenience variable (`$x` from `set $x = ...`, `$_`, `$1`) has no meaning
+/// there, so a command that uses one is left out.
+fn plain_cmd(c: &str) -> bool {
+    if c.contains(['"', ';', '\n', '\\', '`']) {
+        return false;
+    }
+    let mut rest = c;
+    while let Some(at) = rest.find('$') {
+        rest = &rest[at + 1..];
+        let end = rest.find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')).unwrap_or(rest.len());
+        if !register(&rest[..end]) {
+            return false;
+        }
+        rest = &rest[end..];
+    }
+    true
+}
+
+/// The register names of the debugger's expressions (x86-64): the 64, 32, 16 and 8-bit names, `rip`, the flags and
+/// the segments.
+fn register(n: &str) -> bool {
+    const NAMED: [&str; 46] = [
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip", "pc", "sp", "fp", "eflags", "rflags", "flags",
+        "fs_base", "gs_base", "cs", "ss", "ds", "es", "fs", "gs", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp",
+        "esp", "ax", "bx", "cx", "dx", "si", "di", "bp", "al", "bl", "cl", "dl", "sil", "dil", "bpl", "spl",
+    ];
+    let n = n.to_ascii_lowercase();
+    if NAMED.contains(&n.as_str()) {
+        return true;
+    }
+    // r8 to r15 and their d, w and b parts
+    let Some(rest) = n.strip_prefix('r') else { return false };
+    let num = rest.trim_end_matches(['d', 'w', 'b']);
+    rest.len() - num.len() <= 1 && num.parse::<u8>().is_ok_and(|k| (8..16).contains(&k))
 }
 
 /// `run <prog> <args> [< file | <<< "text">]`.
@@ -192,6 +234,10 @@ fn stdin_text(segs: &[Seg], k: usize) -> Option<String> {
         return Some(t.clone());
     }
     let prev = segs.get(k.checked_sub(1)?)?;
+    // a command whose output went to a file (`cat > g1.gdb <<EOF`) gave nothing to this one
+    if prev.output.is_some() {
+        return None;
+    }
     match hint_cmd::program(prev.words.first()?).as_str() {
         "cat" => match &prev.input {
             Some(Input::Text(t)) => Some(t.clone()),
@@ -273,6 +319,10 @@ fn gdb_call(segs: &[Seg], k: usize, cwd: &Path) -> Option<String> {
         lines.extend(t.lines().map(str::to_string));
     }
     let plan = translate(&lines, &s.dir);
+    // every breakpoint, watch and catch of the script was left out: the call would stop nowhere the script did
+    if plan.stops_wanted > 0 && plan.stops_kept == 0 {
+        return None;
+    }
     let (run_args, input) = plan.args.unwrap_or((shell_args, None));
     let input = input.as_ref().and_then(input_text);
     let mut calls: Vec<String> = Vec::new();
@@ -306,14 +356,33 @@ fn gdb_call(segs: &[Seg], k: usize, cwd: &Path) -> Option<String> {
             calls.extend(plan.hit.iter().cloned());
         }
     }
-    calls.dedup();
-    calls.truncate(MAX_CMDS);
-    let mut text = calls.join("; ");
-    while text.len() > MAX_CALL && calls.len() > 2 {
-        calls.pop();
-        text = calls.join("; ");
+    // `next; next` is two steps; the same word twice in a row is otherwise said once
+    calls.dedup_by(|a, b| a == b && !(a.starts_with("next") || a.starts_with("step")));
+    fit(&mut calls).then(|| calls.join("; "))
+}
+
+/// Keeps the call within `MAX_CMDS` commands and `MAX_CALL` characters without losing the `cont` that runs the
+/// program: what follows it goes first, then the last of the breakpoints before it. False when `run` and `cont`
+/// alone do not fit.
+fn fit(calls: &mut Vec<String>) -> bool {
+    let too_big = |c: &[String]| c.len() > MAX_CMDS || c.join("; ").len() > MAX_CALL;
+    let mut cont = calls.iter().position(|c| c == "cont");
+    while too_big(calls) {
+        match cont {
+            Some(at) if calls.len() > at + 1 => {
+                calls.pop();
+            }
+            Some(at) if at >= 2 => {
+                calls.remove(at - 1);
+                cont = Some(at - 1);
+            }
+            None if calls.len() > 2 => {
+                calls.pop();
+            }
+            _ => return false,
+        }
     }
-    Some(text)
+    true
 }
 
 /// A gdb script, as the debug commands that do it.
@@ -327,11 +396,17 @@ struct Plan {
     run_at: Option<usize>,
     /// The program's arguments and input when the script gave them (`run ARGS`, `set args`).
     args: Option<(Vec<String>, Option<Input>)>,
+    /// The breakpoints, watches and catches the script set (outside a `commands` block), and how many the call keeps.
+    stops_wanted: usize,
+    stops_kept: usize,
 }
 
 /// A translated command, kept when the call can carry it; in a `commands` block it waits for the stop.
 fn say(plan: &mut Plan, hit: bool, c: String) {
-    if plain(&c) && c.len() <= 160 {
+    let stop = !hit && matches!(c.split(' ').next(), Some("break" | "tbreak" | "watch" | "catch"));
+    plan.stops_wanted += stop as usize;
+    if plain_cmd(&c) && c.len() <= 160 {
+        plan.stops_kept += stop as usize;
         if hit { &mut plan.hit } else { &mut plan.cmds }.push(c);
     }
 }
@@ -389,8 +464,9 @@ fn translate(lines: &[String], dir: &Path) -> Plan {
             }
             "break" | "b" | "br" | "brea" | "tbreak" | "tb" | "hbreak" | "hb" | "thbreak" | "thb" => {
                 let verb = if name.starts_with('t') { "tbreak" } else { "break" };
-                if let Some(spec) = place(rest) {
-                    say(&mut plan, in_commands, format!("{verb} {spec}"));
+                match place(rest) {
+                    Some(spec) => say(&mut plan, in_commands, format!("{verb} {spec}")),
+                    None => plan.stops_wanted += !in_commands as usize,
                 }
             }
             "continue" | "c" | "cont" | "fg" => say(&mut plan, in_commands, "cont".into()),
@@ -444,11 +520,10 @@ fn translate(lines: &[String], dir: &Path) -> Plan {
             "watch" | "rwatch" | "awatch" if !rest.is_empty() => {
                 say(&mut plan, in_commands, format!("watch {}", expr(rest)))
             }
-            "catch" => {
-                if let Some(r) = rest.strip_prefix("syscall").map(str::trim).filter(|r| !r.is_empty()) {
-                    say(&mut plan, in_commands, format!("catch syscall {r}"));
-                }
-            }
+            "catch" => match rest.strip_prefix("syscall").map(str::trim).filter(|r| !r.is_empty()) {
+                Some(r) => say(&mut plan, in_commands, format!("catch syscall {r}")),
+                None => plan.stops_wanted += !in_commands as usize,
+            },
             "set" => {
                 if let Some(r) = rest.strip_prefix("args") {
                     plan.args = args_of(r.trim(), dir).or(plan.args.take());
@@ -521,7 +596,7 @@ fn examine(fmt: &str, rest: &str) -> Option<String> {
         Some('g') => 8,
         _ => 4,
     };
-    Some(format!("mem {addr} {}", (count * size).min(4096)))
+    Some(format!("mem {addr} {}", count.saturating_mul(size).min(4096)))
 }
 
 /// `strace`/`ltrace` of a program of the project as the debugger's own: the trace on at the entry, the run, the log.
@@ -587,7 +662,7 @@ pub fn told(messages: &[Message]) -> Told {
             for text in content.iter().filter_map(Part::as_text) {
                 t.gdb |= text.contains(HEAD_GDB) || text.contains(HEAD);
                 t.trace |= text.contains(HEAD_TRACE);
-                t.fault |= text.contains(HEAD);
+                t.fault |= text.contains(HEAD_FAULT) || text.contains(HEAD);
             }
         }
     }
@@ -656,7 +731,7 @@ mod tests {
         assert_eq!(kind, Kind::Fault);
         assert_eq!(
             l,
-            r#"[nexo: the debug tool answers this in one call: debug {"command": "run ./paint <<< \"1 -1 #\"; cont"} stops at the fault (exit 139) with file:line, cause and locals]"#
+            r#"[nexo: the debug tool runs this to the fault in one call: debug {"command": "run ./paint <<< \"1 -1 #\"; cont"} stops at the fault (exit 139) with file:line, cause and locals]"#
         );
         assert!(fresh("./paint big < in.txt", SEGV, d.path())
             .unwrap()
@@ -741,6 +816,72 @@ mod tests {
     }
 
     #[test]
+    fn registers_stay_and_gdb_variables_the_debugger_does_not_have_are_left_out() {
+        let d = dir_with_prog();
+        let call = |c: &str| call_of(&fresh(c, "", d.path()).unwrap_or_else(|| panic!("no line for {c}")).1);
+        // every register spelling of the debugger passes
+        assert_eq!(
+            call("gdb -batch -ex 'break main' -ex run -ex 'p $rax + $r8d' -ex 'x/2gx $sp' -ex 'p $eflags' -ex 'x/3i $pc' ./paint"),
+            "run ./paint; break main; cont; print $rax + $r8d; mem $rsp 16; print $eflags; dis $rip 3"
+        );
+        // a convenience variable, gdb's own `$_`, a history value: no word for them there, the line is dropped
+        assert_eq!(
+            call("gdb -batch -ex 'break main' -ex 'set $n = 3' -ex run -ex 'p $n' -ex 'p $_exitcode' -ex 'p $1' -ex 'p $rdi' ./paint"),
+            "run ./paint; break main; cont; print $rdi"
+        );
+        for r in ["rax", "RDI", "r8", "r15d", "r9w", "r10b", "sil", "eflags", "fs_base", "ax", "pc"] {
+            assert!(register(r), "{r}");
+        }
+        for r in ["", "n", "_", "_exitcode", "1", "r16", "r7", "r8dd", "rxx", "eip", "xmm0"] {
+            assert!(!register(r), "{r}");
+        }
+        assert!(plain_cmd("print $rax") && !plain_cmd("print $") && !plain_cmd("print \"a\"") && !plain_cmd("p $n"));
+    }
+
+    #[test]
+    fn a_script_whose_every_stop_was_left_out_gets_no_line() {
+        let d = dir_with_prog();
+        // the only breakpoint is on something the debugger cannot place: `run; cont` would stop nowhere it did
+        assert_eq!(fresh("gdb -batch -ex 'break foo thread 2' -ex run -ex bt ./paint", "", d.path()), None);
+        assert_eq!(fresh("gdb -batch -ex 'catch throw' -ex run ./paint", "", d.path()), None);
+        assert_eq!(fresh("gdb -batch -ex 'watch $n' -ex run ./paint", "", d.path()), None);
+        // one kept stop is enough, and a script with none asked for none
+        let call = |c: &str| call_of(&fresh(c, "", d.path()).unwrap_or_else(|| panic!("no line for {c}")).1);
+        assert_eq!(
+            call("gdb -batch -ex 'catch throw' -ex 'break main' -ex run ./paint"),
+            "run ./paint; break main; cont"
+        );
+        assert_eq!(call("gdb -batch -ex run -ex bt ./paint"), "run ./paint; cont; bt");
+    }
+
+    #[test]
+    fn a_long_script_is_cut_but_never_loses_the_cont_and_two_steps_stay_two() {
+        let d = dir_with_prog();
+        let call = |c: &str| call_of(&fresh(c, "", d.path()).unwrap_or_else(|| panic!("no line for {c}")).1);
+        let breaks: String = (0..14).map(|i| format!("-ex 'break f{i}' ")).collect();
+        let c = call(&format!("gdb -batch {breaks}-ex run -ex bt ./paint"));
+        let words: Vec<&str> = c.split("; ").collect();
+        assert!(words.len() <= MAX_CMDS && words.contains(&"cont") && words[0] == "run ./paint", "{c}");
+        assert!(c.contains("break f0") && !c.contains("break f13"), "{c}");
+        // long places: the character bound cuts the same way
+        let long = "x".repeat(150);
+        let breaks: String = (0..6).map(|i| format!("-ex 'break {long}{i}' ")).collect();
+        let c = call(&format!("gdb -batch {breaks}-ex run -ex bt ./paint"));
+        assert!(c.len() <= MAX_CALL && c.contains("; cont"), "{c}");
+        assert_eq!(
+            call("gdb -batch -ex 'break main' -ex run -ex next -ex next -ex bt ./paint"),
+            "run ./paint; break main; cont; next; next; bt"
+        );
+    }
+
+    #[test]
+    fn x_with_a_huge_count_does_not_overflow() {
+        assert_eq!(examine("18446744073709551615g", "$rsp"), Some("mem $rsp 4096".to_string()));
+        assert_eq!(examine("99999999999999999999g", "$rsp"), None);
+        assert_eq!(examine("2w", "$rsp"), Some("mem $rsp 8".to_string()));
+    }
+
+    #[test]
     fn gdb_with_a_core_file_asks_for_the_core_command() {
         let d = dir_with_prog();
         std::fs::write(d.path().join("core.123"), b"core").unwrap();
@@ -821,12 +962,20 @@ mod tests {
             Part::ToolResult { content, .. } => content.iter().filter_map(Part::as_text).collect::<String>(),
             _ => String::new(),
         };
-        assert!(text(&out[0]).contains(HEAD) && text(&out[1]).contains(HEAD_GDB) && text(&out[2]).contains(HEAD_TRACE));
+        assert!(
+            text(&out[0]).contains(HEAD_FAULT)
+                && text(&out[1]).contains(HEAD_GDB)
+                && text(&out[2]).contains(HEAD_TRACE)
+        );
         assert_eq!(text(&out[3]), "gdb again", "one line per kind");
         assert_eq!(told(&[Message::tool_results(out)]), Told { gdb: true, trace: true, fault: true });
         let again = round(&mut now, &calls, res, d.path());
         assert_eq!(text(&again[1]), "gdb out");
         assert_eq!(told(&[Message::tool_results(again)]), Told::default());
+        // a fault line is a fault and nothing else: a later gdb still earns its line
+        let fault =
+            Message::tool_results(vec![Part::tool_result("x", format!("out\n\n{HEAD_FAULT} debug {{}}]"), false)]);
+        assert_eq!(told(&[fault]), Told { gdb: false, trace: false, fault: true });
         // a line of a session saved before the kinds covers a fault and a gdb
         let old = Message::tool_results(vec![Part::tool_result("x", format!("out\n\n{HEAD} debug {{}}]"), false)]);
         assert_eq!(told(&[old]), Told { gdb: true, trace: false, fault: true });

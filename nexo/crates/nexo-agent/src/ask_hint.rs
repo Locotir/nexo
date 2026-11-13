@@ -5,7 +5,8 @@
 //! request that is not about a compiled program.
 //!
 //! The words are looked at as text and a name is only opened as bytes (4096 at most, regular files only): nothing is
-//! run, loaded or expanded.
+//! run, loaded or expanded. The trigger words are English and Spanish, with or without accents, in any case, and a
+//! name typed in other case than the file's (`C-LCRYPT` for `c-lcrypt`) finds the file in the session's folder.
 
 use std::path::Path;
 
@@ -14,11 +15,14 @@ use nexo_core::message::{Message, Role};
 use crate::hint_cmd::{self, Offer};
 
 /// Starts the line, so `told` finds it in a kept history.
-pub const HEAD: &str = "compiled programs, read and debugged with nexo's own tools:";
+/// It names no tool: the line may offer `bin` alone, and then it must not speak of a debugger.
+pub const HEAD: &str = "compiled programs, with nexo's own tools:";
 
-/// The most words of a message looked at as names, and the most files asked about.
+/// The most words of a message looked at as names, the most files asked about, and the most entries of the
+/// session's folder read to match a name typed in other case.
 const WORDS: usize = 120;
 const STATS: usize = 40;
+const ENTRIES: usize = 2000;
 
 /// Words that ask for reverse engineering by themselves.
 const RE_WORDS: [&str; 12] = [
@@ -36,9 +40,34 @@ const RE_WORDS: [&str; 12] = [
     "decompiler",
 ];
 /// Verbs that ask for it with a noun of a compiled program.
-const DEBUG_WORDS: [&str; 8] =
-    ["debug", "debugging", "debugger", "breakpoint", "backtrace", "segfault", "crash", "crashes"];
-const PROGRAM_WORDS: [&str; 8] = ["binary", "binaries", "executable", "elf", "exe", "compiled", "dll", "so"];
+const DEBUG_WORDS: [&str; 12] = [
+    "debug",
+    "debugging",
+    "debugger",
+    "breakpoint",
+    "backtrace",
+    "segfault",
+    "crash",
+    "crashes",
+    "depurar",
+    "depura",
+    "depurando",
+    "depurador",
+];
+const PROGRAM_WORDS: [&str; 12] = [
+    "binary",
+    "binaries",
+    "executable",
+    "elf",
+    "exe",
+    "compiled",
+    "dll",
+    "binario",
+    "binarios",
+    "ejecutable",
+    "ejecutables",
+    "compilado",
+];
 
 /// The line for the person's message `text` (their own words, never what nexo added), or `None` when it is not
 /// about a compiled program. `offer` says which tools can take the call.
@@ -47,70 +76,98 @@ pub fn line(text: &str, cwd: &Path, offer: Offer) -> Option<String> {
     if file.is_none() && !asks(text) {
         return None;
     }
-    let f = file.as_deref().unwrap_or("<file>");
+    // no file named: the placeholder is written bare, as the model fills it in
+    let (f, shell_f) = match file.as_deref() {
+        Some(f) => (hint_cmd::quoted(f), hint_cmd::shell_quoted(f)),
+        None => ("<file>".to_string(), "<file>".to_string()),
+    };
     let bin = if offer.bin {
-        format!(
-            "{} reads one without running it",
-            hint_cmd::tool_call("bin", &format!("overview {}", hint_cmd::quoted(f)))
-        )
+        format!("{} reads one without running it", hint_cmd::tool_call("bin", &format!("overview {f}")))
     } else {
-        format!("nexo bin overview {} reads one without running it", hint_cmd::shell_quoted(f))
+        format!("nexo bin overview {shell_f} reads one without running it")
     };
     if !offer.debug {
         return Some(format!(
             "{HEAD} {bin}, then funcs, fn, decomp, xref, strings; use that before objdump, strings or xxd."
         ));
     }
-    let run = hint_cmd::tool_call("debug", &format!("run {}; cont", hint_cmd::quoted(f)));
+    let run = hint_cmd::tool_call("debug", &format!("run {f}; cont"));
     Some(format!(
         "{HEAD} {bin}; {run} runs it under a debugger (break, bt, regs, mem, strace); use them before gdb, objdump or strings."
     ))
 }
 
-/// The first word of `text` that is a compiled program the kit opens, as the person wrote it.
-fn named(text: &str, cwd: &Path) -> Option<String> {
-    let mut stats = 0;
-    for raw in text.split_whitespace().take(WORDS) {
-        let w = raw
-            .trim_matches(|c: char| {
+/// The words of `text` that can name a file, as the person wrote them: no option, `@` mention, `~`, URL or glob.
+fn name_words(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .take(WORDS)
+        // a word with both kinds of quote is a shell trick, not a name
+        .filter(|raw| !(raw.contains('"') && raw.contains('\'')))
+        .map(|raw| {
+            raw.trim_matches(|c: char| {
                 matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | ':' | '!' | '?')
             })
-            .trim_end_matches('.');
-        if w.is_empty()
-            || w.len() > 300
-            || w.starts_with(['@', '-', '~'])
-            || w.contains("://")
-            || w.contains(['*', '"', '\\'])
-        {
-            continue;
-        }
-        stats += 1;
-        if stats > STATS {
-            break;
-        }
-        if hint_cmd::reads(cwd, w) {
-            return Some(w.to_string());
-        }
+            .trim_end_matches('.')
+        })
+        .filter(|w| {
+            !(w.is_empty()
+                || w.len() > 300
+                || w.starts_with(['@', '-', '~'])
+                || w.contains("://")
+                || w.contains(['*', '"', '\\']))
+        })
+        .take(STATS)
+        .collect()
+}
+
+/// The first word of `text` that is a compiled program the kit opens, as the person wrote it; failing that, the
+/// file of the session's folder a bare word names in other case (`C-LCRYPT` for `c-lcrypt`).
+fn named(text: &str, cwd: &Path) -> Option<String> {
+    let words = name_words(text);
+    if let Some(w) = words.iter().find(|w| hint_cmd::reads(cwd, w)) {
+        return Some((*w).to_string());
     }
-    None
+    let bare: Vec<&str> = words.iter().copied().filter(|w| !w.contains(['/', '\\'])).collect();
+    if bare.is_empty() {
+        return None;
+    }
+    let names: Vec<String> =
+        std::fs::read_dir(cwd).ok()?.flatten().take(ENTRIES).filter_map(|e| e.file_name().into_string().ok()).collect();
+    bare.iter().find_map(|w| {
+        names.iter().find(|n| n.as_str() != *w && n.eq_ignore_ascii_case(w) && hint_cmd::reads(cwd, n)).cloned()
+    })
+}
+
+/// A letter as the trigger words spell it: lower case, no Spanish accent.
+fn fold(c: char) -> char {
+    match c.to_lowercase().next().unwrap_or(c) {
+        'á' => 'a',
+        'é' => 'e',
+        'í' => 'i',
+        'ó' => 'o',
+        'ú' | 'ü' => 'u',
+        'ñ' => 'n',
+        c => c,
+    }
 }
 
 /// Whether the words ask for reverse engineering or debugging a compiled program.
 fn asks(text: &str) -> bool {
-    let words: Vec<String> = text
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-        .filter(|w| !w.is_empty())
-        .take(400)
-        .map(str::to_ascii_lowercase)
-        .collect();
-    let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
-    let reverse = words.windows(2).any(|p| p[0] == "reverse" && p[1].starts_with("engineer"))
-        || words.iter().any(|w| {
-            w.replace('-', "").starts_with("reverseengineer")
-                || w == "reversing"
-                || w.starts_with("disassembl")
-                || w.starts_with("decompil")
-        });
+    let folded: String = text.chars().map(fold).collect();
+    let words: Vec<&str> =
+        folded.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).filter(|w| !w.is_empty()).take(400).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let reverse = words.windows(2).any(|p| {
+        (p[0] == "reverse" && p[1].starts_with("engineer"))
+            || (p[0] == "ingenieria" && matches!(p[1], "inversa" | "reversa"))
+    }) || words.iter().any(|w| {
+        w.replace('-', "").starts_with("reverseengineer")
+            || *w == "reversing"
+            || w.starts_with("disassembl")
+            || w.starts_with("decompil")
+            || w.starts_with("desensambl")
+            || w.starts_with("descompil")
+    });
     reverse || has(&RE_WORDS) || (has(&DEBUG_WORDS) && has(&PROGRAM_WORDS))
 }
 
@@ -148,6 +205,20 @@ mod tests {
     }
 
     #[test]
+    fn a_name_typed_in_other_case_finds_the_file_of_the_folder() {
+        let d = tempfile::tempdir().unwrap();
+        exe_in(d.path(), "c-lcrypt");
+        // the file as it is, not as it was typed, so the call works where names are case-sensitive
+        let l = line("prueba nexo contra mi programa opensource C-LCRYPT", d.path(), BOTH).unwrap();
+        assert!(l.contains("overview c-lcrypt\"") && l.contains("run c-lcrypt; cont"), "{l}");
+        assert_eq!(named("C-LCRYPT.", d.path()), Some("c-lcrypt".to_string()));
+        // a path is taken as written; a word that is no file of the folder, or a text file, is nothing
+        assert_eq!(named("./C-LCRYPT", d.path()), None);
+        std::fs::write(d.path().join("notes.txt"), "hello\n").unwrap();
+        assert_eq!(named("NOTES.txt Other", d.path()), None);
+    }
+
+    #[test]
     fn the_offer_decides_the_form_and_the_debug_half() {
         let d = tempfile::tempdir().unwrap();
         exe_in(d.path(), "p");
@@ -169,6 +240,12 @@ mod tests {
             "run objdump",
             "debug the executable, it crashes",
             "why does my compiled program segfault? debug it",
+            "Debug the EXECUTABLE, it crashes",
+            "quiero hacer ingeniería inversa de este binario",
+            "desensambla la función main",
+            "descompila el ejecutable",
+            "depura el binario, se cae",
+            "Depurar el programa compilado",
         ] {
             let l = line(t, d.path(), BOTH).unwrap_or_else(|| panic!("no line for {t:?}"));
             assert!(l.contains("overview <file>") && l.contains("run <file>; cont"), "{t}: {l}");
@@ -179,6 +256,9 @@ mod tests {
             "debug this python script",
             "fix the crash in the parser",
             "the program prints a wrong total",
+            "fix the crash so the tests pass",
+            "debug it so it works",
+            "depura esta función de python",
             "open notes.txt and read it",
             "see https://example.com/tool.exe",
             "",

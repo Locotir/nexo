@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use clap::error::ErrorKind;
 use clap::Parser;
+use nexo_core::tool::Check;
 use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
 
@@ -111,10 +112,22 @@ impl Tool for Bin {
                 "refused: `{what}` saves names, notes, types or a file. Run it in the shell as `nexo bin {what} ...`, where it asks."
             ));
         }
-        // the file is relative to the session's folder, as in the shell
+        // the file is relative to the session's folder, as in the shell; and the rules that cover `read` cover it:
+        // they see this call's `command` and not the files named inside it, so each one is asked here, as a `read`
         for f in op.files_mut() {
             if f.is_relative() {
                 *f = ctx.cwd.join(&*f);
+            }
+            let Some(check) = &ctx.check else { continue };
+            let path = f.to_string_lossy().to_string();
+            match check("read", ToolKind::Read, &json!({ "path": path })) {
+                Check::Allow => {}
+                Check::Deny => return ToolOutput::error(format!("bin: a permission rule denies reading {path}")),
+                Check::Ask => {
+                    return ToolOutput::error(format!(
+                        "bin: reading {path} needs the person's OK under the permission rules, so it was not read"
+                    ))
+                }
             }
         }
         match tokio::task::spawn_blocking(move || crate::bin_cmd::execute(&b)).await {
@@ -194,15 +207,83 @@ mod tests {
         std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
         for c in [
             "name prog 0x1000 mine",
+            "name prog 0x1000 --clear",
             "note prog 0x1000 a note",
+            "proto prog main 'int main(void)'",
+            "struct prog Item 0:i32:id",
+            "var prog main a1 count",
             "crypto prog --save",
             "patch prog --at 0x1000 --nop 1 --out prog2",
             "sigs",
+            "sigs --all --out s.sig",
+            "nexo bin name prog 0x1000 mine",
         ] {
             let o = call(dir.path(), c).await;
             assert!(o.is_error && o.content.contains("refused"), "{c}: {}", o.content);
         }
-        assert!(!dir.path().join("prog2").exists());
+        assert!(!dir.path().join("prog2").exists() && !dir.path().join("s.sig").exists());
+    }
+
+    /// The rules of a session: a real policy, asked the way the turn asks it.
+    fn rules(deny: &[&str], cwd: &std::path::Path) -> ToolContext {
+        let policy = nexo_agent::Policy { deny: deny.iter().map(|d| d.to_string()).collect(), ..Default::default() };
+        let rules_cwd = cwd.to_path_buf();
+        let mut ctx = ToolContext::new(cwd.to_path_buf());
+        ctx.check = Some(std::sync::Arc::new(move |tool: &str, kind, args: &Value| {
+            match policy.decide(tool, kind, args, &rules_cwd) {
+                nexo_agent::Decision::Allow => Check::Allow,
+                nexo_agent::Decision::Ask => Check::Ask,
+                nexo_agent::Decision::Deny(_) => Check::Deny,
+            }
+        }));
+        ctx
+    }
+
+    #[tokio::test]
+    async fn the_rules_that_cover_read_cover_the_files_named_inside_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("locked")).unwrap();
+        std::fs::copy(this_binary(), dir.path().join("locked").join("prog")).unwrap();
+        std::fs::copy(this_binary(), dir.path().join("open")).unwrap();
+        let ctx = rules(&["read(**/locked/*)"], dir.path());
+        // relative, absolute, in the shell form, and as the second file of a diff: all the same file to the rules
+        let abs = dir.path().join("locked/prog");
+        for c in [
+            "info locked/prog".to_string(),
+            format!("info {}", abs.display()),
+            "nexo bin overview ./locked/prog".to_string(),
+            "diff open locked/prog".to_string(),
+            "diff locked/prog open".to_string(),
+        ] {
+            let o = Bin.run(json!({ "command": c }), &ctx).await;
+            assert!(o.is_error && o.content.contains("denies reading"), "{c}: {}", o.content);
+        }
+        // a file the rules do not name is read, with the same context
+        let o = Bin.run(json!({"command": "info open"}), &ctx).await;
+        assert!(!o.is_error, "{}", o.content);
+        // no rules at all (no check): read as before
+        let o = call(dir.path(), "info locked/prog").await;
+        assert!(!o.is_error, "{}", o.content);
+    }
+
+    #[tokio::test]
+    async fn a_file_the_rules_ask_about_is_not_read_without_the_person() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
+        let mut ctx = ToolContext::new(dir.path().to_path_buf());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        ctx.check = Some(std::sync::Arc::new(move |tool: &str, kind, args: &Value| {
+            log.lock().unwrap().push((tool.to_string(), kind, args["path"].as_str().unwrap().to_string()));
+            Check::Ask
+        }));
+        let o = Bin.run(json!({"command": "info prog"}), &ctx).await;
+        assert!(o.is_error && o.content.contains("needs the person's OK"), "{}", o.content);
+        let asked = seen.lock().unwrap().clone();
+        assert_eq!(
+            asked,
+            [("read".to_string(), ToolKind::Read, dir.path().join("prog").to_string_lossy().to_string())]
+        );
     }
 
     #[tokio::test]

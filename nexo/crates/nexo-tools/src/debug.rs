@@ -151,7 +151,7 @@ impl Tool for Debug {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Run and debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals. Takes gdb-style commands (break, bt, regs, mem, strace). `help`",
+            description: "Run and debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals. Own commands, not gdb's set/$var: break, bt, regs, mem, strace. `help`",
             params: &[],
         })
     }
@@ -309,8 +309,8 @@ mod tests {
         )
         .unwrap();
         eprintln!("debug tool as offered: {} chars: {sent}", sent.len());
-        // 229 chars before the text said it takes gdb-style commands and replaces gdb (+86 for that, nothing else)
-        assert!(sent.len() <= 316, "{} chars: {sent}", sent.len());
+        // 229 chars before the text said it replaces gdb and takes its own commands, not gdb's (+93 for that, nothing else)
+        assert!(sent.len() <= 323, "{} chars: {sent}", sent.len());
         // the full text keeps every argument, and the flags the short one leaves out parse at the head of a command
         let full = set.specs_for(true).len() + Debug::new().spec().parameters["properties"].as_object().unwrap().len();
         assert!(full >= 5);

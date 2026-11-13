@@ -124,6 +124,8 @@ pub fn ran(text: &str) -> bool {
 enum Redir {
     None,
     Out,
+    /// A file for a stream other than stdout (`2> err.txt`): set aside, it is not the command's output.
+    Other,
     In,
     Here,
 }
@@ -263,6 +265,7 @@ impl Scan {
         self.has = false;
         match std::mem::replace(&mut self.redir, Redir::None) {
             Redir::Out => self.cur.output = Some(w),
+            Redir::Other => {}
             Redir::In => self.cur.input = Some(Input::File(w)),
             Redir::Here => self.cur.input = Some(Input::Text(w)),
             Redir::None => {
@@ -273,18 +276,22 @@ impl Scan {
         }
     }
 
-    /// The word before a redirection that is only a stream number (`2>`): not an argument.
-    fn stream_number(&mut self) {
+    /// The word before a redirection that is only a stream number (`2>`): not an argument. Says whether it named a
+    /// stream other than stdout (`2`, not `1`).
+    fn stream_number(&mut self) -> bool {
         if self.has && !self.word.is_empty() && self.word.chars().all(|c| c.is_ascii_digit()) {
+            let other = self.word != "1";
             self.word.clear();
             self.has = false;
+            other
         } else {
             self.word_end();
+            false
         }
     }
 
     fn redirect_out(&mut self) -> Option<()> {
-        self.stream_number();
+        let other = self.stream_number();
         match self.peek() {
             Some('(') => return None,
             Some('>' | '|') => self.i += 1,
@@ -300,7 +307,7 @@ impl Scan {
             }
             _ => {}
         }
-        self.redir = Redir::Out;
+        self.redir = if other { Redir::Other } else { Redir::Out };
         Some(())
     }
 
@@ -470,7 +477,8 @@ fn strip_wrappers(mut w: Vec<String>) -> Vec<String> {
             while let Some(o) = rest.get(n).filter(|o| o.starts_with('-') && o.len() > 1) {
                 n += 1 + valued.contains(&o.as_str()) as usize;
             }
-            n
+            // a valued option at the end of the line (`sudo -u`) has no value to skip
+            n.min(rest.len())
         };
         let skip = match program(first).as_str() {
             "env" => rest.iter().take_while(|a| a.starts_with('-') || is_assignment(a)).count(),
@@ -486,7 +494,7 @@ fn strip_wrappers(mut w: Vec<String>) -> Vec<String> {
             }
             _ => return w,
         };
-        w.drain(..1 + skip);
+        w.drain(..(1 + skip).min(w.len()));
         if w.first().is_some_and(|x| is_assignment(x)) {
             w.remove(0);
         }
@@ -580,6 +588,17 @@ mod tests {
         // `command -v` and `which` are not a run
         assert_eq!(words("command -v gdb"), [w(&["command", "-v", "gdb"])]);
         assert_eq!(words("which gdb"), [w(&["which", "gdb"])]);
+    }
+
+    #[test]
+    fn a_wrapper_option_with_no_value_left_is_read_without_panicking() {
+        // the line may be cut anywhere: `sudo -u` at the end has no user to skip
+        for c in ["sudo -u", "sudo -u; ls", "timeout -s", "timeout -s KILL", "nice -n", "env -", "sudo -n -u -g"] {
+            let _ = at(c);
+        }
+        assert_eq!(strip_wrappers(w(&["sudo", "-u"])), Vec::<String>::new());
+        assert_eq!(strip_wrappers(w(&["timeout", "-s"])), Vec::<String>::new());
+        assert_eq!(words("sudo -u me gdb p; sudo -u")[0], w(&["gdb", "p"]));
     }
 
     #[test]

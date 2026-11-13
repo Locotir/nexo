@@ -146,7 +146,7 @@ async fn a_message_that_names_a_compiled_program_says_where_the_kit_is_once_and_
     }
     r.stop().await;
     let reqs = client.requests();
-    let head = "compiled programs, read and debugged with nexo's own tools:";
+    let head = "compiled programs, with nexo's own tools:";
     let said = |req: &ModelRequest| user_texts(req).iter().filter(|t| t.contains(head)).count();
     // the first message is about a readme, the second names the file, the third finds the line already there
     assert_eq!(reqs.iter().map(said).collect::<Vec<_>>(), [0, 1, 1]);
