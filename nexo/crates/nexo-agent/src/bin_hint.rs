@@ -425,7 +425,7 @@ mod tests {
         assert!(wanted(&format!("objdump -d {abs} > /tmp/dump.txt 2>/dev/null"), dir.path()));
         // `cd` first: the file is found from there, and the call carries the whole path
         let l = line("cd tests && objdump -d c-lcrypt | head", dir.path(), TOOL).unwrap();
-        assert!(l.contains(&format!("overview {}", hint_cmd::quoted(&abs))), "{l}");
+        assert!(l.contains(&hint_cmd::tool_call("bin", &format!("overview {}", hint_cmd::quoted(&abs)))), "{l}");
         assert!(!wanted("objdump -d c-lcrypt", dir.path()), "from here the name is nothing");
         // wrappers, variables, a script run by the shell
         assert!(wanted(&format!("sudo -n nm {abs}"), dir.path()));

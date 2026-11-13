@@ -750,13 +750,19 @@ mod tests {
         assert!(fresh("./paint big > out.txt 2>&1", SEGV, d.path()).unwrap().1.contains(r#""run ./paint big; cont""#));
         let abs = d.path().join("paint");
         let l = fresh(&format!("timeout 5 {}", slashed(&abs)), SEGV, d.path()).unwrap().1;
-        assert!(l.contains(&format!("run {}; cont", hint_cmd::quoted(&slashed(&abs)))), "{l}");
+        assert!(
+            l.contains(&hint_cmd::tool_call("debug", &format!("run {}; cont", hint_cmd::quoted(&slashed(&abs))))),
+            "{l}"
+        );
         let sub = d.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::copy(abs, sub.join("tool")).unwrap();
         let l = fresh("cd sub && ./tool", SEGV, d.path()).unwrap().1;
         assert!(
-            l.contains(&format!("run {}; cont", hint_cmd::quoted(&format!("{}/sub/./tool", slashed(d.path()))))),
+            l.contains(&hint_cmd::tool_call(
+                "debug",
+                &format!("run {}; cont", hint_cmd::quoted(&format!("{}/sub/./tool", slashed(d.path()))))
+            )),
             "{l}"
         );
     }
@@ -765,6 +771,7 @@ mod tests {
     fn the_shapes_of_the_paste_one_script_in_a_heredoc_and_gdb_on_an_absolute_path() {
         let d = dir_with_prog();
         let abs = slashed(d.path().join("paint"));
+        let shown = hint_cmd::quoted(&abs);
         let command = format!(
             "cat > g1.gdb <<'EOF'\nset pagination off\nbreak *(_ZN6LCRYPT7encryptERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEi+0x170)\ncommands\nsilent\nx/s $rdi\ninfo registers rax\ncontinue\nend\nrun -e t.bin -p 0 -P test123\nEOF\ngdb -q -batch -x g1.gdb {abs} 2>&1 | tail -40"
         );
@@ -774,13 +781,13 @@ mod tests {
         assert_eq!(
             call_of(&l),
             format!(
-                "run {abs} -e t.bin -p 0 -P test123; break *_ZN6LCRYPT7encryptERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEi+0x170; cont; mem $rdi --as str; regs rax"
+                "run {shown} -e t.bin -p 0 -P test123; break *_ZN6LCRYPT7encryptERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEi+0x170; cont; mem $rdi --as str; regs rax"
             )
         );
         // the same script from a file written by an earlier command
         std::fs::write(d.path().join("g2.gdb"), "break main\nrun 1 2\nbt\ninfo locals\n").unwrap();
         let l = fresh(&format!("gdb -batch -x g2.gdb {abs}"), "", d.path()).unwrap().1;
-        assert_eq!(call_of(&l), format!("run {abs} 1 2; break main; cont; bt; locals"));
+        assert_eq!(call_of(&l), format!("run {shown} 1 2; break main; cont; bt; locals"));
     }
 
     #[test]
