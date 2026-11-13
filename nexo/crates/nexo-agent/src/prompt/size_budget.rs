@@ -12,7 +12,8 @@ fn tool_text_chars() -> usize {
 }
 
 /// 10135 characters (about 2500 tokens) when this budget was set, after the text said twice was taken out
-/// (the budget before it was 12150); it may grow 5% and no more (10650).
+/// (the budget before it was 12150); it may grow 5% and no more (10650). The `browser` tool then added its
+/// 1989 (12124 in all; a request carries only its short text, as it is a rare tool): 12640.
 /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
 /// model already knows about shells and search tools, and a parameter gets a description only for what its
 /// name and the tool description do not say.
@@ -20,7 +21,7 @@ fn tool_text_chars() -> usize {
 fn the_tool_text_stays_within_its_budget() {
     let n = tool_text_chars();
     // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
-    let budget = if cfg!(windows) { 10_700 } else { 10_650 };
+    let budget = if cfg!(windows) { 12_690 } else { 12_640 };
     assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
 }
 
@@ -127,9 +128,11 @@ fn a_small_window_gets_the_compact_text_within_its_caps() {
         let b = builtin_part_for(&tools, None, Some(w), false);
         assert!(b.len() <= 2_600, "{w}: the compact built-in part takes {} characters", b.len());
         assert!(!b.contains("How to write code:") && !b.contains("You can do:"), "{b}");
-        let t = tool_definitions_for(&tools.compact_specs(), Some(w));
+        // the tools this window is not offered (`browser` among them) are not in its request
+        let offered: Vec<_> = tools.compact_specs().into_iter().filter(|s| !left_out(Some(w), &s.name)).collect();
+        let t = tool_definitions_for(&offered, Some(w));
         assert!(t.len() <= 6_000, "{w}: the compact tools take {} characters", t.len());
-        let json = serde_json::to_string(&tools.compact_specs()).unwrap();
+        let json = serde_json::to_string(&offered).unwrap();
         assert!(json.len() <= 6_000, "{w}: the compact tool JSON takes {} characters", json.len());
     }
     assert!(BUILT_IN_COMPACT.len() <= 2_400, "{}", BUILT_IN_COMPACT.len());

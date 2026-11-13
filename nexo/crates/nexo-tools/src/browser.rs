@@ -241,42 +241,34 @@ impl Tool for BrowserTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "browser".into(),
-            description: "Drive a real web browser (Chrome, Chromium or Edge) to open pages, log in, fill forms and click, \
-                          for what `web_fetch` cannot do (JavaScript pages, forms, buttons). One tool, one `action` per call; \
-                          the browser starts on the first call and stays open until `close`.\n\
-                          How it works: every action that changes the page (navigate, click, fill, fill_batch, select, \
-                          set_checkbox, press, scroll, wait) answers with the new page as a SNAPSHOT: one line per actionable \
-                          element, `e3 button \"Submit\"`, with a stable ref (e1, e2, ...). Read it, then act on the refs; you \
-                          rarely need `snapshot` itself. A `target` is a ref (`e3`, best), a CSS selector (`#email`), or the \
-                          visible text or label (`Sign in`). Refs change after the page does: use the ones from the latest snapshot.\n\
-                          To fill a form, use `fill_batch` with ALL its fields in ONE call, then `click` the submit button. \
-                          Actions: navigate{url}, snapshot, read_text{selector?}, click{target}, fill{target,value}, \
-                          fill_batch{fields:[{target,value}]}, select{target,option}, set_checkbox{target,checked}, \
-                          press{keys: \"Enter\" or \"Tab Tab Enter\"}, hover{target}, scroll{to: up|down|top|bottom|target}, \
-                          wait{selector?,ms?}, screenshot{full?}, close. Use read_text to read the page's content and \
-                          screenshot to look at it. Never use it to get around a CAPTCHA or a bot check: stop and tell the person."
+            description: "Drive a real browser (Chrome, Chromium or Edge) for what `web_fetch` cannot do: JavaScript pages, \
+                          logins, forms, buttons. One `action` per call; the browser starts on the first call and stays open until `close`.\n\
+                          Every action that changes the page returns the new page as a snapshot: one line per element, \
+                          `e3 button \"Submit\"`, with a stable ref (e1, e2, ...). Act on the refs of the latest snapshot. A `target` \
+                          is a ref (best), a CSS selector or the visible text. Fill a whole form with ONE `fill_batch`, then `click` submit. \
+                          `read_text` reads the page, `screenshot` shows it. Never use it to get past a CAPTCHA or bot check: stop and tell the person."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["navigate", "snapshot", "read_text", "click", "fill", "fill_batch",
                         "select", "set_checkbox", "press", "hover", "scroll", "wait", "screenshot", "close"],
-                        "description": "What to do. Everything that changes the page returns the new snapshot."},
-                    "url": {"type": "string", "description": "navigate: the address to open, e.g. https://example.com."},
-                    "target": {"type": "string", "description": "click, fill, select, set_checkbox, hover: a ref from the latest snapshot (e3), a CSS selector, or the element's visible text or label."},
-                    "value": {"type": "string", "description": "fill: the text to type (replaces the field's content; \"\" clears it)."},
-                    "fields": {"type": "array", "description": "fill_batch: every field of the form, filled in one call.",
+                        "description": "What to do. Page-changing actions return the new snapshot."},
+                    "url": {"type": "string", "description": "navigate: address to open."},
+                    "target": {"type": "string", "description": "click, fill, select, set_checkbox, hover: ref (e3), CSS selector or visible text/label."},
+                    "value": {"type": "string", "description": "fill: text to type (\"\" clears)."},
+                    "fields": {"type": "array", "description": "fill_batch: every field of the form.",
                         "items": {"type": "object", "properties": {
-                            "target": {"type": "string", "description": "Ref, CSS selector or label of the field."},
-                            "value": {"type": "string", "description": "The text to type."}
+                            "target": {"type": "string"},
+                            "value": {"type": "string"}
                         }, "required": ["target", "value"]}},
-                    "option": {"type": "string", "description": "select: the visible text or value of the option to choose."},
-                    "checked": {"type": "boolean", "description": "set_checkbox: true to tick, false to untick."},
-                    "keys": {"type": "string", "description": "press: one key or several separated by spaces, e.g. \"Enter\", \"Escape\", \"Tab Tab Enter\"."},
-                    "to": {"type": "string", "description": "scroll: \"up\" or \"down\" (one screen), \"top\", \"bottom\", or a target to bring into view."},
-                    "selector": {"type": "string", "description": "read_text: only this part of the page (CSS selector; default: the whole page). wait: a ref, CSS selector or text to wait for."},
-                    "ms": {"type": "integer", "description": "wait: milliseconds to wait for the selector, or to pause when there is none (at most 5000)."},
-                    "full": {"type": "boolean", "description": "screenshot: the whole page instead of what is on screen (default false)."}
+                    "option": {"type": "string", "description": "select: option text or value."},
+                    "checked": {"type": "boolean", "description": "set_checkbox: tick or untick."},
+                    "keys": {"type": "string", "description": "press: \"Enter\", \"Tab Tab Enter\"."},
+                    "to": {"type": "string", "description": "scroll: up, down, top, bottom or a target."},
+                    "selector": {"type": "string", "description": "read_text: only this part (CSS). wait: what to wait for."},
+                    "ms": {"type": "integer", "description": "wait: milliseconds, at most 5000."},
+                    "full": {"type": "boolean", "description": "screenshot: whole page."}
                 },
                 "required": ["action"]
             }),
@@ -285,16 +277,21 @@ impl Tool for BrowserTool {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Drive a real browser: open pages, fill forms, click. One `action` per call; page-changing actions return a \
-                          snapshot (`e3 button \"Submit\"`) to act on. A `target` is a ref (e3), a CSS selector or visible text. \
-                          Fill a whole form with `fill_batch`. Actions: navigate, snapshot, read_text, click, fill, fill_batch, \
-                          select, set_checkbox, press, hover, scroll, wait, screenshot, close.",
+            description: "Drive a real browser, one `action` per call; page changes return a snapshot of refs (`e3 button \"Submit\"`). \
+                          A target is a ref, CSS selector or visible text. `fill_batch` fills a whole form.",
             params: &[
-                ("action", "navigate, snapshot, read_text, click, fill, fill_batch, select, set_checkbox, press, hover, scroll, wait, screenshot or close"),
-                ("target", "ref (e3), CSS selector or visible text"),
-                ("fields", "fill_batch: list of {target, value}"),
+                ("action", "navigate{url} snapshot read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} close"),
+                ("target", "ref (e3), CSS selector or text"),
+                ("fields", "fill_batch: [{target, value}]"),
+                ("url", "navigate"),
+                ("keys", "e.g. Enter, Tab Tab Enter"),
+                ("to", "up, down, top, bottom or target"),
             ],
         })
+    }
+
+    fn rare(&self) -> bool {
+        true
     }
 
     fn kind(&self) -> ToolKind {
@@ -402,9 +399,6 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(enum_.join(", "), ACTIONS);
-        for a in &enum_ {
-            assert!(spec.description.contains(a), "description names {a}");
-        }
         for p in ["url", "target", "value", "fields", "option", "checked", "keys", "to", "selector", "ms", "full"] {
             assert!(spec.parameters["properties"][p]["description"].is_string(), "{p} is described");
         }

@@ -211,6 +211,7 @@ fn the_default_tools_keep_under_their_schema_ceiling_with_the_rare_ones_still_of
         names,
         [
             "bash",
+            "browser",
             "diagnostics",
             "edit",
             "glob",
@@ -379,7 +380,9 @@ fn a_small_window_is_not_offered_sub_agents_notes_or_the_task_list_and_a_tiny_on
     for kept in ["bash", "read", "write", "edit", "grep", "glob", "ls", "jobs", "recall"] {
         assert!(tiny.iter().any(|n| n == kept), "{kept} is missing: {tiny:?}");
     }
-    for gone in ["task", "workflow", "skill", "todo", "note", "debug", "diagnostics", "web_search", "web_fetch"] {
+    for gone in
+        ["task", "workflow", "skill", "todo", "note", "debug", "diagnostics", "web_search", "web_fetch", "browser"]
+    {
         assert!(!tiny.iter().any(|n| n == gone), "{gone} is offered: {tiny:?}");
     }
     // a window of 32k keeps the skills and the web, and not the sub-agents and the notes
