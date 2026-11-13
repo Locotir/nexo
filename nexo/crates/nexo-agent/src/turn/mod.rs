@@ -55,15 +55,22 @@ mod compaction;
 mod flow;
 mod goal;
 mod guards;
+mod hook_calls;
 mod host;
 mod lesson;
+mod notices;
 mod orient;
 mod prefix;
 mod round;
 mod settings;
 mod start;
+mod state;
 mod tools;
 mod verify;
+
+use hook_calls::*;
+use notices::*;
+use state::*;
 
 use self::approval::*;
 use self::background::*;
@@ -94,216 +101,6 @@ const GOAL_ROUNDS: u32 = 5;
 pub(crate) const GOAL_CONTINUE: &str = GOAL_CONTINUE_MARK;
 /// Characters at the end of a reply where `GOAL DONE` or `GOAL WAIT` counts even when it is not the last line.
 const GOAL_TAIL: usize = 200;
-
-struct State {
-    config: Config,
-    cwd: PathBuf,
-    tools: ToolSet,
-    client: Arc<dyn ModelClient>,
-    target: Target,
-    session: Session,
-    /// What the session sends before its messages, fixed for its life (see `prefix.rs`).
-    prefix: crate::session::Prefix,
-    history: crate::history::History,
-    policy: Box<dyn ContextPolicy>,
-    /// The tokens of the history and of the last view sent, for /status.
-    last_view: (u64, u64),
-    /// The messages of the last request, to tell which part of the next one repeats it (the cache).
-    last_sent: Vec<Message>,
-    /// The last request the conversation sent, which a prompt suggestion repeats (the provider's cache) with one message more.
-    last_request: Option<ModelRequest>,
-    /// The mends of a broken history already said (each is said once).
-    mended: HashSet<String>,
-    perm: Policy,
-    /// The OS sandbox of the `bash` tool (`/sandbox` changes its mode).
-    sandbox: nexo_core::sandbox::SandboxSettings,
-    gate: Arc<dyn PermissionGate>,
-    /// No person is there to answer (`nexo -p`, a script): what a person would be left to decide is decided here.
-    alone: bool,
-    events: EventTx,
-    usage: Usage,
-    cost: f64,
-    system: String,
-    /// What is known of the model in use (prices, window, largest reply).
-    limits: Limits,
-    /// `/fast` asked for the provider's fast request option (it counts only where the provider has one).
-    fast: bool,
-    /// The models the provider listed when `/fast` last asked, with its name.
-    live: Option<(String, Vec<String>)>,
-    /// Where the request in progress starts in `history`.
-    turn_start: usize,
-    turns: u32,
-    /// The goal the agent keeps working towards, and the continuation round in progress.
-    goal: Option<String>,
-    goal_round: u32,
-    /// Where the goal stands: only an active goal is continued when a turn ends.
-    goal_state: GoalState,
-    /// What the goal panel shows: both wordings of the goal, its stops, steps and spend (see `goal_log`).
-    goal_log: GoalLog,
-    /// The session's cost when the goal was set, to tell what the goal spent.
-    goal_cost0: f64,
-    /// What files looked like before the agent wrote them: `(history length at the time, file,
-    /// its bytes then or None when it did not exist)`, so a rewind can put them back.
-    checkpoints: Vec<(usize, PathBuf, Option<Vec<u8>>)>,
-    /// The spend limit of this session (from `[agent] max_cost`, changed by `/budget`).
-    budget: Option<f64>,
-    /// The 80% warning was given.
-    budget_warned: bool,
-    /// Checkpoints taken since the person last wrote (`agent.on_limit`); a goal's rounds, a mail or a job's end do not reset it.
-    ck_used: u32,
-    /// Why the last request ended at a checkpoint cap or for lack of progress, for a goal's pause.
-    ck_stop: Option<String>,
-    /// Messages sent while a turn runs: they join it before its next model call.
-    inbox: VecDeque<(String, Vec<Attachment>)>,
-    /// What other sessions know, waiting to go with the next request: `(id, title, block)`.
-    shared: Vec<(String, String, String)>,
-    /// Files the model has seen, so an unchanged one is not sent again.
-    reads: Reads,
-    /// When the last requests ran (start, end): a file changed inside one was made by the model's own work.
-    worked: VecDeque<(SystemTime, SystemTime)>,
-    /// The notes of the reader passes so far, by material and request.
-    digests: HashMap<u64, String>,
-    /// Commands and sub-agents running in the background.
-    jobs: Jobs,
-    /// The files running sub-agents are changing (the main agent's writes respect them).
-    claims: nexo_core::claims::Claims,
-    /// Sends the sub-agents a round waits for to the background.
-    detach: nexo_core::jobs::Detach,
-    /// The files the model has read or written, as they were then.
-    seen: nexo_core::seen::Seen,
-    /// What the step-level check remembers: commands too slow to repeat, and the last check's report.
-    post: Arc<nexo_tools::postcheck::Guard>,
-    /// Failures of the session kept by what they were on, to say when one comes back.
-    repeats: crate::repeat::Repeats,
-    /// Whether the line about `nexo bin` is in this session (see `bin_hint.rs`): kept through a compaction, worked
-    /// out again from the history when it is replaced, rewound or cleared.
-    bin_told: bool,
-    /// The same for the line that names a `debug` call (see `dbg_hint.rs`).
-    dbg_told: bool,
-    /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
-    epoch: u64,
-    /// The one-run slot of a workflow started by name: 0 when free, else the number of the start that holds it.
-    /// It starts over with the conversation (see `flow`).
-    flow_slot: Arc<std::sync::atomic::AtomicU64>,
-    /// Plan mode: the mode to go back to and the switch an approved plan asks for.
-    plan: crate::ask::PlanCell,
-    /// The size of the last request as the provider counted it (its prompt and reply tokens) and the
-    /// length of the history then: what the `compact` policy measures the next request from.
-    last_prompt: Option<(u64, usize)>,
-    /// The estimate (4 characters a token) of the prompt of the last request, and the provider's
-    /// tokens per estimated token learned so far: code, logs and other scripts hold more tokens than
-    /// 4 characters each, so the view is fitted to the window in the provider's own count.
-    est_sent: u64,
-    tok_ratio: Option<f64>,
-    /// The last call the provider billed in this session: a call cut before its usage event is estimated from it.
-    last_call: Option<Usage>,
-    /// The mailbox other sessions write to, and the mails that reached the model: those waiting for the turn
-    /// in progress to end, and those the turn in progress carries (told "read" when the model starts answering).
-    mail: Option<Arc<Mailbox>>,
-    /// The MCP servers, and the hub count the tool set was last brought up to date with.
-    mcp: Option<Arc<nexo_tools::mcp_hub::McpHub>>,
-    mcp_gen: u64,
-    mail_wait: Vec<Mail>,
-    mail_turn: Vec<Mail>,
-    /// Text hooks added for the model (SessionStart, UserPromptSubmit): it goes with the next request.
-    hook_context: Vec<String>,
-    /// Notes the supervisor's watch wants on the NEXT model request only (never saved in the conversation), and
-    /// the findings of this request already said, so each is said once.
-    hidden: Vec<String>,
-    /// How many of `hidden` the interface was told of (they ride on the request, which `/sent` shows).
-    hidden_told: usize,
-    noticed: HashSet<String>,
-    /// A check-in was made for this request of the person (at most one; the person speaking opens it again).
-    checked_in: bool,
-    /// How many times `agent.max_tokens` a reply may take in this request: doubled (up to 4) when a reply
-    /// was cut at max_tokens while still thinking, as the reasoning had no room left for an answer or a call.
-    reply_boost: u32,
-    /// The audit log writer, when `[audit] enabled`.
-    audit: Option<Audit>,
-}
-
-type Shared = Arc<Mutex<State>>;
-
-fn emit(events: &EventTx, ev: AgentEvent) {
-    let _ = events.send(ev);
-}
-
-/// What a view that lost some sub-agent events is sent so it can catch up: the state of every run the
-/// registry lists.
-fn sub_resync(subs: &nexo_core::subs::Subs) -> Vec<AgentEvent> {
-    let runs = subs.list().into_iter().map(|info| AgentEvent::SubState { info });
-    runs.chain(subs.flows().into_iter().map(|info| AgentEvent::FlowRun { info })).collect()
-}
-
-fn notice(events: &EventTx, level: Level, text: impl Into<String>) {
-    emit(events, AgentEvent::Notice { level, text: text.into(), problem: None });
-}
-
-/// Tells the person about a failure as a card; the plain text of it rides along for the old readers.
-fn notice_problem(events: &EventTx, problem: Problem) {
-    emit(events, AgentEvent::Notice { level: Level::Error, text: problem.plain(), problem: Some(Box::new(problem)) });
-}
-
-/// Tells the person an operation failed: the title says what, `cause` why; each step is something to do next.
-fn notice_failure(events: &EventTx, title: impl Into<String>, cause: impl std::fmt::Display, steps: &[&str]) {
-    let cause = cause.to_string();
-    let mut p = Problem::new(title, cause.lines().next().unwrap_or("").trim().to_string());
-    for s in steps {
-        p = p.step(*s);
-    }
-    // a cause that is long or has more lines than the row shows opens in full
-    if cause.lines().count() > 1 || cause.chars().count() > 69 {
-        p = p.detail(cause);
-    }
-    notice_problem(events, p);
-}
-
-/// Tells the person how an MCP control ended.
-fn mcp_result(events: &EventTx, r: Result<String, String>) {
-    match r {
-        Ok(t) => notice(events, Level::Info, t),
-        Err(e) => notice(events, Level::Warn, format!("mcp: {e}")),
-    }
-}
-
-/// Runs the hooks of `event` with what the session knows, tells the person which failed, and returns
-/// what they said. Nothing runs (and the state is not read twice) when no hook listens.
-async fn fire(state: &Shared, event: &str, subject: Option<&str>, fields: Value) -> crate::hooks::Outcome {
-    let (hooks, cwd, sid, events) = {
-        let st = state.lock().await;
-        if !crate::hooks::listens(&st.config.hooks, event) {
-            return Default::default();
-        }
-        (st.config.hooks.clone(), st.cwd.clone(), st.session.id().to_string(), st.events.clone())
-    };
-    fire_with(&hooks, &events, &cwd, &sid, event, subject, &fields).await
-}
-
-async fn fire_with(
-    hooks: &[nexo_core::config::HookConfig],
-    events: &EventTx,
-    cwd: &Path,
-    sid: &str,
-    event: &str,
-    subject: Option<&str>,
-    fields: &Value,
-) -> crate::hooks::Outcome {
-    let o = crate::hooks::run(hooks, event, subject, fields, cwd, sid).await;
-    for f in &o.failures {
-        notice(events, Level::Warn, f.clone());
-    }
-    o
-}
-
-/// Tells the hooks of `Notification` (a permission question, a request that ended in trouble) without
-/// holding anything up.
-fn notify_hooks(state: &Shared, kind: &'static str, message: String) {
-    let state = state.clone();
-    tokio::spawn(async move {
-        fire(&state, "notification", Some(kind), serde_json::json!({"notification_type": kind, "message": message}))
-            .await;
-    });
-}
 
 /// A Stop hook may ask the agent to go on this many times in a row; then the request ends anyway.
 const STOP_HOOK_CAP: u32 = 3;
