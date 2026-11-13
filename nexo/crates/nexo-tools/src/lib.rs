@@ -8,6 +8,7 @@
 //! the permission dialog.
 
 pub mod bash;
+pub mod browser;
 pub mod checkers;
 pub mod data_check;
 pub mod debug;
@@ -44,12 +45,14 @@ use nexo_core::config::WebConfig;
 use nexo_core::ToolSet;
 
 /// The built-in tools with the web ones as configured: `web_search` and
-/// `web_fetch` join the local eight unless `[web] enabled = false`.
+/// `web_fetch` join the local eight unless `[web] enabled = false`. `browser` is always there; it starts
+/// no browser until the model first uses it.
 pub fn builtin_with(web: &WebConfig) -> ToolSet {
     let mut set = local();
     for t in web::tools(web) {
         set.add(t);
     }
+    set.add(Arc::new(browser::BrowserTool::new()));
     set
 }
 
@@ -114,6 +117,7 @@ mod tests {
             names,
             vec![
                 "bash",
+                "browser",
                 "diagnostics",
                 "edit",
                 "glob",
@@ -130,7 +134,7 @@ mod tests {
             ]
         );
         let off = builtin_with(&WebConfig { enabled: false, ..Default::default() });
-        assert_eq!(off.names().count(), 12, "no web tools when disabled");
+        assert_eq!(off.names().count(), 13, "no web tools when disabled");
         for spec in set.specs() {
             assert_eq!(spec.parameters["type"], "object", "{}", spec.name);
             assert!(!spec.description.is_empty(), "{}", spec.name);

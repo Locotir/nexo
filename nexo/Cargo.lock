@@ -1938,6 +1938,7 @@ dependencies = [
  "image",
  "landlock",
  "libc",
+ "nexo-browser",
  "nexo-core",
  "nexo-dbg",
  "nexo-providers",

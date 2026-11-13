@@ -25,6 +25,7 @@ dirs = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true }
 htmd = { workspace = true }
+nexo-browser = { workspace = true }
 nexo-providers = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
