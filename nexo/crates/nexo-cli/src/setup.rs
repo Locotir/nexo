@@ -152,6 +152,10 @@ fn session_builtins(cfg: &Config) -> ToolSet {
         tools.remove("web_fetch");
         tools.remove("web_search");
     }
+    // reads a compiled program as bytes, on every platform
+    if cfg.tools.bin {
+        tools.add(Arc::new(crate::bin_tool::Bin));
+    }
     // only where the debugger has a backend
     if cfg.tools.debug && cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         tools.add(Arc::new(nexo_tools::debug::Debug::new()));
@@ -786,6 +790,7 @@ screen = "full"                     # full (alternate screen) | inline (finished
 edit_diagnostics = true             # after edit and write, add the compiler errors of the changed file (Rust, TypeScript, Python, Go) to the result; false: off
 post_write_check = true            # after a step that changed source files, run the project test command (cargo test -q, npm test -s, pytest -q -x, go test ./...) once and add its result to the last changing call; false: off
 post_write_check_secs = 45         # seconds before that check is killed; a command that ran over is not run again by it
+# bin = true                        # the bin tool: read a compiled program (ELF, PE, Mach-O, wasm) as bytes, never run; false: not offered
 
 [compat]
 # claude_code = true                # false: ignore every Claude Code file (~/.claude, CLAUDE.md, CLAUDE.local.md, .claude/ commands, agents, skills, hooks)

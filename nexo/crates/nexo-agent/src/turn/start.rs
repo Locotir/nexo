@@ -192,7 +192,8 @@ async fn begin_turn(
         added.append(&mut after);
         // the supervisor's resume mark is read back as it is, so it carries no note; the next request does
         let tree = if text.trim() == SUPERVISOR_RESUME_MARK { None } else { prefix::tree_note(&mut st) };
-        let note = orient::start_note(&included, &known, check.as_deref(), tree.as_deref());
+        let ask = ask_line(&mut st, person, &text);
+        let note = orient::start_note(&included, &known, check.as_deref(), tree.as_deref(), ask.as_deref());
         let text = if note.is_empty() {
             text
         } else {
@@ -217,6 +218,16 @@ async fn begin_turn(
         orient::worked(&mut state.lock().await.worked, from, SystemTime::now());
         end
     })
+}
+
+/// The line about compiled programs for a message of the person's, once per session (see `ask_hint.rs`).
+fn ask_line(st: &mut State, person: bool, text: &str) -> Option<String> {
+    if !person || st.ask_told {
+        return None;
+    }
+    let line = crate::ask_hint::line(text, &st.cwd, offer_of(st))?;
+    st.ask_told = true;
+    Some(line)
 }
 
 /// The largest reply the next request asks for: `agent.max_tokens`, times the boost after a reply cut
@@ -302,7 +313,8 @@ pub(super) async fn take_inbox(state: &Shared) -> bool {
         // the files the message names come as in a first request: under nexo's own header, counted by a note
         let (named, known) = named_files(&st, &text, &attachments);
         let included = orient::include(&named, &st.cwd);
-        let note = orient::start_note(&included, &known, None, None);
+        let ask = ask_line(&mut st, true, &text);
+        let note = orient::start_note(&included, &known, None, None, ask.as_deref());
         let mut added = Vec::new();
         if !note.is_empty() {
             added.push(AddedPart::new(AddedKind::StartNote, "project at the start of the request", note.clone()));

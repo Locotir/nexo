@@ -1,57 +1,184 @@
-//! The first time a model reads a compiled program by hand (`objdump`, `strings`, `xxd`, ...), the result of
-//! that command ends with one line saying `nexo re` (`nexo bin`) exists. Once per session, and only when the file the
-//! command names is one `nexo bin` opens. No tool, no schema and no system text carry it: a person who never
-//! opens a binary pays nothing. The line is part of the result, so it stays in the history, the saved session
-//! and a compaction summary's source like any output; `told` tells a resumed or rewound history from a fresh one.
+//! The first time a model reads a compiled program by hand (`objdump`, `readelf`, `nm`, `strings`, `xxd`,
+//! `r2`, ...), the result of that command ends with one line naming the exact call of nexo's kit that does the
+//! same: the `bin` tool when it is offered, `nexo bin` in the shell when it is not. Once per session, and only
+//! when the file the command names is one `nexo bin` opens. No schema and no system text carry it: a person who
+//! never opens a binary pays nothing. The line is part of the result, so it stays in the history, the saved
+//! session and a compaction summary's source like any output; `told` tells a resumed or rewound history from a
+//! fresh one.
 //!
-//! Nothing here runs or loads a file. The command is split by the parser the bash tool judges commands with, and
-//! a name it finds is only opened as bytes by `nexo_bin::opens`, which reads at most the first 4096.
+//! Nothing here runs or loads a file. The command is split by `hint_cmd` (redirections, heredocs, `cd x &&`,
+//! wrappers), and a name it finds is only opened as bytes by `nexo_bin::opens`, which reads at most the first
+//! 4096. `gdb` is read here only when the `debug` tool is not offered; with it, `dbg_hint` answers.
 
 use std::path::Path;
 
 use nexo_core::message::{Message, Part};
 use serde_json::Value;
 
-/// The line added to the result. It starts with `[nexo:` so it is told apart from the command's own output.
-pub const LINE: &str = "[nexo: this file can be read in pages with names and references: nexo re lists the kit (nexo bin reads, nexo dbg runs); nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto]";
+use crate::hint_cmd::{self, Offer, Seg};
+
+/// Starts the line when the `bin` tool is offered; `told` finds it in a kept history.
+pub const HEAD: &str = "[nexo: the bin tool reads this file in pages, with names and references:";
+/// Starts the line when it is not: the same call through the shell.
+pub const HEAD_SHELL: &str = "[nexo: nexo bin reads this file in pages, with names and references:";
+/// The one line sessions saved before the calls were exact have: still found by `told`.
+const OLD_LINE: &str = "[nexo: this file can be read in pages with names and references: nexo re lists the kit (nexo bin reads, nexo dbg runs); nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto]";
+
+/// What follows the call.
+const THEN: &str = "then fn|funcs|xref|decomp|strings";
 
 /// The programs people use to read a compiled program by hand.
-const READERS: [&str; 11] =
-    ["objdump", "readelf", "nm", "strings", "xxd", "hexdump", "od", "gdb", "r2", "radare2", "rizin"];
+const READERS: [&str; 10] = ["objdump", "readelf", "nm", "strings", "xxd", "hexdump", "od", "r2", "radare2", "rizin"];
 
 /// The most words of one command whose file is looked at.
 const WORDS: usize = 12;
 
-/// Whether `command`, run in `cwd`, reads a file `nexo bin` opens with one of the `READERS`.
-pub fn wanted(command: &str, cwd: &Path) -> bool {
-    let Some(parts) = nexo_tools::bash::command_words(command) else { return false };
+/// The line for `command`, run in `cwd`, when it reads a file `nexo bin` opens with one of the `READERS`.
+pub fn line(command: &str, cwd: &Path, offer: Offer) -> Option<String> {
+    let segs = hint_cmd::segments(command, cwd)?;
     // a command that already is `nexo bin` needs no hint
-    if parts
-        .iter()
-        .any(|p| p.first().is_some_and(|w| program(w) == "nexo") && p.get(1).is_some_and(|w| w == "bin" || w == "re"))
-    {
-        return false;
+    if segs.iter().any(|s| {
+        s.words.first().is_some_and(|w| hint_cmd::program(w) == "nexo")
+            && s.words.get(1).is_some_and(|w| w == "bin" || w == "re")
+    }) {
+        return None;
     }
-    parts
-        .iter()
-        .filter(|p| p.first().is_some_and(|w| READERS.contains(&program(w).as_str())))
-        .flat_map(|p| p.iter().skip(1).take(WORDS))
-        // an option is not a file; a name that starts with a dash is not looked at
-        .filter(|w| !w.is_empty() && !w.starts_with('-'))
-        .any(|w| nexo_bin::opens(&cwd.join(w)) || nexo_bin::is_wasm(&cwd.join(w)))
+    for (k, s) in segs.iter().enumerate() {
+        let Some(first) = s.words.first() else { continue };
+        let prog = hint_cmd::program(first);
+        // `gdb` on a program is the debugger's: here only where there is no `debug` tool
+        if !(READERS.contains(&prog.as_str()) || (prog == "gdb" && !offer.debug)) {
+            continue;
+        }
+        let args = &s.words[1..];
+        let Some(file) = args.iter().take(WORDS).find(|w| hint_cmd::reads(&s.dir, w)) else { continue };
+        let path = hint_cmd::shown(cwd, &s.dir, file);
+        // what goes inside a double-quoted JSON string or a shell word must be plain
+        if path.contains(['"', '\\', '\n', '$', '`']) {
+            continue;
+        }
+        let op = op_for(&prog, args, &path, segs.get(k + 1));
+        return Some(say(&op, offer));
+    }
+    None
 }
 
-/// The program a command word names, without its folder or `.exe`, in lower case.
-fn program(word: &str) -> String {
-    let name = word.rsplit(['/', '\\']).next().unwrap_or(word).to_ascii_lowercase();
-    name.strip_suffix(".exe").map(str::to_string).unwrap_or(name)
+/// The line that names `op` (an op of `nexo bin` with its file) as a `bin` call or a shell command.
+fn say(op: &str, offer: Offer) -> String {
+    if offer.bin {
+        format!("{HEAD} {}, {THEN}]", hint_cmd::tool_call("bin", op))
+    } else {
+        format!("{HEAD_SHELL} nexo bin {op}, {THEN}]")
+    }
+}
+
+/// The op of `nexo bin` that gives what `prog` was asked for, with the file.
+fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>) -> String {
+    let f = hint_cmd::quoted(file);
+    let has = |short: char, long: &str| {
+        args.iter().any(|a| {
+            (a.starts_with('-') && !a.starts_with("--") && a.contains(short))
+                || (!long.is_empty() && a.starts_with(long))
+        })
+    };
+    let valued = |long: &str| {
+        args.iter().enumerate().find_map(|(i, a)| match a.strip_prefix(long) {
+            Some(v) if v.starts_with('=') => Some(v[1..].to_string()),
+            Some("") => args.get(i + 1).cloned(),
+            _ => None,
+        })
+    };
+    let plain = |s: &str| {
+        !s.is_empty() && s.len() <= 200 && s.chars().all(|c| c.is_ascii_alphanumeric() || "_.$@:<>~+-".contains(c))
+    };
+    match prog {
+        "objdump" => {
+            if let Some(sym) = valued("--disassemble").filter(|s| plain(s)) {
+                format!("fn {f} {sym}")
+            } else if let Some(at) = valued("--start-address").filter(|s| plain(s)) {
+                format!("fn {f} {at}")
+            } else if has('d', "--disassemble") || has('D', "--disassemble-all") || has('S', "--source") {
+                format!("overview {f}")
+            } else if has('t', "--syms") || has('T', "--dynamic-syms") {
+                format!("funcs {f}")
+            } else {
+                format!("info {f}")
+            }
+        }
+        "readelf" => {
+            if has('s', "--syms") || has('s', "--symbols") || has('s', "--dyn-syms") {
+                format!("funcs {f}")
+            } else if has('p', "--string-dump") || has('x', "--hex-dump") {
+                format!("strings {f}")
+            } else {
+                format!("info {f}")
+            }
+        }
+        "nm" => format!("funcs {f}"),
+        "strings" => match grep_after(next) {
+            Some(pat) => format!("strings {f} --grep {}", hint_cmd::quoted(&pat)),
+            None => format!("strings {f}"),
+        },
+        "r2" | "radare2" | "rizin" => {
+            let cmds = args.iter().position(|a| a == "-c" || a == "-qc" || a == "-Qc").and_then(|i| args.get(i + 1));
+            match cmds.map(|c| c.split(';').map(str::trim).collect::<Vec<_>>()) {
+                Some(c) => {
+                    let at = c.iter().find_map(|x| {
+                        let (cmd, sym) = x.split_once('@')?;
+                        let sym = sym.trim();
+                        (cmd.trim().starts_with("pd") && plain(sym)).then(|| sym.to_string())
+                    });
+                    if let Some(sym) = at {
+                        format!("fn {f} {sym}")
+                    } else if c.iter().any(|x| x.starts_with("afl")) {
+                        format!("funcs {f}")
+                    } else if c.iter().any(|x| x.starts_with("iz")) {
+                        format!("strings {f}")
+                    } else if c.iter().any(|x| x.starts_with("ii") || x.starts_with("iI") || x.starts_with("iS")) {
+                        format!("info {f}")
+                    } else {
+                        format!("overview {f}")
+                    }
+                }
+                None => format!("overview {f}"),
+            }
+        }
+        // a dump of bytes: the map first, then `bytes <file> <addr> <len>` for the part wanted
+        "xxd" | "hexdump" | "od" => format!("info {f}"),
+        // gdb with no debug tool offered
+        _ => format!("overview {f}"),
+    }
+}
+
+/// `| grep PATTERN` right after `strings`: the pattern, as `strings --grep` writes it (`(?i)` for `-i`).
+fn grep_after(next: Option<&Seg>) -> Option<String> {
+    let s = next?;
+    let first = hint_cmd::program(s.words.first()?);
+    if !matches!(first.as_str(), "grep" | "egrep" | "rg") {
+        return None;
+    }
+    let flags: String = s.words[1..].iter().filter(|w| w.starts_with('-')).flat_map(|w| w.chars().skip(1)).collect();
+    // a flag that changes what matches (inverted, fixed text, whole words, counts) is not a plain pattern
+    if flags
+        .chars()
+        .any(|c| matches!(c, 'v' | 'F' | 'w' | 'x' | 'c' | 'l' | 'L' | 'o' | 'A' | 'B' | 'C' | 'e' | 'f' | 'm'))
+    {
+        return None;
+    }
+    let pat = s.words[1..].iter().find(|w| !w.starts_with('-'))?;
+    let ok =
+        !pat.is_empty() && pat.len() <= 60 && pat.chars().all(|c| c.is_ascii_alphanumeric() || "_.-:/ |".contains(c));
+    ok.then(|| if flags.contains('i') { format!("(?i){pat}") } else { pat.clone() })
 }
 
 /// Whether `messages` already hold the line in a tool result.
 pub fn told(messages: &[Message]) -> bool {
     messages.iter().any(|m| {
         m.content.iter().any(|p| match p {
-            Part::ToolResult { content, .. } => content.iter().filter_map(Part::as_text).any(|t| t.contains(LINE)),
+            Part::ToolResult { content, .. } => content
+                .iter()
+                .filter_map(Part::as_text)
+                .any(|t| t.contains(HEAD) || t.contains(HEAD_SHELL) || t.contains(OLD_LINE)),
             _ => false,
         })
     })
@@ -59,7 +186,13 @@ pub fn told(messages: &[Message]) -> bool {
 
 /// The results of one round with the line added to the first that earns it. `told` is whether the session has
 /// had it already; it is set when the line is added. Calls with `background` or `detach` have no output yet.
-pub fn round(told: &mut bool, calls: &[(String, String, Value)], results: Vec<Part>, cwd: &Path) -> Vec<Part> {
+pub fn round(
+    told: &mut bool,
+    calls: &[(String, String, Value)],
+    results: Vec<Part>,
+    cwd: &Path,
+    offer: Offer,
+) -> Vec<Part> {
     if *told {
         return results;
     }
@@ -75,25 +208,15 @@ pub fn round(told: &mut bool, calls: &[(String, String, Value)], results: Vec<Pa
             let text: String = content.iter().filter_map(Part::as_text).collect::<Vec<_>>().join("\n");
             // a command that was refused, blocked or interrupted never ran: its file is not looked at and the
             // one line of the session is not spent on it
-            if !*told && (!is_error || ran(&text)) && command.is_some_and(|c| wanted(c, cwd)) {
-                *told = true;
-                content = vec![Part::text(format!("{text}\n\n{LINE}"))];
+            if !*told && (!is_error || hint_cmd::ran(&text)) {
+                if let Some(l) = command.and_then(|c| line(c, cwd, offer)) {
+                    *told = true;
+                    content = vec![Part::text(format!("{text}\n\n{l}"))];
+                }
             }
             Part::ToolResult { call_id, name, content, is_error }
         })
         .collect()
-}
-
-/// Whether a failed shell result is of a command that ran: the shell tool gives those a line with the exit code,
-/// or one that says it was killed (a dump too long for the time limit is where the line helps most). Other lines
-/// nexo adds may follow it. A refusal, a hook's block, a cancel or an interruption has none.
-fn ran(text: &str) -> bool {
-    text.lines().map(str::trim).any(|l| {
-        let code = l.strip_prefix("[exit code ").and_then(|r| r.strip_suffix(']'));
-        code.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit() || b == b'-'))
-            || l == "[killed by a signal]"
-            || (l.starts_with("[killed: timed out after ") && l.ends_with(" s]"))
-    })
 }
 
 fn flag(args: &Value, key: &str) -> bool {
@@ -104,6 +227,9 @@ fn flag(args: &Value, key: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const TOOL: Offer = Offer { bin: true, debug: true };
+    const SHELL: Offer = Offer { bin: false, debug: false };
 
     /// This test program: an ELF or PE x86-64 file `nexo_bin::opens`, read as bytes only.
     fn this_binary() -> std::path::PathBuf {
@@ -128,29 +254,32 @@ mod tests {
             .collect()
     }
 
+    fn wanted(command: &str, cwd: &Path) -> bool {
+        line(command, cwd, TOOL).is_some()
+    }
+
     #[test]
     fn a_command_that_never_ran_gets_no_line_and_does_not_spend_it() {
         let cwd = tempfile::tempdir().unwrap();
         let command = format!("objdump -d '{}'", this_binary().display());
         for refusal in ["Permission denied: the person said no", "Blocked by a hook: no", "interrupted by the person"] {
             let mut told = false;
-            let out =
-                round(&mut told, &[call("c1", &command)], vec![Part::tool_result("c1", refusal, true)], cwd.path());
+            let out = round(
+                &mut told,
+                &[call("c1", &command)],
+                vec![Part::tool_result("c1", refusal, true)],
+                cwd.path(),
+                TOOL,
+            );
             assert_eq!(texts(&out), [refusal.to_string()], "{refusal}");
             assert!(!told, "{refusal}: the one line of the session is still there for a command that runs");
         }
         // a command that ran and failed (the reader is not installed) is where the line helps most
         let mut told = false;
         let failed = "sh: objdump: command not found\n\n[exit code 127]";
-        let out = round(&mut told, &[call("c1", &command)], vec![Part::tool_result("c1", failed, true)], cwd.path());
-        assert!(texts(&out)[0].ends_with(LINE) && told, "{:?}", texts(&out));
-        assert!(ran("x\n\n[exit code 1]") && ran("[exit code -1]\n") && ran("x\n\n[exit code 127]\n\n[nexo: more]"));
-        assert!(
-            ran("partial\n\n[killed: timed out after 120 s]")
-                && ran("[killed by a signal]")
-                && !ran("x\n\n[cancelled]")
-        );
-        assert!(!ran("Permission denied: [exit code ]") && !ran("[exit code 1] and more") && !ran("exit code 1"));
+        let out =
+            round(&mut told, &[call("c1", &command)], vec![Part::tool_result("c1", failed, true)], cwd.path(), TOOL);
+        assert!(texts(&out)[0].contains(HEAD) && told, "{:?}", texts(&out));
     }
 
     #[test]
@@ -195,32 +324,84 @@ mod tests {
     }
 
     #[test]
-    fn the_line_is_the_agreed_text() {
-        assert_eq!(
-            LINE,
-            "[nexo: this file can be read in pages with names and references: nexo re lists the kit (nexo bin reads, nexo dbg runs); nexo bin overview <file> first (main, imports by capability, next steps), then info|funcs|fn|xref|calls|tree|path|slice|strings|find|crypto]"
-        );
-    }
-
-    #[test]
-    fn every_reader_with_a_binary_asks_for_the_line() {
-        let cwd = tempfile::tempdir().unwrap();
-        let exe = this_binary();
-        for r in READERS {
-            assert!(wanted(&format!("{r} -x '{}'", exe.display()), cwd.path()), "{r}");
-        }
-        assert!(wanted(&format!("/usr/bin/objdump -d '{}' | head -50", exe.display()), cwd.path()));
-        assert!(wanted(&format!("strings '{}' 2>&1 | grep http", exe.display()), cwd.path()));
-        assert!(wanted(&format!("cat x; xxd '{}'", exe.display()), cwd.path()));
-    }
-
-    #[test]
-    fn a_name_is_looked_up_from_the_working_directory() {
+    fn the_line_names_the_exact_call_as_a_tool_call_or_in_the_shell() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
-        assert!(wanted("objdump -d prog", dir.path()));
-        assert!(wanted("objdump -d ./prog", dir.path()));
-        assert!(!wanted("objdump -d prog", &dir.path().join("elsewhere")));
+        let l = line("objdump -d prog | head -50", dir.path(), TOOL).unwrap();
+        assert_eq!(
+            l,
+            "[nexo: the bin tool reads this file in pages, with names and references: bin {\"command\": \"overview prog\"}, then fn|funcs|xref|decomp|strings]"
+        );
+        let l = line("objdump -d prog | head -50", dir.path(), SHELL).unwrap();
+        assert_eq!(
+            l,
+            "[nexo: nexo bin reads this file in pages, with names and references: nexo bin overview prog, then fn|funcs|xref|decomp|strings]"
+        );
+        // a name with a space is quoted for the language of the tool, and cannot break the JSON
+        std::fs::copy(this_binary(), dir.path().join("my prog")).unwrap();
+        let l = line("nm 'my prog'", dir.path(), TOOL).unwrap();
+        assert!(l.contains("funcs \\\"my prog\\\""), "{l}");
+    }
+
+    #[test]
+    fn each_reader_asks_for_the_op_that_gives_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("p")).unwrap();
+        let op = |c: &str| {
+            let l = line(c, dir.path(), SHELL).unwrap_or_else(|| panic!("no line for {c}"));
+            let rest = l.strip_prefix(HEAD_SHELL).unwrap().trim_start().strip_prefix("nexo bin ").unwrap().to_string();
+            rest.trim_end_matches(&format!(", {THEN}]")).to_string()
+        };
+        assert_eq!(op("objdump -d p"), "overview p");
+        assert_eq!(op("objdump -d -M intel p"), "overview p");
+        assert_eq!(op("objdump -dS p"), "overview p");
+        assert_eq!(op("objdump --disassemble=main p"), "fn p main");
+        assert_eq!(op("objdump --start-address=0x401000 -d p"), "fn p 0x401000");
+        assert_eq!(op("objdump -t p"), "funcs p");
+        assert_eq!(op("objdump -T p"), "funcs p");
+        assert_eq!(op("objdump -x p"), "info p");
+        assert_eq!(op("objdump -h p"), "info p");
+        assert_eq!(op("readelf -s p"), "funcs p");
+        assert_eq!(op("readelf -Ws p"), "funcs p");
+        assert_eq!(op("readelf -S p"), "info p");
+        assert_eq!(op("readelf -p .rodata p"), "strings p");
+        assert_eq!(op("nm -C p"), "funcs p");
+        assert_eq!(op("strings -n 8 p"), "strings p");
+        assert_eq!(op("strings p | grep -i http"), "strings p --grep \"(?i)http\"");
+        assert_eq!(op("strings p | grep -v http"), "strings p");
+        assert_eq!(op("strings p | grep 'a|b' | head"), "strings p --grep \"a|b\"");
+        assert_eq!(op("xxd p | head"), "info p");
+        assert_eq!(op("hexdump -C p"), "info p");
+        assert_eq!(op("od -x p"), "info p");
+        assert_eq!(op("r2 -A p"), "overview p");
+        assert_eq!(op("r2 -qc 'pdf @ main' p"), "fn p main");
+        assert_eq!(op("rizin -c 'aaa; afl' p"), "funcs p");
+        assert_eq!(op("r2 -c iz p"), "strings p");
+        // gdb is the debugger's where the debug tool is offered, and the map where it is not
+        assert_eq!(line("gdb -batch p", dir.path(), TOOL), None);
+        assert_eq!(op("gdb -batch p"), "overview p");
+    }
+
+    #[test]
+    fn the_shapes_of_a_real_session_are_read_absolute_paths_cd_redirects_and_wrappers() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("tests");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::copy(this_binary(), sub.join("c-lcrypt")).unwrap();
+        let abs = sub.join("c-lcrypt");
+        let abs = abs.display();
+        // an absolute path, with the output redirected and piped
+        assert!(wanted(&format!("objdump -d {abs} 2>&1 | head -100"), dir.path()));
+        assert!(wanted(&format!("objdump -d {abs} > /tmp/dump.txt 2>/dev/null"), dir.path()));
+        // `cd` first: the file is found from there, and the call carries the whole path
+        let l = line("cd tests && objdump -d c-lcrypt | head", dir.path(), TOOL).unwrap();
+        assert!(l.contains(&format!("overview {abs}")), "{l}");
+        assert!(!wanted("objdump -d c-lcrypt", dir.path()), "from here the name is nothing");
+        // wrappers, variables, a script run by the shell
+        assert!(wanted(&format!("sudo -n nm {abs}"), dir.path()));
+        assert!(wanted(&format!("LC_ALL=C strings {abs}"), dir.path()));
+        assert!(wanted(&format!("timeout 10 readelf -h {abs}"), dir.path()));
+        assert!(wanted("bash -c 'cd tests; strings c-lcrypt'", dir.path()));
     }
 
     #[test]
@@ -241,6 +422,7 @@ mod tests {
             format!("ls -l '{exe}'"),
             format!("file '{exe}'"),
             format!("echo objdump '{exe}'"),
+            format!("which objdump '{exe}'"),
             String::new(),
         ] {
             assert!(!wanted(&c, dir.path()), "{c}");
@@ -261,15 +443,20 @@ mod tests {
             "objdump -d -- -rf".to_string(),
             format!("objdump -d '-{}'", exe.display()),
             "strings ; touch touched".to_string(),
+            "strings <(touch touched)".to_string(),
         ] {
             assert!(!wanted(&c, dir.path()), "{c:?}");
         }
         assert!(!dir.path().join("touched").exists());
-        // a dash or a newline inside a real name is just a name
+        // a dash or a newline inside a real name is just a name, and a name the call cannot carry gets no line
         let odd = dir.path().join("a\nb-$(touch touched)");
         if std::fs::copy(&exe, &odd).is_ok() {
-            assert!(wanted("objdump -d 'a\nb-$(touch touched)'", dir.path()));
+            assert!(!wanted("objdump -d 'a\nb-$(touch touched)'", dir.path()), "no newline in a call");
             assert!(!dir.path().join("touched").exists());
+        }
+        let quoted = dir.path().join("a\"b");
+        if std::fs::copy(&exe, &quoted).is_ok() {
+            assert!(!wanted("objdump -d 'a\"b'", dir.path()), "no double quote in a call");
         }
         let dashed = dir.path().join("-prog");
         std::fs::copy(&exe, &dashed).unwrap();
@@ -295,11 +482,13 @@ mod tests {
         let calls = vec![call("a", "ls"), call("b", &hit), call("c", &hit)];
         let results = vec![result("a", "files"), result("b", "disassembly"), result("c", "again")];
         let mut told = false;
-        let out = round(&mut told, &calls, results, dir.path());
+        let out = round(&mut told, &calls, results, dir.path(), TOOL);
         assert!(told);
-        assert_eq!(texts(&out), ["files".to_string(), format!("disassembly\n\n{LINE}"), "again".to_string()]);
+        let said = texts(&out);
+        assert_eq!((said[0].as_str(), said[2].as_str()), ("files", "again"));
+        assert!(said[1].starts_with("disassembly\n\n[nexo: the bin tool reads this file"), "{said:?}");
         // later rounds: nothing
-        let again = round(&mut told, &calls, vec![result("b", "more")], dir.path());
+        let again = round(&mut told, &calls, vec![result("b", "more")], dir.path(), TOOL);
         assert_eq!(texts(&again), ["more"]);
     }
 
@@ -309,13 +498,13 @@ mod tests {
         let hit = format!("objdump -d '{}'", this_binary().display());
         let mut told = false;
         let bg = vec![("a".to_string(), "bash".to_string(), json!({"command": hit, "background": true}))];
-        let out = round(&mut told, &bg, vec![result("a", "job started")], dir.path());
+        let out = round(&mut told, &bg, vec![result("a", "job started")], dir.path(), TOOL);
         assert!(!told && texts(&out) == ["job started"]);
         let calls = vec![call("b", &hit)];
         let err = Part::tool_result("b", "bash: objdump: command not found\n\n[exit code 127]", true);
-        let out = round(&mut told, &calls, vec![err], dir.path());
+        let out = round(&mut told, &calls, vec![err], dir.path(), TOOL);
         assert!(told);
-        assert!(texts(&out)[0].ends_with(LINE));
+        assert!(texts(&out)[0].contains(HEAD));
         assert!(matches!(out[0], Part::ToolResult { is_error: true, .. }));
     }
 
@@ -325,18 +514,25 @@ mod tests {
         let hit = format!("objdump -d '{}'", this_binary().display());
         let calls = vec![("a".to_string(), "read".to_string(), json!({"command": hit}))];
         let mut told = false;
-        let out = round(&mut told, &calls, vec![result("a", "x")], dir.path());
+        let out = round(&mut told, &calls, vec![result("a", "x")], dir.path(), TOOL);
         assert!(!told && texts(&out) == ["x"]);
     }
 
     #[test]
-    fn told_finds_the_line_in_a_kept_history_and_nothing_else() {
-        let with = Message::tool_results(vec![result("b", &format!("out\n\n{LINE}"))]);
+    fn told_finds_either_line_and_the_old_one_in_a_kept_history_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let hit = format!("objdump -d '{}'", this_binary().display());
+        for offer in [TOOL, SHELL] {
+            let l = line(&hit, dir.path(), offer).unwrap();
+            let with = Message::tool_results(vec![result("b", &format!("out\n\n{l}"))]);
+            assert!(told(&[Message::user("hi"), with]));
+        }
+        let old = Message::tool_results(vec![result("b", &format!("out\n\n{OLD_LINE}"))]);
+        assert!(told(&[old]), "a session saved with the old line has it");
         let without = Message::tool_results(vec![result("b", "out")]);
         // the model quoting the line is not nexo having said it
-        let quoted = Message::assistant(LINE);
-        assert!(told(&[Message::user("hi"), with]));
-        assert!(!told(&[Message::user(LINE), without, quoted]));
+        let quoted = Message::assistant(HEAD);
+        assert!(!told(&[Message::user(HEAD), without, quoted]));
         assert!(!told(&[]));
     }
 }

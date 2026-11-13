@@ -16,6 +16,10 @@ pub struct ToolsConfig {
     /// default where the debugger has a backend (Linux x86-64); off elsewhere, and there the tool is never
     /// registered, whatever this says.
     pub debug: bool,
+    /// Offer the `bin` tool (read a compiled program as bytes: map, functions, disassembly, pseudo-C, references,
+    /// strings; the file is never run or changed) to the model. On everywhere; the tool is only a short line in
+    /// each request.
+    pub bin: bool,
 }
 
 impl Default for ToolsConfig {
@@ -25,6 +29,7 @@ impl Default for ToolsConfig {
             post_write_check: true,
             post_write_check_secs: 45,
             debug: cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            bin: true,
         }
     }
 }

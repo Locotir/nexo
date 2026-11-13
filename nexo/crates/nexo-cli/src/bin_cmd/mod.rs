@@ -53,6 +53,37 @@ impl BinOp {
         }
     }
 
+    /// The file the op reads, to be made absolute against a session's folder, and the second build of `diff`.
+    pub fn files_mut(&mut self) -> Vec<&mut std::path::PathBuf> {
+        match self {
+            BinOp::Diff { file, other, .. } => vec![file, other],
+            BinOp::Patch { file, .. }
+            | BinOp::Info { file, .. }
+            | BinOp::Overview { file, .. }
+            | BinOp::Path { file, .. }
+            | BinOp::Slice { file, .. }
+            | BinOp::Crypto { file, .. }
+            | BinOp::Tree { file, .. }
+            | BinOp::Fn { file, .. }
+            | BinOp::Bytes { file, .. }
+            | BinOp::Strings { file, .. }
+            | BinOp::Xref { file, .. }
+            | BinOp::Funcs { file, .. }
+            | BinOp::Decomp { file, .. }
+            | BinOp::Proto { file, .. }
+            | BinOp::Struct { file, .. }
+            | BinOp::Var { file, .. }
+            | BinOp::Calls { file, .. }
+            | BinOp::Name { file, .. }
+            | BinOp::Note { file, .. }
+            | BinOp::Names { file, .. }
+            | BinOp::Find { file, .. }
+            | BinOp::Managed { file, .. }
+            | BinOp::Emu { file, .. } => vec![file],
+            BinOp::Sigs { .. } | BinOp::Asm { .. } => Vec::new(),
+        }
+    }
+
     fn common(&self) -> &Common {
         match self {
             BinOp::Asm { common, .. }

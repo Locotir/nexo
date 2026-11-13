@@ -349,7 +349,7 @@ fn list_of(v: Option<&Value>) -> Result<Vec<String>, String> {
 }
 
 /// Split a command line into words; single and double quotes group words, a backslash escapes in double quotes.
-fn split_words(s: &str) -> Result<Vec<String>, String> {
+pub(crate) fn split_words(s: &str) -> Result<Vec<String>, String> {
     let (mut words, mut cur, mut quote, mut has) = (Vec::new(), String::new(), None::<char>, false);
     let mut chars = s.chars();
     while let Some(c) = chars.next() {

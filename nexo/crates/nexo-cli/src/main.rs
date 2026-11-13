@@ -9,6 +9,7 @@ mod audit_cmd;
 mod bench_cmd;
 mod bin_cmd;
 mod bin_managed;
+mod bin_tool;
 mod chrome_setup_cmd;
 mod cli;
 mod dbg_cmd;

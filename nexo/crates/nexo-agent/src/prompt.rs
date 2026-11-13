@@ -32,7 +32,7 @@ pub const TINY_WINDOW: u64 = 16_384;
 
 /// The tools a window of [`COMPACT_WINDOW`] tokens or less is not offered: each costs a description in every
 /// request and starts work (a second context, a list to keep, notes) that there is no room for.
-const SMALL_LEAVES_OUT: [&str; 7] = ["task", "workflow", "todo", "note", "debug", "diagnostics", "browser"];
+const SMALL_LEAVES_OUT: [&str; 8] = ["task", "workflow", "todo", "note", "debug", "bin", "diagnostics", "browser"];
 
 /// The tools a window of [`TINY_WINDOW`] tokens or less is not offered besides those: skills and the web.
 const TINY_LEAVES_OUT: [&str; 3] = ["skill", "web_fetch", "web_search"];

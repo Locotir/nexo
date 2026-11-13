@@ -83,8 +83,10 @@ pub(super) struct State {
     /// Whether the line about `nexo bin` is in this session (see `bin_hint.rs`): kept through a compaction, worked
     /// out again from the history when it is replaced, rewound or cleared.
     pub(super) bin_told: bool,
-    /// The same for the line that names a `debug` call (see `dbg_hint.rs`).
-    pub(super) dbg_told: bool,
+    /// The same for the lines that name a `debug` call, one per kind (see `dbg_hint.rs`).
+    pub(super) dbg_told: crate::dbg_hint::Told,
+    /// The same for the line in a start note that names a compiled program's tools (see `ask_hint.rs`).
+    pub(super) ask_told: bool,
     /// Bumped when the conversation is cleared, rewound or switched, so a reply asked for before is let go.
     pub(super) epoch: u64,
     /// The one-run slot of a workflow started by name: 0 when free, else the number of the start that holds it.
@@ -128,3 +130,8 @@ pub(super) struct State {
 }
 
 pub(super) type Shared = Arc<Mutex<State>>;
+
+/// Which of the tools the hints name this session offers.
+pub(super) fn offer_of(st: &State) -> crate::hint_cmd::Offer {
+    crate::hint_cmd::Offer { bin: st.tools.get("bin").is_some(), debug: st.tools.get("debug").is_some() }
+}

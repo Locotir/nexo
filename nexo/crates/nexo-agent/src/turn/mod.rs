@@ -175,6 +175,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     };
     let bin_told = crate::bin_hint::told(&history);
     let dbg_told = crate::dbg_hint::told(&history);
+    let ask_told = crate::ask_hint::told(&history);
     let prefix = prefix::settle(&mut session, &cwd, &config.agent, &mut tools);
     let system = prompt::system_prompt_with(&cwd, &config.agent, &tools, window_of(&limits), &prefix.volatile);
     let policy = context::from_config(&config.context);
@@ -293,6 +294,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         repeats: Default::default(),
         bin_told,
         dbg_told,
+        ask_told,
         epoch: 0,
         flow_slot: Default::default(),
         plan,

@@ -670,10 +670,10 @@ fn the_init_event_lists_the_tools_the_model_is_offered() {
     };
     let (tiny, small, big) = (tools_at(8_192), tools_at(32_768), tools_at(131_072));
     let has = |l: &[String], n: &str| l.iter().any(|t| t == n);
-    for n in ["task", "workflow", "todo", "note", "debug", "diagnostics", "skill", "web_fetch", "web_search"] {
+    for n in ["task", "workflow", "todo", "note", "debug", "bin", "diagnostics", "skill", "web_fetch", "web_search"] {
         assert!(!has(&tiny, n), "{n} at 8k");
     }
-    for n in ["task", "workflow", "todo", "note", "debug", "diagnostics"] {
+    for n in ["task", "workflow", "todo", "note", "debug", "bin", "diagnostics"] {
         assert!(!has(&small, n), "{n} at 32k");
     }
     for n in ["skill", "web_fetch", "web_search"] {
