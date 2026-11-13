@@ -63,7 +63,8 @@ async fn writing_in_home_outside_the_project_fails_and_the_note_appears() {
     let target = outside.path().join("x.txt");
     let cmd = format!("echo no > {}", target.display());
     let o = run(p.path(), ws(false), json!({"command": cmd})).await;
-    assert!(o.content.contains("[exit code 1]"), "{}", o.content);
+    // a non-zero exit is shown; the exact code (1 on bash, 2 on dash) is the shell's business
+    assert!(o.content.contains("[exit code") && !o.content.contains("[exit code 0]"), "{}", o.content);
     assert!(!target.exists());
     assert!(o.content.contains("[sandbox:") && o.content.contains("unsandboxed"), "{}", o.content);
     // the same command, asked to run outside the sandbox, works
@@ -81,7 +82,11 @@ async fn read_only_mode_cannot_write_the_project_and_extra_dirs_open_up() {
     let p = in_home();
     let ro = SandboxSettings::new(SandboxMode::ReadOnly, false, vec![]);
     let o = run(p.path(), ro, json!({"command": "echo x > a.txt"})).await;
-    assert!(o.content.contains("[exit code 1]") && !p.path().join("a.txt").exists(), "{}", o.content);
+    assert!(
+        o.content.contains("[exit code") && !o.content.contains("[exit code 0]") && !p.path().join("a.txt").exists(),
+        "{}",
+        o.content
+    );
     let extra = in_home();
     let s = SandboxSettings::new(SandboxMode::WorkspaceWrite, false, vec![extra.path().to_path_buf()]);
     let cmd = format!("echo x > {}/b.txt", extra.path().display());

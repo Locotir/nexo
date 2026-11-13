@@ -706,14 +706,19 @@ async fn only_a_command_that_did_not_run_to_the_end_is_a_failure() {
             _ => panic!("{cmd}"),
         }
     }
-    // not found (127), not runnable (126), a signal's code and a timeout are failures
-    let out = Bash.run(json!({"command": "no_such_program_xyz"}), &c).await;
-    assert!(out.is_error && out.content.ends_with("[exit code 127]"), "{}", out.content);
-    std::fs::write(d.path().join("noexec"), "echo hi").unwrap();
-    let out = Bash.run(json!({"command": "./noexec"}), &c).await;
-    assert!(out.is_error && out.content.ends_with("[exit code 126]"), "{}", out.content);
-    let out = Bash.run(json!({"command": "sh -c 'kill -SEGV $$'"}), &c).await;
-    assert!(out.is_error, "{}", out.content);
+    // not found (127), not runnable (126) and a signal are failures: unix exec semantics,
+    // so the Windows shell (which maps these differently) does not run them
+    #[cfg(unix)]
+    {
+        let out = Bash.run(json!({"command": "no_such_program_xyz"}), &c).await;
+        assert!(out.is_error && out.content.ends_with("[exit code 127]"), "{}", out.content);
+        std::fs::write(d.path().join("noexec"), "echo hi").unwrap();
+        let out = Bash.run(json!({"command": "./noexec"}), &c).await;
+        assert!(out.is_error && out.content.ends_with("[exit code 126]"), "{}", out.content);
+        let out = Bash.run(json!({"command": "sh -c 'kill -SEGV $$'"}), &c).await;
+        assert!(out.is_error, "{}", out.content);
+    }
+    // a timeout is a failure on every platform
     let out = Bash.run(json!({"command": "echo start; sleep 30; echo never", "timeout": 1}), &c).await;
     assert!(out.is_error && out.content.contains("timed out"), "{}", out.content);
 }
