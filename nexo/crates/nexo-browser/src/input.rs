@@ -15,29 +15,29 @@ const MODIFIERS: [(&[&str], &str, i64); 4] = [
 
 const ALT: i64 = 1;
 const SHORTCUT: i64 = 2 | 4;
-const SHIFT: i64 = 8;
+pub(crate) const SHIFT: i64 = 8;
 
 /// A key plus the modifiers held while it is pressed.
-struct Combo {
-    modifiers: Vec<(&'static KeyDefinition, i64)>,
-    key: String,
-    def: &'static KeyDefinition,
+pub(crate) struct Combo {
+    pub(crate) modifiers: Vec<(&'static KeyDefinition, i64)>,
+    pub(crate) key: String,
+    pub(crate) def: &'static KeyDefinition,
 }
 
 impl Combo {
     /// What the key types: its own text, or the key itself when it is one character.
-    fn text(&self) -> Option<String> {
+    pub(crate) fn text(&self) -> Option<String> {
         let single = self.key.chars().count() == 1;
         self.def.text.map(str::to_string).or_else(|| single.then(|| self.key.clone()))
     }
 }
 
-fn unknown(key: &str) -> Error {
+pub(crate) fn unknown(key: &str) -> Error {
     Error::Unusable { target: key.to_string(), reason: "unknown key".to_string() }
 }
 
 /// `None` when the token is a single key, not a combo.
-fn parse(token: &str) -> Option<Result<Combo>> {
+pub(crate) fn parse(token: &str) -> Option<Result<Combo>> {
     let mut parts: Vec<&str> = token.split('+').filter(|p| !p.is_empty()).collect();
     if token.ends_with("++") {
         parts.push("+");
@@ -73,7 +73,7 @@ fn capitalize(s: &str) -> String {
 }
 
 /// The editing command a shortcut stands for; headless Chrome does not map shortcuts to commands itself.
-fn command_for(mask: i64, key: &str) -> Option<&'static str> {
+pub(crate) fn command_for(mask: i64, key: &str) -> Option<&'static str> {
     let shifted = mask & SHIFT != 0;
     if mask & SHORTCUT == 0 || mask & ALT != 0 {
         return None;

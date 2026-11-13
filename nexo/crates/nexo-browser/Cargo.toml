@@ -19,3 +19,13 @@ regex = { workspace = true }
 base64 = { workspace = true }
 png = "=0.18.1"
 gif = { version = "=0.14.2", default-features = false, features = ["std", "color_quant"] }
+font8x8 = { version = "=0.3.1", default-features = false }
+nexo-relay = { workspace = true }
+
+# Windows: App Paths registry lookup and the job object that ends the browser with nexo (pure bindings, MIT/Apache-2.0)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Registry", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
+
+[dev-dependencies]
+nexo-browser-host = { path = "../nexo-browser-host" }
+async-tungstenite = { version = "0.32.1", features = ["tokio-runtime"] }

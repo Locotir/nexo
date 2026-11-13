@@ -148,6 +148,7 @@ pub fn model_choices(cfg: &Config) -> Vec<(String, String)> {
 /// fetch the task's own solution.
 fn session_builtins(cfg: &Config) -> ToolSet {
     let mut tools = nexo_tools::builtin_with(&cfg.web);
+    tools.add(Arc::new(nexo_tools::browser::BrowserTool::with_config(cfg.browser.clone())));
     if cfg.agent.hermetic {
         tools.remove("web_fetch");
         tools.remove("web_search");
@@ -799,6 +800,13 @@ post_write_check_secs = 45         # seconds before that check is killed; a comm
 search = "auto"                     # auto | duckduckgo | tavily | brave | exa | searxng
 # url = "https://searx.example.org" # SearXNG's address (or another one for the chosen backend)
 # keys: TAVILY_API_KEY, BRAVE_API_KEY, EXA_API_KEY in the environment
+
+[browser]
+# source = "installed"               # installed (your Chrome, Chromium or Edge); own-chrome is not available yet (set path instead); auto = installed
+# profile = "ephemeral"              # ephemeral: clean, deleted at close | persistent: kept in ~/.nexo/browser/profile, so you sign in to a site once
+# headless = true                   # hide the window; unset: hidden for ephemeral, shown for persistent (so you can sign in)
+# path = "/usr/bin/google-chrome"   # the browser program, instead of searching for one
+# window = "1280x800"               # window size
 
 # [mcp.filesystem]
 # command = "npx"

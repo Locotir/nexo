@@ -27,6 +27,8 @@ pub struct Config {
     pub mcp: BTreeMap<String, McpServerConfig>,
     pub ui: UiConfig,
     pub web: WebConfig,
+    /// How the `browser` tool starts its browser (`[browser]`).
+    pub browser: BrowserConfig,
     /// Behaviour of the built-in tools (`[tools]`).
     pub tools: ToolsConfig,
     /// What nexo reads of other coding agents' files (`[compat]`).
@@ -287,6 +289,10 @@ impl Config {
         if self.web.api_key_env.take().is_some() {
             out.push("web.api_key_env".into());
         }
+        // a program the project names would run on the person's machine
+        if self.browser.path.take().is_some() {
+            out.push("browser.path".into());
+        }
         out
     }
 
@@ -443,6 +449,9 @@ pub fn rule_path(p: &Path) -> String {
 mod tests;
 
 #[cfg(test)]
+mod browser_tests;
+
+#[cfg(test)]
 mod ui_tests;
 
 #[cfg(test)]
@@ -458,6 +467,8 @@ mod ui_settings;
 pub use ui_settings::*;
 mod tool_settings;
 pub use tool_settings::*;
+mod browser_settings;
+pub use browser_settings::*;
 mod unknown_keys;
 pub use unknown_keys::*;
 mod trust;

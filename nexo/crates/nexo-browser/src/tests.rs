@@ -24,6 +24,8 @@ const FORM: &str = r##"<!doctype html><html><body>
 <script>
 window.log = [];
 for (const t of ['input', 'change']) document.addEventListener(t, (e) => window.log.push(t + ':' + e.target.id));
+// Started by the test right before it looks for #late, so the gap does not depend on how loaded the machine is.
+window.later = () => { setTimeout(() => { const p = document.createElement('p'); p.id = 'late'; p.textContent = 'arrived'; document.body.appendChild(p); }, 600); return true; };
 </script>
 </body></html>"##;
 
@@ -54,7 +56,7 @@ async fn drives_a_local_page() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("page.html");
     std::fs::write(&file, PAGE).unwrap();
-    let url = format!("file://{}", file.display());
+    let url = crate::platform::file_url(&file.to_string_lossy());
 
     let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
     browser.navigate(&url).await.unwrap();
@@ -87,7 +89,7 @@ fn write_page(html: &str) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("page.html");
     std::fs::write(&file, html).unwrap();
-    let url = format!("file://{}", file.display());
+    let url = crate::platform::file_url(&file.to_string_lossy());
     (dir, url)
 }
 
@@ -152,14 +154,10 @@ async fn fills_and_submits_a_form() {
     let res = browser.read_text(Some("#res")).await.unwrap();
     assert!(res.starts_with("sent ") && res.contains("name=Ada") && res.contains("country=us"), "{res}");
 
-    // Wait for something that arrives 1.5 s after it is armed, then for something that never does. Armed here
-    // and not at page load: on a loaded machine the steps above took longer than a load-time delay.
-    browser
-        .eval("setTimeout(() => { const p = document.createElement('p'); p.id = 'late'; p.textContent = 'arrived'; document.body.appendChild(p); }, 1500); 0")
-        .await
-        .unwrap();
+    // Wait for something that arrives 600 ms after it is started, then for something that never does.
+    assert!(browser.eval_as::<bool>("window.later()").await.unwrap());
     assert!(matches!(browser.read_text(Some("#late")).await, Err(Error::NotFound(_))));
-    browser.wait(Wait::Selector("#late", 5_000)).await.unwrap();
+    browser.wait(Wait::Selector("#late", 3_000)).await.unwrap();
     assert_eq!(browser.read_text(Some("#late")).await.unwrap(), "arrived");
     assert!(matches!(browser.wait(Wait::Selector("#never", 200)).await, Err(Error::NotFound(_))));
     browser.wait(Wait::Millis(10)).await.unwrap();
@@ -374,7 +372,7 @@ async fn records_a_gif() {
     let out = dir.path().join("rec.gif");
 
     let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
-    browser.navigate(&format!("file://{}", file.display())).await.unwrap();
+    browser.navigate(&crate::platform::file_url(&file.to_string_lossy())).await.unwrap();
     assert!(matches!(browser.record_stop_gif(&out).await, Err(Error::Unusable { .. })));
     browser.record_start(RecordOptions::default()).await.unwrap();
     assert!(matches!(browser.record_start(RecordOptions::default()).await, Err(Error::Unusable { .. })));
@@ -392,5 +390,117 @@ async fn records_a_gif() {
     assert!(frames > 1, "expected several frames, got {frames}");
     assert_eq!(frames, summary.frames);
 
+    browser.close().await.unwrap();
+}
+
+const STATIC_PAGE: &str = r##"<!doctype html><html><body style="margin:0;background:#fff">
+<button id="b" style="position:absolute;left:300px;top:200px;width:120px;height:40px"
+  onclick="document.body.style.background='#ddf'">Press me</button>
+</body></html>"##;
+
+/// Every frame of a GIF as RGBA pixels.
+fn decode_gif(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let mut decoder = options.read_info(std::io::Cursor::new(bytes)).unwrap();
+    let mut frames = Vec::new();
+    while let Some(frame) = decoder.read_next_frame().unwrap() {
+        frames.push(frame.buffer.to_vec());
+    }
+    frames
+}
+
+fn count_pixels(frames: &[Vec<u8>], hit: impl Fn(u8, u8, u8) -> bool) -> usize {
+    frames.iter().flat_map(|f| f.as_chunks::<4>().0.iter()).filter(|p| hit(p[0], p[1], p[2])).count()
+}
+
+fn orange(r: u8, g: u8, b: u8) -> bool {
+    r >= 220 && (90..=170).contains(&g) && b <= 70
+}
+
+fn red(r: u8, g: u8, b: u8) -> bool {
+    r >= 190 && g <= 90 && b <= 90
+}
+
+#[tokio::test]
+async fn records_actions_and_draws_them_on_the_exported_gif() {
+    if find_browser().is_none() {
+        eprintln!("skipped: no chrome");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("static.html");
+    std::fs::write(&file, STATIC_PAGE).unwrap();
+
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&format!("file://{}", file.display())).await.unwrap();
+
+    // Nothing to stop, export or clear yet; actions are ignored while nothing records.
+    assert!(!browser.recording() && browser.record_info().is_none());
+    assert!(matches!(browser.record_stop().await, Err(Error::Unusable { .. })));
+    assert!(matches!(
+        browser.record_export(dir.path().join("x.gif"), &ExportOptions::default()).await,
+        Err(Error::Unusable { .. })
+    ));
+    assert!(matches!(browser.record_clear().await, Err(Error::Unusable { .. })));
+    browser.record_note_click("click", "Press me").await;
+    assert!(browser.record_info().is_none());
+
+    browser.record_start(RecordOptions::default()).await.unwrap();
+    assert!(browser.recording());
+    browser.wait(Wait::Millis(250)).await.unwrap();
+    // The click is logged before it happens, at the centre of the button (viewport 800x600: 300+60, 200+20).
+    browser.record_note_click("click", "Press me").await;
+    browser.click("Press me").await.unwrap();
+    browser.wait(Wait::Millis(300)).await.unwrap();
+    browser.record_note(ActionEvent::drag("drag", 50.0, 50.0, 250.0, 120.0));
+    browser.wait(Wait::Millis(300)).await.unwrap();
+
+    let info = browser.record_stop().await.unwrap();
+    assert!(!info.running && !browser.recording());
+    assert!(info.frames >= 1, "{info:?}");
+    assert_eq!(info.events, 2);
+    // A stopped recording logs nothing more and cannot be started over.
+    browser.record_note(ActionEvent::other("late"));
+    assert_eq!(browser.record_info().unwrap().events, 2);
+    assert!(matches!(browser.record_start(RecordOptions::default()).await, Err(Error::Unusable { .. })));
+
+    // Plain export: the frames as captured, no orange or red anywhere.
+    let plain = dir.path().join("plain.gif");
+    let s = browser.record_export(&plain, &ExportOptions::plain()).await.unwrap();
+    let bytes = std::fs::read(&plain).unwrap();
+    assert!(bytes.starts_with(b"GIF8") && s.bytes == bytes.len() as u64);
+    let frames = decode_gif(&bytes);
+    assert_eq!(frames.len(), s.frames);
+    assert_eq!(count_pixels(&frames, orange), 0);
+    assert_eq!(count_pixels(&frames, red), 0);
+
+    // Clicks only: the page was still, so the circle is drawn on repeated frames, and it is orange.
+    let rich = dir.path().join("rich.gif");
+    let only_clicks = ExportOptions { clicks: true, ..ExportOptions::plain() };
+    let s = browser.record_export(&rich, &only_clicks).await.unwrap();
+    let frames = decode_gif(&std::fs::read(&rich).unwrap());
+    assert!(frames.len() > 1 && frames.len() == s.frames, "{} frames", frames.len());
+    assert!(count_pixels(&frames, orange) > 100, "no orange click circle");
+    assert_eq!(count_pixels(&frames, red), 0, "drags were off");
+
+    // Drags only: a red arrow, no orange.
+    let drag = dir.path().join("drag.gif");
+    browser.record_export(&drag, &ExportOptions { drags: true, ..ExportOptions::plain() }).await.unwrap();
+    let frames = decode_gif(&std::fs::read(&drag).unwrap());
+    assert!(count_pixels(&frames, red) > 100, "no red drag arrow");
+    assert_eq!(count_pixels(&frames, orange), 0);
+
+    // Everything on, at another quality, still a valid GIF of several frames.
+    let all = dir.path().join("all.gif");
+    let s = browser.record_export(&all, &ExportOptions { quality: 20, ..ExportOptions::default() }).await.unwrap();
+    assert!(s.frames > 1 && s.millis >= 500 && decode_gif(&std::fs::read(&all).unwrap()).len() == s.frames);
+
+    // Clearing discards it and frees the recorder for a new one.
+    let cleared = browser.record_clear().await.unwrap();
+    assert_eq!(cleared.events, 2);
+    assert!(browser.record_info().is_none());
+    browser.record_start(RecordOptions::default()).await.unwrap();
+    assert!(browser.recording());
     browser.close().await.unwrap();
 }

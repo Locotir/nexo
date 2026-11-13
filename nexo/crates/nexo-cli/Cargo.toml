@@ -18,8 +18,11 @@ bench = ["dep:nexo-bench"]
 
 [dependencies]
 nexo-core = { workspace = true }
+nexo-relay = { workspace = true }
+nexo-browser-host = { workspace = true }
 nexo-providers = { workspace = true }
 nexo-tools = { workspace = true }
+nexo-browser = { workspace = true }
 nexo-agent = { workspace = true }
 nexo-bin = { workspace = true }
 nexo-dbg = { workspace = true }

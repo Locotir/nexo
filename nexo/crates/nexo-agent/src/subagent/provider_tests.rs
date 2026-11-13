@@ -28,8 +28,14 @@ fn cfg(default: &str, models: &[&str]) -> ProviderConfig {
 const FIXED_8K: u64 = 1_900;
 const FIXED_32K: u64 = 2_400;
 
-/// The most characters the tools of a new session may take in a request (see the test that reads it).
-const SCHEMA_CEILING: usize = 11_472;
+/// The most characters the tools of a new session may take in a request (see the test that reads it). 11 472 until
+/// the browser verbs (back to type_text, and `batch`) went in with 28 more; 11 595 with the four recording verbs
+/// of the browser (`start_recording`, `stop_recording`, `export_gif{value?,gif?}`, `clear_recording`: 94 more).
+/// `read_page` and its four parameters (filter, depth, ref_id, max_chars) add 186 to the browser's short text.
+/// The browser's `open` action with its `profile` and `visible` added about 230, and `browsers`, `select_browser` and
+/// `switch_browser` 94 more; trimming the browser's short text took 208 off (the rules for the person's own browser come in
+/// the result of `select_browser`).
+const SCHEMA_CEILING: usize = 11_902;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
 const TASK_WITH_OWN_KINDS: usize = 1_845;

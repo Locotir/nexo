@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "nexo: the Chrome native-messaging host the nexo browser extension talks to"
+description = "nexo: the Chrome native-messaging host that bridges the nexo browser extension to nexo agents"
 
 [lib]
 path = "src/lib.rs"
@@ -15,4 +15,9 @@ name = "nexo-browser-host"
 path = "src/main.rs"
 
 [dependencies]
+nexo-relay = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

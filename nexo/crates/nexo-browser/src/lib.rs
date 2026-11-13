@@ -1,19 +1,35 @@
 //! Native browser control for nexo: launches the installed Chrome, Chromium or Edge, drives it over the
 //! DevTools Protocol and shows the page as a snapshot of actionable elements with stable refs.
 
+mod any;
 mod error;
 mod events;
+mod export;
 mod input;
+mod overlay;
+mod platform;
+mod profile;
+#[cfg(test)]
+mod profile_tests;
+#[cfg(test)]
+mod readpage_tests;
 mod record;
+mod recording;
+mod relay;
 mod snapshot;
 mod tabs;
 #[cfg(test)]
 mod tests;
 
+pub use any::AnyBrowser;
 pub use error::{Error, Result};
 pub use events::{ConsoleEntry, NetEntry};
-pub use record::{RecordOptions, RecordSummary};
-pub use snapshot::{Element, Snapshot};
+pub use export::ExportOptions;
+pub use platform::{find_browser, installed_browsers, InstalledBrowser, OVERRIDE_VAR};
+pub use profile::{has_display, preflight};
+pub use record::{ActionEvent, ActionKind, RecordInfo, RecordOptions, RecordSummary};
+pub use relay::{browsers, BrowserEntry, RelayBrowser};
+pub use snapshot::{Element, Filter, PageTree, ReadPageOptions, Snapshot, DEFAULT_DEPTH, DEFAULT_MAX_CHARS};
 pub use tabs::TabInfo;
 
 use chromiumoxide::browser::{Browser as Chrome, BrowserConfig};
@@ -33,12 +49,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tabs::Tabs;
-use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
-/// Browser binaries tried, in this order, along `PATH`.
-const CANDIDATES: [&str; 5] =
-    ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "microsoft-edge"];
+/// The window of a browser launched without a size of its own, in pixels.
+pub const DEFAULT_WINDOW: (u32, u32) = (1280, 800);
 
 /// Longest a [`Wait`] may last, in milliseconds.
 pub const WAIT_CAP_MS: u64 = 5_000;
@@ -60,11 +74,13 @@ pub struct LaunchOptions {
     pub executable: Option<PathBuf>,
     pub headless: bool,
     pub profile: Profile,
+    /// Window size in pixels; `None`: [`DEFAULT_WINDOW`].
+    pub window: Option<(u32, u32)>,
 }
 
 impl Default for LaunchOptions {
     fn default() -> Self {
-        Self { executable: None, headless: true, profile: Profile::Ephemeral }
+        Self { executable: None, headless: true, profile: Profile::Ephemeral, window: None }
     }
 }
 
@@ -94,14 +110,12 @@ impl FillReport {
     }
 }
 
-/// The first installed browser found on `PATH`, if any.
-pub fn find_browser() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
-    CANDIDATES.iter().find_map(|name| {
-        let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-        dirs.iter().map(|d| d.join(&file)).find(|p| p.is_file())
-    })
+/// Plain text read from a page, and where on the page it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageText {
+    pub text: String,
+    /// `selector` for a CSS selector, else `article`, `main`, `densest block <tag#id.class>` or `body`.
+    pub source: String,
 }
 
 /// A running browser. The verbs act on the active tab ([`Browser::tabs`]). An ephemeral profile is deleted on
@@ -112,31 +126,32 @@ pub struct Browser {
     buffers: events::Buffers,
     handler: JoinHandle<()>,
     recorder: Mutex<Option<record::Recorder>>,
-    _profile: Option<TempDir>,
+    guard: Option<platform::ProcessGuard>,
+    profile: Option<platform::TempProfile>,
+    dir: PathBuf,
+    headless: bool,
 }
 
 impl Browser {
     pub async fn launch(opts: LaunchOptions) -> Result<Browser> {
-        let exe = match opts.executable {
-            Some(p) if Path::new(&p).is_file() => p,
-            Some(p) => return Err(Error::BadExecutable(p)),
-            None => find_browser().ok_or_else(|| Error::NoBrowser { tried: CANDIDATES.join(", ") })?,
-        };
-        let (profile, dir) = match opts.profile {
-            Profile::Ephemeral => {
-                let tmp = tempfile::Builder::new().prefix("nexo-browser-").tempdir()?;
-                let dir = tmp.path().to_path_buf();
-                (Some(tmp), dir)
-            }
-            Profile::Persistent(dir) => {
-                std::fs::create_dir_all(&dir)?;
-                (None, dir)
-            }
-        };
-        let mut cfg = BrowserConfig::builder().chrome_executable(exe).user_data_dir(dir).no_sandbox();
+        let exe = profile::resolve_executable(opts.executable)?;
+        if !opts.headless {
+            profile::require_display()?;
+        }
+        let (profile, dir) = profile::open(opts.profile)?;
+        let (width, height) = opts.window.unwrap_or(DEFAULT_WINDOW);
+        // No viewport emulation: the page fills the window, so a visible window and a headless one look alike.
+        let mut cfg = BrowserConfig::builder()
+            .chrome_executable(exe)
+            .user_data_dir(&dir)
+            .no_sandbox()
+            .window_size(width, height)
+            .viewport(None)
+            .launch_timeout(platform::LAUNCH_TIMEOUT);
         cfg = if opts.headless { cfg.new_headless_mode() } else { cfg.with_head() };
         let cfg = cfg.build().map_err(Error::Config)?;
-        let (chrome, mut events) = Chrome::launch(cfg).await?;
+        let (mut chrome, mut events) = Chrome::launch(cfg).await?;
+        let guard = platform::ProcessGuard::adopt(chrome.get_mut_child().and_then(|c| c.as_mut_inner().id()));
         // The event stream must be polled before the first command or every command hangs.
         let handler = tokio::spawn(async move { while events.next().await.is_some() {} });
         let buffers = events::Buffers::default();
@@ -160,7 +175,10 @@ impl Browser {
                     buffers,
                     handler,
                     recorder: Mutex::new(None),
-                    _profile: profile,
+                    guard: Some(guard),
+                    profile,
+                    dir,
+                    headless: opts.headless,
                 })
             }
             Err(e) => {
@@ -170,8 +188,9 @@ impl Browser {
         }
     }
 
+    /// Loads a URL. A local path (`C:\Users\me\page.html`, `/tmp/page.html`) is opened as a `file://` URL.
     pub async fn navigate(&self, url: &str) -> Result<()> {
-        self.page().goto(url).await?;
+        self.page().goto(platform::navigable(url).as_ref()).await?;
         Ok(())
     }
 
@@ -181,32 +200,62 @@ impl Browser {
         Ok(self.page().screenshot(params).await?)
     }
 
-    /// Visible text of the page, or of the first element matching the CSS selector.
+    /// Visible text of the page, or of the first element matching the CSS selector. Without a selector it is the
+    /// main content of the page (see [`Browser::page_text`]).
     pub async fn read_text(&self, selector: Option<&str>) -> Result<String> {
+        Ok(self.page_text(selector).await?.text)
+    }
+
+    /// Plain text of the page. With a CSS selector: the first element matching it. Without one: the main content,
+    /// the `<article>` or `<main>` (or `role=main`) holding most of the text, else the densest block of
+    /// paragraphs, else the whole body; [`PageText::source`] says which, so a caller can ask for `body` when the
+    /// pick was too narrow.
+    pub async fn page_text(&self, selector: Option<&str>) -> Result<PageText> {
         #[derive(Deserialize)]
         struct Reply {
             found: bool,
             text: String,
+            source: String,
         }
-        let selector = selector.unwrap_or("body");
-        let sel = serde_json::to_string(selector)?;
-        // Always a string: a bare null does not cross the protocol reliably, and the text may be empty.
-        let js = format!(
-            "(() => {{ const el = document.querySelector({sel}); \
-             return JSON.stringify({{ found: !!el, text: el ? (el.innerText ?? el.textContent ?? '') : '' }}); }})()"
-        );
+        let arg = serde_json::to_string(&selector)?;
+        // The page answers with a string: a bare null does not cross the protocol reliably, and the text may be empty.
+        let js = format!("({PAGE_TEXT_JS})({arg})");
         let reply: Reply = serde_json::from_str(&self.eval_as::<String>(&js).await?)?;
         if reply.found {
-            Ok(reply.text)
+            Ok(PageText { text: reply.text, source: reply.source })
         } else {
-            Err(Error::NotFound(selector.to_string()))
+            Err(Error::NotFound(selector.unwrap_or("body").to_string()))
         }
     }
 
     /// The actionable elements of the page, each carrying a ref that [`Browser::click`] accepts.
     pub async fn snapshot(&self) -> Result<Snapshot> {
-        let json = self.eval_as::<String>(snapshot::SNAPSHOT_JS).await?;
-        Ok(Snapshot { elements: serde_json::from_str(&json)? })
+        let opts = ReadPageOptions { filter: Filter::Interactive, depth: 1_000, ..Default::default() };
+        let reply: snapshot::TreeReply =
+            serde_json::from_str(&self.eval_as::<String>(&snapshot::tree_call(&opts)).await?)?;
+        Ok(Snapshot { elements: reply.elements() })
+    }
+
+    /// The page as a tree: with [`Filter::All`] headings, landmarks, lists, tables, images, text and elements that
+    /// are not visible (marked), with [`Filter::Interactive`] only the visible actionable ones. Every element that can
+    /// be pointed at carries a ref `e3` that click, fill, hover and the rest accept, the same refs as
+    /// [`Browser::snapshot`]. `ref_id` reads the subtree of one element; a ref that matches nothing is
+    /// [`Error::NotFound`].
+    pub async fn read_page(&self, opts: &ReadPageOptions) -> Result<PageTree> {
+        if let Some(r) = &opts.ref_id {
+            if !is_ref(r) {
+                return Err(Error::Unusable {
+                    target: r.clone(),
+                    reason: "ref_id must be a ref such as e12".to_string(),
+                });
+            }
+        }
+        let reply: snapshot::TreeReply =
+            serde_json::from_str(&self.eval_as::<String>(&snapshot::tree_call(opts)).await?)?;
+        if !reply.found {
+            return Err(Error::NotFound(opts.ref_id.clone().unwrap_or_default()));
+        }
+        Ok(snapshot::render_tree(&reply, opts))
     }
 
     /// Clicks the element with this ref (`e3`), or else the first visible element whose text equals the
@@ -319,40 +368,29 @@ impl Browser {
         }
     }
 
-    /// Starts recording the active tab. Frames are captured as the page changes until [`Browser::record_stop_gif`].
-    /// Only one recording runs at a time.
-    pub async fn record_start(&self, opts: RecordOptions) -> Result<()> {
-        if lock(&self.recorder).is_some() {
-            return Err(Error::Unusable { target: "recording".to_string(), reason: "already recording".to_string() });
-        }
-        let recorder = record::Recorder::start(self.page(), &opts).await?;
-        *lock(&self.recorder) = Some(recorder);
-        Ok(())
-    }
-
-    /// Stops the recording and writes it to `path` as a looping animated GIF, with each frame shown for as long as
-    /// it was on screen.
-    pub async fn record_stop_gif(&self, path: impl AsRef<Path>) -> Result<RecordSummary> {
-        let recorder = lock(&self.recorder).take().ok_or_else(|| Error::Unusable {
-            target: "recording".to_string(),
-            reason: "no recording in progress".to_string(),
-        })?;
-        let frames = recorder.stop().await?;
-        let path = path.as_ref().to_path_buf();
-        tokio::task::spawn_blocking(move || record::encode_gif(&frames, &path))
-            .await
-            .map_err(|e| Error::Encode(e.to_string()))?
-    }
-
     /// Closes the browser. An ephemeral profile is deleted; a persistent one is kept.
     pub async fn close(mut self) -> Result<()> {
-        let closed = self.chrome.close().await;
-        let _ = self.chrome.wait().await;
+        // A browser that hangs must not hang its caller: ask it to quit, and kill it when it does not.
+        let closed = match tokio::time::timeout(platform::CLOSE_GRACE, self.chrome.close()).await {
+            Ok(r) => r.map(drop).map_err(Error::from),
+            Err(_) => {
+                Err(Error::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "the browser did not quit when asked")))
+            }
+        };
+        if tokio::time::timeout(platform::CLOSE_GRACE, self.chrome.wait()).await.is_err() {
+            let _ = self.chrome.kill().await;
+            let _ = tokio::time::timeout(platform::CLOSE_GRACE, self.chrome.wait()).await;
+        }
         lock(&self.tabs).tasks.iter().for_each(JoinHandle::abort);
         drop(lock(&self.recorder).take());
         self.handler.abort();
-        closed?;
-        Ok(())
+        // Helper processes can outlive the main one and keep profile files open; end them, then delete the
+        // profile, waiting out any lock that is still held.
+        self.guard = None;
+        if let Some(profile) = self.profile.take() {
+            let _ = tokio::task::spawn_blocking(move || profile.remove()).await;
+        }
+        closed
     }
 
     /// Goes one page back in the history of the active tab.
@@ -421,8 +459,9 @@ impl Browser {
             t.current = t.pages.len() - 1;
             t.current
         };
-        if url != "about:blank" {
-            page.goto(url).await?;
+        let target = platform::navigable(url);
+        if target != "about:blank" {
+            page.goto(target.as_ref()).await?;
         }
         Ok(index)
     }
@@ -465,7 +504,7 @@ impl Browser {
 
     /// Sets the file of an `<input type=file>` (ref, CSS selector or label), as if picked in the dialog.
     pub async fn upload(&self, target: &str, path: impl AsRef<Path>) -> Result<()> {
-        let file = std::fs::canonicalize(path)?;
+        let file = platform::existing_file(path.as_ref())?;
         self.act_one("mark", target, "").await?;
         let found = self.page().find_element(MARKED_SELECTOR).await;
         let is_file = self.eval_as::<bool>(MARKED_IS_FILE_JS).await.unwrap_or(false);
@@ -596,6 +635,9 @@ fn no_tab(index: usize) -> Error {
 fn is_ref(s: &str) -> bool {
     s.strip_prefix('e').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
+
+/// The page-side half of [`Browser::page_text`]: a function of an optional CSS selector.
+const PAGE_TEXT_JS: &str = include_str!("page_text.js");
 
 /// The page-side half of the interaction verbs: one function taking a verb and `[target, value]` pairs.
 const ACT_JS: &str = include_str!("act.js");

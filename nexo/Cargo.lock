@@ -858,6 +858,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "font8x8"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e"
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1828,10 +1834,14 @@ dependencies = [
 name = "nexo-browser"
 version = "0.1.0"
 dependencies = [
+ "async-tungstenite",
  "base64 0.23.1",
  "chromiumoxide",
+ "font8x8",
  "futures",
  "gif",
+ "nexo-browser-host",
+ "nexo-relay",
  "png",
  "regex",
  "serde",
@@ -1839,13 +1849,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nexo-browser-host"
 version = "0.1.0"
 dependencies = [
+ "nexo-relay",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1862,9 +1876,12 @@ dependencies = [
  "nexo-agent",
  "nexo-bench",
  "nexo-bin",
+ "nexo-browser",
+ "nexo-browser-host",
  "nexo-core",
  "nexo-dbg",
  "nexo-providers",
+ "nexo-relay",
  "nexo-tools",
  "nexo-tui",
  "reqwest",
@@ -1949,6 +1966,21 @@ dependencies = [
  "tracing",
  "uuid",
  "webpki-root-certs",
+]
+
+[[package]]
+name = "nexo-relay"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "libc",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

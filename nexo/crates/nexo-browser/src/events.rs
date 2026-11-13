@@ -16,6 +16,8 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 
+mod relay;
+
 /// Entries kept per buffer; the oldest are dropped first.
 const BUFFER_CAP: usize = 1_000;
 

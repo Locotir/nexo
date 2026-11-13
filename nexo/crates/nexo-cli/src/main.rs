@@ -29,7 +29,35 @@ mod worktree;
 /// The stack of the thread the CLI runs on: what Linux gives a main thread.
 const STACK: usize = 8 << 20;
 
+/// The browser starts nexo as the native-messaging host of the nexo extension with the extension's origin as its
+/// argument (`nexo chrome-extension://<id>/`, plus `--parent-window=N` on Windows); `nexo browser-host` does the same
+/// by hand. Stdout belongs to the protocol, so this runs before anything else can print.
+fn browser_host_mode() -> bool {
+    let first = std::env::args().nth(1).unwrap_or_default();
+    first == "browser-host" || first.starts_with("chrome-extension://")
+}
+
+fn run_browser_host() -> i32 {
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("nexo browser-host: {e}");
+            return 1;
+        }
+    };
+    match rt.block_on(nexo_browser_host::run_stdio()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("nexo browser-host: {e}");
+            1
+        }
+    }
+}
+
 fn main() {
+    if browser_host_mode() {
+        std::process::exit(run_browser_host());
+    }
     nexo_core::version::set(env!("NEXO_VERSION"));
     // The local UTC offset can only be read while the process has one thread.
     nexo_agent::budget::init_local_offset();

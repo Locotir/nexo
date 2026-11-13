@@ -1,0 +1,25 @@
+[package]
+name = "nexo-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nexo: the wire between the nexo agent and the browser native-messaging host (frames, chunks, token, local endpoint)"
+
+[dependencies]
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Security_Authorization", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

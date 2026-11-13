@@ -14,6 +14,12 @@ fn tool_text_chars() -> usize {
 /// 10135 characters (about 2500 tokens) when this budget was set, after the text said twice was taken out
 /// (the budget before it was 12150); it may grow 5% and no more (10650). The `browser` tool then added its
 /// 1989 (12124 in all; a request carries only its short text, as it is a rare tool): 12640.
+/// The gif_creator actions (start_recording, stop_recording, export_gif, clear_recording: 4 enum values, the
+/// `gif` options object and the export path in `value`) then added 209, after trimming them to the bare names: 12850.
+/// `read_page` (action, filter, depth, ref_id, max_chars) then added 372: 13222; its `open` action with `profile` and `visible` took 292 more: 13514. Then 306 more for
+/// `browsers`, `select_browser` and `switch_browser` (the person's own logged-in browser): 13820; the merged tool text then measured 22 more: 13842.
+/// Trimming the browser text took 352 off (the rules for the person's own browser come in the result of
+/// `select_browser`, not in the tool text): 13490.
 /// A tool description says what is nexo's own (limits, errors, what saves steps), never what a
 /// model already knows about shells and search tools, and a parameter gets a description only for what its
 /// name and the tool description do not say.
@@ -21,7 +27,7 @@ fn tool_text_chars() -> usize {
 fn the_tool_text_stays_within_its_budget() {
     let n = tool_text_chars();
     // the `bash` description names the shell it found: on Windows that phrase is up to 43 characters longer than `sh -c`
-    let budget = if cfg!(windows) { 12_690 } else { 12_640 };
+    let budget = if cfg!(windows) { 13_540 } else { 13_490 };
     assert!(n <= budget, "tool descriptions and guidance take {n} characters; the budget is {budget}");
 }
 

@@ -1,4 +1,5 @@
-//! Screen recording: the page is streamed over `Page.startScreencast` and encoded to an animated GIF.
+//! Screen recording: the page is streamed over `Page.startScreencast` and kept in memory, together with a log of
+//! the actions taken meanwhile, until it is exported as an animated GIF (see `export.rs`).
 
 use crate::{lock, Error, Result};
 use base64::Engine;
@@ -8,18 +9,12 @@ use chromiumoxide::cdp::browser_protocol::page::{
 use chromiumoxide::page::Page;
 use futures::StreamExt;
 use serde::Serialize;
-use std::io::Cursor;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::task::JoinHandle;
 
-/// Shortest frame delay browsers honour, in 1/100 s (anything lower is shown as 10).
-const MIN_DELAY_CS: u64 = 2;
-/// Delay of the last frame, which has no successor to measure against, in 1/100 s.
-const LAST_DELAY_CS: u64 = 10;
-/// Palette quantizer speed of the `gif` crate: 1 is best and slowest, 30 fastest.
-const QUANT_SPEED: i32 = 10;
+/// Actions kept in the log at most; later ones are dropped.
+const MAX_EVENTS: usize = 500;
 
 /// How a recording is captured.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,15 +27,26 @@ pub struct RecordOptions {
     pub every_nth_frame: u32,
     /// Frames kept at most; later ones are dropped to bound memory.
     pub max_frames: usize,
+    /// Bytes of PNG kept at most; frames that would go over are dropped.
+    pub max_bytes: usize,
+    /// Seconds of page time kept at most, counted from the first frame; later frames are dropped.
+    pub max_seconds: u64,
 }
 
 impl Default for RecordOptions {
     fn default() -> Self {
-        Self { max_width: 800, max_height: 600, every_nth_frame: 1, max_frames: 300 }
+        Self {
+            max_width: 800,
+            max_height: 600,
+            every_nth_frame: 1,
+            max_frames: 300,
+            max_bytes: 48 * 1024 * 1024,
+            max_seconds: 180,
+        }
     }
 }
 
-/// What a finished recording came to.
+/// What a finished export came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct RecordSummary {
     pub frames: usize,
@@ -50,34 +56,121 @@ pub struct RecordSummary {
     pub bytes: u64,
 }
 
-/// One captured frame: PNG bytes and the time the browser swapped it in, in seconds.
-pub(crate) struct Frame {
-    png: Vec<u8>,
-    at: f64,
+/// What a recording holds right now.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct RecordInfo {
+    /// Still capturing (`false` once stopped).
+    pub running: bool,
+    /// Frames captured.
+    pub frames: usize,
+    /// Actions logged.
+    pub events: usize,
+    /// Page time covered, in milliseconds.
+    pub millis: u64,
+    /// A cap (frames, bytes or time) was hit and later frames were dropped.
+    pub truncated: bool,
 }
 
-/// A screencast in progress on one page; frames collect until [`Recorder::stop`].
+/// What kind of action an [`ActionEvent`] is, which decides how it is drawn on export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionKind {
+    /// A click at a point: an orange circle.
+    Click,
+    /// A drag from one point to another: a red arrow.
+    Drag,
+    /// Anything else: only its label.
+    Other,
+}
+
+/// One browser action taken while recording. Points are in CSS pixels of the viewport.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionEvent {
+    /// Seconds since the Unix epoch; set when the event is logged.
+    pub at: f64,
+    pub kind: ActionKind,
+    pub label: String,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub x2: Option<f64>,
+    pub y2: Option<f64>,
+}
+
+impl ActionEvent {
+    pub fn click(label: impl Into<String>, x: f64, y: f64) -> Self {
+        Self { at: 0.0, kind: ActionKind::Click, label: label.into(), x: Some(x), y: Some(y), x2: None, y2: None }
+    }
+
+    pub fn drag(label: impl Into<String>, x: f64, y: f64, x2: f64, y2: f64) -> Self {
+        Self {
+            at: 0.0,
+            kind: ActionKind::Drag,
+            label: label.into(),
+            x: Some(x),
+            y: Some(y),
+            x2: Some(x2),
+            y2: Some(y2),
+        }
+    }
+
+    pub fn other(label: impl Into<String>) -> Self {
+        Self { at: 0.0, kind: ActionKind::Other, label: label.into(), x: None, y: None, x2: None, y2: None }
+    }
+}
+
+/// Seconds since the Unix epoch.
+pub(crate) fn now() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// One captured frame.
+pub(crate) struct Frame {
+    pub png: Vec<u8>,
+    /// Time the browser swapped it in, in seconds since the epoch.
+    pub at: f64,
+    /// Width of the page the frame shows, in CSS pixels (frame pixels per CSS pixel is its width over this).
+    pub page_width: f64,
+}
+
+#[derive(Default)]
+pub(crate) struct Shared {
+    pub frames: Vec<Frame>,
+    pub events: Vec<ActionEvent>,
+    bytes: usize,
+    pub truncated: bool,
+}
+
+impl Frame {
+    /// A frame from its PNG bytes and capture time in seconds (the relay backend builds them from raw protocol events).
+    pub(crate) fn new(png: Vec<u8>, at: f64) -> Frame {
+        Frame { png, at, page_width: 0.0 }
+    }
+}
+
+/// A recording on one page: capturing until [`Recorder::stop`], then holding its frames until the browser drops it.
 pub(crate) struct Recorder {
     page: Page,
-    frames: Arc<Mutex<Vec<Frame>>>,
-    task: JoinHandle<()>,
+    pub shared: Arc<Mutex<Shared>>,
+    task: Option<JoinHandle<()>>,
+    /// Epoch seconds at which capturing stopped.
+    pub stopped_at: Option<f64>,
 }
 
 impl Drop for Recorder {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
 impl Recorder {
     pub(crate) async fn start(page: Page, opts: &RecordOptions) -> Result<Self> {
-        let frames = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::new(Mutex::new(Shared::default()));
         // The listener goes up before the screencast starts so the first frame is not lost.
         let mut stream = page.event_listener::<EventScreencastFrame>().await?;
-        let sink = Arc::clone(&frames);
+        let sink = Arc::clone(&shared);
         let acker = page.clone();
-        let cap = opts.max_frames.max(1);
-        let began = Instant::now();
+        let (cap, byte_cap, span) = (opts.max_frames.max(1), opts.max_bytes, opts.max_seconds.max(1) as f64);
         let task = tokio::spawn(async move {
             while let Some(event) = stream.next().await {
                 // Chrome sends no further frame until this one is acknowledged.
@@ -86,15 +179,19 @@ impl Recorder {
                 else {
                     continue;
                 };
-                let at =
-                    event.metadata.timestamp.as_ref().map_or_else(|| began.elapsed().as_secs_f64(), |t| *t.inner());
-                let mut frames = lock(&sink);
-                if frames.len() < cap {
-                    frames.push(Frame { png, at });
+                let at = event.metadata.timestamp.as_ref().map_or_else(now, |t| *t.inner());
+                let page_width = event.metadata.device_width;
+                let mut s = lock(&sink);
+                let first = s.frames.first().map_or(at, |f| f.at);
+                if s.frames.len() >= cap || s.bytes + png.len() > byte_cap || at - first > span {
+                    s.truncated = true;
+                    continue;
                 }
+                s.bytes += png.len();
+                s.frames.push(Frame { png, at, page_width });
             }
         });
-        let recorder = Recorder { page, frames, task };
+        let recorder = Recorder { page, shared, task: Some(task), stopped_at: None };
         let params = StartScreencastParams {
             format: Some(StartScreencastFormat::Png),
             quality: None,
@@ -107,83 +204,48 @@ impl Recorder {
         Ok(recorder)
     }
 
-    /// Stops the screencast and hands over the frames captured so far.
-    pub(crate) async fn stop(self) -> Result<Vec<Frame>> {
+    pub(crate) fn running(&self) -> bool {
+        self.task.is_some()
+    }
+
+    /// Stops capturing; the frames and the log stay. Stopping a stopped recording does nothing.
+    pub(crate) async fn stop(&mut self) -> Result<()> {
+        let Some(task) = self.task.take() else { return Ok(()) };
         let stopped = self.page.execute(StopScreencastParams::default()).await;
-        self.task.abort();
-        stopped?;
-        Ok(std::mem::take(&mut *lock(&self.frames)))
+        // Frames the browser already sent are given a moment to reach the sink before the listener goes.
+        tokio::task::yield_now().await;
+        task.abort();
+        self.stopped_at = Some(now());
+        stopped.map(drop).map_err(Error::from)
     }
-}
 
-/// Frame delays in 1/100 s from the gaps between capture times; the last frame gets a fixed one.
-fn delays(times: &[f64]) -> Vec<u16> {
-    let mut out: Vec<u16> = times
-        .windows(2)
-        .map(|w| {
-            let cs = ((w[1] - w[0]).max(0.0) * 100.0).round() as u64;
-            u16::try_from(cs.max(MIN_DELAY_CS)).unwrap_or(u16::MAX)
-        })
-        .collect();
-    out.push(LAST_DELAY_CS as u16);
-    out
-}
-
-fn encode_err(e: impl std::fmt::Display) -> Error {
-    Error::Encode(e.to_string())
-}
-
-/// Decodes a PNG into RGBA8 pixels and its size.
-fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
-    let mut decoder = png::Decoder::new(Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(encode_err)?;
-    let size = reader.output_buffer_size().ok_or_else(|| encode_err("frame too large"))?;
-    let mut buf = vec![0; size];
-    let info = reader.next_frame(&mut buf).map_err(encode_err)?;
-    buf.truncate(info.buffer_size());
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => {
-            buf.as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect()
+    /// Logs an action at the current time; ignored once stopped or when the log is full.
+    pub(crate) fn note(&self, mut event: ActionEvent) {
+        if self.task.is_none() {
+            return;
         }
-        png::ColorType::Indexed => return Err(encode_err("unexpanded palette frame")),
-    };
-    Ok((info.width, info.height, rgba))
-}
+        let mut s = lock(&self.shared);
+        if s.events.len() < MAX_EVENTS {
+            event.at = now();
+            s.events.push(event);
+        }
+    }
 
-/// Encodes frames to a looping GIF at `path`. The canvas is the size of the first frame; frames of another
-/// size (the viewport was resized mid-recording) are skipped.
-pub(crate) fn encode_gif(frames: &[Frame], path: &Path) -> Result<RecordSummary> {
-    let first = frames.first().ok_or_else(|| Error::Unusable {
-        target: "recording".to_string(),
-        reason: "no frames were captured (the page did not change)".to_string(),
-    })?;
-    let (w, h, _) = decode_png(&first.png)?;
-    let (gw, gh) = (u16::try_from(w).map_err(encode_err)?, u16::try_from(h).map_err(encode_err)?);
-    let times: Vec<f64> = frames.iter().map(|f| f.at).collect();
-    let delays = delays(&times);
-
-    let mut out = Vec::new();
-    let mut count = 0;
-    let mut cs_total: u64 = 0;
-    {
-        let mut enc = gif::Encoder::new(&mut out, gw, gh, &[]).map_err(encode_err)?;
-        enc.set_repeat(gif::Repeat::Infinite).map_err(encode_err)?;
-        for (frame, delay) in frames.iter().zip(delays) {
-            let (fw, fh, mut rgba) = decode_png(&frame.png)?;
-            if (fw, fh) != (w, h) {
-                continue;
+    pub(crate) fn info(&self) -> RecordInfo {
+        let s = lock(&self.shared);
+        let millis = match (s.frames.first(), s.frames.last()) {
+            (Some(a), Some(b)) => {
+                let end = self.stopped_at.map_or(b.at, |t| t.max(b.at));
+                ((end - a.at).max(0.0) * 1000.0).round() as u64
             }
-            let mut g = gif::Frame::from_rgba_speed(gw, gh, &mut rgba, QUANT_SPEED);
-            g.delay = delay;
-            enc.write_frame(&g).map_err(encode_err)?;
-            count += 1;
-            cs_total += u64::from(delay);
+            _ => 0,
+        };
+        RecordInfo {
+            running: self.running(),
+            frames: s.frames.len(),
+            events: s.events.len(),
+            millis,
+            truncated: s.truncated,
         }
     }
-    std::fs::write(path, &out)?;
-    Ok(RecordSummary { frames: count, millis: cs_total * 10, bytes: out.len() as u64 })
 }

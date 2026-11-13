@@ -13,6 +13,7 @@ members = [
     "crates/nexo-cli",
     "crates/nexo-bench",
     "crates/nexo-browser",
+    "crates/nexo-relay",
 ]
 
 [workspace.package]
@@ -35,6 +36,8 @@ nexo-bench = { path = "crates/nexo-bench" }
 nexo-bin = { path = "crates/nexo-bin" }
 nexo-dbg = { path = "crates/nexo-dbg" }
 nexo-browser = { path = "crates/nexo-browser" }
+nexo-relay = { path = "crates/nexo-relay" }
+nexo-browser-host = { path = "crates/nexo-browser-host" }
 
 # runtime
 tokio = { version = "1.54", features = ["full"] }
