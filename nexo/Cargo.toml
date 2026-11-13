@@ -11,6 +11,7 @@ members = [
     "crates/nexo-dbg",
     "crates/nexo-cli",
     "crates/nexo-bench",
+    "crates/nexo-browser",
 ]
 
 [workspace.package]
@@ -32,6 +33,7 @@ nexo-tui = { path = "crates/nexo-tui" }
 nexo-bench = { path = "crates/nexo-bench" }
 nexo-bin = { path = "crates/nexo-bin" }
 nexo-dbg = { path = "crates/nexo-dbg" }
+nexo-browser = { path = "crates/nexo-browser" }
 
 # runtime
 tokio = { version = "1.54", features = ["full"] }
@@ -62,6 +64,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 webpki-root-certs = "1"
 url = "2"
 htmd = "0.5"
+
+# browser control (nexo-browser): Chrome DevTools Protocol client, pure Rust
+chromiumoxide = "0.9"
 
 # binary files (nexo-bin): read ELF and PE as bytes, decode x86-64, demangle names
 miniz_oxide = "0.8"
