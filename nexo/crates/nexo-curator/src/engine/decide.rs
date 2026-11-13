@@ -43,11 +43,29 @@ impl Engine {
                 self.refused = true;
                 self.bump("landings_refused", 1);
             }
+        } else if epoch && self.turn_only {
+            // an epoch due only by the person's new request is made on a copy too, and lands only when it changes
+            // the view already sent and what it saves until the size of the view would make an epoch anyway
+            // (`calls_to_size_epoch`) is `margin` times what it sends again, the price the size rule asks
+            // (`fire_point`); its window cut waits for that rule (`window_cut`)
+            self.context_at(self.tr.msgs.len());
+            let mut tried = self.clone();
+            for i in std::mem::take(&mut tried.turn_keep) {
+                tried.steps[i].idle = None;
+            }
+            tried.decide_as(true);
+            self.decide_as(false);
+            let (calls, margin) = (self.calls_left().min(self.calls_to_size_epoch()), self.p.margin);
+            if tried.landed != self.landed && self.landing_pays_over(&mut tried, calls, margin) {
+                *self = tried;
+            } else {
+                self.bump("turns_refused", 1);
+            }
         } else {
             self.decide_as(epoch);
             self.refused &= !epoch;
         }
-        if self.tries_landings() {
+        if self.tries_landings() || (self.epochs() && self.p.close != 0) {
             let vis = self.visible();
             self.sent_fp = Arc::new(self.prints(&vis));
         }

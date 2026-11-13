@@ -313,8 +313,9 @@ fn kept(views: &[Vec<Value>]) -> f64 {
 #[test]
 fn between_epochs_a_view_is_a_prefix_of_the_next() {
     // 200 steps of about 1.8k tokens in a window of 100k: the view is rewritten a few times, not on every call
-    // (a new request opens an epoch of its own once it has made two calls, 22 of them here, so the share is a little
-    // under 0.9: 0.871; a session the person goes back in opens none of those)
+    // (a new request opens an epoch of its own once it has made two calls, and here, where no topic reads what an
+    // earlier one read, it pays, so the share is a little under 0.9: 0.869; a session the person goes back in opens
+    // none of those)
     let views = session("", 100_000, 200, 9);
     let share = kept(&views);
     assert!(share >= 0.85, "{share:.3} of the tokens of the views kept as the prefix of the next");

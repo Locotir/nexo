@@ -208,6 +208,7 @@ impl Engine {
     /// the view is past it.
     pub(super) fn epoch_due(&mut self) -> bool {
         self.resent_from = usize::MAX;
+        self.turn_only = false;
         if !self.epochs() {
             return true;
         }
@@ -226,7 +227,9 @@ impl Engine {
         // (with `kept` at 4 the room past the last landing is not asked: the epoch is tried each `check` tokens of
         // growth and lands by what it really does, `landing_pays`)
         let grown = (self.p.kept >= 4 && self.tries_landings()) || total - self.landed > start - land;
-        (total > start && (self.p.cap > 0 || (grown && total - self.looked >= self.p.check))) || turned
+        let sized = total > start && (self.p.cap > 0 || (grown && total - self.looked >= self.p.check));
+        self.turn_only = turned && !sized;
+        sized || turned
     }
 
     /// Whether the person's latest request makes an epoch due (`Params.close`): it has made two calls of its
@@ -239,7 +242,8 @@ impl Engine {
     /// ("run it again", then an edit of the file read before) draws on them, and they wait as before. A
     /// session in which the person has already gone back to a topic left earlier is one that goes back: the
     /// idle steps of the requests before wait for the cost rule (on the fixtures that return to old topics
-    /// the rule alone forgot 17 more words). Once per request.
+    /// the rule alone forgot 17 more words). Once per request. It only weighs: what leaves is the epoch's to
+    /// decide, and the epoch lands only when it pays (`Engine::decide`).
     fn turn_due(&mut self) -> bool {
         let nt = self.goal.turns.len();
         if self.p.close == 0 || nt < 2 || nt <= self.turn_seen || self.goal.switches().1 > 0 {
@@ -259,10 +263,10 @@ impl Engine {
         let need = self.asks(nt - 1);
         let named: FxHashSet<usize> =
             self.pick(&need, &FxHashSet::default(), |s| !s.out && s.idle.is_some()).into_iter().collect();
-        let mut idle = 0;
-        for (i, s) in self.steps.iter_mut().enumerate().filter(|(_, s)| !s.out && s.idle.is_some()) {
+        let (mut idle, mut keep) = (0, Vec::new());
+        for (i, s) in self.steps.iter().enumerate().filter(|(_, s)| !s.out && s.idle.is_some()) {
             if named.contains(&i) || s.read.iter().any(|w| said.contains(w)) {
-                s.idle = None;
+                keep.push(i);
             } else {
                 idle += s
                     .msgs
@@ -272,6 +276,7 @@ impl Engine {
                     .sum::<i64>();
             }
         }
+        self.turn_keep = keep;
         idle >= self.p.check
     }
 
@@ -343,6 +348,13 @@ impl Engine {
     /// no message before that point costs the cache nothing and lands; so does any epoch when the view with no
     /// epoch is past the ceiling.
     pub(super) fn landing_pays(&mut self, tried: &mut Engine) -> bool {
+        let (calls, margin) = (self.calls_left(), self.p.lmargin);
+        self.landing_pays_over(tried, calls, margin)
+    }
+
+    /// Whether the epoch made on `tried` pays (`landing_pays`) when what it saves lasts `calls` calls and it has to
+    /// save `margin` times what it sends again.
+    pub(super) fn landing_pays_over(&mut self, tried: &mut Engine, calls: f64, margin: f64) -> bool {
         let (v0, v1) = (self.visible(), tried.visible());
         let (p0, p1) = (self.prints(&v0), tried.prints(&v1));
         let (s0, s1) = (self.sizes_now(), tried.sizes_now());
@@ -357,8 +369,19 @@ impl Engine {
         let resent = (tokens(&p1[a1..], &s1) - tokens(&p0[a0..], &s0)).max(0) as f64;
         let long = ((t0 - LONG_KNEE).max(0) - (t1 - LONG_KNEE).max(0)) as f64;
         let r = self.p.ratio;
-        let saved = (r * (t0 - t1) as f64 + LONG_LOSS * long) * self.calls_left();
-        saved > self.p.lmargin * (1.0 - r).max(0.01) * resent
+        let saved = (r * (t0 - t1) as f64 + LONG_LOSS * long) * calls;
+        saved > margin * (1.0 - r).max(0.01) * resent
+    }
+
+    /// The calls until the view has grown to where its size makes an epoch due (`epoch_due`), at the pace the history
+    /// has grown so far (at least 1): what an epoch made before that saves lasts until then, since that one
+    /// rewrites the view anyway.
+    pub(super) fn calls_to_size_epoch(&mut self) -> f64 {
+        let total = self.sizes_now().iter().sum::<i64>() + self.head;
+        let (start, land) = self.window_span();
+        let at = start.max(self.landed + start - land).max(self.looked + self.p.check);
+        let pace = (self.raw_tokens / self.tr.steps.len().max(1) as i64).max(1);
+        ((at - total).max(0) as f64 / pace as f64).max(1.0)
     }
 
     /// The calls a landing is paid back over (`Params.kept`): `lcalls`, and `lahead` for each step so far.
@@ -419,7 +442,7 @@ impl Engine {
     /// The first message the window cut of this epoch changes: the oldest result the sticky set does not hold that has a
     /// part to drop. `None` when the view does not run by epochs or is not past where the cut starts.
     pub(super) fn cut_start(&mut self) -> Option<usize> {
-        if !self.epochs() {
+        if !self.epochs() || self.turn_only {
             return None;
         }
         if self.weighs_landings() {
@@ -457,7 +480,7 @@ impl Engine {
     /// until the view is down to the target, whatever the cache costs; past the ceiling the oldest the sticky set holds besides the latest `file now` of each path and
     /// the last check leave too (their note says how to bring them back). The first message changed.
     pub(super) fn window_cut(&mut self) -> Option<usize> {
-        if self.p.cap <= 0 && self.p.target <= 0 {
+        if (self.p.cap <= 0 && self.p.target <= 0) || self.turn_only {
             return None;
         }
         let sizes = self.sizes_now();

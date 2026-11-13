@@ -502,7 +502,9 @@ fn past_the_ceiling_a_landing_is_made_whatever_it_sends_again() {
 fn a_new_request_opens_an_epoch_when_the_requests_it_closed_left_outputs_in_the_view() {
     // the reads of a finished task leave by the rent rule, which runs at an epoch: once the person's next request
     // has made two calls that draw on none of them, it opens one at once, instead of after the view grew past
-    // the room the cost rule gives; a request that draws on them waits as before
+    // the room the cost rule gives; a request that draws on them waits as before. The epoch is tried on a copy
+    // and lands only when it pays: here the rent rule keeps the 7.5k tokens of a session this short, the try
+    // changes nothing sent, and the view goes on as it was (`turns_refused`, no epoch counted)
     let epochs = |spec: &str, calls: [String; 2]| {
         let mut e = Engine::new(params(&format!("epoch=1;target=10000;check=4000;{spec}")).unwrap());
         let mut msgs = vec![json!({"role": "user", "content": "Read the five parts and say what slot 50 holds."})];
@@ -521,14 +523,15 @@ fn a_new_request_opens_an_epoch_when_the_requests_it_closed_left_outputs_in_the_
         }
         e.sync(&msgs);
         let _ = e.view();
-        e.stats.get("epochs").copied().unwrap_or(0) - before
+        let n = |k: &str| e.stats.get(k).copied().unwrap_or(0);
+        (n("epochs") - before, n("turns_refused"))
     };
     let unrelated = ["date".to_string(), "uptime".to_string()];
     let marks = (1..=5).map(|p| format!("entry_q{p}_frobnic_cell")).collect::<Vec<_>>().join("|");
     let same = [format!("grep -c '{marks}' part*.txt"), "date".to_string()];
-    assert_eq!(epochs("close=2", unrelated.clone()), 1);
-    assert_eq!(epochs("close=0", unrelated), 0);
-    assert_eq!(epochs("close=2", same), 0);
+    assert_eq!(epochs("close=2", unrelated.clone()), (0, 1));
+    assert_eq!(epochs("close=0", unrelated), (0, 0));
+    assert_eq!(epochs("close=2", same), (0, 0));
 }
 
 #[test]
@@ -556,8 +559,9 @@ fn once_the_person_has_gone_back_to_an_earlier_topic_a_new_request_opens_no_epoc
         }
         e.sync(&msgs);
         let _ = e.view();
-        e.stats.get("epochs").copied().unwrap_or(0) - before
+        // an epoch is tried (and here refused: nothing it would close pays yet) or lands
+        e.stats.get("epochs").copied().unwrap_or(0) - before + e.stats.get("turns_refused").copied().unwrap_or(0)
     };
-    assert_eq!(run(false), 1, "a session that only moves on opens the epoch");
-    assert_eq!(run(true), 0, "a session that went back opens none");
+    assert_eq!(run(false), 1, "a session that only moves on weighs the epoch");
+    assert_eq!(run(true), 0, "a session that went back weighs none");
 }

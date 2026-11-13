@@ -134,6 +134,12 @@ pub struct Engine {
     looked: i64,
     /// The person's requests `epoch_due` has seen: a new one may make an epoch due (`Engine::turn_due`).
     turn_seen: usize,
+    /// Whether the epoch of this request is due only by the person's new request (`Engine::turn_due`), not by the
+    /// size of the view: it is tried on a copy and lands only when it pays (`Engine::decide`), and it makes no
+    /// window cut.
+    turn_only: bool,
+    /// The idle steps the person's latest request draws on (`Engine::turn_due`): they stay at its epoch.
+    turn_keep: Vec<usize>,
     /// Whether the last epoch that was due was refused (`Params.kept` 3 and 4): until one lands, the view is held
     /// to the working-set bound at every request (`Engine::past_working_set`).
     refused: bool,
@@ -349,6 +355,8 @@ impl Engine {
             landed: 0,
             looked: 0,
             turn_seen: 0,
+            turn_only: false,
+            turn_keep: Vec::new(),
             refused: false,
             resent_from: usize::MAX,
             fresh_wait: FxHashSet::default(),

@@ -356,12 +356,15 @@ fn the_long_session_ends_with_the_reference_stats() {
     // (was 17298); an epoch that changed nothing sent leaves `landed` (`looked`): 9 epochs, the cache misses 61379 (was
     // 77789). The window cut is as before.
     // A new request of the person weighs at once what the requests it closed left in the view (`turn_due`) unless the
-    // person has gone back to an earlier topic: on this session that is 12 epochs, 34 closed steps, 187 window cuts,
-    // and the cache misses 107382 (miss_close 52146, miss_cap 67486).
-    let want = serde_json::json!({"birth_saved": 1799, "epochs": 12, "dedup_runs": 6, "dedup_saved": 3117,
-        "miss_fresh": 648, "miss": 107382, "dedup_asked": 24, "closed_steps": 34, "miss_close": 52146,
-        "dropped_chunks": 3, "sup_chunks": 3, "rewrites": 4, "left_messages": 112, "ledger_lines": 167,
-        "cap_rewrites": 1, "miss_cap": 67486, "recalled_steps": 1, "agent_recalled_steps": 1, "window_cuts": 187});
+    // person has gone back to an earlier topic. Landed whatever it cost, that was 12 epochs and 187 window cuts here
+    // (a view just past where the cut starts, but not grown past the last landing, was cut to the target at a new
+    // request), and the cache missed 107382. The epoch a new request makes is now tried on a copy, makes no window
+    // cut, and lands only when what it saves until the size rule would make an epoch anyway is `margin` times what
+    // it sends again: on this session all 5 are refused (`turns_refused`) and the stats are those before it.
+    let want = serde_json::json!({"birth_saved": 1799, "epochs": 9, "dedup_runs": 6, "dedup_saved": 3117,
+        "miss_fresh": 648, "miss": 61379, "dedup_asked": 24, "closed_steps": 20, "miss_close": 24207,
+        "dropped_chunks": 178, "sup_chunks": 66, "rewrites": 3, "left_messages": 146, "ledger_lines": 462,
+        "cap_rewrites": 2, "miss_cap": 36524, "recalled_steps": 2, "window_cuts": 4, "turns_refused": 5});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }
