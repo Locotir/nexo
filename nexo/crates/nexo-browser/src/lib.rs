@@ -2,21 +2,35 @@
 //! DevTools Protocol and shows the page as a snapshot of actionable elements with stable refs.
 
 mod error;
+mod events;
+mod input;
 mod snapshot;
+mod tabs;
 #[cfg(test)]
 mod tests;
 
 pub use error::{Error, Result};
+pub use events::{ConsoleEntry, NetEntry};
 pub use snapshot::{Element, Snapshot};
+pub use tabs::TabInfo;
 
 use chromiumoxide::browser::{Browser as Chrome, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
+use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
+use chromiumoxide::cdp::browser_protocol::page::{
+    CaptureScreenshotFormat, GetNavigationHistoryParams, NavigateToHistoryEntryParams,
+};
+use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
+use chromiumoxide::layout::Point;
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tabs::Tabs;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
@@ -88,10 +102,12 @@ pub fn find_browser() -> Option<PathBuf> {
     })
 }
 
-/// A running browser with one page. An ephemeral profile is deleted on [`Browser::close`]; a persistent one stays.
+/// A running browser. The verbs act on the active tab ([`Browser::tabs`]). An ephemeral profile is deleted on
+/// [`Browser::close`]; a persistent one stays.
 pub struct Browser {
     chrome: Chrome,
-    page: Page,
+    tabs: Mutex<Tabs>,
+    buffers: events::Buffers,
     handler: JoinHandle<()>,
     _profile: Option<TempDir>,
 }
@@ -120,24 +136,39 @@ impl Browser {
         let (chrome, mut events) = Chrome::launch(cfg).await?;
         // The event stream must be polled before the first command or every command hangs.
         let handler = tokio::spawn(async move { while events.next().await.is_some() {} });
-        match chrome.new_page("about:blank").await {
-            Ok(page) => Ok(Browser { chrome, page, handler, _profile: profile }),
+        let buffers = events::Buffers::default();
+        // Console and network events reach the buffers through per-page listeners, not through this handler.
+        let first = async {
+            let page = chrome.new_page("about:blank").await?;
+            let tasks = buffers.watch(&page).await?;
+            Ok::<_, Error>((page, tasks))
+        };
+        match first.await {
+            Ok((page, tasks)) => {
+                // Chrome starts with a blank tab of its own; only the one nexo opened is kept.
+                for other in chrome.pages().await.unwrap_or_default() {
+                    if other.target_id() != page.target_id() {
+                        let _ = other.close().await;
+                    }
+                }
+                Ok(Browser { chrome, tabs: Mutex::new(Tabs::new(page, tasks)), buffers, handler, _profile: profile })
+            }
             Err(e) => {
                 handler.abort();
-                Err(e.into())
+                Err(e)
             }
         }
     }
 
     pub async fn navigate(&self, url: &str) -> Result<()> {
-        self.page.goto(url).await?;
+        self.page().goto(url).await?;
         Ok(())
     }
 
     /// PNG bytes of the viewport, or of the whole page.
     pub async fn screenshot(&self, full_page: bool) -> Result<Vec<u8>> {
         let params = ScreenshotParams::builder().format(CaptureScreenshotFormat::Png).full_page(full_page).build();
-        Ok(self.page.screenshot(params).await?)
+        Ok(self.page().screenshot(params).await?)
     }
 
     /// Visible text of the page, or of the first element matching the CSS selector.
@@ -154,7 +185,7 @@ impl Browser {
             "(() => {{ const el = document.querySelector({sel}); \
              return JSON.stringify({{ found: !!el, text: el ? (el.innerText ?? el.textContent ?? '') : '' }}); }})()"
         );
-        let reply: Reply = serde_json::from_str(&self.eval::<String>(&js).await?)?;
+        let reply: Reply = serde_json::from_str(&self.eval_as::<String>(&js).await?)?;
         if reply.found {
             Ok(reply.text)
         } else {
@@ -164,7 +195,7 @@ impl Browser {
 
     /// The actionable elements of the page, each carrying a ref that [`Browser::click`] accepts.
     pub async fn snapshot(&self) -> Result<Snapshot> {
-        let json = self.eval::<String>(snapshot::SNAPSHOT_JS).await?;
+        let json = self.eval_as::<String>(snapshot::SNAPSHOT_JS).await?;
         Ok(Snapshot { elements: serde_json::from_str(&json)? })
     }
 
@@ -176,19 +207,19 @@ impl Browser {
         } else {
             let text = serde_json::to_string(target)?;
             let js = format!("({MARK_BY_TEXT_JS})({text})");
-            if !self.eval::<bool>(&js).await? {
+            if !self.eval_as::<bool>(&js).await? {
                 return Err(Error::NotFound(target.to_string()));
             }
             MARKED_SELECTOR.to_string()
         };
-        let found = self.page.find_element(selector).await;
+        let found = self.page().find_element(selector).await;
         let result = match found {
             Ok(el) => el.click().await.map(drop).map_err(Error::from),
             Err(_) => Err(Error::NotFound(target.to_string())),
         };
         if !is_ref(target) {
             // The mark is only a handle for this click; the page may already be gone.
-            let _ = self.eval::<bool>(UNMARK_JS).await;
+            let _ = self.eval_as::<bool>(UNMARK_JS).await;
         }
         result
     }
@@ -226,11 +257,15 @@ impl Browser {
         self.act_one("check", target, if checked { "true" } else { "false" }).await
     }
 
-    /// Presses keys on whatever has the focus, e.g. `"Enter"` or `"Tab Tab Enter"` (space separated).
+    /// Presses keys on whatever has the focus, e.g. `"Enter"` or `"Tab Tab Enter"` (space separated). A key with
+    /// modifiers is written `Ctrl+A`, `Shift+Tab` or `Ctrl+Shift+Z` (`Ctrl`, `Alt`, `Shift`, `Meta`).
     pub async fn press(&self, keys: &str) -> Result<()> {
-        let root = self.page.find_element("html").await?;
+        let page = self.page();
+        let root = page.find_element("html").await?;
         for key in keys.split_whitespace() {
-            root.press_key(key).await?;
+            if !input::press_combo(&page, key).await? {
+                root.press_key(key).await?;
+            }
         }
         Ok(())
     }
@@ -238,8 +273,8 @@ impl Browser {
     /// Moves the mouse over the target (ref, CSS selector or visible text) so hover styles and menus react.
     pub async fn hover(&self, target: &str) -> Result<()> {
         self.act_one("mark", target, "").await?;
-        let found = self.page.find_element(MARKED_SELECTOR).await;
-        let _ = self.eval::<bool>(UNMARK_JS).await;
+        let found = self.page().find_element(MARKED_SELECTOR).await;
+        let _ = self.eval_as::<bool>(UNMARK_JS).await;
         match found {
             Ok(el) => el.hover().await.map(drop).map_err(Error::from),
             Err(_) => Err(Error::NotFound(target.to_string())),
@@ -278,15 +313,221 @@ impl Browser {
     pub async fn close(mut self) -> Result<()> {
         let closed = self.chrome.close().await;
         let _ = self.chrome.wait().await;
+        lock(&self.tabs).tasks.iter().for_each(JoinHandle::abort);
         self.handler.abort();
         closed?;
         Ok(())
     }
 
+    /// Goes one page back in the history of the active tab.
+    pub async fn back(&self) -> Result<()> {
+        self.step_history("back", -1).await
+    }
+
+    /// Goes one page forward in the history of the active tab.
+    pub async fn forward(&self) -> Result<()> {
+        self.step_history("forward", 1).await
+    }
+
+    /// Reloads the active tab and waits for it to load.
+    pub async fn reload(&self) -> Result<()> {
+        self.page().reload().await?;
+        Ok(())
+    }
+
+    /// Runs JavaScript in the page (promises are awaited) and returns the result as JSON text, `undefined` when
+    /// there is none. A script that throws is an error.
+    pub async fn eval(&self, js: &str) -> Result<String> {
+        let params = EvaluateParams::builder().expression(js).build().map_err(Error::Config)?;
+        let result = self.page().evaluate_expression(params).await?;
+        Ok(result.value().map_or_else(|| "undefined".to_string(), |v| v.to_string()))
+    }
+
+    /// Console messages of every tab since launch (the last 1000), optionally only those whose text or level
+    /// matches the regex.
+    pub async fn console(&self, filter: Option<&str>) -> Result<Vec<ConsoleEntry>> {
+        self.flush_events().await;
+        self.buffers.console(filter)
+    }
+
+    /// Network requests of every tab since launch (the last 1000), optionally only those whose URL or method
+    /// matches the regex.
+    pub async fn network(&self, filter: Option<&str>) -> Result<Vec<NetEntry>> {
+        self.flush_events().await;
+        self.buffers.network(filter)
+    }
+
+    /// The open tabs in order, with the active one flagged. Tabs the page opened itself are included.
+    pub async fn tabs(&self) -> Result<Vec<TabInfo>> {
+        self.sync_tabs().await?;
+        let (pages, current) = {
+            let t = lock(&self.tabs);
+            (t.pages.clone(), t.current)
+        };
+        let mut out = Vec::with_capacity(pages.len());
+        for (index, page) in pages.iter().enumerate() {
+            let title = page.get_title().await.ok().flatten().unwrap_or_default();
+            let url = page.url().await.ok().flatten().unwrap_or_default();
+            out.push(TabInfo { index, title, url, active: index == current });
+        }
+        Ok(out)
+    }
+
+    /// Opens a tab on this URL, makes it the active one and returns its index.
+    pub async fn tab_new(&self, url: &str) -> Result<usize> {
+        self.sync_tabs().await?;
+        let page = self.chrome.new_page("about:blank").await?;
+        let tasks = self.buffers.watch(&page).await?;
+        let index = {
+            let mut t = lock(&self.tabs);
+            t.pages.push(page.clone());
+            t.tasks.extend(tasks);
+            t.current = t.pages.len() - 1;
+            t.current
+        };
+        if url != "about:blank" {
+            page.goto(url).await?;
+        }
+        Ok(index)
+    }
+
+    /// Makes the tab with this index (as listed by [`Browser::tabs`]) the one the other verbs act on.
+    pub async fn tab_switch(&self, index: usize) -> Result<()> {
+        self.sync_tabs().await?;
+        let page = {
+            let mut t = lock(&self.tabs);
+            let page = t.pages.get(index).cloned().ok_or_else(|| no_tab(index))?;
+            t.current = index;
+            page
+        };
+        page.bring_to_front().await?;
+        Ok(())
+    }
+
+    /// Closes the tab with this index. The last tab cannot be closed; use [`Browser::close`].
+    pub async fn tab_close(&self, index: usize) -> Result<()> {
+        self.sync_tabs().await?;
+        let (page, next) = {
+            let mut t = lock(&self.tabs);
+            if index >= t.pages.len() {
+                return Err(no_tab(index));
+            }
+            if t.pages.len() == 1 {
+                return Err(Error::Unusable { target: index.to_string(), reason: "it is the last tab".to_string() });
+            }
+            let page = t.pages.remove(index);
+            t.closed.push(page.target_id().clone());
+            if index < t.current || t.current >= t.pages.len() {
+                t.current = t.current.saturating_sub(1);
+            }
+            (page, t.active())
+        };
+        page.close().await?;
+        next.bring_to_front().await?;
+        Ok(())
+    }
+
+    /// Sets the file of an `<input type=file>` (ref, CSS selector or label), as if picked in the dialog.
+    pub async fn upload(&self, target: &str, path: impl AsRef<Path>) -> Result<()> {
+        let file = std::fs::canonicalize(path)?;
+        self.act_one("mark", target, "").await?;
+        let found = self.page().find_element(MARKED_SELECTOR).await;
+        let is_file = self.eval_as::<bool>(MARKED_IS_FILE_JS).await.unwrap_or(false);
+        let _ = self.eval_as::<bool>(UNMARK_JS).await;
+        let el = found.map_err(|_| Error::NotFound(target.to_string()))?;
+        if !is_file {
+            return Err(Error::Unusable { target: target.to_string(), reason: "not a file input".to_string() });
+        }
+        let params = SetFileInputFilesParams::builder()
+            .file(file.to_string_lossy())
+            .backend_node_id(el.backend_node_id)
+            .build()
+            .map_err(Error::Config)?;
+        self.page().execute(params).await?;
+        Ok(())
+    }
+
+    /// Resizes the viewport of the active tab, in CSS pixels.
+    pub async fn resize(&self, width: u32, height: u32) -> Result<()> {
+        self.page().execute(SetDeviceMetricsOverrideParams::new(width, height, 1.0, false)).await?;
+        Ok(())
+    }
+
+    /// Clicks at viewport coordinates, for canvases and anything without a DOM element to target.
+    pub async fn click_xy(&self, x: f64, y: f64) -> Result<()> {
+        self.page().click(Point::new(x, y)).await?;
+        Ok(())
+    }
+
+    /// Types text into whatever has the focus, as the keyboard would.
+    pub async fn type_text(&self, text: &str) -> Result<()> {
+        self.page().execute(InsertTextParams::new(text)).await?;
+        Ok(())
+    }
+
+    /// Moves `delta` entries along the history of the active tab and waits until that page has loaded.
+    async fn step_history(&self, what: &str, delta: i64) -> Result<()> {
+        let page = self.page();
+        let history = page.execute(GetNavigationHistoryParams::default()).await?.result;
+        let wanted = history.current_index + delta;
+        let entry = usize::try_from(wanted).ok().and_then(|i| history.entries.get(i)).ok_or_else(|| {
+            Error::Unusable { target: what.to_string(), reason: "no such page in the history".to_string() }
+        })?;
+        page.execute(NavigateToHistoryEntryParams::new(entry.id)).await?;
+        let deadline = Instant::now() + Duration::from_millis(WAIT_CAP_MS);
+        while Instant::now() < deadline {
+            // The page is briefly detached while a navigation commits; keep polling through that.
+            let at = page.execute(GetNavigationHistoryParams::default()).await.ok().map(|h| h.result.current_index);
+            let ready =
+                page.evaluate_expression("document.readyState").await.ok().and_then(|r| r.into_value::<String>().ok());
+            if at == Some(wanted) && ready.as_deref() == Some("complete") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        Ok(())
+    }
+
+    /// Reconciles the tab list with the browser: tabs the page opened are added, tabs that went away dropped.
+    async fn sync_tabs(&self) -> Result<()> {
+        let live = self.chrome.pages().await?;
+        let fresh: Vec<Page> = {
+            let t = lock(&self.tabs);
+            let known = |p: &Page| t.pages.iter().any(|k| k.target_id() == p.target_id());
+            live.iter().filter(|p| !known(p) && !t.closed.contains(p.target_id())).cloned().collect()
+        };
+        let mut tasks = Vec::new();
+        let mut added = Vec::new();
+        for page in fresh {
+            if let Ok(t) = self.buffers.watch(&page).await {
+                tasks.extend(t);
+                added.push(page);
+            }
+        }
+        let mut t = lock(&self.tabs);
+        let active = t.active().target_id().clone();
+        t.pages.extend(added);
+        t.tasks.extend(tasks);
+        let gone = |p: &Page| !live.iter().any(|l| l.target_id() == p.target_id());
+        if t.pages.iter().any(|p| !gone(p)) {
+            t.pages.retain(|p| !gone(p));
+        }
+        t.current = t.pages.iter().position(|p| p.target_id() == &active).unwrap_or(0);
+        Ok(())
+    }
+
+    /// Lets events the browser already sent reach the buffers before they are read.
+    async fn flush_events(&self) {
+        let _ = self.page().evaluate_expression("0").await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    }
+
     /// Runs one verb of `act.js` over `(target, value)` pairs in a single page call.
     async fn act(&self, op: &str, items: &[(&str, &str)]) -> Result<Vec<Outcome>> {
         let js = format!("({ACT_JS})({}, {})", serde_json::to_string(op)?, serde_json::to_string(items)?);
-        Ok(serde_json::from_str(&self.eval::<String>(&js).await?)?)
+        Ok(serde_json::from_str(&self.eval_as::<String>(&js).await?)?)
     }
 
     async fn act_one(&self, op: &str, target: &str, value: &str) -> Result<()> {
@@ -298,9 +539,22 @@ impl Browser {
         }
     }
 
-    async fn eval<T: DeserializeOwned>(&self, js: &str) -> Result<T> {
-        Ok(self.page.evaluate(js).await?.into_value()?)
+    async fn eval_as<T: DeserializeOwned>(&self, js: &str) -> Result<T> {
+        Ok(self.page().evaluate(js).await?.into_value()?)
     }
+
+    /// The active tab.
+    fn page(&self) -> Page {
+        lock(&self.tabs).active()
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn no_tab(index: usize) -> Error {
+    Error::Unusable { target: index.to_string(), reason: "no tab with that index".to_string() }
 }
 
 fn is_ref(s: &str) -> bool {
@@ -331,5 +585,7 @@ const MARK_BY_TEXT_JS: &str = r#"(text) => {
   hit.setAttribute('data-nexo-click', '1');
   return true;
 }"#;
+
+const MARKED_IS_FILE_JS: &str = "(() => { const el = document.querySelector('[data-nexo-click]'); return !!el && el.matches('input[type=file]'); })()";
 
 const UNMARK_JS: &str = "(() => { document.querySelectorAll('[data-nexo-click]').forEach((e) => e.removeAttribute('data-nexo-click')); return true; })()";

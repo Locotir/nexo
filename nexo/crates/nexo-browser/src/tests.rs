@@ -104,10 +104,10 @@ async fn fills_and_submits_a_form() {
 
     // By CSS selector, by label text and by placeholder.
     browser.fill("#name", "Ada Lovelace").await.unwrap();
-    assert_eq!(browser.eval::<String>("document.getElementById('name').value").await.unwrap(), "Ada Lovelace");
+    assert_eq!(browser.eval_as::<String>("document.getElementById('name').value").await.unwrap(), "Ada Lovelace");
     browser.fill("you@example.com", "ada@example.com").await.unwrap();
-    assert_eq!(browser.eval::<String>("document.getElementById('email').value").await.unwrap(), "ada@example.com");
-    let log = browser.eval::<String>("JSON.stringify(window.log)").await.unwrap();
+    assert_eq!(browser.eval_as::<String>("document.getElementById('email').value").await.unwrap(), "ada@example.com");
+    let log = browser.eval_as::<String>("JSON.stringify(window.log)").await.unwrap();
     assert!(log.contains("input:name") && log.contains("change:name"), "events not fired: {log}");
 
     // Refs from a snapshot keep working after fills.
@@ -124,27 +124,27 @@ async fn fills_and_submits_a_form() {
     assert_eq!(report.filled, vec!["Full name", "Message"]);
     assert_eq!(report.missing, vec!["No such field", "Send"]);
     assert!(!report.complete());
-    assert_eq!(browser.eval::<String>("document.getElementById('name').value").await.unwrap(), "Ada");
-    assert_eq!(browser.eval::<String>("document.getElementById('msg').value").await.unwrap(), "hello there");
+    assert_eq!(browser.eval_as::<String>("document.getElementById('name').value").await.unwrap(), "Ada");
+    assert_eq!(browser.eval_as::<String>("document.getElementById('msg').value").await.unwrap(), "hello there");
 
     // A form in one call, mixing text, select and checkbox.
     let all = browser.fill_batch(&[("#name", "Ada"), ("#country", "United States"), ("#agree", "true")]).await.unwrap();
     assert!(all.complete(), "{all:?}");
 
     browser.select("Country", "Spain").await.unwrap();
-    assert_eq!(browser.eval::<String>("document.getElementById('country').value").await.unwrap(), "es");
+    assert_eq!(browser.eval_as::<String>("document.getElementById('country').value").await.unwrap(), "es");
     browser.select("#country", "us").await.unwrap();
-    assert_eq!(browser.eval::<String>("document.getElementById('country').value").await.unwrap(), "us");
+    assert_eq!(browser.eval_as::<String>("document.getElementById('country').value").await.unwrap(), "us");
     assert!(matches!(browser.select("#country", "Mars").await, Err(Error::Unusable { .. })));
     assert!(matches!(browser.select("#name", "x").await, Err(Error::Unusable { .. })));
-    let log = browser.eval::<String>("JSON.stringify(window.log)").await.unwrap();
+    let log = browser.eval_as::<String>("JSON.stringify(window.log)").await.unwrap();
     assert!(log.contains("change:country"), "no change on select: {log}");
 
     browser.set_checkbox("I agree", false).await.unwrap();
-    assert!(!browser.eval::<bool>("document.getElementById('agree').checked").await.unwrap());
+    assert!(!browser.eval_as::<bool>("document.getElementById('agree').checked").await.unwrap());
     browser.set_checkbox("#agree", true).await.unwrap();
-    assert!(browser.eval::<bool>("document.getElementById('agree').checked").await.unwrap());
-    let log = browser.eval::<String>("JSON.stringify(window.log)").await.unwrap();
+    assert!(browser.eval_as::<bool>("document.getElementById('agree').checked").await.unwrap());
+    let log = browser.eval_as::<String>("JSON.stringify(window.log)").await.unwrap();
     assert!(log.contains("change:agree"), "no change on checkbox: {log}");
 
     // Enter in a focused field submits the form.
@@ -182,12 +182,170 @@ async fn persistent_profile_keeps_state() {
 
     let first = Browser::launch(opts()).await.unwrap();
     first.navigate(&url).await.unwrap();
-    first.eval::<String>("(localStorage.setItem('seen', 'yes'), 'ok')").await.unwrap();
+    first.eval_as::<String>("(localStorage.setItem('seen', 'yes'), 'ok')").await.unwrap();
     first.close().await.unwrap();
     assert!(profile.path().join("p").is_dir(), "persistent profile must survive close");
 
     let second = Browser::launch(opts()).await.unwrap();
     second.navigate(&url).await.unwrap();
-    assert_eq!(second.eval::<String>("localStorage.getItem('seen') || 'none'").await.unwrap(), "yes");
+    assert_eq!(second.eval_as::<String>("localStorage.getItem('seen') || 'none'").await.unwrap(), "yes");
     second.close().await.unwrap();
+}
+
+const POWER: &str = r##"<!doctype html><html><body>
+<input id="file" type="file">
+<input id="txt" value="select all of this">
+<div id="flags">none</div>
+<canvas id="cv" width="200" height="100" style="position:absolute;left:0;top:200px"></canvas>
+<script>
+console.log('hello from the page', 42);
+console.error('something broke');
+window.clicks = [];
+document.getElementById('cv').addEventListener('click', (e) => window.clicks.push([e.offsetX, e.offsetY]));
+document.getElementById('txt').addEventListener('keydown', (e) => {
+  if (e.key === 'Tab' && e.shiftKey) document.getElementById('flags').textContent = 'shift-tab';
+});
+</script>
+</body></html>"##;
+
+fn skip_without_chrome() -> bool {
+    let none = find_browser().is_none();
+    if none {
+        eprintln!("skipped: no chrome");
+    }
+    none
+}
+
+/// Retries `read` for up to 3 seconds; events cross a channel and may land a moment after the page ran.
+async fn eventually<T>(mut read: impl AsyncFnMut() -> Option<T>) -> T {
+    for _ in 0..60 {
+        if let Some(v) = read().await {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("condition not met in time");
+}
+
+#[tokio::test]
+async fn eval_console_network_and_resize() {
+    if skip_without_chrome() {
+        return;
+    }
+    let (_dir, url) = write_page(POWER);
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&url).await.unwrap();
+
+    assert_eq!(browser.eval("1 + 2").await.unwrap(), "3");
+    assert_eq!(browser.eval("({a: [1, 'x']})").await.unwrap(), r#"{"a":[1,"x"]}"#);
+    assert_eq!(browser.eval("Promise.resolve('later')").await.unwrap(), "\"later\"");
+    assert_eq!(browser.eval("void 0").await.unwrap(), "undefined");
+    assert!(browser.eval("throw new Error('boom')").await.is_err());
+
+    let all = eventually(async || Some(browser.console(None).await.unwrap()).filter(|c| c.len() >= 2)).await;
+    let log = all.iter().find(|c| c.level == "log").expect("console.log captured");
+    assert_eq!(log.text, "hello from the page 42");
+    assert!(log.ts > 0.0);
+    let errors = browser.console(Some("^error$")).await.unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].text, "something broke");
+    assert_eq!(browser.console(Some("hello")).await.unwrap().len(), 1);
+    assert!(matches!(browser.console(Some("(")).await, Err(Error::Unusable { .. })));
+
+    let net = eventually(async || {
+        Some(browser.network(None).await.unwrap()).filter(|n| n.iter().any(|e| e.status.is_some()))
+    })
+    .await;
+    assert!(net.iter().any(|e| e.url == url && e.method == "GET"), "{net:?}");
+    assert!(browser.network(Some("no-such-url")).await.unwrap().is_empty());
+
+    browser.resize(640, 480).await.unwrap();
+    assert_eq!(browser.eval("window.innerWidth").await.unwrap(), "640");
+    assert_eq!(browser.eval("window.innerHeight").await.unwrap(), "480");
+
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn history_reload_and_tabs() {
+    if skip_without_chrome() {
+        return;
+    }
+    let (_a, one) = write_page("<html><body><p id=p>page one</p></body></html>");
+    let (_b, two) = write_page("<html><body><p id=p>page two</p></body></html>");
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&one).await.unwrap();
+    browser.navigate(&two).await.unwrap();
+
+    browser.back().await.unwrap();
+    assert_eq!(browser.read_text(Some("#p")).await.unwrap(), "page one");
+    // The first history entry is the blank page the browser started on; nothing lies before it.
+    browser.back().await.unwrap();
+    assert!(matches!(browser.back().await, Err(Error::Unusable { .. })));
+    browser.forward().await.unwrap();
+    browser.forward().await.unwrap();
+    assert!(matches!(browser.forward().await, Err(Error::Unusable { .. })));
+    assert_eq!(browser.read_text(Some("#p")).await.unwrap(), "page two");
+    browser.eval("document.title = 'changed'").await.unwrap();
+    browser.reload().await.unwrap();
+    assert_eq!(browser.eval("document.title").await.unwrap(), "\"\"");
+
+    let before = browser.tabs().await.unwrap();
+    assert_eq!(before.len(), 1);
+    assert!(before[0].active && before[0].url == two);
+    let index = browser.tab_new(&one).await.unwrap();
+    assert_eq!(index, 1);
+    let tabs = browser.tabs().await.unwrap();
+    assert_eq!(tabs.len(), 2);
+    assert!(tabs[1].active && !tabs[0].active && tabs[1].url == one);
+    assert_eq!(browser.read_text(Some("#p")).await.unwrap(), "page one");
+    browser.tab_switch(0).await.unwrap();
+    assert_eq!(browser.read_text(Some("#p")).await.unwrap(), "page two");
+    assert!(matches!(browser.tab_switch(5).await, Err(Error::Unusable { .. })));
+    browser.tab_close(1).await.unwrap();
+    assert_eq!(browser.tabs().await.unwrap().len(), 1);
+    assert!(matches!(browser.tab_close(0).await, Err(Error::Unusable { .. })));
+    assert_eq!(browser.read_text(Some("#p")).await.unwrap(), "page two");
+
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn upload_keys_and_raw_input() {
+    if skip_without_chrome() {
+        return;
+    }
+    let (dir, url) = write_page(POWER);
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&url).await.unwrap();
+
+    let file = dir.path().join("note.txt");
+    std::fs::write(&file, "hello").unwrap();
+    browser.upload("#file", &file).await.unwrap();
+    assert_eq!(browser.eval("document.getElementById('file').files.length").await.unwrap(), "1");
+    assert_eq!(browser.eval("document.getElementById('file').files[0].name").await.unwrap(), "\"note.txt\"");
+    assert!(matches!(browser.upload("#txt", &file).await, Err(Error::Unusable { .. })));
+    assert!(matches!(browser.upload("#nope", &file).await, Err(Error::NotFound(_))));
+    assert!(matches!(browser.upload("#file", dir.path().join("missing")).await, Err(Error::Io(_))));
+
+    // Ctrl+A selects the whole text of the focused field.
+    browser.fill("#txt", "select all of this").await.unwrap();
+    browser.eval("(() => { const t = document.getElementById('txt'); t.setSelectionRange(0, 0); })()").await.unwrap();
+    browser.press("Ctrl+A").await.unwrap();
+    let selected = "(() => { const t = document.getElementById('txt'); return t.selectionEnd - t.selectionStart; })()";
+    assert_eq!(browser.eval(selected).await.unwrap(), "18");
+    // Typing replaces the selection.
+    browser.type_text("typed").await.unwrap();
+    assert_eq!(browser.eval("document.getElementById('txt').value").await.unwrap(), "\"typed\"");
+    // Shift+Tab reaches the page as a keydown with shiftKey set.
+    browser.press("Shift+Tab").await.unwrap();
+    assert_eq!(browser.read_text(Some("#flags")).await.unwrap(), "shift-tab");
+    assert!(matches!(browser.press("Ctrl+NoSuchKey").await, Err(Error::Unusable { .. })));
+    assert!(matches!(browser.press("Hyper+A").await, Err(Error::Unusable { .. })));
+
+    // A raw click lands on the canvas at the given viewport point.
+    browser.click_xy(50.0, 250.0).await.unwrap();
+    assert_eq!(browser.eval("JSON.stringify(window.clicks)").await.unwrap(), r#""[[50,50]]""#);
+
+    browser.close().await.unwrap();
 }
