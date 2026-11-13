@@ -46,8 +46,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     let mut mute = 0u32;
     // how many of them are asked to go on before the request ends there
     let mute_asks = if alone { MUTE_ASKS_ALONE } else { MUTE_ASKS };
-    // a reply of this turn was cut at `agent.reasoning_budget`: the rest of the turn asks for the least
-    // reasoning the model lists, so a retry does not think as long again at the same level
+    // the last reply was cut at `agent.reasoning_budget`: the asks after it, until a reply calls or says something,
+    // go out at the least reasoning the model lists, so a retry does not think as long again at the same level
     let mut calm = false;
     // times in a row this request was sent again because its stream broke inside the reasoning
     let mut recut = 0u32;
@@ -95,10 +95,13 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         if cut_calls > 0 {
             req.temperature = retry_temperature(req.temperature);
         }
+        // this request asks for less reasoning than the first: a cut past the asks stops the turn
+        let mut lowered = false;
         if calm && req.reasoning.is_none() {
             let mut st = state.lock().await;
             let (_, pcfg, model) = st.target.get();
             req.reasoning = calm_level(pcfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]));
+            lowered = req.reasoning.is_some();
             if let Some(last) = st.last_request.as_mut() {
                 last.reasoning = req.reasoning;
             }
@@ -147,12 +150,15 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             },
         };
         // reasoning tokens a reply may stream before any text or call; off when the person set a level. It stays
-        // on after a cut: a reply let run free only reasons longer, up to max_tokens
+        // on after a cut while the asks think less. A model with no level to lower (an always-thinking one) would
+        // be asked the same way and cut the same way each time: after two asks its reply runs free, up to
+        // max_tokens, as the one way to an answer short of editing the config
         let budget = {
             let st = state.lock().await;
             let (_, pcfg, model) = st.target.get();
             match setup::effort_of(&pcfg, &model, &st.config.agent.reasoning) {
                 Some(_) => 0,
+                None if mute >= 2 && !lowered => 0,
                 None => u64::from(st.config.agent.reasoning_budget),
             }
         };
@@ -369,6 +375,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             continue;
         }
         mute = 0;
+        // the reply called or said something: the next requests go out at the person's level again
+        calm = false;
         if let Some((n, line)) = ck.pending.take() {
             let text = msg.text();
             match checkpoint::parse_decision(&text) {
@@ -667,16 +675,17 @@ pub(super) const MUTE_ASKS: u32 = 2;
 /// is asked twice more. Every reply stays under `agent.reasoning_budget`.
 pub(super) const MUTE_ASKS_ALONE: u32 = 4;
 
-/// The least reasoning a model lists among its levels (`efforts`), for the requests after a cut at
-/// `agent.reasoning_budget`; none when the model lists no level, as a provider that takes none may refuse one.
+/// The least reasoning a model lists among its levels (`efforts`): off, then minimal, then low, as `lean` picks;
+/// for the asks after a cut at `agent.reasoning_budget`. None when the model lists none of them, as a provider
+/// that takes no level may refuse one.
 pub(super) fn calm_level(levels: &[String]) -> Option<ReasoningConfig> {
     let has = |l: &str| levels.iter().any(|x| x == l);
-    if has("low") {
-        Some(ReasoningConfig::Effort(Effort::Low))
+    if has("off") || has("none") {
+        Some(ReasoningConfig::Off)
     } else if has("minimal") {
         Some(ReasoningConfig::Effort(Effort::Minimal))
-    } else if has("off") || has("none") {
-        Some(ReasoningConfig::Off)
+    } else if has("low") {
+        Some(ReasoningConfig::Effort(Effort::Low))
     } else {
         None
     }
@@ -756,4 +765,29 @@ fn succeeded(p: &Part) -> bool {
     let Part::ToolResult { content, is_error: false, .. } = p else { return false };
     let text = content.iter().filter_map(Part::as_text).collect::<Vec<_>>().join("\n");
     nexo_core::shell::exit_code_in(&text).is_none_or(|c| c == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pick(levels: &[&str]) -> Option<ReasoningConfig> {
+        calm_level(&levels.iter().map(|l| l.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn the_calm_level_is_the_least_the_model_lists() {
+        let (off, min, low) = (
+            Some(ReasoningConfig::Off),
+            Some(ReasoningConfig::Effort(Effort::Minimal)),
+            Some(ReasoningConfig::Effort(Effort::Low)),
+        );
+        assert_eq!(pick(&["minimal", "low", "medium", "high"]), min);
+        assert_eq!(pick(&["off", "low", "high"]), off);
+        assert_eq!(pick(&["high", "none", "minimal"]), off);
+        assert_eq!(pick(&["low", "medium", "high"]), low);
+        // nothing below medium, or no level at all: none is sent
+        assert_eq!(pick(&["medium", "high"]), None);
+        assert_eq!(pick(&[]), None);
+    }
 }

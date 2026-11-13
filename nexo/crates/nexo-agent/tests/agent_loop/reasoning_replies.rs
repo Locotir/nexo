@@ -242,6 +242,13 @@ async fn reasoning_past_the_budget_with_nothing_said_is_cut_and_asked_again() {
     r.stop().await;
 }
 
+/// `cfg` for a model that lists these reasoning levels.
+fn with_levels(mut cfg: Config, levels: &[&str]) -> Config {
+    let levels = levels.iter().map(|l| l.to_string()).collect();
+    cfg.providers.get_mut("mock").unwrap().efforts.insert("m1".into(), levels);
+    cfg
+}
+
 #[tokio::test]
 async fn three_cuts_at_the_budget_stop_the_turn_with_a_short_message() {
     let d = test_tmpdir().unwrap();
@@ -251,7 +258,8 @@ async fn three_cuts_at_the_budget_stop_the_turn_with_a_short_message() {
         Reply::Events(long_thought(40_000, then_text("never read either"))),
         Reply::Events(text("never asked")),
     ]);
-    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    let cfg = with_levels(config(PermissionMode::Ask), &["low", "medium", "high"]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
     let evs = r.turn().await;
@@ -267,17 +275,46 @@ async fn three_cuts_at_the_budget_stop_the_turn_with_a_short_message() {
     r.stop().await;
 }
 
+/// A model with no level to lower (an always-thinking one) is asked the same way at each cut: after two its
+/// reply runs free, up to max_tokens, or the turn could only stop there however often "continue" is sent.
+#[tokio::test]
+async fn a_model_with_no_level_to_lower_runs_free_after_two_cuts() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("the answer"))),
+    ]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(reqs.iter().all(|q| q.reasoning.is_none()));
+    assert!(text_of(&evs).contains("the answer"), "{}", text_of(&evs));
+    let said = notices(&evs);
+    assert_eq!(said.iter().filter(|n| n.contains("cut and asked")).count(), 2, "{said:?}");
+    assert!(!said.iter().any(|n| n.contains("stopped") || n.contains("reasoned without answering")), "{said:?}");
+    r.stop().await;
+}
+
 #[tokio::test]
 async fn a_run_with_nobody_there_stops_after_five_cuts_at_the_budget() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new((0..7).map(|_| Reply::Events(long_thought(40_000, then_text("never read")))).collect());
-    let mut r = start_alone(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    let cfg = with_levels(config(PermissionMode::Auto), &["minimal", "low", "high"]);
+    let mut r = start_alone(client.clone(), cfg, d.path()).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let reqs = client.requests();
     assert_eq!(reqs.len(), 5, "{:?}", notices(&evs));
+    // every ask goes out at the least level the model lists
+    let min = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::Minimal));
+    assert!(reqs[1..].iter().all(|q| q.reasoning == min), "{:?}", reqs.iter().map(|q| q.reasoning).collect::<Vec<_>>());
     // the asks do not pile up the cut thinking: the last request carries none of it, and four short notes
     assert_eq!(thinking_sent(&reqs[4]).0, 0);
     let notes: usize = reqs[4].messages.iter().skip(1).map(|m| m.text().len()).sum();
@@ -355,7 +392,8 @@ async fn a_run_with_nobody_there_goes_on_after_three_budget_cuts() {
         Reply::Events(call("c1", "read", json!({"path": "sim.c"}))),
         Reply::Events(text("built it")),
     ]);
-    let mut r = start_alone(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    let cfg = with_levels(config(PermissionMode::Auto), &["low", "high"]);
+    let mut r = start_alone(client.clone(), cfg, d.path()).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
     let evs = r.turn().await;
@@ -371,6 +409,63 @@ async fn a_run_with_nobody_there_goes_on_after_three_budget_cuts() {
     assert!(note.contains("limit again") && !note.contains("NEXT: write gen.py"), "{note}");
     assert_eq!(thinking_sent(&reqs[3]), (0, 0));
     assert_eq!(reqs[3].max_tokens, reqs[0].max_tokens);
+    // the asks think less; once a reply made a call, the next request is at the person's level again
+    let low = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::Low));
+    let levels: Vec<_> = reqs.iter().map(|q| q.reasoning).collect();
+    assert_eq!(levels, vec![None, low, low, low, None]);
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_run_with_nobody_there_and_no_level_to_lower_goes_on_from_a_free_reply() {
+    let d = test_tmpdir().unwrap();
+    // two cuts at the budget, then the free reply reasons up to max_tokens and says nothing
+    let third = format!("{}NEXT: write gen.py with three multipliers", "y".repeat(60_000));
+    let client = Scripted::new(vec![
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(thought(&third)),
+        Reply::Events(call("c1", "read", json!({"path": "sim.c"}))),
+        Reply::Events(text("built it")),
+    ]);
+    let mut r = start_alone(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "{:?}", notices(&evs));
+    assert!(text_of(&evs).contains("built it"), "{}", text_of(&evs));
+    assert!(!notices(&evs).iter().any(|n| n.contains("reasoned without answering")), "{:?}", notices(&evs));
+    assert_eq!(notices(&evs).iter().filter(|n| n.contains("agent.reasoning_budget (8000")).count(), 2);
+    // the ask after the free reply carries the end of what it reasoned, with no more room than before
+    let note = reqs[3].messages.last().unwrap().text();
+    assert!(note.contains("NEXT: write gen.py with three multipliers"), "{note}");
+    assert_eq!(reqs[3].max_tokens, reqs[0].max_tokens);
+    r.stop().await;
+}
+
+/// One cut does not slow the rest of the turn: a call after the cut runs, and the next tool round goes out at
+/// the person's level again, and a later cut is asked at the calm level once more.
+#[tokio::test]
+async fn the_calm_level_ends_once_a_reply_calls() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(call("c1", "read", json!({"path": "a.txt"}))),
+        Reply::Events(call("c2", "read", json!({"path": "b.txt"}))),
+        Reply::Events(long_thought(40_000, then_text("never read"))),
+        Reply::Events(text("done")),
+    ]);
+    let cfg = with_levels(config(PermissionMode::Auto), &["minimal", "low", "high"]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let min = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::Minimal));
+    let levels: Vec<_> = client.requests().iter().map(|q| q.reasoning).collect();
+    assert_eq!(levels, vec![None, min, None, None, min], "{:?}", notices(&evs));
     r.stop().await;
 }
 
