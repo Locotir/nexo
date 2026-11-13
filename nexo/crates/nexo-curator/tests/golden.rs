@@ -361,10 +361,14 @@ fn the_long_session_ends_with_the_reference_stats() {
     // request), and the cache missed 107382. The epoch a new request makes is now tried on a copy, makes no window
     // cut, and lands only when what it saves until the size rule would make an epoch anyway is `margin` times what
     // it sends again: on this session all 5 are refused (`turns_refused`) and the stats are those before it.
+    // A window cut that lands above where cuts start, held up by the sticky set, waits until it pays for what it
+    // sends again (`window_waits` 4), and a read the latest request names goes on past a cap that takes its
+    // message: 28 closed steps, 331 ledger lines, and the cache misses 59443 (was 61379), nothing forgotten.
     let want = serde_json::json!({"birth_saved": 1799, "epochs": 9, "dedup_runs": 6, "dedup_saved": 3117,
-        "miss_fresh": 648, "miss": 61379, "dedup_asked": 24, "closed_steps": 20, "miss_close": 24207,
-        "dropped_chunks": 178, "sup_chunks": 66, "rewrites": 3, "left_messages": 146, "ledger_lines": 462,
-        "cap_rewrites": 2, "miss_cap": 36524, "recalled_steps": 2, "window_cuts": 4, "turns_refused": 5});
+        "miss_fresh": 648, "miss": 59443, "dedup_asked": 24, "closed_steps": 28, "miss_close": 27166,
+        "dropped_chunks": 172, "sup_chunks": 92, "rewrites": 3, "left_messages": 150, "ledger_lines": 331,
+        "cap_rewrites": 2, "miss_cap": 37108, "recalled_steps": 2, "window_waits": 4, "window_cuts": 4,
+        "turns_refused": 6});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);
 }

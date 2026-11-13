@@ -307,7 +307,11 @@ impl Engine {
             }
         }
         // the working window: past `cap` the oldest results the agent is not working from leave, price ignored
-        if let Some(mi) = epoch.then(|| self.window_cut()).flatten() {
+        let rewritten = match (first, closed) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(mi) = epoch.then(|| self.window_cut(rewritten)).flatten() {
             first = Some(first.map_or(mi, |f| f.min(mi)));
             sizes = self.sizes_now();
             self.miss("miss_cap", Some(mi), &sizes, t);

@@ -56,7 +56,7 @@ fn an_answered_request_lets_its_steps_go_and_a_request_about_them_brings_them_ba
 }
 
 #[test]
-fn a_read_brought_back_in_a_message_that_leaves_is_out_again_and_a_request_that_names_it_brings_it_back() {
+fn a_read_brought_back_in_a_message_that_leaves_goes_on_while_named_then_is_out_and_a_request_brings_it_back() {
     let spec = "nudge=0;eoq=0;link=0;close=2;margin=0;ahead=1;protect=1;named=16000";
     let reply = format!("The largest is client {}.", word(529));
     let mut e = Engine::new(params(spec).unwrap());
@@ -76,7 +76,19 @@ fn a_read_brought_back_in_a_message_that_leaves_is_out_again_and_a_request_that_
     let at = e.steps[0].at.unwrap();
     let sizes = e.sizes_now();
     assert!(e.leave(&sizes, 0.0) && e.start > at, "the cut passed the message: {} {at}", e.start);
-    // none of it is in the view: the step is out, not held "in view" by a message that is gone
+    // the request names the read: it goes on after the cut, at the end of the view, not out
+    assert!(!e.steps[0].out && e.steps[0].at.is_some_and(|a| a >= e.start), "{:?} {}", e.steps[0].at, e.start);
+    let back = e.steps[0].at.unwrap();
+    // a request on another file lets it go: a cut that passes it leaves it out, not held "in view" by a message
+    // that is gone
+    msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+    msgs.push(json!({"role": "user", "content": "How many lines has part6.txt?"}));
+    msgs.extend(step(7, "wc -l part6.txt", "12 lines"));
+    msgs.extend(step(8, "wc -l part8.txt", "12 lines"));
+    e.sync(&msgs);
+    e.view();
+    let sizes = e.sizes_now();
+    assert!(e.leave(&sizes, 0.0) && e.start > back, "the cut passed the read: {} {back}", e.start);
     assert!(e.steps[0].out && e.steps[0].at.is_none() && e.steps[0].idle.is_none(), "{:?}", e.steps[0].at);
     // a request that names the file brings it back anew
     msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
@@ -115,6 +127,11 @@ fn a_read_cut_after_it_came_back_is_not_brought_back_again_by_a_name_many_reads_
         e.sync(&msgs);
         e.view();
         recalled.push(e.stats.get("recalled_steps").copied().unwrap_or(0));
+        // a request on another file, then the epoch (the reads the latest request names would go on after it)
+        msgs.push(json!({"role": "user", "content": "And the size of build.log?"}));
+        msgs.push(json!({"role": "assistant", "content": [{"type": "text", "text": "There is none."}]}));
+        e.sync(&msgs);
+        e.view();
         let sizes = e.sizes_now();
         e.leave(&sizes, 0.0);
     }

@@ -479,7 +479,7 @@ impl Engine {
     /// Once rewriting pays (`fire_point`) the oldest results the sticky set does not hold leave, oldest first,
     /// until the view is down to the target, whatever the cache costs; past the ceiling the oldest the sticky set holds besides the latest `file now` of each path and
     /// the last check leave too (their note says how to bring them back). The first message changed.
-    pub(super) fn window_cut(&mut self) -> Option<usize> {
+    pub(super) fn window_cut(&mut self, rewritten: Option<usize>) -> Option<usize> {
         if (self.p.cap <= 0 && self.p.target <= 0) || self.turn_only {
             return None;
         }
@@ -490,6 +490,29 @@ impl Engine {
         let (start, land) = self.window_span();
         if total <= start {
             return None;
+        }
+        // `fire_point` prices the cut as if it landed on the target, but the sticky set holds it where the plan
+        // says: a cut that still lands above the start waits until what it saves on the calls ahead pays for what
+        // it sends again, the messages that stay from its first one to the first one this epoch rewrites anyway.
+        // It waits only while the view, grown by the next look (`check`), stays within what the agent works from
+        // (`still`), a batch and the target
+        if self.p.target > 0
+            && self.p.cap <= 0
+            && !self.weighs_landings()
+            && !self.over_ceiling(total)
+            && total + self.p.check <= self.still_now() + BATCH + self.p.target
+        {
+            if let Some((at, cut)) = self.cut_plan() {
+                let upto = rewritten.map_or(sizes.len(), |w| w.clamp(at, sizes.len()));
+                let resent = (sizes[at..upto].iter().sum::<i64>() - cut).max(0) as f64;
+                let r = self.p.ratio;
+                let pays = r * cut as f64 * self.calls_ahead(self.tr.steps.len())
+                    > self.p.margin * (1.0 - r).max(0.01) * resent;
+                if !pays && total - cut > start {
+                    self.bump("window_waits", 1);
+                    return None;
+                }
+            }
         }
         if self.weighs_landings() && !self.over_ceiling(total) {
             // the cut waits until it pays for what it sends again; what a landing of this request already

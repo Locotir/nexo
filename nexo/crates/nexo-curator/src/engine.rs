@@ -156,6 +156,8 @@ pub struct Engine {
     floor: f64,
     /// The sticky set of the working window, as of the last cut (`window.rs`).
     stk: Sticky,
+    /// The steps the latest request names that `named_keep` kept in the view (`leave` moves them, not drops them).
+    named_now: FxHashSet<usize>,
     /// The tokens of the system prompt and tools the host sends with the view: the working window counts them.
     pub(crate) head: i64,
     /// Whether a part the model only guesses unlikely to be needed may leave in this decision.
@@ -325,6 +327,7 @@ impl Engine {
             fire: 2 * p.target,
             floor: p.floor,
             stk: Sticky::default(),
+            named_now: FxHashSet::default(),
             head: 0,
             guess: true,
             p,

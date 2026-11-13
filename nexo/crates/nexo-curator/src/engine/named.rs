@@ -145,7 +145,8 @@ impl Engine {
     /// `recall` brings them: «and now the logout in auth» finds `auth.rs` read again. Whether any came back.
     pub(super) fn named_keep(&mut self, turned: bool) -> bool {
         let Some(start) = self.goal.turns.last().map(|t| t.start) else { return false };
-        let asked: FxHashSet<String> = name_parts(&self.unit_text_at(start, UKind::User)).into_iter().collect();
+        let text = self.unit_text_at(start, UKind::User);
+        let asked: FxHashSet<String> = name_parts(&text).into_iter().collect();
         let files = self.step_files();
         let last = self.tr.msgs.len() - 1;
         let need = self.asks(self.goal.turns.len() - 1);
@@ -164,6 +165,8 @@ impl Engine {
         let pending = |f: &Vec<String>| through && listed(f) && !taken(f);
         // what the view sends: a read under another topic is not in it, whatever the step says
         let sent: FxHashSet<usize> = self.visible().iter().copied().collect();
+        let mut now = FxHashSet::default();
+        let mut names = false;
         let mut back = 0;
         let mut named: Vec<(usize, Vec<usize>, bool)> = Vec::new();
         for (i, own) in files.iter().enumerate() {
@@ -173,6 +176,7 @@ impl Engine {
                 }
                 continue;
             }
+            names = true;
             // an output that left unused (`live_drop`) is gone from the view as much as a step that left
             let res: Vec<usize> = self.steps[i]
                 .msgs
@@ -206,6 +210,7 @@ impl Engine {
             }
             if in_view {
                 self.steps[i].idle = None;
+                now.insert(i);
             } else if turned {
                 let text = self.step_text(i);
                 let s = &mut self.steps[i];
@@ -213,6 +218,10 @@ impl Engine {
                 s.backs = s.backs.saturating_add(1);
                 back += 1;
             }
+        }
+        // a request that names no file («try that once more») goes on with the reads of the one before
+        if names || !files_in(&text).is_empty() {
+            self.named_now = now;
         }
         if back > 0 {
             self.bump("recalled_steps", back);

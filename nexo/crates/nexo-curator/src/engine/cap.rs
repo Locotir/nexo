@@ -580,8 +580,15 @@ impl Engine {
         let mut total: i64 = sizes.iter().sum();
         let mut new_start = self.start;
         let mut mi = self.start;
+        // a step the latest request names stays, after the request: its tokens do not leave with its message
+        let mut stay: FxHashMap<usize, i64> = FxHashMap::default();
+        for &i in &self.named_now {
+            if let (false, Some(a)) = (self.steps[i].out, self.steps[i].at) {
+                *stay.entry(a).or_insert(0) += self.steps[i].tokens;
+            }
+        }
         while (mi as i64) < (t - self.p.protect).min(t - 1) && total as f64 > target {
-            total -= sizes[mi];
+            total -= sizes[mi] - stay.get(&mi).copied().unwrap_or(0).min(sizes[mi]);
             mi += 1;
             if self.tr.msgs[mi].get("role").and_then(Value::as_str) == Some("assistant") {
                 new_start = mi;
@@ -682,11 +689,26 @@ impl Engine {
         self.start = new_start;
         // a step brought back as text in a message that left with them is out again: none of it is in the view, and a
         // request that names it (or needs it) brings it back anew
-        for s in self.steps.iter_mut().filter(|s| !s.out && s.at.is_some_and(|a| a < new_start)) {
-            (s.out, s.at, s.idle) = (true, None, None);
+        // and one the latest request names and keeps goes on after it, as the request would bring it back anyway
+        let last = self.tr.msgs.len() - 1;
+        let mut moved = false;
+        for i in 0..self.steps.len() {
+            let s = &self.steps[i];
+            if s.out || !s.at.is_some_and(|a| a < new_start) {
+                continue;
+            }
+            if self.named_now.contains(&i) {
+                let text = self.step_text(i);
+                let s = &mut self.steps[i];
+                (s.at, s.tokens, s.idle) = (Some(last), est_str(&text), None);
+                moved = true;
+            } else {
+                let s = &mut self.steps[i];
+                (s.out, s.at, s.idle) = (true, None, None);
+            }
         }
         // a line on a message that left goes back on its request: the view is read again whole anyway
-        if !self.shut.is_empty() {
+        if moved || !self.shut.is_empty() {
             self.shut_lines();
         }
         self.vis = None;
