@@ -647,3 +647,28 @@ fn a_request_sent_again_after_a_cut_in_the_reasoning_starts_a_new_reply_in_the_r
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("ok") && !text.contains("plan"), "{text}");
 }
+
+#[test]
+fn the_init_event_lists_the_tools_the_model_is_offered() {
+    let tools_at = |window: u32| -> Vec<String> {
+        let d = tempfile::tempdir().unwrap();
+        let cfg = format!("{MOCK}[providers.mock.context_window]\nmock = {window}\n[context]\npolicy = \"plain\"\n");
+        let out = nexo_with(d.path(), &cfg, &["-p", "hi", "--output-format", "stream-json"]);
+        let v = lines(&out);
+        assert_eq!(v[0]["type"], "init", "{}", String::from_utf8_lossy(&out.stdout));
+        v[0]["tools"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect()
+    };
+    let (tiny, small, big) = (tools_at(8_192), tools_at(32_768), tools_at(131_072));
+    let has = |l: &[String], n: &str| l.iter().any(|t| t == n);
+    for n in ["task", "workflow", "todo", "note", "debug", "diagnostics", "skill", "web_fetch", "web_search"] {
+        assert!(!has(&tiny, n), "{n} at 8k");
+    }
+    for n in ["task", "workflow", "todo", "note", "debug", "diagnostics"] {
+        assert!(!has(&small, n), "{n} at 32k");
+    }
+    for n in ["skill", "web_fetch", "web_search"] {
+        assert!(has(&small, n) && !has(&tiny, n), "{n} at 32k");
+    }
+    assert!(has(&big, "todo") && has(&big, "web_search") && has(&big, "read"));
+    assert!(has(&tiny, "read") && has(&tiny, "bash"));
+}

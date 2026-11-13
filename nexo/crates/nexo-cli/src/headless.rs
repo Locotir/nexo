@@ -147,7 +147,9 @@ pub fn print_startup_error(fmt: Fmt, msg: &str) {
     let line = match fmt {
         Fmt::Text => return,
         Fmt::Legacy => json!({"event": "error", "message": msg}),
-        Fmt::Json | Fmt::StreamJson => Run::new(fmt, Vec::new(), None).result(EXIT_FAILED, "", None, Some(msg.into())),
+        Fmt::Json | Fmt::StreamJson => {
+            Run::new(fmt, Vec::new(), false, None).result(EXIT_FAILED, "", None, Some(msg.into()))
+        }
     };
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
@@ -268,6 +270,10 @@ impl Req {
 struct Run {
     fmt: Fmt,
     tools: Vec<String>,
+    /// Whether the curator offers `recall`.
+    recall: bool,
+    /// The init line waits for the model's window, which decides what the model is offered.
+    init: Option<Value>,
     started: Instant,
     t: Totals,
     r: Req,
@@ -297,11 +303,34 @@ fn line(v: &Value) {
     let _ = out.flush();
 }
 
+/// The tools the model is offered (as `turn::offered` hands them out) among `all`, for a window of `window`.
+fn offered_names(all: &[String], window: Option<u64>, plan: bool, recall: bool) -> Vec<String> {
+    all.iter()
+        .filter(|n| {
+            !nexo_agent::prompt::left_out(window, n)
+                && (plan || n.as_str() != "exit_plan")
+                && (recall || n.as_str() != "recall")
+                && n.as_str() != "goal_brief"
+        })
+        .cloned()
+        .collect()
+}
+
 impl Run {
-    fn new(fmt: Fmt, tools: Vec<String>, reach: Option<String>) -> Run {
+    /// Prints the init line, once, with the tools offered for `window`.
+    fn send_init(&mut self, window: Option<u64>) {
+        let Some(mut v) = self.init.take() else { return };
+        let plan = v["permission_mode"] == json!(nexo_core::permission::PermissionMode::Plan);
+        v["tools"] = json!(offered_names(&self.tools, window, plan, self.recall));
+        line(&v);
+    }
+
+    fn new(fmt: Fmt, tools: Vec<String>, recall: bool, reach: Option<String>) -> Run {
         Run {
             fmt,
             tools,
+            recall,
+            init: None,
             started: Instant::now(),
             t: Totals::default(),
             r: Req::default(),
@@ -321,17 +350,21 @@ impl Run {
             }
         }
         let stream = self.fmt == Fmt::StreamJson;
+        if !matches!(ev, AgentEvent::Ready { .. } | AgentEvent::ModelLimits { .. }) {
+            self.send_init(None);
+        }
         match ev {
             AgentEvent::Ready { session_id, provider, model, cwd, permission_mode } => {
                 self.t.session_id = session_id.clone();
                 self.t.model = model.clone();
                 if stream {
-                    line(&json!({
+                    self.init = Some(json!({
                         "type": "init", "session_id": session_id, "provider": provider, "model": model,
-                        "tools": self.tools, "cwd": cwd, "permission_mode": permission_mode,
+                        "cwd": cwd, "permission_mode": permission_mode,
                     }));
                 }
             }
+            AgentEvent::ModelLimits { context_window, .. } => self.send_init(context_window.map(u64::from)),
             AgentEvent::SessionChanged { session_id, .. } => self.t.session_id = session_id.clone(),
             AgentEvent::TurnStart { .. } => {
                 self.t.turns += 1;
@@ -609,7 +642,7 @@ pub async fn run(
     let agent = tokio::spawn(nexo_agent::run(ends, agent_setup));
 
     let reach = config.providers.get(&picked.provider).map(|p| unreachable_note(&picked.provider, &p.base_url));
-    let mut run = Run::new(fmt, tools, reach);
+    let mut run = Run::new(fmt, tools, nexo_agent::context::from_config(&config.context).recall(), reach);
     run.quiet_text = schema.is_some();
     let mut stdin_rx = stream_in.then(stdin_lines);
     let mut busy = false;
@@ -781,7 +814,7 @@ mod tests {
 
     #[test]
     fn the_calls_a_resumed_session_replays_are_not_reported_as_this_run_s_work() {
-        let mut run = super::Run::new(super::Fmt::Text, vec![], None);
+        let mut run = super::Run::new(super::Fmt::Text, vec![], false, None);
         let denied = || AgentEvent::ToolDone {
             id: "c1".into(),
             output: nexo_core::ToolOutput::error("Permission denied: rm"),
