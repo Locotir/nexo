@@ -25,7 +25,21 @@ pub(super) fn full_system(st: &State) -> String {
         };
         base = format!("{base}\n\n{directive}");
     }
-    with_goal(&base, st.goal.as_deref())
+    let base = with_goal(&base, st.goal.as_deref());
+    match st.tools.get("todo").and_then(|t| t.todo_items()) {
+        Some(items) if !items.is_empty() => format!("{base}\n\n{}", todo_block(&items)),
+        _ => base,
+    }
+}
+
+/// The task list as a section of the system prompt. History compaction never touches the system
+/// prompt, so the list stays in front of the model however long the work runs.
+pub(super) fn todo_block(items: &[nexo_core::tool::TodoItem]) -> String {
+    let body = nexo_tools::todo::render(items);
+    format!(
+        "<todo-list>\nYour task list, kept here every turn so it never slips out of context as the conversation \
+         is compacted. Keep it current with the `todo` tool as steps finish or the plan changes.\n{body}\n</todo-list>"
+    )
 }
 
 /// The system prompt with the goal pinned at its end. It stays the same whatever the goal's state,
@@ -420,5 +434,32 @@ mod goal_tests {
             (None, Some("Want: green\nWhy: x\nHow: y\nDone when: z"))
         );
         assert_eq!(restated.started_ms, 0, "when it was set is not known");
+    }
+}
+
+#[cfg(test)]
+mod todo_tests {
+    use super::*;
+    use nexo_core::tool::{TodoItem, TodoStatus};
+
+    fn item(text: &str, status: TodoStatus) -> TodoItem {
+        TodoItem { text: text.into(), status }
+    }
+
+    #[test]
+    fn the_todo_block_lists_each_item_with_its_mark_inside_the_tag() {
+        let b = todo_block(&[
+            item("pending item", TodoStatus::Pending),
+            item("working item", TodoStatus::InProgress),
+            item("finished item", TodoStatus::Done),
+        ]);
+        assert!(b.starts_with("<todo-list>\n") && b.ends_with("\n</todo-list>"));
+        assert!(b.contains("\n[ ] pending item\n[>] working item\n[x] finished item\n"));
+    }
+
+    #[test]
+    fn a_tool_without_items_adds_no_todo_section() {
+        let set = ToolSet::new().with(Arc::new(nexo_tools::todo::Todo::new()));
+        assert!(set.get("todo").and_then(|t| t.todo_items()).is_none());
     }
 }

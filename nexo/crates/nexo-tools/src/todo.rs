@@ -167,6 +167,11 @@ impl Tool for Todo {
         })
     }
 
+    fn todo_items(&self) -> Option<Vec<TodoItem>> {
+        let v = self.items();
+        (!v.is_empty()).then_some(v)
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Other
     }
@@ -252,5 +257,18 @@ mod tests {
         let many: Vec<Value> = (0..MAX_ITEMS + 1).map(|i| json!({"text": format!("step {i}")})).collect();
         assert!(t.run(json!({"items": many}), &c).await.content.contains("at most"));
         assert_eq!(t.run(json!({}), &c).await.content, "(no tasks)");
+    }
+
+    #[tokio::test]
+    async fn the_live_list_is_offered_to_the_loop_only_when_it_has_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Todo::with_dir(dir.path().to_path_buf());
+        assert_eq!(t.todo_items(), None);
+        t.run(json!({"items": [{"text": "a"}, {"text": "b", "status": "done"}]}), &ctx(dir.path(), "s2")).await;
+        let items = t.todo_items().expect("a list with items");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].status, TodoStatus::Done);
+        t.run(json!({"items": []}), &ctx(dir.path(), "s2")).await;
+        assert_eq!(t.todo_items(), None);
     }
 }

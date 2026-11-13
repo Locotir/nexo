@@ -260,6 +260,11 @@ pub trait Tool: Send + Sync {
     fn compact(&self) -> Option<Compact<'_>> {
         None
     }
+    /// The live task list, if this tool keeps one and it is not empty. The loop shows it to the
+    /// model every turn, so it never falls out of the context when the history is compacted.
+    fn todo_items(&self) -> Option<Vec<TodoItem>> {
+        None
+    }
     /// A tool the model seldom calls: it is offered with its short text ([`Tool::compact`]) in every window,
     /// as the full one would take its place in every request for a call in a few hundred.
     fn rare(&self) -> bool {
