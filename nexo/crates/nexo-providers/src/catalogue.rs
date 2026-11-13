@@ -18,7 +18,7 @@ use serde_json::Value;
 
 pub const URL: &str = "https://models.dev/api.json";
 /// A cached file older than this is refreshed (in the background).
-pub const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+pub const MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
 /// What the catalogue says about one model.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -31,6 +31,12 @@ pub struct Entry {
     pub reasoning: Option<bool>,
     pub tools: Option<bool>,
     pub vision: Option<bool>,
+    /// The model answers in text (models.dev `modalities.output`); None when the catalogue does not say.
+    pub text_out: Option<bool>,
+    /// models.dev `release_date` (`2026-09-21`), to put the newest first.
+    pub released: Option<String>,
+    /// models.dev `status = "deprecated"`.
+    pub retired: bool,
 }
 
 /// Providers (by their models.dev id) and their models.
@@ -152,6 +158,29 @@ impl Catalogue {
         out
     }
 
+    /// The chat models under a preset, newest first (images, video, speech, embeddings and retired
+    /// models left out).
+    pub fn chat_models_of(&self, preset: &str) -> Vec<String> {
+        let mut all: Vec<(String, Entry)> = self
+            .models_of(preset)
+            .into_iter()
+            .filter(|(id, e)| {
+                !e.retired && e.output != Some(0) && e.text_out != Some(false) && !looks_like_non_chat(id)
+            })
+            .collect();
+        all.sort_by(|(ia, a), (ib, b)| b.released.cmp(&a.released).then_with(|| ib.cmp(ia)));
+        all.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Whether `model` is a chat model of `preset`: what the catalogue says of it when it knows it, else its id.
+    pub fn is_chat(&self, preset: &str, model: &str) -> bool {
+        let exact = catalogue_ids(preset).into_iter().find_map(|id| self.providers.get(&id).and_then(|m| m.get(model)));
+        match exact {
+            Some(e) => !e.retired && e.output != Some(0) && e.text_out != Some(false) && !looks_like_non_chat(model),
+            None => !looks_like_non_chat(model),
+        }
+    }
+
     /// The model ids under a preset (for suggestions).
     pub fn model_names(&self, preset: &str) -> Vec<String> {
         self.models_of(preset).into_iter().map(|(k, _)| k).collect()
@@ -201,7 +230,33 @@ fn entry_of(m: &Value) -> Entry {
         reasoning: m.get("reasoning").and_then(Value::as_bool),
         tools: m.get("tool_call").and_then(Value::as_bool),
         vision: m.pointer("/modalities/input").and_then(Value::as_array).map(|a| a.iter().any(|x| x == "image")),
+        text_out: m.pointer("/modalities/output").and_then(Value::as_array).map(|a| a.iter().any(|x| x == "text")),
+        released: m.get("release_date").and_then(Value::as_str).map(String::from),
+        retired: m.get("status").and_then(Value::as_str) == Some("deprecated"),
     }
+}
+
+/// Whether an id names something that is not a chat model (images, video, speech, embeddings...).
+pub fn looks_like_non_chat(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    if ["imagine", "embed", "dall-e", "multi-agent"].iter().any(|k| id.contains(k)) {
+        return true;
+    }
+    id.split(['-', '_', '/', '.', ':', '@']).any(|t| {
+        matches!(
+            t,
+            "image"
+                | "video"
+                | "tts"
+                | "whisper"
+                | "transcribe"
+                | "moderation"
+                | "rerank"
+                | "realtime"
+                | "sora"
+                | "veo"
+        )
+    })
 }
 
 // ------------------------------------------------------------ the cache on disk

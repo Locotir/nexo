@@ -349,6 +349,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     }
     spawn_catalogue_fill(&state);
     spawn_vendor_fill(&state);
+    if !headless {
+        spawn_model_lists(&state);
+    }
     spawn_job_review(&state, jobs.clone());
     {
         let source = if replay { "resume" } else { "startup" };
@@ -718,6 +721,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         notice(&events, Level::Info, tools_text(&st.tools));
                     }
                     AgentCommand::ScanLocal => {
+                        // the setup opening is also the time to look for models the vendors added
+                        spawn_model_lists(&state);
                         let events = events.clone();
                         // trial keys a killed run left behind: the setup opening is the time to clear them
                         tokio::task::spawn_blocking(setup::sweep_trial_keys);

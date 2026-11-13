@@ -126,3 +126,36 @@ async fn t8_probe_anthropic_and_gemini_need_a_key_on_401_and_400() {
 }
 
 // ================= through the real client =================
+
+#[tokio::test]
+async fn t8_the_picker_gets_a_model_the_vendor_added_through_a_refresh_and_keeps_the_list_offline() {
+    use nexo_providers::modellist::{choices_from, refresh};
+    use std::time::Duration;
+    // `ready()` reads the credential store: not the one of whoever runs the tests
+    std::env::set_var("NEXO_AUTH_FILE", "/nonexistent/nexo-test-auth.json");
+    let s = MockServer::start();
+    s.mock(|w, t| {
+        w.method(GET).path("/v1/models");
+        t.status(200).json_body(json!({"data":[{"id":"grok-5"},{"id":"grok-imagine-image"},{"id":"grok-4.7"}]}));
+    });
+    let mut c = nexo_core::Config::default();
+    let mut p = cfg("openai-chat", &s.base_url());
+    p.models = vec!["grok-4".into()];
+    c.providers.insert("xai".into(), p);
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("vendor-models.json");
+    let client = Client::new(registry());
+    let ask = |p: ProviderConfig| {
+        let client = &client;
+        async move { client.list_models(&p).await.map(|l| l.into_iter().map(|m| m.id).collect()).map_err(|e| e.message) }
+    };
+    assert!(refresh(&c, &f, Duration::from_secs(5), ask).await);
+    let names = |c: &nexo_core::Config| -> Vec<String> {
+        choices_from(c, None, &f).into_iter().filter(|(p, _)| p == "xai").map(|(_, m)| m).collect()
+    };
+    // the configured model first; the vendor's new ones after it; the image one is not offered
+    assert_eq!(names(&c), ["grok-4", "grok-4.7", "grok-5"]);
+    // the vendor is gone: the last list stays
+    drop(s);
+    assert_eq!(names(&c), ["grok-4", "grok-4.7", "grok-5"]);
+}

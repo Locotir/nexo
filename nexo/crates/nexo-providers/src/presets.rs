@@ -86,9 +86,20 @@ const PRESETS: &[Preset] = &[
         base_url: "https://api.x.ai/v1",
         key: Some("XAI_API_KEY"),
         models: &[
-            ("grok-4", Pricing { input: 3.0, output: 15.0, cache_read: 0.75, cache_write: 0.0 }, 256_000),
-            ("grok-4-fast", Pricing { input: 0.2, output: 0.5, cache_read: 0.05, cache_write: 0.0 }, 2_000_000),
-            ("grok-code-fast-1", Pricing { input: 0.2, output: 1.5, cache_read: 0.02, cache_write: 0.0 }, 256_000),
+            ("grok-4.7", Pricing { input: 2.0, output: 6.0, cache_read: 0.5, cache_write: 0.0 }, 500_000),
+            ("grok-build-0.1", Pricing { input: 1.0, output: 2.0, cache_read: 0.2, cache_write: 0.0 }, 256_000),
+            ("grok-4.6", Pricing { input: 2.0, output: 6.0, cache_read: 0.5, cache_write: 0.0 }, 500_000),
+            ("grok-4.3", Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0 }, 1_000_000),
+            (
+                "grok-4.20-0309-reasoning",
+                Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0 },
+                1_000_000,
+            ),
+            (
+                "grok-4.20-0309-non-reasoning",
+                Pricing { input: 1.25, output: 2.5, cache_read: 0.2, cache_write: 0.0 },
+                1_000_000,
+            ),
         ],
         headers: &[],
     },
@@ -421,6 +432,11 @@ mod tests {
         assert_eq!(all["codex"].window_cap, Some(272_000));
         assert!(all["codex"].models.contains(&"gpt-6.1-sol-fast".to_string()));
         assert_eq!(all["xai"].login.as_deref(), Some("xai"));
+        assert_eq!(all["xai"].default_model.as_deref(), Some("grok-4.7"));
+        assert_eq!(all["xai"].models.len(), 6);
+        assert!(all["xai"].models.contains(&"grok-build-0.1".to_string()));
+        assert!(!all["xai"].models.iter().any(|m| m == "grok-4" || m == "grok-4-fast" || m == "grok-code-fast-1"));
+        assert_eq!(all["xai"].context_window["grok-4.7"], 500_000);
     }
 
     #[test]

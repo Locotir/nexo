@@ -335,7 +335,6 @@ pub fn save(file: &Path, name: &str, cfg: &ProviderConfig, model: &str) -> anyho
         if let Some(f) = &cfg.api_key_file {
             set(doc, &p, "api_key_file", Value::from(f.to_string_lossy().as_ref()));
         }
-        config_edit::push_in(doc, &p, "models", model);
         set(doc, &p, "default_model", Value::from(model));
         if let Some(n) = cfg.context_window.get(model) {
             config_edit::set_limit_in(doc, name, model, "context_window", *n);
@@ -578,6 +577,9 @@ mod tests {
         assert_eq!(back.model.as_deref(), Some("qwen3:8b"));
         let p = &back.providers["ollama"];
         assert_eq!(p.base_url, "http://localhost:11434/v1");
+        // the model chosen is the default, never the only one `/model` offers
+        assert!(p.models.is_empty());
+        assert_eq!(p.default_model.as_deref(), Some("qwen3:8b"));
         assert_eq!(p.context_window["qwen3:8b"], 8192);
         assert_eq!(p.efforts["qwen3:8b"], ["off", "on"]);
         assert_eq!(effort_of(p, "qwen3:8b", &None).as_deref(), Some("on"));

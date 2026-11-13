@@ -19,6 +19,7 @@ mod http;
 pub mod keys;
 pub mod login;
 pub mod mock;
+pub mod modellist;
 pub mod openai_chat;
 pub mod openai_responses;
 pub mod parse;

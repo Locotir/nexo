@@ -141,7 +141,7 @@ fn on_gateway(c: &Config, m: &str) -> bool {
 }
 
 pub fn model_choices(cfg: &Config) -> Vec<(String, String)> {
-    cfg.model_choices()
+    nexo_providers::modellist::choices(cfg)
 }
 
 /// The built-in tools of a session. A hermetic one (a benchmark arm) has no web tools: the model could

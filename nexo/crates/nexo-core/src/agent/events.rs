@@ -145,6 +145,11 @@ pub enum AgentEvent {
         provider: String,
         model: String,
     },
+    /// Every model `/model` offers now, `(provider, model)`: the vendors' lists and the catalogue came in
+    /// (or were read again), so a model added since the start shows up without a restart.
+    ModelsListed {
+        models: Vec<(String, String)>,
+    },
     /// The setup could not save the model (nothing was changed): why, and what to do.
     SaveFailed {
         name: String,

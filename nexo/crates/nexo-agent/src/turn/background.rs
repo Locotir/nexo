@@ -287,6 +287,8 @@ pub(super) fn spawn_catalogue_fill(state: &Shared) {
         }
         tokio::spawn(async move {
             let mut st = state.lock().await;
+            // the catalogue is new: so is what `/model` offers
+            emit(&st.events, AgentEvent::ModelsListed { models: nexo_providers::modellist::choices(&st.config) });
             if !st.limits.incomplete() && !st.limits.window_is_cap_only() {
                 return;
             }
@@ -299,6 +301,32 @@ pub(super) fn spawn_catalogue_fill(state: &Shared) {
         });
     });
     catalogue::refresh_if_stale(Some(done));
+}
+
+/// What `/model` offers is read again from the vendors' own lists (each asked at most once a day, in the
+/// background, with a short timeout) and the catalogue; the interface is told what it offers now. A
+/// vendor that does not answer keeps its last list.
+pub(super) fn spawn_model_lists(state: &Shared) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let (config, client, events) = {
+            let st = state.lock().await;
+            (st.config.clone(), st.client.clone(), st.events.clone())
+        };
+        let file = nexo_providers::modellist::cache_file();
+        let ask = |cfg: nexo_core::config::ProviderConfig| {
+            let client = client.clone();
+            async move {
+                client.list_models(&cfg).await.map(|l| l.into_iter().map(|m| m.id).collect()).map_err(|e| e.message)
+            }
+        };
+        let before = nexo_providers::modellist::choices(&config);
+        nexo_providers::modellist::refresh(&config, &file, Duration::from_secs(8), ask).await;
+        let after = nexo_providers::modellist::choices(&config);
+        if after != before {
+            emit(&events, AgentEvent::ModelsListed { models: after });
+        }
+    });
 }
 
 pub(super) fn spawn_vendor_fill(state: &Shared) {

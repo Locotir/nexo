@@ -318,6 +318,16 @@ impl App {
                 self.limits = None;
                 self.refresh_welcome();
             }
+            AgentEvent::ModelsListed { models } => {
+                // what the next `/model` offers; a pair the person has but the list lacks stays
+                let mut all = models;
+                for pair in std::mem::take(&mut self.opts.models) {
+                    if !all.contains(&pair) {
+                        all.push(pair);
+                    }
+                }
+                self.opts.models = all;
+            }
             AgentEvent::SaveFailed { name, model, reason } => {
                 // the wizard that waits for the save says it on its screen; with none open the failure is
                 // still told, in one line

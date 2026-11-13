@@ -59,7 +59,7 @@ pub(super) async fn restore_model(state: &Shared, pinned: bool) {
             let _ = st.session.record_model(&now.0, &now.1);
             return;
         }
-        let usable = st.config.model_choices().iter().any(|(cp, cm)| *cp == p && *cm == m)
+        let usable = nexo_providers::modellist::choices(&st.config).iter().any(|(cp, cm)| *cp == p && *cm == m)
             && st.config.check_model(&p, &m).is_ok();
         if !usable {
             let line =
@@ -387,9 +387,8 @@ pub(super) async fn save_model(state: &Shared, name: String, cfg: ProviderConfig
     for (k, v) in &cfg.headers {
         merged.headers.insert(k.clone(), v.clone());
     }
-    if !merged.models.contains(&model) {
-        merged.models.push(model.clone());
-    }
+    // the model chosen is the default; it is not written into `models`, which would make it the only
+    // one offered: the picker adds the vendor's list and the catalogue
     merged.default_model = Some(model.clone());
     for (map, from) in [(&mut merged.context_window, &cfg.context_window), (&mut merged.max_output, &cfg.max_output)] {
         if let Some(n) = from.get(&model) {
