@@ -43,6 +43,11 @@ pub(super) fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     if app.input.is_untouched() && app.palette.is_none() && editor.width > 4 {
         let shared;
         let pend;
+        let queued;
+        let tip;
+        let mut tip_shown = None;
+        // the hint must fit whole: a cut tip or a cut count of queued messages says less than nothing
+        let width_room = (editor.width as usize).saturating_sub(2);
         let text = if let Some((_, ended)) = app.sub_label() {
             if ended {
                 "ended · Esc back"
@@ -59,6 +64,9 @@ pub(super) fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             }
         } else if let Some(s) = app.suggestion_shown() {
             s
+        } else if let Some(s) = queued_hint(app, width_room) {
+            queued = s;
+            queued.as_str()
         } else if app.busy {
             if app.quiet() {
                 "add a message"
@@ -69,13 +77,47 @@ pub(super) fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             let name = if title.is_empty() { id } else { title };
             shared = format!("⊕ what «{name}» knows goes with your next message · /memory share off drops it");
             shared.as_str()
+        } else if let Some((t, s)) = tip_for_box(app, width_room) {
+            tip_shown = Some(t);
+            tip = s;
+            tip.as_str()
         } else {
             "ask anything"
         };
         // one cell right of the caret, so the caret never covers its first letter
         let ph = Rect { x: editor.x + 2, width: editor.width - 2, height: 1, ..editor };
         f.render_widget(Paragraph::new(Span::styled(truncate(text, ph.width as usize), theme.dim2())), ph);
+        if let Some(t) = tip_shown {
+            let turn = app.turns_ended;
+            app.hint_state.note_shown(t, turn);
+        }
     }
+}
+
+/// Requests wait their turn and the box is empty: say how to take one back (the short form when the long does not fit).
+fn queued_hint(app: &App, room: usize) -> Option<String> {
+    if !app.opts.hints || app.queued_msgs.is_empty() {
+        return None;
+    }
+    ["↑ edit queued messages · Enter sends now", "↑ edit queued"]
+        .into_iter()
+        .find(|s| width(s) <= room)
+        .map(String::from)
+}
+
+/// A key worth knowing, in the quiet moments only: idle, not in vim's normal mode, no window, list or search open,
+/// and room for the whole line.
+fn tip_for_box(app: &App, room: usize) -> Option<(crate::hints::Tip, String)> {
+    if !app.opts.hints
+        || app.quiet()
+        || app.busy
+        || app.modal.is_some()
+        || app.search.is_some()
+        || app.input.vim == Some(crate::input::VimMode::Normal)
+    {
+        return None;
+    }
+    app.hint_state.tip(app.turns_ended, &app.keymap).filter(|(_, s)| width(s) <= room)
 }
 
 /// The newest queued requests as dim rows (`◷ first line`): a click takes one back into the draft.

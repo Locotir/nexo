@@ -24,6 +24,7 @@ fn app(strip: bool, animations: bool) -> App {
         theme: "dark".into(),
         timestamps: false,
         suggest: false,
+        hints: true,
         animations,
         detail: nexo_core::config::Detail::Full,
         figure: nexo_core::config::Figure::Galaxy,

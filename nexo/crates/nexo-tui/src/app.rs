@@ -144,6 +144,8 @@ pub struct App {
     pub words: crate::complete::WordIndex,
     /// The next message the agent suggests, dim in the empty draft; Tab or → takes it, any edit drops it.
     pub suggestion: Option<String>,
+    /// Which key tips were shown and used (the empty draft's hint); kept in the data folder while the interface runs.
+    pub hint_state: crate::hints::HintState,
     pub palette: Option<Palette>,
     /// The draft set aside while the commands window opened by its key has the box.
     pub kept_draft: Option<crate::input::Draft>,
@@ -474,6 +476,7 @@ impl App {
             },
             words: crate::complete::WordIndex::new(opts.complete_words),
             suggestion: None,
+            hint_state: Default::default(),
             palette: None,
             modal: None,
             diffview: None,

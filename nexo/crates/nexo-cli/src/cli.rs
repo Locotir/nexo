@@ -748,6 +748,7 @@ async fn interactive(
         group_tools: config.ui.group_tools,
         complete_words: config.ui.complete_words,
         suggest: config.ui.suggest,
+        hints: config.ui.hints,
         keys: config.ui.keys.clone(),
         animations: config.ui.animations,
         figure: config.ui.figure,

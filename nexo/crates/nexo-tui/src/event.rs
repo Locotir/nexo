@@ -191,6 +191,13 @@ pub fn key(app: &mut App, k: KeyEvent) {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
     let page = app.transcript_area.height.saturating_sub(1).max(1) as i32;
+    // a key a tip names, once used, is never named again
+    if let Some(a) = app.keymap.action(&k) {
+        app.hint_state.used_action(a);
+    }
+    if k.code == KeyCode::Char('@') && !ctrl {
+        app.hint_state.used_tip(crate::hints::Tip::Files);
+    }
     match app.keymap.action(&k) {
         Some(Action::Cancel) => return app.ctrl_c(),
         Some(Action::Quit) if app.input.is_empty() => return app.quit(),

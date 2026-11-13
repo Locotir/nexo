@@ -776,6 +776,7 @@ animations = true                   # smooth scrolling, fades, pulses; false: no
 # detail = "quiet"                  # quiet: no key hints row, no doubled figures, short dialogs; full: everything on screen
 # todo_strip = false                # true: the open to-do list as rows above the draft; false: a count like 3/7 in the bottom bar (click: /todo)
 suggest = true                      # when a turn ends, a dim suggestion of your next message shows in the empty input; Tab or → takes it; costs one short cached call; false: off
+hints = true                        # the empty input shows one short hint (queued messages, a key worth knowing); false: only "ask anything"
 # timestamps = true                 # a dim HH:MM at the right of each message and reply, and how long a reply took; /settings timestamps toggles
 screen = "full"                     # full (alternate screen) | inline (finished turns go to the terminal scrollback)
 # status_line = ["model", "effort", "dir", "branch", "mode", "context", "curator", "mem", "cache", "plan", "tokens", "cost"]   # pieces of the bottom bar, in order; default: all

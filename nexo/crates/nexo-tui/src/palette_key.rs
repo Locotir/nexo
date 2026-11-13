@@ -83,6 +83,7 @@ mod tests {
             group_tools: true,
             complete_words: true,
             suggest: false,
+            hints: true,
             notify_after: 15,
             animations: false,
             figure: nexo_core::config::Figure::Galaxy,

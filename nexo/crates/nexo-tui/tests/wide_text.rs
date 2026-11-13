@@ -37,6 +37,7 @@ fn app() -> (App, mpsc::UnboundedReceiver<nexo_core::agent::AgentCommand>) {
         group_tools: false,
         complete_words: true,
         suggest: false,
+        hints: true,
         keys: Default::default(),
         notify_after: 15,
         animations: false,

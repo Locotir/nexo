@@ -30,6 +30,7 @@ fn app() -> App {
         group_tools: false,
         complete_words: true,
         suggest: false,
+        hints: true,
         keys: Default::default(),
         notify_after: 15,
         // Pop-ins depend on the clock; snapshots check the settled layout.

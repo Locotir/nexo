@@ -24,6 +24,7 @@ fn app() -> App {
         group_tools: false,
         complete_words: false,
         suggest: false,
+        hints: true,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

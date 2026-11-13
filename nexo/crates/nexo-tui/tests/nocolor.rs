@@ -27,6 +27,7 @@ fn app(theme: &str) -> App {
         group_tools: true,
         complete_words: true,
         suggest: false,
+        hints: true,
         keys: Default::default(),
         notify_after: 15,
         animations: false,

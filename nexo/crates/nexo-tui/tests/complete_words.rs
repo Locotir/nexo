@@ -30,6 +30,7 @@ fn app_with(theme: &str, complete: bool) -> App {
         group_tools: false,
         complete_words: complete,
         suggest: false,
+        hints: true,
         keys: Default::default(),
         status_line: vec![],
         status_command: String::new(),

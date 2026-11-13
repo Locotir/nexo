@@ -36,6 +36,7 @@ pub mod fx_home;
 pub mod fx_stars;
 pub mod fx_stream;
 pub mod goal_view;
+pub mod hints;
 pub mod inline;
 pub mod input;
 pub mod insights;
@@ -99,6 +100,8 @@ pub struct TuiOptions {
     pub complete_words: bool,
     /// Ask the agent for a suggested next message when a turn ends and show it as ghost text (`[ui] suggest`).
     pub suggest: bool,
+    /// One short hint in the empty draft: queued messages, or a key worth knowing (`[ui] hints`).
+    pub hints: bool,
     /// `[ui.keys]`: action name -> key, over the default keys.
     pub keys: std::collections::BTreeMap<String, String>,
     /// Smooth scrolling, fades, pulses and the other motion (`[ui] animations`).
@@ -144,6 +147,7 @@ impl Default for TuiOptions {
             group_tools: true,
             complete_words: true,
             suggest: true,
+            hints: true,
             keys: Default::default(),
             animations: true,
             figure: nexo_core::config::Figure::Galaxy,
@@ -291,6 +295,7 @@ pub async fn run(mut handle: AgentHandle, opts: TuiOptions) -> anyhow::Result<()
     let mut app = App::new(opts, handle.commands.clone());
     // the requests sent before, kept between runs (↑ and Ctrl+R reach them)
     app.input.persist_history(nexo_core::paths::data_dir().join("prompt-history.jsonl"));
+    app.hint_state = hints::HintState::load(nexo_core::paths::data_dir().join("hints.json"));
     if let Some(first) = app.opts.prompt.take() {
         app.start_with(&first);
     }

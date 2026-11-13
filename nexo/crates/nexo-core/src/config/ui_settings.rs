@@ -118,6 +118,9 @@ pub struct UiConfig {
     /// When a turn ends, a dim suggestion of your next message shows in the empty input; Tab or → takes it and typing
     /// hides it. It costs one short model call per turn, which reuses the conversation's cached prompt.
     pub suggest: bool,
+    /// The empty input shows one short hint that fits the moment (queued messages, a key worth knowing); false: it
+    /// only says "ask anything".
+    pub hints: bool,
 }
 
 impl Default for UiConfig {
@@ -144,6 +147,7 @@ impl Default for UiConfig {
             timestamps: true,
             update_check: true,
             suggest: true,
+            hints: true,
         }
     }
 }

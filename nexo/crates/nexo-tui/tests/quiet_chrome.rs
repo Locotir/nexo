@@ -29,6 +29,7 @@ fn app(detail: Detail) -> (App, mpsc::UnboundedReceiver<AgentCommand>) {
         theme: "dark".into(),
         timestamps: false,
         suggest: false,
+        hints: true,
         animations: false,
         detail,
         session_id: Some("20261027-120000-ab12".into()),

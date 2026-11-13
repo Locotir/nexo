@@ -30,6 +30,7 @@ fn app(detail: Detail) -> App {
         theme: "dark".into(),
         timestamps: false,
         suggest: false,
+        hints: true,
         animations: false,
         group_tools: true,
         detail,
