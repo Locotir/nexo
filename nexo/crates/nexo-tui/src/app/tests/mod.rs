@@ -223,6 +223,7 @@ mod pastes_questions_and_plans;
 mod scrollbar_titles_and_status_bar;
 mod session_lists_changes_and_selection;
 mod setup_save_and_scroll_news;
+mod starfield;
 mod steps_banner_gauge_and_pricing;
 mod sub;
 mod suggestions_links_and_errors;

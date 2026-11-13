@@ -75,6 +75,20 @@ fn symbols(b: &Buffer) -> Vec<String> {
     b.content().iter().map(|c| c.symbol().to_string()).collect()
 }
 
+/// The buffer without the faint stars (single braille dots on the free cells, which come and go on their own):
+/// they and the blank cells they sit on are reset, so what is left is the card.
+fn without_stars(b: &Buffer) -> Buffer {
+    let mut b = b.clone();
+    for c in b.content.iter_mut() {
+        let mut it = c.symbol().chars();
+        let dot = matches!((it.next(), it.next()), (Some(ch), None) if (0x2801..=0x28ff).contains(&(ch as u32)) && (ch as u32 - 0x2800).count_ones() == 1);
+        if dot || c.symbol() == " " {
+            c.reset();
+        }
+    }
+    b
+}
+
 fn find(b: &Buffer, needle: &str) -> Option<(u16, u16)> {
     let w = b.area.width;
     rows_of(b).iter().enumerate().find_map(|(y, r)| {
@@ -98,9 +112,9 @@ fn limits(a: &mut App, window: u32) {
 fn the_welcome_card_comes_in_line_by_line_once() {
     let t0 = Instant::now();
     let mut a = locked(true);
-    let first = draw_at(&mut a, t0, 0, 80);
-    let mid = draw_at(&mut a, t0, 120, 80);
-    let done = draw_at(&mut a, t0, 400, 80);
+    let first = without_stars(&draw_at(&mut a, t0, 0, 80));
+    let mid = without_stars(&draw_at(&mut a, t0, 120, 80));
+    let done = without_stars(&draw_at(&mut a, t0, 400, 80));
     assert_eq!(symbols(&first), symbols(&done), "colour only");
     assert_eq!(symbols(&mid), symbols(&done));
     let (x, y) = find(&done, "Set up a model").unwrap();
@@ -108,10 +122,10 @@ fn the_welcome_card_comes_in_line_by_line_once() {
     assert_ne!(mid[(x, y)].fg, done[(x, y)].fg, "and is on its way");
     assert!(!a.tick_fx(), "it rests");
     // a card that came in does not come in again
-    let again = draw_at(&mut a, t0, 2000, 80);
+    let again = without_stars(&draw_at(&mut a, t0, 2000, 80));
     assert_eq!(again, done);
     let mut off = locked(false);
-    assert_eq!(draw_at(&mut off, t0, 0, 80), done, "animations off draw the settled card at once");
+    assert_eq!(without_stars(&draw_at(&mut off, t0, 0, 80)), done, "animations off draw the settled card at once");
     assert!(!off.tick_fx());
 }
 

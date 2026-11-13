@@ -33,6 +33,7 @@ pub mod fx_effort;
 pub mod fx_galaxy;
 pub mod fx_goal;
 pub mod fx_home;
+pub mod fx_starfield;
 pub mod fx_stars;
 pub mod fx_stream;
 pub mod goal_view;

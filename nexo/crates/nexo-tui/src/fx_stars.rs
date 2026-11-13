@@ -6,20 +6,20 @@
 //! phase it is asked about; no randomness and no libm at run time (`sin` and `cos` here use only
 //! IEEE operations), so the same phase gives the same frame on every machine.
 //!
-//! The faint stars do not turn or drift: each one breathes (`twinkle`): its brightness follows a raised
-//! cosine, from invisible up to its peak and just as slowly back down, then it rests dark and comes back
-//! somewhere else, on a cycle of its own of 8 to 12 s, and never on a cell the figure uses. Their colour
-//! is drawn from the ground up (no floor), so a star starts and ends fully invisible.
+//! The faint stars are not part of the figure: they are the starfield of `fx_starfield`,
+//! painted over the blank cells of the whole free area above the card once the figure is drawn.
 //!
 //! The figure turns on the spinner beat while someone is at the keys. After `REST_AFTER_MS` with no key
 //! or mouse event it eases to a stop over `STOP_MS` and asks for no more frames; the next input wakes it.
+//! The stars follow it: they fade out over those same `STOP_MS` (visibility 1 to 0) and, once gone, ask for
+//! no more frames either; a key or mouse event fades them back in over `FADE_IN_MS` from where they were.
 
 use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::Instant;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
 
 use nexo_core::config::Figure;
@@ -27,6 +27,7 @@ use nexo_core::config::Figure;
 use crate::anim::{ease_out, progress};
 use crate::app::App;
 use crate::fx_galaxy;
+use crate::fx_starfield::{render_stars, Look};
 use crate::motion::fade;
 
 /// The full figure in cells, and the smallest one a lower or narrower room still gets (the same shape,
@@ -41,11 +42,15 @@ pub const GATHER_MS: u64 = 600;
 pub const REST_AFTER_MS: u64 = 20_000;
 /// ... easing to a stop over this long.
 pub const STOP_MS: u64 = 1000;
+/// How long the stars take to come back after a key or mouse event (from the visibility they had then).
+pub const FADE_IN_MS: u64 = 1000;
+/// How long frames still come after the stars are gone, so the last one drawn is the empty sky (a bit more
+/// than one beat).
+const TAIL_MS: u64 = 150;
 /// The phase of the still frame (animations off, mono): the nicest angle.
 pub const NICE_MS: f64 = 2250.0;
 
 const NODES: usize = 9;
-const STARS: usize = 150;
 const RING_DOTS: usize = 120;
 /// Tilt of the axis (towards the viewer) and its roll, in radians.
 const TILT: f32 = 0.42;
@@ -56,8 +61,6 @@ const RING_R: f32 = 1.22;
 /// A faint star's whole cycle (one breath, then a dark gap) lasts between these, each its own.
 const CYCLE_MIN_MS: f64 = 8000.0;
 const CYCLE_SPAN_MS: f64 = 4000.0;
-/// The brightness of a figure's faint star at the top of its breath.
-const PEAK: f32 = 0.85;
 
 // ---- maths without libm ----
 
@@ -80,7 +83,7 @@ pub(crate) fn cos(x: f32) -> f32 {
     sin(x + PI / 2.0)
 }
 
-fn mix(mut x: u32) -> u32 {
+pub(crate) fn mix(mut x: u32) -> u32 {
     x ^= x >> 16;
     x = x.wrapping_mul(0x7feb_352d);
     x ^= x >> 15;
@@ -273,16 +276,6 @@ impl Canvas {
         }
     }
 
-    /// Nothing is drawn yet in the cell holding the dot at `x`, `y`.
-    fn free(&self, x: f32, y: f32) -> bool {
-        let (w, h) = self.dots();
-        x >= 0.0
-            && y >= 0.0
-            && x < w
-            && y < h
-            && self.bits[(y as usize / self.dy) * self.cols + x as usize / self.dx] == 0
-    }
-
     pub(crate) fn dots(&self) -> (f32, f32) {
         ((self.cols * self.dx) as f32, (self.rows * self.dy) as f32)
     }
@@ -346,11 +339,10 @@ pub(crate) fn lit(z: f32) -> f32 {
 
 /// The figure at `phase_ms` of its turn, with the dots `gather` (0 scattered, 1 gathered) of the way in.
 pub fn grid(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool) -> Grid {
-    build(phase_ms, gather, cols, rows, ascii, true)
+    build(phase_ms, gather, cols, rows, ascii)
 }
 
-/// `grid`, with or without the faint stars.
-fn build(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool, faint: bool) -> Grid {
+fn build(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool) -> Grid {
     let mut cv = Canvas::new(cols, rows, ascii);
     if cols == 0 || rows == 0 {
         return cv.finish();
@@ -411,15 +403,6 @@ fn build(phase_ms: f64, gather: f32, cols: u16, rows: u16, ascii: bool, faint: b
             cv.plot(x + 1.0, y + 1.0, l, true);
         }
     }
-    // the faint stars come last, in screen space and only on cells the figure has left empty
-    let stars = if faint { ((cols as usize * rows as usize) / 4).min(STARS) } else { 0 };
-    for i in 0..stars {
-        let st = twinkle(5000 + i as u32 * 4, phase_ms);
-        let (x, y) = (st.x * w, st.y * h);
-        if st.level > 0.0 && cv.free(x, y) {
-            cv.plot_soft(x, y, PEAK * st.level * seen, false, false);
-        }
-    }
     cv.finish()
 }
 
@@ -450,6 +433,8 @@ pub struct StarsFx {
     last_input: Option<Instant>,
     /// The last draw had room for the figure (the beat is only worth asking for then).
     shown: Cell<bool>,
+    /// The visibility of the stars (0..1) when the last input came: the fade in goes on from there.
+    fade_from: f32,
 }
 
 fn ms(from: Instant, to: Instant) -> f64 {
@@ -466,6 +451,7 @@ impl StarsFx {
                 start: Some(now),
                 last_input: Some(now),
                 shown: Cell::new(false),
+                fade_from: 0.0,
             };
         }
     }
@@ -494,9 +480,34 @@ impl StarsFx {
         ms(start, now) > run + STOP_MS as f64
     }
 
+    /// The seconds on the stars' clock: it only runs on, so a star never jumps when the figure rests or wakes.
+    pub(crate) fn sky_time(&self, now: Instant) -> f32 {
+        self.begun.map_or(0.0, |b| now.saturating_duration_since(b).as_secs_f32())
+    }
+
+    /// How visible the stars are at `now` (0..1): they fade in from where they were at the last input over
+    /// `FADE_IN_MS`, stay while someone is at the keys and fade out over `STOP_MS` once the figure rests.
+    pub(crate) fn visibility(&self, now: Instant) -> f32 {
+        let Some(last) = self.last_input else { return 0.0 };
+        let since = ms(last, now);
+        let rest = REST_AFTER_MS as f64;
+        if since > rest {
+            return (1.0 - (since - rest) / STOP_MS as f64).clamp(0.0, 1.0) as f32;
+        }
+        let k = (since / FADE_IN_MS as f64).clamp(0.0, 1.0) as f32;
+        self.fade_from + (1.0 - self.fade_from) * k
+    }
+
+    /// The stars have faded out and the frame that shows the empty sky has had its time: nothing is left to
+    /// ask frames for until the next input.
+    pub(crate) fn settled(&self, now: Instant) -> bool {
+        self.last_input.is_none_or(|last| ms(last, now) > (REST_AFTER_MS + STOP_MS + TAIL_MS) as f64)
+    }
+
     /// A key or a mouse event: the turn goes on from where it is.
     pub fn input(&mut self, now: Instant) {
         let Some(start) = self.start else { return };
+        self.fade_from = self.visibility(now);
         let running = ms(start, now) <= self.last_input.map_or(0.0, |l| ms(start, l)) + REST_AFTER_MS as f64;
         if !running {
             self.base = self.phase(now);
@@ -522,7 +533,7 @@ impl App {
     /// The figure is on screen and turning (the beat is wanted): the welcome screen is up, the motion is
     /// on, the last draw had room for it and the person was at the keys a short while ago.
     pub fn stars_alive(&self, now: Instant) -> bool {
-        self.locked && self.fx_on() && self.fx.stars.shown.get() && !self.fx.stars.at_rest(now)
+        self.locked && self.fx_on() && self.fx.stars.shown.get() && !self.fx.stars.settled(now)
     }
 
     /// For the tick: the gather moves at frame rate; with `turning`, the turn itself (a beat) counts too.
@@ -537,8 +548,40 @@ impl App {
 // ---- drawing ----
 
 /// Draws the figure above the card whose first row is `top` in `area`, slid up by `slide` rows and
-/// faded by `away` (0..1) while the home unlocks. Nothing when the room is too small.
+/// faded by `away` (0..1) while the home unlocks, and then the starfield over the blank cells of the free
+/// area above the card (the figure is left alone). Nothing when the room is too small.
 pub fn draw(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f64) {
+    draw_figure(f, app, area, top, slide, away);
+    draw_sky(f, app, area, top, slide, away);
+}
+
+/// The starfield (see `fx_starfield`) on the blank cells of the rows above the card, over the whole width. Only
+/// where the figure is (no figure, no room for it, the motion off, a mono theme, no true colour or the ASCII
+/// fallback: no stars).
+fn draw_sky(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f64) {
+    // The default theme paints no ground of its own (`Reset`): a star then rises from black.
+    let ground = match app.theme.bg {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Reset => (0, 0, 0),
+        _ => return,
+    };
+    let Color::Rgb(fr, fg, fb) = app.theme.fg else { return };
+    let free = Rect { height: top.saturating_sub(slide).saturating_sub(area.y).min(area.height), ..area };
+    if !app.fx.stars.shown.get() || !app.fx_on() || crate::ascii::wanted() || free.is_empty() {
+        return;
+    }
+    let now = app.now();
+    let keep = (1.0 - away).clamp(0.0, 1.0) as f32;
+    let look = Look {
+        time: app.fx.stars.sky_time(now),
+        ink: (fr, fg, fb),
+        ground,
+        visibility: app.fx.stars.visibility(now) * keep,
+    };
+    render_stars(free, None, None, look, f.buffer_mut());
+}
+
+fn draw_figure(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f64) {
     let free = top.saturating_sub(area.y).saturating_sub(1);
     let figure = app.opts.figure;
     let galaxy = figure == Figure::Galaxy;
@@ -748,62 +791,81 @@ mod tests {
     }
 
     #[test]
-    fn no_star_sits_on_the_figure() {
+    fn the_figure_has_no_faint_stars_of_its_own() {
+        // the sky is `fx_starfield`'s: the figure's cells are the figure and its ring, the same at every time
+        // within a gather, and the same when asked twice
         for ascii in [false, true] {
-            let mut added = 0;
-            for t in (0..9000).step_by(300) {
-                let bare = build(t as f64, 1.0, 36, 16, ascii, false);
-                let with = build(t as f64, 1.0, 36, 16, ascii, true);
-                for (a, b) in bare.cells.iter().zip(&with.cells) {
-                    if a.ch != ' ' {
-                        assert_eq!(a, b, "a cell of the figure or ring was touched at {t}");
-                    } else if b.ch != ' ' {
-                        added += 1;
-                        assert!(!b.node && !b.core);
-                    }
-                }
+            for t in (0..9000).step_by(900) {
+                let g = build(t as f64, 1.0, 36, 16, ascii);
+                assert_eq!(g.cells, build(t as f64, 1.0, 36, 16, ascii).cells);
+                assert!(g.cells.iter().all(|c| c.ch == ' ' || c.level > 0.0));
             }
-            assert!(added > 100, "stars fill the empty cells: {added}");
         }
     }
 
     #[test]
-    fn ascii_steps_go_dot_colon_star_colon_dot() {
-        let mut seq: Vec<char> = Vec::new();
-        for i in 0..600 {
-            let l = PEAK * twinkle(5000, 10_000.0 + i as f64 * 30.0).level;
-            let ch = if l >= 0.72 {
-                '*'
-            } else if l >= 0.42 {
-                ':'
-            } else if l > 0.0 {
-                '.'
-            } else {
-                ' '
-            };
-            if seq.last() != Some(&ch) {
-                seq.push(ch);
-            }
-        }
-        assert!(seq.windows(2).all(|w| w[0] != w[1]));
-        let s: String = seq.iter().collect();
-        assert!(s.contains(" .:*"), "{s}");
-        assert!(s.contains("*:. "), "{s}");
-    }
-
-    #[test]
-    fn resting_asks_for_no_frames_and_freezes_the_stars() {
+    fn the_stars_fade_out_while_the_figure_rests_and_then_ask_for_no_frames() {
         let t0 = Instant::now();
         let mut fx = StarsFx::default();
         fx.begin(t0);
-        let late = t0 + Duration::from_millis(REST_AFTER_MS + STOP_MS + 500);
-        assert!(fx.at_rest(late));
-        let (a, b) = (fx.phase(late), fx.phase(late + Duration::from_secs(60)));
+        let rest = t0 + Duration::from_millis(REST_AFTER_MS);
+        let at = |ms: u64| rest + Duration::from_millis(ms);
+        // full while someone is at the keys, then a straight fade over STOP_MS
+        assert_eq!(fx.visibility(t0 + Duration::from_millis(FADE_IN_MS)), 1.0);
+        assert_eq!(fx.visibility(rest), 1.0);
+        assert!((fx.visibility(at(STOP_MS / 2)) - 0.5).abs() < 1e-3);
+        assert_eq!(fx.visibility(at(STOP_MS)), 0.0);
+        assert_eq!(fx.visibility(at(STOP_MS + 5000)), 0.0);
+        // each beat of the fade changes it by less than a fifth, so nothing pops
+        let beat = crate::frame::BEAT.as_millis() as u64;
+        let mut last = fx.visibility(rest);
+        for ms in (beat..=STOP_MS + 500).step_by(beat as usize) {
+            let v = fx.visibility(at(ms));
+            assert!(v <= last && last - v < 0.2, "{last} -> {v} at {ms}");
+            last = v;
+        }
+        // the frame after it is gone still comes (the last one drawn is the empty sky), then none
+        assert!(!fx.settled(at(STOP_MS)));
+        assert!(fx.settled(at(STOP_MS + 200)));
+        assert!(fx.settled(at(STOP_MS + 60_000)));
+        // the figure stopped for good: the same turn whenever it is asked
+        let (a, b) = (fx.phase(at(STOP_MS + 500)), fx.phase(at(STOP_MS + 60_000)));
         assert_eq!(a, b);
         assert_eq!(grid(a, 1.0, 36, 16, false).cells, grid(b, 1.0, 36, 16, false).cells);
+    }
+
+    #[test]
+    fn a_key_brings_the_stars_back_from_where_they_were_without_a_jump() {
+        let t0 = Instant::now();
+        let mut fx = StarsFx::default();
+        fx.begin(t0);
+        let rest = t0 + Duration::from_millis(REST_AFTER_MS);
+        // in the middle of the fade out
+        let mid = rest + Duration::from_millis(STOP_MS * 4 / 10);
+        let before = fx.visibility(mid);
+        assert!((before - 0.6).abs() < 1e-3);
+        fx.input(mid);
+        assert!((fx.visibility(mid) - before).abs() < 1e-4, "no jump on the key");
+        assert!(!fx.settled(mid));
+        let mut last = before;
+        let mut now = mid;
+        for _ in 0..12 {
+            now += Duration::from_millis(83);
+            let v = fx.visibility(now);
+            assert!(v >= last && v - last < 0.2, "{last} -> {v}");
+            last = v;
+        }
+        assert!(fx.visibility(mid + Duration::from_millis(FADE_IN_MS)) > 0.999);
+        // after the stars were gone altogether they come in from nothing
+        let late = rest + Duration::from_millis(STOP_MS + 30_000);
+        let mut fx = StarsFx::default();
+        fx.begin(t0);
         fx.input(late);
-        assert!(!fx.at_rest(late + Duration::from_secs(1)));
-        assert!(fx.phase(late + Duration::from_secs(2)) > a);
+        assert_eq!(fx.visibility(late), 0.0);
+        assert!((fx.visibility(late + Duration::from_millis(FADE_IN_MS / 2)) - 0.5).abs() < 1e-3);
+        assert!(!fx.settled(late + Duration::from_secs(1)));
+        // the clock of the stars never restarts, so a star is where it was
+        assert!(fx.sky_time(late) > fx.sky_time(t0));
     }
 
     #[test]
