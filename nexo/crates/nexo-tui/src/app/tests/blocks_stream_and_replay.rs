@@ -193,7 +193,7 @@ fn layout_scroll_and_search() {
     a.push(Block::User { text: "late".into(), at: None });
     a.layout(80);
     a.settle(10);
-    assert_eq!(a.unseen(), 3);
+    assert_eq!(a.unseen(), 1, "one message arrived, however many rows it takes");
     a.scroll_to_end();
     assert_eq!(a.unseen(), 0);
     assert_eq!(a.block_at_line(0), Some(0));
@@ -206,4 +206,29 @@ fn layout_scroll_and_search() {
     assert_eq!(a.search.as_ref().unwrap().matches.len(), 11);
     a.search_jump(true);
     assert!(!a.follow);
+}
+
+#[test]
+fn a_streaming_reply_that_grows_while_scrolled_up_counts_as_one_new_message() {
+    let (mut a, _rx) = app();
+    long_answer(&mut a, 0);
+    frame(&mut a, 60, 20);
+    a.scroll_to_line(0, false);
+    frame(&mut a, 60, 20);
+    assert_eq!(a.unseen(), 0);
+    let at = a.push(Block::Assistant { text: "first".into(), streaming: true, at: None, started: None, took_ms: None });
+    frame(&mut a, 60, 20);
+    assert_eq!(a.unseen(), 1);
+    let more: Vec<String> = (0..20).map(|i| format!("more {i}")).collect();
+    if let Block::Assistant { text, .. } = &mut a.blocks[at] {
+        text.push_str(&format!("\n\n{}", more.join("\n\n")));
+    }
+    a.cache[at] = None;
+    let rows = frame(&mut a, 60, 20);
+    assert_eq!(a.unseen(), 1, "twenty more lines of the same reply are still one message");
+    assert!(rows.iter().any(|r| r.contains("↓ 1 new")), "{rows:?}");
+    long_answer(&mut a, 100);
+    let rows = frame(&mut a, 60, 20);
+    assert_eq!(a.unseen(), 2);
+    assert!(rows.iter().any(|r| r.contains("↓ 2 new")), "{rows:?}");
 }

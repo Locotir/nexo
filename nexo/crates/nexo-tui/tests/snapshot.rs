@@ -454,7 +454,7 @@ fn a_long_transcript_scrolls_and_shows_what_arrived() {
     a.handle_agent(AgentEvent::History { index: 400, message: Message::user("late one") });
     let rows = draw(&mut a, 60, 20);
     let all = rows.join("\n");
-    assert!(all.contains("↓ 3 new"), "a new turn and its blank lines: {all}");
+    assert!(all.contains("↓ 1 new"), "one new message, not its rows: {all}");
     a.open_search();
     a.search.as_mut().unwrap().query = "line 12".into();
     a.rematch();

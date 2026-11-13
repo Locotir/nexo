@@ -270,20 +270,11 @@ impl App {
             };
             (bi, self.scroll.saturating_sub(self.offsets[bi]))
         });
-        let kept = std::mem::take(&mut self.folded_by_hand).then(|| self.unseen());
         self.last_width = width;
         // a call that finished inside a folded group leaves the view: its group takes the selection
         if let Some(m) = self.selected.filter(|s| self.hidden(*s)).and_then(|s| self.group_of(s)) {
             self.selected = Some(m);
         }
-        // the last block seen may be opening: it grows by itself, which is not output that arrived
-        let opening = self.seen_blocks.checked_sub(1).filter(|&k| {
-            self.looks.get(k).and_then(|l| l.opened).is_some_and(|(at, _)| at.elapsed().as_millis() <= OPEN_MS as u128)
-        });
-        let span = |o: &[usize], total: usize, k: usize| {
-            o.get(k + 1).copied().unwrap_or(total) - o.get(k).copied().unwrap_or(0).min(total)
-        };
-        let before = opening.map(|k| span(&self.offsets, self.total_lines, k));
         let mut off = 0;
         self.offsets.clear();
         for i in 0..self.blocks.len() {
@@ -295,16 +286,6 @@ impl App {
             off += n + self.gap_after(i, n);
         }
         self.total_lines = off;
-        if let (Some(k), Some(b)) = (opening, before) {
-            if kept.is_none() && k < self.offsets.len() {
-                let grown = span(&self.offsets, self.total_lines, k);
-                self.seen_tail = (self.seen_tail + grown).saturating_sub(b);
-            }
-        }
-        if let Some(u) = kept {
-            let from = self.offsets.get(self.seen_blocks.wrapping_sub(1)).copied().unwrap_or(0);
-            self.seen_tail = self.total_lines.saturating_sub(from + u);
-        }
         if let Some((bi, j)) = anchor.filter(|(bi, _)| *bi < self.offsets.len()) {
             let end = self.offsets.get(bi + 1).copied().unwrap_or(self.total_lines);
             let top = self.offsets[bi];
@@ -352,18 +333,15 @@ impl App {
     /// Notes that the end of the transcript is in view: what comes after counts as new.
     pub(super) fn mark_seen(&mut self) {
         self.seen_blocks = self.blocks.len();
-        let from = self.offsets.get(self.blocks.len().wrapping_sub(1)).copied().unwrap_or(0);
-        self.seen_tail = self.total_lines.saturating_sub(from);
     }
 
-    /// Rows that arrived since the end was last in view: opening or folding a block above does
-    /// not count, only the growth of the last block seen and the blocks after it.
+    /// Messages that arrived since the end was last in view: every block after the last one seen
+    /// is one, however many lines it grows to. Opening or folding a block above never counts.
     pub fn unseen(&self) -> usize {
         if self.follow {
             return 0;
         }
-        let from = self.offsets.get(self.seen_blocks.wrapping_sub(1)).copied().unwrap_or(0);
-        self.total_lines.saturating_sub(from + self.seen_tail)
+        self.blocks.len().saturating_sub(self.seen_blocks)
     }
 
     pub fn scroll_by(&mut self, delta: i32) {
@@ -464,7 +442,6 @@ impl App {
     }
 
     pub fn toggle_block(&mut self, i: usize) {
-        self.folded_by_hand = true;
         // a message opens to what nexo added to it, and folds back; a long one with it
         if let Some(c) = self.companion(i) {
             let open = self.is_folded(c);
@@ -495,7 +472,6 @@ impl App {
     /// A group of calls opens, or folds back to its line. Opening shows the calls it had left out,
     /// growing in; folding keeps the view inside the transcript and the selection on the group.
     pub(super) fn toggle_group(&mut self, m: usize) {
-        self.folded_by_hand = true;
         let Block::Group { folded, len } = self.blocks[m] else { return };
         let end = (m + len + 1).min(self.blocks.len());
         let top = self.offsets.get(m).copied();
