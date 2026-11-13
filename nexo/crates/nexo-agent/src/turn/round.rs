@@ -46,6 +46,9 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
     let mut mute = 0u32;
     // how many of them are asked to go on before the request ends there
     let mute_asks = if alone { MUTE_ASKS_ALONE } else { MUTE_ASKS };
+    // a reply of this turn was cut at `agent.reasoning_budget`: the rest of the turn asks for the least
+    // reasoning the model lists, so a retry does not think as long again at the same level
+    let mut calm = false;
     // times in a row this request was sent again because its stream broke inside the reasoning
     let mut recut = 0u32;
     // times in a row a Stop hook asked the agent to go on (capped at STOP_HOOK_CAP)
@@ -92,6 +95,14 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         if cut_calls > 0 {
             req.temperature = retry_temperature(req.temperature);
         }
+        if calm && req.reasoning.is_none() {
+            let mut st = state.lock().await;
+            let (_, pcfg, model) = st.target.get();
+            req.reasoning = calm_level(pcfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]));
+            if let Some(last) = st.last_request.as_mut() {
+                last.reasoning = req.reasoning;
+            }
+        }
         if cancel.is_cancelled() {
             return TurnEnd::Interrupted;
         }
@@ -135,14 +146,13 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 }
             },
         };
-        // reasoning tokens a reply may stream before any text or call; off when the person set a level
+        // reasoning tokens a reply may stream before any text or call; off when the person set a level. It stays
+        // on after a cut: a reply let run free only reasons longer, up to max_tokens
         let budget = {
             let st = state.lock().await;
             let (_, pcfg, model) = st.target.get();
             match setup::effort_of(&pcfg, &model, &st.config.agent.reasoning) {
                 Some(_) => 0,
-                // two cuts in this turn already: from here a call runs free (up to max_tokens) so the model can finish
-                None if mute >= 2 => 0,
                 None => u64::from(st.config.agent.reasoning_budget),
             }
         };
@@ -276,13 +286,17 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             }
             _ => recut = 0,
         }
+        // a reply cut at the budget said nothing: its thinking is not kept, so a provider that sends reasoning
+        // back does not carry thousands of tokens of it into every retry and pull the model back into it
+        let kept = if over_budget { without_reasoning(&msg) } else { msg.clone() };
+        calm |= over_budget;
         {
             let mut st = state.lock().await;
-            if !msg.content.is_empty() {
-                st.history.push(msg.clone());
+            if !kept.content.is_empty() {
+                st.history.push(kept.clone());
                 st.hidden.clear();
                 st.hidden_told = 0;
-                if let Err(e) = st.session.append(&msg) {
+                if let Err(e) = st.session.append(&kept) {
                     notice(&events, Level::Warn, format!("cannot save the session: {e}"));
                 }
             }
@@ -296,7 +310,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                     st.last_call = Some(call);
                 }
             }
-            if !msg.content.is_empty() && call.total_input() > 0 {
+            if !kept.content.is_empty() && call.total_input() > 0 {
                 let len = st.history.len();
                 st.last_prompt = Some((call.total_input() + call.output, len));
             }
@@ -338,15 +352,19 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             mute += 1;
             // more room only bought more reasoning, so the limit stays; a budget cut says so
             let why = if over_budget {
-                format!("the reply reasoned past agent.reasoning_budget ({budget} tokens) with no answer and no call; cut and asked to go on")
+                format!("the reply reasoned past agent.reasoning_budget ({budget} tokens) with no answer and no call; cut and asked for the next step with less reasoning")
             } else {
                 "the reply held only reasoning, with no answer and no call; asked to go on".to_string()
             };
             notice(&events, Level::Warn, why);
-            let note = if mute == 1 { MUTE_NOTE } else { MUTE_NOTE_AGAIN };
-            // most providers do not take reasoning back, so the next request would think from nothing
-            // and be cut again: the end of it travels in the note
-            let note = format!("{note}{}", reasoning_tail(&msg.reasoning()));
+            let note = if over_budget {
+                // the cut thinking is gone: the ask names why and what to do, and repeats none of it
+                budget_note(budget, mute > 1)
+            } else {
+                // a reply that ended inside its reasoning on its own: the end of it, short, as a lead to go on from
+                let note = if mute == 1 { MUTE_NOTE } else { MUTE_NOTE_AGAIN };
+                format!("{note}{}", reasoning_tail(&msg.reasoning()))
+            };
             push_results(&state, vec![Part::text(note)]).await;
             continue;
         }
@@ -390,8 +408,15 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         }
         if calls.is_empty() {
             if msg.text().trim().is_empty() && !msg.reasoning().trim().is_empty() && ck.stopping.is_none() {
-                let why = if alone {
-                    let n = mute_asks + 1;
+                let n = mute_asks + 1;
+                let why = if over_budget {
+                    let then = if alone {
+                        "Raise agent.reasoning_budget or split the request."
+                    } else {
+                        "Send \"continue\" or rephrase the request."
+                    };
+                    format!("The model reasoned past agent.reasoning_budget ({budget} tokens) {n} times in a row with no answer; stopped. {then}")
+                } else if alone {
                     format!("The model reasoned without answering {n} times in a row; stopped. Raise agent.max_tokens or agent.reasoning_budget.")
                 } else {
                     "The model reasoned without answering. Send \"continue\" or raise agent.reasoning_budget."
@@ -639,16 +664,58 @@ pub(super) const RECUT_RETRIES: u32 = 2;
 pub(super) const MUTE_ASKS: u32 = 2;
 
 /// The same with no person there (`nexo -p`): nobody can send "continue" and the request would be lost, so it
-/// is asked twice more. Past the two under `agent.reasoning_budget` each reply is bounded by `agent.max_tokens`.
+/// is asked twice more. Every reply stays under `agent.reasoning_budget`.
 pub(super) const MUTE_ASKS_ALONE: u32 = 4;
+
+/// The least reasoning a model lists among its levels (`efforts`), for the requests after a cut at
+/// `agent.reasoning_budget`; none when the model lists no level, as a provider that takes none may refuse one.
+pub(super) fn calm_level(levels: &[String]) -> Option<ReasoningConfig> {
+    let has = |l: &str| levels.iter().any(|x| x == l);
+    if has("low") {
+        Some(ReasoningConfig::Effort(Effort::Low))
+    } else if has("minimal") {
+        Some(ReasoningConfig::Effort(Effort::Minimal))
+    } else if has("off") || has("none") {
+        Some(ReasoningConfig::Off)
+    } else {
+        None
+    }
+}
+
+/// The reply without its reasoning: what a reply cut at the budget keeps.
+fn without_reasoning(msg: &Message) -> Message {
+    let content =
+        msg.content.iter().filter(|p| !matches!(p, Part::Reasoning { .. } | Part::RedactedReasoning { .. })).cloned();
+    Message { role: msg.role, content: content.collect() }
+}
+
+/// Sent after a reply was cut at `agent.reasoning_budget` with nothing said: the cause, and one thing to do now
+/// that needs little thought whatever the request is. `again` is the second cut in a row.
+fn budget_note(budget: u64, again: bool) -> String {
+    let what = if again {
+        format!(
+            "Your reasoning passed the {budget}-token limit again and was cut, with no answer and no tool call. \
+         Reply now with almost no reasoning: one tool call, or a short answer, or one short question to the person \
+         if the request is unclear."
+        )
+    } else {
+        format!(
+            "Your reasoning passed the {budget}-token limit and was cut, with no answer and no tool call; that \
+         reasoning is gone. Do not think it all over again: make the next tool call now, or answer in a few lines. \
+         If the request is a new task, start it with one small step (for example, write the first file)."
+        )
+    };
+    format!("<system-reminder>{what}</system-reminder>")
+}
 
 /// Sent when a reply held only reasoning (often cut at max_tokens while thinking): not a request of the person.
 pub(super) const MUTE_NOTE: &str =
     "<system-reminder>Your last reply held only reasoning: no answer and no tool call reached the person. \
      Go on from it now with a tool call or the answer, keeping the reasoning short.</system-reminder>";
 
-/// How much of the end of a reasoning-only reply the next ask repeats.
-const MUTE_TAIL: usize = 3000;
+/// How much of the end of a reasoning-only reply the next ask repeats: a lead to go on from, not the plan again
+/// (a provider that sends reasoning back has all of it already).
+const MUTE_TAIL: usize = 500;
 
 /// The end of the reasoning, as a quoted block for the ask to go on; empty when there is none.
 fn reasoning_tail(r: &str) -> String {
@@ -661,10 +728,7 @@ fn reasoning_tail(r: &str) -> String {
         from += 1;
     }
     let dots = if from > 0 { "..." } else { "" };
-    format!(
-        "\n<system-reminder>The end of that reasoning, repeated because it is not kept:\n{dots}{}</system-reminder>",
-        &r[from..]
-    )
+    format!("\n<system-reminder>The end of that reasoning:\n{dots}{}</system-reminder>", &r[from..])
 }
 
 /// The second time in a row: planning longer is what keeps failing, so the model is told to build first.

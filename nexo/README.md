@@ -158,7 +158,7 @@ Other `[agent]` keys:
 
 | Key | Default | What |
 |---|---|---|
-| `reasoning_budget` | `8000` | tokens a reply may reason before it says or calls anything; past it the reply is cut and asked again (`0` off; skipped when an effort level is set) |
+| `reasoning_budget` | `8000` | tokens a reply may reason before it says or calls anything; past it the reply is cut, its reasoning dropped, and the model asked for a call or the answer at its lowest listed effort; the third cut in a row stops the turn (`0` off; skipped when an effort level is set) |
 | `parallel_tasks` | `true` | `false` runs sub-agents that can change files one after another |
 | `subagents` | `true` | `false` removes the `task` tool |
 | `subagent_brief`, `subagent_brief_engine` | `3000`, `auto` | the briefing a sub-agent gets (see below) |

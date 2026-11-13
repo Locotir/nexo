@@ -230,37 +230,61 @@ async fn reasoning_past_the_budget_with_nothing_said_is_cut_and_asked_again() {
     assert!(notices(&evs).iter().any(|n| n.contains("agent.reasoning_budget")), "{:?}", notices(&evs));
     let reqs = client.requests();
     assert_eq!(reqs.len(), 2);
+    // the ask names the budget and repeats none of the cut thinking, which is not in the history either
     let note = reqs[1].messages.last().unwrap().text();
-    assert!(note.contains("only reasoning") && note.contains("xxxx"), "{}", note.len());
+    assert!(note.contains("8000-token limit") && !note.contains("xxxx"), "{note}");
+    assert_eq!(thinking_sent(&reqs[1]), (0, 0));
     assert!(!reqs[1].messages.iter().any(|m| m.text().contains("never read")));
     // no more room: it would only buy more reasoning
     assert_eq!(reqs[1].max_tokens, reqs[0].max_tokens);
+    // the model lists no reasoning level: none is sent, as a provider that takes none may refuse one
+    assert_eq!(reqs[1].reasoning, None);
     r.stop().await;
 }
 
 #[tokio::test]
-async fn after_two_cuts_the_next_call_runs_without_the_budget() {
+async fn three_cuts_at_the_budget_stop_the_turn_with_a_short_message() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(vec![
         Reply::Events(long_thought(40_000, then_text("never read"))),
         Reply::Events(long_thought(40_000, then_text("never read"))),
-        Reply::Events(long_thought(40_000, then_text("the answer"))),
+        Reply::Events(long_thought(40_000, then_text("never read either"))),
+        Reply::Events(text("never asked")),
     ]);
     let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
     r.next().await;
     r.send(AgentCommand::Submit { text: "implement it".into(), attachments: vec![] });
     let evs = r.turn().await;
     assert_eq!(end_of(&evs), TurnEnd::Done);
+    // the budget stays on: the third reply is cut too, and no fourth request goes out
     assert_eq!(client.requests().len(), 3);
-    let said: String = evs
-        .iter()
-        .filter_map(|e| match e {
-            AgentEvent::TextDelta { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert!(said.contains("the answer"), "{said}");
-    assert!(!notices(&evs).iter().any(|n| n.contains("reasoned without answering")));
+    assert!(!text_of(&evs).contains("never"), "{}", text_of(&evs));
+    let said = notices(&evs);
+    assert_eq!(said.iter().filter(|n| n.contains("cut and asked")).count(), 2, "{said:?}");
+    let last = said.last().unwrap();
+    assert!(last.contains("reasoning_budget (8000 tokens) 3 times") && last.contains("stopped"), "{said:?}");
+    assert!(last.contains("Send \"continue\""), "{last}");
+    r.stop().await;
+}
+
+#[tokio::test]
+async fn a_run_with_nobody_there_stops_after_five_cuts_at_the_budget() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new((0..7).map(|_| Reply::Events(long_thought(40_000, then_text("never read")))).collect());
+    let mut r = start_alone(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "go".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "{:?}", notices(&evs));
+    // the asks do not pile up the cut thinking: the last request carries none of it, and four short notes
+    assert_eq!(thinking_sent(&reqs[4]).0, 0);
+    let notes: usize = reqs[4].messages.iter().skip(1).map(|m| m.text().len()).sum();
+    assert!(notes < 2_000, "{notes}");
+    let said = notices(&evs);
+    let last = said.last().unwrap();
+    assert!(last.contains("5 times") && last.contains("stopped") && !last.contains("continue"), "{said:?}");
     r.stop().await;
 }
 
@@ -320,9 +344,9 @@ async fn start_alone(client: Arc<Scripted>, cfg: Config, cwd: &std::path::Path) 
 }
 
 #[tokio::test]
-async fn a_run_with_nobody_there_goes_on_after_two_budget_cuts_and_a_reply_that_only_reasoned() {
+async fn a_run_with_nobody_there_goes_on_after_three_budget_cuts() {
     let d = test_tmpdir().unwrap();
-    // two cuts at the budget, then the free reply reasons up to max_tokens and says nothing
+    // three cuts at the budget: the third reply is not let run free past it
     let third = format!("{}NEXT: write gen.py with three multipliers", "y".repeat(60_000));
     let client = Scripted::new(vec![
         Reply::Events(long_thought(40_000, then_text("never read"))),
@@ -341,9 +365,11 @@ async fn a_run_with_nobody_there_goes_on_after_two_budget_cuts_and_a_reply_that_
     assert!(text_of(&evs).contains("built it"), "{}", text_of(&evs));
     // nobody can send "continue", and the request was not left there
     assert!(!notices(&evs).iter().any(|n| n.contains("reasoned without answering")), "{:?}", notices(&evs));
-    // the ask after the third reply carries the end of what it reasoned, with no more room than before
+    assert_eq!(notices(&evs).iter().filter(|n| n.contains("agent.reasoning_budget (8000")).count(), 3);
+    // the ask after the third cut names the budget and carries none of the thinking, with no more room
     let note = reqs[3].messages.last().unwrap().text();
-    assert!(note.contains("NEXT: write gen.py with three multipliers"), "{}", note.len());
+    assert!(note.contains("limit again") && !note.contains("NEXT: write gen.py"), "{note}");
+    assert_eq!(thinking_sent(&reqs[3]), (0, 0));
     assert_eq!(reqs[3].max_tokens, reqs[0].max_tokens);
     r.stop().await;
 }
@@ -499,5 +525,84 @@ async fn a_cut_reasoning_call_is_billed_its_input_too() {
     let sent = client.requests()[0].clone();
     let size = serde_json::to_string(&sent).unwrap().len() as u64 / 4;
     assert!(first.total_input() <= size * 2, "estimate {} for a request of about {size} tokens", first.total_input());
+    r.stop().await;
+}
+
+/// A reply that thinks `chars` characters of `pad`, ending in `tail`, and says nothing: the shape of a
+/// reasoning model that never gets to the answer.
+fn long_thought_ending(chars: usize, pad: &str, tail: &str) -> Vec<StreamEvent> {
+    let mut ev = vec![StreamEvent::Start { response_id: None, model: None }];
+    for _ in 0..chars / 1000 {
+        ev.push(StreamEvent::ReasoningDelta(pad.repeat(1000)));
+    }
+    ev.push(StreamEvent::ReasoningDelta(tail.into()));
+    ev
+}
+
+/// What a request carries of the cut thinking: characters of reasoning parts in assistant messages, and of
+/// the notes that repeat the end of it.
+fn thinking_sent(req: &ModelRequest) -> (usize, usize) {
+    let parts: usize = req.messages.iter().filter(|m| m.role == Role::Assistant).map(|m| m.reasoning().len()).sum();
+    let notes: usize = req
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .map(|m| m.text())
+        .filter(|t| t.contains("The end of that reasoning"))
+        .map(|t| t.len())
+        .sum();
+    (parts, notes)
+}
+
+/// The user's session: a reply reasons past the budget with no answer and no call, and is cut. The next request
+/// asks for the next step at the least reasoning the model lists, names the budget, and carries none of the cut
+/// thinking (before, it was the same request again at the same level, with the thinking in the history and its
+/// end repeated in the note, growing at each ask); and a third cut is not followed by a free round but stops
+/// with a short message.
+#[tokio::test]
+async fn a_budget_cut_retry_asks_for_the_next_step_with_less_thinking() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::new(vec![
+        Reply::Events(long_thought_ending(40_000, "a", "END-OF-FIRST")),
+        Reply::Events(long_thought_ending(40_000, "b", "END-OF-SECOND")),
+        Reply::Events(long_thought_ending(40_000, "c", "END-OF-THIRD")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Ask);
+    let levels = ["low", "medium", "high"].map(String::from).to_vec();
+    cfg.providers.get_mut("mock").unwrap().efforts.insert("m1".into(), levels);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "make a snake game in python".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    let reqs = client.requests();
+    for (i, q) in reqs.iter().enumerate() {
+        let (parts, notes) = thinking_sent(q);
+        let last = q.messages.last().unwrap().text();
+        eprintln!(
+            "request {i}: reasoning={:?} max_tokens={} msgs={} thinking_parts_chars={parts} tail_note_chars={notes} last={last}",
+            q.reasoning,
+            q.max_tokens,
+            q.messages.len()
+        );
+    }
+    eprintln!("notices: {:?}", notices(&evs));
+    // the first request is the person's level (none set: the provider's own); the retries think less
+    assert_eq!(reqs[0].reasoning, None);
+    let low = Some(nexo_core::ReasoningConfig::Effort(nexo_core::Effort::Low));
+    assert_eq!((reqs[1].reasoning, reqs[2].reasoning), (low, low));
+    // the cut thinking is not carried, in the history or in the notes
+    for q in &reqs[1..] {
+        assert_eq!(thinking_sent(q), (0, 0));
+        assert!(!serde_json::to_string(q).unwrap().contains("END-OF-"));
+    }
+    // the ask names the budget and says what to do; the second says it again, shorter
+    let note = reqs[1].messages.last().unwrap().text();
+    assert!(note.contains("8000-token limit") && note.contains("tool call now"), "{note}");
+    assert!(reqs[2].messages.last().unwrap().text().contains("limit again"));
+    // a third cut ends the turn with a message, not with a fourth request
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    assert_eq!(reqs.len(), 3, "{:?}", notices(&evs));
+    assert!(notices(&evs).iter().any(|n| n.contains("stopped")), "{:?}", notices(&evs));
     r.stop().await;
 }
