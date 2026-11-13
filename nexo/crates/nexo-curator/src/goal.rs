@@ -20,6 +20,10 @@ pub struct Turn {
     request: FxHashSet<Sym>,
     terms: FxHashSet<Sym>,
     seen: FxHashSet<Sym>,
+    /// The terms and the distinctive words of what the person and the agent wrote in the turn: all of it but
+    /// the outputs of its calls (`Threads::goes_on`).
+    said: FxHashSet<Sym>,
+    named: FxHashSet<Sym>,
     tokens: i64,
     pub thread: usize,
     pub units: Vec<usize>,
@@ -63,6 +67,12 @@ pub struct Threads {
     /// For each thread, how likely the latest request belongs to it (the classifier's joint); 0 when the
     /// request rides on a step or the thread is new.
     pub joint: Vec<f64>,
+    /// For each closed turn, how likely the latest request goes on from it by what was asked and written in
+    /// it alone (`goes_on`); empty when the request rides on a step.
+    own: Vec<f64>,
+    /// How many of the terms of the latest request no turn before it holds in what the person and the agent wrote
+    /// (`changed`).
+    novel: usize,
     /// Topic changes so far, and those that went back to a topic seen before (`switches`).
     sw: usize,
     back: usize,
@@ -75,6 +85,9 @@ pub struct Threads {
     in_terms: FxHashMap<Sym, Vec<u32>>,
     in_request: FxHashMap<Sym, Vec<u32>>,
     in_seen: FxHashMap<Sym, Vec<u32>>,
+    /// The same by what the person and the agent wrote in the turn, the outputs of its calls apart.
+    in_said: FxHashMap<Sym, Vec<u32>>,
+    in_named: FxHashMap<Sym, Vec<u32>>,
     /// How many turns are in those indexes.
     indexed: usize,
 }
@@ -101,6 +114,10 @@ impl Threads {
             for &i in us {
                 t.terms.extend(fz.terms[i].iter().copied());
                 t.seen.extend(tr.units[i].words.iter().copied());
+                if tr.units[i].kind != UKind::Result {
+                    t.said.extend(fz.terms[i].iter().copied());
+                    t.named.extend(tr.units[i].words.iter().copied());
+                }
                 t.tokens += tr.units[i].tokens;
                 t.units.push(i);
                 for &w in &fz.terms[i] {
@@ -124,6 +141,12 @@ impl Threads {
         }
         for w in std::mem::take(&mut t.seen) {
             self.in_seen.entry(w).or_default().push(at);
+        }
+        for w in std::mem::take(&mut t.said) {
+            self.in_said.entry(w).or_default().push(at);
+        }
+        for w in std::mem::take(&mut t.named) {
+            self.in_named.entry(w).or_default().push(at);
         }
         self.indexed = j + 1;
     }
@@ -149,6 +172,8 @@ impl Threads {
             request: req.clone(),
             terms: FxHashSet::default(),
             seen: FxHashSet::default(),
+            said: FxHashSet::default(),
+            named: FxHashSet::default(),
             tokens: 0,
             thread,
             units: Vec::new(),
@@ -176,11 +201,19 @@ impl Threads {
         while self.indexed < n {
             self.index_turn(self.indexed);
         }
+        let novel = req.iter().filter(|w| !self.in_said.contains_key(*w)).count();
         // the sum of no weights, as a turn that shares no word asked for it
         let none: f64 = std::iter::empty::<f64>().sum();
         let mut shared = vec![Overlap::default(); n];
+        // the same against what the person and the agent wrote in each turn (`goes_on`)
+        let mut wrote = vec![Overlap::default(); n];
         for w in &req {
             let x = weight[w];
+            for &j in self.in_said.get(w).into_iter().flatten() {
+                let o = &mut wrote[j as usize];
+                o.terms += x;
+                o.top = Some(o.top.map_or(x, |m: f64| m.max(x)));
+            }
             for &j in self.in_terms.get(w).into_iter().flatten() {
                 let o = &mut shared[j as usize];
                 o.terms += x;
@@ -195,34 +228,42 @@ impl Threads {
             for &j in self.in_seen.get(w).into_iter().flatten() {
                 shared[j as usize].seen += 1;
             }
+            for &j in self.in_named.get(w).into_iter().flatten() {
+                wrote[j as usize].seen += 1;
+            }
         }
+        let mut own = vec![0.0f64; n];
         for (j, (t, o)) in self.turns.iter().zip(&shared).enumerate() {
-            let (s, top, asked) = (o.terms, o.top, o.asked.unwrap_or(none));
+            let asked = o.asked.unwrap_or(none);
             let prev = if j == n - 1 { 1.0 } else { 0.0 };
-            let x = [
-                s / total,
-                s.ln_1p(),
-                top.unwrap_or(0.0),
-                asked / total,
-                if names.is_empty() { 0.0 } else { o.seen as f64 / names.len() as f64 },
-                prev,
-                if t.thread == self.turns[n - 1].thread { 1.0 } else { 0.0 },
-                ((n - 1 - j) as f64).ln_1p(),
-                fresh as f64 / (names.len() + 2) as f64,
-                (req.len() as f64).ln_1p(),
-                prev / (1 + req.len()) as f64,
-                (t.tokens as f64).ln_1p(),
-                if j == 0 { 1.0 } else { 0.0 },
-            ];
-            let p = match head {
-                Some(h) => correct_share(h.prob(&x), share.filter(|s| *s != 0.0).unwrap_or(0.5)),
-                None => {
-                    let z = PRIOR_B + PRIOR_W.iter().zip(&x).map(|(w, v)| w * v).sum::<f64>();
-                    1.0 / (1.0 + (-z.clamp(-30.0, 30.0)).exp())
+            // how likely the request goes on from the turn, when it shares these of the turn's words
+            let prob = |s: f64, top: Option<f64>, seen: usize| {
+                let x = [
+                    s / total,
+                    s.ln_1p(),
+                    top.unwrap_or(0.0),
+                    asked / total,
+                    if names.is_empty() { 0.0 } else { seen as f64 / names.len() as f64 },
+                    prev,
+                    if t.thread == self.turns[n - 1].thread { 1.0 } else { 0.0 },
+                    ((n - 1 - j) as f64).ln_1p(),
+                    fresh as f64 / (names.len() + 2) as f64,
+                    (req.len() as f64).ln_1p(),
+                    prev / (1 + req.len()) as f64,
+                    (t.tokens as f64).ln_1p(),
+                    if j == 0 { 1.0 } else { 0.0 },
+                ];
+                match head {
+                    Some(h) => correct_share(h.prob(&x), share.filter(|s| *s != 0.0).unwrap_or(0.5)),
+                    None => {
+                        let z = PRIOR_B + PRIOR_W.iter().zip(&x).map(|(w, v)| w * v).sum::<f64>();
+                        1.0 / (1.0 + (-z.clamp(-30.0, 30.0)).exp())
+                    }
                 }
             };
             let k = t.thread;
-            joint[k] = joint[k].max(p);
+            joint[k] = joint[k].max(prob(o.terms, o.top, o.seen));
+            own[j] = prob(wrote[j].terms, wrote[j].top, wrote[j].seen);
         }
         let mut best = 0;
         for k in 1..joint.len() {
@@ -253,6 +294,8 @@ impl Threads {
         self.members[th].push(n);
         self.last[th] = n;
         self.joint = if rides { Vec::new() } else { joint };
+        self.own = if rides { Vec::new() } else { own };
+        self.novel = novel;
         self.joint.resize(self.members.len(), 0.0);
         self.turns.push(turn(th));
     }
@@ -266,6 +309,23 @@ impl Threads {
     pub fn thread_at(&self, mi: usize) -> usize {
         let i = self.turns.partition_point(|t| t.start <= mi);
         i.checked_sub(1).map_or(0, |i| self.turns[i].thread)
+    }
+
+    /// Whether the latest request goes on from the turn that holds message `mi` by what the person asked and the
+    /// agent wrote in it (its text and its calls), the outputs of the calls apart. What was asked and written is
+    /// what a turn was about; an output holds a word of a later request by chance (a symbol table, a listing, a
+    /// log), and tens of thousands of lines of them hold most words. The request's own turn counts as gone on
+    /// from, and so does every turn when the request rides on a step.
+    pub fn goes_on(&self, mi: usize) -> bool {
+        let j = self.turns.partition_point(|t| t.start <= mi).wrapping_sub(1);
+        self.own.get(j).is_none_or(|p| *p >= self.link)
+    }
+
+    /// Whether the latest request changes the topic: it goes on from no turn before it (`goes_on`), and it names
+    /// things of its own, two terms at least that no turn before it wrote. A request that names nothing new
+    /// ("run it again", "and now?") shares no word with any turn, and it goes on from the latest one.
+    pub fn changed(&self) -> bool {
+        !self.own.is_empty() && self.novel >= 2 && self.own.iter().all(|p| *p < self.link)
     }
 
     /// How many times the person changed topic so far, and how many of those went back to a topic seen before.

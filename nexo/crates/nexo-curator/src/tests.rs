@@ -208,11 +208,13 @@ fn every_rewrite_of_a_sent_message_counts_its_miss() {
             let now = got["stats"].get("miss").and_then(Value::as_i64).unwrap_or(0);
             if !edited {
                 if let Some(p) = (0..prev.len()).find(|&p| view.get(p) != Some(&prev[p])) {
-                    // (a message that joined the one before it in the view changes from its first block that differs)
+                    // (a message that joined the one before it in the view changes from its first block that differs,
+                    // or from the first it gained: a request typed right after an output joins that output)
                     let behind: i64 = match view.get(p) {
                         Some(v) => {
                             let (new, old) = (msg::blocks(v.get("content")), msg::blocks(prev[p].get("content")));
-                            let b = (0..new.len().min(old.len())).find(|&b| new[b] != old[b]).unwrap_or(0);
+                            let same = new.len().min(old.len());
+                            let b = (0..same).find(|&b| new[b] != old[b]).unwrap_or(same);
                             new[b..].iter().map(json::est).sum::<i64>()
                                 + view[p + 1..].iter().map(json::est).sum::<i64>()
                         }

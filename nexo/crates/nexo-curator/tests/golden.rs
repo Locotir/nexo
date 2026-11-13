@@ -154,7 +154,7 @@ fn golden_fixtures() {
         .filter(|n| n.ends_with(".jsonl"))
         .collect();
     names.sort();
-    assert_eq!(names.len(), 22);
+    assert_eq!(names.len(), 23);
     let only = std::env::var("FIXTURE").unwrap_or_default();
     names.retain(|n| only.is_empty() || n.contains(&only));
     // each fixture is its own conversation: they replay side by side, a thread each, longest first

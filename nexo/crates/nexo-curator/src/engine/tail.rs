@@ -108,21 +108,39 @@ impl Engine {
         // the index is taken out for the lookup: deciding whether a message is whole in the view reads the engine
         let room = self.inflate_room();
         let index = std::mem::take(&mut self.index);
-        let mut whole: rustc_hash::FxHashMap<usize, bool> = rustc_hash::FxHashMap::default();
-        let mut skip = |(u, _): (u32, u32)| {
+        // each turn's first message, and whether the request goes on from the turn (`Threads::goes_on`)
+        let turns: Vec<(usize, bool)> = self.goal.turns.iter().map(|t| (t.start, self.goal.goes_on(t.start))).collect();
+        let changed = self.goal.changed();
+        let far = |mi: usize| turns.get(turns.partition_point(|t| t.0 <= mi).wrapping_sub(1)).is_some_and(|t| !t.1);
+        let mut wholes: rustc_hash::FxHashMap<usize, bool> = rustc_hash::FxHashMap::default();
+        // the message of a line, and whether the view holds it whole
+        let mut held = |(u, _): (u32, u32)| {
             let mi = self.tr.units[u as usize].msg;
-            *whole.entry(mi).or_insert_with(|| {
+            let whole = *wholes.entry(mi).or_insert_with(|| {
                 vis.binary_search(&mi).is_ok() && if mi == 0 { !hide0 } else { self.message(mi).0.is_none() }
-            })
+            });
+            (mi, whole)
         };
-        let mut picks = index.pick(PER_KEY, LINES, &mut skip);
+        // a request that changes the topic (`Threads::changed`) names none of the lines of the turns before it: its
+        // words in their outputs are there by chance, and those lines would grow the view of a new task
+        let mut picks = index.pick(PER_KEY, LINES, &mut |p| {
+            let (mi, whole) = held(p);
+            whole || (changed && far(mi))
+        });
         // a request that names more than the tail holds (all the ports, every owner: it cuts across the session) gets
         // the lines it names up to the model's window, for this call only: the next one builds its tail from the
-        // normal caps again, and nothing before the tail changes, so the cache is not touched
+        // normal caps again, and nothing before the tail changes, so the cache is not touched.
+        // Only the lines of the turns it goes on from make it such a request, and only they come: a request on a
+        // new topic whose words are in hundreds of lines of the outputs of the task before it (a symbol table)
+        // cuts across nothing, and those lines came with it up to the window (61k tokens on a view of 93k)
         let (mut budget, mut inflated) = (LINE_TOKENS, false);
-        let units: rustc_hash::FxHashSet<u32> = picks.iter().map(|p| p.0).collect();
-        if (picks.len() >= LINES || units.len() >= WIDE_UNITS) && room > LINE_TOKENS {
-            picks = index.pick(PER_KEY * 4, LINES * WIDE, &mut skip);
+        let near: Vec<(u32, u32)> = picks.iter().copied().filter(|&p| !far(held(p).0)).collect();
+        let units: rustc_hash::FxHashSet<u32> = near.iter().map(|p| p.0).collect();
+        if (near.len() >= LINES || units.len() >= WIDE_UNITS) && room > LINE_TOKENS {
+            picks = index.pick(PER_KEY * 4, LINES * WIDE, &mut |p| {
+                let (mi, whole) = held(p);
+                whole || far(mi)
+            });
             budget = room;
             inflated = true;
         }
