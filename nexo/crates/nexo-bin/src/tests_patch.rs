@@ -111,6 +111,7 @@ fn output_symlink_to_input_or_missing_path_is_refused() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn compiled_c_function_offset_patch_round_trip() {
     use std::process::Command;
