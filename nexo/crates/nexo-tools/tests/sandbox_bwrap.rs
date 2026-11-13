@@ -7,6 +7,9 @@ use nexo_core::{Tool, ToolContext};
 use nexo_tools::bash::Bash;
 use serde_json::json;
 
+#[path = "../../nexo-agent/tests/scratch/mod.rs"]
+mod scratch;
+
 #[tokio::test]
 async fn bwrap_holds_writes_to_the_project() {
     std::env::set_var("NEXO_SANDBOX_BACKEND", "bwrap");
@@ -21,6 +24,8 @@ async fn bwrap_holds_writes_to_the_project() {
     }
     let p = tempfile::tempdir().unwrap();
     let outside = tempfile::Builder::new().prefix(".nexo-sandbox-test-").tempdir_in(dirs::home_dir().unwrap()).unwrap();
+    // the scratch folder a command without a session gets lives until the process exits
+    scratch::at_exit(|| nexo_tools::bash::wipe_tmp(""));
     let mut ctx = ToolContext::new(p.path().to_path_buf());
     ctx.sandbox = SandboxSettings::new(SandboxMode::WorkspaceWrite, false, vec![]);
     let o = Bash.run(json!({"command": "echo hi > in.txt"}), &ctx).await;

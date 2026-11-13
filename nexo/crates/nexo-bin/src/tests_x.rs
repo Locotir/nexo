@@ -680,7 +680,8 @@ fn refs_and_functions_come_from_one_decode_pass() {
         (
             "name",
             Box::new(|i| {
-                drop(name_set(i, std::env::temp_dir().as_path().join("nexo-bin-x").as_path(), "main", "x_name").err())
+                let dir = data_dir();
+                drop(name_set(i, dir.path(), "main", "x_name").err())
             }),
         ),
     ];

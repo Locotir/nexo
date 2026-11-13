@@ -8,6 +8,15 @@ use nexo_tools::bash::Bash;
 use nexo_tools::sandbox::{self, Backend};
 use serde_json::json;
 
+#[path = "../../nexo-agent/tests/scratch/mod.rs"]
+mod scratch;
+
+/// The scratch folder a command without a session gets lives until the process exits.
+fn wipe_scratch_at_exit() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| scratch::at_exit(|| nexo_tools::bash::wipe_tmp("")));
+}
+
 fn landlock() -> bool {
     if *sandbox::backend() == Backend::Landlock {
         return true;
@@ -17,6 +26,7 @@ fn landlock() -> bool {
 }
 
 async fn run(dir: &std::path::Path, s: SandboxSettings, args: serde_json::Value) -> ToolOutput {
+    wipe_scratch_at_exit();
     let mut ctx = ToolContext::new(dir.to_path_buf());
     ctx.sandbox = s;
     Bash.run(args, &ctx).await

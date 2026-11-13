@@ -247,12 +247,14 @@ fn tools(probe: &Arc<Probe>) -> ToolSet {
     ToolSet::new().with(Arc::new(Read)).with(Arc::new(Wait(probe.clone()))).with(Arc::new(Write(probe.clone())))
 }
 
+mod scratch;
+
 fn data_dir() {
-    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    let d = DIR.get_or_init(|| test_tmpdir().unwrap());
-    std::env::set_var("NEXO_DATA_DIR", d.path());
-    std::env::set_var("NEXO_CONFIG_DIR", d.path());
-    std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let d = DIR.get_or_init(|| scratch::until_exit(test_tmpdir().unwrap()));
+    std::env::set_var("NEXO_DATA_DIR", d);
+    std::env::set_var("NEXO_CONFIG_DIR", d);
+    std::env::set_var("NEXO_CACHE_DIR", d.join("cache"));
 }
 
 fn config(mode: PermissionMode) -> Config {

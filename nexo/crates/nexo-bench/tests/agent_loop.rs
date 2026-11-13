@@ -45,19 +45,24 @@ impl ModelClient for Script {
     }
 }
 
+#[path = "../../nexo-agent/tests/scratch/mod.rs"]
+mod scratch;
+
 /// A bench whose agents keep their sessions in a folder of the test, never the user's own.
 fn bench(client: Arc<dyn ModelClient>, max_steps: u32, out: &std::path::Path) -> Bench {
-    static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
     let home = HOME.get_or_init(|| {
-        let d = test_tmpdir().unwrap();
+        // the scratch folder a bash call without a session gets lives until the process exits too
+        scratch::at_exit(|| nexo_tools::bash::wipe_tmp(""));
+        let d = scratch::until_exit(test_tmpdir().unwrap());
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
-            std::env::set_var(var, d.path().join(var));
+            std::env::set_var(var, d.join(var));
         }
         // the start check runs a real cargo (each test project has its own package name, as the target dir is shared): keep it off the outer cargo's target dir and build lock
-        std::env::set_var("CARGO_TARGET_DIR", d.path().join("target"));
+        std::env::set_var("CARGO_TARGET_DIR", d.join("target"));
         d
     });
-    assert!(std::env::var_os("NEXO_DATA_DIR").is_some_and(|d| std::path::Path::new(&d).starts_with(home.path())));
+    assert!(std::env::var_os("NEXO_DATA_DIR").is_some_and(|d| std::path::Path::new(&d).starts_with(home)));
     Bench {
         provider: ProviderConfig::new("anthropic", "http://127.0.0.1:9", None),
         model: "deepseek-chat".into(),

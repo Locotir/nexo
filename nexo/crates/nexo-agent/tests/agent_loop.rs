@@ -155,13 +155,19 @@ fn tools() -> ToolSet {
         .with(Arc::new(Fake { name: "bash", kind: ToolKind::Exec, slow: true }))
 }
 
+mod scratch;
+
 fn data_dir() -> PathBuf {
-    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    let d = DIR.get_or_init(|| test_tmpdir().unwrap());
-    std::env::set_var("NEXO_DATA_DIR", d.path());
-    std::env::set_var("NEXO_CONFIG_DIR", d.path());
-    std::env::set_var("NEXO_CACHE_DIR", d.path().join("cache"));
-    d.path().to_path_buf()
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let d = DIR.get_or_init(|| {
+        // the scratch folder a bash call without a session gets lives until the process exits too
+        scratch::at_exit(|| nexo_tools::bash::wipe_tmp(""));
+        scratch::until_exit(test_tmpdir().unwrap())
+    });
+    std::env::set_var("NEXO_DATA_DIR", d);
+    std::env::set_var("NEXO_CONFIG_DIR", d);
+    std::env::set_var("NEXO_CACHE_DIR", d.join("cache"));
+    d.clone()
 }
 
 /// Tests that write the user's configuration file take turns.

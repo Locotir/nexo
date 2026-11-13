@@ -93,6 +93,18 @@ pub(crate) fn child_env() -> Option<Env> {
 mod tests {
     use super::*;
 
+    /// The bash tests that run without a session leave `$NEXO_TMP` of the process in the temp folder: it goes
+    /// when the test binary exits. (Registered by a test, so a run that filters this one out does not sweep.)
+    #[cfg(unix)]
+    #[test]
+    fn the_scratch_folder_of_the_tests_goes_when_the_process_exits() {
+        extern "C" fn sweep() {
+            bash::wipe_tmp("");
+        }
+        // SAFETY: `sweep` is a plain `extern "C"` function that outlives the process.
+        assert_eq!(unsafe { libc::atexit(sweep) }, 0);
+    }
+
     #[test]
     fn the_builtin_set_has_its_tools_with_schemas() {
         let set = builtin();

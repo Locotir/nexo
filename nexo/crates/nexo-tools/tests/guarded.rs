@@ -8,6 +8,15 @@ use nexo_tools::bash::Bash;
 use nexo_tools::guarded::NOTE_PREFIX;
 use serde_json::json;
 
+#[path = "../../nexo-agent/tests/scratch/mod.rs"]
+mod scratch;
+
+/// The scratch folder a command without a session gets lives until the process exits.
+fn wipe_scratch_at_exit() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| scratch::at_exit(|| nexo_tools::bash::wipe_tmp("")));
+}
+
 fn ws() -> SandboxSettings {
     SandboxSettings::new(SandboxMode::WorkspaceWrite, false, vec![])
 }
@@ -17,6 +26,7 @@ async fn run(dir: &std::path::Path, s: SandboxSettings, cmd: &str) -> Option<Too
         eprintln!("skipped: no sandbox backend works here");
         return None;
     }
+    wipe_scratch_at_exit();
     let mut ctx = ToolContext::new(dir.to_path_buf());
     ctx.sandbox = s;
     Some(Bash.run(json!({"command": cmd}), &ctx).await)
@@ -77,6 +87,7 @@ async fn project_files_that_steer_the_agent_are_named() {
 #[tokio::test]
 async fn with_the_sandbox_off_there_is_no_line() {
     let d = repo();
+    wipe_scratch_at_exit();
     let mut ctx = ToolContext::new(d.path().to_path_buf());
     ctx.sandbox = SandboxSettings::default();
     let o = Bash.run(json!({"command": "echo x > .git/hooks/pre-commit"}), &ctx).await;

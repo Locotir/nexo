@@ -51,12 +51,15 @@ fn reply(text: &str, call: Option<(&str, Value)>) -> Vec<StreamEvent> {
     evs
 }
 
+#[path = "../../nexo-agent/tests/scratch/mod.rs"]
+mod scratch;
+
 fn bench(script: Vec<Step>, limit: Option<Duration>, out: &std::path::Path) -> Bench {
-    static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
-        let d = test_tmpdir().unwrap();
+        let d = scratch::until_exit(test_tmpdir().unwrap());
         for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
-            std::env::set_var(var, d.path().join(var));
+            std::env::set_var(var, d.join(var));
         }
         d
     });

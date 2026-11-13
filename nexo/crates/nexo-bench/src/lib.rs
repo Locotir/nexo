@@ -499,6 +499,21 @@ fn isolate(out: &std::path::Path, key: Option<&str>) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    /// The tests that run bash without a session leave `$NEXO_TMP` of the process in the temp folder: it goes
+    /// when the test binary exits. (Registered by a test, so a run that filters this one out does not sweep.)
+    #[cfg(unix)]
+    #[test]
+    fn the_scratch_folder_of_the_tests_goes_when_the_process_exits() {
+        extern "C" {
+            fn atexit(f: extern "C" fn()) -> i32;
+        }
+        extern "C" fn sweep() {
+            nexo_tools::bash::wipe_tmp("");
+        }
+        // SAFETY: `sweep` is a plain `extern "C"` function that outlives the process.
+        assert_eq!(unsafe { atexit(sweep) }, 0);
+    }
+
     #[test]
     fn polyglot_runs_at_temperature_0_unless_told() {
         assert_eq!(temperature_of(None, true), Some(0.0), "as Aider's harness");
