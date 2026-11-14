@@ -577,7 +577,7 @@ pub(super) async fn prepare(
 
 /// The window the view is kept under, in estimated tokens (4 characters a token): `room` provider
 /// tokens divided by the ratio learned, with 5% to spare; before any count, 15% to spare.
-pub(super) fn view_window(room: u32, ratio: Option<f64>) -> u64 {
+pub(crate) fn view_window(room: u32, ratio: Option<f64>) -> u64 {
     match ratio {
         Some(r) => (f64::from(room) * 0.95 / r) as u64,
         None => u64::from(room) * 17 / 20,
@@ -587,7 +587,7 @@ pub(super) fn view_window(room: u32, ratio: Option<f64>) -> u64 {
 /// The ratio of provider tokens to estimated tokens after a request of `est` estimated tokens the
 /// provider counted as `real`: the largest of the last ones weighs most, so a request of code after
 /// one of prose does not pass the window; small requests, whose count is mostly framing, teach nothing.
-pub(super) fn learn_ratio(prev: Option<f64>, est: u64, real: u64) -> Option<f64> {
+pub(crate) fn learn_ratio(prev: Option<f64>, est: u64, real: u64) -> Option<f64> {
     if est < 500 || real == 0 {
         return prev;
     }
@@ -622,7 +622,7 @@ pub(super) fn request_tokens(st: &State, specs: &[nexo_core::provider::ToolSpec]
 }
 
 /// Estimated tokens of what every request carries besides the conversation: the system prompt and the tools.
-pub(super) fn fixed_tokens(system: &str, specs: &[nexo_core::provider::ToolSpec]) -> u64 {
+pub(crate) fn fixed_tokens(system: &str, specs: &[nexo_core::provider::ToolSpec]) -> u64 {
     (system.len() as u64 + serde_json::to_string(specs).map(|s| s.len() as u64).unwrap_or(0)) / 4
 }
 

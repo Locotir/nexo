@@ -4,6 +4,8 @@ use super::*;
 pub(super) const ROUND_RETRIES: u32 = 3;
 /// The longest wait before asking again, whatever the server said.
 pub(super) const MAX_WAIT: Duration = Duration::from_secs(60);
+/// The most tokens a sub-agent's reply takes.
+pub(super) const REPLY_TOKENS: u32 = 4096;
 
 /// Why a request of a round gave no reply.
 pub(super) enum Failure {
@@ -124,6 +126,8 @@ pub(super) struct Run {
     pub(super) id: String,
     /// Its conversation, kept for whoever watches it, and its inbox (see [`nexo_core::subs`]).
     pub(super) sub: Option<SubRun>,
+    /// The session's context policy, run over this sub-agent's own messages (none: everything is sent).
+    pub(super) context: Option<nexo_core::config::ContextConfig>,
 }
 
 impl Run {
@@ -152,14 +156,17 @@ impl Run {
             }
         }
         // on another provider, its prices; the same model name there is the same model
-        let (cfg, pricing) = match &self.provider {
-            Some((name, cfg)) if *name != main_provider => {
-                (cfg.clone(), crate::limits::resolve(name, cfg, &model, None).pricing)
-            }
-            _ => (main_cfg, None),
+        let other = matches!(&self.provider, Some((name, _)) if *name != main_provider);
+        let cfg = match &self.provider {
+            Some((_, cfg)) if other => cfg.clone(),
+            _ => main_cfg,
         };
+        // the window and prices of the model it runs on: its view is kept under the one and priced at the other
+        let name = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());
+        let limits = crate::limits::resolve(name, &cfg, &model, None);
+        let pricing = if other { limits.pricing } else { None };
+        let prices = limits.pricing.or_else(|| cfg.pricing_for(&model));
         if self.provider.is_some() || self.model.is_some() {
-            let name = self.provider.as_ref().map_or(main_provider.as_str(), |(n, _)| n.as_str());
             say(format!("on {name}/{model}"));
         }
         let rounds = self.profile.rounds;
@@ -169,7 +176,21 @@ impl Run {
             None => Message::user(prompt),
         };
         let mut messages = vec![first];
-        let specs = self.tools.specs_for(false);
+        // what it sends is the session's context policy over its own messages, as in the main turn: everything
+        // with `plain`, and with the curator what it keeps, under the model's window and priced over the rounds
+        // left (a cut the run ends before paying back is not made)
+        let mut policy: Box<dyn crate::context::ContextPolicy> = match &self.context {
+            Some(c) => crate::context::from_config(c),
+            None => Box::new(crate::context::Plain::default()),
+        };
+        let mut specs = self.tools.specs_for(false);
+        // a policy that leaves messages out offers `recall`, answered from this run's own messages
+        if policy.recall() && !specs.iter().any(|s| s.name == "recall") {
+            specs.push(nexo_tools::recall::Recall.spec());
+        }
+        let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+        let system_tokens = crate::turn::fixed_tokens(&system, &specs);
+        let mut tok_ratio: Option<f64> = None;
         // one id for every round of this run: its own prefix, apart from the parent's and the other runs'
         let cache_id = format!("{}-sub-{}", ctx.session_id, &uuid::Uuid::new_v4().simple().to_string()[..8]);
         for round in 0..=rounds {
@@ -192,9 +213,31 @@ impl Run {
                     m.content.push(Part::text(LAST_ROUND));
                 }
             }
-            let mut req = ModelRequest::new(model.clone(), system.clone(), messages.clone());
+            policy.tools(&names);
+            if let Some(w) = limits.context_window.filter(|w| *w > REPLY_TOKENS) {
+                policy.window(crate::turn::view_window(w - REPLY_TOKENS, tok_ratio));
+            }
+            if let Some(p) = prices {
+                policy.prices(p.input, p.cache_read);
+            }
+            policy.calls_left(Some((rounds - round + 1) as u64));
+            let view = match policy.view(system_tokens, &messages).await {
+                Ok(v) => v,
+                Err(e) => {
+                    say(format!("context policy failed ({e}); sending everything"));
+                    crate::context::View {
+                        tokens: nexo_core::message::estimate_tokens(&messages),
+                        messages: messages.clone(),
+                        note: None,
+                        memory: None,
+                    }
+                }
+            };
+            let sent_tokens = system_tokens + view.tokens;
+            let (sent, _) = nexo_core::message::well_formed(view.messages);
+            let mut req = ModelRequest::new(model.clone(), system.clone(), sent);
             req.tools = specs.clone();
-            req.max_tokens = 4096;
+            req.max_tokens = REPLY_TOKENS;
             req.session_id = Some(cache_id.clone());
             // a round whose reply broke off is asked again whole: no call of it ran yet, so nothing is
             // done twice, and the rounds before it (files written, commands run) are not thrown away
@@ -207,6 +250,10 @@ impl Run {
                 }
                 if let Some(s) = &self.sub {
                     s.spent(&usage, cost);
+                }
+                if got.is_ok() && !usage.is_empty() {
+                    policy.usage(usage.cache_read, usage.total_input());
+                    tok_ratio = crate::turn::learn_ratio(tok_ratio, sent_tokens, usage.total_input());
                 }
                 match got {
                     Ok(reply) => break reply,
@@ -267,7 +314,11 @@ impl Run {
                     let summary = self.tools.get(&name).map_or_else(|| name.clone(), |t| t.summary(&a));
                     s.item(SubItem::Call { id: id.clone(), name: name.clone(), summary });
                 }
-                let out = self.call(&id, &name, &a, ctx, say).await;
+                let out = if name == "recall" {
+                    crate::recall::answer(&messages, &a)
+                } else {
+                    self.call(&id, &name, &a, ctx, say).await
+                };
                 if let Some(s) = &self.sub {
                     s.item(SubItem::Result { id: id.clone(), ok: !out.is_error, bytes: out.content.len() });
                 }

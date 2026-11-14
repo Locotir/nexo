@@ -65,6 +65,8 @@ mod prefix;
 mod round;
 mod settings;
 mod start;
+// what a sub-agent's loop shares with the main turn's to build its view
+pub(crate) use start::{fixed_tokens, learn_ratio, view_window};
 mod state;
 mod tools;
 mod ultracode;
@@ -149,7 +151,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             .with_providers(config.providers.clone())
             .with_parallel(config.agent.parallel_tasks)
             .with_hooks(config.hooks.clone())
-            .with_worktree_setup(config.agent.worktree_setup.clone());
+            .with_worktree_setup(config.agent.worktree_setup.clone())
+            .with_context(config.context.clone());
         let sub = Arc::new(sub);
         tools.add(sub.clone());
         flow_sub = Some(sub.clone());

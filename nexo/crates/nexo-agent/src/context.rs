@@ -80,6 +80,9 @@ pub trait ContextPolicy: Send {
     /// What the provider said of the call made with the last view: the input tokens it read from its
     /// cache, and all of them, from which the curator learns how long the cache keeps a view.
     fn usage(&mut self, _read: u64, _input: u64) {}
+    /// The model calls left, the next one included, when the loop knows them (a sub-agent's rounds left),
+    /// before each view; `None` when it does not (the curator then estimates them, as it always has).
+    fn calls_left(&mut self, _calls: Option<u64>) {}
     /// Whether the view keeps under the tokens `window` gives it, so a window learned smaller needs a
     /// new view rather than a compaction.
     fn fits_window(&self) -> bool {
@@ -419,6 +422,10 @@ impl ContextPolicy for BuiltIn {
 
     fn usage(&mut self, read: u64, input: u64) {
         self.cur.cached(read, input);
+    }
+
+    fn calls_left(&mut self, calls: Option<u64>) {
+        self.cur.calls_left(calls);
     }
 
     fn fits_window(&self) -> bool {

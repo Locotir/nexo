@@ -41,6 +41,8 @@ use crate::audit::Why;
 use crate::brief::{self, Brief, BriefConfig};
 use crate::client::{ModelClient, Target};
 
+#[cfg(test)]
+mod context_tests;
 mod profile;
 #[cfg(test)]
 mod provider_tests;
@@ -168,6 +170,8 @@ pub struct SubAgent {
     hooks: Vec<nexo_core::config::HookConfig>,
     /// Commands run in a new worktree (`[agent] worktree_setup`).
     worktree_setup: Vec<String>,
+    /// The session's context policy (`[context]`), which each sub-agent runs over its own messages (none: plain).
+    context: Option<nexo_core::config::ContextConfig>,
     launch_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
@@ -205,8 +209,16 @@ impl SubAgent {
             parallel: false,
             hooks: Vec::new(),
             worktree_setup: Vec::new(),
+            context: None,
             launch_gate: Arc::new(tokio::sync::RwLock::new(())),
         }
+    }
+
+    /// The session's context policy: each sub-agent sends what it keeps of its own messages, as the main turn
+    /// does (without it, everything).
+    pub fn with_context(mut self, cfg: nexo_core::config::ContextConfig) -> SubAgent {
+        self.context = Some(cfg);
+        self
     }
 
     /// The commands to run in the worktree of a sub-agent with `isolation: worktree`.
@@ -488,6 +500,7 @@ impl SubAgent {
             claims: ctx.claims.clone(),
             id: String::new(),
             sub: None,
+            context: self.context.clone(),
             label: own_words.lines().next().unwrap_or("").chars().take(60).collect(),
         };
         let writes = self.can_write(&run.profile);
