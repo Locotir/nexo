@@ -72,7 +72,7 @@ impl Tool for Writer {
     }
 }
 
-mod scratch;
+use crate::scratch;
 
 fn data_dir() {
     static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
