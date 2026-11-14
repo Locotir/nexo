@@ -117,10 +117,13 @@ fn split_assign(s: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// The parts of a script: cut at `;` and at line ends outside double quotes, trimmed, without empty parts and
-/// without `#` comment lines.
+/// The parts of a script: cut at `;` and at line ends outside quotes (double or single, so `';'` and `'a;b'` stay
+/// whole), trimmed, without empty parts and without `#` comment lines. A quote left open keeps the rest as one part.
 pub fn units(text: &str) -> Vec<String> {
-    let (mut out, mut cur, mut q) = (Vec::new(), String::new(), false);
+    let (mut out, mut cur) = (Vec::new(), String::new());
+    let mut q: Option<char> = None;
+    let mut esc = false;
+    let mut comment = false;
     let mut push = |cur: &mut String| {
         let t = cur.trim();
         if !t.is_empty() && !t.starts_with('#') {
@@ -129,13 +132,33 @@ pub fn units(text: &str) -> Vec<String> {
         cur.clear();
     };
     for c in text.chars() {
+        if comment {
+            // a comment line ends at its line end; its quotes mean nothing
+            if c == '\n' {
+                comment = false;
+                cur.clear();
+            }
+            continue;
+        }
+        if let Some(open) = q {
+            cur.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == open {
+                q = None;
+            }
+            continue;
+        }
         match c {
-            '"' => {
-                q = !q;
+            '"' | '\'' => {
+                q = Some(c);
                 cur.push(c);
             }
-            ';' | '\n' if !q => push(&mut cur),
-            '\r' if !q => {}
+            '#' if cur.trim().is_empty() => comment = true,
+            ';' | '\n' => push(&mut cur),
+            '\r' => {}
             _ => cur.push(c),
         }
     }
@@ -830,5 +853,23 @@ mod tests {
         let p = plan(&units("file ./p\nbreak helper\nstart"), &reg).unwrap().unwrap();
         assert_eq!(p.start, "run --main ./p");
         assert_eq!(p.rest, ["break helper"]);
+    }
+
+    #[test]
+    fn single_quotes_keep_a_semicolon_whole() {
+        assert_eq!(units("print c == ';'; cont"), s(&["print c == ';'", "cont"]));
+        assert_eq!(units("find --grep 'a;b'; fn main"), s(&["find --grep 'a;b'", "fn main"]));
+        assert_eq!(units("print '\\''; cont"), s(&["print '\\''", "cont"]));
+        // a double quote inside single quotes, and an apostrophe inside double quotes, open nothing
+        assert_eq!(units("print '\"'; a"), s(&["print '\"'", "a"]));
+        assert_eq!(units("note \"it's\"; b"), s(&["note \"it's\"", "b"]));
+        // an apostrophe in a comment line does not swallow the lines after it
+        assert_eq!(units("# don't\nrun"), s(&["run"]));
+    }
+
+    #[test]
+    fn an_unclosed_quote_keeps_the_rest_as_one_part() {
+        assert_eq!(units("a; find 'x; b\nc"), s(&["a", "find 'x; b\nc"]));
+        assert_eq!(units("a; say \"x; b"), s(&["a", "say \"x; b"]));
     }
 }

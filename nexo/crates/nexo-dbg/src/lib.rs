@@ -53,7 +53,7 @@ pub use stub::serve_gdb;
 
 use std::fmt;
 
-/// A script cut into commands at `;` and at line ends outside double quotes (`#` lines left out): one call may carry
+/// A script cut into commands at `;` and at line ends outside quotes (double or single) (`#` lines left out): one call may carry
 /// a whole gdb script.
 pub fn script_units(text: &str) -> Vec<String> {
     gdbdialect::units(text)

@@ -689,6 +689,30 @@ mod tests {
     }
 
     #[test]
+    fn the_read_only_ops_and_their_paging_args_work_without_the_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fixture(dir.path());
+        let cases = [
+            ("bin_cfg", json!({"file": exe, "target": "main"})),
+            ("bin_bytes", json!({"file": exe, "addr": "main", "len": "16", "ty": "int"})),
+            ("bin_bytes", json!({"file": exe, "addr": "main", "len": 8, "ty": "u8"})),
+            ("bin_xref", json!({"file": exe, "target": "add"})),
+            ("bin_xref", json!({"file": exe, "target": "add", "to": "main"})),
+            ("bin_xref", json!({"file": exe, "target": "add..main"})),
+            ("bin_fn", json!({"file": exe, "target": "main", "code": true})),
+            ("bin_find", json!({"file": exe, "pattern": ["c3"], "within": "main"})),
+            ("bin_funcs", json!({"file": exe, "lines": 2, "from": "0", "grep": "a"})),
+            ("bin_funcs", json!({"file": exe, "lines": "all"})),
+        ];
+        let lines: Vec<Value> = cases.iter().enumerate().map(|(i, (t, a))| call(i as u64, t, a.clone())).collect();
+        for (i, v) in talk(false, &lines).iter().enumerate() {
+            let t = result_text(v);
+            eprintln!("{} {}: {}", cases[i].0, cases[i].1, t.lines().next().unwrap_or(""));
+            assert_eq!(v["result"]["isError"], false, "{} {}: {t}", cases[i].0, cases[i].1);
+        }
+    }
+
+    #[test]
     fn a_write_is_refused_without_the_flag_and_the_refusal_names_the_flag() {
         let dir = tempfile::tempdir().unwrap();
         let exe = fixture(dir.path());
