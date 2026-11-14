@@ -410,6 +410,9 @@ fn not_an_op(word: &str) -> Option<String> {
             "{word} is a shell command, not a bin op; results already come one per op, so a separator is not needed"
         )),
         _ if nexo_dbg::is_shell_word(&w) => Some(format!("`{word}` is a shell command, not a bin op: bin runs no shell")),
+        _ if word.contains('/') || word.contains('\\') => Some(format!(
+            "`{word}` is a program path, and the first word of an op line is read as the op name, so it was not run (bin never runs a file). `overview {word}` reads it; to run it use `debug` (`run {word} ARGS`) or bash"
+        )),
         _ => None,
     }
 }
@@ -692,6 +695,21 @@ mod tests {
         }
         let one = call(dir.path(), "frobnicate x").await;
         assert!(one.is_error && !one.content.starts_with("error:"), "{}", one.content);
+    }
+
+    /// t2d: `./calc 3 7 5` in a script was read as an op and got `tip: a similar subcommand exists: 'calls'`.
+    #[tokio::test]
+    async fn a_program_path_is_said_to_be_taken_as_an_op() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
+        let o = call(dir.path(), "info prog; ./prog 3 7 5").await;
+        assert!(
+            o.content.contains("`./prog` is a program path, and the first word of an op line is read as the op name"),
+            "{}",
+            o.content
+        );
+        assert!(o.content.contains("`overview ./prog`") && o.content.contains("`run ./prog ARGS`"), "{}", o.content);
+        assert!(!o.content.contains("similar subcommand"), "{}", o.content);
     }
 
     #[tokio::test]
