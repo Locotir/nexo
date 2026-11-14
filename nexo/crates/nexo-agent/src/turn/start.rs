@@ -328,9 +328,8 @@ pub(super) fn push_user(
         Message::new(Role::User, parts)
     };
     st.history.push(m.clone());
-    if let Err(e) = st.session.append(&m) {
-        notice(&st.events, Level::Warn, format!("cannot save the session: {e}"));
-    }
+    let _ = st.session.append(&m);
+    saving(st);
     let index = st.history.len() - 1;
     emit(&st.events, AgentEvent::History { index, message: m });
     if !added.is_empty() {

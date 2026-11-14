@@ -333,9 +333,8 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 st.history.push(kept.clone());
                 st.hidden.clear();
                 st.hidden_told = 0;
-                if let Err(e) = st.session.append(&kept) {
-                    notice(&events, Level::Warn, format!("cannot save the session: {e}"));
-                }
+                let _ = st.session.append(&kept);
+                saving(&mut st);
             }
             if !usage.is_empty() {
                 let model = req.model.clone();

@@ -22,9 +22,8 @@ pub(super) async fn push_results(state: &Shared, results: Vec<Part>) {
     // the outputs, and after them the text the loop adds (`ANSWER_NOW`)
     let m = Message { role: Role::User, content: results };
     st.history.push(m.clone());
-    if let Err(e) = st.session.append(&m) {
-        notice(&st.events, Level::Warn, format!("cannot save the session: {e}"));
-    }
+    let _ = st.session.append(&m);
+    saving(&mut st);
 }
 
 /// The result of a call that was skipped because the call before it in its message failed.
@@ -613,6 +612,7 @@ pub(super) async fn run_call(
             let seen = {
                 let mut st = state.lock().await;
                 let _ = st.session.record_output(id, &out);
+                saving(&mut st);
                 match (name, &file) {
                     ("read", Some((path, p))) if !out.is_error => {
                         let offset = args.get("offset").and_then(Value::as_u64);

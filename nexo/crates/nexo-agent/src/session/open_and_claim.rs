@@ -63,6 +63,9 @@ impl Session {
             lost: None,
             closed: false,
             size,
+            skipped: 0,
+            unsaved: false,
+            news: None,
         })
     }
 
@@ -98,6 +101,9 @@ impl Session {
             lost: None,
             closed: false,
             size: 0,
+            skipped: 0,
+            unsaved: false,
+            news: None,
         }
     }
 
@@ -124,6 +130,7 @@ impl Session {
         let mut goal = None;
         let mut goal_state = GoalState::Active;
         let mut prefix = None;
+        let mut skipped = 0;
         for l in lines {
             match serde_json::from_str::<Line>(&l) {
                 Ok(Line::Message { message, .. }) => messages.push(message),
@@ -146,7 +153,7 @@ impl Session {
                 Ok(Line::Prefix(p)) => prefix = Some(p),
                 Ok(Line::Reset) => messages.clear(),
                 Ok(Line::Meta(_)) => {}
-                Err(_) => {} // a cut line: whatever was being written when the process died
+                Err(_) => skipped += 1, // a cut line: whatever was being written when the process died
             }
         }
         meta.messages = messages.len();
@@ -169,6 +176,9 @@ impl Session {
             lost: None,
             closed: false,
             size: bytes.len() as u64,
+            skipped,
+            unsaved: false,
+            news: None,
         })
     }
 

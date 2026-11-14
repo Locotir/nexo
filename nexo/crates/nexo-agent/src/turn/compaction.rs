@@ -67,9 +67,8 @@ pub(super) async fn compact_locked(st: &mut State, keep_from: usize, cancel: &Ca
             st.repeats = Default::default();
             add_usage(st, &events, &done.model, done.usage, Usage::default(), UsageKind::Compact);
             st.last_prompt = None;
-            if let Err(e) = st.session.reset_with(&st.history.to_vec()) {
-                notice(&events, Level::Warn, format!("cannot save the session: {e}"));
-            }
+            let _ = st.session.reset_with(&st.history.to_vec());
+            saving(st);
             st.policy.compacted();
             emit(
                 &events,

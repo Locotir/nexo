@@ -29,6 +29,7 @@ pub(super) fn add_usage_priced(
     let held = (kind == UsageKind::Main).then(|| st.last_view.0.saturating_sub(st.last_view.1));
     let meta = UsageMeta { model: Some(model.to_string()), kind: Some(kind), held };
     let _ = st.session.record_usage_meta(usage, cost, meta);
+    saving(st);
     if let Some(audit) = &st.audit {
         let call = match kind {
             UsageKind::Main => "main",

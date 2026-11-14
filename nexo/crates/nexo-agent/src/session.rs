@@ -173,6 +173,22 @@ pub struct Session {
     /// The length of the file after this session's own last write: a longer file, or another one,
     /// holds lines of somebody else.
     size: u64,
+    /// Lines of the file that could not be read when it was opened (a cut or garbled line): their
+    /// content is not in this session.
+    skipped: usize,
+    /// Saving is failing right now: the person has been told once, and is told again when it works.
+    unsaved: bool,
+    /// What the person has not yet been told about saving.
+    news: Option<SaveNews>,
+}
+
+/// A change in whether the session is being saved, for the person to be told once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveNews {
+    /// Saving just failed (the reason); the conversation goes on in memory.
+    Stopped(String),
+    /// Saving works again.
+    Resumed,
 }
 
 impl Drop for Session {

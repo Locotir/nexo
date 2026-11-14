@@ -177,6 +177,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
             let s = Session::open(id)
                 .and_then(|mut s| s.claim().map(|_| s))
                 .map_err(|e| anyhow::anyhow!("cannot resume session {id}: {e}"))?;
+            skipped_note(&events, id, s.skipped_lines());
             let h = s.messages().to_vec();
             (s, h, true)
         }

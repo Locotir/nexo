@@ -61,7 +61,7 @@ pub use client::{ModelClient, Target};
 pub use context::{ContextPolicy, View};
 pub use limits::Limits;
 pub use permission::{Decision, Policy};
-pub use session::{Session, SessionMeta};
+pub use session::{SaveNews, Session, SessionMeta};
 
 /// Everything the loop needs to start.
 pub struct AgentSetup {

@@ -57,3 +57,33 @@ pub(super) const PREP_MODEL: &str = "waiting for the model";
 pub(super) fn preparing(events: &EventTx, what: impl Into<String>) {
     emit(events, AgentEvent::Preparing { what: what.into() });
 }
+
+/// Tells the person when saving the session stops, and when it works again: once each, not once per
+/// line that fails. The conversation goes on in memory either way.
+pub(super) fn saving(st: &mut State) {
+    let events = &st.events;
+    match st.session.take_save_news() {
+        Some(crate::session::SaveNews::Stopped(why)) => notice(
+            events,
+            Level::Warn,
+            format!(
+                "the session is not being saved: {why}. The conversation goes on, but a restart would lose what follows; saving is tried again with each line."
+            ),
+        ),
+        Some(crate::session::SaveNews::Resumed) => notice(events, Level::Info, "the session is being saved again"),
+        None => {}
+    }
+}
+
+/// Tells the person a session was opened without some lines of its file (a cut or garbled line): the
+/// rest is loaded.
+pub(super) fn skipped_note(events: &EventTx, id: &str, skipped: usize) {
+    if skipped > 0 {
+        let lines = if skipped == 1 { "1 line".to_string() } else { format!("{skipped} lines") };
+        notice(
+            events,
+            Level::Warn,
+            format!("session {id}: {lines} of its file could not be read and were skipped; everything else is loaded"),
+        );
+    }
+}

@@ -80,9 +80,8 @@ pub(super) fn tree_note(st: &mut State) -> Option<String> {
         return None;
     }
     st.prefix.shown = now.clone();
-    if let Err(e) = st.session.record_prefix(&st.prefix) {
-        notice(&st.events, Level::Warn, format!("cannot save the project map: {e}"));
-    }
+    let _ = st.session.record_prefix(&st.prefix);
+    saving(st);
     Some(if now.is_empty() { "Project: no files are listed any more.".to_string() } else { now })
 }
 

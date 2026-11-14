@@ -74,14 +74,67 @@ impl Session {
     }
 
     fn write(&mut self, line: &Line) -> anyhow::Result<()> {
+        let done = self.write_line_now(line);
+        self.track(&done);
+        done
+    }
+
+    fn write_line_now(&mut self, line: &Line) -> anyhow::Result<()> {
         self.ensure_open()?;
         self.claim()?;
+        self.check_present()?;
         if let Some(f) = &mut self.file {
-            write_line(f, line)?;
+            if let Err(e) = write_line(f, line) {
+                // a full disk can take half a line: the next one starts on a line of its own
+                self.open_tail = true;
+                return Err(e);
+            }
         }
         self.mark();
         self.meta.updated = now();
         Ok(())
+    }
+
+    /// An open file keeps accepting writes after its name is gone or taken by a directory, and they
+    /// reach nobody: that is a failure to save, not a success.
+    fn check_present(&self) -> anyhow::Result<()> {
+        if self.file.is_none() || self.path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match std::fs::metadata(&self.path) {
+            Ok(m) if m.is_file() => Ok(()),
+            Ok(_) => anyhow::bail!("{} is not a file any more", self.path.display()),
+            Err(e) => anyhow::bail!("the session file {} cannot be reached: {e}", self.path.display()),
+        }
+    }
+
+    /// Records whether saving works, for the person to be told when that changes (see [`SaveNews`]).
+    pub(super) fn track(&mut self, done: &anyhow::Result<()>) {
+        match done {
+            Err(e) if !self.unsaved => {
+                self.unsaved = true;
+                self.news = Some(SaveNews::Stopped(format!("{e:#}")));
+            }
+            Ok(()) if self.unsaved => {
+                self.unsaved = false;
+                // failed and fixed before anyone was told: nothing to say
+                self.news = match self.news.take() {
+                    Some(SaveNews::Stopped(_)) => None,
+                    _ => Some(SaveNews::Resumed),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// The change in saving not yet told to the person, once.
+    pub fn take_save_news(&mut self) -> Option<SaveNews> {
+        self.news.take()
+    }
+
+    /// How many lines of the file could not be read when the session was opened.
+    pub fn skipped_lines(&self) -> usize {
+        self.skipped
     }
 
     pub fn append(&mut self, m: &Message) -> anyhow::Result<()> {
@@ -174,6 +227,7 @@ impl Session {
         // one atomic rewrite: a crash leaves the old file or the new one, never a half history
         let (old, outputs) = (std::mem::replace(&mut self.messages, messages.to_vec()), self.outputs.clone());
         let done = self.rewrite();
+        self.track(&done);
         // as in `rewind`: when the file was not replaced, memory keeps matching it
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
             (self.messages, self.outputs) = (old, outputs);

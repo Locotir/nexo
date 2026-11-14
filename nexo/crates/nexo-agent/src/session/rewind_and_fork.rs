@@ -14,6 +14,7 @@ impl Session {
             self.messages.iter().flat_map(|m| m.tool_calls().map(|(id, _, _)| id.to_string())).collect();
         self.outputs.retain(|id, _| ids.contains(id));
         let done = self.rewrite();
+        self.track(&done);
         // a file replaced but not opened again holds the kept messages: memory stays as they are
         if done.as_ref().is_err_and(|e| !e.is::<NotReopened>()) {
             (self.messages, self.outputs) = (messages, outputs);

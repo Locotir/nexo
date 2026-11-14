@@ -915,3 +915,120 @@ fn one_empty_or_damaged_file_does_not_hide_the_good_sessions() {
     assert_eq!(l.len(), 1);
     assert_eq!(l[0].messages, 12);
 }
+
+/// Points the open session file at `target`, as a full disk does to every write.
+#[cfg(target_os = "linux")]
+fn aim_at(s: &mut Session, target: &str) {
+    s.file = Some(OpenOptions::new().write(true).open(target).unwrap());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_disk_fails_each_write_but_tells_the_person_once_and_again_when_it_works() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("before")).unwrap();
+    assert_eq!(s.take_save_news(), None);
+    let good = s.file.take();
+    aim_at(&mut s, "/dev/full");
+    for n in 0..4 {
+        let e = s.append(&Message::assistant(format!("lost {n}"))).unwrap_err();
+        assert!(e.to_string().to_lowercase().contains("space"), "the cause is kept: {e}");
+    }
+    // the conversation goes on in memory
+    assert_eq!(s.messages().len(), 5);
+    match s.take_save_news() {
+        Some(SaveNews::Stopped(why)) => assert!(why.to_lowercase().contains("space"), "{why}"),
+        other => panic!("one notice that saving stopped, got {other:?}"),
+    }
+    assert_eq!(s.take_save_news(), None, "not one per failed line");
+    // space is back
+    s.file = good;
+    s.append(&Message::assistant("after")).unwrap();
+    assert_eq!(s.take_save_news(), Some(SaveNews::Resumed));
+    s.append(&Message::assistant("again")).unwrap();
+    assert_eq!(s.take_save_news(), None);
+    // a fix before anyone was told says nothing
+    aim_at(&mut s, "/dev/full");
+    assert!(s.append(&Message::assistant("x")).is_err());
+    s.file = Some(reopen(&s.path).unwrap());
+    s.append(&Message::assistant("y")).unwrap();
+    assert_eq!(s.take_save_news(), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_line_cut_by_a_full_disk_does_not_swallow_the_next_good_line() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("one")).unwrap();
+    // half a line reaches the file
+    s.file.as_mut().unwrap().write_all(b"{\"type\":\"mess").unwrap();
+    let good = s.file.take();
+    aim_at(&mut s, "/dev/full");
+    assert!(s.append(&Message::assistant("lost")).is_err());
+    s.file = good;
+    s.append(&Message::assistant("kept")).unwrap();
+    let back = Session::open_path(s.path()).unwrap();
+    let texts: Vec<_> = back.messages().iter().map(|m| m.text()).collect();
+    assert_eq!(texts, ["one", "kept"]);
+    assert_eq!(back.skipped_lines(), 1);
+}
+
+#[test]
+fn a_file_removed_or_replaced_by_a_folder_is_a_failure_to_save_not_a_silent_success() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = Session::create_in(d.path(), Path::new("/p"), "mock", "m1").unwrap();
+    s.append(&Message::user("one")).unwrap();
+    let path = s.path().to_path_buf();
+    std::fs::remove_file(&path).unwrap();
+    assert!(s.append(&Message::assistant("two")).is_err(), "removed");
+    assert!(matches!(s.take_save_news(), Some(SaveNews::Stopped(_))));
+    std::fs::create_dir(&path).unwrap();
+    assert!(s.append(&Message::assistant("three")).is_err(), "a folder");
+    assert!(s.reset_with(&[Message::user("one")]).is_err(), "a rewrite cannot replace a folder");
+    assert_eq!(s.take_save_news(), None, "told once");
+    assert_eq!(s.messages().len(), 3, "memory keeps the conversation");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_folder_fails_the_rewrite_and_keeps_the_old_file_and_memory() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let mut s = Session::open_path(&p).unwrap();
+    std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    if std::fs::File::create(d.path().join("probe")).is_ok() {
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        return; // running as root: permissions do not stop it
+    }
+    let before = std::fs::read(&p).unwrap();
+    let kept = s.messages().len();
+    assert!(s.reset_with(&[Message::user("short")]).is_err());
+    std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), before, "the old file is untouched");
+    assert_eq!(s.messages().len(), kept, "memory matches the file");
+    assert!(matches!(s.take_save_news(), Some(SaveNews::Stopped(_))));
+    s.reset_with(&[Message::user("short")]).unwrap();
+    assert_eq!(s.take_save_news(), Some(SaveNews::Resumed));
+}
+
+#[test]
+fn resuming_a_damaged_file_loads_every_good_line_and_counts_the_skipped_ones() {
+    let d = tempfile::tempdir().unwrap();
+    let p = busy_session(d.path());
+    let mut lines: Vec<Vec<u8>> =
+        std::fs::read(&p).unwrap().split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(|l| l.to_vec()).collect();
+    lines.insert(3, b"{not json".to_vec());
+    lines.insert(6, br#"{"type":"message","index":"x","message":7}"#.to_vec()); // the wrong shape
+    lines.insert(9, vec![0u8; 16]);
+    let mut bytes = lines.join(&b'\n');
+    bytes.extend_from_slice(b"\n{\"type\":\"usage\",\"usage\":{\"inp"); // cut last line
+    std::fs::write(&p, &bytes).unwrap();
+    let s = Session::open_path(&p).unwrap();
+    assert_eq!(s.messages().len(), 12);
+    assert_eq!(s.skipped_lines(), 4);
+    let clean = Session::open_path(&busy_session(tempfile::tempdir().unwrap().path())).unwrap();
+    assert_eq!(clean.skipped_lines(), 0);
+}

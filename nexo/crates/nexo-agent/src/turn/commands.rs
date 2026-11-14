@@ -97,9 +97,8 @@ pub(super) fn close_open_calls(st: &mut State) {
     }
     let msg = Message::tool_results(cancelled_results(&calls, "the session ended before the tools ran"));
     st.history.push(msg.clone());
-    if let Err(e) = st.session.append(&msg) {
-        notice(&st.events, Level::Warn, format!("cannot save the session: {e}"));
-    }
+    let _ = st.session.append(&msg);
+    saving(st);
     let n = calls.len();
     notice(
         &st.events,
@@ -118,6 +117,7 @@ pub(super) async fn resume_session(state: &Shared, id: &str) {
     // taken before anything is spent: a session another nexo writes is not resumed here
     match Session::open(id).and_then(|mut s| s.claim().map(|_| s)) {
         Ok(s) => {
+            skipped_note(&st.events, id, s.skipped_lines());
             install_session(&mut st, s);
             if !st.history.is_empty() {
                 view_now(&mut st, 0).await;
