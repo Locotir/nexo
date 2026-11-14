@@ -220,6 +220,25 @@ fn live_call(members: &[Block]) -> Option<String> {
     (!first.is_empty()).then(|| first.to_string())
 }
 
+/// The newest progress line of the call running now, dim, to sit under the head of a live group:
+/// what a long call (a wait on a job, a command) is doing at this moment. None when it said nothing.
+pub fn live_tail(members: &[Block], w: usize, theme: &Theme) -> Option<Line<'static>> {
+    let mut best: Option<(&Option<Instant>, &Vec<String>)> = None;
+    for b in members {
+        if let Block::Tool { status: ToolStatus::Running, started, progress, .. } = b {
+            if best.is_none_or(|(s, _)| started >= s) {
+                best = Some((started, progress));
+            }
+        }
+    }
+    let last = best?.1.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty())?;
+    let head = "  ⎿ ";
+    Some(Line::from(Span::styled(
+        format!("{head}{}", truncate(last, w.saturating_sub(width(head)).max(4))),
+        theme.dim(),
+    )))
+}
+
 /// The head line of a group of `members`, `w` cells wide.
 pub fn header(members: &[Block], folded: bool, spinner: usize, w: usize, theme: &Theme) -> Line<'static> {
     header_for(members, folded, spinner, w, theme, nexo_core::config::Detail::Full)
@@ -540,6 +559,25 @@ mod tests {
         assert!(text(&header(&m, false, 0, 100, &theme)).contains("· ssh minipc docker ps"));
         let q = text(&header_for(&m, true, 0, 100, &theme, nexo_core::config::Detail::Quiet));
         assert!(q.contains("· ssh minipc docker ps"), "{q}");
+    }
+
+    #[test]
+    fn a_live_group_shows_the_newest_progress_line_dim_under_its_head() {
+        let theme = Theme::dark();
+        let mut a = running("jobs: waiting for shell job 46 · cargo test · up to 600 s", 5);
+        if let Block::Tool { progress, .. } = &mut a {
+            *progress = vec!["compiling a".into(), "".into(), "running 12 tests".into()];
+        }
+        let l = live_tail(&[done("bash"), a.clone()], 60, &theme).unwrap();
+        assert_eq!(text(&l), "  ⎿ running 12 tests");
+        assert_eq!(l.spans[0].style, theme.dim());
+        assert_eq!(text(&live_tail(&[a.clone()], 12, &theme).unwrap()).chars().count(), 12);
+        // nothing said yet, or nothing running: no line
+        assert!(live_tail(&[running("x", 1)], 60, &theme).is_none());
+        if let Block::Tool { status, .. } = &mut a {
+            *status = ToolStatus::Done;
+        }
+        assert!(live_tail(&[a], 60, &theme).is_none());
     }
 
     #[test]

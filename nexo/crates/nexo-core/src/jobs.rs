@@ -349,6 +349,13 @@ impl Jobs {
         Some(JobRead { info, new })
     }
 
+    /// The newest non-empty line of job `id`'s output, without marking anything read.
+    pub fn last_line(&self, id: u32) -> Option<String> {
+        let e = self.entry(id)?;
+        let o = e.out.lock().unwrap();
+        o.lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string())
+    }
+
     /// The end of the output of every job, without marking anything read.
     pub fn tails(&self) -> Vec<JobTail> {
         let jobs = self.0.jobs.lock().unwrap();

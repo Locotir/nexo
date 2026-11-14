@@ -199,7 +199,14 @@ impl App {
                         &self.theme,
                         self.opts.detail,
                     );
-                    vec![head]
+                    let mut v = vec![head];
+                    // a live group says under its head what the call running now is doing
+                    v.extend(crate::render::group::live_tail(
+                        &self.blocks[i + 1..end],
+                        (width - indent).max(8),
+                        &self.theme,
+                    ));
+                    v
                 }
                 b => {
                     let (l, m) = b.render_meta(width - indent, &self.theme, self.render_opts());

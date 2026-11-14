@@ -82,14 +82,20 @@ impl Tool for Jobs {
 
     fn summary_live(&self, args: &Value, jobs: &nexo_core::jobs::Jobs) -> String {
         let id = int_arg(args, "id");
-        let what = id.and_then(|i| jobs.get(i as u32)).map(|j| one_line(&j.label, 48));
-        let (Some(id), Some(what)) = (id, what) else { return self.summary(args) };
+        let job = id.and_then(|i| jobs.get(i as u32));
+        let (Some(id), Some(job)) = (id, job) else { return self.summary(args) };
+        // what the job is: a shell command, or a sub-agent by its task
+        let what = one_line(&job.label, 48);
+        let who = match job.kind {
+            JobKind::Shell => format!("shell job {id} · {what}"),
+            JobKind::Agent => format!("sub-agent \"{what}\" (job {id})"),
+        };
         match str_arg(args, "action").unwrap_or("list") {
             "output" => match int_arg(args, "wait").filter(|w| *w > 0) {
-                Some(w) => format!("jobs: waiting for job {id} · {what} · up to {} s", w.min(MAX_WAIT_S)),
-                None => format!("jobs: output of job {id} · {what}"),
+                Some(w) => format!("jobs: waiting for {who} · up to {} s", w.min(MAX_WAIT_S)),
+                None => format!("jobs: output of {who}"),
             },
-            "kill" => format!("jobs: stopping job {id} · {what}"),
+            "kill" => format!("jobs: stopping {who}"),
             _ => self.summary(args),
         }
     }
@@ -113,7 +119,23 @@ impl Tool for Jobs {
             ("output" | "kill", None) => ToolOutput::error(format!("jobs: `id` is required for {action}")),
             ("output", Some(id)) => {
                 let wait = Duration::from_secs(int_arg(&args, "wait").unwrap_or(0).min(MAX_WAIT_S));
-                match ctx.jobs.read(id, wait, &ctx.cancel).await {
+                // while the model waits, the screen sees the job's newest output line
+                let read = ctx.jobs.read(id, wait, &ctx.cancel);
+                tokio::pin!(read);
+                let mut tick = tokio::time::interval(Duration::from_millis(700));
+                let mut shown = String::new();
+                let read = loop {
+                    tokio::select! {
+                        r = &mut read => break r,
+                        _ = tick.tick(), if !wait.is_zero() => {
+                            if let Some(l) = ctx.jobs.last_line(id).filter(|l| *l != shown) {
+                                ctx.report(one_line(&l, 300));
+                                shown = l;
+                            }
+                        }
+                    }
+                };
+                match read {
                     None => ToolOutput::error(format!("jobs: there is no job {id} (see action \"list\")")),
                     Some(r) => {
                         let mut text = format!("job {id}: {}, {}", r.info.status.word(), duration(r.info.elapsed_ms));
@@ -159,20 +181,23 @@ mod tests {
         let line = |args: Value| Jobs.summary_live(&args, &jobs);
         assert_eq!(
             line(json!({"action": "output", "id": id, "wait": 60})),
-            format!("jobs: waiting for job {id} · cargo test -p nexo-bin · up to 60 s")
+            format!("jobs: waiting for shell job {id} · cargo test -p nexo-bin · up to 60 s")
         );
         assert_eq!(
             line(json!({"action": "output", "id": id})),
-            format!("jobs: output of job {id} · cargo test -p nexo-bin")
+            format!("jobs: output of shell job {id} · cargo test -p nexo-bin")
         );
         assert_eq!(
             line(json!({"action": "kill", "id": id})),
-            format!("jobs: stopping job {id} · cargo test -p nexo-bin")
+            format!("jobs: stopping shell job {id} · cargo test -p nexo-bin")
         );
         // a sub-agent goes by its task, on one line
         assert_eq!(
             line(json!({"action": "output", "id": agent.id(), "wait": 900})),
-            format!("jobs: waiting for job {} · map the session files and their readers … · up to 600 s", agent.id())
+            format!(
+                "jobs: waiting for sub-agent \"map the session files and their readers …\" (job {}) · up to 600 s",
+                agent.id()
+            )
         );
         // a job the session does not know, or the list: the arguments alone
         assert_eq!(line(json!({"action": "output", "id": 99, "wait": 5})), "jobs: output 99 (wait 5 s)");
@@ -212,6 +237,35 @@ mod tests {
             assert!(Jobs.run(json!({"action": "output"}), &c).await.is_error);
             assert!(Jobs.run(json!({"action": "output", "id": 9}), &c).await.is_error);
             assert_eq!(Jobs.summary(&json!({"action": "output", "id": 2, "wait": 30})), "jobs: output 2 (wait 30 s)");
+        });
+    }
+
+    #[test]
+    fn a_wait_shows_the_newest_line_of_the_job_as_progress() {
+        crate::util::run_bounded(Duration::from_secs(30), "a_wait_shows_the_newest_line", async {
+            let d = tempfile::tempdir().unwrap();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut c = ToolContext::new(d.path().to_path_buf());
+            c.progress = Some(tx);
+            let h = c.jobs.start(JobKind::Agent, "map the readers");
+            let id = h.id();
+            let jobs = c.jobs.clone();
+            tokio::spawn(async move {
+                h.line("reading a.rs");
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                h.line("reading b.rs");
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                h.finish(true, "reported");
+            });
+            let out = Jobs.run(json!({"action": "output", "id": id, "wait": 20}), &c).await;
+            assert!(out.content.contains("reading b.rs"), "{}", out.content);
+            drop(c);
+            let mut lines = Vec::new();
+            while let Ok(p) = rx.try_recv() {
+                lines.push(p.line);
+            }
+            assert_eq!(lines, ["reading a.rs", "reading b.rs"], "each new line once, in order");
+            assert_eq!(jobs.last_line(id).as_deref(), Some("reading b.rs"));
         });
     }
 }
