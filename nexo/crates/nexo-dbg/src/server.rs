@@ -192,6 +192,9 @@ fn make_session(kind: &Kind) -> Result<(Session, Option<crate::corefile::Death>)
             if !exe.is_file() {
                 return fail(format!("{} is not a file", exe.display()));
             }
+            if let Some(why) = platform::foreign_program(exe) {
+                return fail(why);
+            }
             platform::launch(&Launch { exe: exe.clone(), args: args.clone(), ..Launch::default() })?
         }
         Kind::Attach(pid) => platform::attach(*pid)?,

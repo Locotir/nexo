@@ -13,6 +13,37 @@ use serde_json::{json, Value};
 /// Seconds a `--wait` may ask for in one call: a longer wait is cut to this and the call says it is still running.
 pub const MAX_WAIT_SECS: u64 = 60;
 
+/// Where the debugger has a backend: the host the binary was built for.
+pub const fn available() -> bool {
+    cfg!(all(target_arch = "x86_64", any(target_os = "linux", windows)))
+}
+
+/// The host a program runs on under this tool, from the target the binary was built for: `Linux x86-64`.
+pub fn host() -> String {
+    host_name(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn host_name(os: &str, arch: &str) -> String {
+    let os = match os {
+        "linux" => "Linux",
+        "windows" => "Windows",
+        "macos" => "macOS",
+        o => o,
+    };
+    let arch = match arch {
+        "x86_64" => "x86-64",
+        "aarch64" => "arm64",
+        a => a,
+    };
+    format!("{os} {arch}")
+}
+
+/// The command list as this host has it: Windows has no system call tracing, so those lines are not offered.
+fn commands() -> String {
+    let windows = cfg!(windows);
+    COMMANDS.lines().filter(|l| !(windows && l.starts_with("strace "))).collect::<Vec<_>>().join("\n")
+}
+
 const COMMANDS: &str = "\
 run [--main] <path> [args] [< file|<<< text]  start under the debugger, stop at entry (or main); input is sent, then closed
 a; b  several commands in one call (`run ./p <<< \"1 2\"; cont` runs to the crash)
@@ -32,6 +63,12 @@ do \"c1; c2\"  several commands in one call
 gdb words work: x/20bx a, p/x e, printf \"%d\\n\", e, set $v = e, display, info registers|breakpoints|frame|proc mappings, break *(f+0x10), `commands N ... end` (log, x, printf, continue at every hit, no round trip); a whole gdb script (newlines or `;`, `file p` or `run p args` last) is one call; `print a --as string|vector`
 name <addr> <name>, note [0xaddr] <text>  keep a finding for this binary; its next session starts with it (`saved:` line)
 detach, kill, end, sessions, help";
+
+const COMPACT: &str = if cfg!(windows) {
+    "Debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals, live memory. gdb forms work (x/8x $rsp, p/x, set $v), as does break. `bin` reads the file. `help`"
+} else {
+    "Debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals, live memory. gdb forms work (x/8x $rsp, p/x, set $v), as do break, strace. `bin` reads the file. `help`"
+};
 
 /// A debug session for the model. `steer_only` refuses everything that starts, attaches or writes.
 pub struct Debug {
@@ -134,7 +171,9 @@ impl Tool for Debug {
         ToolSpec {
             name: "debug".into(),
             description: format!(
-                "Debugger for programs you run (Linux x86-64). One command per call; the session stays between calls.\n{COMMANDS}"
+                "Debugger for programs you run ({}). One command per call; the session stays between calls.\n{}",
+                host(),
+                commands()
             ),
             parameters: json!({
                 "type": "object",
@@ -150,10 +189,7 @@ impl Tool for Debug {
     }
 
     fn compact(&self) -> Option<Compact<'_>> {
-        Some(Compact {
-            description: "Debug a local program, instead of gdb: `run ./p <<< \"in\"; cont` stops at a crash with file:line, cause, locals, live memory. gdb forms work (x/8x $rsp, p/x, set $v), as do break, strace. `bin` reads the file. `help`",
-            params: &[],
-        })
+        Some(Compact { description: COMPACT, params: &[] })
     }
 
     fn rare(&self) -> bool {
@@ -341,6 +377,33 @@ mod tests {
         call(&t, "end").await;
     }
 
+    /// The full text names the host the binary was built for, and offers the system call lines Linux has.
+    #[test]
+    fn the_full_text_names_this_host_and_keeps_the_linux_trace_lines() {
+        let d = Debug::new().spec().description;
+        assert!(d.starts_with("Debugger for programs you run (Linux x86-64)."), "{d}");
+        assert!(d.contains("\nstrace [names|file|net|process|memory]") && d.contains("catch syscall"), "{d}");
+        assert!(available());
+    }
+
+    /// A Windows program cannot run on this host: the answer says so as a fact and names `bin`, and starts nothing.
+    #[tokio::test]
+    async fn running_a_pe_file_on_linux_says_this_host_cannot_run_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("prog.exe");
+        let mut pe = vec![0u8; 0x100];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[0x3c] = 0x80;
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        std::fs::write(&exe, &pe).unwrap();
+        let t = Debug::in_dir(&dir.path().join("state"));
+        let o = call(&t, &format!("run {}", exe.display())).await;
+        assert!(o.is_error, "{}", o.content);
+        assert!(o.content.contains("is a Windows (PE) program; this host runs Linux programs only"), "{}", o.content);
+        assert!(o.content.contains("`bin` reads it without running it"), "{}", o.content);
+        assert!(call(&t, "sessions").await.content.contains("no debug sessions"));
+    }
+
     fn sleep_bin() -> String {
         ["/usr/bin/sleep", "/bin/sleep"].iter().find(|p| Path::new(p).is_file()).expect("sleep").to_string()
     }
@@ -487,5 +550,34 @@ mod tests {
     fn a_long_wait_is_cut_to_the_cap() {
         let w = Debug::words(&json!({"command": "cont --wait 9999"})).unwrap();
         assert_eq!(w, ["cont", "--wait", "60"]);
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn the_host_is_named_from_the_target_the_binary_was_built_for() {
+        assert_eq!(host_name("linux", "x86_64"), "Linux x86-64");
+        assert_eq!(host_name("windows", "x86_64"), "Windows x86-64");
+        assert_eq!(host_name("macos", "aarch64"), "macOS arm64");
+        assert_eq!(host(), host_name(std::env::consts::OS, std::env::consts::ARCH));
+        let d = Debug::new().spec().description;
+        assert!(d.contains(&format!("({})", host())), "{d}");
+    }
+
+    #[test]
+    fn the_trace_lines_are_offered_only_where_the_host_has_system_calls() {
+        let c = commands();
+        assert_eq!(c.contains("strace "), !cfg!(windows), "{c}");
+        assert_eq!(c.contains("catch syscall"), !cfg!(windows), "{c}");
+        // everything else is the same on every host
+        assert!(
+            c.contains("ltrace [names]")
+                && c.contains("run [--main] <path>")
+                && c.ends_with("detach, kill, end, sessions, help")
+        );
+        assert_eq!(COMPACT.contains("strace"), !cfg!(windows));
     }
 }

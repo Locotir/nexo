@@ -158,7 +158,7 @@ fn session_builtins(cfg: &Config) -> ToolSet {
         tools.add(Arc::new(crate::bin_tool::Bin));
     }
     // only where the debugger has a backend
-    if cfg.tools.debug && cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if cfg.tools.debug && nexo_tools::debug::available() {
         tools.add(Arc::new(nexo_tools::debug::Debug::new()));
     }
     tools

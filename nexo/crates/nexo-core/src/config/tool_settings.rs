@@ -13,7 +13,7 @@ pub struct ToolsConfig {
     /// Seconds that check may take (also the cap of an `edit`/`write` `check` command).
     pub post_write_check_secs: u64,
     /// Offer the `debug` tool (run a program under a debugger, break, step, read memory) to the model. On by
-    /// default where the debugger has a backend (Linux x86-64); off elsewhere, and there the tool is never
+    /// default where the debugger has a backend (Linux x86-64, Windows x86-64); off elsewhere, and there the tool is never
     /// registered, whatever this says.
     pub debug: bool,
     /// Offer the `bin` tool (read a compiled program as bytes: map, functions, disassembly, pseudo-C, references,
@@ -28,7 +28,7 @@ impl Default for ToolsConfig {
             edit_diagnostics: true,
             post_write_check: true,
             post_write_check_secs: 45,
-            debug: cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            debug: cfg!(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))),
             bin: true,
         }
     }

@@ -184,6 +184,35 @@ pub trait Target {
     fn kill(&mut self) -> Result<()>;
 }
 
+/// What kind of program `exe` is when this host cannot run it: a Windows program on Linux, a Linux or macOS one on
+/// Windows. `None` when it can run here (or the file is not one of those formats: the launch says what is wrong).
+pub fn foreign_program(exe: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = [0u8; 64];
+    let n = std::fs::File::open(exe).and_then(|mut f| f.read(&mut head)).ok()?;
+    let head = &head[..n];
+    let pe = head.starts_with(b"MZ");
+    let elf = head.starts_with(b"\x7fELF");
+    let macho =
+        [[0xfe, 0xed, 0xfa, 0xce], [0xfe, 0xed, 0xfa, 0xcf], [0xce, 0xfa, 0xed, 0xfe], [0xcf, 0xfa, 0xed, 0xfe]]
+            .iter()
+            .any(|m| head.starts_with(m));
+    let (kind, here) = match (pe, elf, macho) {
+        (true, ..) => ("a Windows (PE) program", cfg!(windows)),
+        (_, true, _) => ("a Linux (ELF) program", cfg!(target_os = "linux")),
+        (.., true) => ("a macOS (Mach-O) program", false),
+        _ => return None,
+    };
+    if here {
+        return None;
+    }
+    let host = if cfg!(windows) { "Windows" } else { "Linux" };
+    Some(format!(
+        "{} is {kind}; this host runs {host} programs only, so `run` cannot start it here (`bin` reads it without running it)",
+        exe.display()
+    ))
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn launch(l: &Launch) -> Result<Box<dyn Target>> {
     Ok(Box::new(crate::linux::Linux::launch(l)?))
@@ -216,4 +245,36 @@ pub fn launch(_: &Launch) -> Result<Box<dyn Target>> {
 #[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), all(windows, target_arch = "x86_64"))))]
 pub fn attach(_: u32) -> Result<Box<dyn Target>> {
     crate::fail(ONLY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("prog");
+        std::fs::write(&p, bytes).unwrap();
+        (dir, p)
+    }
+
+    #[test]
+    fn a_program_of_another_system_is_named_and_one_of_this_system_is_not() {
+        let (_d, pe) = file(b"MZ\x90\0\x03\0\0\0");
+        let (_e, elf) = file(b"\x7fELF\x02\x01\x01\0");
+        let (_m, mach) = file(&[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1]);
+        let (_t, text) = file(b"#!/bin/sh\n");
+        let (pe, elf, mach) = (foreign_program(&pe), foreign_program(&elf), foreign_program(&mach));
+        assert!(mach.unwrap().contains("macOS (Mach-O) program"));
+        assert_eq!(foreign_program(&text), None);
+        if cfg!(windows) {
+            assert_eq!(pe, None);
+            assert!(elf.unwrap().contains("a Linux (ELF) program; this host runs Windows programs only"));
+        } else {
+            assert_eq!(elf, None);
+            let e = pe.unwrap();
+            assert!(e.contains("a Windows (PE) program; this host runs Linux programs only"), "{e}");
+            assert!(e.contains("`bin` reads it without running it"), "{e}");
+        }
+    }
 }

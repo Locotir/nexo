@@ -9,9 +9,18 @@ use serde_json::json;
 
 use crate::cmds::Args;
 use crate::engine::{rows, Session, State, Why};
-use crate::platform::{Sys, Tid};
+use crate::platform::{Os, Sys, Tid};
 use crate::syscalls::{self, Filter};
-use crate::{usage, Result};
+use crate::{fail, usage, Result};
+
+/// The answer to a system call command on a system that has no such trace: it says what is true and what to use.
+fn no_syscalls(os: Os, what: &str) -> Option<String> {
+    (os == Os::Windows).then(|| {
+        format!(
+            "{what}: system call tracing is not available on Windows; break on the API instead (`break <function>` stops on one, `ltrace` writes the program's imported calls, `hook <function>` follows one)"
+        )
+    })
+}
 
 /// Trace lines kept; older ones are dropped and counted.
 pub const TRACE_KEEP: usize = 20_000;
@@ -144,6 +153,14 @@ impl Session {
         }
     }
 
+    /// What is true about system call tracing on this program's system, when it has none.
+    fn no_syscalls(&self, what: &str) -> Result<()> {
+        match no_syscalls(self.t.os(), what) {
+            Some(why) => fail(why),
+            None => Ok(()),
+        }
+    }
+
     fn sync_syscalls(&mut self) -> Result<()> {
         let on = self.tr.wants_syscalls();
         self.t.trace_syscalls(on)
@@ -151,6 +168,7 @@ impl Session {
 
     /// `strace [names|groups]` | `strace off` | `strace show [names|groups]`.
     pub(crate) fn cmd_strace(&mut self, a: &Args) -> Result<Output> {
+        self.no_syscalls("strace")?;
         match a.pos.first().map(String::as_str) {
             Some("off") => {
                 let n = self.tr.lines.iter().filter(|l| l.kind == Kind::Sys).count();
@@ -187,6 +205,7 @@ impl Session {
 
     /// `catch syscall <names|groups>` | `catch syscall off`.
     pub(crate) fn cmd_catch_syscall(&mut self, words: &[String]) -> Result<Output> {
+        self.no_syscalls("catch syscall")?;
         self.need_stopped()?;
         if words.first().is_some_and(|w| w == "off") {
             self.tr.sys_catch = None;
@@ -250,5 +269,20 @@ impl Session {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_call_commands_say_they_are_not_on_windows() {
+        for c in ["strace", "catch syscall"] {
+            let e = no_syscalls(Os::Windows, c).unwrap();
+            assert!(e.starts_with(&format!("{c}: system call tracing is not available on Windows")), "{e}");
+            assert!(e.contains("break on the API instead"), "{e}");
+        }
+        assert_eq!(no_syscalls(Os::Linux, "strace"), None);
     }
 }
