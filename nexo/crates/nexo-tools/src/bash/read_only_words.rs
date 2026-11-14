@@ -123,6 +123,7 @@ pub(super) fn reads_only(words: &[String]) -> bool {
                             | "fn"
                             | "xref"
                             | "calls"
+                            | "cfg"
                             | "tree"
                             | "path"
                             | "slice"

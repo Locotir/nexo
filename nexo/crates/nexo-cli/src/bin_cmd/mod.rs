@@ -70,6 +70,7 @@ impl BinOp {
             | BinOp::Struct { file, .. }
             | BinOp::Var { file, .. }
             | BinOp::Calls { file, .. }
+            | BinOp::Cfg { file, .. }
             | BinOp::Name { file, .. }
             | BinOp::Note { file, .. }
             | BinOp::Names { file, .. }
@@ -103,6 +104,7 @@ impl BinOp {
             | BinOp::Struct { file, .. }
             | BinOp::Var { file, .. }
             | BinOp::Calls { file, .. }
+            | BinOp::Cfg { file, .. }
             | BinOp::Name { file, .. }
             | BinOp::Note { file, .. }
             | BinOp::Names { file, .. }
@@ -143,6 +145,7 @@ impl BinOp {
             | BinOp::Struct { common, .. }
             | BinOp::Var { common, .. }
             | BinOp::Calls { common, .. }
+            | BinOp::Cfg { common, .. }
             | BinOp::Name { common, .. }
             | BinOp::Note { common, .. }
             | BinOp::Names { common, .. }
@@ -260,6 +263,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
             nexo_bin::var_set(&img, data_dir, target, key, if *clear { None } else { name.as_deref() })?
         }
         BinOp::Calls { target, .. } => nexo_bin::calls_window(&img, target, from, lines)?,
+        BinOp::Cfg { target, .. } => nexo_bin::cfg_op(&img, target)?,
         BinOp::Name { target, name, clear, .. } => match (clear, name) {
             (false, Some(n)) => nexo_bin::name_set(&img, data_dir, target, n)?,
             _ => nexo_bin::name_clear(&img, data_dir, target)?,

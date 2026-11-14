@@ -120,7 +120,7 @@ pub fn merge_conds(f: &mut Lifted) {
 // Dominators
 
 /// Immediate dominators by the iterative algorithm; `None` for nodes that cannot be reached.
-fn idoms(n: usize, succs: &[Vec<usize>], entry: usize) -> (Vec<Option<usize>>, Vec<usize>) {
+pub(crate) fn idoms(n: usize, succs: &[Vec<usize>], entry: usize) -> (Vec<Option<usize>>, Vec<usize>) {
     // reverse post order
     let mut order: Vec<usize> = Vec::new();
     let mut seen = vec![false; n];
@@ -188,6 +188,49 @@ fn idoms(n: usize, succs: &[Vec<usize>], entry: usize) -> (Vec<Option<usize>>, V
     (idom, rpo)
 }
 
+/// Whether `a` dominates `b`: every path from the entry to `b` goes through `a` (a block dominates itself).
+pub(crate) fn dominates(idom: &[Option<usize>], a: usize, mut b: usize) -> bool {
+    loop {
+        if a == b {
+            return true;
+        }
+        match idom[b] {
+            Some(p) if p != b => b = p,
+            _ => return false,
+        }
+    }
+}
+
+/// The natural loops: for each header (a block that dominates the source of an edge to it), the blocks that
+/// reach the source of a back edge without passing the header, header included. Edges from blocks that cannot
+/// be reached from the entry (`rpo` is `usize::MAX`) are ignored.
+pub(crate) fn natural_loops(
+    succs: &[Vec<usize>],
+    preds: &[Vec<usize>],
+    idom: &[Option<usize>],
+    rpo: &[usize],
+) -> HashMap<usize, BTreeSet<usize>> {
+    let mut loops: HashMap<usize, BTreeSet<usize>> = HashMap::new();
+    for (a, ss) in succs.iter().enumerate() {
+        if rpo[a] == usize::MAX {
+            continue;
+        }
+        for &h in ss {
+            if dominates(idom, h, a) {
+                let set = loops.entry(h).or_default();
+                set.insert(h);
+                let mut stack = vec![a];
+                while let Some(x) = stack.pop() {
+                    if set.insert(x) {
+                        stack.extend(preds[x].iter().copied().filter(|&p| rpo[p] != usize::MAX));
+                    }
+                }
+            }
+        }
+    }
+    loops
+}
+
 struct Ctx<'a> {
     f: &'a Lifted,
     idom: Vec<Option<usize>>,
@@ -209,16 +252,8 @@ enum Scope {
 }
 
 impl Ctx<'_> {
-    fn dominates(&self, a: usize, mut b: usize) -> bool {
-        loop {
-            if a == b {
-                return true;
-            }
-            match self.idom[b] {
-                Some(p) if p != b => b = p,
-                _ => return false,
-            }
-        }
+    fn dominates(&self, a: usize, b: usize) -> bool {
+        dominates(&self.idom, a, b)
     }
 
     fn innermost_loop(&self) -> Option<(usize, Option<usize>)> {
@@ -406,7 +441,8 @@ pub fn structure(f: &mut Lifted) -> Vec<Node> {
     let (ipdom, _) = idoms(n + 1, &rev, n);
     let ipdom: Vec<Option<usize>> = ipdom.into_iter().take(n).map(|x| x.filter(|_| true)).collect();
     // loops
-    let mut loops: HashMap<usize, BTreeSet<usize>> = HashMap::new();
+    let preds = preds_of(f);
+    let loops = natural_loops(&succs, &preds, &idom, &rpo);
     let ctx0 = Ctx {
         f,
         idom: idom.clone(),
@@ -419,24 +455,6 @@ pub fn structure(f: &mut Lifted) -> Vec<Node> {
         labels: HashSet::new(),
         scopes: Vec::new(),
     };
-    let preds = preds_of(f);
-    for a in 0..n {
-        if rpo[a] == usize::MAX {
-            continue;
-        }
-        for &h in &succs[a] {
-            if ctx0.dominates(h, a) {
-                let set = loops.entry(h).or_default();
-                set.insert(h);
-                let mut stack = vec![a];
-                while let Some(x) = stack.pop() {
-                    if set.insert(x) {
-                        stack.extend(preds[x].iter().copied());
-                    }
-                }
-            }
-        }
-    }
     let mut ctx = ctx0;
     ctx.loops = loops;
     let mut body = ctx.gen(0, None);

@@ -11,6 +11,7 @@ mod a64;
 mod asm;
 mod bindiff;
 mod caps;
+mod cfg;
 mod crypto;
 mod damage;
 mod damage_macho;
@@ -50,6 +51,8 @@ pub mod fixtures;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_cfg;
+#[cfg(test)]
 mod tests_diff;
 #[cfg(test)]
 mod tests_fmt;
@@ -78,6 +81,7 @@ pub mod wasm_fixture;
 
 pub use asm::{assemble, assembly};
 pub use bindiff::diff_window;
+pub use cfg::cfg_op;
 pub use crypto::{crypto_window, scan as crypto_scan, CryptoHit};
 pub use decomp::api::{decomp_window, proto_set, struct_set, var_set};
 pub use emu::{emulate, limits as emu_limits, EmuSpec};

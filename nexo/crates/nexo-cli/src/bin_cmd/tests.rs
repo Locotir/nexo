@@ -378,8 +378,8 @@ fn help_has_one_line_for_each_op() {
     let bin = root.find_subcommand_mut("bin").expect("bin is a command");
     let ops: Vec<String> = bin.get_subcommands().map(|c| c.get_name().to_string()).collect();
     for want in [
-        "info", "fn", "xref", "funcs", "calls", "decomp", "proto", "struct", "var", "name", "note", "names", "bytes",
-        "strings", "find",
+        "info", "fn", "xref", "funcs", "calls", "cfg", "decomp", "proto", "struct", "var", "name", "note", "names",
+        "bytes", "strings", "find",
     ] {
         assert!(ops.iter().any(|o| o == want), "{want} is missing from {ops:?}");
     }
@@ -583,4 +583,26 @@ fn find_takes_a_range_and_fn_decodes_data_as_code_when_asked() {
     let t = ask(&["fn", &path, ".data", "--to", ".data+16", "--code"]).unwrap();
     assert!(t.lines().next().unwrap().contains("decoded as code on request"), "{t}");
     assert!(t.lines().count() > 1, "{t}");
+}
+
+#[test]
+fn cfg_gives_the_blocks_of_one_function_and_pages_like_every_op() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixtures::elf64(false);
+    let path = file(&dir, "elf", &f);
+    // A is one block: it calls B and C and returns
+    let t = ask(&["cfg", &path, &format!("{:#x}", f.a)]).unwrap();
+    assert!(t.starts_with("cfg ") && t.contains("blocks 1, edges 0, loops 0"), "{t}");
+    assert!(t.contains(&format!("block {:#x}..", f.a)) && t.contains("insns 6  idom -  entry"), "{t}");
+    assert!(t.contains("calls ") && t.contains("; ends: ret"), "{t}");
+    // the page options are the ones of every op
+    let t = ask(&["cfg", &path, &format!("{:#x}", f.a), "--grep", "^block"]).unwrap();
+    assert_eq!(t.lines().count(), 2, "{t}");
+    assert!(t.starts_with("... --grep ^block: 1 of 3 rows match"), "{t}");
+    let t = ask(&["cfg", &path, &format!("{:#x}", f.a), "--from", "1", "--lines", "10"]).unwrap();
+    assert!(t.starts_with("block ") && t.lines().count() == 2, "{t}");
+    let j: serde_json::Value =
+        serde_json::from_str(&ask(&["cfg", &path, &format!("{:#x}", f.a), "--json"]).unwrap()).unwrap();
+    assert_eq!(j["op"], "cfg");
+    assert_eq!(j["items"][0]["row"], "block");
 }

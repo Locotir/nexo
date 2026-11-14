@@ -233,6 +233,14 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
+    /// Control-flow graph of one function: basic blocks, edges (fallthrough, jump, cond-true, cond-false, switch cases), loops and the immediate dominator of each block. x86-64.
+    Cfg {
+        file: PathBuf,
+        /// A function name, or an address inside the function (0x401a30, main+0x10).
+        target: String,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Give an address a name that stays with the file (`--clear` removes it).
     Name {
         file: PathBuf,
