@@ -22,6 +22,20 @@
         }
       },
       {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
+        }
+      },
+      {
         "name": "wait",
         "description": "fake",
         "parameters": {
@@ -85,6 +99,20 @@
         }
       },
       {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
+        }
+      },
+      {
         "name": "wait",
         "description": "fake",
         "parameters": {
@@ -118,6 +146,20 @@
         "description": "fake",
         "parameters": {
           "type": "object"
+        }
+      },
+      {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
         }
       },
       {
@@ -181,6 +223,20 @@
         "description": "fake",
         "parameters": {
           "type": "object"
+        }
+      },
+      {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
         }
       },
       {

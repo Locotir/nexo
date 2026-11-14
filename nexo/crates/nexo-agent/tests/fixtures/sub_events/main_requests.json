@@ -67,6 +67,36 @@
         }
       },
       {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
+        }
+      },
+      {
+        "name": "shared_memory_write",
+        "description": "Append a concise coordination note to shared memory, visible to other agents and sessions. Do not store secrets.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "The note to share."
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      },
+      {
         "name": "task",
         "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
@@ -89,6 +119,10 @@
             "background": {
               "type": "boolean",
               "description": "Run as a job"
+            },
+            "start_clean": {
+              "type": "boolean",
+              "description": "No inherited context"
             },
             "model": {
               "type": "string",
@@ -219,6 +253,36 @@
         }
       },
       {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
+        }
+      },
+      {
+        "name": "shared_memory_write",
+        "description": "Append a concise coordination note to shared memory, visible to other agents and sessions. Do not store secrets.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "The note to share."
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      },
+      {
         "name": "task",
         "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
@@ -241,6 +305,10 @@
             "background": {
               "type": "boolean",
               "description": "Run as a job"
+            },
+            "start_clean": {
+              "type": "boolean",
+              "description": "No inherited context"
             },
             "model": {
               "type": "string",
@@ -402,6 +470,36 @@
         }
       },
       {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
+        }
+      },
+      {
+        "name": "shared_memory_write",
+        "description": "Append a concise coordination note to shared memory, visible to other agents and sessions. Do not store secrets.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "The note to share."
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      },
+      {
         "name": "task",
         "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
@@ -424,6 +522,10 @@
             "background": {
               "type": "boolean",
               "description": "Run as a job"
+            },
+            "start_clean": {
+              "type": "boolean",
+              "description": "No inherited context"
             },
             "model": {
               "type": "string",
@@ -603,6 +705,36 @@
         }
       },
       {
+        "name": "shared_memory_read",
+        "description": "Read shared memory entries after an epoch, oldest first. Continue with the last returned epoch to page through entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Last epoch seen (default 0)."
+            }
+          }
+        }
+      },
+      {
+        "name": "shared_memory_write",
+        "description": "Append a concise coordination note to shared memory, visible to other agents and sessions. Do not store secrets.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "The note to share."
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      },
+      {
         "name": "task",
         "description": "Hand self-contained work to a sub-agent that does not see this conversation and returns a short report. `explore` (default) is read-only; `general` can edit.",
         "parameters": {
@@ -625,6 +757,10 @@
             "background": {
               "type": "boolean",
               "description": "Run as a job"
+            },
+            "start_clean": {
+              "type": "boolean",
+              "description": "No inherited context"
             },
             "model": {
               "type": "string",
