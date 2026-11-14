@@ -438,7 +438,8 @@ fn handle(sess: &mut Session, stream: TcpStream, token: &str, pending: &mut Opti
                     .last_stop
                     .as_ref()
                     .map(|s| json!({"n": s.n, "event": s.event, "place": s.place, "addr": s.addr}));
-                json!({"ok": true, "out": out_to_json(&o), "state": state_word(sess), "stop": stop, "fresh": sess.nstop != before})
+                let bridge = if sess.nstop != before && sess.state == State::Stopped { sess.bridge() } else { None };
+                json!({"ok": true, "out": out_to_json(&o), "state": state_word(sess), "stop": stop, "fresh": sess.nstop != before, "bridge": bridge})
             }
             Err(e) => json!({"ok": false, "error": e.to_string(), "code": e.exit_code(), "state": state_word(sess)}),
         }
@@ -465,6 +466,8 @@ pub struct Reply {
     /// The last stop (its number, event, place and address), and whether this very call produced it.
     pub stop: Option<crate::engine::StopInfo>,
     pub fresh: bool,
+    /// The program's path and the file address of the pc, for a fresh stop in the program's own code.
+    pub bridge: Option<(String, u64)>,
 }
 
 struct Entry {
@@ -512,7 +515,11 @@ pub fn request(dir: &Path, id: &str, words: &[String]) -> Result<Reply> {
             place: v["stop"]["place"].as_str().unwrap_or("").to_string(),
             addr: v["stop"]["addr"].as_u64().unwrap_or(0),
         });
-        Ok(Reply { out: out_from_json(&v["out"]), state, stop, fresh: v["fresh"].as_bool() == Some(true) })
+        let bridge = match (v["bridge"][0].as_str(), v["bridge"][1].as_u64()) {
+            (Some(exe), Some(addr)) => Some((exe.to_string(), addr)),
+            _ => None,
+        };
+        Ok(Reply { out: out_from_json(&v["out"]), state, stop, fresh: v["fresh"].as_bool() == Some(true), bridge })
     } else {
         let msg = v["error"].as_str().unwrap_or("failed").to_string();
         Err(if v["code"].as_i64() == Some(2) { Error::Usage(msg) } else { Error::Fail(msg) })

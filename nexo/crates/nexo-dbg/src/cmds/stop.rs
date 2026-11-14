@@ -10,6 +10,24 @@ const CHANGED_SHOWN: usize = 6;
 const FRESH_LOG: usize = 40;
 
 impl Session {
+    /// For a stop in the program's own code: its path and the file address of the pc, so the answer can name the
+    /// `bin` call that decompiles the function. `None` at the entry, outside the program, or while stepping in a
+    /// function that already got the line.
+    pub fn bridge(&mut self) -> Option<(String, u64)> {
+        let s =
+            self.last_stop.as_ref().filter(|s| !matches!(s.event.as_str(), "entry" | "exec" | "exit" | "killed"))?;
+        let file_addr = self.mods.in_main(s.addr)?;
+        let key = match s.place.split('+').next().unwrap_or("") {
+            "?" | "" => format!("?{:x}", file_addr >> 12),
+            f => f.to_string(),
+        };
+        if self.bridged == key {
+            return None;
+        }
+        self.bridged = key;
+        Some((self.mods.exe_path().display().to_string(), file_addr))
+    }
+
     /// Tell the stop: why, where, the instruction, what changed.
     pub fn stopped(&mut self, tid: Tid, why: Why) -> Output {
         self.nstop += 1;

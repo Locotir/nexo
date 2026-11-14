@@ -464,6 +464,19 @@ fn print(
     text
 }
 
+/// The answer of a stop in the program's own code, ended with the `bin` call that decompiles the function it is in
+/// (the tool's form under the `debug` tool, the shell's form under `nexo dbg`). Not in JSON, and not when the
+/// answer already fills the lines the caller asked for.
+fn with_bridge(mut text: String, bridge: Option<(String, u64)>, o: &Call, prefix: &str) -> String {
+    let Some((exe, addr)) = bridge else { return text };
+    if o.json || text.lines().count() >= o.lines.max(MIN_LINES) {
+        return text;
+    }
+    let call = if prefix == "debug" { "bin" } else { "nexo bin" };
+    text.push_str(&format!("\nto read this function: {call} decomp {} {addr:#x}", shell_word(&exe)));
+    text
+}
+
 /// The first line of every answer, always in this shape so a model (and the curator) can find it:
 /// `debug <session> #<stop number> stop <event> <place> <0xaddress>` when the call ended in a stop, else
 /// `debug <session> #<stop number> <command>` with ` running` or ` exited` after it when the program is not stopped.
@@ -581,7 +594,9 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
                 row.key = i as u64;
             }
             let head = header_of(&id, r.stop.as_ref(), &r.state, true, "run");
-            Ok(print(r.out, &id, &["status".to_string()], o, Some(head), &r.state, prefix))
+            let bridge = r.bridge.clone();
+            let text = print(r.out, &id, &["status".to_string()], o, Some(head), &r.state, prefix);
+            Ok(with_bridge(text, bridge, o, prefix))
         }
         "serve" => Err(Error::Usage(
             "`serve --gdb <port> <program> [args]` (or `--attach <pid>`) is a server that stays up: start it from the shell, in the background".into(),
@@ -618,7 +633,9 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
             let id = pick_session(dir, &o.session)?;
             let r = crate::request(dir, &id, &o.words)?;
             let head = header(&id, &r, cmd);
-            Ok(print(r.out, &id, &o.words, o, Some(head), &r.state, prefix))
+            let bridge = r.bridge.clone();
+            let text = print(r.out, &id, &o.words, o, Some(head), &r.state, prefix);
+            Ok(with_bridge(text, bridge, o, prefix))
         }
     }
 }
@@ -659,6 +676,7 @@ mod tests {
             state: "stopped".into(),
             stop: Some(stop),
             fresh: true,
+            bridge: None,
         };
         let h = header("s1", &r, "cont");
         assert_eq!(h, "debug s1 #7 stop breakpoint main+0x1a 0x401136");
@@ -673,6 +691,22 @@ mod tests {
         let r3 = Reply { state: "running".into(), ..r2 };
         assert_eq!(parse_header(&header("s1", &r3, "wait")).unwrap().state, "running");
         assert!(parse_header("session s1").is_none());
+    }
+
+    #[test]
+    fn a_stop_in_the_program_ends_with_the_bin_call_in_the_form_of_the_surface() {
+        let b = Some(("/tmp/my prog".to_string(), 0x1139u64));
+        let o = parse(&words("cont")).unwrap();
+        let tool = with_bridge("debug s #1 stop".into(), b.clone(), &o, "debug");
+        assert_eq!(tool, "debug s #1 stop\nto read this function: bin decomp '/tmp/my prog' 0x1139");
+        assert!(with_bridge("x".into(), b.clone(), &o, "nexo dbg").ends_with("nexo bin decomp '/tmp/my prog' 0x1139"));
+        // nothing for a stop outside the program, for JSON, or when the lines asked for are filled
+        assert_eq!(with_bridge("x".into(), None, &o, "debug"), "x");
+        let j = parse(&words("cont --json")).unwrap();
+        assert_eq!(with_bridge("x".into(), b.clone(), &j, "debug"), "x");
+        let few = parse(&words("cont --lines 10")).unwrap();
+        assert_eq!(with_bridge(["l"; 10].join("\n"), b.clone(), &few, "debug").lines().count(), 10);
+        assert_eq!(with_bridge(["l"; 9].join("\n"), b, &few, "debug").lines().count(), 10);
     }
 
     #[test]

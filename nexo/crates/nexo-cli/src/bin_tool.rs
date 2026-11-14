@@ -53,7 +53,7 @@ impl Tool for Bin {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Read a compiled program (ELF, PE, Mach-O, wasm) without running it, instead of objdump or strings: `overview ./p`, then `funcs`, `fn ./p main`, `decomp`, `xref`. `--help`",
+            description: "Read a compiled program (ELF, PE, Mach-O, wasm) without running it, instead of objdump or strings: `overview ./p`, `funcs`, `fn ./p main`, `decomp`, `xref`. `debug` runs it. `--help`",
             params: &[],
         })
     }
@@ -130,7 +130,16 @@ impl Tool for Bin {
                 }
             }
         }
-        match tokio::task::spawn_blocking(move || crate::bin_cmd::execute(&b)).await {
+        // an answer about one place in a program `debug` can run ends with the call that stops there
+        let asked = tokio::task::spawn_blocking(move || {
+            let text = crate::bin_cmd::execute(&b)?;
+            let bridge = b.op.as_ref().and_then(|op| crate::bin_cmd::bridge::line(op, &text));
+            Ok::<_, nexo_bin::Error>(match bridge {
+                Some(l) => format!("{text}\n{l}"),
+                None => text,
+            })
+        });
+        match asked.await {
             Ok(Ok(text)) => ToolOutput::ok(text),
             Ok(Err(e)) => ToolOutput::error(format!("bin: {e}")),
             Err(e) => ToolOutput::error(format!("bin stopped working: {e}")),
@@ -177,7 +186,8 @@ mod tests {
         )
         .unwrap();
         eprintln!("bin tool as offered: {} chars: {sent}", sent.len());
-        assert!(sent.len() <= 303, "{} chars: {sent}", sent.len());
+        // 298 chars before the text named `debug` (+12)
+        assert!(sent.len() <= 310, "{} chars: {sent}", sent.len());
         assert!(Bin.rare() && Bin.kind() == ToolKind::Read);
         assert!(Bin.spec().description.len() > spec.description.len(), "the full text lists the ops");
         // the short text names the ops a model reaches for first
@@ -300,5 +310,61 @@ mod tests {
         let o = call(dir.path(), "frobnicate x").await;
         assert!(o.is_error, "{}", o.content);
         assert_eq!(Bin.summary(&json!({"command": "fn p main"})), "bin: fn p main");
+    }
+
+    /// Both directions on a real program: the `bin` answer names the `debug` call, the call stops where the
+    /// answer looked, and the stop names the `bin` call that reads the function it is in.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn a_bin_answer_and_a_debug_stop_name_each_others_calls() {
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let Some(exe) = crate::bin_cmd::bridge::tests::build(dir.path(), "prog", &["-g0"]) else {
+            return eprintln!("skipped: no cc");
+        };
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let answer = Bin.run(json!({"command": "fn prog helper"}), &ctx).await;
+        assert!(!answer.is_error, "{}", answer.content);
+        let last = answer.content.lines().last().unwrap();
+        assert_eq!(answer.content.matches("to see it live").count(), 1, "{}", answer.content);
+        let call = last
+            .strip_prefix("to see it live: debug `")
+            .and_then(|l| l.strip_suffix('`'))
+            .unwrap_or_else(|| panic!("{last}"));
+        // every unit of the call parses in the debugger, and the break is at the address the answer is about
+        let helper = match nexo_bin::place_of(&nexo_bin::Image::open(&exe).unwrap(), "helper").unwrap() {
+            nexo_bin::Place::Code(a) => a,
+            other => panic!("{other:?}"),
+        };
+        let units = nexo_dbg::script_units(call);
+        assert_eq!(units.len(), 3, "{units:?}");
+        for u in &units {
+            nexo_dbg::parse(&nexo_dbg::split_words(u)).unwrap_or_else(|e| panic!("{u}: {e}"));
+        }
+        assert_eq!(
+            nexo_dbg::parse(&nexo_dbg::split_words(&units[1])).unwrap().words,
+            ["break", &format!("*{helper:#x}")]
+        );
+        assert!(answer.content.contains("helper"), "{}", answer.content);
+        // the call stops there, and the stop names the `bin` call for the function
+        let state = tempfile::tempdir().unwrap();
+        let dbg = nexo_tools::debug::Debug::in_dir(state.path());
+        let stop = dbg.run(json!({"command": call}), &ctx).await;
+        assert!(!stop.is_error, "{}", stop.content);
+        assert!(stop.content.contains("helper"), "{}", stop.content);
+        let bridge = stop.content.lines().last().unwrap().to_string();
+        let words = bridge.strip_prefix("to read this function: bin ").unwrap_or_else(|| panic!("{}", stop.content));
+        let argv: Vec<String> =
+            ["nexo", "bin"].iter().map(|s| s.to_string()).chain(crate::re_mcp::split_words(words).unwrap()).collect();
+        assert!(
+            matches!(crate::cli::Args::try_parse_from(&argv).unwrap().cmd, Some(crate::cli::Cmd::Bin(_))),
+            "{words}"
+        );
+        let read = Bin.run(json!({"command": words}), &ctx).await;
+        assert!(!read.is_error && read.content.contains("helper"), "{}", read.content);
+        // stepping inside the same function does not repeat the line
+        let again = dbg.run(json!({"command": "step"}), &ctx).await;
+        assert!(!again.content.contains("to read this function"), "{}", again.content);
+        dbg.run(json!({"command": "end"}), &ctx).await;
     }
 }

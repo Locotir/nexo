@@ -88,6 +88,12 @@ impl Mods {
         self.main_base().wrapping_sub(self.main.image_base)
     }
 
+    /// The file address (the ones `nexo bin` prints) of a memory address inside the program's own image.
+    pub fn in_main(&self, addr: u64) -> Option<u64> {
+        let i = self.locate(addr)?;
+        (i == self.main_idx).then(|| addr.wrapping_sub(self.main_bias()))
+    }
+
     pub fn locate(&self, addr: u64) -> Option<usize> {
         self.list.iter().position(|m| addr >= m.base && addr < m.end)
     }

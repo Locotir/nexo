@@ -133,6 +133,8 @@ pub struct Session {
     pub nstop: u64,
     /// Where the last stop was, for the header of the answer.
     pub last_stop: Option<StopInfo>,
+    /// The function of the last stop that got a `bin decomp` line, so stepping inside it does not repeat the line.
+    pub bridged: String,
     pub catch: BTreeSet<u32>,
     pub exit: Option<String>,
     /// `strace`, `ltrace`, hooks and coverage.
@@ -333,6 +335,7 @@ impl Session {
             history: VecDeque::new(),
             nstop: 0,
             last_stop: None,
+            bridged: String::new(),
             catch: default_catch(os),
             exit: None,
             tr: Default::default(),

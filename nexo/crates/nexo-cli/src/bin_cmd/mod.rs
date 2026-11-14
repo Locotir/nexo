@@ -9,6 +9,7 @@ use sigs::make_sigs;
 use wasm::wasm_in;
 
 mod args;
+pub(crate) mod bridge;
 mod ops;
 mod sigs;
 #[cfg(test)]
