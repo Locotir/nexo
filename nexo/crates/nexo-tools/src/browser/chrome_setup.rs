@@ -324,7 +324,9 @@ fn host_state(file: Option<PathBuf>, host: &Path) -> ChromeHostState {
     else {
         return ChromeHostState::Missing;
     };
-    let same = path == host.to_string_lossy() || Path::new(&path).canonicalize().ok() == host.canonicalize().ok();
+    // a link or a relative spelling of the same file counts; two paths that do not exist are not "the same"
+    let same = path == host.to_string_lossy()
+        || matches!((Path::new(&path).canonicalize(), host.canonicalize()), (Ok(a), Ok(b)) if a == b);
     if same {
         ChromeHostState::Ready
     } else {
