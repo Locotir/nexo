@@ -265,23 +265,58 @@ pub fn activity_line(app: &App, verb: &str, w: usize) -> Line<'static> {
     let used: usize = spans.iter().map(|s| width(&s.content)).sum();
     let tail = w.saturating_sub(used);
     if app.opts.animations && !theme.mono {
-        spans.extend(comet(theme, tail, frame));
+        // the crest runs on the clock of the turn, not on the beat count: its speed does not follow the frame rate
+        let wave_secs = app.turn_started.map_or(0.0, |t| app.now().saturating_duration_since(t).as_secs_f32());
+        spans.extend(wave(theme, tail, wave_secs));
     } else {
         spans.push(Span::styled("─".repeat(tail), border));
     }
     Line::from(spans)
 }
 
-/// A rule of `n` cells with a glow running along it, frame by frame: the line under a
-/// working agent. Cells of the same colour share a span.
-pub fn comet(theme: &Theme, n: usize, frame: usize) -> Vec<Span<'static>> {
-    const TAIL: f32 = 8.0;
-    let head = (frame as f32 * 1.0) % (n as f32 + 2.0 * TAIL) - TAIL;
+/// How long the crest takes to cross the rule, whatever its width.
+const WAVE_PASS_S: f32 = 2.0;
+/// The pause after a pass, before the next crest comes in.
+const WAVE_REST_S: f32 = 0.6;
+/// Cells from the front of the crest to its tail.
+const WAVE_WIDTH: f32 = 18.0;
+/// The peak light swells and settles over this many seconds (as the stars of the home screen breathe).
+const WAVE_BREATH_S: f32 = 3.2;
+/// The peak light stays between this share of the full glow and the whole of it.
+const WAVE_BREATH_LOW: f32 = 0.7;
+
+/// How far along the rule the middle of the crest is `secs` seconds into the turn, in cells counted from
+/// the left of a rule of `n` cells: it comes in from beyond the left edge, leaves beyond the right edge,
+/// and rests off the rule until the next pass. The speed is in cells per second of the clock, so it is the
+/// same at any frame rate; the pass takes `WAVE_PASS_S` at any width.
+fn wave_centre(n: usize, secs: f32) -> Option<f32> {
+    let t = secs.rem_euclid(WAVE_PASS_S + WAVE_REST_S);
+    (t < WAVE_PASS_S).then(|| {
+        let half = WAVE_WIDTH / 2.0;
+        -half + (n as f32 + WAVE_WIDTH) * t / WAVE_PASS_S
+    })
+}
+
+/// How lit the cell `d` cells from the middle of the crest is, 0..1: a raised cosine, nothing at the front
+/// and at the tail, the whole of it in the middle.
+fn wave_bell(d: f32) -> f32 {
+    let half = WAVE_WIDTH / 2.0;
+    if d.abs() >= half {
+        return 0.0;
+    }
+    0.5 * (1.0 + crate::fx_stars::cos(crate::fx_stars::PI * d / half))
+}
+
+/// A rule of `n` cells with a soft crest of light crossing it, `secs` seconds into the turn: the line under
+/// a working agent. Cells of the same colour share a span.
+pub fn wave(theme: &Theme, n: usize, secs: f32) -> Vec<Span<'static>> {
+    let centre = wave_centre(n, secs);
+    // the peak swells and settles slowly, never below `WAVE_BREATH_LOW`
+    let breath = 0.5 + 0.5 * crate::fx_stars::sin(secs * crate::fx_stars::TAU / WAVE_BREATH_S);
+    let peak = WAVE_BREATH_LOW + (1.0 - WAVE_BREATH_LOW) * breath;
     let mut out: Vec<Span<'static>> = Vec::new();
     for i in 0..n {
-        let d = head - i as f32;
-        // bright at the head, fading behind it, nothing ahead of it
-        let glow = if d < 0.0 { (1.0 + d).max(0.0) } else { (1.0 - d / TAIL).max(0.0) };
+        let glow = centre.map_or(0.0, |c| wave_bell(i as f32 + 0.5 - c) * peak);
         let style = theme.style(mix(theme.border, theme.accent, glow));
         match out.last_mut() {
             Some(last) if last.style == style => last.content.to_mut().push('─'),

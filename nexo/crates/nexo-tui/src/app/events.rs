@@ -435,7 +435,8 @@ impl App {
     pub fn load(&self) -> crate::frame::Load {
         use crate::frame::Load;
         // the banner's intro moves from the first frame, before any tick has set `moving`
-        if self.moving || self.intro_running() {
+        // the crest on the work line crosses the rule in 2 s: a frame every 16 ms while the agent works
+        if self.moving || self.intro_running() || (self.busy && self.fx_on()) {
             Load::Motion
         } else if self.busy
             || self.status.is_some()

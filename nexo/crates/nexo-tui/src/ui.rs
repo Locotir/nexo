@@ -419,16 +419,17 @@ mod tests {
     use crate::theme::Theme;
 
     #[test]
-    fn the_comet_runs_along_the_rule_and_keeps_its_width() {
+    fn the_wave_crosses_the_rule_and_keeps_its_width() {
         let t = Theme::nexo();
-        for frame in [0, 7, 30, 200] {
-            let spans = comet(&t, 40, frame);
+        for secs in [0.0, 0.7, 1.9, 2.3, 9.4] {
+            let spans = wave(&t, 40, secs);
             let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(text, "─".repeat(40));
         }
-        let lit = |frame| comet(&t, 40, frame).iter().any(|s| s.style.fg == Some(t.accent));
-        assert!((0..60).any(lit), "the head is drawn in the accent somewhere along the way");
-        assert!(comet(&t, 0, 3).is_empty());
+        let lit = |secs: f32| wave(&t, 40, secs).iter().any(|s| s.style.fg != Some(t.border));
+        assert!((0..26).any(|i| lit(i as f32 * 0.1)), "the crest is lit somewhere along the way");
+        assert!(!lit(2.3), "it rests between passes");
+        assert!(wave(&t, 0, 3.0).is_empty());
     }
 
     #[test]
