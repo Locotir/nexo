@@ -16,10 +16,16 @@ const SRC: &str = "struct pt { int x; int y; char tag[8]; unsigned short v[3]; }
     int main(void) { return origin.x + (int)nums[0] + greeting[0]; }\n";
 
 fn data_dir() -> &'static Path {
-    static D: OnceLock<tempfile::TempDir> = OnceLock::new();
-    let d = D.get_or_init(|| tempfile::tempdir().unwrap());
-    nexo_dbg::set_data_dir(d.path().to_path_buf());
-    d.path()
+    // A fixed folder under the target dir, emptied once per run: a static `TempDir` is never dropped.
+    static D: OnceLock<PathBuf> = OnceLock::new();
+    let d = D.get_or_init(|| {
+        let p = Path::new(env!("CARGO_TARGET_TMPDIR")).join("type_view_data");
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    });
+    nexo_dbg::set_data_dir(d.clone());
+    d
 }
 
 fn run(s: &mut Session, cmd: &str) -> nexo_bin::Output {

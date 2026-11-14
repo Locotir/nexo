@@ -98,7 +98,7 @@ async fn the_real_extension_asks_first_and_then_drives_its_own_tabs() {
         eprintln!("skipped: build the host program first (cargo build -p nexo-cli)");
         return;
     };
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::ChromeDir::new();
     let profile = tmp.path().join("chrome-profile");
     let data = tmp.path().join("data");
     std::fs::create_dir_all(&profile).unwrap();

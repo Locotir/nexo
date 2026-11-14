@@ -145,3 +145,33 @@ where
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// A scratch folder for a test that runs Chrome in it. Chrome's helper processes keep writing for a moment after
+/// the browser is killed, so a plain `TempDir` can be emptied just before they recreate files and leave the folder
+/// behind (in the RAM-backed temp dir). This one removes it again until it stays gone.
+pub struct ChromeDir(std::path::PathBuf);
+
+impl ChromeDir {
+    pub fn new() -> ChromeDir {
+        ChromeDir(tempfile::tempdir().unwrap().keep())
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for ChromeDir {
+    fn drop(&mut self) {
+        // Gone and still gone after a pause (a helper may recreate it between two tries), or give up after about 8 s.
+        let mut quiet = 0;
+        for _ in 0..40 {
+            let _ = std::fs::remove_dir_all(&self.0);
+            quiet = if self.0.exists() { 0 } else { quiet + 1 };
+            if quiet == 3 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+}

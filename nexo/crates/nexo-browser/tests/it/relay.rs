@@ -210,7 +210,7 @@ struct Rig {
     port: u16,
     tasks: Vec<JoinHandle<()>>,
     _chrome: Chrome,
-    _tmp: tempfile::TempDir,
+    _tmp: support::ChromeDir,
 }
 
 impl Drop for Rig {
@@ -222,7 +222,7 @@ impl Drop for Rig {
 /// Launches the test's own headless Chrome and wires agent -> host -> fake extension -> Chrome. `None` without Chrome.
 async fn rig(allow: bool) -> Option<Rig> {
     let exe = nexo_browser::find_browser()?;
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::ChromeDir::new();
     let profile = tmp.path().join("chrome-profile");
     let cfg = BrowserConfig::builder()
         .chrome_executable(exe)

@@ -11,7 +11,10 @@ fn run(s: &mut Session, cmd: &str) -> String {
 #[test]
 fn the_targets_of_one_call_site_are_saved_and_decomp_shows_them_by_name() {
     let dir = tempfile::tempdir().unwrap();
-    let data = dir.path().join("data");
+    // The data dir is process-global, so other tests keep writing to it after this one ends: keep it out of `dir`,
+    // which is removed on drop, and under the target dir instead, emptied here.
+    let data = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("call_targets_data");
+    let _ = std::fs::remove_dir_all(&data);
     let Some(cc) = ["cc", "gcc", "clang"]
         .into_iter()
         .find(|c| std::process::Command::new(c).arg("--version").output().is_ok_and(|o| o.status.success()))
