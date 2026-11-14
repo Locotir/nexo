@@ -40,6 +40,8 @@ pub struct StatusCommand {
     /// When the one more try may start.
     retry_at: Option<Instant>,
     logged: bool,
+    /// How long a run may take; `TIMEOUT` unless a test on a starved machine lends it more.
+    pub timeout: Duration,
     /// The last good line, as the script printed it (escapes included).
     pub line: Option<String>,
     /// Why the last run gave no line (kept for tests and the log, never drawn).
@@ -60,6 +62,7 @@ impl StatusCommand {
             retried: false,
             retry_at: None,
             logged: false,
+            timeout: TIMEOUT,
             line: None,
             error: None,
         })
@@ -108,9 +111,9 @@ impl StatusCommand {
             self.wanted = false;
             self.started = Some(Instant::now());
             let (tx, rx) = mpsc::channel();
-            let (cmd, cwd, json) = (self.command.clone(), self.cwd.clone(), input());
+            let (cmd, cwd, json, timeout) = (self.command.clone(), self.cwd.clone(), input(), self.timeout);
             std::thread::spawn(move || {
-                let _ = tx.send(run(&cmd, &cwd, &json, TIMEOUT));
+                let _ = tx.send(run(&cmd, &cwd, &json, timeout));
             });
             self.running = Some(rx);
         }

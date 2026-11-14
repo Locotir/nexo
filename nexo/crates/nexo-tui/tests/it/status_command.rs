@@ -37,6 +37,13 @@ fn app(command: &str) -> App {
         ..Default::default()
     };
     let mut a = App::new(opts, tx);
+    // the 500 ms cut is for a person's machine; a runner busy with other tests may need seconds to start `sh`
+    // (the slow-script test sets it back to see the cut itself)
+    if let Some(s) = a.status_cmd.as_mut() {
+        s.timeout = Duration::from_secs(20);
+    }
+    // not `Theme::pick`'s: `NO_COLOR` or a terminal without 24-bit colour would change the colours under test
+    a.theme = nexo_tui::theme::Theme::nexo();
     a.root = false;
     a.handle_agent(AgentEvent::Ready {
         session_id: "20261102-140000-ab12".into(),
@@ -138,6 +145,7 @@ fn the_script_runs_again_when_a_turn_ends_or_the_model_changes() {
 #[test]
 fn a_slow_script_never_freezes_the_interface() {
     let mut a = app(&script("slow.sh"));
+    a.status_cmd.as_mut().unwrap().timeout = nexo_tui::status_cmd::TIMEOUT;
     let started = Instant::now();
     let longest = tick_until(&mut a, Duration::from_millis(1500), |_| false);
     assert!(longest < Duration::from_millis(100), "a tick took {longest:?}");
