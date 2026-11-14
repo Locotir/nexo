@@ -62,6 +62,7 @@ mod lesson;
 mod notices;
 mod orient;
 mod prefix;
+mod queue;
 mod round;
 mod settings;
 mod start;
@@ -402,6 +403,13 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             }
                         } else {
                             person_spoke(&mut st);
+                            // requests kept after an Esc were written before this one: they go with it, first
+                            let kept = st.inbox.len();
+                            st.inbox.push_back((text, attachments));
+                            let (text, attachments) = queue::take_all(&mut st.inbox).unwrap_or_default();
+                            if kept > 0 {
+                                emit(&events, AgentEvent::Queued { pending: 0 });
+                            }
                             drop(st);
                             turn = start_prompt(&state, text, attachments, false, cancel.child_token()).await;
                         }
@@ -989,11 +997,13 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 // the goal takes the turn's end first (met, waiting, paused), then a queued message runs
                 goal_settle(&state, reason).await;
                 // what is left came after the turn's last model call
-                let next = {
+                let (next, joined) = {
                     let mut st = state.lock().await;
                     // after Esc the person wanted to stop: what was queued waits for them (Enter sent it on)
                     let waits = reason == TurnEnd::Interrupted && !run_queue;
-                    let next = if waits { None } else { st.inbox.pop_front() };
+                    let joined = st.inbox.len();
+                    // all of it, as one request: two queued lines are not two turns
+                    let next = if waits { None } else { queue::take_all(&mut st.inbox) };
                     if waits && !st.inbox.is_empty() {
                         notice(&events, Level::Info, format!("{} queued request(s) kept; they join your next message", st.inbox.len()));
                     }
@@ -1001,10 +1011,11 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         emit(&events, AgentEvent::Queued { pending: st.inbox.len() });
                         person_spoke(&mut st);
                     }
-                    next
+                    (next, joined)
                 };
                 if let Some((text, attachments)) = next {
-                    notice(&events, Level::Info, "running the queued request");
+                    let what = if joined > 1 { format!("running the {joined} queued requests as one") } else { "running the queued request".into() };
+                    notice(&events, Level::Info, what);
                     turn = start_prompt(&state, text, attachments, false, cancel.child_token()).await;
                 } else if !state.lock().await.mail_wait.is_empty() {
                     let mails = std::mem::take(&mut state.lock().await.mail_wait);
