@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use nexo_bin::{ElemType, Error, FnQuery, FuncSort, Image, Output, StrSort, MIN_LINES};
+use nexo_bin::{ElemType, Error, FnQuery, FuncSort, Image, Output, StrSort, DEFAULT_LINES, MIN_LINES, RANGE_LINES};
 
 use sigs::make_sigs;
 use wasm::wasm_in;
@@ -149,7 +149,11 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         other = Some(b);
     }
     let c = op.common();
-    let (from, lines) = (c.from, c.lines.max(MIN_LINES));
+    let (from, mut lines) = (c.from, c.lines.max(MIN_LINES));
+    // a range or a length the caller gave sizes the page: all of it, up to RANGE_LINES, unless --lines says otherwise
+    if c.lines == DEFAULT_LINES && matches!(op, BinOp::Fn { to: Some(_), .. } | BinOp::Bytes { .. }) {
+        lines = RANGE_LINES;
+    }
     let out: Output = match op {
         BinOp::Asm { .. } => unreachable!("assembled before opening an image"),
         BinOp::Patch { out, at, function, bytes, asm, nop, .. } => {
@@ -192,9 +196,12 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
                 ..FnQuery::new(target)
             },
         )?,
-        BinOp::Xref { target, str_text, insensitive, .. } => match (str_text, target) {
+        BinOp::Xref { target, to, str_text, insensitive, .. } => match (str_text, target) {
             (Some(t), _) => nexo_bin::xref_str_window(&img, t, *insensitive, from, lines)?,
-            (None, Some(t)) => nexo_bin::xref_window(&img, t, from, lines)?,
+            (None, Some(t)) => match to {
+                Some(to) => nexo_bin::xref_range_window(&img, t, to, from, lines)?,
+                None => nexo_bin::xref_window(&img, t, from, lines)?,
+            },
             (None, None) => return Err(Error::Usage("give an address or a name, or --str TEXT".into())),
         },
         BinOp::Funcs { sort, grep, min_size, .. } => {

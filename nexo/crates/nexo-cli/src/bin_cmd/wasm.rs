@@ -15,6 +15,11 @@ pub(super) fn wasm_in(op: &BinOp) -> Result<String, Error> {
         }
         BinOp::Fn { target, bytes, .. } => (ask.op, ask.target, ask.with_bytes) = ("fn", Some(target.as_str()), *bytes),
         BinOp::Calls { target, .. } => (ask.op, ask.target) = ("calls", Some(target.as_str())),
+        BinOp::Xref { to: Some(_), .. } => {
+            return Err(Error::Usage(
+                "xref --to does not read WebAssembly modules yet; ask one address at a time".into(),
+            ))
+        }
         BinOp::Xref { target, str_text, insensitive, .. } => {
             (ask.op, ask.target, ask.str_text, ask.insensitive) =
                 ("xref", target.as_deref(), str_text.as_deref(), *insensitive)

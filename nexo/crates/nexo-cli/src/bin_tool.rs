@@ -20,7 +20,7 @@ info <file>  format, entry, sections, hardening
 funcs <file> [--grep RE] [--sort size|callers] [--min-size N]  functions with size, callers, callees
 fn <file> <name|addr> [--bytes] [--to ADDR]  one function disassembled (Intel syntax)
 decomp <file> <name|addr>...  pseudo-C
-xref <file> <name|addr>, xref <file> --str TEXT  who calls, reads, writes or points at it
+xref <file> <name|addr> [--to ADDR|FN], xref <file> --str TEXT  who calls, reads, writes or points at it
 calls <file> <name>, tree <file> <name> [--up], path <file> <from> <to>  callers, callees, call chains
 strings <file> [--grep RE], find <file> <hex|--imm N>, bytes <file> <addr> <len> [--as u32|ptr|str], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
 --lines N, --from ADDR, --json after any op; `<op> --help` for its flags

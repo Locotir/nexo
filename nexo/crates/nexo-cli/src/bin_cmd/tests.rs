@@ -272,6 +272,70 @@ fn fn_to_and_the_address_page_answer_through_the_parser() {
 }
 
 #[test]
+fn xref_to_answers_a_range_through_the_parser() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixtures::elf64_xref();
+    let path = file(&dir, "elf", &f);
+    let (lo, hi) = (format!("{:#x}", f.a), format!("{:#x}", f.text_end));
+    let t = ask(&["xref", &path, &lo, "--to", &hi]).unwrap();
+    assert!(t.starts_with(&format!("xref {lo}..{hi}  ")), "{t}");
+    for x in [f.b, f.c] {
+        assert!(t.lines().any(|l| l.starts_with(&format!("{x:#x}  function "))), "{x:#x}: {t}");
+    }
+    let j: serde_json::Value =
+        serde_json::from_str(&ask(&["xref", &path, &lo, "--to", &hi, "--json"]).unwrap()).unwrap();
+    assert!(j["next"].is_null() && j["addresses"].as_u64().unwrap() >= 2, "{j}");
+    // without --to the answer is the one address, as before
+    let one = ask(&["xref", &path, &format!("{:#x}", f.b)]).unwrap();
+    assert!(one.starts_with(&format!("xref {:#x}  function ", f.b)) && one.contains("calls (2)"), "{one}");
+}
+
+#[test]
+fn fn_to_and_bytes_pages_cover_the_range_asked() {
+    let exe = std::env::current_exe().unwrap().display().to_string();
+    let j: serde_json::Value =
+        serde_json::from_str(&ask(&["funcs", &exe, "--sort", "size", "--json", "--lines", "10"]).unwrap()).unwrap();
+    let start = j["items"][0]["addr"].as_u64().unwrap();
+    let s = format!("{start:#x}");
+    let more = |t: &str| t.lines().any(|l| l.starts_with("... ") && l.contains(" more lines: "));
+    // bytes: a short length is its rows, a long one is not cut at the default 120, a longer one stops at RANGE_LINES
+    let t = ask(&["bytes", &exe, &s, "32"]).unwrap();
+    assert_eq!(t.lines().count(), 2, "{t}");
+    let t = ask(&["bytes", &exe, &s, "4096"]).unwrap();
+    assert!(t.lines().count() == 256 && !more(&t), "{t}");
+    let t = ask(&["bytes", &exe, &s, "16384"]).unwrap();
+    let last = t.lines().last().unwrap();
+    assert_eq!(t.lines().count(), RANGE_LINES, "{last}");
+    assert!(last.starts_with("... 625 more lines: ") && last.ends_with(&format!("--lines {RANGE_LINES}")), "{last}");
+    // --lines still bounds it
+    assert_eq!(ask(&["bytes", &exe, &s, "4096", "--lines", "50"]).unwrap().lines().count(), 50);
+    // fn --to: a range longer than 120 lines comes whole, exactly its lines
+    let lines_of = |to: &str| -> u64 {
+        let j: serde_json::Value =
+            serde_json::from_str(&ask(&["fn", &exe, &s, "--to", to, "--json", "--lines", "100000"]).unwrap()).unwrap();
+        j["lines"].as_u64().unwrap()
+    };
+    let (to, total) = (0x200..0x1000u64)
+        .step_by(0x40)
+        .map(|k| format!("{:#x}", start + k))
+        .map(|to| {
+            let n = lines_of(&to);
+            (to, n)
+        })
+        .find(|(_, n)| (130..RANGE_LINES as u64 - 10).contains(n))
+        .expect("a range of 130 to 390 lines in the largest function and after it");
+    let t = ask(&["fn", &exe, &s, "--to", &to]).unwrap();
+    assert!(t.lines().count() as u64 == total && !more(&t), "{total}: {t}");
+    // a range xref that does not fit is cut like any other answer and resumes with --to
+    let far = format!("{:#x}", start + 0x80000);
+    let t = ask(&["xref", &exe, &s, "--to", &far, "--lines", "10"]).unwrap();
+    assert!(t.lines().count() == 10 && t.lines().last().unwrap().contains(&format!(" --to {far} --from ")), "{t}");
+    // without --to, fn keeps the default page
+    let t = ask(&["fn", &exe, &s]).unwrap();
+    assert!(t.lines().count() <= nexo_bin::DEFAULT_LINES, "{t}");
+}
+
+#[test]
 fn help_has_one_line_for_each_op() {
     let mut root = crate::cli::Args::command();
     let bin = root.find_subcommand_mut("bin").expect("bin is a command");

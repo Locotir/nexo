@@ -4,6 +4,9 @@ use serde_json::{json, Map, Value};
 
 /// Lines in an answer unless the caller says otherwise.
 pub const DEFAULT_LINES: usize = 120;
+/// Lines in a page whose length the caller chose (`fn --to`, `bytes LEN`) without `--lines`: the whole range up
+/// to this many, about the 30 000 characters a shell or MCP answer is held to.
+pub const RANGE_LINES: usize = 400;
 /// The smallest budget. Lower values are raised to it, so a cut never lands next to the header row.
 pub const MIN_LINES: usize = 10;
 

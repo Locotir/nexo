@@ -320,6 +320,71 @@ pub fn xref_window(img: &Image, target: &str, from: Option<u64>, budget: usize) 
     Ok(Output { op: "xref", meta, rows, tail, command: command(img, "xref", &shell_word(target.trim())) })
 }
 
+/// Every reference into the range from `target` up to `to`, grouped by the address it points at. `to` is an
+/// address (not included) or a function name, which ends the range with that function: `main --to main` is
+/// its whole body. Only the lines of one page are formatted.
+pub fn xref_range_window(img: &Image, target: &str, to: &str, from: Option<u64>, budget: usize) -> Result<Output> {
+    let lo = target_addr(img, target)?;
+    let to = to.trim();
+    let hi = if numeric(to) { parse_addr(to)? } else { resolve(img, to)?.end };
+    if hi <= lo {
+        return Err(Error::Usage(format!("--to {hi:#x} is not after the start {lo:#x}; give a higher address")));
+    }
+    let refs = img.refs();
+    // the addresses in the range that something points at; a PLT stub also answers for the slot it jumps through
+    let mut targets: Vec<u64> = refs.within(lo, hi - lo).iter().map(|r| r.target).collect();
+    let funcs = img.funcs();
+    for f in funcs[funcs.partition_point(|f| f.start < lo)..].iter().take_while(|f| f.start < hi) {
+        if stub_slot(img, f.start).is_some_and(|s| !refs.at(s).is_empty()) {
+            targets.push(f.start);
+        }
+    }
+    targets.sort_unstable();
+    targets.dedup();
+    let mut counts = [0usize; Kind::ALL.len()];
+    let mut segs = vec![Seg::Text(String::new())];
+    for &t in &targets {
+        let lists: Vec<&[Ref]> = std::iter::once(refs.at(t)).chain(stub_slot(img, t).map(|s| refs.at(s))).collect();
+        for r in lists.iter().flat_map(|l| l.iter()) {
+            counts[r.kind as usize] += 1;
+        }
+        let n: usize = lists.iter().map(|l| l.len()).sum();
+        segs.push(Seg::Text(format!("{t:#x}  {}  ({n}){}", target_desc(img, t), note_suffix(img, t))));
+        segs.push(Seg::Refs { n, kind: None, lists, string: None });
+    }
+    let total: usize = counts.iter().sum();
+    let word = if total == 1 { "reference" } else { "references" };
+    let places = if targets.len() == 1 { "address" } else { "addresses" };
+    segs[0] = Seg::Text(format!(
+        "xref {lo:#x}..{hi:#x}  {}  ; {total} {word} to {} {places}{}",
+        target_desc(img, lo),
+        targets.len(),
+        note_suffix(img, lo)
+    ));
+    if total == 0 {
+        segs.push(Seg::Text(format!("no reference into {lo:#x}..{hi:#x} was found")));
+    }
+    segs.extend(closing(img, true));
+    let mut fmt = formatter();
+    let (rows, tail) = lazy_cut(
+        &segs,
+        from,
+        budget,
+        |s| match s {
+            Seg::Text(s) => text_row(s.clone()),
+            _ => text_row(""),
+        },
+        |r, string| ref_row(img, &mut fmt, r, string),
+    );
+    let meta = json!({
+        "target": lo, "to": hi, "description": target_desc(img, lo), "references": total,
+        "addresses": targets.len(), "counts": counts_json(&counts), "capped": refs.capped,
+        "indirect_calls": refs.indirect_calls, "indirect_jumps": refs.indirect_jumps,
+    });
+    let rest = format!("{} --to {}", shell_word(target.trim()), shell_word(to));
+    Ok(Output { op: "xref", meta, rows, tail, command: command(img, "xref", &rest) })
+}
+
 /// The strings that contain `text`, then the references to each.
 pub fn xref_str(img: &Image, text: &str, insensitive: bool) -> Result<Output> {
     xref_str_window(img, text, insensitive, None, usize::MAX)

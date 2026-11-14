@@ -350,6 +350,18 @@ pub fn typed_rows(data: &[u8], addr: u64, ty: ElemType, name: &dyn Fn(u64) -> Op
     if ty == ElemType::Str {
         let mut pos = 0usize;
         while pos < data.len() {
+            // two or more NULs in a row are padding, not empty strings: one line says how many
+            let nuls = data[pos..].iter().take_while(|&&b| b == 0).count();
+            if nuls > 1 {
+                let a = addr + pos as u64;
+                rows.push(Row {
+                    key: a,
+                    text: format!("{a:#010x}  ... {nuls} NUL bytes skipped"),
+                    json: Some(json!({"addr": a, "nul_bytes": nuls})),
+                });
+                pos += nuls;
+                continue;
+            }
             let end = data[pos..].iter().position(|&b| b == 0).map_or(data.len(), |n| pos + n);
             // escape here, once: `shorten` would escape the backslash of a `\x0a` a second time
             let text: String = data[pos..end]

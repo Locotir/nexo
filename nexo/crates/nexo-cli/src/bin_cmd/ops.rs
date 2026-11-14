@@ -183,6 +183,9 @@ pub enum BinOp {
         /// An address (0x401a30) or a function, symbol or import name.
         #[arg(required_unless_present = "str_text")]
         target: Option<String>,
+        /// Every reference into the target up to this address, or to the end of this function (`main --to main`).
+        #[arg(long, value_name = "ADDR|FN", conflicts_with = "str_text")]
+        to: Option<String>,
         /// Instead: the strings that contain this text, and the references to each.
         #[arg(long = "str", value_name = "TEXT", conflicts_with = "target")]
         str_text: Option<String>,

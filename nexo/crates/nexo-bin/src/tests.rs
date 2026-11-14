@@ -657,6 +657,27 @@ fn bytes_as_str_escapes_once() {
 }
 
 #[test]
+fn bytes_as_str_collapses_a_run_of_nuls_into_one_line() {
+    let mut elf = fixtures::elf64(false);
+    let a = elf.string;
+    let off = elf.bytes.windows(STRING.len()).position(|w| w == STRING.as_bytes()).unwrap();
+    // "ab", four NULs after its own, "cd", one empty string, "ef"
+    elf.bytes[off..off + 14].copy_from_slice(b"ab\0\0\0\0\0cd\0\0ef\0");
+    let img = Image::from_bytes(elf.bytes, "/x".into()).unwrap();
+    let o = bytes(&img, a, 14, ElemType::Str).unwrap();
+    let want = [
+        format!("{a:#010x}  \"ab\""),
+        format!("{:#010x}  ... 4 NUL bytes skipped", a + 3),
+        format!("{:#010x}  \"cd\"", a + 7),
+        format!("{:#010x}  \"\"", a + 10),
+        format!("{:#010x}  \"ef\"", a + 11),
+    ];
+    assert_eq!(text(&o), want.join("\n"));
+    let items = o.page(None, 50).value["items"].clone();
+    assert_eq!(items[1], serde_json::json!({"addr": a + 3, "nul_bytes": 4}));
+}
+
+#[test]
 fn find_imm_sees_code_before_the_first_function() {
     let f = fixtures::elf64(false);
     let mut d = f.bytes.clone();
