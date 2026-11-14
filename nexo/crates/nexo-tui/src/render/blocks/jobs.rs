@@ -23,15 +23,32 @@ pub(super) fn parse_job_row(line: &str) -> Option<JobRow<'_>> {
     let (rest, lines) = rest.rsplit_once(", ")?;
     let n = lines.strip_suffix(" lines of output").or_else(|| lines.strip_suffix(" line of output"))?;
     let (rest, dur) = rest.rsplit_once(" after ")?;
-    let (what, how) = if let Some(w) = rest.strip_suffix(" killed") {
-        (w, "killed")
+    // `done (how)` went well, `failed (how)` did not; notes written before that split say `done` for both,
+    // and only a clean exit or a report was a success then. The last marker is the state, whatever the label says.
+    let (what, how, ok) = if let Some(w) = rest.strip_suffix(" killed") {
+        (w, "killed".to_string(), false)
+    } else if let Some(w) = rest.strip_suffix(" failed") {
+        (w, "failed".to_string(), false)
     } else {
-        let i = rest.rfind(" done (")?;
-        (&rest[..i], rest[i + 7..].strip_suffix(')')?)
+        let (d, f) = (rest.rfind(" done ("), rest.rfind(" failed ("));
+        if f > d {
+            let i = f?;
+            (&rest[..i], rest[i + 9..].strip_suffix(')')?.to_string(), false)
+        } else {
+            let i = d?;
+            let how = rest[i + 7..].strip_suffix(')')?;
+            (&rest[..i], how.to_string(), how == "exit 0" || how == "reported")
+        }
     };
     let what = what.strip_prefix('`').and_then(|w| w.strip_suffix('`')).unwrap_or(what);
     let unit = if n == "1" { "line" } else { "lines" };
-    Some(JobRow { id, what, ok: how == "exit 0", facts: format!("{how} · {dur} · {n} {unit}") })
+    // a failure says why in words, not a bare mark
+    let how = if ok || how == "killed" || how == "failed" || how.starts_with("exit ") {
+        how
+    } else {
+        format!("failed: {how}")
+    };
+    Some(JobRow { id, what, ok, facts: format!("{how} · {dur} · {n} {unit}") })
 }
 
 /// The note as a quiet system card: a dim rule, then one row per job. Only the screen changes; the

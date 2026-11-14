@@ -59,6 +59,16 @@ impl JobStatus {
         }
     }
 
+    /// How the ended note words the state: `done (how)` for a job that went well, `failed (how)` for one that
+    /// did not, so a reader of the note (the interface draws its mark from it) need not guess from `how`.
+    pub fn note_word(&self) -> String {
+        match self {
+            JobStatus::Done { ok: false, how } if how == "failed" => "failed".into(),
+            JobStatus::Done { ok: false, how } => format!("failed ({how})"),
+            other => other.word(),
+        }
+    }
+
     pub fn word(&self) -> String {
         match self {
             JobStatus::Running => "running".into(),
@@ -580,7 +590,7 @@ fn note(jobs: &[JobInfo], reports: &[Option<String>]) -> String {
             format!(
                 "- job {} {what} {} after {}, {} lines of output",
                 j.id,
-                j.status.word(),
+                j.status.note_word(),
                 duration(j.elapsed_ms),
                 j.lines
             )
@@ -669,9 +679,21 @@ mod tests {
         h2.finish(false, "error");
         let ended = jobs.take_ended();
         assert_eq!(ended.len(), 1);
-        assert!(ended_note(&ended).contains("job 2 sub-agent \"find the parser\" done (error)"));
+        assert!(ended_note(&ended).contains("job 2 sub-agent \"find the parser\" failed (error)"));
         assert!(jobs.take_ended().is_empty(), "told once");
         assert!(jobs.read(9, Duration::ZERO, &c).await.is_none());
+    }
+
+    #[test]
+    fn the_ended_note_says_done_for_a_job_that_went_well_and_failed_for_one_that_did_not() {
+        let jobs = Jobs::new();
+        jobs.start(JobKind::Agent, "look").finish(true, "reported");
+        jobs.start(JobKind::Agent, "wf").finish(false, "reported an error");
+        jobs.start(JobKind::Shell, "make").finish(false, "exit 2");
+        let note = ended_note(&jobs.take_ended());
+        assert!(note.contains("sub-agent \"look\" done (reported) after"), "{note}");
+        assert!(note.contains("sub-agent \"wf\" failed (reported an error) after"), "{note}");
+        assert!(note.contains("`make` failed (exit 2) after"), "{note}");
     }
 
     #[tokio::test]

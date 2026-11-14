@@ -189,7 +189,7 @@ pub(super) async fn start(state: &Shared, sub: Option<Arc<crate::subagent::SubAg
             let first = out.content.lines().next().unwrap_or("");
             notice(&events, Level::Warn, format!("Workflow `{name}` did not finish: {first}"));
         }
-        job.finish(!out.is_error, "reported");
+        job.finish(!out.is_error, if out.is_error { "reported an error" } else { "reported" });
     });
 }
 

@@ -495,6 +495,18 @@ fn ended_jobs_note_shows_as_a_compact_card() {
 }
 
 #[test]
+fn a_sub_agent_that_reported_is_a_tick_and_a_failure_says_why() {
+    let note = "[background jobs ended]\n- job 9 sub-agent \"Vista de workflows\" done (reported) after 2 min 9 s, 43 lines of output\n- job 10 sub-agent \"x\" failed (error) after 3 s, 1 lines of output\n- job 11 workflow `w` failed (reported an error) after 3 s, 2 lines of output\n- job 12 `echo failed (1) done (exit 0)` done (exit 0) after 1 s, 1 lines of output\n- job 13 `make` failed (exit 2) after 1 s, 3 lines of output\n\n--- report of job 9 ---\nall good";
+    let t = texts(&Block::User { text: note.into(), at: None }.render(90, &Theme::dark(), opts()));
+    let all = t.join("\n");
+    assert!(t[1].contains("✓ reported · 2 min 9 s · 43 lines"), "{all}");
+    assert!(t[2].contains("✗ failed: error · 3 s"), "{all}");
+    assert!(t[3].contains("✗ failed: reported an error · 3 s"), "{all}");
+    assert!(t[4].contains("✓ exit 0 · 1 s") && t[4].contains("echo failed (1) done (exit 0)"), "{all}");
+    assert!(t[5].contains("✗ exit 2 · 1 s"), "{all}");
+}
+
+#[test]
 fn a_long_diff_row_is_shortened_with_an_ellipsis_not_cut_by_the_edge() {
     let out = ToolOutput::ok("ok").with_display(ToolDisplay::Diff {
         path: "a.rs".into(),

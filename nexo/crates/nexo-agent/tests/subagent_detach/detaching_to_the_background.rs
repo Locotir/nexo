@@ -395,3 +395,34 @@ async fn a_background_writer_of_any_profile_is_a_job_and_its_claim_keeps_others_
     assert!(m2.contains("wrote a.txt"), "free after the holder ended: {m2}");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_background_reader_whose_last_tool_failed_but_reported_ends_ok() {
+    let d = test_tmpdir().unwrap();
+    let client = Scripted::with_subs(
+        vec![
+            Reply::Events(call("t1", "task", bg("explore", "look"))),
+            Reply::Events(call("m1", "wait", json!({}))),
+            Reply::Events(text("ok")),
+        ],
+        vec![(
+            "look",
+            vec![
+                Reply::Events(call("s1", "read", json!({"path": "missing.txt"}))),
+                Reply::Events(text("it is not there")),
+            ],
+        )],
+    );
+    let mut r = start(client.clone(), config(PermissionMode::Auto), d.path()).await;
+    r.submit("go");
+    let evs = r.until_all(&[&is_done("t1"), &job_ended(1)]).await;
+    let status = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Jobs { jobs } => jobs.iter().find(|j| j.id == 1).map(|j| j.status.clone()),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(status, Some(nexo_core::jobs::JobStatus::Done { ok: true, how: "reported".into() }));
+    r.stop().await;
+}
