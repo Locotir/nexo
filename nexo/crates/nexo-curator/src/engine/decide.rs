@@ -61,6 +61,21 @@ impl Engine {
             } else {
                 self.bump("turns_refused", 1);
             }
+        } else if epoch && self.left.is_some() {
+            // the host knows the calls left (a sub-agent's rounds): the epoch is made on a copy, and the copy takes this
+            // engine's place only when what it saves over those calls pays for what it sends again (`landing_pays`,
+            // which lands one past the ceiling whatever it costs); else the view grows as it is, under the window guard
+            // (`fit`), and the next look waits for `check` tokens of growth
+            self.context_at(self.tr.msgs.len());
+            let mut tried = self.clone();
+            tried.decide_as(true);
+            self.decide_as(false);
+            if self.landing_pays(&mut tried) {
+                *self = tried;
+            } else {
+                self.looked = self.sizes_now().iter().sum::<i64>() + self.head;
+                self.bump("horizon_refused", 1);
+            }
         } else {
             self.decide_as(epoch);
             self.refused &= !epoch;

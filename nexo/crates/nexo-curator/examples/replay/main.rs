@@ -63,6 +63,8 @@
 //! `--bank FILE...` reads sessions of the corpus (`examples/corpus.rs`) and prints one JSON line for each:
 //! the whole history, the agent's own requests (with its compaction) and the curator's view, side by side.
 //! It skips the slower measures, so that hundreds of long sessions fit in memory and time.
+//! `--window N` gives the curator a window there too, and `--rounds N` tells it the session has at most `N`
+//! requests (`Curator::calls_left`), as a sub-agent with a cap on its rounds knows.
 //! Its `errs` counts failed calls that fail again on the same entity for the same cause, and whether the first
 //! failure was still in the view the repeat was made from.
 //!
@@ -114,6 +116,7 @@ fn main() {
         let mut spec = String::new();
         let mut files = Vec::new();
         let (mut recall, mut oracle, mut dump) = (false, false, None);
+        let (mut window, mut rounds) = (0u64, None);
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
@@ -122,12 +125,14 @@ fn main() {
                 "--oracle" => oracle = true,
                 "--dump" => dump = it.next().cloned(),
                 "--spec" => spec = it.next().cloned().unwrap_or_default(),
+                "--window" => window = it.next().and_then(|n| n.parse().ok()).unwrap_or(0),
+                "--rounds" => rounds = it.next().and_then(|n| n.parse().ok()),
                 _ => files.push(a.clone()),
             }
         }
         for f in files {
-            let line =
-                bank(&f, &spec, recall, oracle, dump.as_deref()).unwrap_or_else(|e| json!({"file": f, "error": e}));
+            let line = bank(&f, &spec, Bank { recall, oracle, dump: dump.as_deref(), window, rounds })
+                .unwrap_or_else(|e| json!({"file": f, "error": e}));
             println!("{line}");
         }
         return;

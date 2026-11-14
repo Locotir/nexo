@@ -481,7 +481,7 @@ impl Engine {
         let k = self.tr.steps.len();
         // how long a topic lasts: the mean steps of the ones already closed, else the share of the session so far
         let hz = match self.topic_steps() {
-            Some(m) if self.p.ahead > 0.0 => m.max(4.0).min(self.room(k, v as i64)),
+            Some(m) if self.p.ahead > 0.0 => self.within(m.max(4.0)).min(self.room(k, v as i64)),
             _ => self.horizon(k, v as i64),
         };
         let rewrite = {

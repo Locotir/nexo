@@ -109,9 +109,15 @@ impl Engine {
         }
     }
 
-    /// The requests still to come that a rewrite is priced over: `ahead` of the session so far, at least 4.
+    /// The requests still to come that a rewrite is priced over: `ahead` of the session so far, at least 4, and
+    /// never more than the host says are left ([`Engine::set_left`]).
     pub(super) fn calls_ahead(&self, k: usize) -> f64 {
-        (self.p.ahead * k as f64).max(4.0)
+        self.within((self.p.ahead * k as f64).max(4.0))
+    }
+
+    /// `calls` bounded by the calls the host says are left (as many as `calls` when it does not know).
+    pub(super) fn within(&self, calls: f64) -> f64 {
+        self.left.map_or(calls, |l| calls.min(l))
     }
 
     /// The steps the view has room to grow by before the cap cuts it (all of them without a cap).
@@ -124,19 +130,31 @@ impl Engine {
         }
     }
 
+    /// The cap the view is cut at, priced as an order quantity (`eoq`), which assumes cuts go on for ever. When
+    /// the host says how many calls are left ([`Engine::set_left`]), a cut down to `e` pays only if the rent it
+    /// saves on each of them (`ratio` of what it cuts) covers reading `e` again without the cache once: the cap
+    /// is at least `e + (1 - ratio) e / (ratio calls)`, so near the end of a run no cut is made that the run ends
+    /// before paying back. The window (`fit`, the ceiling) still cuts whatever the calls left.
     pub(super) fn eoq_cap(&self, k: usize, base: i64) -> (i64, f64, bool) {
         let r = self.p.ratio;
         if r <= 0.0 {
             return (0, self.floor, false);
         }
         let g = self.raw_tokens as f64 / k.max(1) as f64;
-        let cap_of = |e: f64| e + if r < 1.0 { (2.0 * (1.0 - r) * e * g / r).sqrt() } else { 0.0 };
+        let cap_of = |e: f64| {
+            let eoq = e + if r < 1.0 { (2.0 * (1.0 - r) * e * g / r).sqrt() } else { 0.0 };
+            match self.left {
+                Some(calls) if r < 1.0 => eoq.max(e + (1.0 - r) * e / (r * calls)),
+                _ => eoq,
+            }
+        };
         let mut e = self.p.eoq as f64;
         let stuck = base as f64 + g > cap_of(e);
         if stuck {
             e = base as f64;
         }
-        let cap = (cap_of(e) as i64).max(1);
+        // (a cap that never pays stays far enough from the end of i64 to be doubled)
+        let cap = (cap_of(e).min((i64::MAX / 4) as f64) as i64).max(1);
         (cap, e / cap as f64, stuck)
     }
 
@@ -543,6 +561,12 @@ impl Engine {
     /// The tokens the view may take in the model's window (0: no limit).
     pub fn set_budget(&mut self, tokens: i64) {
         self.budget = tokens.max(0);
+    }
+
+    /// The model calls this view and the ones after it are sent for, when the host knows them (at least this
+    /// one); `None` when it does not.
+    pub fn set_left(&mut self, calls: Option<u64>) {
+        self.left = calls.map(|c| c.max(1) as f64);
     }
 
     /// The window: a view over [`Engine::set_budget`] would be refused by the provider, so the oldest

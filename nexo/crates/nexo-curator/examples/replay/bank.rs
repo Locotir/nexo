@@ -7,7 +7,18 @@ use super::*;
 /// the replies took from the history that the way had not sent. Memory and time grow with the session,
 /// not with its square: each request is applied to what the one before left, as the file gives it.
 /// With `oracle`, a fourth way: the offline floor of `belady`, at the tokens the curator's view spent.
-pub(super) fn bank(path: &str, spec: &str, recall: bool, oracle: bool, dump: Option<&str>) -> Result<Value, String> {
+/// How `bank` replays: `--recall`, `--oracle`, `--dump`, `--window` (0: none) and `--rounds` (the most requests
+/// the session may make, told to the curator as the calls left; `None`: not told).
+pub(super) struct Bank<'a> {
+    pub(super) recall: bool,
+    pub(super) oracle: bool,
+    pub(super) dump: Option<&'a str>,
+    pub(super) window: u64,
+    pub(super) rounds: Option<usize>,
+}
+
+pub(super) fn bank(path: &str, spec: &str, how: Bank) -> Result<Value, String> {
+    let Bank { recall, oracle, dump, window, rounds } = how;
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file = std::path::Path::new(path);
     let sent_text = file
@@ -16,6 +27,7 @@ pub(super) fn bank(path: &str, spec: &str, recall: bool, oracle: bool, dump: Opt
         .and_then(|(dir, name)| std::fs::read_to_string(dir.join("sent").join(name)).ok());
     let mut sent_lines = sent_text.as_deref().map(|t| t.lines().filter(|l| !l.trim().is_empty()));
     let mut cur = Curator::new(spec).map_err(|e| format!("bad spec: {e}"))?;
+    cur.window(window);
     // `--dump DIR`: the features of what the view holds at 40 requests of the session, and what each unit
     // was used by, for a fit of the need heads outside the replay
     if let Some(dir) = dump {
@@ -132,6 +144,7 @@ pub(super) fn bank(path: &str, spec: &str, recall: bool, oracle: bool, dump: Opt
             agent.count(sent.total() + system_tokens, hit + head);
         }
         let now = rec["now"].as_f64().unwrap_or(0.0);
+        cur.calls_left(rounds.map(|n| n.saturating_sub(requests) as u64));
         let reply = cur.view(system_tokens as u64, &whole.msgs, now).map_err(|e| format!("view: {e}"))?;
         cells = reply.memory.cells.iter().map(|c| c.state.as_str().to_string()).collect();
         steps = reply.stats.iter().filter(|(k, _)| k.ends_with("_steps")).map(|(k, v)| (k.to_string(), *v)).collect();

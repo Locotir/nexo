@@ -459,6 +459,8 @@ pub struct Curator {
     head_tokens: u64,
     /// Tokens the model takes in a call, less its reply (0: no limit).
     window: u64,
+    /// The model calls left, this one included, when the host knows them (`Curator::calls_left`).
+    left: Option<u64>,
     /// What a cached input token costs against an uncached one, from the provider's prices (`None`: the
     /// spec's `ratio`).
     price_ratio: Option<f64>,
@@ -478,6 +480,7 @@ impl Curator {
             eng: Engine::new(params(spec)?),
             head_tokens: 0,
             window: 0,
+            left: None,
             price_ratio: None,
             last: Vec::new(),
             tools: None,
@@ -537,6 +540,7 @@ impl Curator {
             w => w.saturating_sub(system_tokens).max(1) as i64,
         };
         self.eng.set_budget(budget);
+        self.eng.set_left(self.left);
         let missed = self.eng.stats.get("miss").copied().unwrap_or(0);
         self.eng.sync(messages);
         let mut view = self.eng.view();
@@ -638,6 +642,14 @@ impl Curator {
     /// The tokens the model takes in one call, less its reply (0: no limit). The view never passes it.
     pub fn window(&mut self, tokens: u64) {
         self.window = tokens;
+    }
+
+    /// The model calls the next view and the ones after it are sent for, that one included, when the host
+    /// knows them: a sub-agent's rounds left, a session's steps left (`None`: not known, the default). A cut is
+    /// then priced over those calls only, so one the run ends before paying back is not made; the window
+    /// still cuts whatever is left.
+    pub fn calls_left(&mut self, calls: Option<u64>) {
+        self.left = calls;
     }
 
     /// How many messages this view put in (new or back), how many of those were back (they were in the

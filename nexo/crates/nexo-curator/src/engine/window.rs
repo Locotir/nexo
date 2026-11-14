@@ -386,7 +386,7 @@ impl Engine {
 
     /// The calls a landing is paid back over (`Params.kept`): `lcalls`, and `lahead` for each step so far.
     pub(super) fn calls_left(&self) -> f64 {
-        (self.p.lcalls + self.p.lahead * self.tr.steps.len() as f64).max(0.0)
+        self.within((self.p.lcalls + self.p.lahead * self.tr.steps.len() as f64).max(0.0))
     }
 
     /// Whether a landing pays (`Params.kept`): `drop` tokens leave the view for the calls still to come, each

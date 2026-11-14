@@ -92,6 +92,10 @@ pub struct Engine {
     /// Tokens the view may take in the model's window, after the system prompt, the tools and the reply
     /// (0: no limit). The host gives it with each call ([`Engine::set_budget`]).
     budget: i64,
+    /// The model calls this view and the ones after it are sent for, when the host knows them (a sub-agent's
+    /// rounds left, a session's steps left): no cut is priced over more calls than there are ([`Engine::set_left`]).
+    /// `None`: not known, and the calls to come are estimated (`Params.ahead`).
+    left: Option<f64>,
     int: Interner,
     tr: Shared<Tracer>,
     fz: Shared<Featurizer>,
@@ -353,6 +357,7 @@ impl Engine {
             gone_tokens: 0,
             gone_commands: 0,
             budget: 0,
+            left: None,
             checked: 0,
             checked_at: 0,
             landed: 0,
