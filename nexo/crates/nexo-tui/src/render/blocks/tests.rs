@@ -503,14 +503,37 @@ fn ended_jobs_note_shows_as_a_compact_card() {
     let b = Block::User { text: note.into(), at: None };
     let t = texts(&b.render(70, &Theme::dark(), opts()));
     let all = t.join("\n");
-    assert!(!all.contains("[background jobs ended]") && !all.contains("Read the output"), "{all}");
+    assert!(!all.contains("[background jobs ended]") && all.contains("Read the output"), "{all}");
     assert!(!all.contains('▌'), "{all}");
-    assert_eq!(t.len(), 3, "{all}");
-    assert!(t[1].starts_with("⚙ job 1  cd /home"), "{all}");
-    assert!(t[1].contains("…") && t[1].ends_with("✓ exit 0 · 2 min 43 s · 40 lines"), "{all}");
-    assert!(t[2].starts_with("⚙ job 2  false") && t[2].ends_with("✗ exit 1 · 3 s · 1 line"), "{all}");
+    assert!(all.contains("for t in a b c; do echo $t; done"), "{all}");
+    assert!(all.contains("✓") && all.contains("exit 0 · 2 min 43 s · 40 lines"), "{all}");
+    assert!(all.contains("⚙ job 2  false") && all.contains("✗ exit 1 · 3 s · 1 line"), "{all}");
     assert!(t.iter().all(|l| width(l) <= 70), "{all}");
     assert_eq!(b.copy_text().as_deref(), Some(note));
+}
+
+#[test]
+fn ended_jobs_show_when_output_is_missing_with_or_without_reports() {
+    let rows = "[background jobs ended]\n- job 1 `echo hi` done (exit 0) after 1 s, 1 lines of output\n- job 2 sub-agent \"review\" done (reported) after 2 s, 1 lines of output";
+    let instruction = "Read the output with the `jobs` tool (action \"output\", the job's id).";
+    for report in ["", "\n\n--- report of job 2 ---\nReview complete."] {
+        let note = format!("{rows}{report}\n{instruction}");
+        let block = Block::User { text: note.clone(), at: None };
+        for w in [20, 40, 80] {
+            let rendered = block.render(w, &Theme::dark(), opts());
+            let text = texts(&rendered).join(" ");
+            assert!(text.contains("Some job output is not included."), "{text}");
+            assert!(text.contains("jobs") && text.contains("output") && text.contains("job's id"), "{text}");
+            assert!(rendered.iter().all(|l| width(&markdown::text_of(l)) <= w), "{text}");
+            if !report.is_empty() {
+                assert!(text.contains("Review complete."), "{text}");
+            }
+        }
+        assert_eq!(block.copy_text().as_deref(), Some(note.as_str()));
+    }
+    let complete = format!("{rows}\n\n--- report of job 1 ---\nDone.\n\n--- report of job 2 ---\nReview complete.");
+    let text = texts(&Block::User { text: complete, at: None }.render(80, &Theme::dark(), opts())).join(" ");
+    assert!(!text.contains("not included") && !text.contains("Read the output"), "{text}");
 }
 
 #[test]
@@ -523,6 +546,28 @@ fn a_sub_agent_that_reported_is_a_tick_and_a_failure_says_why() {
     assert!(t[3].contains("✗ failed: reported an error · 3 s"), "{all}");
     assert!(t[4].contains("✓ exit 0 · 1 s") && t[4].contains("echo failed (1) done (exit 0)"), "{all}");
     assert!(t[5].contains("✗ exit 2 · 1 s"), "{all}");
+}
+
+#[test]
+fn job_reports_render_markdown_and_wrap_without_losing_words() {
+    let note = "[background jobs ended]\n- job 16 sub-agent \"review\" done (reported) after 23 s, 28 lines of output\n\n--- report of job 16 ---\n### Hallazgos priorizados\n\n**Importante**: una frase larga con palabras que deben permanecer visibles hasta el final.\n\n- primer elemento\n- segundo elemento";
+    let block = Block::User { text: note.into(), at: None };
+    for w in [20, 40, 80] {
+        let rendered = block.render(w, &Theme::dark(), opts());
+        let all = texts(&rendered).join("\n");
+        assert!(rendered.iter().all(|l| width(&markdown::text_of(l)) <= w), "{all}");
+        assert!(!all.contains("###") && !all.contains("**"), "{all}");
+        assert!(all.contains("Hallazgos") && all.contains("Importante") && all.contains("final."), "{all}");
+        assert!(all.contains("primer elemento") && all.contains("segundo elemento"), "{all}");
+        assert!(
+            rendered
+                .iter()
+                .flat_map(|l| &l.spans)
+                .any(|s| s.content.contains("Importante") && s.style.add_modifier.contains(Modifier::BOLD)),
+            "{all}"
+        );
+        assert_eq!(block.copy_text().as_deref(), Some(note));
+    }
 }
 
 #[test]

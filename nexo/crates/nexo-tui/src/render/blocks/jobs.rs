@@ -1,5 +1,6 @@
 //! The card for background jobs that ended.
 
+use super::super::wrap::wrap_runs;
 use super::*;
 
 pub(super) const JOB_NOTE: &str = "[background jobs ended]\n";
@@ -23,8 +24,6 @@ pub(super) fn parse_job_row(line: &str) -> Option<JobRow<'_>> {
     let (rest, lines) = rest.rsplit_once(", ")?;
     let n = lines.strip_suffix(" lines of output").or_else(|| lines.strip_suffix(" line of output"))?;
     let (rest, dur) = rest.rsplit_once(" after ")?;
-    // `done (how)` went well, `failed (how)` did not; notes written before that split say `done` for both,
-    // and only a clean exit or a report was a success then. The last marker is the state, whatever the label says.
     let (what, how, ok) = if let Some(w) = rest.strip_suffix(" killed") {
         (w, "killed".to_string(), false)
     } else if let Some(w) = rest.strip_suffix(" failed") {
@@ -42,7 +41,6 @@ pub(super) fn parse_job_row(line: &str) -> Option<JobRow<'_>> {
     };
     let what = what.strip_prefix('`').and_then(|w| w.strip_suffix('`')).unwrap_or(what);
     let unit = if n == "1" { "line" } else { "lines" };
-    // a failure says why in words, not a bare mark
     let how = if ok || how == "killed" || how == "failed" || how.starts_with("exit ") {
         how
     } else {
@@ -51,39 +49,44 @@ pub(super) fn parse_job_row(line: &str) -> Option<JobRow<'_>> {
     Some(JobRow { id, what, ok, facts: format!("{how} · {dur} · {n} {unit}") })
 }
 
-/// The note as a quiet system card: a dim rule, then one row per job. Only the screen changes; the
-/// model keeps the exact text.
+/// A quiet card for rows followed by full Markdown reports. The model keeps the original text.
 pub(super) fn job_card(text: &str, w: usize, theme: &Theme) -> Vec<Line<'static>> {
     let dim = theme.dim();
     let title = " jobs ended ";
     let rule = format!("──{title}{}", "─".repeat(w.saturating_sub(2 + width(title))));
     let mut lines = vec![Line::from(Span::styled(truncate(&rule, w), theme.style(theme.dim2)))];
-    for raw in text.lines().skip(1) {
-        // the note ends at its last line; a message glued after it is not a job row
-        if raw.starts_with("Read the output with") {
+    let body = text.strip_prefix(JOB_NOTE).unwrap_or(text);
+    let mut offset = 0;
+    for raw in body.split_inclusive('\n') {
+        let row = raw.trim_end_matches('\n');
+        if let Some(r) = parse_job_row(row) {
+            let mark = if r.ok { "✓" } else { "✗" };
+            let mstyle = if r.ok { theme.style(theme.success) } else { theme.style(theme.error) };
+            let runs = vec![
+                (format!("⚙ job {}  ", r.id), dim),
+                (format!("{}  ", r.what), Style::default()),
+                (format!("{mark} {}", r.facts), if r.ok { dim } else { mstyle }),
+            ];
+            lines.extend(wrap_runs(&runs, w, &[], &[]));
+        } else if !row.trim().is_empty() {
             break;
         }
-        if raw.trim().is_empty() {
-            continue;
-        }
-        let Some(r) = parse_job_row(raw) else {
-            lines.push(Line::from(Span::styled(truncate(raw, w), dim)));
-            continue;
-        };
-        let mark = if r.ok { "✓" } else { "✗" };
-        let mstyle = if r.ok { theme.style(theme.success) } else { theme.style(theme.error) };
-        let head = format!("⚙ job {}  ", r.id);
-        let tail = format!("{mark} {}", r.facts);
-        let room = w.saturating_sub(width(&head) + width(&tail) + 2);
-        let what = truncate(r.what, room);
-        let gap = w.saturating_sub(width(&head) + width(&what) + width(&tail)).max(2);
-        lines.push(Line::from(vec![
-            Span::styled(head, dim),
-            Span::raw(what),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(mark.to_string(), mstyle),
-            Span::styled(format!(" {}", r.facts), if r.ok { dim } else { mstyle }),
-        ]));
+        offset += raw.len();
+    }
+    let report = body[offset..].trim();
+    // The producer appends this instruction when at least one output is missing.
+    let instruction = "Read the output with the `jobs` tool (action \"output\", the job's id).";
+    let (report, missing_output) = match report.strip_suffix(instruction) {
+        Some(report) => (report.trim_end(), true),
+        None => (report, false),
+    };
+    if !report.is_empty() {
+        lines.push(Line::default());
+        lines.extend(markdown::render(report, w, theme));
+    }
+    if missing_output {
+        lines.push(Line::default());
+        lines.extend(markdown::render(&format!("Some job output is not included. {instruction}"), w, theme));
     }
     lines
 }
