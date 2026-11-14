@@ -659,8 +659,16 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
             }
             Ok(format!("debug {id} #0 end\nsession {id} ended: use `run <path>` to start another"))
         }
+        // the command list needs no program: it is the same text a live session prints
+        "help" => Ok(print(crate::help(), "-", &["help".to_string()], o, None, "", prefix)),
         _ => {
-            let id = pick_session(dir, &o.session)?;
+            let id = pick_session(dir, &o.session).map_err(|e| match e {
+                Error::Fail(m) if m.starts_with("no debug session:") => Error::Fail(format!(
+                    "no debug session for `{}`: start one with `run <path>` (or `attach <pid>`), then send it again; `help` lists the commands",
+                    o.words.join(" ")
+                )),
+                e => e,
+            })?;
             let r = crate::request(dir, &id, &o.words)?;
             let head = header(&id, &r, cmd);
             let bridge = r.bridge.clone();
@@ -737,6 +745,21 @@ mod tests {
         let few = parse(&words("cont --lines 10")).unwrap();
         assert_eq!(with_bridge(["l"; 10].join("\n"), b.clone(), &few, "debug").lines().count(), 10);
         assert_eq!(with_bridge(["l"; 9].join("\n"), b, &few, "debug").lines().count(), 10);
+    }
+
+    #[test]
+    fn help_answers_without_a_session_and_other_commands_name_themselves() {
+        let dir = std::env::temp_dir().join(format!("nexo-dbg-nosess-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let o = parse(&words("help")).unwrap();
+        let h = execute(&o, &dir, &Host::Thread, "nexo dbg").unwrap();
+        assert!(h.contains("break:") && h.contains("run: nexo dbg run"), "{h}");
+        let o = parse(&words("help break")).unwrap();
+        assert_eq!(execute(&o, &dir, &Host::Thread, "nexo dbg").unwrap(), h);
+        let o = parse(&words("break main")).unwrap();
+        let e = execute(&o, &dir, &Host::Thread, "nexo dbg").unwrap_err().to_string();
+        assert!(e.contains("no debug session for `break main`") && e.contains("`help` lists the commands"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

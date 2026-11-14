@@ -408,6 +408,16 @@ mod tests {
         assert!(call(&t, "sessions").await.content.contains("no debug sessions"));
     }
 
+    #[tokio::test]
+    async fn help_works_before_any_session_and_other_commands_say_which_one_was_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Debug::in_dir(&dir.path().join("state"));
+        let h = call(&t, "help").await;
+        assert!(!h.is_error && h.content.contains("break:"), "{}", h.content);
+        let b = call(&t, "break main").await;
+        assert!(b.is_error && b.content.contains("no debug session for `break main`"), "{}", b.content);
+    }
+
     fn sleep_bin() -> String {
         ["/usr/bin/sleep", "/bin/sleep"].iter().find(|p| Path::new(p).is_file()).expect("sleep").to_string()
     }
