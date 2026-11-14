@@ -370,6 +370,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     /// Places inside `root`, with Chromium's profile folder there so it counts as installed.
+    #[cfg(not(windows))]
     fn places(root: &Path) -> Places {
         let config = root.join("config");
         #[cfg(not(windows))]
