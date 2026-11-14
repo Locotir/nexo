@@ -8,8 +8,7 @@ use nexo_tools::bash::Bash;
 use nexo_tools::sandbox::{self, Backend};
 use serde_json::json;
 
-#[path = "../../nexo-agent/tests/scratch/mod.rs"]
-mod scratch;
+use crate::scratch;
 
 /// The scratch folder a command without a session gets lives until the process exits.
 fn wipe_scratch_at_exit() {
