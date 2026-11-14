@@ -290,12 +290,28 @@ fn xref_to_answers_a_range_through_the_parser() {
     assert!(one.starts_with(&format!("xref {:#x}  function ", f.b)) && one.contains("calls (2)"), "{one}");
 }
 
+/// The test program and a place in it with a long run of code after it, whatever the OS lays out: the first
+/// function of the largest code section, and the end of that section's bytes.
+fn exe_code() -> (String, u64, u64) {
+    let exe = std::env::current_exe().unwrap();
+    let img = Image::open(&exe).unwrap();
+    let s = img.sections.iter().filter(|s| s.exec).max_by_key(|s| s.file_size).unwrap();
+    let (lo, hi) = (s.addr, s.addr + s.file_size.min(s.size));
+    let start = img.funcs().iter().find(|f| f.start >= lo && f.end <= hi).unwrap().start;
+    assert!(hi - start >= 0x10000, "{} has {:#x} bytes of code", s.name, hi - start);
+    (exe.display().to_string(), start, hi)
+}
+
+/// The JSON of one whole answer (no cut).
+fn whole_json(args: &[&str]) -> serde_json::Value {
+    let mut a = args.to_vec();
+    a.extend(["--json", "--lines", "1000000"]);
+    serde_json::from_str(&ask(&a).unwrap()).unwrap()
+}
+
 #[test]
 fn fn_to_and_bytes_pages_cover_the_range_asked() {
-    let exe = std::env::current_exe().unwrap().display().to_string();
-    let j: serde_json::Value =
-        serde_json::from_str(&ask(&["funcs", &exe, "--sort", "size", "--json", "--lines", "10"]).unwrap()).unwrap();
-    let start = j["items"][0]["addr"].as_u64().unwrap();
+    let (exe, start, hi) = exe_code();
     let s = format!("{start:#x}");
     let more = |t: &str| t.lines().any(|l| l.starts_with("... ") && l.contains(" more lines: "));
     // bytes: a short length is its rows, a long one is not cut at the default 120, a longer one stops at RANGE_LINES
@@ -309,25 +325,24 @@ fn fn_to_and_bytes_pages_cover_the_range_asked() {
     assert!(last.starts_with("... 625 more lines: ") && last.ends_with(&format!("--lines {RANGE_LINES}")), "{last}");
     // --lines still bounds it
     assert_eq!(ask(&["bytes", &exe, &s, "4096", "--lines", "50"]).unwrap().lines().count(), 50);
-    // fn --to: a range longer than 120 lines comes whole, exactly its lines
-    let lines_of = |to: &str| -> u64 {
-        let j: serde_json::Value =
-            serde_json::from_str(&ask(&["fn", &exe, &s, "--to", to, "--json", "--lines", "100000"]).unwrap()).unwrap();
-        j["lines"].as_u64().unwrap()
-    };
-    let (to, total) = (0x200..0x1000u64)
+    // fn --to: a range longer than 120 lines comes whole, exactly its lines (the range is grown until it is one)
+    let (to, total) = (0x200..0x4000u64.min(hi - start))
         .step_by(0x40)
         .map(|k| format!("{:#x}", start + k))
         .map(|to| {
-            let n = lines_of(&to);
+            let n = whole_json(&["fn", &exe, &s, "--to", &to])["lines"].as_u64().unwrap();
             (to, n)
         })
         .find(|(_, n)| (130..RANGE_LINES as u64 - 10).contains(n))
-        .expect("a range of 130 to 390 lines in the largest function and after it");
+        .expect("a range of 130 to 390 lines in the code");
     let t = ask(&["fn", &exe, &s, "--to", &to]).unwrap();
     assert!(t.lines().count() as u64 == total && !more(&t), "{total}: {t}");
-    // a range xref that does not fit is cut like any other answer and resumes with --to
-    let far = format!("{:#x}", start + 0x80000);
+    // a range xref that does not fit is cut like any other answer and resumes with --to (grown until the whole
+    // answer is longer than the page, however many references this build has)
+    let far = std::iter::successors(Some(0x1000u64), |k| (*k < hi - start).then(|| (k * 2).min(hi - start)))
+        .map(|k| format!("{:#x}", start + k))
+        .find(|far| whole_json(&["xref", &exe, &s, "--to", far])["shown"].as_u64().unwrap() > 10)
+        .expect("more than 10 lines of references into the code section");
     let t = ask(&["xref", &exe, &s, "--to", &far, "--lines", "10"]).unwrap();
     assert!(t.lines().count() == 10 && t.lines().last().unwrap().contains(&format!(" --to {far} --from ")), "{t}");
     // without --to, fn keeps the default page
@@ -337,15 +352,17 @@ fn fn_to_and_bytes_pages_cover_the_range_asked() {
 
 #[test]
 fn fn_to_with_lines_120_gives_120_lines_and_the_more_note() {
-    let exe = std::env::current_exe().unwrap().display().to_string();
-    let j: serde_json::Value =
-        serde_json::from_str(&ask(&["funcs", &exe, "--sort", "size", "--json", "--lines", "10"]).unwrap()).unwrap();
-    let start = j["items"][0]["addr"].as_u64().unwrap();
-    let (s, to) = (format!("{start:#x}"), format!("{:#x}", start + 0x1000));
-    let whole: serde_json::Value =
-        serde_json::from_str(&ask(&["fn", &exe, &s, "--to", &to, "--json", "--lines", "100000"]).unwrap()).unwrap();
-    let total = whole["lines"].as_u64().unwrap();
-    assert!(total > 130, "the range is longer than the page: {total}");
+    let (exe, start, hi) = exe_code();
+    let s = format!("{start:#x}");
+    // a range longer than the page, grown until it is one
+    let (to, total) = std::iter::successors(Some(0x400u64), |k| (*k < hi - start).then(|| (k * 2).min(hi - start)))
+        .map(|k| format!("{:#x}", start + k))
+        .map(|to| {
+            let n = whole_json(&["fn", &exe, &s, "--to", &to])["lines"].as_u64().unwrap();
+            (to, n)
+        })
+        .find(|(_, n)| *n > 130)
+        .expect("a range longer than 130 lines in the code");
     let t = ask(&["fn", &exe, &s, "--to", &to, "--lines", "120"]).unwrap();
     let last = t.lines().last().unwrap();
     assert_eq!(t.lines().count(), 120, "{last}");
