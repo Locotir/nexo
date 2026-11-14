@@ -243,11 +243,21 @@ impl Run {
             // done twice, and the rounds before it (files written, commands run) are not thrown away
             let mut tries = 0u32;
             let (text, calls) = loop {
+                // the spend limits hold for a sub-agent as for the main agent; the hold lasts until the call is billed
+                let hold = match &self.host {
+                    Some(h) => {
+                        let (cap, hold) = h.reserve(&model, prices, sent_tokens, req.max_tokens).await?;
+                        req.max_tokens = cap;
+                        Some(hold)
+                    }
+                    None => None,
+                };
                 let (got, usage) = self.ask(&cfg, &req, ctx).await;
                 let mut cost = 0.0;
                 if let (Some(h), false) = (&self.host, usage.is_empty()) {
                     cost = h.spent(&model, usage, pricing).await;
                 }
+                drop(hold);
                 if let Some(s) = &self.sub {
                     s.spent(&usage, cost);
                 }

@@ -75,6 +75,18 @@ pub trait Host: Send + Sync {
     }
     /// A tool call of a sub-agent is over: its line in the audit log (when that is on).
     async fn audit(&self, _call: AuditCall<'_>) {}
+    /// A sub-agent is about to ask the model: `Err` says a spend limit is reached (counting the calls in flight).
+    /// `Ok` holds the output cap to send, lowered when the budget left could not pay a full reply, and a hold to
+    /// keep until the call is billed. `pricing`: the sub-agent's prices for `model`, none: the main agent's.
+    async fn reserve(
+        &self,
+        _model: &str,
+        _pricing: Option<Pricing>,
+        _input_tokens: u64,
+        max_tokens: u32,
+    ) -> Result<(u32, crate::budget::Flight), String> {
+        Ok((max_tokens, crate::budget::Flight::default()))
+    }
     /// Bills a sub-agent's model call to the session and says what it cost. `pricing`: the prices of another
     /// provider the sub-agent ran on; none: priced as the main agent prices `model`.
     async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) -> f64;

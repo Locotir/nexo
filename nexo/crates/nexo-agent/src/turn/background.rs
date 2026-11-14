@@ -166,7 +166,7 @@ pub(super) async fn watch_round(state: &Shared) -> u32 {
 /// CONTINUE resumes the session through `tx`; DONE, or an answer that is not clear, changes nothing. At most one
 /// per request of the person, and none when something else will wake the session.
 pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::sync::mpsc::UnboundedSender<Resume>) {
-    let (req, cfg, client, retries, events, stamp) = {
+    let (req, cfg, client, retries, events, stamp, flight) = {
         let mut st = state.lock().await;
         let a = &st.config.agent;
         if !a.check_in || st.checked_in || st.perm.mode == PermissionMode::Plan {
@@ -205,8 +205,23 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
         req.messages.push(reply.clone());
         req.messages.push(Message::user(crate::supervise::watch::check_in_ask(&evidence)));
         lean(&mut req, cfg.efforts.get(&model).map(Vec::as_slice).unwrap_or(&[]), CHECK_IN_TOKENS);
+        // the limits count the calls in flight, and the check-in's reply is capped to what the budget can pay
+        let input = (st.est_sent as f64 * st.tok_ratio.unwrap_or(1.0)).round() as u64;
+        let priced = main_pricing(&st, &req.model);
+        let Ok((cap, flight)) = budget::admit(
+            st.session.id(),
+            st.cost,
+            st.budget,
+            st.config.agent.max_cost_day,
+            priced,
+            input,
+            req.max_tokens,
+        ) else {
+            return;
+        };
+        req.max_tokens = cap;
         st.checked_in = true;
-        (req, cfg, st.client.clone(), st.config.agent.retries, st.events.clone(), (st.turns, st.epoch))
+        (req, cfg, st.client.clone(), st.config.agent.retries, st.events.clone(), (st.turns, st.epoch), flight)
     };
     let state = state.clone();
     let tx = tx.clone();
@@ -225,6 +240,7 @@ pub(super) async fn check_in(state: &Shared, extra: Option<String>, tx: &tokio::
             let mut st = state.lock().await;
             add_usage(&mut st, &events, &req.model, c.usage, Usage::default(), UsageKind::CheckIn);
         }
+        drop(flight);
         if c.error.is_some() {
             return;
         }

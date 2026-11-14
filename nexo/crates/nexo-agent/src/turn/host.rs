@@ -20,15 +20,9 @@ pub(super) fn add_usage_priced(
     kind: UsageKind,
 ) -> f64 {
     st.usage += usage;
-    let (prov, cfg, main) = st.target.get();
+    let (prov, _, _) = st.target.get();
     let sent_to_other = other.is_some();
-    let pricing = other.or_else(|| {
-        if model == main {
-            st.limits.pricing.or_else(|| cfg.pricing_for(model))
-        } else {
-            cfg.pricing_for(model)
-        }
-    });
+    let pricing = other.or_else(|| main_pricing(st, model));
     let cost = pricing.map(|p| p.cost(&usage)).unwrap_or(0.0);
     st.cost += cost;
     // what the view left out of the history at this call (the conversation's own calls only)
@@ -59,8 +53,21 @@ pub(super) fn add_usage_priced(
     }
     emit(events, AgentEvent::Usage { turn: usage, call, session: st.usage, cost_usd: st.cost });
     let day = budget::add(cost);
+    if let Some(p) = budget::take_problem() {
+        notice(events, Level::Warn, p);
+    }
     emit(events, budget_event(st, day));
     cost
+}
+
+/// The prices of `model` as the main agent bills it: its own limits first, then the provider's table.
+pub(super) fn main_pricing(st: &State, model: &str) -> Option<Pricing> {
+    let (_, cfg, main) = st.target.get();
+    if model == main {
+        st.limits.pricing.or_else(|| cfg.pricing_for(model))
+    } else {
+        cfg.pricing_for(model)
+    }
 }
 
 /// The sub-agents' way to the agent: its permissions and its bill.
@@ -120,6 +127,27 @@ impl crate::subagent::Host for StateHost {
             exit_code: None,
             duration_ms: call.duration_ms,
         });
+    }
+
+    async fn reserve(
+        &self,
+        model: &str,
+        pricing: Option<Pricing>,
+        input_tokens: u64,
+        max_tokens: u32,
+    ) -> Result<(u32, budget::Flight), String> {
+        let Some(state) = self.state.upgrade() else { return Ok((max_tokens, budget::Flight::default())) };
+        let st = state.lock().await;
+        let pricing = pricing.or_else(|| main_pricing(&st, model));
+        budget::admit(
+            st.session.id(),
+            st.cost,
+            st.budget,
+            st.config.agent.max_cost_day,
+            pricing,
+            input_tokens,
+            max_tokens,
+        )
     }
 
     async fn spent(&self, model: &str, usage: Usage, pricing: Option<Pricing>) -> f64 {

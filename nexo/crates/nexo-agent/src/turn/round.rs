@@ -111,6 +111,33 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
         if cancel.is_cancelled() {
             return TurnEnd::Interrupted;
         }
+        // what is in flight counts against the limits, and a reply the rest of the budget could not pay is asked
+        // for shorter: the request goes out with the cap this leaves
+        let flight = {
+            let st = state.lock().await;
+            let input = (st.est_sent as f64 * st.tok_ratio.unwrap_or(1.0)).round() as u64;
+            let priced = main_pricing(&st, &req.model);
+            let admitted = budget::admit(
+                st.session.id(),
+                st.cost,
+                st.budget,
+                st.config.agent.max_cost_day,
+                priced,
+                input,
+                req.max_tokens,
+            );
+            drop(st);
+            match admitted {
+                Ok((cap, hold)) => {
+                    req.max_tokens = cap;
+                    hold
+                }
+                Err(why) => {
+                    notice(&events, Level::Error, why);
+                    return TurnEnd::Error;
+                }
+            }
+        };
         emit(&events, AgentEvent::AssistantStart);
         // the request is out: until its first word the wait is the model's
         preparing(&events, PREP_MODEL);
@@ -313,6 +340,7 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
             if !usage.is_empty() {
                 let model = req.model.clone();
                 add_usage(&mut st, &events, &model, usage, call, UsageKind::Main);
+                drop(flight);
                 // an estimate has no input side: it says nothing about the cache or the token ratio
                 if !estimated {
                     st.policy.usage(call.cache_read, call.total_input());
