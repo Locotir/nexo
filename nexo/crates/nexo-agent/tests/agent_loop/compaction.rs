@@ -170,3 +170,26 @@ async fn compact_does_not_summarise_every_round_a_request_its_fixed_part_keeps_o
     assert_eq!(reqs[4].messages.len(), 9, "the history is as it was");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_summary_cut_by_max_tokens_is_not_applied() {
+    let d = test_tmpdir().unwrap();
+    let mut cut_summary = text("HALF A SUMM");
+    for e in &mut cut_summary {
+        if let StreamEvent::Finish(f) = e {
+            *f = FinishReason::Length;
+        }
+    }
+    let client = Scripted::new(vec![Reply::Events(text("first answer")), Reply::Events(cut_summary)]);
+    let mut r = start(client.clone(), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "one".into(), attachments: vec![] });
+    r.turn().await;
+    r.send(AgentCommand::Compact);
+    let evs = r.until(|e| matches!(e, AgentEvent::Notice { level: Level::Error, .. })).await;
+    let n = notices(&evs);
+    assert!(n.iter().any(|t| t.contains("cut short") && t.contains("history was kept")), "{n:?}");
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Compacted { .. })), "{evs:?}");
+    assert_eq!(client.requests().len(), 2, "one answer, one summary call");
+    r.stop().await;
+}

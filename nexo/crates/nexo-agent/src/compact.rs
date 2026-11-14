@@ -10,7 +10,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use nexo_core::message::{estimate_tokens, Message, Part, Role};
 use nexo_core::provider::ModelRequest;
-use nexo_core::stream::{Collector, StreamEvent, Usage};
+use nexo_core::stream::{Collector, FinishReason, StreamEvent, Usage};
 
 use crate::client::{ModelClient, Target};
 
@@ -79,6 +79,9 @@ impl Summariser {
                 anyhow::bail!("summary failed: {e}");
             }
             c.push(ev);
+        }
+        if matches!(c.finish_reason(), FinishReason::Length | FinishReason::ContentFilter | FinishReason::Error) {
+            anyhow::bail!("the summary came back cut short, so the history was kept as it was");
         }
         let text = c.message().text();
         if text.trim().is_empty() {
