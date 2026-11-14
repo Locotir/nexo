@@ -28,8 +28,11 @@ const INIT: Duration = Duration::from_secs(20);
 /// After diagnostics arrive, how long to wait for more (servers publish in waves).
 const SETTLE: Duration = Duration::from_millis(1500);
 
-/// The most an `edit`/`write` waits for an already running server before it reports nothing.
-pub const QUICK: Duration = Duration::from_millis(1500);
+/// The most an `edit`/`write` waits for an already running server before it reports nothing. Unit
+/// tests run hundreds of tests at once on a busy machine, where the fake server in them sometimes needs
+/// more than 1.5 s to answer; there it is 4 s, still under the 5 s the slow fake sleeps, so the test of
+/// a slow server keeps seeing the edit give up.
+pub const QUICK: Duration = if cfg!(test) { Duration::from_secs(4) } else { Duration::from_millis(1500) };
 /// After the first diagnostics of a quick check, how long to wait for more.
 const QUICK_SETTLE: Duration = Duration::from_millis(100);
 
