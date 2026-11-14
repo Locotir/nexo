@@ -547,9 +547,16 @@ impl App {
                     }
                 }
                 let block = Block::Added { parts, folded: true };
-                if matches!(self.blocks.get(i + 1), Some(Block::Added { .. })) {
-                    self.blocks[i + 1] = block;
-                    self.invalidate(i + 1);
+                // the line read back from the message's text, when the history drew one: not always the
+                // block next to the message (a message that waited has the warning and the agent's notices
+                // under its dim line, which is where it was put back), so it is looked for up to the next message
+                let read_back = self.blocks[i + 1..]
+                    .iter()
+                    .take_while(|b| !matches!(b, Block::User { .. }))
+                    .position(|b| matches!(b, Block::Added { parts, .. } if !parts.iter().all(|p| p.request_only)));
+                if let Some(at) = read_back.map(|k| i + 1 + k) {
+                    self.blocks[at] = block;
+                    self.invalidate(at);
                 } else {
                     self.invalidate(i);
                     self.push(block);

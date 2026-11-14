@@ -215,3 +215,30 @@ fn goal_brief_shows_as_restating_the_goal_and_its_result_is_the_goal_shown() {
     a.handle_agent(AgentEvent::ToolDone { id: "g1".into(), output: ToolOutput::ok("ok"), elapsed_ms: 3 });
     assert_eq!(a.goal.as_ref().map(|g| g.text.as_str()), Some(want));
 }
+
+/// How many "what nexo added" lines the transcript holds.
+fn added_lines(a: &App) -> usize {
+    a.blocks.iter().filter(|b| matches!(b, Block::Added { .. })).count()
+}
+
+#[test]
+fn a_message_that_waited_behind_other_lines_gets_one_added_line() {
+    use nexo_core::agent::{AddedKind::StartNote, AddedPart};
+    let t0 = Instant::now();
+    let (mut a, _rx) = app();
+    fx_at(&mut a, t0, 0);
+    a.input.set_text("fix the bug");
+    a.submit();
+    // the message sits waiting: the warning, then a notice of the agent's setup, are drawn under its dim line
+    fx_at(&mut a, t0, 3_100);
+    a.tick();
+    a.notice(Level::Info, "setting up");
+    // the agent echoes it with the start note nexo put with it, then says what it added
+    let note = "[project at the start of this request]\nattached: 2 files";
+    a.handle_agent(AgentEvent::History {
+        index: 0,
+        message: Message::user(format!("{note}\n\n{}\nfix the bug", nexo_core::agent::PERSON_MARK)),
+    });
+    a.handle_agent(AgentEvent::Added { index: 0, parts: vec![AddedPart::new(StartNote, "project", note)] });
+    assert_eq!(added_lines(&a), 1, "one line for one message");
+}
