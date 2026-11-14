@@ -36,13 +36,13 @@ const FIXED_32K: u64 = 2_400;
 /// `switch_browser` 94 more; trimming the browser's short text took 208 off (the rules for the person's own browser come in
 /// the result of `select_browser`). `find{target}`, the mouse verbs with `modifiers?` and `network{to?}` add 107
 /// (measured 12 009). Saying that `browsers` lists the person's logged-in browsers took 1 more (12 010).
-const SCHEMA_CEILING: usize = 12_010;
+const SCHEMA_CEILING: usize = 12_080;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
-const TASK_WITH_OWN_KINDS: usize = 1_845;
-/// What those kinds may add to the tools of a session, over [`SCHEMA_CEILING`]: `task` takes 655 of it
+const TASK_WITH_OWN_KINDS: usize = 1_915;
+/// What those kinds may add to the tools of a session, over [`SCHEMA_CEILING`]: `task` takes 725 of it
 /// with the two built-in kinds alone.
-const OWN_KINDS_BUDGET: usize = TASK_WITH_OWN_KINDS - 655;
+const OWN_KINDS_BUDGET: usize = TASK_WITH_OWN_KINDS - 725;
 
 fn map(list: &[(&str, ProviderConfig)]) -> BTreeMap<String, ProviderConfig> {
     list.iter().map(|(n, c)| (n.to_string(), c.clone())).collect()
@@ -125,6 +125,27 @@ async fn any_provider_name_is_offered_and_an_unknown_one_is_answered_with_the_na
     let out = sub.run(json!({"prompt": "look", "provider": "nope"}), &ToolContext::new(dir.path().into())).await;
     assert!(out.is_error, "{out:?}");
     assert_eq!(out.content, "no provider `nope` is set up; there are: alpha, beta, gamma");
+}
+
+#[test]
+fn clean_launch_excludes_shared_memory_even_when_profile_lists_it() {
+    let mut tools = nexo_tools::builtin();
+    tools.add(Arc::new(crate::share_tool::ReadSharedMemory));
+    tools.add(Arc::new(crate::share_tool::WriteSharedMemory));
+    let sub =
+        SubAgent::new(Arc::new(Mute), Target::new("p", cfg("m", &[]), "m"), &tools, Vec::new(), Default::default());
+    let general = builtin().into_iter().find(|p| p.name == "general").unwrap();
+    let profile = Profile {
+        tools: Some(vec!["shared_memory_read".into(), "shared_memory_write".into(), "read".into()]),
+        ..general
+    };
+    let normal = sub.tools_for_launch(&profile, false);
+    assert!(normal.get("shared_memory_read").is_some());
+    assert!(normal.get("shared_memory_write").is_some());
+    let clean = sub.tools_for_launch(&profile, true);
+    assert!(clean.get("shared_memory_read").is_none());
+    assert!(clean.get("shared_memory_write").is_none());
+    assert!(clean.get("read").is_some());
 }
 
 #[test]

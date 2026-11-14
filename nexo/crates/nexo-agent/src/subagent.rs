@@ -275,11 +275,38 @@ impl SubAgent {
         set
     }
 
+    /// A clean start does not offer the shared-memory tools, even to custom profiles.
+    fn tools_for_launch(&self, profile: &Profile, start_clean: bool) -> ToolSet {
+        let all = self.tools_for(profile);
+        if !start_clean {
+            return all;
+        }
+        let mut clean = ToolSet::new();
+        for spec in all.specs() {
+            if !matches!(spec.name.as_str(), "shared_memory_read" | "shared_memory_write") {
+                if let Some(tool) = all.get(&spec.name) {
+                    clean.add(tool.clone());
+                }
+            }
+        }
+        clean
+    }
+
     /// Starts one sub-agent as a job and a task of its own and returns at once with the way to its end. The
     /// `task` tool and the workflow runner both start theirs here, so a sub-agent has the same hooks,
     /// briefing, claims, registry entry and permission questions whoever started it.
     pub(crate) async fn launch(&self, l: Launch<'_>, ctx: &ToolContext) -> Result<Started, String> {
-        let Launch { agent: name, prompt, provider, model, description, title, background: asked, detachable } = l;
+        let Launch {
+            agent: name,
+            prompt,
+            provider,
+            model,
+            description,
+            title,
+            background: asked,
+            detachable,
+            start_clean,
+        } = l;
         let Some(profile) = self.profiles.iter().find(|p| p.name == name).cloned() else {
             // the text of `task` in a request holds the start of each description: here they are whole, so
             // the next call can name the right kind
@@ -332,7 +359,7 @@ impl SubAgent {
             for f in &o.failures {
                 ctx.report(f.clone());
             }
-            if o.context.is_empty() {
+            if start_clean || o.context.is_empty() {
                 prompt.to_string()
             } else {
                 format!("{prompt}\n\n{}", o.context.join("\n\n"))
@@ -342,7 +369,9 @@ impl SubAgent {
         let own_words = description.unwrap_or(prompt);
         let prompt = prompt_owned.as_str();
         let briefing = match &host {
-            Some(h) if self.brief.tokens > 0 => brief::build(prompt, &h.history().await, &ctx.cwd, &self.brief).await,
+            Some(h) if !start_clean && self.brief.tokens > 0 => {
+                brief::build(prompt, &h.history().await, &ctx.cwd, &self.brief).await
+            }
             _ => None,
         };
         let mut run = Run {
@@ -350,7 +379,7 @@ impl SubAgent {
             target: self.target.clone(),
             provider,
             model,
-            tools: self.tools_for(&profile),
+            tools: self.tools_for_launch(&profile, start_clean),
             profile,
             host,
             claims: ctx.claims.clone(),
@@ -591,6 +620,7 @@ impl Tool for SubAgent {
                 "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."},
                 "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
                 "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
+                "start_clean": {"type": "boolean", "description": "No briefing, hook context or shared-memory tools; profile and project tools remain."},
                 "model": {"type": "string", "description": "Another model for this sub-agent, only when the person asks for one."}
             },
             "required": ["prompt"]
@@ -620,6 +650,7 @@ impl Tool for SubAgent {
             params: &[
                 ("prompt", "The whole task, naming files and symbols"),
                 ("background", "Run as a job"),
+                ("start_clean", "No inherited context"),
                 ("model", "Only if the person asks"),
                 ("provider", "Only if the person asks"),
             ],
@@ -678,6 +709,11 @@ impl Tool for SubAgent {
         let asked_for = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
         let asked = matches!(args.get("background"), Some(Value::Bool(true)))
             || args.get("background").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("true"));
+        let start_clean = match args.get("start_clean") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => return ToolOutput::error("`start_clean` must be a boolean"),
+        };
         let launch = Launch {
             agent: name,
             prompt,
@@ -687,6 +723,7 @@ impl Tool for SubAgent {
             title: None,
             background: asked,
             detachable: true,
+            start_clean,
         };
         let Started { id, label, run_id, rx, attached, inline, .. } = match self.launch(launch, ctx).await {
             Ok(s) => s,
@@ -764,6 +801,8 @@ pub(crate) struct Launch<'a> {
     /// The call that waits for it may let go of it when the person writes or presses the key, and sees its
     /// progress lines. A workflow keeps its sub-agents until they end: false.
     pub detachable: bool,
+    /// Omit inherited conversation and shared-memory access.
+    pub start_clean: bool,
 }
 
 /// A sub-agent at work, as whoever started it sees it.

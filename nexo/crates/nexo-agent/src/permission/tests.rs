@@ -267,6 +267,8 @@ fn deny_beats_allow_beats_mode() {
     assert!(matches!(p.decide("bash", ToolKind::Exec, &json!({"command": "ls"}), &c), Decision::Deny(_)));
     assert_eq!(p.decide("grep", ToolKind::Search, &json!({"pattern": "a"}), &c), Decision::Allow);
     assert_eq!(p.decide("exit_plan", ToolKind::Other, &json!({"plan": "x"}), &c), Decision::Allow);
+    assert_eq!(p.decide("task", ToolKind::Search, &json!({}), &c), Decision::Deny("plan mode".into()));
+    assert_eq!(p.decide("workflow", ToolKind::Other, &json!({}), &c), Decision::Deny("plan mode".into()));
     assert_eq!(p.decide("ask_user", ToolKind::Other, &json!({}), &c), Decision::Allow);
 }
 

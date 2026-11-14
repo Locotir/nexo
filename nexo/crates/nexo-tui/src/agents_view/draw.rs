@@ -691,8 +691,42 @@ impl AgentsView {
         f.render_widget(Paragraph::new(Line::from(spans)).style(bg), r);
     }
 
+    /// Only label a workflow when the last observed tool step names it; a step is not a run status.
+    fn workflow_step(step: Option<&str>) -> Option<&str> {
+        let step = step?.trim();
+        let name = step.split_whitespace().next()?;
+        name.eq_ignore_ascii_case("workflow").then_some(step)
+    }
+
+    fn coordination(&self, row: &AgentRow) -> Vec<String> {
+        let mut parts = Vec::new();
+        if let Some(parent) = &row.parent {
+            let name = self.rows.iter().find(|r| &r.key == parent).map_or(parent.as_str(), |r| r.name.as_str());
+            parts.push(format!("subagent of {name}"));
+        }
+        if !row.subs.is_empty() {
+            let running = Self::running_subs(row);
+            parts.push(format!("subagents {running} active / {} total", row.subs.len()));
+            let children = row
+                .subs
+                .iter()
+                .map(|(key, state)| {
+                    let name = self.rows.iter().find(|r| &r.key == key).map_or(key.as_str(), |r| r.name.as_str());
+                    format!("{name}: {}", state.label())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(children);
+        }
+        if let Some(step) = Self::workflow_step(row.last_step.as_deref()) {
+            parts.push(format!("last workflow: {step}"));
+        }
+        parts
+    }
+
     pub(super) fn detail(&self, row: &AgentRow, theme: &Theme, w: usize) -> Vec<Span<'static>> {
-        let mut parts: Vec<String> = Vec::new();
+        // Coordination goes first so it remains visible when paths or session keys are long.
+        let mut parts = self.coordination(row);
         if let Some(c) = &row.cwd {
             parts.push(c.clone());
         }
@@ -805,6 +839,15 @@ mod tests {
         let fixed = legible(&t, faint);
         assert!(ratio(fixed, t.modal_bg) >= 4.5, "{fixed:?}");
         assert_eq!(legible(&Theme::mono(), faint), faint);
+    }
+
+    #[test]
+    fn workflow_label_uses_only_the_observed_tool_step() {
+        assert_eq!(AgentsView::workflow_step(Some("workflow  review")), Some("workflow  review"));
+        assert_eq!(AgentsView::workflow_step(Some("Workflow  build")), Some("Workflow  build"));
+        assert_eq!(AgentsView::workflow_step(Some("read  workflow.toml")), None);
+        assert_eq!(AgentsView::workflow_step(Some("workflowing")), None);
+        assert_eq!(AgentsView::workflow_step(None), None);
     }
 
     #[test]

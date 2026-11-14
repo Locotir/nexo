@@ -116,11 +116,14 @@ impl Policy {
         if ALWAYS_ALLOWED.contains(&tool) {
             return Decision::Allow;
         }
+        if self.mode == PermissionMode::Plan && matches!(tool, "task" | "workflow") {
+            return Decision::Deny("plan mode".into());
+        }
         // reading a web page changes nothing here: read-only mode still asks for it
         let reads = matches!(kind, ToolKind::Read | ToolKind::Search | ToolKind::Network);
-        // a workflow is asked about as it is in every mode, also where only reads run: like `task`, what its
-        // sub-agents do is decided call by call
-        if self.mode.reads_only() && !reads && tool != "workflow" {
+        // A plan must not start a workflow before the person approves it. Read-only mode still
+        // permits workflows subject to their normal approval and per-call permissions.
+        if self.mode.reads_only() && !reads && !(tool == "workflow" && self.mode == PermissionMode::ReadOnly) {
             return Decision::Deny(format!("{} mode", self.mode.as_str()));
         }
         // it reads, but by starting the project's own build tools (build scripts, macros, plugins),

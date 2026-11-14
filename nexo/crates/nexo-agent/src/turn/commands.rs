@@ -187,6 +187,30 @@ pub(super) async fn share_memory(state: &Shared, id: Option<String>, focus: Opti
     }
 }
 
+/// User-facing operations on the same locked coordination store used by the tools.
+pub(super) async fn read_shared_memory(state: &Shared, since: u64) {
+    let st = state.lock().await;
+    match crate::share::read_since(since) {
+        Ok(entries) if entries.is_empty() => {
+            notice(&st.events, Level::Info, "No shared memory entries after this epoch.")
+        }
+        Ok(entries) => notice(
+            &st.events,
+            Level::Info,
+            format!("Shared memory (continue after the last epoch):\n{}", crate::share::block(&entries)),
+        ),
+        Err(e) => notice(&st.events, Level::Error, format!("cannot read shared memory: {e}")),
+    }
+}
+
+pub(super) async fn append_shared_memory(state: &Shared, text: &str) {
+    let st = state.lock().await;
+    match crate::share::append(st.session.id(), text) {
+        Ok(entry) => notice(&st.events, Level::Info, format!("Shared: {}", crate::share::block(&[entry]))),
+        Err(e) => notice(&st.events, Level::Error, format!("cannot write shared memory: {e}")),
+    }
+}
+
 /// How much of another session one share brings, at most (tokens).
 pub(super) const SHARE_TOKENS: usize = 4000;
 

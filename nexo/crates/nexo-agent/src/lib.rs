@@ -42,6 +42,8 @@ pub mod sent;
 pub mod session;
 pub mod session_scan;
 pub mod setup;
+pub mod share;
+mod share_tool;
 pub mod subagent;
 pub mod supervise;
 mod turn;

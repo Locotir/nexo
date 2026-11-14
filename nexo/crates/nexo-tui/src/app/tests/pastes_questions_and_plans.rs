@@ -187,6 +187,26 @@ fn plan_mode_shows_on_the_rule_and_a_known_command_is_coloured() {
 }
 
 #[test]
+fn ultracode_starts_a_plan_only_when_idle_and_given_a_task() {
+    let (mut a, mut rx) = app();
+    assert_eq!(commands::parse("/ultracode build it"), Some(Command::Ultracode(Some("build it".into()))));
+    a.input.set_text("/ultracode");
+    a.submit();
+    assert!(rx.try_recv().is_err());
+    a.busy = true;
+    a.input.set_text("/ultracode build it");
+    a.submit();
+    assert!(rx.try_recv().is_err());
+    a.busy = false;
+    a.input.set_text("/ultracode build it");
+    a.submit();
+    assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(PermissionMode::Plan))));
+    assert!(
+        matches!(rx.try_recv(), Ok(AgentCommand::Ultracode { text, .. }) if text.contains("exit_plan") && text.ends_with("Task:\nbuild it"))
+    );
+}
+
+#[test]
 fn shift_tab_walks_the_modes_through_plan_and_slash_plan_sends_the_text() {
     let (mut a, mut rx) = app();
     let mut modes = Vec::new();

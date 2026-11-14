@@ -145,6 +145,14 @@ impl App {
 
     /// Enter on the draft.
     pub fn submit(&mut self) {
+        self.submit_with_kind(false);
+    }
+
+    pub(super) fn submit_ultracode(&mut self) {
+        self.submit_with_kind(true);
+    }
+
+    fn submit_with_kind(&mut self, ultracode: bool) {
         if self.in_sub() {
             return self.submit_sub();
         }
@@ -251,7 +259,12 @@ impl App {
             self.unechoed.push((trimmed.to_string(), self.now(), false));
             self.push(Block::Pending { text: trimmed.to_string() });
         }
-        self.send(AgentCommand::Submit { text: trimmed.to_string(), attachments });
+        let text = trimmed.to_string();
+        self.send(if ultracode {
+            AgentCommand::Ultracode { text, attachments }
+        } else {
+            AgentCommand::Submit { text, attachments }
+        });
         self.scroll_to_end();
     }
 
@@ -490,7 +503,7 @@ impl App {
         self.modal = Some(Modal::Picker(Picker::new(PickKind::Queue, "Queued · Enter edit", items, None)));
     }
 
-    /// `/shared-memory list`: the memory of other sessions that goes with the next message.
+    /// `/mem list`: the memory of other sessions that goes with the next message.
     pub fn open_shared(&mut self) {
         if self.shared.is_empty() {
             return self.notice(Level::Info, "no shared memory waits for the next message");

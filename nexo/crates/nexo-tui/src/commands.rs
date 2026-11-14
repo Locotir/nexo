@@ -38,6 +38,7 @@ pub const COMMANDS: &[Spec] = &[
     ),
     spec("add-dir", &["adddir"], "<folder>", "let the file tools read and write in one more folder"),
     spec("plan", &["planning"], "[text|off]", "plan mode: reads only, then a plan to approve; with text: sends it"),
+    spec("ultracode", &[], "<task>", "plan a coordinated multi-agent task for approval"),
     spec(
         "prompt",
         &["system"],
@@ -109,6 +110,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("theme", &[], "[name]", "change the colours (a picker without a name)"),
     spec("copy", &[], "[code]", "copy the last reply to the clipboard; `code`: its last code block"),
     spec("quit", &["exit", "q"], "", "leave nexo"),
+    spec("shared-memory", &[], "[read [epoch]|write <text>]", "read or append coordination notes shared with agents"),
     spec("todo", &["tasks"], "", "the todo list, every item with its state"),
     spec("queue", &["queued"], "", "the requests waiting for the turn to end; pick one to edit it"),
 ];
@@ -154,6 +156,8 @@ pub enum Command {
     Sandbox(Option<nexo_core::sandbox::SandboxMode>),
     /// `/plan` turns plan mode on, `/plan text` also sends the text, `/plan off` leaves it.
     Plan(Option<String>),
+    /// Plan a coordinated task before any agents are launched.
+    Ultracode(Option<String>),
     Prompt,
     PromptEdit,
     /// `/memory [user]`: the project's instructions file, or the person's own, in $EDITOR.
@@ -176,6 +180,7 @@ pub enum Command {
     Undelete(Option<String>),
     /// Share another session's memory with this one: `id [focus]`, `off`, or None to pick.
     Mem(Option<String>),
+    SharedMemory(Option<String>),
     /// `/todo`: the todo list.
     Todo,
     /// `/queue`: the requests waiting for the turn to end.
@@ -257,7 +262,7 @@ const HIDDEN: &[(&str, &str, &str)] = &[
     ("tree", "resume", "tree"),
     ("undelete", "resume", "undelete"),
     ("restore", "resume", "undelete"),
-    ("shared-memory", "memory", "share"),
+    ("mem", "memory", "share"),
     ("memory-shared", "memory", "share"),
     ("share", "memory", "share"),
     ("note", "memory", "add"),
@@ -375,11 +380,13 @@ pub fn parse(line: &str) -> Option<Command> {
             },
         },
         "plan" => Command::Plan(arg),
+        "ultracode" => Command::Ultracode(arg),
         "prompt" => match arg.as_deref() {
             Some("edit") | Some("e") => Command::PromptEdit,
             Some(a) => Command::BadArgument("prompt".into(), a.to_string()),
             None => Command::Prompt,
         },
+        "shared-memory" => Command::SharedMemory(arg),
         "memory" => match arg.as_deref() {
             None => Command::Memory { user: false },
             Some("user") => Command::Memory { user: true },
@@ -497,14 +504,14 @@ pub fn hits(q: &str, s: &str) -> Vec<usize> {
 
 /// The palette's sections when nothing is typed, each with its commands in order.
 pub const GROUPS: &[(&str, &[&str])] = &[
-    ("common", &["model", "permissions", "resume", "plan", "compact", "clear", "help", "effort"]),
+    ("common", &["model", "permissions", "resume", "plan", "ultracode", "compact", "clear", "help", "effort"]),
     ("session", &["fork", "rewind", "undo", "rename", "msg", "export", "goal", "queue"]),
     ("model", &["logout", "fast", "pricing", "prompt", "memory", "budget"]),
     (
         "context and tools",
         &[
             "context", "sent", "cost", "tools", "hooks", "mcp", "chrome", "skills", "plugins", "jobs", "panel", "todo",
-            "diff", "init", "review", "commit", "pr", "status",
+            "diff", "shared-memory", "init", "review", "commit", "pr", "status",
         ],
     ),
     ("settings", &["settings", "sandbox", "add-dir", "theme"]),
@@ -727,7 +734,7 @@ mod tests {
         assert_eq!(parse("/sessions"), Some(Command::Sessions));
         assert_eq!(parse("/resume parser fix"), Some(Command::Resume("parser fix".into())));
         assert_eq!(parse("/undelete"), Some(Command::Undelete(None)));
-        assert_eq!(parse("/shared-memory s1 the parser"), Some(Command::Mem(Some("s1 the parser".into()))));
+        assert_eq!(parse("/mem s1 the parser"), Some(Command::Mem(Some("s1 the parser".into()))));
         assert_eq!(parse("/restore 2026-1"), Some(Command::Undelete(Some("2026-1".into()))));
         assert_eq!(parse("/export notes.md"), Some(Command::Export(Some("notes.md".into()))));
         assert_eq!(parse("/save"), Some(Command::Export(None)));
@@ -790,8 +797,8 @@ mod tests {
             ("/undelete s1", Command::Undelete(Some("s1".into()))),
             ("/restore s1", Command::Undelete(Some("s1".into()))),
             ("/resume undelete s1", Command::Undelete(Some("s1".into()))),
-            ("/shared-memory", Command::Mem(None)),
-            ("/shared-memory list", Command::Mem(Some("list".into()))),
+            ("/shared-memory", Command::SharedMemory(None)),
+            ("/shared-memory read 1", Command::SharedMemory(Some("read 1".into()))),
             ("/share s1 the tabs", Command::Mem(Some("s1 the tabs".into()))),
             ("/memory-shared off", Command::Mem(Some("off".into()))),
             ("/memory share off", Command::Mem(Some("off".into()))),
@@ -817,7 +824,7 @@ mod tests {
             "tree",
             "undelete",
             "restore",
-            "shared-memory",
+            "mem",
             "memory-shared",
             "share",
             "note",
@@ -828,7 +835,7 @@ mod tests {
             assert!(lookup(old).is_some(), "/{old} no longer resolves");
             assert!(GROUPS.iter().all(|(_, m)| !m.contains(&old)), "/{old} is in a menu group");
         }
-        assert_eq!(COMMANDS.len(), 47, "the menu has grown or shrunk: update this on purpose");
+        assert_eq!(COMMANDS.len(), 49, "the menu has grown or shrunk: update this on purpose");
         for old in ["provider", "keys", "config", "yolo"] {
             assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
         }

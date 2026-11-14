@@ -67,6 +67,7 @@ pub(super) async fn start_prompt(
     state: &Shared,
     text: String,
     attachments: Vec<Attachment>,
+    ultracode: bool,
     cancel: CancellationToken,
 ) -> Option<JoinHandle<TurnEnd>> {
     // taken: said at once, before the hooks and the start of the turn (they can take seconds)
@@ -80,7 +81,7 @@ pub(super) async fn start_prompt(
         return None;
     }
     state.lock().await.hook_context.extend(o.context);
-    Some(begin_turn(state, text, attachments, true, cancel).await)
+    Some(begin_turn(state, text, attachments, true, ultracode, cancel).await)
 }
 
 /// Starts a turn on a message that is not the person's own words (mail, the goal loop, a job note, the
@@ -91,7 +92,7 @@ pub(super) async fn start_turn(
     attachments: Vec<Attachment>,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
-    begin_turn(state, text, attachments, false, cancel).await
+    begin_turn(state, text, attachments, false, false, cancel).await
 }
 
 /// Starts a turn on ``text``. When the person wrote it (``person``), everything nexo adds (shared memory, hook
@@ -105,6 +106,7 @@ async fn begin_turn(
     text: String,
     attachments: Vec<Attachment>,
     person: bool,
+    ultracode: bool,
     cancel: CancellationToken,
 ) -> JoinHandle<TurnEnd> {
     let events = state.lock().await.events.clone();
@@ -159,6 +161,11 @@ async fn prepare_turn(
     let check = orient::start_check(state, cancel).await;
     {
         let mut st = state.lock().await;
+        if ultracode {
+            let (provider, _, model) = st.target.get();
+            let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+            first.push(ultracode::facts(&st.config, &provider, &model, now));
+        }
         // the project files nexo includes by itself: the ones the message names, then the small ones in the budget
         let (mut own, known) = named_files(&st, &text, &attachments);
         let with: Vec<Attachment> = attachments.iter().chain(&own).cloned().collect();

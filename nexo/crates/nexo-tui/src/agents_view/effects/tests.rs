@@ -107,6 +107,26 @@ fn row_text(b: &Buffer, y: u16, x0: u16, x1: u16) -> String {
 }
 
 #[test]
+fn panel_detail_shows_observed_workflow_and_subagent_states() {
+    let mut parent = agent("parent", State::Working);
+    parent.last_step = Some("workflow  review".into());
+    parent.subs = vec![("child".into(), State::Working), ("finished".into(), State::Done)];
+    let mut child = agent("child", State::Working);
+    child.name = "reviewer".into();
+    child.parent = Some("parent".into());
+    let mut v = AgentsView::with_rows(vec![parent, child], NOW, false);
+    let b = paint(&mut v, 150, 30, Instant::now(), false);
+    let text = (0..b.area.height).map(|y| row_text(&b, y, 0, b.area.width)).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("subagents 1 active / 2 total"), "{text}");
+    assert!(text.contains("reviewer: working"), "{text}");
+    assert!(text.contains("finished: done"), "{text}");
+    assert!(text.contains("last workflow: workflow  review"), "{text}");
+    let child = v.rows().iter().find(|r| r.key == "child").unwrap();
+    let details = v.detail(child, &Theme::dark(), 80).into_iter().map(|s| s.content.into_owned()).collect::<String>();
+    assert!(details.contains("subagent of parent"), "{details}");
+}
+
+#[test]
 fn a_draw_with_the_motion_off_asks_for_no_frame_even_when_the_fleet_is_busy() {
     let t0 = Instant::now();
     let mut v =

@@ -103,7 +103,7 @@ fn mem_shares_another_sessions_memory_and_shows_it_waiting() {
     let (mut a, mut rx) = app();
     a.session_id = Some("here".into());
     a.opts.sessions = vec![("here".into(), "this one".into()), ("s1".into(), "the parser".into())];
-    a.input.set_text("/shared-memory");
+    a.input.set_text("/mem");
     a.submit();
     let Some(Modal::Picker(p)) = &a.modal else { panic!("a picker") };
     assert_eq!(p.items.len(), 1, "this session is not offered");
@@ -113,12 +113,12 @@ fn mem_shares_another_sessions_memory_and_shows_it_waiting() {
     assert!(crate::ui::hint_right_text(&a).contains("⊕ mem 1 · 2.1k"), "{}", crate::ui::hint_right_text(&a));
     let rows = frame(&mut a, 120, 20).join("\n");
     assert!(rows.contains("what «the parser» knows goes with your next message"), "{rows}");
-    a.input.set_text("/shared-memory s1 the tokenizer tabs");
+    a.input.set_text("/mem s1 the tokenizer tabs");
     a.submit();
     assert!(
         matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: Some(i), focus: Some(f) }) if i == "s1" && f == "the tokenizer tabs")
     );
-    a.input.set_text("/shared-memory off");
+    a.input.set_text("/mem off");
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::ShareMemory { id: None, .. })));
     a.handle_agent(AgentEvent::MemoryShared { pending: vec![] });
@@ -293,4 +293,23 @@ fn the_arrows_walk_the_blocks_and_open_and_fold_them() {
     // with a draft, the arrows are the editor's
     press(&mut a, KeyCode::Left);
     assert!(matches!(a.blocks[3], Block::Tool { folded: false, .. }));
+}
+
+#[test]
+fn shared_memory_commands_use_the_coordination_store() {
+    let (mut a, mut rx) = app();
+    for (line, expected) in [
+        ("/shared-memory", AgentCommand::ReadSharedMemory { since: 0 }),
+        ("/shared-memory read 42", AgentCommand::ReadSharedMemory { since: 42 }),
+        ("/shared-memory write hello world", AgentCommand::WriteSharedMemory { text: "hello world".into() }),
+    ] {
+        a.input.set_text(line);
+        a.submit();
+        assert_eq!(rx.try_recv().unwrap(), expected);
+    }
+    for line in ["/shared-memory read -1", "/shared-memory write", "/shared-memory nonsense"] {
+        a.input.set_text(line);
+        a.submit();
+        assert!(rx.try_recv().is_err());
+    }
 }

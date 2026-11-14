@@ -96,7 +96,7 @@ pub enum HintHit {
     Todo,
     /// `⚙ N jobs`: `/jobs`.
     Jobs,
-    /// `⊕ mem`: `/shared-memory list`.
+    /// `⊕ mem`: `/mem list`.
     Mem,
     /// `◷ N queued`: `/queue`.
     Queued,

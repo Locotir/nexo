@@ -67,6 +67,7 @@ mod settings;
 mod start;
 mod state;
 mod tools;
+mod ultracode;
 mod verify;
 
 use hook_calls::*;
@@ -130,6 +131,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let audit = Audit::from_config(&config.audit);
     let limits = limits::resolve(&provider, &pcfg, &model, None);
     let target = Target::new(&provider, pcfg, &model);
+    // Register before taking the sub-agent tool snapshot; the ordinary permission policy applies.
+    tools.add(Arc::new(crate::share_tool::ReadSharedMemory));
+    tools.add(Arc::new(crate::share_tool::WriteSharedMemory));
     // the sub-agents, when there are tools to give them; they reach the state once it exists
     let host: crate::subagent::HostCell = Arc::new(OnceLock::new());
     // what a workflow the person starts by name runs its sub-agents with
@@ -389,7 +393,18 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                         } else {
                             person_spoke(&mut st);
                             drop(st);
-                            turn = start_prompt(&state, text, attachments, cancel.child_token()).await;
+                            turn = start_prompt(&state, text, attachments, false, cancel.child_token()).await;
+                        }
+                    }
+                    AgentCommand::Ultracode { text, attachments } => {
+                        if turn.is_some() {
+                            notice(&events, Level::Warn, "ultracode: wait for the current turn to end");
+                        } else {
+                            let mut st = state.lock().await;
+                            st.goal_round = 0;
+                            person_spoke(&mut st);
+                            drop(st);
+                            turn = start_prompt(&state, text, attachments, true, cancel.child_token()).await;
                         }
                     }
                     AgentCommand::Deliver { mails } => {
@@ -573,6 +588,8 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                     }
                     AgentCommand::DeleteSession { id } => delete_session(&state, &id).await,
                     AgentCommand::ShareMemory { id, focus } => share_memory(&state, id, focus).await,
+                    AgentCommand::ReadSharedMemory { since } => read_shared_memory(&state, since).await,
+                    AgentCommand::WriteSharedMemory { text } => append_shared_memory(&state, &text).await,
                     AgentCommand::ListTrash => {
                         let st = state.lock().await;
                         let sessions = crate::session::trashed().into_iter().map(|m| (m.id, m.title)).collect();
@@ -719,7 +736,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                                 } else {
                                     person_spoke(&mut st);
                                     drop(st);
-                                    turn = start_prompt(&state, text, Vec::new(), cancel.child_token()).await;
+                                    turn = start_prompt(&state, text, Vec::new(), false, cancel.child_token()).await;
                                 }
                             }
                         }
@@ -952,7 +969,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                 };
                 if let Some((text, attachments)) = next {
                     notice(&events, Level::Info, "running the queued request");
-                    turn = start_prompt(&state, text, attachments, cancel.child_token()).await;
+                    turn = start_prompt(&state, text, attachments, false, cancel.child_token()).await;
                 } else if !state.lock().await.mail_wait.is_empty() {
                     let mails = std::mem::take(&mut state.lock().await.mail_wait);
                     turn = Some(deliver_mails(&state, mails, cancel.child_token()).await);

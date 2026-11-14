@@ -209,7 +209,7 @@ impl PlanState {
 /// `exit_plan`: the model shows its plan; the person approves it (plan mode
 /// ends) or sends it back.
 pub struct ExitPlan {
-    /// None without an interface to ask (headless): the plan is approved.
+    /// None when there is no interface to request approval.
     asker: Option<Arc<ChannelAsker>>,
     plan: PlanCell,
 }
@@ -217,16 +217,6 @@ pub struct ExitPlan {
 impl ExitPlan {
     pub fn new(asker: Option<Arc<ChannelAsker>>, plan: PlanCell) -> ExitPlan {
         ExitPlan { asker, plan }
-    }
-}
-
-/// The mode the plan goes ahead in when approved without asking (a run nobody watches):
-/// there nobody can answer an ask, so the plan goes ahead with its edits allowed, or in the
-/// mode the run had before if that allowed more.
-fn after_plan(before: PermissionMode) -> PermissionMode {
-    match before {
-        PermissionMode::Auto => PermissionMode::Auto,
-        _ => PermissionMode::AcceptEdits,
     }
 }
 
@@ -278,13 +268,14 @@ impl Tool for ExitPlan {
         let switch = |mode: PermissionMode| {
             self.plan.lock().unwrap_or_else(|e| e.into_inner()).switch = Some(mode);
         };
+        // Yolo keeps its meaning, but the plan-mode gate stays in force until
+        // the model has actually presented a non-empty plan through this tool.
+        if before == PermissionMode::Auto {
+            switch(PermissionMode::Auto);
+            return ToolOutput::ok("Yolo mode: plan accepted without asking. Carry it out now.");
+        }
         let Some(asker) = &self.asker else {
-            let mode = after_plan(before);
-            switch(mode);
-            return ToolOutput::ok(format!(
-                "The plan is approved ({} mode). Carry it out now, step by step.",
-                mode.as_str()
-            ));
+            return ToolOutput::error("Cannot request plan approval without an interface; stay in plan mode.");
         };
         let q = Question {
             id: ctx.call_id.clone(),
@@ -375,9 +366,6 @@ mod tests {
         assert_eq!((p.mode, p.before), (PermissionMode::Plan, PermissionMode::Auto));
         p.set(PermissionMode::Plan);
         assert_eq!(p.before, PermissionMode::Auto, "entering twice keeps the first");
-        assert_eq!(after_plan(PermissionMode::ReadOnly), PermissionMode::AcceptEdits);
-        assert_eq!(after_plan(PermissionMode::Ask), PermissionMode::AcceptEdits);
-        assert_eq!(after_plan(PermissionMode::Auto), PermissionMode::Auto);
     }
 
     #[tokio::test]
@@ -398,6 +386,24 @@ mod tests {
         let closed = answer.await.unwrap();
         assert!(matches!(closed, Some(AgentEvent::QuestionResolved { id, answer: Some(_) }) if id == "q1"));
         assert_eq!(asker.waiting(), 0);
+    }
+
+    #[tokio::test]
+    async fn yolo_presents_a_nonempty_plan_without_question_and_returns_to_auto() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cell: PlanCell = Arc::default();
+        {
+            let mut state = cell.lock().unwrap();
+            state.set(PermissionMode::Auto);
+            state.set(PermissionMode::Plan);
+        }
+        let tool = ExitPlan::new(Some(ChannelAsker::new(tx)), cell.clone());
+        assert!(tool.run(json!({"plan": " "}), &ctx("p0")).await.is_error);
+        assert_eq!(cell.lock().unwrap().switch, None);
+        let out = tool.run(json!({"plan": "1. do it"}), &ctx("p1")).await;
+        assert!(!out.is_error);
+        assert_eq!(cell.lock().unwrap().switch, Some(PermissionMode::Auto));
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -433,11 +439,11 @@ mod tests {
             assert!(out.content.contains(says), "{answer}: {}", out.content);
             assert_eq!(cell.lock().unwrap().switch, switch, "{answer}");
         }
-        // without an interface the plan goes ahead with its edits allowed
+        // Without an interface there is no approval and the plan stays in place.
         let headless = ExitPlan::new(None, cell.clone());
         cell.lock().unwrap().switch = None;
         let out = headless.run(args, &ctx("p2")).await;
-        assert!(out.content.contains("approved (accept-edits mode)"), "{}", out.content);
-        assert_eq!(cell.lock().unwrap().switch, Some(PermissionMode::AcceptEdits));
+        assert!(out.is_error, "{}", out.content);
+        assert_eq!(cell.lock().unwrap().switch, None);
     }
 }

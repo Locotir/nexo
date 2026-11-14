@@ -249,6 +249,35 @@ async fn a_message_sent_during_a_turn_joins_it_before_the_next_call() {
 }
 
 #[tokio::test]
+async fn shared_store_command_reads_and_writes() {
+    if std::env::var_os("NEXO_SHARED_COMMAND_CHILD").is_none() {
+        let dir = test_tmpdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "session_commands::shared_store_command_reads_and_writes", "--nocapture"])
+            .env("NEXO_SHARED_COMMAND_CHILD", "1")
+            .env("NEXO_SHARED_MEMORY", dir.path().join("memory"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let d = test_tmpdir().unwrap();
+    let mut r = start(Scripted::new(vec![]), config(PermissionMode::Ask), None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::WriteSharedMemory { text: "hello agent".into() });
+    let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(matches!(ev.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("hello agent")));
+    assert_eq!(nexo_agent::share::read_since(0).unwrap()[0].text, "hello agent");
+    nexo_agent::share::append("agent", "reply").unwrap();
+    r.send(AgentCommand::ReadSharedMemory { since: 1 });
+    let ev = r.until(|e| matches!(e, AgentEvent::Notice { .. })).await;
+    assert!(
+        matches!(ev.last(), Some(AgentEvent::Notice { text, .. }) if text.contains("2 | agent | reply") && !text.contains("hello agent"))
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn another_sessions_memory_goes_with_the_next_request_and_sessions_go_to_the_trash() {
     let d = test_tmpdir().unwrap();
     // session A: what it found

@@ -59,6 +59,29 @@ impl App {
                 }
                 _ => self.send(AgentCommand::SetPermissionMode(PermissionMode::Plan)),
             },
+            Command::Ultracode(arg) => {
+                let Some(task) = arg.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+                    self.notice(Level::Info, "/ultracode <task>: describe the work to coordinate");
+                    return;
+                };
+                // Do not change permissions during another turn, or queue a plan behind work already running.
+                if self.busy {
+                    self.notice(Level::Info, "ultracode: wait for the current turn to end");
+                    return;
+                }
+                if self.permission_mode != PermissionMode::Plan {
+                    self.send(AgentCommand::SetPermissionMode(PermissionMode::Plan));
+                }
+                self.input.set_text(&format!("Plan this multi-agent task; do not launch agents while planning. \
+                    Describe the proposed agents, their responsibilities, dependencies and coordination. \
+                    Consider the configured providers, authentication, available subscription quota, model prices and \
+                    an estimated cost; explicitly mark unavailable information unknown, never invent it. \
+                    Respect the current configuration and permissions. Present the plan with exit_plan before launching anything; \
+                    outside yolo wait for approval. After approval, use available task or workflow tools where appropriate. \
+                    Shared-memory tools are available to eligible agents; use task start_clean only if requested, \
+                    and do not claim it isolates project files or removes the agent profile.\n\nTask:\n{task}"));
+                self.submit_ultracode();
+            }
             Command::Prompt => self.send(AgentCommand::ShowPrompt),
             Command::PromptEdit => self.prompt_edit(),
             Command::Memory { user } => self.memory_edit(user),
@@ -260,6 +283,19 @@ impl App {
                         .map(|(id, title)| PickItem { label: id.clone(), value: id.clone(), hint: title.clone() })
                         .collect();
                     self.modal = Some(Modal::Picker(Picker::new(PickKind::Session, "Sessions", items, None)));
+                }
+            }
+            Command::SharedMemory(arg) => {
+                let arg = arg.as_deref().unwrap_or("read");
+                let (op, rest) = arg.split_once(char::is_whitespace).map_or((arg, ""), |(a, b)| (a, b.trim()));
+                match op {
+                    "read" if rest.is_empty() => self.send(AgentCommand::ReadSharedMemory { since: 0 }),
+                    "read" => match rest.parse::<u64>() {
+                        Ok(since) => self.send(AgentCommand::ReadSharedMemory { since }),
+                        Err(_) => self.notice(Level::Error, "shared memory epoch must be a non-negative integer"),
+                    },
+                    "write" if !rest.is_empty() => self.send(AgentCommand::WriteSharedMemory { text: rest.into() }),
+                    _ => self.notice(Level::Error, "usage: /shared-memory [read [epoch]|write <text>]"),
                 }
             }
             Command::Mem(None) => {

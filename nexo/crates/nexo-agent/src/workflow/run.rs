@@ -409,6 +409,7 @@ async fn schedule(
                 title: Some(&u.label),
                 background: false,
                 detachable: false,
+                start_clean: false,
             };
             match sub.launch(launch, ctx).await {
                 Err(refused) => {

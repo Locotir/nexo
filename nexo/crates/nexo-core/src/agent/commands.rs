@@ -10,6 +10,12 @@ pub enum AgentCommand {
         #[serde(default)]
         attachments: Vec<Attachment>,
     },
+    /// Start an ultracode planning request; rejected while another turn is running.
+    Ultracode {
+        text: String,
+        #[serde(default)]
+        attachments: Vec<Attachment>,
+    },
     /// Stop the running turn (tools are cancelled, the partial reply is kept).
     Interrupt,
     /// Send the sub-agents the running turn waits for to the background (they go on; the turn is free).
@@ -108,6 +114,14 @@ pub enum AgentCommand {
     ShareMemory {
         id: Option<String>,
         focus: Option<String>,
+    },
+    /// Read coordination entries newer than an epoch.
+    ReadSharedMemory {
+        since: u64,
+    },
+    /// Append a coordination note to the shared store.
+    WriteSharedMemory {
+        text: String,
     },
     /// Keep only the first `index` messages (the session file is rewritten); the
     /// interface gets `HistoryCleared` and the kept `History` again.

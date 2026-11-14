@@ -137,21 +137,21 @@ fn todo_queue_and_memory_lists_answer_to_slash_commands() {
     let (mut a, mut rx) = app();
     assert_eq!(commands::parse("/todo"), Some(Command::Todo));
     assert_eq!(commands::parse("/queue"), Some(Command::Queue));
-    assert_eq!(commands::parse("/shared-memory list"), Some(Command::Mem(Some("list".into()))));
+    assert_eq!(commands::parse("/mem list"), Some(Command::Mem(Some("list".into()))));
     // no tasks: the window says so, and closes
     a.input.set_text("/todo");
     a.submit();
     assert!(matches!(&a.modal, Some(Modal::Todo(v)) if v.is_empty()));
     a.modal = None;
     // nothing to list: a notice, no window
-    for c in ["/queue", "/shared-memory list"] {
+    for c in ["/queue", "/mem list"] {
         a.input.set_text(c);
         a.submit();
         assert!(a.modal.is_none(), "{c}");
     }
     assert!(drain(&mut rx).is_empty(), "listing asks nothing of the agent");
     a.shared = vec![("s1".into(), String::new(), 900)];
-    a.input.set_text("/shared-memory list");
+    a.input.set_text("/mem list");
     a.submit();
     assert!(matches!(&a.modal, Some(Modal::Picker(p)) if p.kind == PickKind::Shared && p.items[0].label == "s1"));
 }

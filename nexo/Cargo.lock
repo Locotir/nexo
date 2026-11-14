@@ -1769,6 +1769,7 @@ dependencies = [
  "futures",
  "globset",
  "ignore",
+ "libc",
  "nexo-bin",
  "nexo-core",
  "nexo-curator",
