@@ -10,7 +10,21 @@ pub(super) async fn run_command(
     timeout: Option<Duration>,
     cancel: &CancellationToken,
     tmp: Option<&std::path::Path>,
+    on_line: impl FnMut(&str),
+) -> End {
+    run_command_logged(command, cwd, sandbox, timeout, cancel, tmp, on_line, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_command_logged(
+    command: &str,
+    cwd: &std::path::Path,
+    sandbox: &nexo_core::sandbox::SandboxSettings,
+    timeout: Option<Duration>,
+    cancel: &CancellationToken,
+    tmp: Option<&std::path::Path>,
     mut on_line: impl FnMut(&str),
+    log: Option<RawLog>,
 ) -> End {
     let mut cmd = match build_command(command, cwd, sandbox, false) {
         Ok(c) => c,
@@ -33,10 +47,10 @@ pub(super) async fn run_command(
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let mut readers = Vec::new();
     if let Some(out) = child.stdout.take() {
-        readers.push(tokio::spawn(read_lines(out, tx.clone())));
+        readers.push(tokio::spawn(read_lines_logged(out, tx.clone(), log.clone())));
     }
     if let Some(err) = child.stderr.take() {
-        readers.push(tokio::spawn(read_lines(err, tx.clone())));
+        readers.push(tokio::spawn(read_lines_logged(err, tx.clone(), log.clone())));
     }
     drop(tx);
     // no timeout: a year is as good as forever, and keeps one code path

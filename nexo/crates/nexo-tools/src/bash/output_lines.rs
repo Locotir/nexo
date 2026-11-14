@@ -8,7 +8,25 @@ pub(super) const DRAIN: Duration = Duration::from_millis(300);
 
 /// Sends each line `r` gives to `tx`, decoded lossily (a byte that is not UTF-8 does not stop the
 /// reading) and cut to `LINE_BYTES` (a line with no end costs no more memory than that).
+#[cfg(test)]
 pub(super) async fn read_lines<R: tokio::io::AsyncRead + Unpin>(r: R, tx: mpsc::UnboundedSender<String>) {
+    read_lines_logged(r, tx, None).await;
+}
+
+/// Maximum bytes retained per foreground command, shared by stdout and stderr.
+pub(super) const MAX_LOG_BYTES: usize = 8 * 1024 * 1024;
+pub(super) struct LogFile {
+    pub file: std::fs::File,
+    pub written: usize,
+    pub truncated: bool,
+}
+pub(super) type RawLog = std::sync::Arc<std::sync::Mutex<Result<LogFile, String>>>;
+
+pub(super) async fn read_lines_logged<R: tokio::io::AsyncRead + Unpin>(
+    r: R,
+    tx: mpsc::UnboundedSender<String>,
+    log: Option<RawLog>,
+) {
     let mut r = BufReader::new(r);
     let mut line: Vec<u8> = Vec::new();
     let mut cut = 0usize;
@@ -20,6 +38,20 @@ pub(super) async fn read_lines<R: tokio::io::AsyncRead + Unpin>(r: R, tx: mpsc::
                     Some(i) => (&buf[..i], true),
                     None => (buf, false),
                 };
+                let used = chunk.len() + usize::from(ended);
+                if let Some(log) = &log {
+                    use std::io::Write;
+                    let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Ok(state) = &mut *log {
+                        let keep = used.min(MAX_LOG_BYTES.saturating_sub(state.written));
+                        if let Err(e) = state.file.write_all(&buf[..keep]) {
+                            *log = Err(e.to_string());
+                        } else {
+                            state.written += keep;
+                            state.truncated |= keep < used;
+                        }
+                    }
+                }
                 let room = LINE_BYTES.saturating_sub(line.len());
                 line.extend_from_slice(&chunk[..chunk.len().min(room)]);
                 cut += chunk.len().saturating_sub(room);

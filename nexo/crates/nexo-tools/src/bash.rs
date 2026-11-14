@@ -32,14 +32,11 @@ impl Tool for Bash {
         ToolSpec {
             name: "bash".into(),
             description: format!(
-                "Run a shell command ({}) in the working directory; returns its output \
-                 (stdout and stderr interleaved) and exit code. Killed after `timeout` \
-                 seconds (default 120, max 600); long output keeps its head \
-                 and tail. `background: true` \
-                 runs it as a job while you work: the call returns its job id, you are told \
-                 when it ends, and `jobs` reads its output or stops it. Background jobs end with the session; \
-                 `detach: true` keeps a service running after it. \
-                 Session scratch: $NEXO_TMP.",
+                "Run ({}) in the working directory; returns stdout/stderr interleaved and exit code. \
+                 Killed after `timeout` seconds (default 120, max 600). Long output keeps head, tail and selected diagnostics; \
+                 long foreground logs may be saved in $NEXO_TMP (max 8 MiB per command). \
+                 `background: true`: job id returned, completion notified; `jobs` reads or stops it. \
+                 Jobs end with the session; `detach: true` keeps a service running. Session scratch: $NEXO_TMP.",
                 match nexo_core::shell::shell().kind {
                     "powershell" => "Windows PowerShell: write PowerShell, not sh",
                     "bash" => "Git Bash on Windows: POSIX shell, C:/... paths work",
@@ -52,10 +49,10 @@ impl Tool for Bash {
                     "command": {"type": "string"},
                     "timeout": {"type": "integer", "minimum": 1, "maximum": 600},
                     "description": {"type": "string", "description": "Few English words: what it does, shown live."},
-                    "wait_until": {"type": "string", "description": "Shell condition polled up to `timeout`; then `command` runs."},
+                    "wait_until": {"type": "string", "description": "Poll condition for `timeout` before running."},
                     "background": {"type": "boolean"},
                     "detach": {"type": "boolean", "description": "With `background`: outlives nexo, logs to a file; stop it by pid."},
-                    "unsandboxed": {"type": "boolean", "description": "Only after the OS sandbox blocked a command: run outside it; the person is asked."}
+                    "unsandboxed": {"type": "boolean", "description": "After OS sandbox blocks a command, ask to run outside it."}
                 },
                 "required": ["command"]
             }),
@@ -130,11 +127,51 @@ impl Tool for Bash {
         let mut output = Capture::new();
         let tmp = tmp_dir(&ctx.session_id);
         let guard = crate::guarded::before(&sandbox, &ctx.cwd);
-        let end = run_command(command, &ctx.cwd, &sandbox, Some(timeout), &ctx.cancel, Some(&tmp), |l| {
-            ctx.report(l);
-            output.push(l);
-        })
+        let log_dir = tmp.join(".bash-logs");
+        let log_path = log_dir.join(format!("bash-{}.log", uuid::Uuid::new_v4()));
+        // Only save logs where we can explicitly guarantee private file permissions.
+        #[cfg(unix)]
+        let log_result = {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Reserve a full 8 MiB slot for each log, including concurrent commands.
+            // Existing logs remain available; once the session budget is exhausted, skip logging.
+            static LOG_CREATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _lock = LOG_CREATION.lock().unwrap_or_else(|e| e.into_inner());
+            std::fs::create_dir_all(&log_dir).and_then(|()| {
+                if std::fs::read_dir(&log_dir)?.take(8).count() >= 8 {
+                    return Err(std::io::Error::other("session log budget exhausted (64 MiB)"));
+                }
+                std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&log_path)
+            })
+        };
+        #[cfg(not(unix))]
+        let log_result: std::io::Result<std::fs::File> = Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "private log permissions unavailable on this platform",
+        ));
+        let (log, log_error) = match log_result {
+            Ok(file) => (
+                Some(std::sync::Arc::new(std::sync::Mutex::new(Ok(LogFile { file, written: 0, truncated: false })))),
+                None,
+            ),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        let end = run_command_logged(
+            command,
+            &ctx.cwd,
+            &sandbox,
+            Some(timeout),
+            &ctx.cancel,
+            Some(&tmp),
+            |l| {
+                ctx.report(l);
+                output.push(l);
+            },
+            log.clone(),
+        )
         .await;
+        let truncated = output.truncated();
+        let highlights = output.highlights();
         let missing = if matches!(end, End::Exited(0)) { output.not_found() } else { Vec::new() };
         let outcome = Outcome { output: output.text(), end };
         let mut content = if outcome.output.trim().is_empty() {
@@ -142,6 +179,34 @@ impl Tool for Bash {
         } else {
             cap_text(&outcome.output, MAX_OUTPUT_CHARS)
         };
+        if truncated {
+            content.push_str(&highlights);
+            let error = log_error.or_else(|| {
+                log.as_ref().and_then(|l| l.lock().unwrap_or_else(|e| e.into_inner()).as_ref().err().cloned())
+            });
+            if let Some(error) = error {
+                content.push_str(&format!("\n[full output log unavailable: {error}]"));
+                let _ = std::fs::remove_file(&log_path);
+            } else {
+                let limited = log.as_ref().is_some_and(|l| {
+                    l.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_ok_and(|state| state.truncated)
+                });
+                if limited {
+                    content.push_str(&format!(
+                        "\n[captured output log truncated at {MAX_LOG_BYTES} bytes: {}; removed when the session ends]",
+                        log_path.display()
+                    ));
+                } else {
+                    content.push_str(&format!(
+                        "\n[full captured output: {}; removed when the session ends]",
+                        log_path.display()
+                    ));
+                }
+            }
+        } else {
+            drop(log);
+            let _ = std::fs::remove_file(&log_path);
+        }
         let is_error = match outcome.end {
             End::Exited(0) => false,
             // a command that ran to the end and answered with a code (`cmp`, `grep`, `diff`, `test`, a test

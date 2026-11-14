@@ -21,16 +21,52 @@ pub(super) struct Capture {
     tail: VecDeque<String>,
     tail_chars: usize,
     omitted: usize,
+    highlights: String,
+    highlight_dropped: usize,
+    context_left: usize,
+    line_cut: bool,
 }
 
 impl Capture {
     const HALF: usize = MAX_OUTPUT_CHARS / 2;
 
     pub(super) fn new() -> Capture {
-        Capture { head: String::new(), tail: VecDeque::new(), tail_chars: 0, omitted: 0 }
+        Capture {
+            head: String::new(),
+            tail: VecDeque::new(),
+            tail_chars: 0,
+            omitted: 0,
+            highlights: String::new(),
+            highlight_dropped: 0,
+            context_left: 0,
+            line_cut: false,
+        }
     }
 
     pub(super) fn push(&mut self, line: &str) {
+        self.line_cut |= line.contains(" bytes of this line cut]");
+        let trimmed = line.trim_start();
+        let important = trimmed.starts_with("error:")
+            || trimmed.starts_with("error[")
+            || trimmed.starts_with("failures:")
+            || trimmed.starts_with("test result:")
+            || trimmed.starts_with("thread '") && trimmed.contains("panicked")
+            || trimmed.starts_with("FAILED")
+            || trimmed.starts_with("test ") && trimmed.contains(" ... FAILED")
+            || trimmed.starts_with("could not compile");
+        if important {
+            self.context_left = 3;
+        }
+        if self.context_left > 0 {
+            let excerpt: String = line.chars().take(500).collect();
+            if self.highlights.len() + excerpt.len() < 6000 {
+                self.highlights.push_str(&excerpt);
+                self.highlights.push('\n');
+            } else {
+                self.highlight_dropped += 1;
+            }
+            self.context_left -= 1;
+        }
         let n = line.chars().count() + 1;
         if self.head.len() < Self::HALF {
             self.head.push_str(line);
@@ -63,6 +99,20 @@ impl Capture {
             }
         }
         names
+    }
+
+    pub(super) fn truncated(&self) -> bool {
+        self.omitted > 0 || self.line_cut
+    }
+
+    pub(super) fn highlights(&self) -> String {
+        if !self.truncated() || self.highlights.is_empty() {
+            return String::new();
+        }
+        format!(
+            "\n\n[selected diagnostic lines, possibly incomplete; {} lines omitted from selection]\n{}",
+            self.highlight_dropped, self.highlights
+        )
     }
 
     pub(super) fn text(mut self) -> String {

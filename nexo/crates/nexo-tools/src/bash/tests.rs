@@ -533,7 +533,7 @@ async fn caps_long_output() {
     assert!(!out.is_error);
     assert!(out.content.chars().count() < MAX_OUTPUT_CHARS + 200);
     assert!(out.content.starts_with("1\n2\n"));
-    assert!(out.content.trim_end().ends_with("20000"));
+    assert!(out.content.contains("20000"));
     assert!(out.content.contains("characters omitted"));
     // a million lines: bounded while it runs, head and tail kept, quick
     let t = std::time::Instant::now();
@@ -541,7 +541,7 @@ async fn caps_long_output() {
     let out = Bash.run(json!({"command": "awk 'BEGIN { for (i = 1; i <= 1000000; i++) print i }'"}), &c).await;
     assert!(t.elapsed() < Duration::from_secs(20));
     assert!(
-        out.content.starts_with("1\n2\n") && out.content.trim_end().ends_with("1000000"),
+        out.content.starts_with("1\n2\n") && out.content.contains("1000000"),
         "{}",
         &out.content[out.content.len() - 40..]
     );
@@ -589,7 +589,7 @@ async fn output_that_is_not_utf8_or_one_huge_line_is_kept_bounded() {
     // 8 MB with no line end
     let out = Bash.run(json!({"command": "head -c 8000000 /dev/zero | tr '\\0' y; echo; echo end"}), &c).await;
     assert!(!out.is_error, "{}", &out.content[out.content.len().saturating_sub(200)..]);
-    assert!(out.content.contains("bytes of this line cut") && out.content.trim_end().ends_with("end"));
+    assert!(out.content.contains("bytes of this line cut") && out.content.contains("end"));
     assert!(out.content.chars().count() < MAX_OUTPUT_CHARS + 200);
 }
 
@@ -721,4 +721,56 @@ async fn only_a_command_that_did_not_run_to_the_end_is_a_failure() {
     // a timeout is a failure on every platform
     let out = Bash.run(json!({"command": "echo start; sleep 30; echo never", "timeout": 1}), &c).await;
     assert!(out.is_error && out.content.contains("timed out"), "{}", out.content);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn long_build_output_keeps_diagnostics_and_full_raw_log() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ctx = ToolContext::new(d.path().to_path_buf());
+    ctx.session_id = "long-build-output-test".into();
+    let command = "i=0; while [ $i -lt 4000 ]; do echo filler-$i-xxxxxxxxxxxxxxxxxxxxxxxx; i=$((i+1)); done; echo 'error[E1234]: middle failure'; echo '  --> src/example.rs:7:1'; i=0; while [ $i -lt 4000 ]; do echo later-$i-xxxxxxxxxxxxxxxxxxxxxxxx; i=$((i+1)); done; echo 'test result: FAILED. 1 failed'; exit 1";
+    let out = Bash.run(json!({"command": command}), &ctx).await;
+    assert!(out.content.contains("error[E1234]: middle failure"), "{}", out.content);
+    assert!(out.content.contains("src/example.rs:7:1"));
+    assert!(out.content.contains("test result: FAILED"));
+    let path = out.content.split("[full captured output: ").nth(1).unwrap().split("; removed").next().unwrap();
+    let full = std::fs::read_to_string(path).unwrap();
+    assert!(full.contains("filler-2000-"));
+    assert!(full.contains("error[E1234]: middle failure"));
+    assert!(full.contains("later-2000-"));
+    wipe_tmp(&ctx.session_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn huge_single_line_keeps_raw_bytes_in_log() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ctx = ToolContext::new(d.path().to_path_buf());
+    ctx.session_id = "long-line-output-test".into();
+    let out = Bash.run(json!({"command": "head -c 50000 /dev/zero | tr '\\000' x"}), &ctx).await;
+    let path = out.content.split("[full captured output: ").nth(1).unwrap().split("; removed").next().unwrap();
+    assert_eq!(std::fs::metadata(path).unwrap().len(), 50000);
+    wipe_tmp(&ctx.session_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn raw_log_is_exact_private_and_bounded() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let mut ctx = ToolContext::new(d.path().to_path_buf());
+    ctx.session_id = format!("raw-log-{}", uuid::Uuid::new_v4());
+    let out = Bash
+        .run(json!({"command": "i=0; while [ $i -lt 4000 ]; do printf 'line-%04d\\n' \"$i\"; i=$((i+1)); done"}), &ctx)
+        .await;
+    let path = out.content.split("[full captured output: ").nth(1).unwrap().split("; removed").next().unwrap();
+    let expected: String = (0..4000).map(|i| format!("line-{i:04}\n")).collect();
+    assert_eq!(std::fs::read(path).unwrap(), expected.as_bytes());
+    assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+    let out = Bash.run(json!({"command": "head -c 9000000 /dev/zero | tr '\\000' x"}), &ctx).await;
+    let path = out.content.split("bytes: ").nth(1).unwrap().split("; removed").next().unwrap();
+    assert!(out.content.contains("captured output log truncated at 8388608 bytes"));
+    assert_eq!(std::fs::metadata(path).unwrap().len(), MAX_LOG_BYTES as u64);
+    wipe_tmp(&ctx.session_id);
 }
