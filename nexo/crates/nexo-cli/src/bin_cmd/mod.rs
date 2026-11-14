@@ -54,7 +54,8 @@ impl BinOp {
         }
     }
 
-    /// The file the op reads, to be made absolute against a session's folder, and the second build of `diff`.
+    /// The files the op reads, to be made absolute against a session's folder: the second build of `diff`, the
+    /// libraries of `sigs`.
     pub fn files_mut(&mut self) -> Vec<&mut std::path::PathBuf> {
         match self {
             BinOp::Diff { file, other, .. } => vec![file, other],
@@ -81,7 +82,17 @@ impl BinOp {
             | BinOp::Find { file, .. }
             | BinOp::Managed { file, .. }
             | BinOp::Emu { file, .. } => vec![file],
-            BinOp::Sigs { .. } | BinOp::Asm { .. } => Vec::new(),
+            BinOp::Sigs { libs, .. } => libs.iter_mut().collect(),
+            BinOp::Asm { .. } => Vec::new(),
+        }
+    }
+
+    /// The file the op writes, to be made absolute against a session's folder: a patched copy, or a signature file.
+    pub fn out_mut(&mut self) -> Option<&mut std::path::PathBuf> {
+        match self {
+            BinOp::Patch { out, .. } => Some(out),
+            BinOp::Sigs { out, .. } => out.as_mut(),
+            _ => None,
         }
     }
 
