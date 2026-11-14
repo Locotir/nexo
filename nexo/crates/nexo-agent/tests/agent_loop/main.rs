@@ -167,6 +167,7 @@ mod goal_progress;
 mod goals_and_todo;
 #[cfg(unix)]
 mod hooks;
+mod literal_notes;
 mod loop_guards;
 mod mail;
 mod model_setup;

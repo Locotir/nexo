@@ -86,6 +86,19 @@ pub(super) fn tree_note(st: &mut State) -> Option<String> {
     Some(if now.is_empty() { "Project: no files are listed any more.".to_string() } else { now })
 }
 
+/// The line for the note at the head of a request when today is not the date the system text gives (the day the
+/// session began, kept for the cached prefix): a model would take that day for today. None on the day the
+/// session began, and once the conversation has the line for today.
+pub(super) fn date_line(st: &State) -> Option<String> {
+    let today = time::OffsetDateTime::now_utc().date().to_string();
+    if st.prefix.volatile.date.is_empty() || today == st.prefix.volatile.date {
+        return None;
+    }
+    let line = format!("Today is {today}; the Date in the system text is the day this session began.");
+    let said = st.history.iter().any(|m| m.role == Role::User && m.text().contains(&line));
+    (!said).then_some(line)
+}
+
 /// After another session took the place of this one: its prefix, built now when it has none.
 pub(super) fn adopt(st: &mut State) {
     st.prefix = settle(&mut st.session, &st.cwd, &st.config.agent, &mut st.tools);

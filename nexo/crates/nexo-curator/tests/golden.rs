@@ -365,10 +365,12 @@ fn the_long_session_ends_with_the_reference_stats() {
     // sends again (`window_waits` 4), and a read the latest request names goes on past a cap that takes its
     // message: 28 closed steps, 331 ledger lines, and the cache misses 59443 (was 61379), nothing forgotten.
     // The line of a closed request keeps what the agent said with its calls: the cache misses 59874 (431 more).
+    // The rules block says a task among them was asked in its turn, not in the current request (3 characters
+    // shorter): the cache misses 59873, miss_cap 37107.
     let want = serde_json::json!({"birth_saved": 1799, "epochs": 9, "dedup_runs": 6, "dedup_saved": 3117,
-        "miss_fresh": 648, "miss": 59874, "dedup_asked": 24, "closed_steps": 28, "miss_close": 27597,
+        "miss_fresh": 648, "miss": 59873, "dedup_asked": 24, "closed_steps": 28, "miss_close": 27597,
         "dropped_chunks": 172, "sup_chunks": 92, "rewrites": 3, "left_messages": 150, "ledger_lines": 331,
-        "cap_rewrites": 2, "miss_cap": 37108, "recalled_steps": 2, "window_waits": 4, "window_cuts": 4,
+        "cap_rewrites": 2, "miss_cap": 37107, "recalled_steps": 2, "window_waits": 4, "window_cuts": 4,
         "turns_refused": 6});
     eprintln!("stats: {}", last["stats"]);
     assert_eq!(last["stats"], want);

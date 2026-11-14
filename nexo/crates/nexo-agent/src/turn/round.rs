@@ -776,8 +776,8 @@ pub(super) const MUTE_NOTE_AGAIN: &str =
      command), then test it and improve it step by step.</system-reminder>";
 
 pub(super) const ANSWER_NOW: &str =
-    "Tool calls are off for the rest of this request: they will not run. Give your answer now, from what you have already seen. \
-     The next message of the person turns them on again.";
+    "Tool calls are off until you answer: they will not run. Give your answer now, from what you have already seen. \
+     They are on again after your answer, or when the person writes.";
 
 /// Sent after `CHECKPOINT STOP` with no summary: the request ends on the model's account of its work.
 pub(super) const SUMMARY_NOW: &str =

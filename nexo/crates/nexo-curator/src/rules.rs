@@ -584,7 +584,7 @@ impl Rules {
     /// The block of the rules ``shown`` takes, or "" when it takes none.
     pub fn text(&self, shown: impl Fn(&Rule) -> bool) -> String {
         let mut lines = vec![format!(
-            "{MARK} Standing instructions the user gave during this session. They hold until the user changes them; on conflict the later one wins. Follow them in every step, as if they were part of the current request:"
+            "{MARK} Standing instructions the user gave during this session. They hold until the user changes them; on conflict the later one wins. A task among them was asked in its turn, not in the current request:"
         )];
         for r in self.list.iter().filter(|r| shown(r)) {
             if r.restated {

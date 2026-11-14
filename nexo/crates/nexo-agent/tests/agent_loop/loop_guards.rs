@@ -202,8 +202,10 @@ async fn a_guard_stop_asks_for_the_answer_without_tools() {
     assert!(told(&reqs[4]) && !reqs[..4].iter().any(told), "the model is told, next to the last outputs, to answer");
     let last = serde_json::to_string(reqs[4].messages.last().unwrap()).unwrap();
     assert!(
-        last.contains("this request") && !last.contains("from here on"),
-        "the stop holds for this request only, or the model keeps off the tools for the rest of the session"
+        last.contains("until you answer")
+            && last.contains("on again after your answer")
+            && !last.contains("from here on"),
+        "the stop holds until the answer only, or the model keeps off the tools for the rest of the session"
     );
     r.stop().await;
 }

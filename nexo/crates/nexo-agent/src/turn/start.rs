@@ -193,6 +193,11 @@ async fn begin_turn(
         added.append(&mut after);
         // the supervisor's resume mark is read back as it is, so it carries no note; the next request does
         let tree = if text.trim() == SUPERVISOR_RESUME_MARK { None } else { prefix::tree_note(&mut st) };
+        // a session that goes on past the day it began: its system text keeps that day, so today comes here
+        let tree = match (prefix::date_line(&st), tree) {
+            (Some(d), Some(t)) => Some(format!("{d}\n{t}")),
+            (d, t) => d.or(t),
+        };
         let ask = ask_line(&mut st, person, &text);
         let note = orient::start_note(&included, &known, check.as_deref(), tree.as_deref(), ask.as_deref());
         let text = if note.is_empty() {
