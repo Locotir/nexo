@@ -59,7 +59,8 @@ pub(super) fn wrote_about(later: &[Value], result: &HashSet<String>) -> bool {
 /// The tokens of results of the latest request in `history` (after the person's last message) that the agent
 /// has not written about yet (no text, no `note` call, and no call that draws on a word of the result, in a
 /// later assistant message) that `view` leaves out, and the tokens of all such results. A result counts for
-/// the share of its lines (segments) the view lacks anywhere, so a copy elsewhere in the view shows the line.
+/// the share of its lines with a value (a word, number, path or hash) the view lacks anywhere, so a copy
+/// elsewhere in the view, or the line written again by a fold, shows the line.
 /// The agent is still reading those: what it writes next draws on them, and a reply that paraphrases them
 /// shows no copied word for `forgotten` to catch. Results under `SMALL_RESULT` tokens are left out of both
 /// counts, as the engine leaves them in place.
@@ -70,7 +71,7 @@ pub(super) fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
 /// The results `blind` counts, one by one: (message, block, tokens, tokens the view lacks).
 pub(super) fn blind_parts(history: &[Value], view: &[Value]) -> Vec<(usize, usize, i64, i64)> {
     const SMALL_RESULT: i64 = 100;
-    let shown: HashSet<String> = view.iter().flat_map(segments).collect();
+    let shown: HashSet<String> = view.iter().flat_map(values).collect();
     let start = latest_request(history);
     let mut out = Vec::new();
     for (k, m) in history.iter().enumerate().skip(start) {
@@ -85,9 +86,8 @@ pub(super) fn blind_parts(history: &[Value], view: &[Value]) -> Vec<(usize, usiz
             if wrote_about(&history[k + 1..], &words) {
                 continue;
             }
-            let segs = segments(&one);
-            let lacks = segs.iter().filter(|s| !shown.contains(*s)).count() as i64;
-            out.push((k, bi, tokens, if segs.is_empty() { 0 } else { tokens * lacks / segs.len() as i64 }));
+            let (lacking, lines) = lacking_lines(&one, &shown);
+            out.push((k, bi, tokens, if lines == 0 { 0 } else { tokens * lacking as i64 / lines as i64 }));
         }
     }
     out

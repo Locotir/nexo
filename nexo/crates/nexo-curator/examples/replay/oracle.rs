@@ -199,7 +199,7 @@ pub(super) fn oracle(
         let view: Vec<Value> =
             r.messages.iter().zip(&keys).map(|(m, k)| cut.get(k).cloned().unwrap_or_else(|| m.clone())).collect();
         for (acc, (a, b)) in
-            [(&mut loss.blind, blind(&r.messages, &view)), (&mut loss.denied, denied(&r.messages, &view))]
+            [(&mut loss.blind, blind(&r.messages, &view)), (&mut loss.denied, denied_values(&r.messages, &view))]
         {
             acc.0 += a;
             acc.1 += b;

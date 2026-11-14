@@ -122,20 +122,36 @@ pub fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
 /// The results `denied` counts, one by one: every result in the last message of the request, with the
 /// tokens of it the view's last message lacks (`tokens * lacking segments / segments`).
 pub fn denied_parts(history: &[Value], view: &[Value]) -> Vec<Lack> {
+    denied_parts_by(history, view, |one, sent| {
+        let (here, segs) = (segments(sent).into_iter().collect::<HashSet<String>>(), segments(one));
+        (segs.iter().filter(|s| !here.contains(*s)).count(), segs.len())
+    })
+}
+
+/// The results `denied_values` counts: as `denied_parts`, but a line is lacking only when it holds a value
+/// (see `line_values`) the view's last message does not hold anywhere, so a line a fold writes again is not.
+pub fn denied_values_parts(history: &[Value], view: &[Value]) -> Vec<Lack> {
+    denied_parts_by(history, view, |one, sent| lacking_lines(one, &values(sent)))
+}
+
+/// `denied_parts` with `count(result, sent)` giving how many pieces of the result `sent` lacks and how many
+/// pieces it has.
+fn denied_parts_by(history: &[Value], view: &[Value], count: impl Fn(&Value, &Value) -> (usize, usize)) -> Vec<Lack> {
     const SMALL_RESULT: i64 = 100;
     let (Some(last), Some(sent)) = (history.last(), view.last()) else { return Vec::new() };
     let Some(Value::Array(blocks)) = last.get("content") else { return Vec::new() };
-    let here: HashSet<String> = segments(sent).into_iter().collect();
     let mut out = Vec::new();
     for (bi, b) in blocks.iter().enumerate().filter(|(_, b)| b["type"] == "tool_result") {
         let one = json!({"role": "user", "content": [b]});
         let tokens = tokens_of(&one);
-        let segs = segments(&one);
-        if tokens < SMALL_RESULT || segs.is_empty() {
+        if tokens < SMALL_RESULT {
             continue;
         }
-        let lacks = segs.iter().filter(|s| !here.contains(*s)).count() as i64;
-        out.push(Lack { mi: history.len() - 1, block: bi, tokens, missing: tokens * lacks / segs.len() as i64 });
+        let (lacks, pieces) = count(&one, sent);
+        if pieces == 0 {
+            continue;
+        }
+        out.push(Lack { mi: history.len() - 1, block: bi, tokens, missing: tokens * lacks as i64 / pieces as i64 });
     }
     out
 }
@@ -147,6 +163,39 @@ pub fn denied_parts(history: &[Value], view: &[Value]) -> Vec<Lack> {
 /// `blind` misses it, as it looks for the lines anywhere in the view.
 pub fn denied(history: &[Value], view: &[Value]) -> (i64, i64) {
     denied_parts(history, view).iter().fold((0, 0), |(m, o), l| (m + l.missing, o + l.tokens))
+}
+
+/// `denied` counting values, not line shapes: a result the view's last message sends again in another shape
+/// (a table row for each line, a form and its cells) with every value is not left out. The replay's measure.
+pub fn denied_values(history: &[Value], view: &[Value]) -> (i64, i64) {
+    denied_values_parts(history, view).iter().fold((0, 0), |(m, o), l| (m + l.missing, o + l.tokens))
+}
+
+/// The values of a line: its words, numbers, paths and hashes, the whitespace-separated tokens with the signs
+/// around each (quotes, commas, colons, brackets) trimmed. A line a fold writes again (a table row, a form
+/// with its cells) holds the same values as the line it came from, so it is not left out.
+pub fn line_values(line: &str) -> impl Iterator<Item = &str> {
+    line.split_whitespace().map(|t| t.trim_matches(|c: char| !c.is_alphanumeric())).filter(|t| !t.is_empty())
+}
+
+/// The values of every line of the text of `m`.
+pub fn values(m: &Value) -> HashSet<String> {
+    text_of(m).lines().flat_map(line_values).map(str::to_string).collect()
+}
+
+/// How many lines of the text of `m` hold a value that `shown` lacks, and how many lines hold a value at all
+/// (a line of signs only holds no data and is not counted).
+pub fn lacking_lines(m: &Value, shown: &HashSet<String>) -> (usize, usize) {
+    let (mut lacking, mut lines) = (0, 0);
+    for line in text_of(m).lines() {
+        let mut held = line_values(line).peekable();
+        if held.peek().is_none() {
+            continue;
+        }
+        lines += 1;
+        lacking += usize::from(held.any(|v| !shown.contains(v)));
+    }
+    (lacking, lines)
 }
 
 /// The pieces a view can keep or drop, at the finest grain a curator cuts: the lines of a message's text,

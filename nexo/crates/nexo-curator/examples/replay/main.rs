@@ -71,7 +71,9 @@
 use std::collections::{HashMap, HashSet};
 
 use nexo_curator::optimum::{optimum, Cost, Piece};
-use nexo_curator::sim::events::{denied, forgotten, latest_request, segments, wrote};
+use nexo_curator::sim::events::{
+    denied_values, forgotten, lacking_lines, latest_request, line_values, segments, values, wrote,
+};
 use nexo_curator::sim::input::{
     fixture_requests, names, reply_to, said_of, said_words, text_of, transcript_requests, Request,
 };
@@ -255,10 +257,15 @@ fn main() {
         }
         // REPLAY_BLIND=2 names each result left out and the rule that took the first line the view lacks
         if missing > 0 && std::env::var("REPLAY_BLIND").is_ok_and(|v| v == "2") {
-            let shown: HashSet<String> = reply.view.iter().flat_map(segments).collect();
+            let shown: HashSet<String> = reply.view.iter().flat_map(values).collect();
             for (mi, bi, tokens, lack) in blind_parts(&r.messages, &reply.view).into_iter().filter(|p| p.3 > 0) {
                 let one = json!({"content": [blocks_of(&r.messages[mi]).get(bi).cloned().unwrap_or_default()]});
-                let first = segments(&one).into_iter().find(|s| !shown.contains(s)).unwrap_or_default();
+                let first = text_of(&one)
+                    .lines()
+                    .find(|l| line_values(l).any(|v| !shown.contains(v)))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
                 let word = distinctive_words(&first).into_iter().next().unwrap_or_default();
                 // `kept`: a copy of the word is still sent, so the line came reformatted (a fold at birth), not left out
                 let rule = cur.fate(mi, &word).map_or("?", |f| if f.1 == "kept" { "none, reformatted" } else { f.1 });
@@ -279,7 +286,7 @@ fn main() {
         for b in cur.cut_blocks() {
             first_cut.entry(b).or_insert(i);
         }
-        let (missing, open) = denied(&r.messages, &reply.view);
+        let (missing, open) = denied_values(&r.messages, &reply.view);
         denied_tokens += missing;
         asked_tokens += open;
         let ((k, a), (rk, ra)) = own_replies(&r.messages, &reply.view, 10);
@@ -707,6 +714,53 @@ mod tests {
         let (missing, open) = blind(&unrelated, &dropped(&unrelated));
         assert!(open > 0 && missing == open, "an unread result left out is blind: {missing} of {open}");
         assert_eq!(blind(&unrelated, &unrelated), (0, open));
+    }
+
+    fn call(id: &str, command: &str, out: &str) -> [Value; 2] {
+        [
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "bash", "input": {"command": command}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": out}]}),
+        ]
+    }
+
+    #[test]
+    fn a_log_folded_into_a_table_with_every_value_kept_counts_nothing_left_out() {
+        // the audit log of bench-marathon: a form and one row per line, every shard and checksum still sent
+        let sum = |k: u64| format!("{:08x}", k.wrapping_mul(2_654_435_761) & 0xffff_ffff);
+        let mut lines: Vec<String> =
+            (0..80).map(|k| format!("INFO audit shard {k:03}: flushed, checksum {}", sum(k))).collect();
+        lines.extend((0..60).map(|k| format!("INFO audit shard {k:03}: closed")));
+        lines.push("WARN inventory/report.py:11 leftover TODO comment".into());
+        lines.push("audit failed: 3 problems".into());
+        let mut msgs = vec![json!({"role": "user", "content": "Run the audit and fix what it reports."})];
+        msgs.extend(call("c1", "python tools/audit.py", &lines.join("\n")));
+        let view = Curator::new("").unwrap().view(1_000, &msgs, 0.0).unwrap().view;
+        assert!(view.iter().any(|m| text_of(m).contains("lines of the form")), "the log is folded into a form");
+        // the lines are no longer there as they were: counting line shapes called them left out
+        let shown: HashSet<String> = view.iter().flat_map(segments).collect();
+        let result = json!({"role": "user", "content": [msgs[2]["content"][0].clone()]});
+        assert!(segments(&result).iter().filter(|s| !shown.contains(*s)).count() > 100);
+        // every value is there, so none counts
+        let (missing, open) = blind(&msgs, &view);
+        assert!(open > 100 && missing == 0, "blind {missing} of {open}");
+        let (missing, open) = denied_values(&msgs, &view);
+        assert!(open > 100 && missing == 0, "denied {missing} of {open}");
+    }
+
+    #[test]
+    fn a_window_cut_that_drops_lines_still_counts_their_values_left_out() {
+        let out: String =
+            (0..2_000).map(|l| format!("data/part_0/row_{l}.csv:{l}: amount_0_{l} = {}\n", l * 7)).collect();
+        let mut msgs = vec![json!({"role": "user", "content": "Read the export."})];
+        msgs.extend(call("c0", "cat data/part_0", &out));
+        let mut cur = Curator::new("").unwrap();
+        cur.window(8_000);
+        let view = cur.view(500, &msgs, 0.0).unwrap().view;
+        assert!(view.iter().any(|m| text_of(m).contains("left out here")), "the window cut");
+        let (missing, open) = blind(&msgs, &view);
+        assert!(missing * 2 > open, "blind: most of the rows are gone: {missing} of {open}");
+        let (missing, open) = denied_values(&msgs, &view);
+        assert!(missing * 2 > open, "denied: most of the rows are gone: {missing} of {open}");
     }
 
     #[test]
