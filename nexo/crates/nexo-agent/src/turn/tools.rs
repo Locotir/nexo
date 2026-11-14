@@ -508,8 +508,9 @@ pub(super) async fn run_call(
                 }
             });
             // the rules as they stand now, for a tool that is led somewhere it was not asked about
-            let (jobs, claims, detach, seen, perm, rules_cwd, sandbox, vision, post_check, check_secs) = {
+            let (jobs, claims, detach, seen, perm, rules_cwd, sandbox, vision, post_check, check_secs, tool_names) = {
                 let mut st = state.lock().await;
+                let tool_names = Arc::new(st.tools.names().map(String::from).collect::<Vec<_>>());
                 count_step(&mut st);
                 let (provider, _, model) = st.target.get();
                 // a picture is withheld only where the model catalogue says the model cannot see it
@@ -531,6 +532,7 @@ pub(super) async fn run_call(
                     vision,
                     post_check,
                     check_secs,
+                    tool_names,
                 )
             };
             let ctx = ToolContext {
@@ -543,6 +545,7 @@ pub(super) async fn run_call(
                 jobs,
                 claims,
                 detach: Some(detach),
+                tool_names,
                 seen,
                 sandbox,
                 vision,

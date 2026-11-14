@@ -459,6 +459,32 @@ fn reads_the_shells_not_found_forms() {
 }
 
 #[tokio::test]
+async fn a_nexo_tool_typed_into_bash_is_said_to_be_a_tool() {
+    let d = tempfile::tempdir().unwrap();
+    if nexo_core::shell::shell().kind == "powershell" {
+        return;
+    }
+    let mut c = ToolContext::new(d.path().to_path_buf());
+    c.tool_names = std::sync::Arc::new(vec!["bin".into(), "debug".into(), "bash".into()]);
+    let out = Bash.run(json!({"command": "bin_xx_not_a_tool; bin overview ./calc"}), &c).await;
+    assert!(out.is_error && out.content.contains("[exit code 127]"), "{}", out.content);
+    assert!(
+        out.content.ends_with(
+            "[note: `bin` is a nexo tool, not a shell command: call it directly as a tool, not through bash]"
+        ),
+        "{}",
+        out.content
+    );
+    // a name that is not a tool of the session gets nothing more
+    let out = Bash.run(json!({"command": "zzz_nope"}), &c).await;
+    assert!(!out.content.contains("nexo tool"), "{}", out.content);
+    assert_eq!(
+        tool_not_a_command(&["bin".into(), "debug".into(), "x".into()], &c.tool_names).unwrap(),
+        "[note: `bin`, `debug` are nexo tools, not a shell command: call each directly as a tool, not through bash]"
+    );
+}
+
+#[tokio::test]
 async fn a_command_not_found_in_a_script_that_exits_0_is_noted() {
     let d = tempfile::tempdir().unwrap();
     let c = ToolContext::new(d.path().to_path_buf());

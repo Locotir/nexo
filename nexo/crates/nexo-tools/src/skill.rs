@@ -105,6 +105,7 @@ mod tests {
             check_secs: 45,
             claims: Default::default(),
             detach: None,
+            tool_names: Default::default(),
         }
     }
 

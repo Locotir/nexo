@@ -172,7 +172,9 @@ impl Tool for Bash {
         .await;
         let truncated = output.truncated();
         let highlights = output.highlights();
-        let missing = if matches!(end, End::Exited(0)) { output.not_found() } else { Vec::new() };
+        let not_found = output.not_found();
+        let tool_note = tool_not_a_command(&not_found, &ctx.tool_names);
+        let missing = if matches!(end, End::Exited(0)) { not_found } else { Vec::new() };
         let outcome = Outcome { output: output.text(), end };
         let mut content = if outcome.output.trim().is_empty() {
             "(no output)".to_string()
@@ -236,6 +238,10 @@ impl Tool for Bash {
         if !missing.is_empty() {
             // the status is the last command's: say that an earlier one was not found
             content.push_str(&format!("\n[note: a command in this script was not found: {}]", missing.join(", ")));
+        }
+        if let Some(note) = tool_note {
+            content.push('\n');
+            content.push_str(&note);
         }
         if matches!(outcome.end, End::Exited(c) if c != 0) {
             if let Some(note) = skipped_by_probe(command, &ctx.cwd) {

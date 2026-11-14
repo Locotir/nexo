@@ -175,6 +175,8 @@ pub struct ToolContext {
     pub claims: crate::claims::Claims,
     /// Sends the sub-agents the turn waits for to the background (the interface or a message asks). None: never.
     pub detach: Option<crate::jobs::Detach>,
+    /// The names of the session's tools (`bash` says a missing command that is one of them is a tool, not a program).
+    pub tool_names: Arc<Vec<String>>,
 }
 
 /// What the permission rules would do with a call, without asking anyone.
@@ -206,6 +208,7 @@ impl ToolContext {
             check_secs: 45,
             claims: Default::default(),
             detach: None,
+            tool_names: Default::default(),
         }
     }
 

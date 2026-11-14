@@ -212,6 +212,7 @@ async fn context(state: &Shared, cwd: &Path, call_id: &str) -> ToolContext {
         jobs: st.jobs.clone(),
         claims: st.claims.clone(),
         detach: None,
+        tool_names: Arc::new(st.tools.names().map(String::from).collect()),
         seen: st.seen.clone(),
         sandbox: st.sandbox.clone(),
         vision,

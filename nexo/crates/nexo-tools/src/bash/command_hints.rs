@@ -26,6 +26,18 @@ pub(super) fn not_found_name(line: &str) -> Option<String> {
     (!name.is_empty() && !name.contains(char::is_whitespace)).then(|| name.to_string())
 }
 
+/// One line when a command the shell did not find is the name of one of the session's tools (`bin`, `debug`): the
+/// model called a tool through the shell.
+pub(super) fn tool_not_a_command(missing: &[String], tools: &[String]) -> Option<String> {
+    let names: Vec<&str> = missing.iter().filter(|m| tools.contains(m)).map(String::as_str).collect();
+    if names.is_empty() {
+        return None;
+    }
+    let list = names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ");
+    let (is, it) = if names.len() == 1 { ("is a nexo tool", "it") } else { ("are nexo tools", "each") };
+    Some(format!("[note: {list} {is}, not a shell command: call {it} directly as a tool, not through bash]"))
+}
+
 /// For a failed `a && b && c`: the note to give when a link before the last is `ls`, `cat` or
 /// `stat` of a plain path that does not exist (resolved after any `cd` links). `&&` stops there,
 /// so what follows never ran, which the model takes for an answer about the rest. Anything
