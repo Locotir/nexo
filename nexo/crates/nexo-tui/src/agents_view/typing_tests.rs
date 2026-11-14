@@ -14,6 +14,7 @@ fn claude_row(cwd: &str) -> AgentRow {
         state: State::Idle { min: 1 },
         since: 1_000,
         last_step: None,
+        last_conclusion: None,
         idle_secs: Some(60),
         cost_usd: None,
         model: None,

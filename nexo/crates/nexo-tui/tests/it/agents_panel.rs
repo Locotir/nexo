@@ -64,6 +64,7 @@ fn row(key: &str, name: &str, source: SourceKind, state: State, idle: Option<u64
         state,
         since: NOW - 60,
         last_step: step.map(Into::into),
+        last_conclusion: None,
         idle_secs: idle,
         cost_usd: None,
         model: None,

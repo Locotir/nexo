@@ -302,10 +302,12 @@ impl AgentsView {
         if all {
             let on = !panel.paused_all();
             panel.pause(None, on);
-            self.note = Some(if on { "all sessions paused" } else { "all sessions resumed" }.into());
+            self.note = Some(
+                if on { "supervisor paused for all sessions" } else { "supervisor resumed for all sessions" }.into(),
+            );
         } else if let Some(row) = self.selected_row() {
             panel.pause(Some(&row.key), !row.paused);
-            self.note = Some(format!("{} {}", row.name, if row.paused { "resumed" } else { "paused" }));
+            self.note = Some(format!("supervisor {} for {}", if row.paused { "resumed" } else { "paused" }, row.name));
         } else {
             self.note = Some("no session to pause".into());
         }

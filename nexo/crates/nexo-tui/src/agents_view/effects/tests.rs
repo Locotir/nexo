@@ -59,6 +59,7 @@ fn agent(key: &str, state: State) -> AgentRow {
         state,
         since: NOW - 60,
         last_step: Some("Edit  src/lib.rs".into()),
+        last_conclusion: None,
         idle_secs: Some(2),
         cost_usd: None,
         model: None,
@@ -104,6 +105,17 @@ fn paint(v: &mut AgentsView, w: u16, h: u16, now: Instant, fx: bool) -> Buffer {
 
 fn row_text(b: &Buffer, y: u16, x0: u16, x1: u16) -> String {
     (x0..x1).map(|x| b[(x, y)].symbol().to_string()).collect()
+}
+
+#[test]
+fn card_prioritizes_last_result_and_keeps_state_visible() {
+    let mut row = agent("builder", State::Done);
+    row.last_conclusion = Some("tests passed".into());
+    let mut v = AgentsView::with_rows(vec![row], NOW, false);
+    let b = paint(&mut v, 100, 30, Instant::now(), false);
+    let text = (0..b.area.height).map(|y| row_text(&b, y, 0, b.area.width)).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("last result: tests passed"), "{text}");
+    assert!(text.contains("done"), "{text}");
 }
 
 #[test]

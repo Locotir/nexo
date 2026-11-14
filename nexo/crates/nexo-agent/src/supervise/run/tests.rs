@@ -40,6 +40,7 @@ fn a_finished_session_goes_from_working_to_idle_and_each_change_is_marked() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "Builder");
     assert_eq!(rows[0].last_step.as_deref(), Some("Bash  cargo test"));
+    assert_eq!(rows[0].last_conclusion.as_deref(), Some("done"));
     assert_eq!(rows[0].idle_secs, Some(10));
     let v = s.version;
     assert!(!s.tick(1011), "nothing changed");

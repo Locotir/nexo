@@ -112,6 +112,7 @@ fn row(key: &str, name: &str, state: State) -> AgentRow {
         state,
         since: NOW - 60,
         last_step: Some("Edit  src/parser.rs".into()),
+        last_conclusion: None,
         idle_secs: Some(30),
         cost_usd: None,
         model: None,

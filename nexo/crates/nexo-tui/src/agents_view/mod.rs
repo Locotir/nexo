@@ -229,6 +229,7 @@ fn tidy(mut r: AgentRow) -> AgentRow {
     one(&mut r.name);
     one(&mut r.program);
     r.last_step.iter_mut().for_each(one);
+    r.last_conclusion.iter_mut().for_each(one);
     r.cwd.iter_mut().for_each(one);
     r.model.iter_mut().for_each(one);
     r.permission_mode.iter_mut().for_each(one);

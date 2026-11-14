@@ -62,6 +62,7 @@ fn job(key: &str, source: SourceKind) -> AgentRow {
         state: State::Working,
         since: NOW - 60,
         last_step: None,
+        last_conclusion: None,
         idle_secs: Some(3),
         cost_usd: None,
         model: None,

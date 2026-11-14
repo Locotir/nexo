@@ -516,9 +516,13 @@ impl AgentsView {
         let todo = row.todo.filter(|&(d, t)| t > 0 && cw >= 20 && cw >= px::todo_width(d, t) + 12);
         let bar_w = todo.map_or(0, |(d, t)| px::todo_width(d, t) + 1);
         let step_room = cw.saturating_sub(bar_w);
-        let step = match &row.last_step {
-            Some(s) => Span::styled(format!("▸ {}", fit_step(s, step_room.saturating_sub(2))), theme.dim()),
-            None => Span::styled(truncate("▸ no step seen yet", step_room), theme.dim2()),
+        let step = if let Some(s) = &row.last_conclusion {
+            Span::styled(truncate(&format!("last result: {s}"), step_room), theme.dim())
+        } else {
+            match &row.last_step {
+                Some(s) => Span::styled(format!("▸ {}", fit_step(s, step_room.saturating_sub(2))), theme.dim()),
+                None => Span::styled(truncate("▸ no step seen yet", step_room), theme.dim2()),
+            }
         };
         let mut l2 = vec![step];
         if let Some((d, t)) = todo {

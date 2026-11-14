@@ -38,6 +38,8 @@ pub struct AgentRow {
     /// Since when the session has been in this state.
     pub since: Secs,
     pub last_step: Option<String>,
+    /// Redacted tail of the last completed turn, not necessarily the current task.
+    pub last_conclusion: Option<String>,
     /// Seconds without activity.
     pub idle_secs: Option<u64>,
     pub cost_usd: Option<f64>,
@@ -290,6 +292,11 @@ impl Supervisor {
                     state: e.state,
                     since: e.since,
                     last_step: t.last_step.clone(),
+                    last_conclusion: t
+                        .turn_end
+                        .as_ref()
+                        .map(|(_, text)| super::source::clean_step(text))
+                        .filter(|s| !s.is_empty()),
                     idle_secs: t.idle_secs(now),
                     cost_usd: t.cost_usd,
                     model: t.model.clone(),
