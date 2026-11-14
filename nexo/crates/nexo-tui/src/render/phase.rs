@@ -1,6 +1,8 @@
 //! What the agent is doing right now, as one word for the separator: derived from the live
 //! block (the tool being run, the text being written) or from a pending question.
 
+use nexo_core::tool::catalog::{role, Role};
+
 /// The agent's phase. `label` is the word the activity line shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -29,12 +31,12 @@ impl Phase {
 
 /// The phase a tool call puts the agent in, by the tool's name.
 pub fn phase_of_tool(name: &str) -> Phase {
-    match name {
-        "read" | "web_fetch" => Phase::Reading,
-        "write" | "edit" | "todo" | "note" => Phase::Editing,
-        "grep" | "glob" | "ls" | "web_search" => Phase::Searching,
-        "task" => Phase::Waiting,
-        _ => Phase::Running,
+    match role(name) {
+        Role::ReadFile | Role::ReadPage => Phase::Reading,
+        Role::Edit | Role::Note => Phase::Editing,
+        Role::FindPattern | Role::FindDir | Role::FindWeb => Phase::Searching,
+        Role::Agent => Phase::Waiting,
+        Role::Shell | Role::Other => Phase::Running,
     }
 }
 

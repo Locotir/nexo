@@ -3,6 +3,7 @@
 //! line up; narrow windows drop the least useful pieces first (calls, cache, steps).
 
 use nexo_core::stream::Usage;
+use nexo_core::tool::catalog::{role, Role};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -52,16 +53,17 @@ pub struct Class {
 
 /// The one classification of tools: `kind_word` and the group lines both read it.
 pub fn classify(tool: &str) -> Class {
-    let (kind, what) = match tool {
-        "read" => ("read", What::File),
-        "web_fetch" => ("read", What::Page),
-        "write" | "edit" => ("edit", What::Edit),
-        "bash" => ("run", What::Shell),
-        "grep" | "glob" => ("find", What::Pattern),
-        "ls" => ("find", What::Dir),
-        "web_search" => ("find", What::Web),
-        "task" => ("agent", What::Agent),
-        _ => ("other", What::Other),
+    let (kind, what) = match role(tool) {
+        Role::ReadFile => ("read", What::File),
+        Role::ReadPage => ("read", What::Page),
+        Role::Edit => ("edit", What::Edit),
+        Role::Shell => ("run", What::Shell),
+        Role::FindPattern => ("find", What::Pattern),
+        Role::FindDir => ("find", What::Dir),
+        Role::FindWeb => ("find", What::Web),
+        Role::Agent => ("agent", What::Agent),
+        // The call counts never had a word for the model's own notes, so they stay "other".
+        Role::Note | Role::Other => ("other", What::Other),
     };
     Class { kind, what }
 }
