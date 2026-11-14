@@ -21,7 +21,7 @@ use crate::graph::{node_name, node_of};
 use crate::mainfind::clobbered_by_call;
 use crate::ops::command;
 use crate::page::{cut, Output, Row};
-use crate::xops::target_addr;
+use crate::place::addr_in;
 use crate::{Error, Format, Image, Result};
 
 /// A place a value lives.
@@ -186,7 +186,7 @@ pub fn slice_window(
     budget: usize,
 ) -> Result<Output> {
     img.require_x86("slice")?;
-    let at_addr = target_addr(img, at)?;
+    let at_addr = addr_in(img, at)?;
     let f = img
         .func_at(at_addr)
         .ok_or_else(|| Error::Bad(format!("{at_addr:#x} is not inside a function found in this file")))?;

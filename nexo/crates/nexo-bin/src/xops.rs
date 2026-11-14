@@ -12,11 +12,12 @@ use serde_json::{json, Value};
 
 use crate::disasm::{describe, formatter, text_at};
 use crate::names;
-use crate::ops::{command, numeric, resolve};
+use crate::ops::{command, resolve};
 use crate::page::{cut, shell_word, window, Output, Row};
+use crate::place::addr_in;
 use crate::refs::{Kind, Ref, MAX_REFS};
 use crate::strings::shorten;
-use crate::{parse_addr, Error, Image, Result};
+use crate::{Error, Image, Result};
 
 /// The most strings `xref --str` follows.
 pub const MAX_STR_HITS: usize = 2000;
@@ -53,51 +54,6 @@ fn place(img: &Image, a: u64) -> String {
         }
     }
     describe(img, a, true).unwrap_or_else(|| format!("{a:#x}"))
-}
-
-/// The address a person means: a number inside a section, or the name of a function, a symbol or an import.
-pub(crate) fn target_addr(img: &Image, t: &str) -> Result<u64> {
-    // the references first: one decode pass gives them and the function list
-    let _ = img.refs();
-    let t = t.trim();
-    if t.is_empty() {
-        return Err(Error::Bad("give an address (0x401000) or a name".into()));
-    }
-    if numeric(t) {
-        let a = parse_addr(t)?;
-        if img.section_at(a).is_none() {
-            return Err(Error::Bad(format!("{a:#x} is not inside any section")));
-        }
-        return Ok(a);
-    }
-    if let Some((&a, _)) = img.user.names.iter().find(|(_, n)| n.as_str() == t) {
-        return Ok(a);
-    }
-    if let Some(f) = img.funcs().iter().find(|f| f.name == t) {
-        return Ok(f.start);
-    }
-    if let Some(a) = img.addr_of_raw(t) {
-        if let Some(f) = img.func_at(a).filter(|f| f.start == a) {
-            return Ok(f.start);
-        }
-        return Ok(a);
-    }
-    // an ELF import is called through its PLT stub: that is the address its call sites target
-    if img.imports.iter().any(|i| i.name == t) {
-        if let Some(f) = img.funcs().iter().find(|f| f.name.strip_suffix("@plt") == Some(t)) {
-            return Ok(f.start);
-        }
-    }
-    if let Some(slot) = img.imports.iter().find(|i| i.name == t).and_then(|i| i.slot) {
-        return Ok(slot);
-    }
-    if let Some(s) = img.symbols.iter().find(|s| s.name == t) {
-        return Ok(s.addr);
-    }
-    if let Some(e) = img.exports.iter().find(|e| e.name == t) {
-        return Ok(e.addr);
-    }
-    resolve(img, t).map(|f| f.start)
 }
 
 /// What a target is, for the heading.
@@ -277,7 +233,7 @@ pub fn xref(img: &Image, target: &str) -> Result<Output> {
 /// Like [`xref`], but only the lines of one page are formatted.
 pub fn xref_window(img: &Image, target: &str, from: Option<u64>, budget: usize) -> Result<Output> {
     let _ = img.refs();
-    let t = target_addr(img, target)?;
+    let t = addr_in(img, target)?;
     let refs = img.refs();
     // a PLT stub also answers for the slot it jumps through: that reference is one more line
     let lists: Vec<&[Ref]> = std::iter::once(refs.at(t)).chain(stub_slot(img, t).map(|s| refs.at(s))).collect();
@@ -324,9 +280,13 @@ pub fn xref_window(img: &Image, target: &str, from: Option<u64>, budget: usize) 
 /// address (not included) or a function name, which ends the range with that function: `main --to main` is
 /// its whole body. Only the lines of one page are formatted.
 pub fn xref_range_window(img: &Image, target: &str, to: &str, from: Option<u64>, budget: usize) -> Result<Output> {
-    let lo = target_addr(img, target)?;
+    let lo = addr_in(img, target)?;
     let to = to.trim();
-    let hi = if numeric(to) { parse_addr(to)? } else { resolve(img, to)?.end };
+    // a bare function or section name ends the range with it; any other form is the address it names
+    let hi = match crate::place::AddrExpr::parse(to)? {
+        crate::place::AddrExpr::Name { off: 0, .. } => crate::place::range_in(img, to)?.1,
+        _ => crate::place::any_addr_in(img, to)?,
+    };
     if hi <= lo {
         return Err(Error::Usage(format!("--to {hi:#x} is not after the start {lo:#x}; give a higher address")));
     }
@@ -713,7 +673,7 @@ fn one_line(op: &'static str, text: String, j: Value, img: &Image) -> Output {
 
 /// Give an address a name that stays with the file.
 pub fn name_set(img: &Image, data_dir: &Path, target: &str, name: &str) -> Result<Output> {
-    let addr = target_addr(img, target)?;
+    let addr = addr_in(img, target)?;
     let old = names::set_name(img, data_dir, addr, name)?;
     let was = old.as_ref().map(|o| format!(" (was {o})")).unwrap_or_default();
     Ok(one_line(
@@ -726,7 +686,7 @@ pub fn name_set(img: &Image, data_dir: &Path, target: &str, name: &str) -> Resul
 
 /// Remove the name at an address.
 pub fn name_clear(img: &Image, data_dir: &Path, target: &str) -> Result<Output> {
-    let addr = target_addr(img, target)?;
+    let addr = addr_in(img, target)?;
     let had = names::clear_name(img, data_dir, addr)?;
     let text =
         if had { format!("cleared the name at {addr:#x}") } else { format!("no name at {addr:#x}; nothing to clear") };
@@ -735,14 +695,14 @@ pub fn name_clear(img: &Image, data_dir: &Path, target: &str) -> Result<Output> 
 
 /// Leave a note at an address.
 pub fn note_set(img: &Image, data_dir: &Path, target: &str, text: &str) -> Result<Output> {
-    let addr = target_addr(img, target)?;
+    let addr = addr_in(img, target)?;
     let kept = names::set_note(img, data_dir, addr, text)?;
     Ok(one_line("note", format!("noted {addr:#x}: {kept}"), json!({"addr": addr, "note": kept, "action": "set"}), img))
 }
 
 /// Remove the note at an address.
 pub fn note_clear(img: &Image, data_dir: &Path, target: &str) -> Result<Output> {
-    let addr = target_addr(img, target)?;
+    let addr = addr_in(img, target)?;
     let had = names::clear_note(img, data_dir, addr)?;
     let text =
         if had { format!("cleared the note at {addr:#x}") } else { format!("no note at {addr:#x}; nothing to clear") };

@@ -7,7 +7,7 @@ use crate::disasm::{describe, formatter, walk_bits};
 use crate::image::Section;
 use crate::page::{shell_word, Output, Row, MIN_LINES};
 use crate::strings::shorten;
-use crate::{parse_addr, Error, Image, Result};
+use crate::{Error, Image, Result};
 
 /// The most bytes `bytes` shows in one question.
 pub const MAX_BYTES: u64 = 1 << 18;
@@ -142,22 +142,30 @@ pub(crate) fn numeric(t: &str) -> bool {
     t.starts_with("0x") || t.starts_with("0X") || (!t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Find the function a user means: an address inside it, or its name.
+/// Find the function a user means: an address inside it, or its name (any form of [`crate::place::AddrExpr`]).
 pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::funcs::Func> {
     let t = target.trim();
     if t.is_empty() {
         return Err(Error::Bad("give an address (0x401000) or a function name".into()));
     }
-    if numeric(t) {
-        let a = parse_addr(t)?;
-        return img.func_at(a).ok_or_else(|| match img.section_at(a) {
-            Some(s) if s.exec => {
-                Error::Bad(format!("{a:#x} is in {} but before the first function found there", s.name))
-            }
-            Some(s) => Error::Bad(format!("{a:#x} is in {}, which is data, not code (try: nexo bin bytes)", s.name)),
-            None => Error::Bad(format!("{a:#x} is not inside any section")),
-        });
+    match crate::place::AddrExpr::parse(t)? {
+        crate::place::AddrExpr::Num(a) => func_at_addr(img, a),
+        crate::place::AddrExpr::Name { off: 0, .. } => resolve_name(img, t),
+        _ => crate::place::func_of(img, t).or_else(|e| resolve_name(img, t).map_err(|_| e)),
     }
+}
+
+/// The function that holds `a`, or why there is none.
+pub(crate) fn func_at_addr(img: &Image, a: u64) -> Result<&crate::funcs::Func> {
+    img.func_at(a).ok_or_else(|| match img.section_at(a) {
+        Some(s) if s.exec => Error::Bad(format!("{a:#x} is in {} but before the first function found there", s.name)),
+        Some(s) => Error::Bad(format!("{a:#x} is in {}, which is data, not code (try: nexo bin bytes)", s.name)),
+        None => Error::Bad(format!("{a:#x} is not inside any section")),
+    })
+}
+
+/// A function by its name, part of it, or a section name (the function at its start).
+fn resolve_name<'a>(img: &'a Image, t: &str) -> Result<&'a crate::funcs::Func> {
     let funcs = img.funcs();
     if let Some(f) = funcs.iter().find(|f| img.func_name(f) == t || f.name == t) {
         return Ok(f);
@@ -179,6 +187,9 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
         // it do not count when exactly one function carries that name
         many if many.len() > 1 && hot_exact(many, img, t).len() == 1 => Ok(hot_exact(many, img, t)[0]),
         [] => {
+            if let Some(s) = img.sections.iter().find(|s| s.name == t) {
+                return func_at_addr(img, s.addr);
+            }
             let hint = if t.len() >= 3 && t.chars().all(|c| c.is_ascii_hexdigit()) {
                 format!("; for an address write 0x{t}")
             } else if img.imports.iter().any(|i| i.name == t) {
@@ -186,12 +197,13 @@ pub(crate) fn resolve<'a>(img: &'a Image, target: &str) -> Result<&'a crate::fun
             } else {
                 String::new()
             };
-            let next = if hint.is_empty() {
+            let close = crate::place::close_note(img, t);
+            let next = if hint.is_empty() && close.is_empty() {
                 format!("; find it with: {}", command(img, "funcs", &format!("--grep {t}")))
             } else {
                 String::new()
             };
-            Err(Error::Bad(format!("no function is named {t:?}{hint}{next}")))
+            Err(Error::Bad(format!("no function is named {t:?}{hint}{close}{next}; {}", crate::place::ADDR_FORMS)))
         }
         many => {
             let exact = hot_exact(many, img, t);

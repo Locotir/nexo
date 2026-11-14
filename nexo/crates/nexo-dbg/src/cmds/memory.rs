@@ -5,17 +5,22 @@ use super::*;
 impl Session {
     pub(super) fn cmd_mem(&mut self, a: &Args) -> Result<Output> {
         let (Some(at), len) = (a.pos.first(), a.pos.get(1)) else {
-            return usage("mem <address|expr> [length] [--as u8|u16|u32|u64|i32|f32|f64|ptr|str]");
+            return usage("mem <address|expr|A..B> [length] [--as u8|u16|u32|u64|i32|f32|f64|ptr|str]");
         };
         self.need_stopped()?;
-        let addr = self.addr_of(at)?;
+        let (addr, len) = match self.span_of(at)? {
+            Some((lo, hi)) => (lo, hi - lo),
+            None => (
+                self.addr_of(at)?,
+                match len {
+                    Some(l) => self.addr_of(l)?,
+                    None => 64,
+                },
+            ),
+        };
         let ty = match a.flag("as") {
             Some(t) => ElemType::parse(t)?,
             None => ElemType::U8,
-        };
-        let len = match len {
-            Some(l) => self.addr_of(l)?,
-            None => 64,
         };
         if len > 1 << 20 {
             return usage("mem reads at most 1 MiB at a time");

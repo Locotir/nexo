@@ -76,18 +76,26 @@ impl Session {
 
     pub(super) fn cmd_dis(&mut self, a: &Args) -> Result<Output> {
         let r = self.tid_regs()?;
-        let at = match a.pos.first() {
-            Some(t) => self.addr_of(t)?,
-            None => r.rip,
+        // `dis A..B` shows the instructions that start before B
+        let (at, end) = match a.pos.first() {
+            Some(t) => match self.span_of(t)? {
+                Some((lo, hi)) => (lo, Some(hi)),
+                None => (self.addr_of(t)?, None),
+            },
+            None => (r.rip, None),
         };
-        let n = match a.pos.get(1) {
-            Some(x) => parse_addr(x)?.clamp(1, 200) as usize,
-            None => 8,
+        let n = match (a.pos.get(1), end) {
+            (Some(x), _) => parse_addr(x)?.clamp(1, 200) as usize,
+            (None, Some(hi)) => (hi - at).clamp(1, 200) as usize,
+            (None, None) => 8,
         };
         let bytes = self.read_vec(at, n * 15);
         let (mut pos, mut l) = (0usize, Vec::new());
         for _ in 0..n {
             let ip = at + pos as u64;
+            if end.is_some_and(|hi| ip >= hi) {
+                break;
+            }
             let Some(i) = decode_live(&bytes[pos.min(bytes.len())..], ip, &|x| r.get(x)) else { break };
             let mark = if ip == r.rip { "=>" } else { "  " };
             let name = if pos == 0 {

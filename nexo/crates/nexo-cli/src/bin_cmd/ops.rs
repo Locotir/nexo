@@ -24,8 +24,9 @@ pub enum BinOp {
         file: PathBuf,
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, value_parser = parse_addr)]
-        at: Option<u64>,
+        /// An address: 0x401000, a name, name+0x10.
+        #[arg(long, value_name = "ADDR")]
+        at: Option<String>,
         #[arg(long = "fn", value_name = "NAME+OFF")]
         function: Option<String>,
         #[arg(long, value_name = "HEX")]
@@ -114,12 +115,12 @@ pub enum BinOp {
     /// Disassemble the whole function that holds an address, or has a name (Intel syntax).
     Fn {
         file: PathBuf,
-        /// An address (0x401a30) or a function name.
+        /// An address (0x401a30, main+0x10) or a function name; A..B shows the range, like --to.
         target: String,
         /// Show the instruction bytes.
         #[arg(long)]
         bytes: bool,
-        /// Show everything from the target up to this address, across functions (padding folded).
+        /// Show everything from the target up to this address (0x401b00, a name, name+0x10), across functions (padding folded).
         #[arg(long, value_name = "ADDR")]
         to: Option<String>,
         #[command(flatten)]
@@ -180,7 +181,7 @@ pub enum BinOp {
     /// Who calls, jumps to, reads, writes, takes the address of, or points at an address or name.
     Xref {
         file: PathBuf,
-        /// An address (0x401a30) or a function, symbol or import name.
+        /// An address (0x401a30, name+0x10) or a function, symbol or import name; A..B is the range, like --to.
         #[arg(required_unless_present = "str_text")]
         target: Option<String>,
         /// Every reference into the target up to this address, or to the end of this function (`main --to main`).
@@ -273,9 +274,9 @@ pub enum BinOp {
         /// Arguments in order: 42, -1, 0x401000, str:TEXT, hex:DE AD, buf:SIZE (a buffer to write into).
         #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
-        /// Stop when execution reaches this address (run a stretch of code).
-        #[arg(long, value_parser = parse_addr, value_name = "ADDR")]
-        to: Option<u64>,
+        /// Stop when execution reaches this address (0x401b00, a name, name+0x10): run a stretch of code.
+        #[arg(long, value_name = "ADDR")]
+        to: Option<String>,
         /// Set a register before the run: --reg rbx=5 or --reg rsi=str:abc (repeat).
         #[arg(long = "reg", value_name = "NAME=VALUE")]
         regs: Vec<String>,
@@ -309,14 +310,14 @@ pub enum BinOp {
         #[command(flatten)]
         common: Common,
     },
-    /// Show LEN bytes at an address as a typed table.
+    /// Show the bytes of a range, or LEN bytes at an address, as a typed table.
     Bytes {
         file: PathBuf,
-        #[arg(value_parser = parse_addr)]
-        addr: u64,
+        /// A range (A..B, A+LEN, a function or section name), or an address when LEN follows.
+        addr: String,
         /// How many bytes (at most 262144).
         #[arg(value_parser = parse_addr)]
-        len: u64,
+        len: Option<u64>,
         /// u8, u16, u32, u64, i32, f32, f64, ptr (shows what it points to) or str.
         #[arg(long = "as", default_value = "u8", value_parser = ElemType::NAMES)]
         ty: String,

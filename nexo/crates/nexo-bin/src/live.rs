@@ -5,8 +5,8 @@
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Formatter, InstructionInfoFactory, OpAccess, OpKind, Register};
 
 use crate::disasm::{describe, formatter, target};
-use crate::xops::target_addr;
-use crate::{parse_addr, Error, Image, Result};
+use crate::place::{addr_in, AddrExpr};
+use crate::{Image, Result};
 
 /// One memory place an instruction touches.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,24 +185,15 @@ impl Place {
     }
 }
 
-/// The place a person means: a number, a name (function, symbol, import, a name given with
-/// `nexo bin name`), or either one followed by `+<offset>`. Addresses are the file's own.
+/// The place a person means, written as [`crate::place::AddrExpr`]: a number, a name (function, symbol, import,
+/// section, a name given with `nexo bin name`), either one with `+<offset>` or `-<offset>`. Addresses are the file's own.
 pub fn place_of(img: &Image, target: &str) -> Result<Place> {
-    let t = target.trim();
-    let (head, off) = match t.rsplit_once('+') {
-        Some((h, o)) if !h.trim().is_empty() => match parse_addr(o) {
-            Ok(n) => (h.trim(), n),
-            Err(_) => (t, 0),
-        },
-        _ => (t, 0),
-    };
-    let base = target_addr(img, head)?;
-    let addr =
-        base.checked_add(off).ok_or_else(|| Error::Bad(format!("{t:?} is past the end of the address space")))?;
+    let addr = addr_in(img, target)?;
+    let off = matches!(AddrExpr::parse(target)?, AddrExpr::Name { off, .. } if off != 0);
     if img.is_exec(addr) {
         return Ok(Place::Code(addr));
     }
-    if off == 0 && img.imports.iter().any(|i| i.slot == Some(addr)) {
+    if !off && img.imports.iter().any(|i| i.slot == Some(addr)) {
         return Ok(Place::ImportSlot(addr));
     }
     Ok(Place::Data(addr))

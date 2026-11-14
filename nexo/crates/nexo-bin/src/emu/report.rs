@@ -262,7 +262,8 @@ pub(super) fn report(
         }
     }
     for s in &spec.show {
-        let parsed = s.split_once(':').and_then(|(a, l)| Some((parse_addr(a).ok()?, parse_addr(l).ok()?)));
+        let parsed =
+            s.rsplit_once(':').and_then(|(a, l)| Some((crate::place::any_addr_in(img, a).ok()?, parse_addr(l).ok()?)));
         match parsed {
             Some((a, l)) => {
                 let l = (l as usize).clamp(1, MAX_DUMP);

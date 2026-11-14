@@ -210,11 +210,12 @@ fn fn_to_refuses_what_it_cannot_do_with_exit_2() {
         (hex(f.b).as_str(), "0x10", "not after the start"),
         ("0x10", "0x20", "not inside any section"),
         (hex(f.b).as_str(), "0xffffffffffffffff", "ask for at most"),
-        (hex(f.b).as_str(), "zzz", "not a number"),
+        // a name is an address too now: an unknown one says so
+        (hex(f.b).as_str(), "zzz", "no function is named"),
     ] {
         let e = run(a, to).unwrap_err();
         assert!(e.to_string().contains(why), "{a}..{to}: {e}");
-        if why != "not a number" {
+        if why != "no function is named" {
             assert_eq!(e.exit_code(), 2, "{a}..{to}: {e}");
         }
     }

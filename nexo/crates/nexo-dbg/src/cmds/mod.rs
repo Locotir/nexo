@@ -118,6 +118,20 @@ impl Session {
         Ok(self.mods.resolve(t)?.addr())
     }
 
+    /// `A..B` (see [`nexo_bin::RangeExpr`]) as two addresses, each end any place [`Session::addr_of`] takes; `None`
+    /// for one place, since here `$rsp+0x20` and `main+0x10` are addresses.
+    pub fn span_of(&mut self, text: &str) -> Result<Option<(u64, u64)>> {
+        if !nexo_bin::is_span(text) {
+            return Ok(None);
+        }
+        let nexo_bin::RangeExpr::Between(a, b) = nexo_bin::RangeExpr::parse(text)? else { return Ok(None) };
+        let (lo, hi) = (self.addr_of(&a)?, self.addr_of(&b)?);
+        if hi <= lo {
+            return usage(format!("{text:?} ends at {hi:#x}, not after its start {lo:#x}; {}", nexo_bin::RANGE_FORMS));
+        }
+        Ok(Some((lo, hi)))
+    }
+
     pub fn exec(&mut self, words: &[String]) -> Result<Output> {
         let Some(cmd) = words.first() else { return usage("a command is needed: `help` lists them") };
         if self.recording.is_some() {

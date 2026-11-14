@@ -434,3 +434,77 @@ fn a_question_that_cannot_be_answered_says_why() {
     let e = ask(&["info", &dir.path().join("missing").display().to_string()]).unwrap_err();
     assert_eq!(e.exit_code(), 2);
 }
+
+#[test]
+fn every_address_op_takes_a_symbol_an_offset_and_a_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixtures::elf64(false);
+    let path = file(&dir, "elf", &f);
+    let (a, b) = (format!("{:#x}", f.a), format!("{:#x}", f.b));
+    let a4 = format!("{:#x}", f.a + 4);
+    // the same answer, apart from the commands it suggests, which repeat the target as it was written, and the time
+    let answer = |args: &[&str]| -> String {
+        let keep = |l: &str| l.split("  ").filter(|w| !w.ends_with(" ms")).collect::<Vec<_>>().join("  ");
+        ask(args).unwrap().lines().filter(|l| !l.contains("nexo bin ")).map(keep).collect::<Vec<_>>().join("\n")
+    };
+    let same = |forms: &[Vec<&str>]| {
+        let first = answer(&forms[0]);
+        assert!(!first.is_empty(), "{:?}", forms[0]);
+        for args in &forms[1..] {
+            assert_eq!(answer(args), first, "{args:?}");
+        }
+    };
+    // bytes: the old address and length, a symbol with a length, and a range in each form
+    let a8 = format!("{a}..{:#x}", f.a + 8);
+    same(&[
+        vec!["bytes", &path, &a, "8"],
+        vec!["bytes", &path, "main", "8"],
+        vec!["bytes", &path, "main+8"],
+        vec!["bytes", &path, "main..main+8"],
+        vec!["bytes", &path, &a8],
+    ]);
+    same(&[
+        vec!["bytes", &path, &a4, "4"],
+        vec!["bytes", &path, "main+4", "4"],
+        vec!["bytes", &path, "main+4..main+8"],
+    ]);
+    assert!(ask(&["bytes", &path, ".data", "--as", "u32"]).unwrap().contains("0x12345678"));
+    // fn: an address inside, a range as A..B or --to, with numbers or names
+    same(&[vec!["fn", &path, &a4], vec!["fn", &path, "main+0x4"], vec!["fn", &path, "main+4"]]);
+    same(&[
+        vec!["fn", &path, &a, "--to", &b],
+        vec!["fn", &path, "main", "--to", "helper"],
+        vec!["fn", &path, "main..helper"],
+        vec!["fn", &path, &format!("{a}..{b}")],
+    ]);
+    // xref: a name, an offset, a range
+    same(&[vec!["xref", &path, &b], vec!["xref", &path, "helper"], vec!["xref", &path, "helper+0"]]);
+    let te = format!("{:#x}", f.text_end);
+    same(&[vec!["xref", &path, &a, "--to", &te], vec!["xref", &path, &format!("main..{te}")]]);
+    // emu --to and the ops that find a function take the same forms
+    same(&[vec!["emu", &path, "main", "--to", &b], vec!["emu", &path, "main", "--to", "helper"]]);
+    same(&[vec!["calls", &path, &a4], vec!["calls", &path, "main+4"]]);
+    // patch --at: a name with an offset lands on the same file offset as the number
+    let at = |n: &str, at: &str| {
+        let out = dir.path().join(n).display().to_string();
+        let r = ask(&["patch", &path, "--out", &out, "--at", at, "--bytes", "90", "--json"]).unwrap();
+        serde_json::from_str::<serde_json::Value>(&r).unwrap()["file_offset"].clone()
+    };
+    assert_eq!(at("p1", &format!("{:#x}", f.a + 1)), at("p2", "main+1"));
+}
+
+#[test]
+fn an_unknown_name_is_answered_with_the_close_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = file(&dir, "elf", &fixtures::elf64(false));
+    for args in [
+        vec!["fn", &path, "mian"],
+        vec!["bytes", &path, "mian", "4"],
+        vec!["bytes", &path, "mian..helper"],
+        vec!["xref", &path, "mian+4"],
+        vec!["emu", &path, "main", "--to", "helpr"],
+    ] {
+        let e = ask(&args).unwrap_err().to_string();
+        assert!(e.contains("close names: main") || e.contains("close names: helper"), "{args:?}: {e}");
+    }
+}

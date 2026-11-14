@@ -159,7 +159,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Asm { .. } => unreachable!("assembled before opening an image"),
         BinOp::Patch { out, at, function, bytes, asm, nop, .. } => {
             let target = match (at, function) {
-                (Some(at), None) => nexo_bin::PatchTarget::Address(*at),
+                (Some(at), None) => nexo_bin::PatchTarget::Address(nexo_bin::any_addr_in(&img, at)?),
                 (None, Some(name)) => nexo_bin::PatchTarget::Function(name),
                 _ => return Err(Error::Usage("give exactly one of --at or --fn".into())),
             };
@@ -199,9 +199,14 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         )?,
         BinOp::Xref { target, to, str_text, insensitive, .. } => match (str_text, target) {
             (Some(t), _) => nexo_bin::xref_str_window(&img, t, *insensitive, from, lines)?,
-            (None, Some(t)) => match to {
-                Some(to) => nexo_bin::xref_range_window(&img, t, to, from, lines)?,
-                None => nexo_bin::xref_window(&img, t, from, lines)?,
+            (None, Some(t)) => match (to, nexo_bin::is_span(t)) {
+                (Some(to), _) => nexo_bin::xref_range_window(&img, t, to, from, lines)?,
+                // `A..B`: B is the address the range stops before, whatever it names
+                (None, true) => {
+                    let (lo, hi) = nexo_bin::range_in(&img, t)?;
+                    nexo_bin::xref_range_window(&img, &format!("{lo:#x}"), &format!("{hi:#x}"), from, lines)?
+                }
+                (None, false) => nexo_bin::xref_window(&img, t, from, lines)?,
             },
             (None, None) => return Err(Error::Usage("give an address or a name, or --str TEXT".into())),
         },
@@ -232,7 +237,13 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         }
         BinOp::Sigs { .. } => unreachable!("handled before the file is opened"),
         BinOp::Names { .. } => nexo_bin::names_list_window(&img, from, lines),
-        BinOp::Bytes { addr, len, ty, .. } => nexo_bin::bytes(&img, *addr, *len, ElemType::parse(ty)?)?,
+        BinOp::Bytes { addr, len, ty, .. } => {
+            let (at, n) = match len {
+                Some(n) => (nexo_bin::any_addr_in(&img, addr)?, *n),
+                None => nexo_bin::range_in(&img, addr).map(|(lo, hi)| (lo, hi - lo))?,
+            };
+            nexo_bin::bytes(&img, at, n, ElemType::parse(ty)?)?
+        }
         BinOp::Strings { grep, sort, .. } => {
             nexo_bin::strings_window(&img, grep.as_deref(), StrSort::parse(sort)?, from, lines)?
         }
@@ -241,7 +252,7 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
                 &img,
                 &nexo_bin::EmuSpec {
                     args: args.clone(),
-                    to: *to,
+                    to: to.as_deref().map(|t| nexo_bin::any_addr_in(&img, t)).transpose()?,
                     regs: regs.clone(),
                     mem: mems.clone(),
                     stubs: stubs.clone(),

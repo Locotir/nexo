@@ -34,6 +34,7 @@ mod page;
 mod patch;
 mod pdbread;
 mod pic32;
+mod place;
 mod refs;
 mod sigs;
 mod slice;
@@ -62,6 +63,8 @@ mod tests_macho;
 mod tests_map;
 #[cfg(test)]
 mod tests_patch;
+#[cfg(test)]
+mod tests_place;
 #[cfg(test)]
 mod tests_sigs;
 #[cfg(test)]
@@ -100,6 +103,7 @@ pub use ops::{
 pub use overview::{overview, overview_window};
 pub use page::{Output, Page, Row, DEFAULT_LINES, MIN_LINES, RANGE_LINES};
 pub use patch::{patch, PatchData, PatchTarget};
+pub use place::{addr_in, any_addr_in, close_names, is_span, range_in, AddrExpr, RangeExpr, ADDR_FORMS, RANGE_FORMS};
 pub use refs::{Kind, Ref, Refs, MAX_REFS};
 pub use sigs::{
     find_libraries as sig_libraries, generate as sig_generate, Keep as SigKeep, SigHit, SigSet, Strength as SigStrength,

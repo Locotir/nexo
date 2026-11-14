@@ -8,9 +8,10 @@ use serde_json::json;
 
 use crate::disasm::{formatter, walk_lines, Line};
 use crate::funcs::Func;
-use crate::ops::{command, hex, numeric, resolve};
+use crate::ops::{command, hex, resolve};
 use crate::page::{shell_word, window, Output, Row, MIN_LINES};
-use crate::{parse_addr, Error, Image, Result};
+use crate::place::{addr_in, any_addr_in, is_span, AddrExpr, RangeExpr};
+use crate::{Error, Image, Result};
 
 /// Instructions shown before the one that holds an address that was asked for (fewer when the
 /// line budget is the smallest one).
@@ -46,6 +47,11 @@ pub fn func_view(img: &Image, q: &FnQuery) -> Result<Output> {
     let _ = img.refs();
     match q.to {
         Some(to) => range(img, q, to),
+        // `fn A..B` is `fn A --to B`
+        None if is_span(q.target) => match RangeExpr::parse(q.target)? {
+            RangeExpr::Between(a, b) => range(img, &FnQuery { target: &a, ..*q }, &b),
+            _ => one(img, q),
+        },
         None => one(img, q),
     }
 }
@@ -124,7 +130,12 @@ fn one(img: &Image, q: &FnQuery) -> Result<Output> {
     let t = q.target.trim();
     let bytes = bytes_of(img, f);
     // an address inside the function, not its first byte: the page opens near it and marks it
-    let asked = if numeric(t) { parse_addr(t).ok().filter(|&a| a != f.start) } else { None };
+    let asked = match AddrExpr::parse(t)? {
+        AddrExpr::Num(a) => Some(a),
+        AddrExpr::Name { off, .. } if off != 0 => addr_in(img, t).ok(),
+        _ => None,
+    }
+    .filter(|&a| a != f.start);
     let (mut total, mut holder) = (0usize, None::<usize>);
     walk_lines(img, bytes, f.start, |ins, raw| {
         if let Some(a) = asked {
@@ -229,8 +240,9 @@ fn plural(n: u64, word: &str) -> String {
 
 fn range(img: &Image, q: &FnQuery, to: &str) -> Result<Output> {
     let t = q.target.trim();
-    let s0 = if numeric(t) { parse_addr(t)? } else { resolve(img, t)?.start };
-    let s1 = parse_addr(to)?;
+    // a number is checked below, with the range's own words
+    let s0 = any_addr_in(img, t)?;
+    let s1 = any_addr_in(img, to)?;
     if s1 <= s0 {
         return Err(Error::Usage(format!("--to {s1:#x} is not after the start {s0:#x}; give a higher address")));
     }

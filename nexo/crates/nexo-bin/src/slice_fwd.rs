@@ -18,10 +18,10 @@ use crate::disasm::{formatter, walk};
 use crate::mainfind::clobbered_by_call;
 use crate::ops::command;
 use crate::page::{cut, Output, Row};
+use crate::place::addr_in;
 use crate::slice::{
     arg_regs, call_name, loc_text, mem_loc, overlaps, parse_mem, parse_reg, pure_write, reads, reg_name, writes, Loc,
 };
-use crate::xops::target_addr;
 use crate::{Error, Image, Result};
 
 /// Instructions visited before the walk gives up and says so.
@@ -62,7 +62,7 @@ pub fn slice_forward(
     budget: usize,
 ) -> Result<Output> {
     img.require_x86("slice --forward")?;
-    let at_addr = target_addr(img, at)?;
+    let at_addr = addr_in(img, at)?;
     let f = img
         .func_at(at_addr)
         .ok_or_else(|| Error::Bad(format!("{at_addr:#x} is not inside a function found in this file")))?;

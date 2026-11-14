@@ -337,7 +337,7 @@ pub fn emulate(img: &Image, spec: &EmuSpec) -> Result<Output> {
         let (a, v) = s
             .split_once('=')
             .ok_or_else(|| Error::Usage(format!("--mem {s:?}: write ADDR=VALUE, like --mem 0x4010=hex:01 02")))?;
-        let a = parse_addr(a)?;
+        let a = crate::place::any_addr_in(img, a)?;
         let bytes = match v.split_once(':') {
             Some(("u8", n)) => (parse_number(n)? as u64).to_le_bytes()[..1].to_vec(),
             Some(("u16", n)) => (parse_number(n)? as u64).to_le_bytes()[..2].to_vec(),

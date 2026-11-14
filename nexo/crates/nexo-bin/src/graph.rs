@@ -12,8 +12,9 @@ use serde_json::json;
 use crate::disasm::describe;
 use crate::ops::command;
 use crate::page::{cut, shell_word, Output, Row};
+use crate::place::addr_in;
 use crate::refs::Kind;
-use crate::xops::{indirect_line, stub_slot, target_addr};
+use crate::xops::{indirect_line, stub_slot};
 use crate::{Error, Image, Result};
 
 /// The deepest tree.
@@ -148,7 +149,7 @@ fn edges_of(img: &Image, node: u64, up: bool, ptrs: bool) -> Vec<Edge> {
 }
 
 fn code_node(img: &Image, target: &str) -> Result<u64> {
-    let a = target_addr(img, target)?;
+    let a = addr_in(img, target)?;
     if img.slots.contains_key(&a) {
         return Ok(a);
     }
