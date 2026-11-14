@@ -86,7 +86,7 @@ fn list(found: &[BrowserEntry], bad: &[(String, String)], current: Option<&AnyBr
     }
     if found.is_empty() && bad.is_empty() {
         lines.push(format!(
-            "(no browser with the nexo extension is running. The person runs `nexo chrome-setup` once; then in the browser \
+            "(no browser with the nexo extension is running. The person types /chrome in nexo (or runs `nexo chrome-setup` in the shell) once; then in the browser \
              on chrome://extensions they turn on Developer mode, pick \"Load unpacked\" and select the folder {})",
             nexo_core::paths::data_dir().join("chrome-extension").display()
         ));
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn an_empty_list_says_how_to_get_a_browser() {
         let text = list(&[], &[], None);
-        assert!(text.contains("nexo chrome-setup") && text.contains("headless"), "{text}");
+        assert!(text.contains("/chrome") && text.contains("nexo chrome-setup") && text.contains("headless"), "{text}");
         for want in ["Developer mode", "Load unpacked", "chrome-extension"] {
             assert!(text.contains(want), "{want} missing from {text}");
         }
