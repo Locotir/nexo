@@ -18,7 +18,7 @@ impl Vars {
         if head.is_empty() || head.starts_with(|c: char| c.is_ascii_digit()) {
             return None;
         }
-        let mut v = match self.find(head, regs) {
+        let (mut v, why) = match self.find(head, regs) {
             Some(v) => v,
             None => {
                 let pc = regs.rip.wrapping_sub(regs.bias);
@@ -58,7 +58,12 @@ impl Vars {
                     Ok(n) => n as i64,
                     Err(_) => match self.path(inner, regs) {
                         Some(Ok((x, _))) => match self.int(&x, regs) {
-                            Some(n) => n,
+                            Some(n) => {
+                                if let Some((head, why)) = FACT.with(|f| f.borrow_mut().take()) {
+                                    notes.push(format!("the index {head}: {why}"));
+                                }
+                                n
+                            }
                             None => return Some(Err(format!("{inner} is not a number"))),
                         },
                         Some(Err(e)) => return Some(Err(e)),
@@ -88,6 +93,7 @@ impl Vars {
             };
         }
         NOTES.with(|n| *n.borrow_mut() = notes);
+        FACT.with(|f| *f.borrow_mut() = why.filter(|_| !amp).map(|w| (head.to_string(), w)));
         Some(Ok((v, amp)))
     }
 
@@ -150,4 +156,6 @@ impl Vars {
 thread_local! {
     /// Notes from the last `path` (an index past the end), read right after it.
     pub(super) static NOTES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// From the last `path`: the variable it starts from and why its value is not its own yet, read right after.
+    pub(super) static FACT: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
 }

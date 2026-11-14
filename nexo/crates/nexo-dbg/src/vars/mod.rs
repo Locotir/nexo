@@ -2,6 +2,7 @@
 //! types, so `locals`, `print p->tag` and `print rows[2][1]` answer in the program's own words. Only the program
 //! itself is read (not its libraries), and only plain (uncompressed) ELF sections, like `lines.rs`.
 
+mod assigned;
 mod entry;
 mod load;
 mod path;
@@ -48,6 +49,8 @@ struct Var {
     ty: Option<u64>,
     /// The ranges of the lexical block it was declared in; `None` for the whole function.
     scope: Option<Vec<(u64, u64)>>,
+    /// Where it is declared (`DW_AT_decl_file` as an index into `Vars::files`, `DW_AT_decl_line`).
+    decl: Option<(u32, u32)>,
 }
 
 /// What `args` knows from DWARF about the function it stopped in.
@@ -110,6 +113,8 @@ pub struct Vars {
     funcs: Vec<Func>,
     globals: Vec<(Var, gimli::Encoding)>,
     types: HashMap<u64, Ty>,
+    /// The source files the declarations name, as the line table names them.
+    files: Vec<String>,
 }
 
 /// A type as used in a value: the type, and how many array dimensions were already indexed.
@@ -137,6 +142,8 @@ pub struct Regs<'a> {
     /// The stop is before the function's prologue ends (`stopped at store+0x0, the prologue ends at
     /// store+0x10`): its stack slots still hold what an earlier call left there, so they are not read.
     pub early: Option<String>,
+    /// The program's line table, to place the stop and the declarations in the source.
+    pub lines: Option<&'a crate::lines::Lines>,
 }
 
 enum Ctx {
@@ -162,7 +169,7 @@ mod tests {
     }
 
     fn lone(types: Vec<(u64, Ty)>) -> Vars {
-        Vars { funcs: Vec::new(), globals: Vec::new(), types: types.into_iter().collect() }
+        Vars { funcs: Vec::new(), globals: Vec::new(), types: types.into_iter().collect(), files: Vec::new() }
     }
 
     #[test]
@@ -203,8 +210,15 @@ mod tests {
                 }
             }
             let mut rd = |_: u64, n: usize| Some(vec![1u8; n.min(64)]);
-            let mut regs =
-                Regs { gp: [0x1000; 16], rip: 0x40_0000, cfa: Some(0x7fff_0000), bias: 0, rd: &mut rd, early: None };
+            let mut regs = Regs {
+                gp: [0x1000; 16],
+                rip: 0x40_0000,
+                cfa: Some(0x7fff_0000),
+                bias: 0,
+                rd: &mut rd,
+                early: None,
+                lines: None,
+            };
             let t0 = std::time::Instant::now();
             let _ = eval(&e, enc, Some(&[0x9c]), &mut regs);
             assert!(t0.elapsed().as_secs() < 2, "{e:02x?}");

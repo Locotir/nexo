@@ -21,7 +21,7 @@ impl Vars {
             Ok(EndianSlice::new(get(id.name()), LittleEndian))
         };
         let dwarf = gimli::Dwarf::load(load).ok()?;
-        let mut out = Vars { funcs: Vec::new(), globals: Vec::new(), types: HashMap::new() };
+        let mut out = Vars { funcs: Vec::new(), globals: Vec::new(), types: HashMap::new(), files: Vec::new() };
         let mut units = dwarf.units();
         while let Ok(Some(header)) = units.next() {
             let Ok(unit) = dwarf.unit(header) else { continue };
@@ -55,6 +55,20 @@ impl Vars {
                 }
             }
             v
+        };
+        // a declaration's file, as an index into `self.files`, by its index in this unit's file table
+        let header = unit.line_program.as_ref().map(|p| p.header());
+        let comp_dir = unit.comp_dir.map(|d| d.to_string_lossy().into_owned());
+        let mut file_of: HashMap<u64, Option<u32>> = HashMap::new();
+        let mut decl_of = |e: &gimli::DebuggingInformationEntry<Slice<'a>>, files: &mut Vec<String>| {
+            let Some(AttributeValue::FileIndex(fi)) = e.attr_value(gimli::DW_AT_decl_file) else { return None };
+            let line = e.attr_value(gimli::DW_AT_decl_line).and_then(|v| v.udata_value())?;
+            let file = *file_of.entry(fi).or_insert_with(|| {
+                let path = crate::lines::file_path(dwarf, unit, header?, comp_dir.as_deref(), fi)?;
+                files.push(path);
+                Some((files.len() - 1) as u32)
+            });
+            Some((file?, u32::try_from(line).ok()?))
         };
         let mut stack: Vec<(isize, Ctx)> = Vec::new();
         let mut entries = unit.entries();
@@ -121,6 +135,7 @@ impl Vars {
                         loc,
                         ty: type_of(e),
                         scope: None,
+                        decl: decl_of(e, &mut self.files),
                     };
                     let mut owner = None;
                     for (_, c) in stack.iter().rev() {

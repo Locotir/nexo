@@ -184,6 +184,15 @@ impl Mods {
         Some((self.vars.as_ref()?.as_ref()?, bias))
     }
 
+    /// The program's variables and its line table together (each built once), with the bias to add to their
+    /// addresses; the line table is `None` when the program has none.
+    pub fn main_vars_lines(&mut self) -> Option<(&crate::vars::Vars, Option<&crate::lines::Lines>, u64)> {
+        let _ = self.main_lines();
+        self.main_vars()?;
+        let lines = self.lines.get(&self.main_idx).and_then(Option::as_ref);
+        Some((self.vars.as_ref()?.as_ref()?, lines, self.main_bias()))
+    }
+
     /// The text of the source line of the code at `addr`, when the file is on this machine.
     pub fn source_text(&mut self, addr: u64) -> Option<String> {
         let idx = self.locate(addr)?;

@@ -74,27 +74,9 @@ impl Lines {
                 let file = match seen.iter().find(|(k, _)| *k == id) {
                     Some((_, f)) => *f,
                     None => {
-                        let name = h.file(id).map(|f| {
-                            let mut p = String::new();
-                            if let Some(d) = f.directory(h) {
-                                if let Ok(d) = dwarf.attr_string(&unit, d) {
-                                    p = d.to_string_lossy().into_owned();
-                                }
-                            }
-                            let n = dwarf.attr_string(&unit, f.path_name()).map(|n| n.to_string_lossy().into_owned());
-                            let n = n.unwrap_or_default();
-                            if n.starts_with('/') || p.is_empty() {
-                                n
-                            } else {
-                                format!("{p}/{n}")
-                            }
-                        });
-                        let mut name = name.unwrap_or_default();
-                        if !name.starts_with('/') {
-                            if let Some(c) = &comp_dir {
-                                name = format!("{c}/{name}");
-                            }
-                        }
+                        let name = file_path(&dwarf, &unit, h, comp_dir.as_deref(), id);
+                        let name =
+                            name.unwrap_or_else(|| comp_dir.as_ref().map(|c| format!("{c}/")).unwrap_or_default());
                         out.files.push(name);
                         let f = (out.files.len() - 1) as u32;
                         seen.push((id, f));
@@ -110,20 +92,7 @@ impl Lines {
                 });
             }
             let name_of = |id: u64, files: &mut Vec<String>| -> Option<u32> {
-                let f = header.file(id)?;
-                let mut p = String::new();
-                if let Some(d) = f.directory(header) {
-                    if let Ok(d) = dwarf.attr_string(&unit, d) {
-                        p = d.to_string_lossy().into_owned();
-                    }
-                }
-                let n = dwarf.attr_string(&unit, f.path_name()).ok()?.to_string_lossy().into_owned();
-                let mut name = if n.starts_with('/') || p.is_empty() { n } else { format!("{p}/{n}") };
-                if !name.starts_with('/') {
-                    if let Some(c) = &comp_dir {
-                        name = format!("{c}/{name}");
-                    }
-                }
+                let name = file_path(&dwarf, &unit, header, comp_dir.as_deref(), id)?;
                 files.push(name);
                 Some((files.len() - 1) as u32)
             };
@@ -234,6 +203,69 @@ impl Lines {
         let body = || self.rows[i..].iter().take_while(|r| !r.end && r.addr < hi);
         body().find(|r| r.prologue_end).or_else(|| body().find(|r| r.addr > lo)).map(|r| r.addr)
     }
+
+    /// The rows of the code in `lo..hi` (file addresses), each with the address its code starts at there: the
+    /// row that covers `lo` counts from `lo`.
+    fn rows_in(&self, lo: u64, hi: u64) -> impl Iterator<Item = (u64, &Row)> {
+        let i = self.rows.partition_point(|r| r.addr <= lo).saturating_sub(1);
+        let rows = self.rows[i..].iter().take_while(move |r| r.addr < hi);
+        rows.filter(|r| !r.end && r.line != 0).map(move |r| (r.addr.max(lo), r))
+    }
+
+    /// Where the code of `line` of `file` starts inside `ranges` (a function or a lexical block): its lowest
+    /// address there. `None` when that line has no code there.
+    pub fn line_start_in(&self, file: &str, line: u32, ranges: &[(u64, u64)]) -> Option<u64> {
+        let named = |r: &Row| self.files.get(r.file as usize).is_some_and(|f| f == file);
+        ranges
+            .iter()
+            .filter_map(|&(lo, hi)| self.rows_in(lo, hi).find(|(_, r)| r.line == line && named(r)))
+            .map(|(a, _)| a)
+            .min()
+    }
+
+    /// The file and the first and last line of the code in `ranges` (a lexical block), in the file of its first
+    /// row. `None` when no row falls there.
+    pub fn span_of(&self, ranges: &[(u64, u64)]) -> Option<(&str, u32, u32)> {
+        let mut file = None;
+        let (mut first, mut last) = (u32::MAX, 0);
+        for &(lo, hi) in ranges {
+            for (_, r) in self.rows_in(lo, hi) {
+                if *file.get_or_insert(r.file) == r.file {
+                    first = first.min(r.line);
+                    last = last.max(r.line);
+                }
+            }
+        }
+        Some((self.files.get(file? as usize)?.as_str(), first, last))
+    }
+}
+
+type Slice<'a> = gimli::EndianSlice<'a, gimli::LittleEndian>;
+
+/// The path of file `id` of a unit's line program, as the line table names it: its directory joined to it, and
+/// the unit's directory before a path still relative. `None` for an index the table does not have.
+pub(crate) fn file_path(
+    dwarf: &gimli::Dwarf<Slice<'_>>,
+    unit: &gimli::Unit<Slice<'_>>,
+    header: &gimli::LineProgramHeader<Slice<'_>>,
+    comp_dir: Option<&str>,
+    id: u64,
+) -> Option<String> {
+    let f = header.file(id)?;
+    let mut p = String::new();
+    if let Some(d) = f.directory(header) {
+        if let Ok(d) = dwarf.attr_string(unit, d) {
+            p = d.to_string_lossy().into_owned();
+        }
+    }
+    let n = dwarf.attr_string(unit, f.path_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut name = if n.starts_with('/') || p.is_empty() { n } else { format!("{p}/{n}") };
+    if !name.starts_with('/') {
+        if let Some(c) = comp_dir {
+            name = format!("{c}/{name}");
+        }
+    }
+    Some(name)
 }
 
 /// The text of `line` in `file`, trimmed, when the file is on this machine.

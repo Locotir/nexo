@@ -41,14 +41,28 @@ impl Vars {
         eval(expr, enc, fb, regs)
     }
 
-    pub(super) fn find(&self, name: &str, regs: &mut Regs) -> Option<Val> {
+    /// The variable `name` at this stop, with why its value is not its own yet when that is known: a local in
+    /// scope, else a global, else a local of a block that does not hold the stop (the block that starts last
+    /// before the stop, else the first one).
+    pub(super) fn find(&self, name: &str, regs: &mut Regs) -> Option<(Val, Option<String>)> {
         let pc = regs.rip.wrapping_sub(regs.bias);
         let local = self.in_scope(pc).into_iter().find(|(v, _, _)| v.name == name);
         if let Some((v, enc, fb)) = local {
-            return Some(Val { at: self.value(v, enc, fb, regs)?, ty: View(v.ty, 0) });
+            let why = self.unassigned(v, regs);
+            return Some((Val { at: self.value(v, enc, fb, regs)?, ty: View(v.ty, 0) }, why));
         }
-        let (v, enc) = self.globals.iter().find(|(v, _)| v.name == name)?;
-        Some(Val { at: self.value(v, *enc, None, regs)?, ty: View(v.ty, 0) })
+        if let Some((v, enc)) = self.globals.iter().find(|(v, _)| v.name == name) {
+            return Some((Val { at: self.value(v, *enc, None, regs)?, ty: View(v.ty, 0) }, None));
+        }
+        let gone: Vec<_> = self.out_of_block(pc).into_iter().filter(|(v, _, _)| v.name == name).collect();
+        let start = |v: &Var| v.scope.as_ref().and_then(|r| r.iter().map(|r| r.0).min()).unwrap_or(0);
+        let (v, enc, fb) =
+            *gone.iter().filter(|(v, _, _)| start(v) <= pc).max_by_key(|(v, _, _)| start(v)).or(gone.first())?;
+        let mut why = self.unassigned(v, regs);
+        if let (Some(w), n @ 2..) = (why.as_mut(), gone.len()) {
+            w.push_str(&format!("; {} more named {name} in other blocks: `locals` lists them", n - 1));
+        }
+        Some((Val { at: self.value(v, enc, fb, regs)?, ty: View(v.ty, 0) }, why))
     }
 }
 

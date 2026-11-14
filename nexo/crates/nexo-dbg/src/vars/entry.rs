@@ -107,7 +107,7 @@ mod tests {
     use super::*;
 
     fn var(name: &str, ty: u64) -> Var {
-        Var { name: name.into(), param: true, loc: Loc::Expr(vec![0x91, 0x68]), ty: Some(ty), scope: None }
+        Var { name: name.into(), param: true, loc: Loc::Expr(vec![0x91, 0x68]), ty: Some(ty), scope: None, decl: None }
     }
 
     /// f(double d, char *p, struct pt s, int n) returning `ret`, with rdi..r9 and rcx holding 0x10 * their index.
@@ -132,10 +132,11 @@ mod tests {
             prototyped: true,
             ret,
         };
-        let v = Vars { funcs: vec![f], globals: Vec::new(), types: types.into_iter().collect() };
+        let v = Vars { funcs: vec![f], globals: Vec::new(), types: types.into_iter().collect(), files: Vec::new() };
         let mut rd = |_: u64, _: usize| None;
         let gp: [u64; 16] = std::array::from_fn(|i| 0x10 * i as u64);
-        let mut regs = Regs { gp, rip: 0x100, cfa: None, bias: 0, rd: &mut rd, early: Some(String::new()) };
+        let mut regs =
+            Regs { gp, rip: 0x100, cfa: None, bias: 0, rd: &mut rd, early: Some(String::new()), lines: None };
         v.params_in_regs(0x100, win, &mut regs, 1)
             .into_iter()
             .map(|(v, got)| match got {

@@ -20,3 +20,4 @@ mod range_page;
 mod rsp;
 mod source_level;
 mod stdin_bytes;
+mod unassigned_locals;

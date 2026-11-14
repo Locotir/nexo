@@ -1,6 +1,6 @@
 //! The `locals`, `print` and stop-report side of a session.
 
-use super::path::NOTES;
+use super::path::{FACT, NOTES};
 use super::*;
 
 impl Session {
@@ -18,12 +18,12 @@ impl Session {
             };
             mods.backtrace(&r, &mut rd8, 1).first().and_then(|f| f.cfa)
         };
-        let Some((vars, bias)) = mods.main_vars() else { return Ok(None) };
+        let Some((vars, lines, bias)) = mods.main_vars_lines() else { return Ok(None) };
         let mut rd = |a: u64, n: usize| {
             let mut b = vec![0u8; n];
             (t.read(a, &mut b) == n).then_some(b)
         };
-        let mut regs = Regs { gp: r.gp, rip: r.rip, cfa, bias, rd: &mut rd, early };
+        let mut regs = Regs { gp: r.gp, rip: r.rip, cfa, bias, rd: &mut rd, early, lines };
         Ok(Some(f(vars, &mut regs)))
     }
 
@@ -57,10 +57,11 @@ impl Session {
             let early = regs.early.clone().filter(|_| vs.iter().any(|(v, _, _)| Vars::in_slot(v)));
             let inreg = if early.is_some() { vars.params_in_regs(pc, win, regs, 0) } else { Vec::new() };
             let mut l = Vec::new();
-            for (v, enc, fb) in vs {
+            // the locals of blocks that do not hold the stop come last, saying so
+            for (v, enc, fb) in vs.into_iter().chain(vars.out_of_block(pc)) {
                 let ty = View(v.ty, 0);
                 let at = vars.value(v, enc, fb, regs);
-                let val = vars.shown(v, at, regs, 0, &inreg);
+                let val = vars.shown_noted(v, at, regs, 0, &inreg);
                 let kind = if v.param { "arg " } else { "" };
                 l.push(format!("{kind}{} ({}) = {val}", v.name, vars.name(ty)));
             }
@@ -91,6 +92,12 @@ impl Session {
                     Err(e) => return Some(Err(e)),
                 };
                 let notes = NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()));
+                // why the variable the expression starts from does not hold its own value yet, as `locals` says
+                let fact = match FACT.with(|f| f.borrow_mut().take()) {
+                    Some((head, why)) if head == src.trim() => format!(" ({why})"),
+                    Some((head, why)) => format!(" ({head}: {why})"),
+                    None => String::new(),
+                };
                 let ty = vars.name(v.ty);
                 let mut l = vec![if amp {
                     match v.at {
@@ -102,7 +109,7 @@ impl Session {
                         At::Mem(a) => format!(" at {a:#x}"),
                         At::Bytes(_) => String::new(),
                     };
-                    format!("{src} ({ty}{at}) = {}", vars.render(&v, regs, 0))
+                    format!("{src} ({ty}{at}) = {}{fact}", vars.render(&v, regs, 0))
                 }];
                 l.extend(notes);
                 Some(Ok(l))
@@ -134,7 +141,7 @@ impl Session {
         self.with_vars(true, |vars, regs| {
             let pc = regs.rip.wrapping_sub(regs.bias);
             let vs = vars.in_scope(pc);
-            if vs.is_empty() {
+            if vs.is_empty() && vars.out_of_block(pc).is_empty() {
                 return None;
             }
             let short = |val: String| {
@@ -174,9 +181,14 @@ impl Session {
                 }
                 None => {
                     let mut parts = Vec::new();
-                    for (v, enc, fb) in vs {
+                    for (v, enc, fb) in vs.into_iter().chain(vars.out_of_block(pc)) {
                         let at = vars.value(v, enc, fb, regs);
-                        parts.push(format!("{} = {}", v.name, short(vars.shown(v, at, regs, 1, &[]))));
+                        let val = short(vars.shown(v, at, regs, 1, &[]));
+                        // the fact is not cut with the value
+                        match vars.unassigned(v, regs) {
+                            Some(why) => parts.push(format!("{} = {val} ({why})", v.name)),
+                            None => parts.push(format!("{} = {val}", v.name)),
+                        }
                     }
                     format!("locals: {}", parts.join(", "))
                 }
