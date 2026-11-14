@@ -149,12 +149,13 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         other = Some(b);
     }
     let c = op.common();
-    let (from, mut lines) = (c.from, c.lines.max(MIN_LINES));
+    let (from, mut lines) = (c.from, c.budget());
     // a range or a length the caller gave sizes the page: all of it, up to RANGE_LINES, unless --lines says otherwise
-    if c.lines == DEFAULT_LINES && matches!(op, BinOp::Fn { to: Some(_), .. } | BinOp::Bytes { .. }) {
+    let sized = matches!(op, BinOp::Fn { to: Some(_), .. } | BinOp::Bytes { .. });
+    if sized && c.lines.is_none() {
         lines = RANGE_LINES;
     }
-    let out: Output = match op {
+    let mut out: Output = match op {
         BinOp::Asm { .. } => unreachable!("assembled before opening an image"),
         BinOp::Patch { out, at, function, bytes, asm, nop, .. } => {
             let target = match (at, function) {
@@ -265,6 +266,10 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
             None => unreachable!("the second build is opened with the first"),
         },
     };
+    // the resume command leaves out a --lines equal to the default; here no --lines means the range, so keep it
+    if sized && c.lines.is_some_and(|n| n.max(MIN_LINES) == DEFAULT_LINES) {
+        out.command.push_str(&format!(" --lines {DEFAULT_LINES}"));
+    }
     let page = out.page_as(from, lines, c.json);
     if c.timing {
         let built = img.refs().build.as_secs_f64() * 1000.0;

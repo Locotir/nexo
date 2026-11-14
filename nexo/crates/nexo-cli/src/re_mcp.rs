@@ -411,7 +411,9 @@ fn arg_schema(a: &Arg) -> Value {
         json!({"type": "boolean"})
     } else if is_list(a) {
         json!({"type": "array", "items": {"type": "string"}})
-    } else if a.get_default_values().first().is_some_and(|d| d.to_str().is_some_and(|d| d.parse::<i64>().is_ok())) {
+    } else if a.get_default_values().first().is_some_and(|d| d.to_str().is_some_and(|d| d.parse::<i64>().is_ok()))
+        || a.get_value_parser().type_id() == std::any::TypeId::of::<usize>()
+    {
         json!({"type": ["integer", "string"]})
     } else {
         json!({"type": "string"})

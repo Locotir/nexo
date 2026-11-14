@@ -2,7 +2,7 @@
 //! `nexo-bin` crate without opening the file as a native image.
 
 use crate::bin_cmd::BinOp;
-use nexo_bin::{Error, ManagedQuery, MIN_LINES};
+use nexo_bin::{Error, ManagedQuery};
 
 /// `Some(answer)` when this command is about managed bytecode, `None` for the native ops.
 pub fn try_managed(op: &BinOp) -> Option<Result<String, Error>> {
@@ -28,7 +28,7 @@ pub fn try_managed(op: &BinOp) -> Option<Result<String, Error>> {
         }
         _ => return None,
     };
-    Some(answer(file, &query, common.from, common.lines.max(MIN_LINES), common.json))
+    Some(answer(file, &query, common.from, common.budget(), common.json))
 }
 
 fn answer(

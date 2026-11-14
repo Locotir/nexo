@@ -1,11 +1,11 @@
-use nexo_bin::{Error, MIN_LINES};
+use nexo_bin::Error;
 
 use super::BinOp;
 
 /// The ops that read a WebAssembly module (found by its signature, not its name).
 pub(super) fn wasm_in(op: &BinOp) -> Result<String, Error> {
     let c = op.common();
-    let (from, lines) = (c.from, c.lines.max(MIN_LINES));
+    let (from, lines) = (c.from, c.budget());
     let mut ask = nexo_bin::WasmAsk { from, budget: lines, ..Default::default() };
     match op {
         BinOp::Info { .. } => ask.op = "info",

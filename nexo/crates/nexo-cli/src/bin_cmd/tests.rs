@@ -336,6 +336,28 @@ fn fn_to_and_bytes_pages_cover_the_range_asked() {
 }
 
 #[test]
+fn fn_to_with_lines_120_gives_120_lines_and_the_more_note() {
+    let exe = std::env::current_exe().unwrap().display().to_string();
+    let j: serde_json::Value =
+        serde_json::from_str(&ask(&["funcs", &exe, "--sort", "size", "--json", "--lines", "10"]).unwrap()).unwrap();
+    let start = j["items"][0]["addr"].as_u64().unwrap();
+    let (s, to) = (format!("{start:#x}"), format!("{:#x}", start + 0x1000));
+    let whole: serde_json::Value =
+        serde_json::from_str(&ask(&["fn", &exe, &s, "--to", &to, "--json", "--lines", "100000"]).unwrap()).unwrap();
+    let total = whole["lines"].as_u64().unwrap();
+    assert!(total > 130, "the range is longer than the page: {total}");
+    let t = ask(&["fn", &exe, &s, "--to", &to, "--lines", "120"]).unwrap();
+    let last = t.lines().last().unwrap();
+    assert_eq!(t.lines().count(), 120, "{last}");
+    assert!(last.starts_with(&format!("... {} more lines: ", total - 119)), "{last}");
+    // the next page is 120 lines too, not the range
+    assert!(last.ends_with("--lines 120") || last.contains(" --lines 120 "), "{last}");
+    let next = last.split(" --from ").nth(1).unwrap().split(' ').next().unwrap();
+    let t2 = ask(&["fn", &exe, &s, "--to", &to, "--lines", "120", "--from", next]).unwrap();
+    assert_eq!(t2.lines().count() as u64, (total - 119).min(120), "{t2}");
+}
+
+#[test]
 fn help_has_one_line_for_each_op() {
     let mut root = crate::cli::Args::command();
     let bin = root.find_subcommand_mut("bin").expect("bin is a command");
