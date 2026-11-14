@@ -155,6 +155,16 @@ impl Mods {
         })
     }
 
+    /// Where the function or symbol that holds `addr` starts, from the same symbols that name addresses.
+    pub fn symbol_start(&mut self, addr: u64) -> Option<u64> {
+        let idx = self.locate(addr)?;
+        self.ensure(idx);
+        let bias = self.bias(idx);
+        let img = self.image(idx)?;
+        let (_, off) = nexo_bin::nearest_symbol(img, addr.wrapping_sub(bias))?;
+        addr.checked_sub(off)
+    }
+
     /// The line table of the program itself, built once, with the bias to add to its addresses.
     pub fn main_lines(&mut self) -> Option<(&crate::lines::Lines, u64)> {
         let (idx, bias) = (self.main_idx, self.main_bias());

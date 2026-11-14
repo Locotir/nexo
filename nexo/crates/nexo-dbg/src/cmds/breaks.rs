@@ -57,7 +57,9 @@ impl Session {
         // `*place` is that exact address: no move past a function's prologue
         let exact = spec.starts_with('*');
         let spec = &spec.trim_start_matches('*').to_string();
-        let addr = match self.source_place(spec, !exact) {
+        let by_line = self.source_place(spec, !exact);
+        let from_line = by_line.is_some();
+        let addr = match by_line {
             Some(r) => r?,
             None => match self.mods.resolve(spec) {
                 Ok(Place::Code(x)) => x,
@@ -96,6 +98,7 @@ impl Session {
                 }
             }
         }
+        let note = if from_line { None } else { self.boundary_check(addr)? };
         let id = self.new_id();
         let mut label = self.mods.label(addr, false).unwrap_or_default();
         if let Some(src) = self.mods.source(addr).filter(|s| !label.contains(s.as_str())) {
@@ -113,7 +116,58 @@ impl Session {
             call: false,
             actions: Vec::new(),
         });
-        Ok(rows("break", vec![format!("breakpoint #{id} at {addr:#x} {label}")], json!({"id": id, "addr": addr})))
+        let mut l = vec![format!("breakpoint #{id} at {addr:#x} {label}")];
+        l.extend(note);
+        Ok(rows("break", l, json!({"id": id, "addr": addr})))
+    }
+
+    /// Whether `addr` starts an instruction, found by decoding from the start of the function that holds it. `Err`
+    /// when it is inside one (an int3 there would break the instruction); `Ok(Some(note))` when that could not be
+    /// checked, so the model is told instead of assuming.
+    fn boundary_check(&mut self, addr: u64) -> Result<Option<String>> {
+        let Some(start) = self.mods.symbol_start(addr).filter(|s| *s <= addr) else {
+            return Ok(Some(format!(
+                "note: no function start is known for {addr:#x}, so whether it starts an instruction was not checked"
+            )));
+        };
+        if start == addr {
+            return Ok(None);
+        }
+        let want = (addr - start + 16).min(1 << 16) as usize;
+        let mut bytes = self.read_vec(start, want);
+        // our own int3 bytes are not the program's code
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            if let Some(b) = self.inserted_byte(start + i as u64) {
+                *byte = b;
+            }
+        }
+        let regs = self.tid_regs().ok();
+        let mut pos = 0usize;
+        while start + (pos as u64) <= addr && pos < bytes.len() {
+            let ip = start + pos as u64;
+            let Some(i) = nexo_bin::decode_live(&bytes[pos..], ip, &|x| regs.as_ref().and_then(|r| r.get(x))) else {
+                break;
+            };
+            if i.invalid {
+                break;
+            }
+            if ip == addr {
+                return Ok(None);
+            }
+            if ip + i.len as u64 > addr {
+                let name = |s: &mut Self, a: u64| s.mods.label(a, false).unwrap_or_else(|| format!("{a:#x}"));
+                let (here, next) = (name(self, ip), name(self, ip + i.len as u64));
+                return fail(format!(
+                    "{addr:#x} is inside the instruction at {here} ({}, {} bytes); instruction starts nearby: {here}, {next}",
+                    i.text, i.len
+                ));
+            }
+            pos += i.len;
+        }
+        Ok(Some(format!(
+            "note: could not decode the code from {} to {addr:#x}, so whether it starts an instruction was not checked",
+            self.mods.label(start, false).unwrap_or_else(|| format!("{start:#x}"))
+        )))
     }
 
     fn maps_exec(&mut self, addr: u64) -> bool {

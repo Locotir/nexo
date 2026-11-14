@@ -218,7 +218,9 @@ impl Session {
             "do" => self.cmd_do(&words[1..]),
             other => match crate::gdbdialect::hint(other) {
                 Some(h) => usage(format!("{other}: {h}")),
-                None => usage(format!("unknown command {other:?}: `help` lists them")),
+                None => usage(format!(
+                    "unknown command {other:?}: `help` lists them; program input is not typed as a line: `run <path> <<< \"3 20 X\\n\"` or `run <path> < file` gives it at the start, `stdin <text>` while it runs"
+                )),
             },
         }
     }

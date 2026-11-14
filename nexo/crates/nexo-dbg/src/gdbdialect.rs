@@ -6,7 +6,7 @@
 pub fn alias(name: &str) -> &str {
     match name {
         "backtrace" | "where" => "bt",
-        "disassemble" => "dis",
+        "disassemble" | "disas" | "disass" | "disassem" => "dis",
         "tb" | "tbr" => "tbreak",
         "br" | "brea" | "bre" => "break",
         "si" | "stepi" => "step",
