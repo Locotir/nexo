@@ -271,6 +271,30 @@ pub fn lookup(name: &str) -> Option<&'static Spec> {
     COMMANDS.iter().find(|s| s.name == name || s.aliases.contains(&name))
 }
 
+/// The subcommand a single word of `/goal` names: the whole word, or three letters or more that start exactly
+/// one of them (`res` is resume). None: the text is a goal.
+fn goal_word(word: &str) -> Option<GoalArg> {
+    const WORDS: [(&str, GoalArg); 6] = [
+        ("off", GoalArg::Clear),
+        ("clear", GoalArg::Clear),
+        ("none", GoalArg::Clear),
+        ("done", GoalArg::Clear),
+        ("pause", GoalArg::Pause),
+        ("resume", GoalArg::Resume),
+    ];
+    if let Some((_, a)) = WORDS.iter().find(|(w, _)| *w == word) {
+        return Some(a.clone());
+    }
+    if word.len() < 3 {
+        return None;
+    }
+    let mut hits = WORDS.iter().filter(|(w, _)| w.starts_with(word));
+    match (hits.next(), hits.next()) {
+        (Some((_, a)), None) => Some(a.clone()),
+        _ => None,
+    }
+}
+
 /// Parses a line that starts with `/`.
 pub fn parse(line: &str) -> Option<Command> {
     let line = line.trim();
@@ -364,11 +388,8 @@ pub fn parse(line: &str) -> Option<Command> {
         "pricing" => Command::Pricing(arg),
         "goal" => Command::Goal(match arg.as_deref() {
             None => GoalArg::Show,
-            Some("off") | Some("clear") | Some("none") | Some("done") => GoalArg::Clear,
-            // only the bare word: `/goal pause the cron jobs` is a goal
-            Some("pause") => GoalArg::Pause,
-            Some("resume") => GoalArg::Resume,
-            Some(t) => GoalArg::Set(t.to_string()),
+            // only a bare word: `/goal pause the cron jobs` is a goal; `res` is `resume`
+            Some(t) => goal_word(t).unwrap_or_else(|| GoalArg::Set(t.to_string())),
         }),
         "compact" => Command::Compact,
         "clear" => Command::Clear,
@@ -638,6 +659,23 @@ mod tests {
         assert_eq!(parse("/settings mouse off"), Some(Command::Mouse));
         assert_eq!(parse("/yolo off"), Some(Command::Permissions(Some(PermissionMode::Auto))));
         assert_eq!(parse("/settings nonsense on"), Some(Command::BadArgument("settings".into(), "nonsense on".into())));
+    }
+
+    #[test]
+    fn a_goal_word_of_three_letters_is_the_subcommand_it_starts() {
+        let goal = |t: &str| parse(&format!("/goal {t}"));
+        assert_eq!(goal("res"), Some(Command::Goal(GoalArg::Resume)));
+        assert_eq!(goal("resum"), Some(Command::Goal(GoalArg::Resume)));
+        assert_eq!(goal("pau"), Some(Command::Goal(GoalArg::Pause)));
+        assert_eq!(goal("cle"), Some(Command::Goal(GoalArg::Clear)));
+        assert_eq!(goal("don"), Some(Command::Goal(GoalArg::Clear)));
+        assert_eq!(goal("non"), Some(Command::Goal(GoalArg::Clear)));
+        // too short, not a prefix, or more than one word: a goal
+        assert_eq!(goal("re"), Some(Command::Goal(GoalArg::Set("re".into()))));
+        assert_eq!(goal("fix"), Some(Command::Goal(GoalArg::Set("fix".into()))));
+        assert_eq!(goal("resumes"), Some(Command::Goal(GoalArg::Set("resumes".into()))));
+        assert_eq!(goal("res the parser"), Some(Command::Goal(GoalArg::Set("res the parser".into()))));
+        assert_eq!(goal("pau now"), Some(Command::Goal(GoalArg::Set("pau now".into()))));
     }
 
     #[test]
