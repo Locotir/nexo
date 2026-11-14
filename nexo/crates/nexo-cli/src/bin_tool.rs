@@ -341,13 +341,7 @@ pub(crate) fn bin_error(e: &clap::Error, words: &[String]) -> Option<String> {
             }
             Some(out)
         }
-        ErrorKind::InvalidSubcommand => Some(not_an_op(op).unwrap_or_else(|| {
-            let tip = text.lines().find(|l| l.trim_start().starts_with("tip: a similar"));
-            match tip {
-                Some(t) => format!("{first}\n{}", t.trim()),
-                None => first.to_string(),
-            }
-        })),
+        ErrorKind::InvalidSubcommand => Some(not_an_op(op).unwrap_or_else(|| unknown_op(op))),
         ErrorKind::MissingRequiredArgument | ErrorKind::WrongNumberOfValues | ErrorKind::TooFewValues => {
             // clap's first line, then the op's own usage line instead of its whole block
             let usage = op_usage(op).or_else(|| {
@@ -414,6 +408,62 @@ fn not_an_op(word: &str) -> Option<String> {
             "`{word}` is a program path, and the first word of an op line is read as the op name, so it was not run (bin never runs a file). `overview {word}` reads it; to run it use `debug` (`run {word} ARGS`) or bash"
         )),
         _ => None,
+    }
+}
+
+/// The ops clap knows (visible subcommands), by name.
+fn op_names() -> Vec<String> {
+    bin_command()
+        .map(|b| b.get_subcommands().filter(|s| !s.is_hide_set()).map(|s| s.get_name().to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// What to say of a word that is no op: the real ops close to it in name (a shared start of 3 letters, one inside the
+/// other, or a small edit distance) or in meaning (a word of the op's line in the tool's list), else every op name once.
+fn unknown_op(word: &str) -> String {
+    let w = word.to_ascii_lowercase();
+    let names = op_names();
+    let stem = |s: &str| s.chars().take(4).collect::<String>();
+    let w = w.as_str();
+    let close: Vec<&String> = names
+        .iter()
+        .filter(|n| {
+            let n = n.as_str();
+            let by_name = (n.len() >= 3 && w.contains(n))
+                || (w.len() >= 3 && n.contains(w))
+                || (w.len() >= 3 && n.len() >= 3 && w.chars().take(3).eq(n.chars().take(3)))
+                || edit_distance(w, n) <= 2.min(n.len() / 3);
+            let by_meaning = w.len() >= 4
+                && OPS.lines().any(|l| {
+                    let head = l.split("  ").next().unwrap_or("");
+                    head.split(", ").any(|p| p.split_whitespace().next() == Some(n))
+                        && l.split("  ").nth(1).is_some_and(|d| {
+                            d.split(|c: char| !c.is_alphanumeric()).any(|x| x.len() >= 4 && stem(x) == stem(w))
+                        })
+                });
+            by_name || by_meaning
+        })
+        .collect();
+    if close.is_empty() {
+        format!("`{word}` is not a bin op. The ops are: {}", names.join(", "))
+    } else {
+        let list = close.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(" or ");
+        format!("`{word}` is not a bin op; did you mean {list}? (`--help` lists the ops)")
     }
 }
 
@@ -712,6 +762,22 @@ mod tests {
         assert!(!o.content.contains("similar subcommand"), "{}", o.content);
     }
 
+    /// t1: `symbols` got no hint.
+    #[test]
+    fn an_unknown_op_names_the_close_real_op_or_lists_them() {
+        assert!(unknown_op("function").contains("`funcs`"), "{}", unknown_op("function"));
+        assert!(unknown_op("decompile").contains("`decomp`"), "{}", unknown_op("decompile"));
+        assert!(unknown_op("string").contains("`strings`"), "{}", unknown_op("string"));
+        let far = unknown_op("symbols");
+        assert!(
+            far.starts_with("`symbols` is not a bin op. The ops are: ")
+                && far.contains("overview")
+                && far.contains("funcs"),
+            "{far}"
+        );
+        assert!(!far.contains("did you mean"), "{far}");
+    }
+
     #[tokio::test]
     async fn an_unknown_flag_says_which_flags_the_op_takes() {
         let dir = tempfile::tempdir().unwrap();
@@ -838,9 +904,9 @@ mod tests {
         let f = err("fn ./calc main --asm").unwrap();
         assert!(f.starts_with("unexpected argument '--asm' found\n`fn` takes: "), "{f}");
         assert!(!f.contains("tip:") && !f.contains("Usage"), "{f}");
-        // a word nexo has no fact for: clap's first line only
+        // a word nexo has no fact for: the real op names
         let g = err("zzzzqq ./calc").unwrap();
-        assert!(g.starts_with("unrecognized subcommand 'zzzzqq'") && !g.contains("Usage"), "{g}");
+        assert!(g.starts_with("`zzzzqq` is not a bin op") && !g.contains("Usage"), "{g}");
         // a missing argument: clap's first line and the op's usage line, not its block
         let m = err("fn ./calc").unwrap();
         assert!(
