@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
 
 use nexo_core::config::Figure;
@@ -58,9 +58,6 @@ const ROLL: f32 = 0.30;
 /// How far the ring is tilted against the equator.
 const RING_TILT: f32 = 0.25;
 const RING_R: f32 = 1.22;
-/// A faint star's whole cycle (one breath, then a dark gap) lasts between these, each its own.
-const CYCLE_MIN_MS: f64 = 8000.0;
-const CYCLE_SPAN_MS: f64 = 4000.0;
 
 // ---- maths without libm ----
 
@@ -97,38 +94,6 @@ pub(crate) fn unit(seed: u32) -> f32 {
 }
 
 // ---- the faint stars ----
-
-/// A faint star at one moment: where (0..1 each way across the room) and how bright (0..1, 0 while dark).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Twinkle {
-    pub x: f32,
-    pub y: f32,
-    pub level: f32,
-    /// How many times it has come and gone.
-    pub cycle: u32,
-}
-
-/// Star number `seed` at `phase_ms`: it breathes (a raised cosine from 0 up to 1 and back to 0, the same
-/// slow way both ways), stays dark a short while and comes back somewhere else. Its cycle is its own length
-/// (8 to 12 s, a breath of 5 to 12 s inside it) and offset, so no two stars pulse together; where it comes
-/// back and how long it rests come from a hash of the seed and the cycle number, so the same phase always
-/// gives the same star.
-pub(crate) fn twinkle(seed: u32, phase_ms: f64) -> Twinkle {
-    let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
-    let t = phase_ms.max(0.0) / period + unit(seed.wrapping_add(1)) as f64;
-    let cycle = t.floor() as u32;
-    let k = t.fract() as f32;
-    let key = mix(seed ^ mix(cycle.wrapping_add(0x9e37_79b9)));
-    let (x, y) = (unit(key.wrapping_add(1)), unit(key.wrapping_add(2)));
-    let life = 1.0 - (0.12 + 0.20 * unit(key.wrapping_add(3)));
-    let level = if k >= life { 0.0 } else { breath(k / life) };
-    Twinkle { x, y, level, cycle }
-}
-
-/// A breath at `u` (0..1 through it): 0 at both ends, 1 in the middle, a raised cosine.
-pub(crate) fn breath(u: f32) -> f32 {
-    (0.5 - 0.5 * cos(u.clamp(0.0, 1.0) * TAU)).clamp(0.0, 1.0)
-}
 
 /// 0 below `lo`, 1 above `hi`, a smooth step between.
 pub(crate) fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
@@ -559,24 +524,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f6
 /// where the figure is (no figure, no room for it, the motion off, a mono theme, no true colour or the ASCII
 /// fallback: no stars).
 fn draw_sky(f: &mut Frame, app: &App, area: Rect, top: u16, slide: u16, away: f64) {
-    // The default theme paints no ground of its own (`Reset`): a star then rises from black.
-    let ground = match app.theme.bg {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset => (0, 0, 0),
-        _ => return,
-    };
-    let Color::Rgb(fr, fg, fb) = app.theme.fg else { return };
     let free = Rect { height: top.saturating_sub(slide).saturating_sub(area.y).min(area.height), ..area };
     if !app.fx.stars.shown.get() || !app.fx_on() || crate::ascii::wanted() || free.is_empty() {
         return;
     }
     let now = app.now();
     let keep = (1.0 - away).clamp(0.0, 1.0) as f32;
-    let look = Look {
-        time: app.fx.stars.sky_time(now),
-        ink: (fr, fg, fb),
-        ground,
-        visibility: app.fx.stars.visibility(now) * keep,
+    let Some(look) = Look::on(&app.theme, app.fx.stars.sky_time(now), app.fx.stars.visibility(now) * keep) else {
+        return;
     };
     render_stars(free, None, None, look, f.buffer_mut());
 }
@@ -695,99 +650,10 @@ mod tests {
         assert_ne!(nodes(100.0), nodes(2600.0));
     }
 
-    /// One whole cycle of star `seed` sampled every `step` ms from a cycle boundary: (period, levels).
-    fn one_cycle(seed: u32, step: f64) -> (f64, Vec<f32>) {
-        let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
-        let t0 = (1.0 - unit(seed + 1) as f64) * period + 3.0 * period + 0.001;
-        let n = (period / step) as usize;
-        (period, (0..n).map(|i| twinkle(seed, t0 + i as f64 * step).level).collect())
-    }
-
     #[test]
-    fn a_star_breathes_up_to_its_peak_and_down_to_dark_within_its_cycle() {
-        for seed in [5000u32, 5004, 5008, 5012, 5016, 5020] {
-            let (period, lv) = one_cycle(seed, 10.0);
-            assert!((CYCLE_MIN_MS..=CYCLE_MIN_MS + CYCLE_SPAN_MS).contains(&period));
-            assert!(lv[0] < 0.01, "starts invisible: {}", lv[0]);
-            let top = lv.iter().cloned().fold(0.0f32, f32::max);
-            assert!(top > 0.999, "peaks at full: {top}");
-            let peak = lv.iter().position(|&l| l == top).unwrap();
-            assert!(lv[..=peak].windows(2).all(|w| w[1] >= w[0] - 1e-6), "rises only");
-            assert!(lv[peak..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "falls only");
-            assert_eq!(*lv.last().unwrap(), 0.0, "ends dark");
-            let dark = lv.iter().rev().take_while(|&&l| l == 0.0).count();
-            assert!(dark as f64 * 10.0 > 0.1 * period, "after a dark gap: {dark}");
-            // symmetric: the rise and the fall take about as long (within a frame or two)
-            let lit = lv.iter().filter(|&&l| l > 0.0).count();
-            assert!((peak as i64 * 2 - lit as i64).abs() < 6, "peak {peak} of {lit}");
-            // no hold: within 2 % of the top for under an eighth of the breath
-            let near = lv.iter().filter(|&&l| l > 0.98).count();
-            assert!(near * 8 < lit, "{near} of {lit} near the top");
-        }
-    }
-
-    #[test]
-    fn the_breath_is_continuous_at_the_frame_interval() {
-        // the beat (83 ms) is the frame interval the field is drawn at; the slowest-to-fastest breaths
-        for seed in (0..200u32).map(|i| 5000 + i * 4) {
-            let (_, lv) = one_cycle(seed, 83.0);
-            let step = lv.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
-            assert!(step < 0.06, "seed {seed}: a jump of {step} between frames");
-            // and the colour weight that follows it is as gentle
-            let k = lv.windows(2).map(|w| (soft_k(w[1]) - soft_k(w[0])).abs()).fold(0.0f32, f32::max);
-            assert!(k < 0.08, "seed {seed}: colour jump {k}");
-        }
+    fn the_colour_weight_runs_from_nothing_to_full() {
         assert_eq!(soft_k(0.0), 0.0);
         assert!((soft_k(1.0) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn breath_is_a_raised_cosine() {
-        assert_eq!(breath(0.0), 0.0);
-        assert_eq!(breath(1.0), 0.0);
-        assert!((breath(0.5) - 1.0).abs() < 1e-4);
-        assert!((breath(0.25) - 0.5).abs() < 1e-3 && (breath(0.75) - 0.5).abs() < 1e-3);
-    }
-
-    #[test]
-    fn a_star_comes_back_somewhere_else() {
-        for seed in [5000u32, 5004, 5008, 5012, 5016] {
-            let at = |n: u32| {
-                let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
-                let t = twinkle(seed, (n as f64 + 1.0 - unit(seed + 1) as f64 + 0.01) * period);
-                (t.cycle, t.x, t.y)
-            };
-            for n in 1..6 {
-                let (a, b) = (at(n), at(n + 1));
-                assert_eq!(b.0, a.0 + 1);
-                assert!((a.1, a.2) != (b.1, b.2), "seed {seed} cycle {n}");
-            }
-            // and it stays put through one cycle
-            let period = CYCLE_MIN_MS + CYCLE_SPAN_MS * unit(seed) as f64;
-            let t0 = (1.0 - unit(seed + 1) as f64) * period + 2.0 * period + 1.0;
-            let (p, q) = (twinkle(seed, t0), twinkle(seed, t0 + period * 0.5));
-            assert_eq!((p.x, p.y), (q.x, q.y));
-        }
-    }
-
-    #[test]
-    fn two_stars_are_not_in_phase() {
-        let level = |seed: u32, t: f64| twinkle(seed, t).level;
-        let mut same = 0;
-        for i in 0..300 {
-            let t = i as f64 * 150.0;
-            same += usize::from(level(5000, t) == level(5004, t));
-        }
-        assert!(same < 200, "{same} of 300 samples equal");
-        let offs: Vec<u32> = (0..20).map(|i| (unit(5000 + i * 4 + 1) * 100.0) as u32).collect();
-        let mut sorted = offs.clone();
-        sorted.dedup();
-        assert!(sorted.len() > 10);
-        // at any moment the field holds stars at every step, not all in one
-        for t in [0.0, 1234.0, 7777.0] {
-            let n = (0..140).filter(|&i| twinkle(5000 + i * 4, t).level > 0.0).count();
-            assert!((70..140).contains(&n), "{n} lit at {t}");
-        }
     }
 
     #[test]

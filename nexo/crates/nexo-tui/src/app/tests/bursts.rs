@@ -175,7 +175,7 @@ fn the_stars_rest_after_a_while_and_a_key_wakes_them() {
     let t0 = Instant::now();
     let mut a = home(t0);
     buf_of(&mut a, 110, 36);
-    let rest = REST_AFTER_MS + STOP_MS + 50;
+    let rest = REST_AFTER_MS + STOP_MS + 200;
     fx_at(&mut a, t0, rest);
     a.tick_fx();
     assert!(!a.home_alive(a.now()) && !a.home_moving(a.now()));

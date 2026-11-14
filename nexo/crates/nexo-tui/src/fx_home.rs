@@ -1,19 +1,16 @@
-//! Faint stars on an empty session: while the home is open and nothing has been sent yet, a field of
-//! braille dots breathes over the transcript in three depths, the far ones dim, the near ones brighter.
-//! Each star's brightness follows a slow raised cosine (`fx_stars::twinkle`): from invisible up to its peak
-//! and as slowly back down (5 to 12 s), then it rests dark and comes back somewhere else on a cycle of its
-//! own; none of them drift and no two pulse together. The near ones grow a small cross as they near the
-//! peak, arm by arm, and lose it again the same way. About every 12 s on average a comet crosses the sky
-//! (one at a time, each its own direction, length and speed, its tail swelling in and fading out softly).
-//! The field keeps clear of text: it draws on blank cells only, and not on the ones beside a line of text
-//! or above and below it. Every dot is soft: its colour comes up from nothing with its brightness, so
-//! nothing pops. It is drawn on the beat (12 frames a second), never at the faster frame rate.
+//! Faint stars on an empty session: while the home is open and nothing has been sent yet, the starfield
+//! of the welcome screen (`fx_starfield`: single braille dots, about one cell in five, each on a cycle of
+//! its own with a sharp peak) breathes over the transcript. It keeps clear of text: it draws on blank
+//! cells only, and not on the ones beside a line of text or above and below it. About every 12 s on
+//! average a comet crosses the sky (one at a time, each its own direction, length and speed, its tail
+//! swelling in and fading out softly). It is drawn on the beat (12 frames a second), never at the faster
+//! frame rate.
 //!
-//! Each frame is a pure function of the drift's phase, like the welcome figure (`fx_stars`): fixed
-//! seeds, no randomness and no libm. The field rests like that figure too: after `REST_AFTER_MS` with no
-//! key or mouse event it eases to a stop and asks for no more frames, and the next input wakes it. It
-//! fades in when the empty home shows and out in `OUT_MS` once a message is sent or a session with
-//! messages is loaded.
+//! Each frame is a pure function of the clocks, like the welcome figure (`fx_stars`): fixed seeds, no
+//! randomness and no libm. The field rests like that figure too: after `REST_AFTER_MS` with no key or
+//! mouse event the stars fade out over `STOP_MS` and the comets ease to a stop, and then no more frames
+//! are asked for; the next input fades the stars back in over `FADE_IN_MS`. The field comes in when the
+//! empty home shows and goes out in `OUT_MS` once a message is sent or a session with messages is loaded.
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
@@ -24,7 +21,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::anim::progress;
 use crate::app::App;
-use crate::fx_stars::{cos, sin, smooth, soft_k, twinkle, unit, Canvas, FigCell, Grid, StarsFx};
+use crate::fx_starfield::{render_stars_in, Look};
+use crate::fx_stars::{cos, sin, smooth, soft_k, unit, Canvas, FigCell, Grid, StarsFx};
 use crate::motion::{fade, within};
 use crate::theme::Theme;
 
@@ -42,74 +40,23 @@ pub const SHOOT_SPAN_MS: f64 = 1800.0;
 /// Columns kept clear on each side of a line of text, and rows above and below it.
 const MARGIN_X: u16 = 2;
 const MARGIN_Y: u16 = 1;
-/// About one star in this many cells.
-const CELLS_PER_STAR: usize = 24;
-const MAX_STARS: usize = 300;
-/// The depths, far to near: share of the stars, brightness from and to.
-const LAYERS: [(f32, f32, f32); 3] = [(0.62, 0.20, 0.36), (0.27, 0.42, 0.62), (0.11, 0.74, 0.96)];
 
-// ---- the field ----
+// ---- the comets ----
 
-/// The field at `phase_ms` of its drift over `cols` x `rows` cells. `shown` (0..1) fades it in and out,
-/// the stars coming and going in a scattered order; `shoot` (0..1) is how much of a comet shows
-/// (none while the drift comes to rest).
-pub fn field(phase_ms: f64, shown: f32, shoot: f32, cols: u16, rows: u16, ascii: bool) -> Grid {
+/// The comets at `phase_ms` of the drift over `cols` x `rows` cells. `shown` (0..1) fades them in and out;
+/// `shoot` (0..1) is how much of a comet shows (none while the drift comes to rest).
+pub fn comet_grid(phase_ms: f64, shown: f32, shoot: f32, cols: u16, rows: u16, ascii: bool) -> Grid {
     let mut cv = Canvas::new(cols, rows, ascii);
     if cols == 0 || rows == 0 || shown <= 0.0 {
         return cv.finish();
     }
     let (w, h) = cv.dots();
-    let n = (cols as usize * rows as usize / CELLS_PER_STAR).clamp(4, MAX_STARS);
-    for i in 0..n {
-        let s = 40_000 + i as u32 * 8;
-        let (layer, (_, lo, hi)) = layer_of(unit(s));
-        let st = twinkle(s + 2, phase_ms);
-        if st.level <= 0.0 {
-            continue;
-        }
-        let (x, y) = (st.x * w, st.y * h);
-        // the stars come in (and go) one by one over the fade
-        let late = unit(s + 4) * 0.5;
-        let k = ((shown - late) / 0.5).clamp(0.0, 1.0);
-        let base = lo + (hi - lo) * unit(s + 5);
-        // the breath (0..1) scales the star's own brightness
-        let glow = st.level;
-        let level = base * glow * k;
-        let near = layer == 2;
-        cv.plot_soft(x, y, level, near, false);
-        // a third of the near stars are two dots wide
-        if near && unit(s + 9) < 0.34 && !ascii {
-            cv.plot_soft(x + 1.0, y, level * 0.8, true, false);
-        }
-        // near the top of the breath, a small cross grows arm by arm (and goes the same way down)
-        if layer > 0 && !ascii {
-            for (n, (dx, dy)) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)].into_iter().enumerate() {
-                let from = 0.55 + 0.09 * n as f32;
-                let grown = smooth(from, from + 0.15, glow);
-                if grown > 0.0 {
-                    cv.plot_soft(x + dx, y + dy, level * 0.55 * grown, near, false);
-                }
-            }
-        }
-    }
     if shoot > 0.0 {
         if let Some(shot) = shot_at(phase_ms, w, h) {
             shooting(&mut cv, &shot, shoot * shown, ascii);
         }
     }
     cv.finish()
-}
-
-/// The depth a star falls in, from `pick` (0..1), with that depth's numbers.
-fn layer_of(pick: f32) -> (usize, (f32, f32, f32)) {
-    let mut acc = 0.0;
-    for (i, l) in LAYERS.iter().enumerate() {
-        acc += l.0;
-        if pick < acc {
-            return (i, *l);
-        }
-    }
-    (LAYERS.len() - 1, LAYERS[LAYERS.len() - 1])
 }
 
 /// A comet in flight: how far along (0..1), where it set out, its heading, how far it goes (dots) and how
@@ -182,8 +129,8 @@ pub fn fits(area: Rect) -> bool {
 
 // ---- time ----
 
-/// What the field remembers: when the empty home showed and when it stopped being empty, and the drift's
-/// clock (it runs and rests like the welcome figure's turn).
+/// What the field remembers: when the empty home showed and when it stopped being empty, and the clock of
+/// the stars and comets (it runs and rests like the welcome figure's turn).
 #[derive(Debug, Default, Clone)]
 pub struct HomeFx {
     since: Option<Instant>,
@@ -222,9 +169,17 @@ impl HomeFx {
         self.clock.at_rest(now)
     }
 
-    /// The field is drifting on screen (the beat is wanted).
+    /// 0..1: how visible the stars are at `now`: the welcome's fades (in on a key, out at rest) and the
+    /// fade out of the field once the home is not empty any more.
+    fn stars(&self, now: Instant) -> f32 {
+        let out = self.gone.map_or(1.0, |gone| 1.0 - progress(Some(gone), now, OUT_MS) as f32);
+        self.clock.visibility(now) * out
+    }
+
+    /// The field is on screen (the beat is wanted) until the stars have faded out and the empty sky has
+    /// been drawn.
     fn drifting(&self, now: Instant) -> bool {
-        self.shown.get() && self.since.is_some() && self.gone.is_none() && !self.at_rest(now)
+        self.shown.get() && self.since.is_some() && self.gone.is_none() && !self.clock.settled(now)
     }
 
     /// A fade is under way (frames are wanted). The comets do not ask for more: they ride the beat like
@@ -284,10 +239,16 @@ pub fn draw(buf: &mut Buffer, app: &App, area: Rect) {
         return;
     }
     let ascii = crate::ascii::wanted();
-    let grid = field(hf.phase(now), shown, hf.pace(now), area.width, area.height, ascii);
+    let grid = comet_grid(hf.phase(now), shown, hf.pace(now), area.width, area.height, ascii);
     let free = clear_of_text(buf, area, &app.theme, MARGIN_X, MARGIN_Y, u16::MAX);
     let theme = &app.theme;
     paint(buf, area, &grid, &free, ascii, |c| star_style(theme, c));
+    // the stars, as on the welcome screen (none in ASCII mode or without true colour), under the comets
+    if !ascii {
+        if let Some(look) = Look::on(theme, hf.clock.sky_time(now), hf.stars(now)) {
+            render_stars_in(area, None, None, Some(&free), look, buf);
+        }
+    }
 }
 
 /// The look of a cell of the field: the far stars grey, the middle ones the accent, the near ones the
@@ -387,43 +348,24 @@ mod tests {
         g.cells.iter().enumerate().filter(|(_, c)| c.ch != ' ').map(|(i, c)| (i, c.ch)).collect()
     }
 
-    #[test]
-    fn the_field_is_the_same_for_the_same_phase() {
-        let a = field(4321.0, 1.0, 1.0, 80, 24, false);
-        let b = field(4321.0, 1.0, 1.0, 80, 24, false);
-        assert_eq!(dots(&a), dots(&b));
-        assert!(dots(&a).len() > 30, "a room this big holds a few dozen stars");
+    /// A moment (ms) at which a comet is half way across a room of `w` x `h` dots.
+    fn comet_time(w: f32, h: f32) -> f64 {
+        (0..400_000)
+            .step_by(40)
+            .map(|t| t as f64)
+            .find(|t| shot_at(*t, w, h).is_some_and(|s| (0.4..0.6).contains(&s.u)))
+            .unwrap()
     }
 
     #[test]
-    fn the_stars_twinkle_in_place_instead_of_drifting() {
-        let (cols, rows) = (60u16, 20u16);
-        let at = |t: f64| dots(&field(t, 1.0, 0.0, cols, rows, false));
-        assert_ne!(at(0.0), at(1500.0), "the field changes as stars come and go");
-        // one star keeps its place through a cycle, then reappears elsewhere
-        let seed = 40_002u32;
-        let (a, b) = (twinkle(seed, 10_000.0), twinkle(seed, 10_010.0));
-        assert_eq!((a.x, a.y), (b.x, b.y));
-        let later = twinkle(seed, 10_000.0 + 24_000.0);
-        assert_ne!((a.x, a.y), (later.x, later.y));
-        // a long while on, the field is as full as ever (stars reappear, none leave)
-        let far = at(3_600_000.0);
-        assert!(far.len() > 10 && far.len() * 2 > at(0.0).len());
-    }
-
-    #[test]
-    fn the_far_stars_are_dimmer_than_the_near_ones() {
-        assert!(LAYERS[0].2 < LAYERS[2].1);
-        let shares: f32 = LAYERS.iter().map(|l| l.0).sum();
-        assert!((shares - 1.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn nothing_shows_before_the_fade_in_and_less_part_way() {
-        assert!(dots(&field(1000.0, 0.0, 1.0, 80, 24, false)).is_empty());
-        let half = dots(&field(1000.0, 0.4, 1.0, 80, 24, false)).len();
-        let all = dots(&field(1000.0, 1.0, 1.0, 80, 24, false)).len();
-        assert!(half < all, "{half} < {all}");
+    fn the_comets_are_the_same_for_the_same_phase_and_none_before_the_fade_in() {
+        let t = comet_time(200.0, 100.0);
+        let a = comet_grid(t, 1.0, 1.0, 100, 25, false);
+        assert_eq!(dots(&a), dots(&comet_grid(t, 1.0, 1.0, 100, 25, false)));
+        assert!(!dots(&a).is_empty());
+        assert!(dots(&comet_grid(t, 0.0, 1.0, 100, 25, false)).is_empty());
+        let peak = |g: &Grid| g.cells.iter().map(|c| c.level).fold(0.0, f32::max);
+        assert!(peak(&comet_grid(t, 0.3, 1.0, 100, 25, false)) < peak(&a));
     }
 
     /// The slots of `n` of them in which a comet crosses (sampled every 40 ms) and the comets seen.
@@ -511,14 +453,10 @@ mod tests {
 
     #[test]
     fn comets_show_in_the_field_and_none_when_it_is_at_rest() {
-        let t = (0..400_000)
-            .step_by(40)
-            .map(|t| t as f64)
-            .find(|t| shot_at(*t, 200.0, 100.0).is_some_and(|s| (0.4..0.6).contains(&s.u)))
-            .unwrap();
-        let with = field(t, 1.0, 1.0, 100, 25, false);
+        let t = comet_time(200.0, 100.0);
+        let with = comet_grid(t, 1.0, 1.0, 100, 25, false);
         assert!(with.cells.iter().any(|c| c.core));
-        let without = field(t, 1.0, 0.0, 100, 25, false);
+        let without = comet_grid(t, 1.0, 0.0, 100, 25, false);
         assert!(!without.cells.iter().any(|c| c.core));
     }
 
@@ -538,10 +476,12 @@ mod tests {
         let free = clear_of_text(&text, area, &theme, MARGIN_X, MARGIN_Y, u16::MAX);
         let (mut core, mut painted) = (0, 0);
         for t in (0..240_000).step_by(700) {
-            let g = field(t as f64, 1.0, 1.0, area.width, area.height, false);
+            let g = comet_grid(t as f64, 1.0, 1.0, area.width, area.height, false);
             core += g.cells.iter().filter(|c| c.core && c.ch != ' ').count();
             let mut buf = text.clone();
             paint(&mut buf, area, &g, &free, false, |c| star_style(&theme, c));
+            let look = Look::on(&theme, t as f32 / 1000.0, 1.0).unwrap();
+            render_stars_in(area, None, None, Some(&free), look, &mut buf);
             for y in 0..area.height {
                 for x in 0..area.width {
                     let (a, b) = (&text[(x, y)], &buf[(x, y)]);
@@ -557,45 +497,8 @@ mod tests {
     }
 
     #[test]
-    fn a_near_star_grows_its_cross_arm_by_arm_and_loses_it_the_same_way() {
-        // a near star on its own: the dots in the 3 x 3 dots around it
-        let (cols, rows) = (60u16, 20u16);
-        let n = (cols as usize * rows as usize / CELLS_PER_STAR).clamp(4, MAX_STARS);
-        let (seed, _) = (0..n as u32)
-            .map(|i| 40_000 + i * 8)
-            .map(|s| (s, layer_of(unit(s)).0))
-            .find(|&(s, l)| l == 2 && unit(s + 9) >= 0.34)
-            .expect("a near single star");
-        let tw = |t: f64| twinkle(seed + 2, t);
-        let period = 8000.0 + 4000.0 * unit(seed + 2) as f64;
-        let t0 = (1.0 - unit(seed + 3) as f64) * period + 3.0 * period + 1.0;
-        let (w, h) = (cols as f32 * 2.0, rows as f32 * 4.0);
-        let (x, y) = (tw(t0 + 10.0).x * w, tw(t0 + 10.0).y * h);
-        let around = |t: f64| {
-            let g = field(t, 1.0, 0.0, cols, rows, false);
-            let mut c = 0;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let (px, py) = ((x as i32 + dx).max(0) as usize, (y as i32 + dy).max(0) as usize);
-                    let ch = (g.cells[(py / 4) * cols as usize + px / 2].ch as u32).saturating_sub(0x2800);
-                    c += ((ch >> [[0, 1, 2, 6], [3, 4, 5, 7]][px % 2][py % 4]) & 1) as usize;
-                }
-            }
-            c
-        };
-        let seq: Vec<usize> = (0..(period / 83.0) as usize).map(|i| around(t0 + i as f64 * 83.0)).collect();
-        let top = *seq.iter().max().unwrap();
-        assert!(top >= 4, "the cross shows at the peak: {seq:?}");
-        let (first, last) = (seq.iter().position(|&c| c == top).unwrap(), seq.iter().rposition(|&c| c == top).unwrap());
-        assert!(seq[..=first].windows(2).all(|w| w[1] >= w[0]), "grows only: {seq:?}");
-        assert!(seq[last..].windows(2).all(|w| w[1] <= w[0]), "shrinks only: {seq:?}");
-        assert!(seq.windows(2).all(|w| w[1].abs_diff(w[0]) <= 2), "an arm or two at a time: {seq:?}");
-        assert!(seq[0] <= 1 && *seq.last().unwrap() <= 1);
-    }
-
-    #[test]
-    fn ascii_draws_plain_marks() {
-        let g = field(2500.0, 1.0, 1.0, 80, 24, true);
+    fn ascii_comets_draw_plain_marks() {
+        let g = comet_grid(comet_time(160.0, 96.0), 1.0, 1.0, 80, 24, true);
         assert!(!dots(&g).is_empty());
         assert!(dots(&g).iter().all(|(_, c)| matches!(c, '.' | ':' | '*')));
     }
@@ -612,8 +515,12 @@ mod tests {
         assert!(h.level(at(IN_MS / 3)) < 1.0);
         assert_eq!(h.level(at(IN_MS)), 1.0);
         assert!(h.drifting(at(5000)));
-        let rest = crate::fx_stars::REST_AFTER_MS + crate::fx_stars::STOP_MS + 10;
+        assert_eq!(h.stars(at(5000)), 1.0);
+        let rest = crate::fx_stars::REST_AFTER_MS + crate::fx_stars::STOP_MS + 200;
+        assert!(h.drifting(at(rest - 600)), "the stars are still fading out");
+        assert!(h.stars(at(rest - 600)) < 1.0);
         assert!(!h.drifting(at(rest)), "at rest after a while with no input");
+        assert_eq!(h.stars(at(rest)), 0.0);
         assert_eq!(h.pace(at(rest)), 0.0);
         let still = h.phase(at(rest));
         assert_eq!(h.phase(at(rest + 5000)), still, "the still frame stays");

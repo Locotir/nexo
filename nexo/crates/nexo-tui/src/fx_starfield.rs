@@ -18,7 +18,7 @@ use ratatui::style::Color;
 use unicode_width::UnicodeWidthStr;
 
 use crate::fx_stars::{mix, sin, unit, PI};
-use crate::theme::mix as mix_colour;
+use crate::theme::{mix as mix_colour, Theme};
 
 /// A star dimmer than this is not drawn.
 pub(crate) const MIN_BRIGHTNESS: f32 = 0.04;
@@ -76,6 +76,21 @@ pub(crate) struct Look {
     pub visibility: f32,
 }
 
+impl Look {
+    /// The look of the field on `theme` at `time` seconds and `visibility`: the ink is the theme's text colour
+    /// and a cell with the default ground rises from black (the default theme paints no ground of its own).
+    /// None where the field is not drawn: a theme without true colour (mono, indexed) has no stars.
+    pub(crate) fn on(theme: &Theme, time: f32, visibility: f32) -> Option<Look> {
+        let ground = match theme.bg {
+            Color::Rgb(r, g, b) => (r, g, b),
+            Color::Reset => (0, 0, 0),
+            _ => return None,
+        };
+        let Color::Rgb(r, g, b) = theme.fg else { return None };
+        Some(Look { time, ink: (r, g, b), ground, visibility })
+    }
+}
+
 /// Paints the stars of `look` on the blank cells of `area` in `buf`. A cell is left alone when it holds
 /// anything but one space (a wide glyph also covers the cell after it), has a modifier, is the `cursor`
 /// or lies in `protected`. Nothing at 0 visibility.
@@ -83,6 +98,19 @@ pub(crate) fn render_stars(
     area: Rect,
     cursor: Option<(u16, u16)>,
     protected: Option<Rect>,
+    look: Look,
+    buf: &mut Buffer,
+) {
+    render_stars_in(area, cursor, protected, None, look, buf);
+}
+
+/// `render_stars`, and with `free` (row by row over `area`, which must lie in the buffer) only the cells it
+/// marks are used.
+pub(crate) fn render_stars_in(
+    area: Rect,
+    cursor: Option<(u16, u16)>,
+    protected: Option<Rect>,
+    free: Option<&[bool]>,
     look: Look,
     buf: &mut Buffer,
 ) {
@@ -102,7 +130,11 @@ pub(crate) fn render_stars(
                 occupied_until = x.saturating_add(cell.symbol().width() as u16);
                 continue;
             }
-            if cursor == Some((x, y))
+            if free.is_some_and(|f| {
+                !f.get(usize::from(y - area.y) * usize::from(area.width) + usize::from(x - area.x))
+                    .copied()
+                    .unwrap_or(false)
+            }) || cursor == Some((x, y))
                 || protected.is_some_and(|p| p.contains(Position::new(x, y)))
                 || !cell.modifier.is_empty()
             {
