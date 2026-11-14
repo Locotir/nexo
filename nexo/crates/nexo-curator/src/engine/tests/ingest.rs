@@ -87,3 +87,37 @@ fn a_rewrite_with_no_reply_is_read_anew_but_its_newest_message() {
     let texts: Vec<String> = rules(&e).into_iter().map(|r| r.0).collect();
     assert_eq!(texts, ["You may push to main from now on.", "Never push to main."]);
 }
+
+#[test]
+fn an_audit_log_the_agent_has_not_acted_on_yet_still_sends_every_shard_and_checksum() {
+    // bench-marathon (r9 of -full, r36 of -D): what the blind and denied measures counted as left out of a
+    // result the agent had not acted on yet was this log folded at birth into its form and one row per line,
+    // with every value still sent; the agent never ran the audit again
+    let sum = |k: u64| format!("{:08x}", k.wrapping_mul(2_654_435_761) & 0xffff_ffff);
+    let mut lines: Vec<String> =
+        (0..80).map(|k| format!("INFO audit shard {k:03}: flushed, checksum {}", sum(k))).collect();
+    lines.extend((0..60).map(|k| format!("INFO audit shard {k:03}: closed")));
+    lines.push("WARN inventory/report.py:11 leftover TODO comment".into());
+    lines.push("audit failed: 3 problems".into());
+    let log = lines.join("\n");
+    let mut msgs = vec![json!({"role": "user", "content": "Run the audit and fix what it reports."})];
+    msgs.extend(step(1, "python tools/audit.py", &log));
+    let mut e = Engine::new(crate::params("").unwrap());
+    let check = |view: &[Value]| {
+        let out = output(view, 2);
+        assert!(out.contains("lines of the form «INFO audit shard {}: flushed, checksum {}»"), "{out}");
+        // each line is there as it came or as its row under the form
+        let held = |k: u64| {
+            out.contains(&format!("{k:03}: flushed, checksum {}", sum(k)))
+                || out.contains(&format!("\n{k:03} {}\n", sum(k)))
+        };
+        assert!((0..80).all(held), "{out}");
+        assert!(out.contains("leftover TODO comment") && out.contains("audit failed: 3 problems"), "{out}");
+    };
+    e.sync(&msgs);
+    check(&e.view());
+    // a step that draws on none of its words: the log is still the agent's to act on, and stays as it was sent
+    msgs.extend(step(2, "ls docs", "spec.md\nnotes.md"));
+    e.sync(&msgs);
+    check(&e.view());
+}

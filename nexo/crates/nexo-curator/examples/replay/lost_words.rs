@@ -64,13 +64,18 @@ pub(super) fn wrote_about(later: &[Value], result: &HashSet<String>) -> bool {
 /// shows no copied word for `forgotten` to catch. Results under `SMALL_RESULT` tokens are left out of both
 /// counts, as the engine leaves them in place.
 pub(super) fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
+    blind_parts(history, view).iter().fold((0, 0), |(m, o), p| (m + p.3, o + p.2))
+}
+
+/// The results `blind` counts, one by one: (message, block, tokens, tokens the view lacks).
+pub(super) fn blind_parts(history: &[Value], view: &[Value]) -> Vec<(usize, usize, i64, i64)> {
     const SMALL_RESULT: i64 = 100;
     let shown: HashSet<String> = view.iter().flat_map(segments).collect();
     let start = latest_request(history);
-    let (mut missing, mut open) = (0, 0);
+    let mut out = Vec::new();
     for (k, m) in history.iter().enumerate().skip(start) {
         let Some(Value::Array(blocks)) = m.get("content") else { continue };
-        for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
+        for (bi, b) in blocks.iter().enumerate().filter(|(_, b)| b["type"] == "tool_result") {
             let one = json!({"role": "user", "content": [b]});
             let tokens = tokens_of(&one);
             if tokens < SMALL_RESULT {
@@ -80,13 +85,10 @@ pub(super) fn blind(history: &[Value], view: &[Value]) -> (i64, i64) {
             if wrote_about(&history[k + 1..], &words) {
                 continue;
             }
-            open += tokens;
             let segs = segments(&one);
-            if !segs.is_empty() {
-                let lacks = segs.iter().filter(|s| !shown.contains(*s)).count() as i64;
-                missing += tokens * lacks / segs.len() as i64;
-            }
+            let lacks = segs.iter().filter(|s| !shown.contains(*s)).count() as i64;
+            out.push((k, bi, tokens, if segs.is_empty() { 0 } else { tokens * lacks / segs.len() as i64 }));
         }
     }
-    (missing, open)
+    out
 }

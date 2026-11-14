@@ -51,7 +51,7 @@ pub(super) struct Keys {
 }
 
 /// (key, kind, file) of a call, the key as `calls.jq` of the lab makes it, with the tool's name in front.
-fn call_key(name: &str, input: &Value) -> (String, &'static str, Option<String>) {
+pub(super) fn call_key(name: &str, input: &Value) -> (String, &'static str, Option<String>) {
     let s = |k: &str| input.get(k).and_then(Value::as_str);
     let target = ["file_path", "path", "command", "pattern", "url"]
         .iter()
@@ -143,7 +143,7 @@ fn printed_file(command: &str) -> Option<String> {
 }
 
 /// Whether two paths name the same file: equal, or one is the other with more directories in front.
-fn same_path(a: &str, b: &str) -> bool {
+pub(super) fn same_path(a: &str, b: &str) -> bool {
     let (a, b) = (a.trim_start_matches("./"), b.trim_start_matches("./"));
     let under = |long: &str, short: &str| long.strip_suffix(short).is_some_and(|h| h.ends_with('/'));
     a == b || under(a, b) || under(b, a)

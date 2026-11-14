@@ -34,6 +34,11 @@
 //! - own replies: the share of the agent's own text replies (with or without tool calls) each view still shows,
 //!   summed over the requests, and the same for its latest ten; the other measures look at results, not at
 //!   what the model already said.
+//! - re-reads: the calls that ask again for what an earlier call returned (the same tool on the same target,
+//!   or a read of the same file, nothing written to it since), how many of them were made with the earlier
+//!   result out of the view, and how often a result the view left out before the agent acted on it (`blind`)
+//!   was asked for again, next to the rate for the other results. A repeat made with the earlier result in
+//!   view was not caused by the curator. `REPLAY_REREAD=1` names each one.
 //! - repeated result lines: the tokens of result lines that an earlier result in the same request already
 //!   holds (lines of 8 characters or more), summed over the requests, for the view and the raw history.
 //! - efficiency: how much of the most a view can save it does save, priced with a prefix cache. 0 % is
@@ -84,6 +89,7 @@ mod oracle;
 mod own_replies;
 mod plain_counts;
 mod priced_pieces;
+mod rereads;
 mod sending;
 use bank::*;
 use belady::*;
@@ -95,6 +101,7 @@ use oracle::*;
 use own_replies::*;
 use plain_counts::*;
 use priced_pieces::*;
+use rereads::*;
 use sending::*;
 
 fn main() {
@@ -191,6 +198,7 @@ fn main() {
     let (mut blind_tokens, mut open_tokens) = (0i64, 0i64);
     let (mut denied_tokens, mut asked_tokens) = (0i64, 0i64);
     let (mut own_kept, mut own_all, mut own_recent_kept, mut own_recent_all) = (0usize, 0usize, 0usize, 0usize);
+    let mut rereads = Rereads::default();
     // the working window: the largest view, the largest sticky set, and where each cut block was first cut
     let (mut max_view, mut max_sticky) = (0i64, 0i64);
     let mut first_cut = std::collections::BTreeMap::<(usize, usize), usize>::new();
@@ -207,7 +215,10 @@ fn main() {
             cur.tools(t);
         }
         let at = gap.map_or(r.now, |g| g * i as f64) + pause.map_or(0.0, |(n, s)| (i / n) as f64 * s);
+        // the calls new in this request were made from the view of the request before
+        rereads.see(&r.messages, &last_view, i + 1);
         let reply = cur.view(r.system_tokens, &r.messages, at).expect("a view");
+        rereads.left_out(&r.messages, &reply.view, i + 1);
         if let Ok(spec) = std::env::var("REPLAY_RAW") {
             if let Some((n, file)) = spec.split_once(':') {
                 if n.parse::<usize>().ok() == Some(i + 1) {
@@ -241,6 +252,18 @@ fn main() {
         // REPLAY_BLIND=1 names each request that left out a result the agent had not yet written about
         if missing > 0 && std::env::var("REPLAY_BLIND").is_ok_and(|v| v == "1") {
             println!("r{} blind {missing} of {open} tokens", i + 1);
+        }
+        // REPLAY_BLIND=2 names each result left out and the rule that took the first line the view lacks
+        if missing > 0 && std::env::var("REPLAY_BLIND").is_ok_and(|v| v == "2") {
+            let shown: HashSet<String> = reply.view.iter().flat_map(segments).collect();
+            for (mi, bi, tokens, lack) in blind_parts(&r.messages, &reply.view).into_iter().filter(|p| p.3 > 0) {
+                let one = json!({"content": [blocks_of(&r.messages[mi]).get(bi).cloned().unwrap_or_default()]});
+                let first = segments(&one).into_iter().find(|s| !shown.contains(s)).unwrap_or_default();
+                let word = distinctive_words(&first).into_iter().next().unwrap_or_default();
+                // `kept`: a copy of the word is still sent, so the line came reformatted (a fold at birth), not left out
+                let rule = cur.fate(mi, &word).map_or("?", |f| if f.1 == "kept" { "none, reformatted" } else { f.1 });
+                println!("r{} blind m{mi} {lack} of {tokens} tokens, rule {rule}: {first:.80}", i + 1);
+            }
         }
         blind_tokens += missing;
         open_tokens += open;
@@ -552,6 +575,22 @@ fn main() {
         share(own_kept as i64, own_all as i64),
         share(own_recent_kept as i64, own_recent_all as i64)
     );
+    let (unused, unused_again, other, other_again) = rereads.rates();
+    println!(
+        "re-reads: {} calls asked again for an earlier result (same tool and target, or a read of the same file, unchanged), {} of them with it out of the view; reads {}, {} out; results left out before the agent acted on them: {unused_again} of {unused} asked for again ({:.1}%), other results: {other_again} of {other} ({:.1}%)",
+        rereads.repeats,
+        rereads.out_of_view,
+        rereads.reads,
+        rereads.reads_out,
+        share(unused_again as i64, unused as i64),
+        share(other_again as i64, other as i64)
+    );
+    // REPLAY_REREAD=1 names each call that asked again
+    if std::env::var("REPLAY_REREAD").is_ok_and(|v| v == "1") {
+        for l in &rereads.lines {
+            println!("{l}");
+        }
+    }
     println!(
         "revisits: {revisits} requests sent a view already sent before, call ids and the counts in curator lines aside{}",
         if first_revisits.is_empty() { String::new() } else { format!(" (first: {})", first_revisits.join(", ")) }
