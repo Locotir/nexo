@@ -607,31 +607,27 @@ pub(super) async fn run_turn(state: Shared, cancel: CancellationToken) -> TurnEn
                 return TurnEnd::Done;
             }
         }
+        let last_results = results.clone();
         push_results(&state, results).await;
-        let notes = if cancelled { 0 } else { watch_round(&state).await };
+        if !cancelled {
+            watch_round(&state).await;
+        }
         if cancelled {
             return TurnEnd::Interrupted;
         }
-        // an active goal whose work changes nothing: its reading tools go, then the turn ends and the goal pauses
+        // an active goal whose work brings nothing new for too long: the turn ends and the goal pauses, with the facts
         if stop.is_none() {
-            let mut st = state.lock().await;
+            let mut guard = state.lock().await;
+            let st = &mut *guard;
             if st.goal.is_some() && st.goal_state.is_active() {
-                let changed = round_changed(&st, &kept, &ok);
-                match goal_watch(&mut st.goal_idle, changed, kept.len() as u32, notes) {
-                    GoalStep::Go => {}
-                    GoalStep::Narrow(line) => {
-                        notice(
-                            &events,
-                            Level::Warn,
-                            "goal: nothing changed lately; reading tools are off until something does",
-                        );
-                        st.hidden.push(line);
-                    }
-                    GoalStep::Stop(why) => {
-                        st.ck_stop = Some(why.clone());
-                        notice(&events, Level::Warn, format!("stopped: {why} while working on the goal"));
-                        return TurnEnd::MaxTurns;
-                    }
+                let mut idle = std::mem::take(&mut st.goal_idle);
+                let was = goal_calls(st, &mut idle, &kept, &ok, &last_results);
+                let step = goal_watch(&mut idle, &was);
+                st.goal_idle = idle;
+                if let GoalStep::Stop(why) = step {
+                    st.ck_stop = Some(why.clone());
+                    notice(&events, Level::Warn, format!("stopped: {why} while working on the goal"));
+                    return TurnEnd::MaxTurns;
                 }
             }
         }

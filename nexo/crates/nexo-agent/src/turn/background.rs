@@ -146,7 +146,13 @@ pub(super) async fn watch_round(state: &Shared) -> u32 {
     }
     let from = st.turn_start.min(st.history.len());
     let mut added = 0;
+    // an active goal's facts line says what a run of reads or a call made again brought (see `GoalIdle::facts`): no
+    // note to guess it
+    let goal_facts = st.goal.is_some() && st.goal_state.is_active();
     for f in crate::supervise::watch::scan_rounds(&st.history[from..]) {
+        if goal_facts && (f.key.starts_with("reads:") || f.key.starts_with("repeat:")) {
+            continue;
+        }
         if st.noticed.insert(f.key) {
             st.hidden.push(f.text);
             added += 1;

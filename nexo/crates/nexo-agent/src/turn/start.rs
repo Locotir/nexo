@@ -455,7 +455,6 @@ pub(super) fn offered(st: &State) -> Vec<nexo_core::provider::ToolSpec> {
                 && (plan || s.name != "exit_plan")
                 && (curator || s.name != "recall")
                 && (st.goal.is_some() || s.name != "goal_brief")
-                && !narrowed_out(st, &s.name)
         })
         .collect()
 }
@@ -496,6 +495,11 @@ pub(super) async fn prepare(
             emit(&st.events, AgentEvent::Added { index: st.turn_start, parts: vec![part] });
         }
         attach_hidden(&mut req.messages, block);
+    }
+    // an active goal's work that brings nothing new: the plain facts of it, on this request only (see
+    // `GoalIdle::facts`), in place of a generic note
+    if let Some(f) = st.goal.as_ref().filter(|_| st.goal_state.is_active()).and(st.goal_idle.facts()) {
+        attach_hidden(&mut req.messages, format!("[goal work: {f}]"));
     }
     req.tools = specs;
     req.no_tool_call = no_tool_call;

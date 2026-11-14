@@ -172,15 +172,21 @@ or a new `/goal`. `/goal pause` (`PauseGoal`) holds it. An active goal whose
 reply declared nothing gets `[goal: continue]`, once per round, up to `max`
 rounds (5; `NEXO_GOAL_ROUNDS`); the rules for that mark live in the pinned
 goal, so the request stays one short line and the TUI shows it as a notice,
-not as the person's message. A continuation round that changed nothing (no
-successful edit, write or command that is not read-only or a plain check) pauses
-the goal; after the last round it pauses too. Within a goal's work, two
-supervisor notes (or 36 steps) with no change take the read and search tools
-away for the next requests, so the model acts or reports; a step that still
-changes nothing ends the turn and pauses the goal (`N steps without a change`).
-The pinned goal says that what the person wrote before `[goal set]` is answered. The
-state persists in the session and comes back on resume. Queued requests run
-before a continuation.
+not as the person's message. Progress in a goal's work is something new: an
+edit, a file or range not read before in this goal (or changed since), a search
+with new hits, a command whose output differs; a call that gives back the same
+result as before is a repeat (`GoalIdle`). A continuation round with no progress
+pauses the goal; after the last round it pauses too. From the second repeat (or
+12 steps with no progress) each request carries the facts as a request-only
+note (`[goal work: no progress for 61 steps, same result again: store.rs ×6,
+commands.rs ×5]`) in place of the generic watch notes on reads and repeated
+calls; no tool is taken away (that pushed edits made blind). After 36 steps with
+no progress, or when a guard stops such work, the turn ends and the goal pauses
+with those facts for the person. Nothing tells the model that what came before
+`[goal set]` is answered; it sees its own earlier replies (see the curator's
+closed steps). On Anthropic the cache breakpoint sits on the block before such a
+trailing request-only text. The goal state persists in the session and comes
+back on resume. Queued requests run before a continuation.
 
 Permission rules: `tool` (any call of it), `tool(glob)` where the glob is
 matched against the call's target: the command for `bash` (prefix globs such

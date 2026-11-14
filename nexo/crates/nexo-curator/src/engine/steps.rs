@@ -10,6 +10,7 @@ use crate::goal::action;
 use crate::hindsight::{Interner, Sym, Tracer, UKind};
 use crate::mechanical::MARK;
 use crate::msg::blocks;
+use crate::textops;
 
 use super::{Engine, NOTE_TOOL};
 
@@ -18,6 +19,9 @@ const RECALL_NAMED: usize = 6;
 
 /// The distinct calls a closed request names on its line.
 const CLOSED_SHOWN: usize = 8;
+
+/// Characters of each thing the agent said with those calls that the line keeps.
+const SAID_CHARS: usize = 160;
 
 /// A step of an answered request (`Params.close`): a call and its output.
 #[derive(Clone, Debug)]
@@ -249,7 +253,7 @@ impl Engine {
         }
         // each run, by the message its line goes on and its request: the calls that left, the messages
         // that carry their outputs (what a `recall` is for), and whether it reaches the request's last step
-        type Run<'s> = (IndexMap<&'s str, usize>, Vec<usize>, bool);
+        type Run<'s> = (IndexMap<&'s str, usize>, Vec<usize>, bool, Vec<String>);
         let mut runs: IndexMap<(usize, usize), Run> = IndexMap::new();
         let mut brought: Vec<(usize, usize)> = Vec::new();
         for (i, s) in self.steps.iter().enumerate() {
@@ -274,10 +278,21 @@ impl Engine {
                         .iter()
                         .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
             });
-            let (d, outs, end) = runs.entry((at, s.a)).or_default();
+            let (d, outs, end, words) = runs.entry((at, s.a)).or_default();
             for &m in &s.msgs {
                 if self.tr.msgs[m].get("role").and_then(Value::as_str) != Some("assistant") {
                     outs.push(m);
+                    continue;
+                }
+                // what the agent said with its calls leaves with them: the line keeps it, short, so the agent
+                // still sees what it already told (a greeting, a plan) and does not say it again
+                for &u in self.fz.by_msg(m) {
+                    if self.tr.units[u].kind == UKind::Text {
+                        let t = textops::squash_ws(&self.tr.unit_text(u));
+                        if !t.is_empty() && !words.contains(&t) {
+                            words.push(t);
+                        }
+                    }
                 }
             }
             for what in &s.did {
@@ -292,7 +307,7 @@ impl Engine {
         for (at, i) in brought {
             shut.entry(at).or_default().push(self.step_text(i));
         }
-        for ((at, _), (d, mut outs, end)) in runs {
+        for ((at, _), (d, mut outs, end, words)) in runs {
             let calls: usize = d.values().sum();
             let mut said: Vec<String> = d
                 .iter()
@@ -320,8 +335,20 @@ impl Engine {
             } else {
                 String::new()
             };
+            let words = if words.is_empty() {
+                String::new()
+            } else {
+                let cut = |w: &String| {
+                    if textops::len(w) > SAID_CHARS {
+                        format!("{}…", textops::head(w, SAID_CHARS))
+                    } else {
+                        w.clone()
+                    }
+                };
+                format!(" You said with them: {}.", words.iter().map(cut).collect::<Vec<_>>().join(" | "))
+            };
             shut.entry(at).or_default().push(format!(
-                "{MARK} {calls} tool call{} made for this request and {} output are left out of this context: {}.{}{back}",
+                "{MARK} {calls} tool call{} made for this request and {} output are left out of this context: {}.{words}{}{back}",
                 if calls == 1 { "" } else { "s" },
                 if calls == 1 { "its" } else { "their" },
                 said.join(" | "),

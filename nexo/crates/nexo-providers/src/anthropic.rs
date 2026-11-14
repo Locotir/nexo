@@ -131,9 +131,15 @@ impl Anthropic {
             }
         }
         if cache {
-            if let Some(last) = messages.last_mut().and_then(|m| m["content"].as_array_mut()).and_then(|c| c.last_mut())
-            {
-                last["cache_control"] = bp;
+            if let Some(c) = messages.last_mut().and_then(|m| m["content"].as_array_mut()) {
+                // a text that ends a message of several blocks rides on this request only (the time and facts line,
+                // a supervisor note): the breakpoint goes before it, so the next request, which no longer carries
+                // it, still finds this one's prefix in the cache
+                let trailing = c.len() > 1 && c.last().is_some_and(|b| b["type"] == "text");
+                let at = if trailing { c.len() - 2 } else { c.len().saturating_sub(1) };
+                if let Some(b) = c.get_mut(at) {
+                    b["cache_control"] = bp;
+                }
             }
         }
         body["messages"] = Value::Array(messages);
@@ -662,6 +668,20 @@ mod tests {
             Anthropic::url(&ProviderConfig::new(ID, "https://api.deepseek.com/anthropic", None)),
             "https://api.deepseek.com/anthropic/v1/messages"
         );
+    }
+
+    /// The time line rides on one request only, as the last text of the last message: the breakpoint goes on the block
+    /// before it, so the next request finds this one's prefix in the cache.
+    #[test]
+    fn a_trailing_request_only_text_stays_after_the_cache_breakpoint() {
+        let mut person = Message::user("[22:36] hola");
+        person.content.push(Part::text("[now 22:36 · turn running]"));
+        let req = ModelRequest::new("claude-x", "sys", vec![person]);
+        let b = Anthropic::body(&ProviderConfig::new(ID, "https://api.anthropic.com", None), &req);
+        let c = b["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0]["cache_control"]["type"], "ephemeral");
+        assert!(c[1].get("cache_control").is_none());
     }
 
     #[test]

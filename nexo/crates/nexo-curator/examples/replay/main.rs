@@ -31,6 +31,9 @@
 //! - denied: the tokens of the results the agent has just asked for that the view does not send in their place
 //!   (a pointer to a copy above, a note that they were left out), as a share of all such tokens. `blind` finds
 //!   the lines anywhere in the view; this asks whether the agent got the reading it asked for.
+//! - own replies: the share of the agent's own text replies (with or without tool calls) each view still shows,
+//!   summed over the requests, and the same for its latest ten; the other measures look at results, not at
+//!   what the model already said.
 //! - repeated result lines: the tokens of result lines that an earlier result in the same request already
 //!   holds (lines of 8 characters or more), summed over the requests, for the view and the raw history.
 //! - efficiency: how much of the most a view can save it does save, priced with a prefix cache. 0 % is
@@ -78,6 +81,7 @@ mod chunks;
 mod failed_calls;
 mod lost_words;
 mod oracle;
+mod own_replies;
 mod plain_counts;
 mod priced_pieces;
 mod sending;
@@ -88,6 +92,7 @@ use chunks::*;
 use failed_calls::*;
 use lost_words::*;
 use oracle::*;
+use own_replies::*;
 use plain_counts::*;
 use priced_pieces::*;
 use sending::*;
@@ -185,6 +190,7 @@ fn main() {
     let mut copied_words = 0;
     let (mut blind_tokens, mut open_tokens) = (0i64, 0i64);
     let (mut denied_tokens, mut asked_tokens) = (0i64, 0i64);
+    let (mut own_kept, mut own_all, mut own_recent_kept, mut own_recent_all) = (0usize, 0usize, 0usize, 0usize);
     // the working window: the largest view, the largest sticky set, and where each cut block was first cut
     let (mut max_view, mut max_sticky) = (0i64, 0i64);
     let mut first_cut = std::collections::BTreeMap::<(usize, usize), usize>::new();
@@ -253,6 +259,13 @@ fn main() {
         let (missing, open) = denied(&r.messages, &reply.view);
         denied_tokens += missing;
         asked_tokens += open;
+        let ((k, a), (rk, ra)) = own_replies(&r.messages, &reply.view, 10);
+        (own_kept, own_all, own_recent_kept, own_recent_all) =
+            (own_kept + k, own_all + a, own_recent_kept + rk, own_recent_all + ra);
+        // REPLAY_OWN=1 names each request whose view left out one of the agent's latest ten replies
+        if rk < ra && std::env::var("REPLAY_OWN").is_ok_and(|v| v == "1") {
+            println!("r{} own replies: {k} of {a} kept, {rk} of the latest {ra}", i + 1);
+        }
         if !shapes.insert(shape(&reply.view)) {
             revisits += 1;
             if first_revisits.len() < 6 {
@@ -533,6 +546,11 @@ fn main() {
     println!(
         "denied: {denied_tokens} of {asked_tokens} tokens of the results just asked for were not sent in their place ({:.1}%)",
         share(denied_tokens, asked_tokens)
+    );
+    println!(
+        "own replies: {own_kept} of {own_all} of the agent's text replies were in the views ({:.1}%); of the latest ten, {own_recent_kept} of {own_recent_all} ({:.1}%)",
+        share(own_kept as i64, own_all as i64),
+        share(own_recent_kept as i64, own_recent_all as i64)
     );
     println!(
         "revisits: {revisits} requests sent a view already sent before, call ids and the counts in curator lines aside{}",

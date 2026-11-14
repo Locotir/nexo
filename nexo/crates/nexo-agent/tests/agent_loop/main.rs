@@ -171,6 +171,7 @@ mod loop_guards;
 mod mail;
 mod model_setup;
 mod nexo_bin_hint;
+mod own_replies;
 mod permissions;
 mod provider_limits;
 mod reasoning_replies;

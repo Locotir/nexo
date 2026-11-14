@@ -61,9 +61,8 @@ pub(super) fn with_goal(system: &str, goal: Option<&str>) -> String {
          single line GOAL DONE; if nothing is left to do, say so and end with that line. When you cannot go on \
          without the person (a question only they can answer, a decision, an approval, access you lack), ask it and \
          end your reply with the single line GOAL WAIT: the work waits for their answer. Do not stop for what you \
-         can decide or check yourself. The goal is the task in progress: what the person wrote before \
-         `{GOAL_SET_MARK}` was answered already, so do not answer it again. A message they send after it comes \
-         first: answer it plainly, then go on; call `goal_brief` again when they change what they want."
+         can decide or check yourself. A message the person sends while you work comes first: answer it plainly, \
+         then go on; call `goal_brief` again when they change what they want."
     )
 }
 
@@ -216,7 +215,7 @@ pub(super) fn goal_to(st: &mut State, to: GoalState, say: String) {
 /// A message of the person starts a turn: a goal waiting for their answer has it, and runs again.
 pub(super) fn person_spoke(st: &mut State) {
     st.checked_in = false;
-    // what the person says is news: the goal's work gets its reading tools back
+    // what the person says is news: the goal's work counts its progress from here
     st.goal_idle = GoalIdle::default();
     // only a person's message gives a request its checkpoints back: a goal's rounds, a mail or a job's end do not
     st.ck_used = 0;
@@ -239,7 +238,8 @@ pub(super) async fn goal_settle(state: &Shared, reason: TurnEnd) {
         TurnEnd::Error => {
             (paused("the turn failed"), "goal paused: the turn failed · /goal resume tries again".to_string())
         }
-        TurnEnd::MaxTurns => match st.ck_stop.take() {
+        TurnEnd::MaxTurns => match st.ck_stop.take().or_else(|| st.goal_idle.facts()) {
+            // a guard that stopped work bringing nothing new: the person gets the facts of it
             Some(why) => (paused(&why), format!("goal paused: {why} · /goal resume goes on")),
             None => (
                 paused("the tool-round limit (agent.max_turns)"),
@@ -277,11 +277,12 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
         return None;
     }
     let max = goal_rounds();
-    // a round counts by what it changed, not by its calls: a round of reads alone did nothing new either
+    // a round counts by its progress, not by its calls: a round that only got back what it had did nothing new
     if st.goal_round > 0 && !st.goal_idle.changed {
-        let why = match st.goal_idle.steps {
-            0 => "the last round did nothing new".to_string(),
-            n => format!("the last round changed nothing ({n} steps without a change)"),
+        let why = match st.goal_idle.facts() {
+            _ if st.goal_idle.steps == 0 => "the last round did nothing new".to_string(),
+            Some(f) => format!("the last round made no progress ({f})"),
+            None => format!("the last round made no progress ({} steps)", st.goal_idle.steps),
         };
         let say = format!("goal paused: {why} · /goal resume goes on, or say what next");
         goal_to(&mut st, GoalState::Paused(why), say);
@@ -298,20 +299,52 @@ pub(super) async fn goal_follow_up(state: &Shared) -> Option<String> {
     Some(GOAL_CONTINUE.to_string())
 }
 
-/// Supervisor notes left unheeded, with no change since the first of them, before the goal's work is narrowed.
-pub(super) const GOAL_NOTES_IGNORED: u32 = 2;
-/// Steps without a change after which the work is narrowed even when no note fired (`agent.watch` off, or reads
-/// mixed with other calls so that no run of reads grows long): three runs of reads as the watch counts them.
+/// Steps without progress after which the goal's work stops and the goal pauses, with the facts for the person:
+/// three runs of reads as the supervisor's watch counts them.
 pub(super) const GOAL_IDLE_STEPS: u32 = 3 * crate::supervise::watch::READ_RUN as u32;
+/// Repeats (the same call with the same result) after which the facts ride on each request.
+const GOAL_REPEATS_SAID: u32 = 2;
+/// The most names the facts list among the repeats.
+const GOAL_REPEATS_NAMED: usize = 3;
 
-/// How much of a goal's recent work changed nothing: steps (tool calls) and supervisor notes since the last
-/// change, whether the reading tools are off now (`narrowed`), and whether the turn in progress changed anything.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How much of a goal's recent work made no progress: steps (tool calls) since the last progress, whether the turn in progress made any, what each read-only call returned in this goal (by tool and arguments),
+/// and which of those came back the same since the last progress, by what they were on, with how many times.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct GoalIdle {
     pub(super) steps: u32,
-    pub(super) notes: u32,
-    pub(super) narrowed: bool,
     pub(super) changed: bool,
+    pub(super) seen: HashMap<String, u64>,
+    pub(super) again: Vec<(String, u32)>,
+}
+
+impl GoalIdle {
+    /// The facts of the work without progress, in few tokens: `no progress for 12 steps, same result again: store.rs
+    /// ×6, cmd.rs ×5`. None while there is nothing to say.
+    pub(super) fn facts(&self) -> Option<String> {
+        let repeats: u32 = self.again.iter().map(|(_, n)| n).sum();
+        if repeats < GOAL_REPEATS_SAID && self.steps < GOAL_IDLE_STEPS / 3 {
+            return None;
+        }
+        let mut s = format!("no progress for {} steps", self.steps);
+        if !self.again.is_empty() {
+            let mut top = self.again.clone();
+            top.sort_by_key(|t| std::cmp::Reverse(t.1));
+            let named: Vec<String> =
+                top.iter().take(GOAL_REPEATS_NAMED).map(|(what, n)| format!("{what} ×{n}")).collect();
+            s.push_str(&format!(", same result again: {}", named.join(", ")));
+        }
+        Some(s)
+    }
+}
+
+/// What one call of a goal's work was: progress (a change, or something new: a file, range, search or command
+/// output not seen before in this goal, or one that differs from the last time), a repeat of a call that gave the same
+/// result before (on what), or a failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CallWas {
+    New,
+    Again(String),
+    Failed,
 }
 
 /// What a step of an active goal leads to (see [`goal_watch`]).
@@ -319,53 +352,87 @@ pub(super) struct GoalIdle {
 pub(super) enum GoalStep {
     /// Go on as before.
     Go,
-    /// The reading tools are off from the next request on; the line tells the model why.
-    Narrow(String),
-    /// The model was narrowed and still changed nothing: the turn ends and the goal pauses, for this reason.
+    /// The work made no progress for too long: the turn ends and the goal pauses, for this reason.
     Stop(String),
 }
 
-/// One tool round of an active goal: `changed` tells whether one of its calls changed something (an edit, a
-/// write or a command that is not read-only and not a plain check, that succeeded), `calls` how many calls it
-/// made and `notes` how many supervisor notes it raised. Reading what is already known is not progress: after
-/// [`GOAL_NOTES_IGNORED`] notes (or [`GOAL_IDLE_STEPS`] steps) with no change the reading tools go away, so the
-/// model must act or report; a step that still changes nothing then ends the turn and pauses the goal. Any model,
-/// any task: only calls and their kinds are counted, never words.
-pub(super) fn goal_watch(idle: &mut GoalIdle, changed: bool, calls: u32, notes: u32) -> GoalStep {
-    if changed {
-        *idle = GoalIdle { changed: true, ..GoalIdle::default() };
+/// One tool round of an active goal, call by call. Progress is something new, not only a change: reading files not
+/// read before is the work of a goal that asks to find out something. A call that gives back what it gave before in
+/// this goal is the waste: the facts of it ride on each request (see [`GoalIdle::facts`]), so the model judges for
+/// itself, and after [`GOAL_IDLE_STEPS`] steps without progress the turn ends and the goal pauses with the same facts
+/// for the person. No tool is taken away: a model without its reading tools edits blind. Any model, any task: only
+/// calls, their arguments and their results are compared, never words.
+pub(super) fn goal_watch(idle: &mut GoalIdle, calls: &[CallWas]) -> GoalStep {
+    if calls.contains(&CallWas::New) {
+        let seen = std::mem::take(&mut idle.seen);
+        *idle = GoalIdle { changed: true, seen, ..GoalIdle::default() };
         return GoalStep::Go;
     }
-    idle.steps += calls;
-    idle.notes += notes;
-    if idle.narrowed {
-        return GoalStep::Stop(format!("{} steps without a change", idle.steps));
+    for c in calls {
+        idle.steps += 1;
+        if let CallWas::Again(what) = c {
+            match idle.again.iter_mut().find(|(w, _)| w == what) {
+                Some((_, n)) => *n += 1,
+                None => idle.again.push((what.clone(), 1)),
+            }
+        }
     }
-    if idle.notes >= GOAL_NOTES_IGNORED || idle.steps >= GOAL_IDLE_STEPS {
-        idle.narrowed = true;
-        return GoalStep::Narrow(format!(
-            "{} steps since the last change and {} notes about it: reading and search tools are off until \
-             something changes. Make the change now with the tools left, or, if you cannot, report in a few lines \
-             what you found and what blocks you, and end with GOAL WAIT. Another step that changes nothing ends \
-             this turn and pauses the goal.",
-            idle.steps, idle.notes
-        ));
+    if idle.steps >= GOAL_IDLE_STEPS {
+        let facts = idle.facts().unwrap_or_else(|| format!("no progress for {} steps", idle.steps));
+        return GoalStep::Stop(facts);
     }
     GoalStep::Go
 }
 
-/// Whether a reply's calls changed something: `ok` tells, call by call, whether it succeeded.
-pub(super) fn round_changed(st: &State, calls: &[(String, String, Value)], ok: &[bool]) -> bool {
-    calls.iter().zip(ok).any(|(c, &ok)| {
-        ok && verify::judge(std::slice::from_ref(c), &[true], |n, a| st.tools.get(n).map(|t| t.call_kind(a))).changed
-    })
+/// What each call of a round was for the goal's progress (see [`CallWas`]); `ok` tells, call by call, whether it
+/// succeeded, and `results` holds their outputs. The calls that only read are remembered in `idle.seen`.
+pub(super) fn goal_calls(
+    st: &State,
+    idle: &mut GoalIdle,
+    calls: &[(String, String, Value)],
+    ok: &[bool],
+    results: &[Part],
+) -> Vec<CallWas> {
+    calls
+        .iter()
+        .zip(ok)
+        .map(|(c, &ok)| {
+            if !ok {
+                return CallWas::Failed;
+            }
+            let kind = |n: &str, a: &Value| st.tools.get(n).map(|t| t.call_kind(a));
+            if verify::judge(std::slice::from_ref(c), &[true], kind).changed {
+                return CallWas::New;
+            }
+            let (id, name, args) = c;
+            let out = results.iter().find_map(|p| match p {
+                Part::ToolResult { call_id, content, .. } if call_id == id => {
+                    Some(content.iter().filter_map(Part::as_text).collect::<Vec<_>>().join("\n"))
+                }
+                _ => None,
+            });
+            let mut h = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&out.unwrap_or_default(), &mut h);
+            let hash = std::hash::Hasher::finish(&h);
+            match idle.seen.insert(format!("{name} {args}"), hash) {
+                Some(before) if before == hash => CallWas::Again(call_target(name, args)),
+                _ => CallWas::New,
+            }
+        })
+        .collect()
 }
 
-/// Whether a tool is taken away while the goal's work is narrowed: the ones that only read or search.
-pub(super) fn narrowed_out(st: &State, name: &str) -> bool {
-    st.goal_idle.narrowed
-        && st.goal.is_some()
-        && st.tools.get(name).is_some_and(|t| matches!(t.kind(), ToolKind::Read | ToolKind::Search))
+/// What a call was on, short: the file name of its path, else its pattern or command (cut), else the tool.
+fn call_target(name: &str, args: &Value) -> String {
+    let get = |k: &str| args.get(k).and_then(Value::as_str);
+    if let Some(p) = get("path").or_else(|| get("file_path")) {
+        return p.rsplit(['/', '\\']).next().unwrap_or(p).to_string();
+    }
+    match get("pattern").or_else(|| get("command")) {
+        Some(t) if t.chars().count() > 30 => format!("{name} {}…", t.chars().take(30).collect::<String>()),
+        Some(t) => format!("{name} {t}"),
+        None => name.to_string(),
+    }
 }
 
 /// `/goal pause`: nothing more starts for the goal; a turn in progress finishes as it is.

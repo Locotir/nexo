@@ -56,7 +56,9 @@ paths are in [`context-curator.md`](context-curator.md).
   words no later output holds, whether the same file or program was read or run again and how that went,
   whether the request names it, whether its thread is active). What a step came to be used for is traced
   lexically in hindsight (a reply that repeats one of its distinctive words). Figures in
-  [`results.md`](results.md#the-need-predictor-and-the-hindsight-floor).
+  [`results.md`](results.md#the-need-predictor-and-the-hindsight-floor). The line that names the steps
+  that left (`shut_lines` in `engine/steps.rs`) keeps what the agent said with those calls, each up to
+  160 characters, so the agent still sees what it already told and does not say it again.
 - **Standing facts and the index** (`standing.rs`, `index.rs`, `facts.rs`). Two things go in the tail of
   the last message, built again for each call, so the cached prefix is not touched. The standing facts are
   lines of the session that override a default (a port, a path, a folder not to touch), kept by the words and
