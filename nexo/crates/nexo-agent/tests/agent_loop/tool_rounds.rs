@@ -39,11 +39,15 @@ async fn a_text_reply_is_streamed_recorded_and_priced() {
     assert_eq!(end_of(&evs), TurnEnd::Done);
     let req = &client.requests()[0];
     assert!(req.system.starts_with("You are nexo"));
-    // the four tools given, the read-only sub-agent built from them and the question; the plan's
-    // approval only in plan mode
-    assert_eq!(req.tools.len(), 6);
-    assert!(req.tools.iter().any(|t| t.name == "task"));
-    assert!(req.tools.iter().any(|t| t.name == "ask_user"));
+    // The supplied tools, sub-agent, question and shared-memory tools are available;
+    // the plan's approval is only in plan mode.
+    let names = req.tools.iter().map(|t| t.name.as_str()).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        names,
+        ["ask_user", "bash", "grep", "read", "shared_memory_read", "shared_memory_write", "task", "write"]
+            .into_iter()
+            .collect()
+    );
     assert!(!req.tools.iter().any(|t| t.name == "exit_plan"));
     assert_eq!(req.messages.len(), 1);
     r.stop().await;
