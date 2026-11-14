@@ -45,7 +45,7 @@ fn check(c: &Collector, evs: &[StreamEvent], signature: bool) {
 
 #[tokio::test]
 async fn openai_chat_fixture() {
-    let text = include_str!("fixtures/openai_chat.sse");
+    let text = include_str!("../fixtures/openai_chat.sse");
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("openai-chat", text, chunk).await;
         check(&c, &evs, false);
@@ -55,7 +55,7 @@ async fn openai_chat_fixture() {
 
 #[tokio::test]
 async fn openai_responses_fixture() {
-    let text = include_str!("fixtures/openai_responses.sse");
+    let text = include_str!("../fixtures/openai_responses.sse");
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("openai-responses", text, chunk).await;
         check(&c, &evs, true);
@@ -70,7 +70,7 @@ async fn openai_responses_fixture() {
 
 #[tokio::test]
 async fn anthropic_fixture() {
-    let text = include_str!("fixtures/anthropic.sse");
+    let text = include_str!("../fixtures/anthropic.sse");
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("anthropic", text, chunk).await;
         check(&c, &evs, true);
@@ -80,7 +80,7 @@ async fn anthropic_fixture() {
 
 #[tokio::test]
 async fn gemini_fixture() {
-    let text = include_str!("fixtures/gemini.sse");
+    let text = include_str!("../fixtures/gemini.sse");
     for chunk in [0, 7, 1000] {
         let (c, evs) = collect("gemini", text, chunk).await;
         check(&c, &evs, true);
