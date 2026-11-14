@@ -91,8 +91,8 @@ pub use graph::{path_window, tree_window};
 pub use hookinfo::{arg_count, block_starts, import_sites, libc_proto, parse_proto, proto_at, ImportSite, Proto};
 pub use image::{opens, Export, Format, Hardening, Image, Import, Section, Symbol};
 pub use live::{
-    decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, LiveIns, LiveMem,
-    Place, MAX_INDIRECT_CALLS,
+    decode_live, describe_addr, indirect_call_target, indirect_calls, nearest_symbol, place_of, slot_use, LiveIns,
+    LiveMem, Place, SlotUse, MAX_INDIRECT_CALLS,
 };
 #[cfg(any(test, feature = "fixtures"))]
 pub use managed::testkit as managed_fixtures;

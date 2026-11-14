@@ -15,6 +15,7 @@ mod core_file;
 mod dbg_linux;
 mod dbg_windows;
 mod gdb_script;
+mod one_line_locals;
 mod prologue_locals;
 mod range_page;
 mod rsp;

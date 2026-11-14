@@ -2,7 +2,9 @@
 //! words for an address, and the text of an instruction that was read from memory. Nothing here
 //! starts, opens or touches a process: the caller reads the bytes and passes them in.
 
-use iced_x86::{Decoder, DecoderOptions, FlowControl, Formatter, InstructionInfoFactory, OpAccess, OpKind, Register};
+use iced_x86::{
+    Decoder, DecoderOptions, FlowControl, Formatter, InstructionInfoFactory, Mnemonic, OpAccess, OpKind, Register,
+};
 
 use crate::disasm::{describe, formatter, target};
 use crate::place::{addr_in, AddrExpr};
@@ -209,4 +211,90 @@ pub fn describe_addr(img: &Image, addr: u64, memory: bool) -> Option<String> {
 /// of the file (a shared library is named this way).
 pub fn nearest_symbol(img: &Image, addr: u64) -> Option<(String, u64)> {
     img.symbol_covering(addr).map(|(n, off)| (n.to_string(), off))
+}
+
+/// What the code of a function does to one stack slot before a stop (`slot_use`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotUse {
+    /// An instruction before the stop writes to the slot.
+    Stored,
+    /// Nothing before the stop writes to it, takes its address or can be reached again from after the stop.
+    Untouched,
+    /// Its address is taken before the stop (`lea`), so a callee may have filled it.
+    AddressTaken,
+    /// The code could not be read or decoded, or a jump from after the stop goes back to before it.
+    Unclear,
+}
+
+/// Whether the code at `[lo, hi)` (`bytes`, the program's own bytes, at `lo`) writes to the `size` bytes at
+/// `slot` before `stop`. Only a function with a frame pointer is judged (`push rbp; mov rbp, rsp` at its entry,
+/// after an optional `endbr64`): `rbp` is the value the caller gives, what it holds for the whole body, since at
+/// the stop it may already be restored. `push`, `pop` and `call` write the stack through `rsp` and are skipped.
+pub fn slot_use(bytes: &[u8], lo: u64, stop: u64, slot: u64, size: u64, rbp: u64) -> SlotUse {
+    let body = bytes.strip_prefix(&[0xf3, 0x0f, 0x1e, 0xfa]).unwrap_or(bytes);
+    if !(body.starts_with(&[0x55, 0x48, 0x89, 0xe5]) || body.starts_with(&[0x55, 0x48, 0x8b, 0xec])) {
+        return SlotUse::Unclear;
+    }
+    let hit = |a: u64, n: u64| a < slot.saturating_add(size.max(1)) && slot < a.saturating_add(n.max(1));
+    let value = |r: Register, _: usize, _: usize| -> Option<u64> {
+        if r.is_segment_register() {
+            // flat addressing; fs and gs are thread data, never a frame slot
+            return (!matches!(r, Register::FS | Register::GS)).then_some(0);
+        }
+        let name = format!("{:?}", r.full_register()).to_ascii_lowercase();
+        (name == "rbp").then_some(rbp)
+    };
+    let mut d = Decoder::with_ip(64, bytes, lo, DecoderOptions::NONE);
+    let mut factory = InstructionInfoFactory::new();
+    let mut taken = false;
+    while d.can_decode() {
+        let ins = d.decode();
+        if ins.is_invalid() {
+            return SlotUse::Unclear;
+        }
+        if ins.ip() >= stop {
+            // a branch from here back to or before the stop could run the earlier code, and a store in the
+            // code after the stop, again
+            let back = matches!(ins.flow_control(), FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch)
+                && matches!(ins.op0_kind(), OpKind::NearBranch64)
+                && ins.near_branch_target() <= stop;
+            if back {
+                return SlotUse::Unclear;
+            }
+            continue;
+        }
+        if matches!(ins.mnemonic(), Mnemonic::Push | Mnemonic::Pop | Mnemonic::Call | Mnemonic::Ret) {
+            continue;
+        }
+        for m in factory.info(&ins).used_memory() {
+            let Some(a) = m.virtual_address(0, value) else { continue };
+            let n = m.memory_size().size() as u64;
+            match m.access() {
+                OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite if hit(a, n) => {
+                    return SlotUse::Stored;
+                }
+                OpAccess::NoMemAccess if ins.mnemonic() == Mnemonic::Lea && hit(a, 1) => taken = true,
+                _ => {}
+            }
+        }
+        if ins.has_rep_prefix()
+            && matches!(
+                ins.mnemonic(),
+                Mnemonic::Stosb
+                    | Mnemonic::Stosd
+                    | Mnemonic::Stosq
+                    | Mnemonic::Movsb
+                    | Mnemonic::Movsd
+                    | Mnemonic::Movsq
+            )
+        {
+            // a block fill or copy: where it writes is in rdi, which is not known here
+            return SlotUse::Unclear;
+        }
+    }
+    if taken {
+        SlotUse::AddressTaken
+    } else {
+        SlotUse::Untouched
+    }
 }
