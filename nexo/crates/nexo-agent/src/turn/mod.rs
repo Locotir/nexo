@@ -351,7 +351,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         let mut st = state.lock().await;
         close_open_calls(&mut st);
         if !st.history.is_empty() {
-            view_now(&mut st).await;
+            view_now(&mut st, 0).await;
             // a view shown, not sent: the next request finds no cache of it
             st.last_sent.clear();
         }

@@ -120,7 +120,7 @@ pub(super) async fn resume_session(state: &Shared, id: &str) {
         Ok(s) => {
             install_session(&mut st, s);
             if !st.history.is_empty() {
-                view_now(&mut st).await;
+                view_now(&mut st, 0).await;
                 // a view shown, not sent: the next request finds no cache of it
                 st.last_sent.clear();
             }
@@ -146,7 +146,7 @@ pub(super) async fn fork_session(state: &Shared, index: Option<usize>) {
         Ok(s) => {
             install_session(&mut st, s);
             if !st.history.is_empty() {
-                view_now(&mut st).await;
+                view_now(&mut st, 0).await;
                 // a view shown, not sent: the next request finds no cache of it
                 st.last_sent.clear();
             }
@@ -278,7 +278,7 @@ pub(super) async fn rewind(state: &Shared, index: usize) {
     mail_sync(&st);
     replay_history(&st.events, &st.session, &st.tools);
     if !st.history.is_empty() {
-        view_now(&mut st).await;
+        view_now(&mut st, 0).await;
         // a view shown, not sent: the next request finds no cache of it
         st.last_sent.clear();
     }

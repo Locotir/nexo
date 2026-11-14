@@ -531,12 +531,21 @@ pub(super) async fn prepare(
             }
         }
     }
-    let view = view_now(st).await;
+    // what rides on this request only is worked out first, so the view's budget leaves room for it
+    let hidden = (!st.hidden.is_empty()).then(|| crate::supervise::watch::hidden_block(&st.hidden));
+    let goal_facts = st
+        .goal
+        .as_ref()
+        .filter(|_| st.goal_state.is_active())
+        .and(st.goal_idle.facts())
+        // an active goal's work that brings nothing new: the plain facts of it (see `GoalIdle::facts`), in
+        // place of a generic note
+        .map(|f| format!("[goal work: {f}]"));
+    let view = view_now(st, request_only_tokens(&hidden.iter().chain(&goal_facts).collect::<Vec<_>>())).await;
     let (_, cfg, model) = st.target.get();
     let effort = setup::effort_of(&cfg, &model, &st.config.agent.reasoning);
     let mut req = ModelRequest::new(model, st.system.clone(), view.messages);
-    if !st.hidden.is_empty() {
-        let block = crate::supervise::watch::hidden_block(&st.hidden);
+    if let Some(block) = hidden {
         // the person may read what rides on this request only, apart from what they typed
         if st.hidden.len() != st.hidden_told {
             st.hidden_told = st.hidden.len();
@@ -546,10 +555,8 @@ pub(super) async fn prepare(
         }
         attach_hidden(&mut req.messages, block);
     }
-    // an active goal's work that brings nothing new: the plain facts of it, on this request only (see
-    // `GoalIdle::facts`), in place of a generic note
-    if let Some(f) = st.goal.as_ref().filter(|_| st.goal_state.is_active()).and(st.goal_idle.facts()) {
-        attach_hidden(&mut req.messages, format!("[goal work: {f}]"));
+    if let Some(f) = goal_facts {
+        attach_hidden(&mut req.messages, f);
     }
     req.tools = specs;
     req.no_tool_call = no_tool_call;
@@ -610,12 +617,24 @@ pub(super) fn request_tokens(st: &State, specs: &[nexo_core::provider::ToolSpec]
     }
 }
 
+/// Estimated tokens of what every request carries besides the conversation: the system prompt and the tools.
+pub(super) fn fixed_tokens(system: &str, specs: &[nexo_core::provider::ToolSpec]) -> u64 {
+    (system.len() as u64 + serde_json::to_string(specs).map(|s| s.len() as u64).unwrap_or(0)) / 4
+}
+
+/// The blocks that ride on this request only, as messages, to count what the view's budget must leave room for.
+pub(super) fn request_only_tokens(blocks: &[&String]) -> u64 {
+    let msgs: Vec<Message> = blocks.iter().map(|t| Message::user((*t).clone())).collect();
+    nexo_core::message::estimate_tokens(&msgs)
+}
+
 /// What the next call will see, announced to the interface: on every call, and
 /// when a conversation is loaded, so its numbers are there before the first call.
-pub(super) async fn view_now(st: &mut State) -> View {
+pub(super) async fn view_now(st: &mut State, extra_tokens: u64) -> View {
     let specs = offered(st);
-    let system_tokens =
-        (st.system.len() as u64 + serde_json::to_string(&specs).map(|s| s.len() as u64).unwrap_or(0)) / 4;
+    // what is not the history but rides on the request: the system prompt, the tools and `extra_tokens` (the
+    // blocks added to this request only)
+    let system_tokens = fixed_tokens(&st.system, &specs) + extra_tokens;
     let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
     st.policy.tools(&names);
     // the view never passes the model's window: what it takes less the reply, in estimated tokens
@@ -762,4 +781,18 @@ fn named_files(st: &State, text: &str, explicit: &[Attachment]) -> (Vec<Attachme
         out.push(Attachment { path: PathBuf::from(word) });
     }
     (out, known)
+}
+
+#[cfg(test)]
+mod request_only_tests {
+    use super::*;
+
+    #[test]
+    fn what_rides_on_the_request_only_is_counted_with_the_estimator_of_the_budget() {
+        let block = crate::supervise::watch::hidden_block(&["x".repeat(40_000)]);
+        let t = request_only_tokens(&[&block]);
+        assert!(t >= 10_000, "{t}");
+        assert_eq!(t, nexo_core::message::estimate_tokens(&[Message::user(block)]));
+        assert_eq!(request_only_tokens(&[]), 0);
+    }
 }
