@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 
 use crate::decomp::api::{abi_of, plain_name, ImgEnv};
 use crate::decomp::ir::{Expr, Stmt, Target, Term};
-use crate::decomp::lift::{lift, Lifted};
-use crate::decomp::structure::{dominates, idoms, natural_loops};
+use crate::decomp::lift::{is_noreturn, lift, Lifted};
+use crate::decomp::structure::{dominates, idoms, irreducible_regions, natural_loops};
 use crate::ops::{command, resolve};
 use crate::page::shell_word;
 use crate::{Error, Image, Output, Result, Row};
@@ -112,6 +112,42 @@ pub(crate) fn dominators_and_loops(
     (idom, loops)
 }
 
+/// Irreducible regions of a graph given by its successor lists: the blocks of each and its entries.
+pub(crate) fn irreducible_of(succs: &[Vec<usize>], entry: usize) -> Vec<(BTreeSet<usize>, BTreeSet<usize>)> {
+    let n = succs.len();
+    let (idom, rpo) = idoms(n, succs, entry);
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (b, ss) in succs.iter().enumerate() {
+        for &s in ss {
+            preds[s].push(b);
+        }
+    }
+    irreducible_regions(succs, &preds, &idom, &rpo, entry)
+}
+
+/// The name a call goes by: its symbol or import, a bare address, or `indirect`.
+fn callee_name(img: &Image, c: &crate::decomp::ir::Call) -> String {
+    match &c.target {
+        Target::Direct(a) => plain_name(img, *a).unwrap_or_else(|| format!("{a:#x}")),
+        Target::Import(i) => img.imports.get(*i).map_or_else(|| "import".into(), |x| x.name.clone()),
+        Target::Indirect(_) => "indirect".into(),
+    }
+}
+
+/// The calls of a block with their instruction addresses, in order.
+fn call_sites(img: &Image, f: &Lifted, b: usize) -> Vec<(u64, String, bool)> {
+    let mut out = Vec::new();
+    for s in &f.blocks[b].stmts {
+        let e = match &s.st {
+            Stmt::Assign(_, e) | Stmt::Eval(e) => e,
+            _ => continue,
+        };
+        let Expr::Call(c) = e else { continue };
+        out.push((c.addr, callee_name(img, c), matches!(c.target, Target::Indirect(_))));
+    }
+    out
+}
+
 /// What the block's calls are called, in order, without repeats.
 fn calls_in(img: &Image, f: &Lifted, b: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -183,7 +219,22 @@ pub fn cfg_op(img: &Image, target: &str) -> Result<Output> {
     let innermost = |b: usize| -> Option<usize> {
         loops.iter().filter(|(_, set)| set.contains(&b)).min_by_key(|(h, set)| (set.len(), addr(**h))).map(|(h, _)| *h)
     };
-    let n_edges: usize = order.iter().map(|&b| g.edges[b].len()).sum();
+    let mut irr: Vec<(Vec<u64>, Vec<u64>)> = irreducible_of(&g.succs, 0)
+        .into_iter()
+        .map(|(set, ent)| {
+            let mut m: Vec<u64> = set.iter().map(|&b| addr(b)).collect();
+            let mut e: Vec<u64> = ent.iter().map(|&b| addr(b)).collect();
+            m.sort_unstable();
+            e.sort_unstable();
+            (m, e)
+        })
+        .collect();
+    irr.sort();
+    let n_returns: usize = order
+        .iter()
+        .map(|&b| call_sites(img, &lifted, b).iter().filter(|(_, n, ind)| *ind || !is_noreturn(n)).count())
+        .sum();
+    let n_edges: usize = order.iter().map(|&b| g.edges[b].len()).sum::<usize>() + n_returns;
     let n_insns: usize = order.iter().map(|&b| count(addr(b), block_end(b))).sum();
     let mut rows: Vec<Row> = Vec::new();
     let mut push = |text: String, j: Option<Value>| {
@@ -195,6 +246,9 @@ pub fn cfg_op(img: &Image, target: &str) -> Result<Output> {
         order.len(),
         loops.len()
     );
+    if !irr.is_empty() {
+        head.push_str(&format!(", irreducible loops {}", irr.len()));
+    }
     if lifted.tables > 0 {
         head.push_str(&format!(", jump tables resolved: {}", lifted.tables));
     }
@@ -210,6 +264,7 @@ pub fn cfg_op(img: &Image, target: &str) -> Result<Output> {
         let dom = if b == 0 { None } else { idom[b].map(addr) };
         let inner = innermost(b).map(addr);
         let calls = calls_in(img, &lifted, b);
+        let sites = call_sites(img, &lifted, b);
         let ends = match &bl.term {
             Term::Return(_) => Some("ret".to_string()),
             Term::TailCall(Expr::Call(c)) => Some(match &c.target {
@@ -219,7 +274,10 @@ pub fn cfg_op(img: &Image, target: &str) -> Result<Output> {
             }),
             Term::TailCall(_) => Some("tail call".into()),
             Term::Indirect(_) => Some("indirect jump, target not resolved".into()),
-            Term::Stop => Some("does not return".into()),
+            Term::Stop => Some(match sites.last() {
+                Some((_, n, false)) if is_noreturn(n) => format!("noreturn call {n}"),
+                _ => "does not return".into(),
+            }),
             _ => None,
         };
         let mut text = format!(
@@ -251,6 +309,23 @@ pub fn cfg_op(img: &Image, target: &str) -> Result<Output> {
     }
     // edges, by source address, then in the order of the terminator
     for &b in &order {
+        for (call, callee, indirect) in call_sites(img, &lifted, b) {
+            if !indirect && is_noreturn(&callee) {
+                push(
+                    format!("call {call:#x} noreturn ({callee})  ; no return edge"),
+                    Some(json!({"row": "call", "from": call, "callee": callee, "noreturn": true})),
+                );
+                continue;
+            }
+            let ret = call + len_at(call).unwrap_or(0);
+            let label = if indirect { "indirect".to_string() } else { callee.clone() };
+            push(
+                format!("edge {call:#x} -> {ret:#x}  call-return ({label})"),
+                Some(json!({"row": "edge", "from": call, "to": ret, "kind": "call-return",
+                    "callee": if indirect { Value::Null } else { json!(callee) }, "indirect": indirect,
+                    "cases": Value::Null, "back": false, "outside": false, "to_name": Value::Null})),
+            );
+        }
         for (t, kind) in &g.edges[b] {
             let t_addr = addr(*t);
             let outside = !in_fn(t_addr);
@@ -307,13 +382,21 @@ pub fn cfg_op(img: &Image, target: &str) -> Result<Output> {
             Some(json!({"row": "loop", "header": h_addr, "blocks": members, "back_edges": back, "parent": parent})),
         );
     }
-    push(
-        "note: calls do not end a block (a call that returns continues in the same block; only a call that never \
-         returns, like exit, ends one)"
-            .into(),
-        None,
-    );
+    // irreducible regions: cycles that can be entered at more than one block
+    for (m, e) in &irr {
+        let hex = |v: &[u64]| v.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(", ");
+        let more = m.len().saturating_sub(LOOP_BLOCKS_SHOWN);
+        push(
+            format!(
+                "irreducible loop: blocks {}{}; entries {}",
+                hex(&m[..m.len().min(LOOP_BLOCKS_SHOWN)]),
+                if more > 0 { format!(" +{more}") } else { String::new() },
+                hex(e)
+            ),
+            Some(json!({"row": "irreducible", "blocks": m, "entries": e})),
+        );
+    }
     let meta = json!({"function": name, "start": start, "end": end, "blocks": order.len(), "edges": n_edges,
-        "loops": loops.len(), "instructions": n_insns});
+        "loops": loops.len(), "irreducible": irr.len(), "instructions": n_insns});
     Ok(Output { op: "cfg", meta, rows, tail: 0, command: command(img, "cfg", &shell_word(target.trim())) })
 }

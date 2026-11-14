@@ -231,6 +231,55 @@ pub(crate) fn natural_loops(
     loops
 }
 
+/// Irreducible regions: a retreating edge (its target comes no later than its source in reverse post order) whose
+/// target does not dominate its source is not a back edge, and the cycle it closes can be entered at more than one
+/// block. Each region is the strongly connected set that edge lies on, with its entries (blocks reached from
+/// outside the set, or the function entry). Edges from blocks that cannot be reached are ignored.
+pub(crate) fn irreducible_regions(
+    succs: &[Vec<usize>],
+    preds: &[Vec<usize>],
+    idom: &[Option<usize>],
+    rpo: &[usize],
+    entry: usize,
+) -> Vec<(BTreeSet<usize>, BTreeSet<usize>)> {
+    let reach = |from: usize, next: &dyn Fn(usize) -> Vec<usize>| -> HashSet<usize> {
+        let mut seen: HashSet<usize> = HashSet::from([from]);
+        let mut stack = vec![from];
+        while let Some(x) = stack.pop() {
+            for y in next(x) {
+                if rpo[y] != usize::MAX && seen.insert(y) {
+                    stack.push(y);
+                }
+            }
+        }
+        seen
+    };
+    let mut out: Vec<(BTreeSet<usize>, BTreeSet<usize>)> = Vec::new();
+    for (a, ss) in succs.iter().enumerate() {
+        if rpo[a] == usize::MAX {
+            continue;
+        }
+        for &h in ss {
+            if rpo[h] == usize::MAX || rpo[h] > rpo[a] || dominates(idom, h, a) {
+                continue;
+            }
+            let fwd = reach(h, &|x| succs[x].clone());
+            let back = reach(a, &|x| preds[x].clone());
+            let set: BTreeSet<usize> = fwd.intersection(&back).copied().collect();
+            if out.iter().any(|(s, _)| *s == set) {
+                continue;
+            }
+            let entries: BTreeSet<usize> = set
+                .iter()
+                .copied()
+                .filter(|&b| b == entry || preds[b].iter().any(|p| rpo[*p] != usize::MAX && !set.contains(p)))
+                .collect();
+            out.push((set, entries));
+        }
+    }
+    out
+}
+
 struct Ctx<'a> {
     f: &'a Lifted,
     idom: Vec<Option<usize>>,

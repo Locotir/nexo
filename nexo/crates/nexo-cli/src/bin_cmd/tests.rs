@@ -592,15 +592,15 @@ fn cfg_gives_the_blocks_of_one_function_and_pages_like_every_op() {
     let path = file(&dir, "elf", &f);
     // A is one block: it calls B and C and returns
     let t = ask(&["cfg", &path, &format!("{:#x}", f.a)]).unwrap();
-    assert!(t.starts_with("cfg ") && t.contains("blocks 1, edges 0, loops 0"), "{t}");
+    assert!(t.starts_with("cfg ") && t.contains("blocks 1, edges 2, loops 0"), "{t}");
     assert!(t.contains(&format!("block {:#x}..", f.a)) && t.contains("insns 6  idom -  entry"), "{t}");
     assert!(t.contains("calls ") && t.contains("; ends: ret"), "{t}");
     // the page options are the ones of every op
     let t = ask(&["cfg", &path, &format!("{:#x}", f.a), "--grep", "^block"]).unwrap();
     assert_eq!(t.lines().count(), 2, "{t}");
-    assert!(t.starts_with("... --grep ^block: 1 of 3 rows match"), "{t}");
+    assert!(t.starts_with("... --grep ^block: 1 of 4 rows match"), "{t}");
     let t = ask(&["cfg", &path, &format!("{:#x}", f.a), "--from", "1", "--lines", "10"]).unwrap();
-    assert!(t.starts_with("block ") && t.lines().count() == 2, "{t}");
+    assert!(t.starts_with("block ") && t.lines().count() == 3, "{t}");
     let j: serde_json::Value =
         serde_json::from_str(&ask(&["cfg", &path, &format!("{:#x}", f.a), "--json"]).unwrap()).unwrap();
     assert_eq!(j["op"], "cfg");

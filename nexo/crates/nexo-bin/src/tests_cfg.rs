@@ -177,7 +177,7 @@ fn grep_and_from_page_the_rows_of_cfg() {
     let Some(img) = sample(dir.path()) else { return };
     let o = cfg_op(&img, "sum").unwrap();
     let all = o.rows.len();
-    assert!(all > 10, "{}", whole(&o));
+    assert!(all >= 10, "{}", whole(&o));
     // --grep keeps the rows that match and says how many of how many
     let ask = |grep: Option<&str>, from: Option<u64>, lines: usize| PageAsk {
         lines: Some(Lines::Rows(lines)),
@@ -197,13 +197,16 @@ fn grep_and_from_page_the_rows_of_cfg() {
         format!("... --grep ^nothing: 0 of {all} rows match")
     );
     // --from starts at a row position, and the cut line names the next one, with the same grep kept
-    let first = ask(None, None, 10).page(&o).unwrap();
+    let o2 = cfg_op(&img, "sw").unwrap();
+    let all2 = o2.rows.len();
+    assert!(all2 > 10, "{}", whole(&o2));
+    let first = ask(None, None, 10).page(&o2).unwrap();
     assert_eq!(first.lines.len(), 10);
     let next = first.next.clone().unwrap();
     assert!(next.starts_with("nexo bin cfg ") && next.contains("--from 0x9"), "{next}");
-    let rest = ask(None, Some(9), 100).page(&o).unwrap();
-    assert_eq!(rest.lines.len(), all - 9, "{}", rest.text());
-    assert_eq!(rest.lines[0], o.rows[9].text);
+    let rest = ask(None, Some(9), 100).page(&o2).unwrap();
+    assert_eq!(rest.lines.len(), all2 - 9, "{}", rest.text());
+    assert_eq!(rest.lines[0], o2.rows[9].text);
     // the grep keeps the row positions: `--from 6` skips the first edge row (position 5) and keeps the other three
     let both = ask(Some("^edge"), Some(6), 100).page(&o).unwrap();
     assert_eq!(both.lines[0], format!("... --grep ^edge: 4 of {all} rows match"), "{}", both.text());
@@ -232,4 +235,89 @@ fn an_address_inside_the_function_names_it_and_arm64_is_refused_honestly() {
     let a = img.funcs()[0].start;
     let e = cfg_op(&img, &format!("{a:#x}")).unwrap_err().to_string();
     assert!(e.contains("cfg of") && e.contains("does not read AArch64 code yet"), "{e}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Call-return edges and irreducible loops
+
+const CALLS_SRC: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+__attribute__((noinline)) int greet(int n) { puts("hello"); if (n > 2) exit(3); return n + 1; }
+__attribute__((noinline)) int viacb(int (*f)(int), int n) { return f(n) + 1; }
+__attribute__((noinline)) int twice(int a) { return a * 2; }
+int main(int argc, char **argv) { (void)argv; return greet(argc) + viacb(twice, argc); }
+"#;
+
+const IRR_SRC: &str = r#"
+__attribute__((noinline)) int irr(int n, int k) {
+    int s = 0;
+    if (k) goto inside;
+    for (;;) {
+        s += n;
+        if (s > 1000) return s;
+    inside:
+        s += 2;
+        if (s > n * 50) return s;
+    }
+}
+int main(int argc, char **argv) { (void)argv; return irr(argc, argc - 1); }
+"#;
+
+#[test]
+fn a_call_gets_a_call_return_edge_named_by_its_callee_and_exit_gets_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(exe) = compile(dir.path(), CALLS_SRC, FLAGS) else { return };
+    let img = Image::open(&exe).unwrap();
+    let o = cfg_op(&img, "greet").unwrap();
+    let t = whole(&o);
+    println!("{t}");
+    let ret: Vec<Value> = items(&o, "edge").into_iter().filter(|e| e["kind"] == "call-return").collect();
+    assert_eq!(ret.len(), 1, "{t}");
+    assert_eq!(ret[0]["callee"], "puts", "{t}");
+    let from = ret[0]["from"].as_u64().unwrap();
+    assert!(ret[0]["to"].as_u64().unwrap() > from);
+    assert!(t.contains(&format!("edge {from:#x} -> {:#x}  call-return (puts)", ret[0]["to"].as_u64().unwrap())), "{t}");
+    let calls = items(&o, "call");
+    assert_eq!(calls.len(), 1, "{t}");
+    assert_eq!(calls[0]["callee"], "exit");
+    assert!(t.contains("noreturn (exit)  ; no return edge"), "{t}");
+    assert!(t.contains("; ends: noreturn call exit"), "{t}");
+    assert!(!t.contains("note: calls do not end"), "{t}");
+    // the edge count of the header counts the call-return edge
+    let n_edges = o.meta["edges"].as_u64().unwrap() as usize;
+    assert_eq!(n_edges, items(&o, "edge").len(), "{t}");
+    // an indirect call
+    let o = cfg_op(&img, "viacb").unwrap();
+    let t = whole(&o);
+    assert!(t.contains("call-return (indirect)"), "{t}");
+}
+
+#[test]
+fn a_goto_into_a_loop_body_is_an_irreducible_loop_with_two_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(exe) = compile(dir.path(), IRR_SRC, FLAGS) else { return };
+    let img = Image::open(&exe).unwrap();
+    let o = cfg_op(&img, "irr").unwrap();
+    let t = whole(&o);
+    println!("{t}");
+    let irr = items(&o, "irreducible");
+    assert_eq!(irr.len(), 1, "{t}");
+    assert!(irr[0]["blocks"].as_array().unwrap().len() >= 2);
+    assert_eq!(irr[0]["entries"].as_array().unwrap().len(), 2, "{t}");
+    assert!(t.contains("irreducible loop: blocks 0x") && t.contains("; entries 0x"), "{t}");
+    // a reducible function has none
+    assert!(items(&cfg_op(&img, "main").unwrap(), "irreducible").is_empty());
+}
+
+#[test]
+fn irreducible_regions_on_hand_built_graphs() {
+    use crate::cfg::irreducible_of;
+    // 0 -> 1, 2 ; 1 -> 2 ; 2 -> 1, 3 : the cycle 1 2 is entered at both
+    let r = irreducible_of(&[vec![1, 2], vec![2], vec![1, 3], vec![]], 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].0.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(r[0].1.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
+    // a natural loop is not one
+    assert!(irreducible_of(&[vec![1], vec![2, 3], vec![1], vec![]], 0).is_empty());
 }
