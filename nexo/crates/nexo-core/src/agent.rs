@@ -60,6 +60,8 @@ mod commands;
 pub use commands::*;
 mod mcp_info;
 pub use mcp_info::*;
+mod chrome_info;
+pub use chrome_info::*;
 mod goal_marks;
 pub use goal_marks::*;
 mod context_cells;

@@ -144,7 +144,7 @@ pub(super) fn render_output(
             }
             boxed(meta, Kind::Output, 0, lines.len(), 2);
         }
-        ToolDisplay::Plain => {
+        ToolDisplay::Plain | ToolDisplay::NoBrowser => {
             let style = if out.is_error { theme.style(theme.error) } else { Style::default() };
             let text = if out.content.trim().is_empty() {
                 if out.is_error {

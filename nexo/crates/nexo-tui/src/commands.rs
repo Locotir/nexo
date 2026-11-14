@@ -83,6 +83,7 @@ pub const COMMANDS: &[Spec] = &[
     spec("tools", &[], "", "the tools the model has, by kind"),
     spec("hooks", &[], "", "the hooks that are loaded, and where they come from"),
     spec("mcp", &[], "", "the MCP servers: state, tools, resources and prompts; turn on or off, log in, reconnect"),
+    spec("chrome", &["browser"], "", "connect your own Chrome, Edge or Brave to nexo: set it up, check it, use it here"),
     spec("skills", &[], "", "the skills found (name, what it does, where from); /skill-name [args] runs one"),
     spec("plugins", &[], "", "the installed plugins and what each adds (nexo plugin install adds one)"),
     spec(
@@ -136,6 +137,8 @@ pub enum Command {
     Hooks,
     /// `/mcp`: the window with the MCP servers.
     Mcp,
+    /// `/chrome`: the window that connects the person's own browser.
+    Chrome,
     /// `/skills`: the Agent Skills found, with their source.
     Skills,
     /// `/plugins`: the installed plugins and what each adds.
@@ -341,6 +344,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "sent" => Command::Sent,
         "hooks" => Command::Hooks,
         "mcp" => Command::Mcp,
+        "chrome" => Command::Chrome,
         "skills" => Command::Skills,
         "plugins" => Command::Plugins,
         "budget" => Command::Budget(arg),

@@ -105,7 +105,8 @@ async fn the_real_extension_asks_first_and_then_drives_its_own_tabs() {
     write_native_manifest(&profile, &host);
     // The host Chrome starts inherits this environment, so it keeps its token and socket inside the temporary folder.
     let dirs = Dirs::new(data.clone(), data.join("browser").join("run"));
-    let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nexo-cli/assets/chrome-extension").canonicalize().unwrap();
+    let ext =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../nexo-tools/assets/chrome-extension").canonicalize().unwrap();
     let child = Command::new(&chrome_exe)
         .arg("--headless=new")
         .arg(format!("--user-data-dir={}", profile.display()))

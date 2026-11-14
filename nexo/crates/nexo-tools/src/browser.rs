@@ -10,6 +10,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use base64::Engine;
+pub mod chrome_setup;
 mod real;
 
 use nexo_browser::{
@@ -714,6 +715,13 @@ async fn screenshot(b: &Browser, full: bool, vision: bool) -> ToolOutput {
 impl Tool for BrowserTool {
     fn name(&self) -> &str {
         "browser"
+    }
+
+    /// The person's own browser, when that is the one this session uses (a call that is running holds the lock:
+    /// nothing is said then).
+    fn in_use(&self) -> Option<String> {
+        let guard = self.browser.try_lock().ok()?;
+        guard.as_ref().filter(|b| b.is_real()).map(|b| b.describe())
     }
 
     fn spec(&self) -> ToolSpec {

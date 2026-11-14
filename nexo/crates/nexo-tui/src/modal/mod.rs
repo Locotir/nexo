@@ -332,6 +332,8 @@ pub enum Modal {
     Todo(Box<crate::todo_view::TodoView>),
     /// `/mcp`: the MCP servers, with their state and controls.
     Mcp(Box<crate::mcp_view::McpView>),
+    /// `/chrome`: connecting the person's own browser.
+    Chrome(Box<crate::chrome_view::ChromeView>),
     /// A click on `◎ goal`: the goal, its stops and a Resume button.
     Goal(Box<crate::goal_view::GoalView>),
     /// `/sent`: the last request as it was sent, by section.
@@ -608,6 +610,7 @@ impl Modal {
             Modal::Jobs(j) => j.key(key),
             Modal::Todo(t) => t.key(key),
             Modal::Mcp(m) => m.key(key),
+            Modal::Chrome(c) => c.key(key, std::time::Instant::now()),
             Modal::Goal(g) => g.key(key),
             Modal::Sent(v) => v.key(key),
             Modal::Trust(t) => t.key(key),
@@ -741,6 +744,8 @@ impl Modal {
                 }
                 ModalOut::Nothing
             }
+            // keys only
+            Modal::Chrome(_) => ModalOut::Nothing,
             // the Resume button
             Modal::Goal(g) => match rows.iter().find(|(r, _)| contains(*r, x, y)) {
                 Some(_) if g.can_resume() => g.resume(),
@@ -788,6 +793,7 @@ impl Modal {
             Modal::Jobs(j) => j.scroll_by(delta),
             Modal::Todo(t) => t.scroll_by(delta),
             Modal::Mcp(m) => m.scroll_by(delta),
+            Modal::Chrome(c) => c.scroll_by(delta),
             Modal::Goal(g) => g.scroll_by(delta),
             Modal::Sent(v) => v.scroll_by(delta),
             Modal::Trust(_) => {}
@@ -818,6 +824,7 @@ impl Modal {
             Modal::Jobs(j) => j.scroll = off,
             Modal::Todo(t) => t.scroll_to_line(off),
             Modal::Mcp(m) => m.scroll = off,
+            Modal::Chrome(c) => c.scroll = off,
             Modal::Goal(g) => g.scroll = off,
             Modal::Sent(v) => v.scroll = off,
             Modal::Picker(p) => pick(p, off, viewport, first),

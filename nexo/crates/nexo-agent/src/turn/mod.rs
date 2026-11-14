@@ -50,6 +50,7 @@ use crate::AgentSetup;
 
 mod approval;
 mod background;
+mod chrome;
 mod commands;
 mod compaction;
 mod flow;
@@ -650,6 +651,9 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
                             }
                         }
                     }
+                    AgentCommand::ChromeCheck => chrome::check(&state, &events).await,
+                    AgentCommand::ChromeSetup => chrome::set_up(&state, &events).await,
+                    AgentCommand::ChromeUse { id } => chrome::use_browser(&state, &events, id).await,
                     AgentCommand::McpToggle { server, on, persist } => {
                         let hub = state.lock().await.mcp.clone();
                         let events = events.clone();

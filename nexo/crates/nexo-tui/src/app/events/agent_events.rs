@@ -186,6 +186,12 @@ impl App {
                     };
                     self.flash(&format!("✦ remembered ({place}): {what}"));
                 }
+                // `browsers` found none of the person's: say how to connect one (not for a replayed call, which
+                // never started)
+                let no_browser = matches!(output.display, ToolDisplay::NoBrowser)
+                    && self
+                        .tool_index(&id)
+                        .is_some_and(|i| matches!(&self.blocks[i], Block::Tool { started: Some(_), .. }));
                 if let Some(i) = self.tool_index(&id) {
                     if let Block::Tool { status, output: o, elapsed_ms: e, .. } = &mut self.blocks[i] {
                         *status = status_of(&output);
@@ -195,6 +201,9 @@ impl App {
                     }
                     self.note_change(i);
                     self.invalidate(i);
+                }
+                if no_browser {
+                    self.notice(Level::Info, "Your browser is not connected: /chrome sets it up");
                 }
             }
             AgentEvent::AssistantDone { message } => {
@@ -648,6 +657,12 @@ impl App {
                 }
                 self.jobs = jobs;
                 self.dirty = true;
+            }
+            AgentEvent::Chrome(info) => {
+                if let Some(Modal::Chrome(v)) = &mut self.modal {
+                    v.set(info);
+                    self.dirty = true;
+                }
             }
             AgentEvent::Mcp { servers } => {
                 if let Some(Modal::Mcp(v)) = &mut self.modal {

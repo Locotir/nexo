@@ -218,7 +218,15 @@ fn draw_all(f: &mut Frame, app: &mut App) {
         // others keep the text in sight (a theme preview needs it) and clear only the cells beside the box
         if matches!(
             app.modal,
-            Some(Modal::Todo(_) | Modal::Jobs(_) | Modal::Mcp(_) | Modal::Goal(_) | Modal::Sent(_) | Modal::Trust(_))
+            Some(
+                Modal::Todo(_)
+                    | Modal::Jobs(_)
+                    | Modal::Mcp(_)
+                    | Modal::Chrome(_)
+                    | Modal::Goal(_)
+                    | Modal::Sent(_)
+                    | Modal::Trust(_)
+            )
         ) {
             clear_bg(f, area_for, &app.theme);
         } else if app.has_welcome() && matches!(app.modal, Some(Modal::Permission(_))) {

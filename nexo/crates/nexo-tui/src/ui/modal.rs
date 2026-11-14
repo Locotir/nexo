@@ -154,6 +154,10 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             pinned = vec![Line::default(), v.keys(inner_w, &theme)];
             (v.title(), lines, None)
         }
+        Modal::Chrome(v) => {
+            pinned = vec![Line::default(), v.keys(inner_w, &theme)];
+            (v.title(), v.lines(inner_w, &theme), None)
+        }
         Modal::Todo(v) => {
             let spinner = app.opts.animations.then_some(app.spinner);
             let pulse = if spinner.is_some() { ((app.spinner as f32 * 0.21).sin() + 1.0) / 2.0 } else { 0.0 };
@@ -248,6 +252,10 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
             v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
             v.scroll
         }
+        Modal::Chrome(v) => {
+            v.scroll = v.scroll.min(body.len().saturating_sub(body_h));
+            v.scroll
+        }
         Modal::Todo(v) => {
             // the selected task stays in view, headers above it too when there is room
             let (at, len) = todo_sel;
@@ -310,6 +318,7 @@ pub(super) fn draw_modal(f: &mut Frame, app: &mut App, area: Rect) {
         | Modal::Jobs(_)
         | Modal::Todo(_)
         | Modal::Mcp(_)
+        | Modal::Chrome(_)
         | Modal::Goal(_)
         | Modal::Sent(_)
         | Modal::Trust(_) => Some(0),

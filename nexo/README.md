@@ -646,6 +646,14 @@ Every redirect is checked by the rules as if its target had been asked for: a
 deny rule refuses it, and another site no rule allows is not read on the way
 (the reply gives its address, and fetching it is asked about as usual).
 
+### Your own browser
+
+The `browser` tool can drive the Chrome, Edge or Brave you already use, with your logins. Type `/chrome`
+in nexo and press `s`: it registers nexo with your browser and writes the extension to a folder. Then in the
+browser open `chrome://extensions`, turn on Developer mode, click Load unpacked and pick that folder (`c` copies it).
+The panel ticks each step as it happens, and `u` tells the session to use the browser. Without the slash
+command, `nexo chrome-setup` does the same in the shell. Nothing is controlled until you click Allow in the browser.
+
 ### Your own system prompt
 
 `nexo prompt` prints the prompt as it would be sent from the directory

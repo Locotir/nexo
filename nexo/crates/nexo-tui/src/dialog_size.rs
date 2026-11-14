@@ -85,6 +85,7 @@ pub fn modal_key(m: &Modal) -> u64 {
         Modal::Goal(v) => (11u8, v.size_key()).hash(&mut h),
         Modal::Sent(_) => 12u8.hash(&mut h),
         Modal::Trust(_) => 10u8.hash(&mut h),
+        Modal::Chrome(_) => 13u8.hash(&mut h),
     }
     h.finish()
 }

@@ -12,6 +12,7 @@ pub mod anim;
 pub mod app;
 pub mod app_fx;
 pub mod ascii;
+pub mod chrome_view;
 pub mod clipboard;
 pub mod commands;
 pub mod complete;

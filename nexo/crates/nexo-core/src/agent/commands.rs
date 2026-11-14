@@ -185,6 +185,17 @@ pub enum AgentCommand {
         #[serde(default)]
         args: String,
     },
+    /// Look at the way into the person's own browser (`/chrome`): the native-messaging manifests, the extension's
+    /// files, the browsers that answer and what this session uses; answered with `Chrome`.
+    ChromeCheck,
+    /// Do what `nexo chrome-setup` does (manifests, extension files, relay token) and open the browser's
+    /// extensions page; answered with `Chrome` (`just_set_up`), or a `Notice` with the error.
+    ChromeSetup,
+    /// Tell the model the person connected the browser with this id: the note rides on their next request
+    /// (the way hook context does); answered with a `Notice`.
+    ChromeUse {
+        id: String,
+    },
     /// Look for the usual local servers (Ollama, LM Studio, vLLM, llama.cpp) at their usual
     /// ports; answered with `LocalServers`.
     ScanLocal,

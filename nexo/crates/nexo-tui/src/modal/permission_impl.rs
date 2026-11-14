@@ -86,7 +86,7 @@ impl Modal {
                     lines.extend(crate::render::todo::todo_row(it, w, theme, Default::default()));
                 }
             }
-            ToolDisplay::Plain => {}
+            ToolDisplay::Plain | ToolDisplay::NoBrowser => {}
         }
         if with_rules {
             gap(&mut lines);

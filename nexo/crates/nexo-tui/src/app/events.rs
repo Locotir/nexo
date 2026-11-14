@@ -267,6 +267,7 @@ impl App {
         self.check_unechoed();
         self.poll_status_cmd();
         self.poll_mailbox();
+        self.poll_chrome();
         self.poll_diffview();
         self.poll_insights();
         if !self.branch_read.is_some_and(|t| t.elapsed().as_secs() < 5) {

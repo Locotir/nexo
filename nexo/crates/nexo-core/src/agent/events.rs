@@ -215,6 +215,8 @@ pub enum AgentEvent {
     Mcp {
         servers: Vec<McpServerInfo>,
     },
+    /// The state of the way into the person's own browser, the answer to `ChromeCheck` and `ChromeSetup`.
+    Chrome(ChromeInfo),
     /// The background jobs of the session, sent whenever one starts or ends.
     Jobs {
         jobs: Vec<crate::jobs::JobInfo>,

@@ -90,6 +90,9 @@ pub enum ToolDisplay {
         items: Vec<String>,
         path: String,
     },
+    /// The `browsers` action of the `browser` tool found no browser of the person's with the nexo extension
+    /// (the interface points them at `/chrome`).
+    NoBrowser,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +266,11 @@ pub trait Tool: Send + Sync {
     /// The live task list, if this tool keeps one and it is not empty. The loop shows it to the
     /// model every turn, so it never falls out of the context when the history is compacted.
     fn todo_items(&self) -> Option<Vec<TodoItem>> {
+        None
+    }
+    /// What the tool is connected to for the person to see, when it holds a connection to something of theirs (the
+    /// `browser` tool: their own browser, if that is the one in use); `/chrome` shows it.
+    fn in_use(&self) -> Option<String> {
         None
     }
     /// A tool the model seldom calls: it is offered with its short text ([`Tool::compact`]) in every window,

@@ -390,6 +390,23 @@ impl App {
         self.send(AgentCommand::ShowMcp);
     }
 
+    /// `/chrome`: the window that connects the person's own browser (asks the agent how things stand).
+    pub fn open_chrome(&mut self) {
+        self.modal = Some(Modal::Chrome(Box::new(crate::chrome_view::ChromeView::new(std::time::Instant::now()))));
+        self.send(AgentCommand::ChromeCheck);
+    }
+
+    /// While `/chrome` is open and no browser answers, looks again every two seconds.
+    pub(super) fn poll_chrome(&mut self) {
+        let due = match &mut self.modal {
+            Some(Modal::Chrome(v)) => v.due(std::time::Instant::now()),
+            _ => false,
+        };
+        if due {
+            self.send(AgentCommand::ChromeCheck);
+        }
+    }
+
     /// The servers changed: the prompts become the commands `/mcp__server__prompt` (the old ones go).
     pub(super) fn set_mcp(&mut self, servers: Vec<nexo_core::agent::McpServerInfo>) {
         self.custom_commands.retain(|c| c.origin != "mcp");

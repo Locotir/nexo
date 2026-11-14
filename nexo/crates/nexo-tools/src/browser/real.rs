@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use nexo_browser::{AnyBrowser, BrowserEntry, LaunchOptions};
-use nexo_core::ToolOutput;
+use nexo_core::{ToolDisplay, ToolOutput};
 
 use super::Action;
 
@@ -21,7 +21,9 @@ pub(super) async fn run(action: &Action<'_>, guard: &mut Option<AnyBrowser>, cwd
     match action {
         Action::Browsers => {
             let (found, bad) = AnyBrowser::available().await;
-            Some(ToolOutput::ok(list(&found, &bad, guard.as_ref())))
+            let out = ToolOutput::ok(list(&found, &bad, guard.as_ref()));
+            // none of the person's browsers answered: the interface points them at `/chrome`
+            Some(if found.is_empty() { out.with_display(ToolDisplay::NoBrowser) } else { out })
         }
         Action::SelectBrowser(id) => Some(select(id, guard, cwd).await),
         Action::SwitchBrowser => Some(switch(guard, cwd).await),
