@@ -255,6 +255,19 @@ impl SubAgent {
         &self.profiles
     }
 
+    /// Configuration only: do not resolve credentials or claim availability.
+    fn catalog(&self) -> String {
+        let (main, config, model) = self.target.get();
+        let mut providers = self.providers.clone();
+        providers.insert(main.clone(), config);
+        let mut lines = vec![format!("Configured models (authentication and availability not checked). Current: {main}/{model}. Use explicit provider and model with task.")];
+        for (name, cfg) in providers {
+            let default = cfg.default_model.as_deref().unwrap_or("none");
+            lines.push(format!("{name}: default={default}; models={}", cfg.models.join(", ")));
+        }
+        lines.join("\n")
+    }
+
     /// Whether a sub-agent of `p` has a tool that may change something (anything but reads and searches).
     fn can_write(&self, p: &Profile) -> bool {
         let set = self.tools_for(p);
@@ -744,7 +757,7 @@ impl Tool for SubAgent {
             "type": "object",
             "properties": {
                 "description": {"type": "string", "description": "Three to six words saying what the task is."},
-                "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them."},
+                "prompt": {"type": "string", "description": "The task, with what the sub-agent needs to know. It does not see this conversation; nexo hands it the passages of it that bear on the task (files read, failing commands, the person's constraints), so name the files and symbols involved rather than pasting them. Empty for catalog."},
                 "agent": {"type": "string", "enum": names, "description": "The kind of sub-agent."},
                 "background": {"type": "boolean", "description": "Run it as a background job and go on at once."},
                 "start_clean": {"type": "boolean", "description": "No briefing, hook context or shared-memory tools; profile and project tools remain."},
@@ -775,7 +788,7 @@ impl Tool for SubAgent {
         Some(Compact {
             description: &self.short,
             params: &[
-                ("prompt", "The whole task, naming files and symbols"),
+                ("prompt", "Task; empty lists providers/models"),
                 ("background", "Run as a job"),
                 ("start_clean", "No inherited context"),
                 ("model", "Only if the person asks"),
@@ -829,6 +842,9 @@ impl Tool for SubAgent {
     }
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        if args.get("prompt").and_then(Value::as_str) == Some("") {
+            return ToolOutput::ok(self.catalog());
+        }
         let Some(prompt) = args.get("prompt").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) else {
             return ToolOutput::error("`prompt` is required: the task for the sub-agent");
         };

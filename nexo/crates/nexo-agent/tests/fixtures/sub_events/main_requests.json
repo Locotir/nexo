@@ -107,7 +107,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "The whole task, naming files and symbols"
+              "description": "Task; empty lists providers/models"
             },
             "agent": {
               "type": "string",
@@ -293,7 +293,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "The whole task, naming files and symbols"
+              "description": "Task; empty lists providers/models"
             },
             "agent": {
               "type": "string",
@@ -510,7 +510,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "The whole task, naming files and symbols"
+              "description": "Task; empty lists providers/models"
             },
             "agent": {
               "type": "string",
@@ -745,7 +745,7 @@
             },
             "prompt": {
               "type": "string",
-              "description": "The whole task, naming files and symbols"
+              "description": "Task; empty lists providers/models"
             },
             "agent": {
               "type": "string",
