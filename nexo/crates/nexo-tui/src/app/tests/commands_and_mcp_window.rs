@@ -28,6 +28,18 @@ fn a_replayed_message_with_a_note_memory_and_text_becomes_cards_and_a_bubble() {
 }
 
 #[test]
+fn a_live_job_report_enters_the_transcript_as_rendered_markdown() {
+    let (mut a, _rx) = app();
+    let base = a.blocks.len();
+    let note = "[background jobs ended]\n- job 16 sub-agent \"review\" done (reported) after 23 s, 28 lines of output\n\n--- report of job 16 ---\n### Findings\n\n**Important**: the last words remain visible";
+    a.history(0, Message::user(note));
+    let rendered = a.lines(base, 24);
+    let text = rendered.iter().map(crate::render::markdown::text_of).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Findings") && text.contains("Important") && text.contains("visible"), "{text}");
+    assert!(!text.contains("###") && !text.contains("**"), "{text}");
+}
+
+#[test]
 fn a_long_call_summary_cuts_non_ascii_json_on_a_character_boundary() {
     // byte 79 falls inside a two-byte "ñ"
     let args = serde_json::json!({ "x": format!("{}{}", "a".repeat(72), "ñ".repeat(10)) });

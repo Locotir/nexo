@@ -14,8 +14,8 @@
 │  ✓ done       ▢ docs                                2h  Bash  gh release cr… │
 │  ◐ stalled    ▢ nightly-fixer                      40m  Read  tests/long_ru… │
 │                                                                              │
-│ /home/dev/project · default · n1                                             │
-│ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                     │
+│ selected  /home/dev/project · default · n1                                   │
+│ ←↑↓→ move · Enter observe · s source · +/- zoom · Esc close                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 ─ ask ──────────────────────────────────────────────────────────────────────────

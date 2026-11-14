@@ -5,6 +5,7 @@
 mod draw;
 mod effects;
 mod keys;
+mod observe;
 mod pulse;
 
 use std::collections::HashMap;
@@ -345,9 +346,18 @@ pub struct AgentsView {
     /// The policy page is showing instead of the sessions.
     policy_page: bool,
     policy_scroll: usize,
+    /// Stable key of the session being observed, independent of fleet reordering.
+    observing: Option<String>,
+    observe_scroll: usize,
+    observe_max: usize,
+    history_rx: Option<HistoryReceiver>,
+    history: Option<Result<nexo_agent::session::HistorySnapshot, String>>,
     /// The size the window took when it opened.
     size: crate::dialog_size::Slot,
 }
+
+type HistoryReceiver =
+    Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Result<nexo_agent::session::HistorySnapshot, String>>>>;
 
 impl AgentsView {
     pub fn new(panel: Option<Arc<Panel>>, still: bool) -> AgentsView {
@@ -389,6 +399,11 @@ impl AgentsView {
             open: false,
             policy_page: false,
             policy_scroll: 0,
+            observing: None,
+            observe_scroll: 0,
+            observe_max: 0,
+            history_rx: None,
+            history: None,
             size: Default::default(),
         };
         v.refresh();
@@ -565,7 +580,8 @@ impl AgentsView {
 
     /// Takes the panel's newest rows. True when something the view shows changed (the caller repaints).
     pub fn refresh(&mut self) -> bool {
-        let Some(panel) = &self.panel else { return false };
+        let history_changed = self.poll_history();
+        let Some(panel) = &self.panel else { return history_changed };
         let now = now_secs();
         let v = panel.version();
         let mut rows = panel.rows(now);
@@ -581,7 +597,7 @@ impl AgentsView {
         self.rows = rows;
         self.clock = clock;
         self.retarget(keep);
-        changed
+        changed || history_changed
     }
 
     /// 0..1: how far a session's card has entered (1 with no motion).
@@ -634,7 +650,7 @@ impl AgentsView {
 
     /// What keeps the window the same window: the zoom, the filter, the page and whether any session has arrived yet (the first poll can land after the first draw), not the cursor.
     pub fn size_key(&self) -> (u8, u8, bool, bool) {
-        (self.zoom as u8, self.filter as u8, self.policy_page, self.rows.is_empty())
+        (self.zoom as u8, self.filter as u8, self.policy_page || self.observing.is_some(), self.rows.is_empty())
     }
 
     // ---------------------------------------------------------------- drawing
@@ -661,7 +677,8 @@ impl AgentsView {
         let groups = self.groups(&shown);
         // the cards take a sixth row for the last events, and the fleet a line of figures under the header,
         // when the terminal has the room for every session that way; else the cards keep five rows
-        let pulse_ok = !self.policy_page && !self.rows.is_empty() && area.height >= PULSE_FROM;
+        let pulse_ok =
+            !self.policy_page && self.observing.is_none() && !self.rows.is_empty() && area.height >= PULSE_FROM;
         let layout_with = |h: u16, card_h: u16, pulse: u16| match zoom {
             Zoom::Blocks => blocks_layout(inner_w),
             Zoom::List => Layout::List,
@@ -677,7 +694,7 @@ impl AgentsView {
         let layout_for = |h: u16| layout_with(h, card_h, pulse);
         // a blank row between the sessions and their details, when the window is tall enough to spare it
         let spare = u16::from(area.height >= SPARE_FROM);
-        let want = if self.policy_page {
+        let want = if self.policy_page || self.observing.is_some() {
             area.height
         } else if self.rows.is_empty() && self.filter == Filter::All {
             EMPTY_STATE.len() as u16 + CHROME + spare + pulse
@@ -701,7 +718,13 @@ impl AgentsView {
             .border_type(BorderType::Rounded)
             .border_style(theme.style(theme.border))
             .title(Span::styled(
-                if self.policy_page { " panel · policy " } else { " panel " },
+                if self.policy_page {
+                    " panel · policy "
+                } else if self.observing.is_some() {
+                    " panel · observation "
+                } else {
+                    " panel "
+                },
                 theme.bold(theme.accent),
             ))
             .style(Style::default().bg(theme.modal_bg));
@@ -742,6 +765,8 @@ impl AgentsView {
         self.cards.clear();
         if self.policy_page {
             self.draw_policy(f, body, theme);
+        } else if self.observing.is_some() {
+            self.draw_observation(f, body, theme);
         } else {
             self.glide.note(Some(self.selected), now, fx);
             self.note(now, fx);
@@ -790,16 +815,14 @@ impl AgentsView {
             ])
         } else if let Some(n) = &self.note {
             Line::from(Span::styled(truncate(n, foot.width as usize), theme.style(theme.accent2)))
+        } else if self.observing.is_some() {
+            Line::from(Span::styled(truncate("↑↓ scroll · n message · Esc back", foot.width as usize), theme.dim2()))
         } else {
             // "more below" is the part that must survive a narrow window
             let room = (foot.width as usize).saturating_sub(width(more));
             let hints: &[&str] = if self.panel.is_some() {
                 &[
-                    if self.open {
-                        "←↑↓→ move · s source · Enter close · n message · o policy · p/P pause · +/- zoom · Esc close"
-                    } else {
-                        "←↑↓→ move · s source · Enter open · n message · o policy · p/P pause · +/- zoom · Esc close"
-                    },
+                    "←↑↓→ move · s source · Enter observe · n message · o policy · p/P pause · +/- zoom · Esc close",
                     "←↑↓→ move · s source · n message · o policy · p pause · +/- zoom · Esc close",
                     "s source · n message · p pause · Esc close",
                     "s source · Esc close",
@@ -807,7 +830,7 @@ impl AgentsView {
                 ]
             } else {
                 &[
-                    "←↑↓→ move · Enter open · s source · +/- zoom · Esc close",
+                    "←↑↓→ move · Enter observe · s source · +/- zoom · Esc close",
                     "←↑↓→ move · s source · +/- zoom · Esc close",
                     "s source · Esc close",
                     "Esc close",

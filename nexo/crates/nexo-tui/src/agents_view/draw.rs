@@ -617,8 +617,9 @@ impl AgentsView {
         let level = self.lit(i, row, now);
         let bg = lit_style(theme, Style::default().bg(theme.modal_bg), level);
         let chip = self.chip_spans(row, theme, now, fx);
-        let chip_w = 13usize;
         let shown_w: usize = chip.iter().map(|s| width(&s.content)).sum();
+        // A paused chip can be wider than the normal column; account for every cell.
+        let chip_w = 13usize.max(shown_w);
         let quiet = row.idle_secs.map(age).unwrap_or_else(|| "-".to_string());
         let quiet_w = 4usize;
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -733,6 +734,10 @@ impl AgentsView {
     pub(super) fn detail(&self, row: &AgentRow, theme: &Theme, w: usize) -> Vec<Span<'static>> {
         // Coordination goes first so it remains visible when paths or session keys are long.
         let mut parts = self.coordination(row);
+        if row.paused {
+            parts.insert(0, "supervisor paused".into());
+        }
+        let priority_width = width(&parts.iter().take(2).cloned().collect::<Vec<_>>().join(" · "));
         if let Some(c) = &row.cwd {
             parts.push(c.clone());
         }
@@ -745,14 +750,17 @@ impl AgentsView {
         if self.open {
             parts.push(row.key.clone());
             parts.push(format!("{} since {}", row.state.label(), self.since_action(row.since)));
-            if row.paused {
-                parts.push("paused".into());
-            }
         } else {
             parts.push(row.key.chars().take(12).collect());
         }
+        // Anchor the selected session's detail line; on narrow terminals reserve the
+        // space for information rather than the label.
+        let label = if w >= 40 && priority_width + width("selected  ") <= w { "selected  " } else { "" };
         let text = parts.join(" · ");
-        vec![Span::styled(truncate(&text, w), theme.dim2())]
+        vec![
+            Span::styled(label, theme.bold(legible(theme, theme.accent))),
+            Span::styled(truncate(&text, w.saturating_sub(width(label))), theme.dim()),
+        ]
     }
 }
 

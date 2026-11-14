@@ -15,8 +15,8 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│ /home/dev/project · default · this-session                                   │
-│ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close  ↓ 2 more           │
+│ selected  /home/dev/project · default · this-session                         │
+│ ←↑↓→ move · Enter observe · s source · +/- zoom · Esc close  ↓ 2 more        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ─ ask ──────────────────────────────────────────────────────────────────────────
 ›   ask anything

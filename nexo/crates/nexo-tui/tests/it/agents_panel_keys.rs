@@ -240,9 +240,9 @@ fn escape_puts_a_half_written_message_aside_and_n_picks_it_up() {
     let (_d, mut a) = supervised(vec![job("alpha", SourceKind::External)]);
     capture(&mut a, 120, 30);
     press(&mut a, KeyCode::Char('n'));
-    // clear the template so the test does not depend on its words
-    view(&mut a).key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
     type_in(&mut a, "check the migration");
+    let shown = text(&mut a, 120, 30);
+    assert!(shown.contains("message › check the migration"), "new messages start empty: {shown}");
     assert_eq!(press(&mut a, KeyCode::Esc), ModalOut::Nothing, "Esc backs out of the field only");
     let shown = text(&mut a, 120, 30);
     assert!(!shown.contains("message ›") && shown.contains("message kept"), "{shown}");
@@ -354,5 +354,5 @@ fn the_key_hint_fits_and_keeps_esc_at_every_width() {
         assert!(foot.contains("Esc"), "{w}");
     }
     let mut a = scene(jobs(3));
-    assert!(text(&mut a, 120, 24).contains("Enter open"), "Enter is listed");
+    assert!(text(&mut a, 120, 24).contains("Enter observe"), "Enter is listed");
 }

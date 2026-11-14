@@ -301,7 +301,7 @@ fn n_writes_a_nudge_p_pauses_and_enter_opens_the_details() {
     assert!(!panel.paused_all());
     // Enter opens the details instead of closing; Esc closes them first, then the window
     key(v, KeyCode::Enter);
-    assert!(text(&mut a).contains("sess-1"));
+    assert!(text(&mut a).contains("observation"));
     let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
     assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Nothing);
     assert_eq!(v.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), nexo_tui::modal::ModalOut::Close);
@@ -793,7 +793,7 @@ fn a_tiny_terminal_keeps_a_session_line_and_drops_the_group_header() {
 }
 
 #[test]
-fn the_footer_says_enter_close_while_the_details_are_open() {
+fn the_footer_offers_back_from_observation() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let (_d, panel) = live_panel();
     let t = std::time::Instant::now();
@@ -805,11 +805,11 @@ fn the_footer_says_enter_close_while_the_details_are_open() {
     }
     let mut a = app();
     a.modal = Some(Modal::Agents(Box::new(v)));
-    assert!(capture(&mut a, 140, 30).join("\n").contains("Enter open"));
+    assert!(capture(&mut a, 140, 30).join("\n").contains("Enter observe"));
     let Some(Modal::Agents(v)) = &mut a.modal else { panic!() };
     v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let text = capture(&mut a, 140, 30).join("\n");
-    assert!(text.contains("Enter close") && !text.contains("Enter open"), "{text}");
+    assert!(text.contains("Esc back") && text.contains("observation"), "{text}");
 }
 
 #[test]

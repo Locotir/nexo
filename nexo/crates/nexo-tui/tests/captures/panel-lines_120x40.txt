@@ -22,8 +22,8 @@
 │  ○ idle       ▢ refactor                                                   17m                                       │
 │  ✓ done       ▢ release                                                     2h  Bash  gh release create v1.4         │
 │                                                                                                                      │
-│ /home/dev/project · default · this-session                                                                           │
-│ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                                                             │
+│ selected  /home/dev/project · default · this-session                                                                 │
+│ ←↑↓→ move · Enter observe · s source · +/- zoom · Esc close                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 

@@ -51,3 +51,5 @@ mod visual;
 mod wide_text;
 mod window_polish;
 mod work_wave;
+
+mod panel_observe;

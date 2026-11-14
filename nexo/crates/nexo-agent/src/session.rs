@@ -17,6 +17,8 @@ use nexo_core::tool::ToolOutput;
 use nexo_core::GoalState;
 use serde::{Deserialize, Serialize};
 
+mod history;
+pub use history::{history, HistorySnapshot};
 mod lock_file;
 mod markdown_export;
 mod open_and_claim;

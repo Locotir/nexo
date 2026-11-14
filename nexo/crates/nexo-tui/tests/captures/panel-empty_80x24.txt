@@ -13,7 +13,7 @@
 │  and how long it has been quiet.                                             │
 │                                                                              │
 │                                                                              │
-│ ←↑↓→ move · Enter open · s source · +/- zoom · Esc close                     │
+│ ←↑↓→ move · Enter observe · s source · +/- zoom · Esc close                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 

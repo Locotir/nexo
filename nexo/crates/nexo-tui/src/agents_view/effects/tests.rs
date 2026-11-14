@@ -152,6 +152,22 @@ fn workflow_observation_precedes_long_child_list_and_is_not_a_run_status() {
 }
 
 #[test]
+fn selected_detail_is_labelled_when_wide_and_pause_is_clear_when_narrow() {
+    let mut row = agent("builder", State::Working);
+    row.paused = true;
+    row.parent = Some("coordinator".into());
+    let v = AgentsView::with_rows(vec![row], NOW, false);
+    let theme = Theme::dark();
+    for w in [26, 50, 80] {
+        let spans = v.detail(&v.rows()[0], &theme, w);
+        let text = spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        assert!(text.contains("supervisor paused"), "{w}: {text}");
+        assert_eq!(text.starts_with("selected  "), w >= 80, "{w}: {text}");
+        assert!(crate::render::wrap::width(&text) <= w, "{w}: {text}");
+    }
+}
+
+#[test]
 fn a_draw_with_the_motion_off_asks_for_no_frame_even_when_the_fleet_is_busy() {
     let t0 = Instant::now();
     let mut v =

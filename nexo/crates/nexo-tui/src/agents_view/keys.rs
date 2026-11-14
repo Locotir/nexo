@@ -16,11 +16,21 @@ impl AgentsView {
         if self.policy_page {
             return self.policy_key(key);
         }
+        if self.observing.is_some() {
+            return self.observe_key(key);
+        }
         let n = self.shown().len();
         match key.code {
             KeyCode::Esc if self.open => self.open = false,
             KeyCode::Esc | KeyCode::Char('q') => return ModalOut::Close,
-            KeyCode::Enter => self.open = !self.open && n > 0,
+            KeyCode::Enter => {
+                if let Some(row) = self.selected_row() {
+                    self.start_history(&row);
+                    self.observing = Some(row.key);
+                    self.observe_scroll = 0;
+                    self.observe_max = 0;
+                }
+            }
             KeyCode::Char('s') => self.cycle_filter(),
             KeyCode::Char('o') if self.panel.is_some() => {
                 self.policy_page = true;
@@ -206,12 +216,10 @@ impl AgentsView {
             return;
         }
         // a session of another program that can be typed into needs no supervisor
-        let template = match &self.panel {
-            Some(panel) => panel.template(&row.key),
-            None if self.typing_address(&row).is_some() => String::new(),
-            None => return self.needs_supervisor(),
-        };
-        let text = self.drafts.remove(&row.key).unwrap_or(template);
+        if self.panel.is_none() && self.typing_address(&row).is_none() {
+            return self.needs_supervisor();
+        }
+        let text = self.drafts.remove(&row.key).unwrap_or_default();
         self.edit_for = Some((row.key.clone(), row.name.clone()));
         self.edit = Some(text);
     }
@@ -348,6 +356,12 @@ impl AgentsView {
     pub fn scroll_by(&mut self, delta: i32) {
         if self.policy_page {
             self.policy_scroll = (self.policy_scroll as i32 + delta).max(0) as usize;
+            return;
+        }
+        if self.observing.is_some() {
+            if delta != 0 {
+                self.observe_scroll = self.observe_scroll.min(self.observe_max).saturating_add_signed(delta as isize);
+            }
             return;
         }
         let step = if matches!(self.drawn, Layout::List) { delta } else { delta.signum() };
