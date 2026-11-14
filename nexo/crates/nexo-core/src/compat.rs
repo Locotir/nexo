@@ -881,6 +881,26 @@ pub fn with_replaced(text: &str, old: &str, rule: &str, date: &str) -> Option<(S
     Some((format!("{}- {date}: {rule}{end}{}", &text[..at], &text[at + line.len()..]), bare(line)))
 }
 
+/// `text` without the line of its `## Remembered by nexo` section that `old` names (see `named`), and that
+/// line as it was, without its list marker. `None` when the section has no such line. Every other byte of
+/// `text` stays: the person's own lines are never the ones removed.
+pub fn without_line(text: &str, old: &str) -> Option<(String, String)> {
+    let (at, line) = named(&remembered_lines(text), old)?;
+    Some((format!("{}{}", &text[..at], &text[at + line.len()..]), bare(line)))
+}
+
+/// Takes out of `file` the saved line that `old` names (see `without_line`): `Done` with what it said, or `NoLine`.
+pub fn remove_rule(file: &Path, old: &str) -> std::io::Result<Replaced> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Replaced::NoLine),
+        Err(e) => return Err(e),
+    };
+    let Some((new, was)) = without_line(&text, old) else { return Ok(Replaced::NoLine) };
+    std::fs::write(file, new)?;
+    Ok(Replaced::Done(was))
+}
+
 /// What `replace_rule` did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Replaced {

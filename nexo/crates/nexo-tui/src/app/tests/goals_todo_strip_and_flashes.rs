@@ -160,6 +160,7 @@ fn a_saved_instruction_flashes_in_the_status_bar_and_its_card_stays_in_sight_in_
         scope: "project".into(),
         items: vec!["tests run with `make check`".into()],
         path: "/p/AGENTS.md".into(),
+        was: None,
     });
     call(&mut a, "n1", "note", saved);
     assert_eq!(

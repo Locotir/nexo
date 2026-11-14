@@ -178,13 +178,17 @@ impl App {
                         self.dirty = true;
                     }
                 }
-                if let ToolDisplay::Remembered { scope, items, .. } = &output.display {
+                if let ToolDisplay::Remembered { scope, items, was, .. } = &output.display {
                     let place = if scope == "project" { "this project" } else { "global" };
-                    let what = match items.as_slice() {
-                        [one] => crate::render::wrap::truncate(one, 48),
-                        more => nexo_core::count(more.len(), "rule"),
+                    let said = match items.as_slice() {
+                        [] => format!(
+                            "✦ forgot ({place}): {}",
+                            crate::render::wrap::truncate(was.as_deref().unwrap_or(""), 40)
+                        ),
+                        [one] => format!("✦ remembered ({place}): {}", crate::render::wrap::truncate(one, 48)),
+                        more => format!("✦ remembered ({place}): {}", nexo_core::count(more.len(), "rule")),
                     };
-                    self.flash(&format!("✦ remembered ({place}): {what}"));
+                    self.flash(&said);
                 }
                 // `browsers` found none of the person's: say how to connect one (not for a replayed call, which
                 // never started)

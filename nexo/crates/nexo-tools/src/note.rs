@@ -36,6 +36,24 @@ fn shown(line: &str) -> String {
     }
 }
 
+/// A saved line without the date nexo put in front of it (`2026-11-14: `).
+fn undated(line: &str) -> &str {
+    let b = line.as_bytes();
+    let dated = b.len() > 12
+        && line.is_char_boundary(12)
+        && b[..12].iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b':',
+            11 => *c == b' ',
+            _ => c.is_ascii_digit(),
+        });
+    if dated {
+        &line[12..]
+    } else {
+        line
+    }
+}
+
 pub struct Note;
 
 /// Whether `line` is a note line: an optional list marker, then `Finding:`, `Plan:` or `Rule:`.
@@ -73,13 +91,14 @@ impl Tool for Note {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "note".into(),
-            description: "Keep what you learnt before older messages leave this context, one line per item: \
+            description: "Keep what you learnt before older messages leave this context, a line per item: \
                           `Finding: ...` a fact a result settled, `Plan: ...` what is left (replaces the previous plan), \
-                          `Rule: ...` an instruction the user gave. Kept with the first message, in your words, for the \
-                          session. Send it in the same response as your next tool call after a result settles something, \
+                          `Rule: ...` an instruction the user gave. Kept with the first message, for the \
+                          session. Send it with your next tool call after a result settles something, \
                           or when the context asks; never as a response of its own, never after your final result. \
                           With `scope` `global` or `project`, `Rule:` lines are also saved for later sessions \
-                          (a near-repeat is skipped unless `anyway`; `replaces`: the saved line a rule corrects)."
+                          (`anyway` saves a near-repeat; `replaces` \
+                          names the saved line a rule corrects; `forget` (no `text`) removes one)."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -91,9 +110,9 @@ impl Tool for Note {
                         "description": "Where `Rule:` lines last: this session (default), this project (AGENTS.md) or all projects (~/.nexo/prompt.md)."
                     },
                     "anyway": { "type": "boolean" },
-                    "replaces": { "type": "string" }
-                },
-                "required": ["text"]
+                    "replaces": { "type": "string" },
+                    "forget": { "type": "string" }
+                }
             }),
         }
     }
@@ -106,6 +125,7 @@ impl Tool for Note {
                 ("scope", "Where `Rule:` lines last"),
                 ("anyway", "Save a near-repeat too"),
                 ("replaces", "The saved line this rule corrects"),
+                ("forget", "A saved line to take out (with `scope`, no `text`)"),
             ],
         })
     }
@@ -116,6 +136,10 @@ impl Tool for Note {
 
     fn summary(&self, args: &Value) -> String {
         let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+        if let Some(old) = args.get("forget").and_then(Value::as_str).filter(|_| text.trim().is_empty()) {
+            let short: String = old.trim().chars().take(72).collect();
+            return format!("note: forget {short}");
+        }
         let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
         let short: String = first.chars().take(72).collect();
         if short.len() < first.len() {
@@ -127,6 +151,9 @@ impl Tool for Note {
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
         let text = args.get("text").and_then(Value::as_str).unwrap_or("").trim();
+        if let Some(old) = args.get("forget").and_then(Value::as_str).map(str::trim).filter(|o| !o.is_empty()) {
+            return forget(old, text, args.get("scope").and_then(Value::as_str).unwrap_or("session"), ctx);
+        }
         if text.is_empty() {
             return ToolOutput::error("`text` is required: one line per note, beginning with Finding:, Plan: or Rule:");
         }
@@ -231,10 +258,47 @@ impl Tool for Note {
                     scope: scope.to_string(),
                     items: fresh,
                     path: file.display().to_string(),
+                    was: replaced.as_deref().map(|w| shown(undated(w))),
                 };
             }
         }
         ToolOutput::ok(out).with_display(display)
+    }
+}
+
+/// Takes the saved line `old` names out of the scope's file: only a list line nexo saved, by its words.
+fn forget(old: &str, text: &str, scope: &str, ctx: &ToolContext) -> ToolOutput {
+    if !text.is_empty() {
+        return ToolOutput::error("`forget` takes a saved line out and no `text`: send the one or the other");
+    }
+    let home = nexo_core::compat::foreign_home();
+    let file = match scope {
+        "project" | "global" => {
+            nexo_core::compat::rules_file(scope, &ctx.cwd, &nexo_core::paths::config_dir(), home.as_deref())
+        }
+        _ => None,
+    };
+    let Some((file, _)) = file else {
+        return ToolOutput::error("`forget` needs `scope` `project` or `global`: where the line was saved");
+    };
+    match nexo_core::compat::remove_rule(&file, old) {
+        Ok(Replaced::Done(was)) => {
+            let was = shown(undated(&was));
+            ToolOutput::ok(format!("removed from {}: \"{was}\"{SAVED_TAIL}", file.display())).with_display(
+                ToolDisplay::Remembered {
+                    scope: scope.to_string(),
+                    items: Vec::new(),
+                    path: file.display().to_string(),
+                    was: Some(was),
+                },
+            )
+        }
+        Ok(_) => ToolOutput::error(format!(
+            "nothing removed: no list line nexo saved in {} is what `forget` says (a line the person wrote, or a quote \
+             that fits none or several, is left as it is); quote more of the line's words",
+            file.display()
+        )),
+        Err(e) => ToolOutput::error(format!("cannot change {}: {e}", file.display())),
     }
 }
 
@@ -327,7 +391,8 @@ mod tests {
             ToolDisplay::Remembered {
                 scope: "project".into(),
                 items: vec!["the API is on port 4100".into()],
-                path: f.display().to_string()
+                path: f.display().to_string(),
+                was: None
             }
         );
     }
@@ -402,7 +467,8 @@ mod tests {
         assert!(out.content.contains(": the staging database is on port 5433 of db-stage\")"), "{}", out.content);
         assert!(out.content.ends_with(SAVED_TAIL) && !out.content.contains("new rule"), "{}", out.content);
         assert!(
-            matches!(&out.display, ToolDisplay::Remembered { items, .. } if items == &["the staging database is on port 5434 of db-stage"]),
+            matches!(&out.display, ToolDisplay::Remembered { items, was, .. } if items == &["the staging database is on port 5434 of db-stage"]
+                && was.as_deref() == Some("the staging database is on port 5433 of db-stage")),
             "{:?}",
             out.display
         );
@@ -442,6 +508,45 @@ mod tests {
         let out = Note.run(secret, &cx).await;
         assert!(out.is_error && out.content.contains("secret"), "{}", out.content);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), last);
+    }
+
+    #[tokio::test]
+    async fn forget_takes_out_one_saved_line_and_nothing_else() {
+        let d = repo();
+        let cx = ToolContext::new(d.path().to_path_buf());
+        let f = d.path().join("AGENTS.md");
+        std::fs::write(&f, "# Mine\n\nWe use tabs here.\n").unwrap();
+        let first = json!({"text": "Rule: we use tabs for indentation in every file\nRule: never touch vendor/", "scope": "project"});
+        assert!(Note.run(first, &cx).await.content.contains("2 new rules saved"));
+        let before = std::fs::read_to_string(&f).unwrap();
+        // a vague quote names none, and says so
+        let vague = Note.run(json!({"forget": "we use", "scope": "project"}), &cx).await;
+        assert!(vague.is_error && vague.content.contains("nothing removed"), "{}", vague.content);
+        // a line the person wrote is not nexo's to take out
+        let theirs = Note.run(json!({"forget": "We use tabs here.", "scope": "project"}), &cx).await;
+        assert!(theirs.is_error && theirs.content.contains("nothing removed"), "{}", theirs.content);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), before);
+        // no scope or a text with it: refused
+        assert!(Note.run(json!({"forget": "never touch vendor/"}), &cx).await.is_error);
+        let both = Note.run(json!({"forget": "never touch vendor/", "text": "Rule: x", "scope": "project"}), &cx).await;
+        assert!(both.is_error && both.content.contains("no `text`"), "{}", both.content);
+        // the named line goes, the result says which and from where, and the other stays
+        let out = Note.run(json!({"forget": "never touch vendor/", "scope": "project"}), &cx).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("removed from") && out.content.contains("AGENTS.md: \"never touch vendor/\""));
+        assert!(
+            matches!(&out.display, ToolDisplay::Remembered { items, was, .. }
+                if items.is_empty() && was.as_deref() == Some("never touch vendor/")),
+            "{:?}",
+            out.display
+        );
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert!(
+            !after.contains("vendor")
+                && after.contains("we use tabs for indentation")
+                && after.contains("We use tabs here.")
+        );
+        assert_eq!(after.lines().filter(|l| l.starts_with("- ")).count(), 1, "{after}");
     }
 
     #[tokio::test]

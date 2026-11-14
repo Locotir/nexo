@@ -408,10 +408,15 @@ fn reasoning_hides_when_asked_and_folds_to_one_line() {
 }
 
 fn remembered(scope: &str, items: &[&str], path: &str) -> Block {
+    remembered_was(scope, items, path, None)
+}
+
+fn remembered_was(scope: &str, items: &[&str], path: &str, was: Option<&str>) -> Block {
     let display = ToolDisplay::Remembered {
         scope: scope.into(),
         items: items.iter().map(|s| s.to_string()).collect(),
         path: path.into(),
+        was: was.map(str::to_string),
     };
     Block::Tool {
         id: "n".into(),
@@ -461,6 +466,20 @@ fn what_nexo_remembers_is_a_card_with_its_scope_the_line_and_a_link_to_the_file(
     assert!(long.len() > 3 && long[1..long.len() - 1].iter().all(|l| width(l) <= 20), "{long:?}");
     assert!(long[2].starts_with("│   "), "{long:?}");
     assert_eq!(long.last().unwrap(), "└ file:///h/prompt.md");
+}
+
+#[test]
+fn a_rewritten_or_removed_rule_names_the_old_line_on_its_card() {
+    let b = remembered_was("project", &["we use spaces"], "/p/AGENTS.md", Some("we use tabs"));
+    assert_eq!(
+        texts(&b.render(60, &Theme::dark(), opts())),
+        vec!["✦ remembered · this project", "│ replaced: we use tabs", "│ • we use spaces", "└ file:///p/AGENTS.md"]
+    );
+    let b = remembered_was("global", &[], "/p/prompt.md", Some("we use tabs"));
+    assert_eq!(
+        texts(&b.render(60, &Theme::dark(), opts())),
+        vec!["✦ forgot · global", "│ removed: we use tabs", "└ file:///p/prompt.md"]
+    );
 }
 
 #[test]

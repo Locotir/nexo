@@ -24,11 +24,13 @@ pub fn file_url(path: &str) -> String {
     url
 }
 
-/// What nexo saved for later sessions: `✦ remembered · this project`, the lines, and the file as a link.
+/// What nexo saved for later sessions: `✦ remembered · this project`, the lines, and the file as a link. A
+/// rewritten line shows the old one first (`replaced: ...`); a removed one has the card `✦ forgot` with `removed: ...`.
 pub(super) fn remembered_card(
     scope: &str,
     items: &[String],
     path: &str,
+    was: Option<&str>,
     theme: &Theme,
     w: usize,
 ) -> Vec<Line<'static>> {
@@ -37,9 +39,19 @@ pub(super) fn remembered_card(
     let place = if scope == "project" { "this project" } else { "global" };
     let mut lines = vec![Line::from(vec![
         Span::styled("✦ ", edge),
-        Span::styled("remembered", edge.add_modifier(Modifier::BOLD)),
+        Span::styled(if items.is_empty() { "forgot" } else { "remembered" }, edge.add_modifier(Modifier::BOLD)),
         Span::styled(format!(" · {place}"), theme.dim()),
     ])];
+    // the older line a rewrite or a removal took out, one row (wrapped when it is long) above the new line
+    if let Some(old) = was {
+        let tag = if items.is_empty() { "removed: " } else { "replaced: " };
+        lines.extend(crate::render::wrap::wrap_runs(
+            &[(format!("{tag}{old}"), theme.dim())],
+            w,
+            &[rail()],
+            &[rail(), Span::raw("  ")],
+        ));
+    }
     for it in items {
         lines.extend(crate::render::wrap::wrap_runs(
             &[(it.clone(), Style::default().fg(theme.fg))],

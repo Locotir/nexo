@@ -384,9 +384,9 @@ impl Block {
             // what nexo saved for later sessions: a card of its own, not a tool's output
             Block::Tool {
                 status: ToolStatus::Done,
-                output: Some(ToolOutput { display: ToolDisplay::Remembered { scope, items, path }, .. }),
+                output: Some(ToolOutput { display: ToolDisplay::Remembered { scope, items, path, was }, .. }),
                 ..
-            } => remembered_card(scope, items, path, theme, w),
+            } => remembered_card(scope, items, path, was.as_deref(), theme, w),
             Block::Tool { name, summary, status, progress, output, started, elapsed_ms, folded, args, .. } => {
                 let running = matches!(status, ToolStatus::Running | ToolStatus::Pending);
                 let (icon, istyle) = match status {

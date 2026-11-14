@@ -84,11 +84,15 @@ pub enum ToolDisplay {
         items: Vec<TodoItem>,
     },
     /// Instructions the agent saved for later sessions (the `note` tool): `scope` is `global` or
-    /// `project`, `items` the lines that were new and `path` the file they went to.
+    /// `project`, `items` the lines that were new, `path` the file they went to and `was` the older line
+    /// they replaced or, with no items, that was taken out.
     Remembered {
         scope: String,
         items: Vec<String>,
         path: String,
+        /// The saved line this call rewrote (`items` holds the new one) or, with no `items`, removed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        was: Option<String>,
     },
     /// The `browsers` action of the `browser` tool found no browser of the person's with the nexo extension
     /// (the interface points them at `/chrome`).
