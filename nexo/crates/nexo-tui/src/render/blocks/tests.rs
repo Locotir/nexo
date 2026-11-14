@@ -579,3 +579,57 @@ fn diff_cards_show_counts_and_user_lines_carry_the_bar() {
     assert_eq!(fmt_k(3_100_000_000), "3.10B");
     assert_eq!(fmt_ms(61_000), "1m01s");
 }
+
+fn described(status: ToolStatus, folded: bool, output: Option<ToolOutput>) -> Block {
+    Block::Tool {
+        id: "d1".into(),
+        name: "bash".into(),
+        summary: "bash: cd /repo && sed -n 250,300p src/a.rs".into(),
+        args: serde_json::json!({"command": "cd /repo && sed -n 250,300p src/a.rs", "description": "Reading the tool selection"}),
+        status,
+        progress: vec![],
+        output,
+        started: None,
+        elapsed_ms: Some(10),
+        folded,
+    }
+}
+
+#[test]
+fn a_call_with_a_description_shows_it_as_its_head_and_the_command_under_it() {
+    let t = texts(&described(ToolStatus::Done, true, None).render(80, &Theme::dark(), opts()));
+    assert!(t[0].contains("Reading the tool selection") && !t[0].contains("sed -n"), "{t:?}");
+    assert!(t[1].contains("$ cd /repo && sed -n 250,300p src/a.rs"), "{t:?}");
+    let t = texts(&described(ToolStatus::Running, true, None).render(80, &Theme::dark(), opts()));
+    assert!(t[0].contains("Reading the tool selection") && t[1].contains("$ cd /repo"), "{t:?}");
+    // open and running: the whole command already sits under the head, once
+    let t = texts(&described(ToolStatus::Running, false, None).render(80, &Theme::dark(), opts()));
+    assert_eq!(t.iter().filter(|l| l.contains("sed -n")).count(), 1, "{t:?}");
+    // no description: the line is as before
+    let mut plain = described(ToolStatus::Done, true, None);
+    if let Block::Tool { args, .. } = &mut plain {
+        *args = serde_json::json!({"command": "ls", "description": "  "});
+    }
+    let t = texts(&plain.render(80, &Theme::dark(), opts()));
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(t[0].contains("cd /repo"), "{t:?}");
+}
+
+#[test]
+fn a_call_waiting_for_approval_still_shows_its_real_command() {
+    let t = texts(&described(ToolStatus::Pending, true, None).render(80, &Theme::dark(), opts()));
+    assert!(t[0].contains("sed -n 250,300p") && !t[0].contains("Reading the tool selection"), "{t:?}");
+}
+
+#[test]
+fn an_expanded_finished_call_shows_the_description_then_the_command_once() {
+    let out = ToolOutput::ok("x").with_display(ToolDisplay::Shell {
+        command: "cd /repo && sed -n 250,300p src/a.rs".into(),
+        stdout: "line".into(),
+        stderr: String::new(),
+        exit_code: Some(0),
+    });
+    let t = texts(&described(ToolStatus::Done, false, Some(out)).render(80, &Theme::dark(), opts()));
+    assert!(t[0].contains("Reading the tool selection"), "{t:?}");
+    assert_eq!(t.iter().filter(|l| l.contains("sed -n")).count(), 1, "{t:?}");
+}

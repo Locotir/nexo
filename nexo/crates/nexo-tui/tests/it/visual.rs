@@ -364,7 +364,7 @@ fn a_run_of_calls_reads_as_one_summary_line_and_opens_with_ctrl_o() {
     let line = rows[at].trim();
     assert!(line.contains("read 2 files"), "{line}");
     assert!(line.contains("called slack 2 times"), "{line}");
-    assert!(line.contains("· 1 failed") && line.ends_with('▸'), "{line}");
+    assert!(line.starts_with("✓") && line.contains("· 1 of 6 failed") && line.ends_with('▸'), "{line}");
     assert!(!rows.iter().any(|r| r.contains("src/b.rs")), "{}", rows.join("\n"));
     // Ctrl+O opens the group: every call is on screen again
     nexo_tui::event::key(&mut a, KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));

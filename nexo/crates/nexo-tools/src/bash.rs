@@ -51,7 +51,7 @@ impl Tool for Bash {
                 "properties": {
                     "command": {"type": "string"},
                     "timeout": {"type": "integer", "minimum": 1, "maximum": 600},
-                    "description": {"type": "string", "description": "A few words on what it does, for the person."},
+                    "description": {"type": "string", "description": "Few English words: what it does, shown live."},
                     "wait_until": {"type": "string", "description": "Shell condition polled up to `timeout`; then `command` runs."},
                     "background": {"type": "boolean"},
                     "detach": {"type": "boolean", "description": "With `background`: outlives nexo, logs to a file; stop it by pid."},

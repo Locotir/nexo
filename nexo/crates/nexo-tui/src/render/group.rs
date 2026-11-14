@@ -197,17 +197,26 @@ pub fn elapsed_ms(members: &[Block]) -> Option<u64> {
         .max()
 }
 
-/// The first line of the summary of the call that started last among the live ones.
+/// What the call that started last among the live ones is doing: the `description` it carries once it
+/// runs, else the first line of its summary (a call still waiting for approval shows the real command).
 fn live_call(members: &[Block]) -> Option<String> {
-    let mut best: Option<(&Option<Instant>, &str)> = None;
+    let mut best: Option<(&Option<Instant>, &str, Option<String>)> = None;
     for b in members {
-        if let Block::Tool { status: ToolStatus::Running | ToolStatus::Pending, started, summary, .. } = b {
-            if best.is_none_or(|(s, _)| started >= s) {
-                best = Some((started, summary));
+        if let Block::Tool {
+            status: st @ (ToolStatus::Running | ToolStatus::Pending), started, summary, args, ..
+        } = b
+        {
+            if best.as_ref().is_none_or(|(s, ..)| started >= *s) {
+                let what = if *st == ToolStatus::Running { super::blocks::what_of(args) } else { None };
+                best = Some((started, summary, what));
             }
         }
     }
-    let first = best?.1.lines().next().unwrap_or("").trim();
+    let (_, summary, what) = best?;
+    if what.is_some() {
+        return what;
+    }
+    let first = summary.lines().next().unwrap_or("").trim();
     (!first.is_empty()).then(|| first.to_string())
 }
 
@@ -237,8 +246,17 @@ pub fn header_for(
             }
         }
     }
+    // the finished calls: the icon is bad only when none of them went well
+    let finished = members
+        .iter()
+        .filter(
+            |b| matches!(b, Block::Tool { status, .. } if !matches!(status, ToolStatus::Running | ToolStatus::Pending)),
+        )
+        .count();
     let (icon, istyle): (&str, Style) = if live {
         (SPINNER[spinner % SPINNER.len()], theme.style(theme.accent))
+    } else if finished > failed + denied {
+        ("✓", theme.style(theme.success))
     } else if failed > 0 {
         ("✗", theme.style(theme.error))
     } else if denied > 0 {
@@ -246,18 +264,31 @@ pub fn header_for(
     } else {
         ("✓", theme.style(theme.success))
     };
+    let total = members.iter().filter(|b| matches!(b, Block::Tool { .. })).count();
     let text = if quiet { sentence_quiet(members) } else { sentence(members) };
     let chevron = if folded { " ▸" } else { " ▾" };
+    // some failed among many is a note, not an error: all failed reads as the error it is
+    let all_failed = failed > 0 && failed == total;
     let long = |f: usize, d: usize| {
         (
-            if f > 0 { format!(" · {f} failed") } else { String::new() },
+            if f == 0 {
+                String::new()
+            } else if all_failed {
+                format!(" · {f} failed")
+            } else {
+                format!(" · {f} of {total} failed")
+            },
             if d > 0 { format!(" · {d} denied") } else { String::new() },
         )
     };
     let (mut fails, mut denies) = long(failed, denied);
     // in a very narrow pane the markers shrink to a symbol and a count so the chevron still fits
     if w < 2 + width(&fails) + width(&denies) + width(chevron) + 4 {
-        fails = if failed > 0 { format!(" ✗{failed}") } else { String::new() };
+        fails = match failed {
+            0 => String::new(),
+            _ if all_failed => format!(" ✗{failed}"),
+            _ => format!(" ✗{failed}/{total}"),
+        };
         denies = if denied > 0 { format!(" ⊘{denied}") } else { String::new() };
     }
     let gap = if quiet { " · " } else { "  " };
@@ -277,7 +308,7 @@ pub fn header_for(
         }
     }
     if !fails.is_empty() {
-        spans.push(Span::styled(fails, theme.style(theme.error)));
+        spans.push(Span::styled(fails, theme.style(if all_failed { theme.error } else { theme.warn })));
     }
     if !denies.is_empty() {
         spans.push(Span::styled(denies, theme.style(theme.warn)));
@@ -400,25 +431,80 @@ mod tests {
         let m = [done("read"), call("bash", ToolStatus::Failed), done("edit"), call("bash", ToolStatus::Denied)];
         let h = header(&m, true, 0, 80, &theme);
         let t = text(&h);
-        assert!(t.starts_with("✗ Read 1 file, ran 2 shell commands, made 1 edit"), "{t}");
-        assert!(t.contains(" · 1 failed") && t.contains(" · 1 denied") && t.ends_with('▸'), "{t}");
-        let red = h.spans.iter().find(|s| s.content.contains("1 failed")).unwrap();
-        assert_eq!(red.style.fg, Some(theme.error));
+        assert!(t.starts_with("✓ Read 1 file, ran 2 shell commands, made 1 edit"), "{t}");
+        assert!(t.contains(" · 1 of 4 failed") && t.contains(" · 1 denied") && t.ends_with('▸'), "{t}");
+        let amber = h.spans.iter().find(|s| s.content.contains("1 of 4 failed")).unwrap();
+        assert_eq!(amber.style.fg, Some(theme.warn), "some failed is a note, not an error");
         for w in [30usize, 40, 50] {
             let t = text(&header(&m, true, 0, w, &theme));
             assert!(width(&t) <= w, "{w}: {t:?} is {}", width(&t));
-            assert!(t.contains("1 failed") && t.contains("1 denied"), "{w}: {t}");
+            assert!(
+                (t.contains("failed") || t.contains("✗1/4")) && (t.contains("1 denied") || t.contains("⊘1")),
+                "{w}: {t}"
+            );
         }
+    }
+
+    #[test]
+    fn one_failure_among_many_keeps_the_good_icon() {
+        let theme = Theme::dark();
+        let mut m: Vec<Block> = (0..11).map(|_| done("read")).collect();
+        m.push(call("bash", ToolStatus::Failed));
+        let h = header(&m, true, 0, 80, &theme);
+        let t = text(&h);
+        assert!(t.starts_with("✓ ") && t.contains(" · 1 of 12 failed") && t.ends_with('▸'), "{t}");
+        assert_eq!(h.spans[0].style.fg, Some(theme.success));
+        let amber = h.spans.iter().find(|s| s.content.contains("1 of 12 failed")).unwrap();
+        assert_eq!(amber.style.fg, Some(theme.warn));
+        let t = text(&header(&m, true, 0, 24, &theme));
+        assert!(t.contains(" ✗1/12") && width(&t) <= 24, "{t}");
+    }
+
+    #[test]
+    fn a_group_where_every_call_failed_is_the_error() {
+        let theme = Theme::dark();
+        let m = [call("bash", ToolStatus::Failed), call("read", ToolStatus::Failed)];
+        let h = header(&m, true, 0, 80, &theme);
+        let t = text(&h);
+        assert!(t.starts_with("✗ ") && t.contains(" · 2 failed"), "{t}");
+        assert_eq!(h.spans[0].style.fg, Some(theme.error));
+        let red = h.spans.iter().find(|s| s.content.contains("2 failed")).unwrap();
+        assert_eq!(red.style.fg, Some(theme.error));
+        // all denied is the warning, and a failure beside a denial is still no success
+        let t = text(&header(&[call("bash", ToolStatus::Denied)], true, 0, 80, &theme));
+        assert!(t.starts_with("⊘ ") && t.contains("1 denied"), "{t}");
+        let t =
+            text(&header(&[call("bash", ToolStatus::Denied), call("bash", ToolStatus::Failed)], true, 0, 80, &theme));
+        assert!(t.starts_with("✗ "), "{t}");
+    }
+
+    #[test]
+    fn a_live_group_shows_the_description_of_the_call_running_now() {
+        let theme = Theme::dark();
+        let mut a = running("bash: ssh minipc docker ps", 5);
+        if let Block::Tool { args, .. } = &mut a {
+            *args = serde_json::json!({"command": "ssh minipc docker ps", "description": "Listing containers"});
+        }
+        let t = text(&header(&[done("bash"), a.clone()], true, 0, 100, &theme));
+        assert!(t.contains("· Listing containers") && !t.contains("docker ps"), "{t}");
+        let q = text(&header_for(&[a.clone()], true, 0, 100, &theme, nexo_core::config::Detail::Quiet));
+        assert!(q.contains("· Listing containers"), "{q}");
+        // not yet approved: the real command, never the description
+        if let Block::Tool { status, .. } = &mut a {
+            *status = ToolStatus::Pending;
+        }
+        let t = text(&header(&[a], true, 0, 100, &theme));
+        assert!(t.contains("docker ps") && !t.contains("Listing"), "{t}");
     }
 
     #[test]
     fn both_markers_fit_a_very_narrow_pane() {
         let theme = Theme::dark();
         let m = [done("read"), call("bash", ToolStatus::Failed), call("bash", ToolStatus::Denied)];
-        for w in [20usize, 24, 26] {
+        for w in [22usize, 24, 26] {
             let t = text(&header(&m, true, 0, w, &theme));
             assert!(width(&t) <= w, "{w}: {t:?}");
-            assert!(t.contains("✗1") && t.contains("⊘1") && t.ends_with('▸'), "{w}: {t}");
+            assert!(t.contains("✗1/3") && t.contains("⊘1") && t.ends_with('▸'), "{w}: {t}");
         }
     }
 

@@ -484,6 +484,10 @@ impl Block {
                     .strip_prefix(name.as_str())
                     .map(|r| r.trim_start_matches(':').trim_start())
                     .unwrap_or(summary.as_str());
+                // a call that says what it does shows that as its head, and the command under it; a call
+                // not yet approved shows the command itself
+                let what = if matches!(status, ToolStatus::Pending) { None } else { what_of(args) };
+                let rest = what.as_deref().unwrap_or(rest);
                 // a chevron says there is more behind the card, and which way it folds
                 let chevron = if running {
                     ""
@@ -531,6 +535,27 @@ impl Block {
                     head.push(Span::styled(chevron, theme.dim()));
                 }
                 let mut lines = vec![Line::from(head)];
+                // the command goes dim under the description unless the body already shows it whole
+                if what.is_some() {
+                    let shows = if running {
+                        !*folded
+                    } else {
+                        matches!(output, Some(ToolOutput { display: ToolDisplay::Shell { .. }, .. }))
+                            && (!*folded || preview > 0)
+                    };
+                    if !shows {
+                        let cmd = summary.lines().next().unwrap_or("");
+                        let cmd = cmd
+                            .strip_prefix(name.as_str())
+                            .map(|r| r.trim_start_matches(':').trim_start())
+                            .unwrap_or(cmd);
+                        let cmd = if name == "bash" { format!("$ {cmd}") } else { cmd.to_string() };
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", theme.style(rail_color)),
+                            Span::styled(truncate(&cmd, w.saturating_sub(2).max(4)), theme.dim()),
+                        ]));
+                    }
+                }
                 if body.len() > preview {
                     let hidden = body.len() - preview;
                     if preview > 0 {
@@ -764,6 +789,14 @@ pub use jobs::*;
 pub use live_marks::*;
 pub use notice_cards::*;
 use output::*;
+
+/// What a call says it does, for the person: its `description` argument, first line, when it has one.
+/// Shown on the screen only; the model, the transcript and every permission question keep the call's
+/// own summary, since a description is the model's word and the command is what runs.
+pub(crate) fn what_of(args: &Value) -> Option<String> {
+    let d = args.get("description")?.as_str()?.lines().next()?.trim();
+    (!d.is_empty()).then(|| d.to_string())
+}
 
 #[cfg(test)]
 mod tests;
