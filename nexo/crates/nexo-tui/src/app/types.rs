@@ -121,6 +121,21 @@ pub enum Hover {
     Picker(usize),
     /// The first line of a block that folds (a click there folds or opens it).
     Head(usize),
+    /// A link in the transcript: the screen row and the columns it covers on it.
+    Link {
+        y: u16,
+        from: u16,
+        to: u16,
+    },
+}
+
+/// A link found under a cell: its address and where it shows on that row (`from..to`, screen columns).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkHit {
+    pub url: String,
+    pub y: u16,
+    pub from: u16,
+    pub to: u16,
 }
 
 /// What a subscription's usage would have cost on the API. The person knows the plan pays for it, so it says no more.

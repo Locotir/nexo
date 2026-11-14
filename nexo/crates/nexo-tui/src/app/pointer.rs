@@ -323,13 +323,132 @@ impl App {
 
     /// The link under screen `(x, y)` in the transcript, if the cell is part of one.
     pub fn link_at(&mut self, x: u16, y: u16) -> Option<String> {
+        self.link_hit(x, y).map(|h| h.url)
+    }
+
+    /// Row `line` of the laid-out transcript as the layout drew it, and whether it continues the row above.
+    fn link_row(&mut self, line: usize) -> Option<(Line<'static>, Option<crate::regions::Cont>)> {
+        let i = self.block_at_line(line)?;
+        let w = self.last_width;
+        self.lines(i, w);
+        let j = line - self.offsets[i];
+        let (_, _, Some(lines), meta) = self.cache[i].as_ref()? else { return None };
+        Some((lines.get(j)?.clone(), meta.cont_of(j)))
+    }
+
+    /// The link under screen `(x, y)`: found in the whole logical line, so a link the layout wrapped
+    /// over several rows is one link from any of them. A link is a bare address, or the underlined
+    /// text of a markdown link, whose address follows it in parentheses.
+    pub fn link_hit(&mut self, x: u16, y: u16) -> Option<LinkHit> {
+        use unicode_segmentation::UnicodeSegmentation;
         let a = self.transcript_area;
         if !crate::modal::contains(a, x, y) {
             return None;
         }
         let line = self.view_top() + (y - a.y) as usize;
-        let text = self.line_text(line)?;
-        crate::links::url_at(&text, (x - a.x) as usize)
+        let col = (x - a.x) as usize;
+        // the rows of the logical line, the first one and the ones the layout wrapped after it
+        let mut first = line;
+        let mut rows = vec![self.link_row(line)?];
+        while rows[0].1.is_some() && first > 0 && rows.len() < 64 {
+            first -= 1;
+            rows.insert(0, self.link_row(first)?);
+        }
+        let mut next = line + 1;
+        while rows.len() < 128 {
+            match self.link_row(next) {
+                Some(r) if r.1.is_some() => rows.push(r),
+                _ => break,
+            }
+            next += 1;
+        }
+        // the text without the rows' own decoration, a space where the wrap took some out
+        let mut text = String::new();
+        let mut ul: Vec<bool> = Vec::new();
+        let mut shape: Vec<(usize, isize, usize)> = Vec::new(); // (skipped cols, logical - screen col, row width)
+        for (k, (ln, c)) in rows.iter().enumerate() {
+            let skip = if k == 0 { 0 } else { c.map_or(0, |c| c.deco as usize) };
+            if k > 0 {
+                let gap = c.map_or(0, |c| c.gap as usize);
+                text.push_str(&" ".repeat(gap));
+                ul.extend(std::iter::repeat_n(false, gap));
+            }
+            let base = ul.len() as isize - skip as isize;
+            let mut at = 0;
+            for sp in &ln.spans {
+                let under = sp.style.add_modifier.contains(ratatui::style::Modifier::UNDERLINED);
+                for g in sp.content.graphemes(true) {
+                    let w = crate::render::wrap::width(g);
+                    if at >= skip {
+                        text.push_str(g);
+                        ul.extend(std::iter::repeat_n(under, w));
+                    }
+                    at += w;
+                }
+            }
+            shape.push((skip, base, at));
+        }
+        let (skip, delta, end) = *shape.get(line - first)?;
+        if col < skip {
+            return None;
+        }
+        let lcol = (col as isize + delta) as usize;
+        let hit = |s: usize, e: usize, url: String| {
+            let from = (s as isize - delta).max(skip as isize) as usize;
+            let to = ((e as isize - delta).max(0) as usize).min(end);
+            LinkHit { url, y, from: a.x + from as u16, to: a.x + to as u16 }
+        };
+        if let Some((s, e, url)) = crate::links::url_span(&text, lcol) {
+            return Some(hit(s, e, url));
+        }
+        if ul.get(lcol) == Some(&true) {
+            let mut s = lcol;
+            while s > 0 && ul[s - 1] {
+                s -= 1;
+            }
+            let mut e = lcol + 1;
+            while ul.get(e) == Some(&true) {
+                e += 1;
+            }
+            let tail = crate::select::slice_cols(&text, e, usize::MAX);
+            if tail.starts_with(" (") {
+                if let Some((_, _, url)) = crate::links::url_span(&tail, 2) {
+                    return Some(hit(s, e, url));
+                }
+            }
+        }
+        None
+    }
+
+    /// Opens a link a person clicked. Web and file links open; a program is never run, its folder
+    /// opens instead; anything else, or a failure, copies the address. One short notice says which.
+    pub fn open_link(&mut self, url: &str) {
+        use crate::links::Plan;
+        match crate::links::plan(url) {
+            Plan::Open { url, label } => {
+                if crate::links::open(&url) {
+                    self.flash_toast(&format!("opened {label}"));
+                } else {
+                    self.link_copied(&url, "could not open the link");
+                }
+            }
+            Plan::Folder { url, label } => {
+                if crate::links::open(&url) {
+                    self.flash_toast(&format!("{label} is a program: opened its folder, links never run it"));
+                } else {
+                    self.link_copied(&url, "could not open the folder");
+                }
+            }
+            Plan::Copy { url, why } => self.link_copied(&url, &why),
+        }
+        self.dirty = true;
+    }
+
+    fn link_copied(&mut self, url: &str, why: &str) {
+        match crate::clipboard::copy(url) {
+            Ok(how) => self.notice(Level::Warn, format!("{why}; the link is copied ({how})")),
+            Err(e) => self.notice(Level::Warn, format!("{why}; copying it failed: {e}")),
+        }
     }
 
     /// The button came up: a drag copies its selection, a click selects or toggles a block.
@@ -346,6 +465,13 @@ impl App {
         }
         self.selection = None;
         let Some((px, py)) = press else { return };
+        // a click (the button came up where it went down) on a link opens it
+        if (px, py) == (x, y) {
+            if let Some(url) = self.link_at(px, py) {
+                self.open_link(&url);
+                return;
+            }
+        }
         let area = self.transcript_area;
         if crate::modal::contains(area, px, py) && crate::modal::contains(area, x, y) {
             let line = self.view_top() + (py - area.y) as usize;
@@ -599,6 +725,9 @@ impl App {
         }
         let a = self.transcript_area;
         if contains(a, x, y) {
+            if let Some(h) = self.link_hit(x, y) {
+                return Hover::Link { y: h.y, from: h.from, to: h.to };
+            }
             let line = self.view_top() + (y - a.y) as usize;
             if let Some(i) = self.block_at_line(line) {
                 if line == self.offsets[i] && self.foldable(i) {

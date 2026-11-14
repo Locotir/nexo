@@ -16,6 +16,10 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         Hover::Head(i) => Some(i),
         _ => None,
     };
+    let hovered_link = match app.hover {
+        Hover::Link { y, from, to } if y >= area.y => Some(((y - area.y) as usize, from, to)),
+        _ => None,
+    };
     let query = app.search.as_ref().filter(|s| !s.query.is_empty()).map(|s| s.query.to_lowercase());
     let current_match = app.search.as_ref().and_then(|s| s.matches.get(s.current).copied());
     let selected = app.selected;
@@ -76,6 +80,11 @@ pub(super) fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 to = l.width();
             }
             l = style_cols(l, from, to, theme.highlight());
+        }
+        // the link under the pointer lights up
+        if let Some((row, from, to)) = hovered_link.filter(|(row, ..)| *row == line - scroll) {
+            let _ = row;
+            l = style_cols(l, (from - area.x) as usize, (to - area.x) as usize, theme.hover());
         }
         // the person's message: its band is filled to the edge here, on screen only, so copying
         // its text never picks up the padding
