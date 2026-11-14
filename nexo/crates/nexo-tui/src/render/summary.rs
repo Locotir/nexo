@@ -125,7 +125,7 @@ pub fn summary_line(theme: &Theme, u: &Usage, cost: f64, ms: u64, t: &TurnTally,
     summary_line_for(theme, u, cost, ms, t, w, false)
 }
 
-/// The same line; on a plan the cost reads as API value that the plan includes.
+/// The same line; on a plan the cost reads as API value.
 pub fn summary_line_for(
     theme: &Theme,
     u: &Usage,
@@ -157,7 +157,7 @@ pub fn summary_line_for(
 }
 
 /// The quiet line of a finished turn, all in the dim colour: `14.4s · $0.0042`, never more than one row of
-/// `w` cells. On a plan the cost reads as API value (`≈$0.0042 API value · included in plan`). What does not
+/// `w` cells. On a plan the cost reads as API value (`≈$0.0042 API value`). What does not
 /// fit goes in this order: the words after the plan's figure, the cost (the time alone), then the cut with `…`.
 pub fn short_line(theme: &Theme, cost: f64, ms: u64, plan: bool, w: usize) -> Line<'static> {
     let time = format!("  {}", fmt_ms(ms));

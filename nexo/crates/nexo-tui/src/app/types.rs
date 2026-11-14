@@ -123,7 +123,7 @@ pub enum Hover {
     Head(usize),
 }
 
-/// What a subscription's usage would have cost on the API, worded as included in the plan.
+/// What a subscription's usage would have cost on the API. The person knows the plan pays for it, so it says no more.
 pub fn plan_value(usd: f64) -> String {
-    format!("≈${usd:.4} API value · included in plan")
+    format!("≈${usd:.4} API value")
 }

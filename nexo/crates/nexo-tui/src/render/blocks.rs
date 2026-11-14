@@ -137,7 +137,7 @@ pub enum Block {
         cost_usd: f64,
         elapsed_ms: u64,
         tally: super::summary::TurnTally,
-        /// The provider is a subscription: the cost is API value, included in the plan.
+        /// The provider is a subscription: the cost is API value, not money spent.
         plan: bool,
         /// `[ui] detail = "quiet"`: only the time and the cost show; open, the whole line does.
         folded: bool,

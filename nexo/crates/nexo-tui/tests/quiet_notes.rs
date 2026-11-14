@@ -285,9 +285,9 @@ fn usage_rows(plan: bool, cost: f64, w: usize) -> Vec<String> {
 #[test]
 fn the_quiet_turn_line_of_a_plan_user_is_one_row_at_any_width() {
     let cases: [(usize, &str); 5] = [
-        (60, "  14.4s · ≈$0.0042 API value · included in plan"),
-        (40, "  14.4s · ≈$0.0042"),
-        (36, "  14.4s · ≈$0.0042"),
+        (60, "  14.4s · ≈$0.0042 API value"),
+        (28, "  14.4s · ≈$0.0042 API value"),
+        (27, "  14.4s · ≈$0.0042"),
         (20, "  14.4s · ≈$0.0042"),
         (12, "  14.4s"),
     ];

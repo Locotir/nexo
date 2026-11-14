@@ -62,8 +62,9 @@ fn the_status_line_turn_summary_and_usage_panel_call_it_api_value() {
     let mut a = app(true);
     turn(&mut a);
     let s = screen(&mut a);
-    assert!(s.contains("≈$0.0123 API value · included in plan"), "status line\n{s}");
-    assert!(s.contains("≈$0.0042 API value · included in plan"), "turn summary\n{s}");
+    assert!(s.contains("≈$0.0123 API value"), "status line\n{s}");
+    assert!(s.contains("≈$0.0042 API value"), "turn summary\n{s}");
+    assert!(!s.contains("included in plan"), "the person knows the plan pays\n{s}");
     a.run_command(Command::Cost);
     let s = screen(&mut a);
     assert!(s.contains("≈$0.0123 API value") && s.contains("this session"), "usage panel\n{s}");
