@@ -123,7 +123,7 @@ async fn begin_turn(
     let state = state.clone();
     tokio::spawn(async move {
         let from = SystemTime::now();
-        prepare_turn(&state, text, attachments, person, &cancel).await;
+        prepare_turn(&state, text, attachments, person, ultracode, &cancel).await;
         let end = run_turn(state.clone(), cancel).await;
         orient::worked(&mut state.lock().await.worked, from, SystemTime::now());
         end
@@ -136,6 +136,7 @@ async fn prepare_turn(
     text: String,
     attachments: Vec<Attachment>,
     person: bool,
+    ultracode: bool,
     cancel: &CancellationToken,
 ) {
     // @server:uri mentions become the resources they name (read before the state is taken)
