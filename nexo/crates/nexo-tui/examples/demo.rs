@@ -126,6 +126,18 @@ async fn main() -> anyhow::Result<()> {
                         problem: None,
                     });
                 }
+                Some(AgentCommand::ChromeCheck | AgentCommand::ChromeSetup) => {
+                    use nexo_core::agent::{ChromeFiles, ChromeHostInfo, ChromeHostState, ChromeInfo};
+                    let _ = events.send(AgentEvent::Chrome(ChromeInfo {
+                        hosts: vec![ChromeHostInfo { browser: "Google Chrome".into(), state: ChromeHostState::Ready }],
+                        extension_dir: PathBuf::from("/home/you/.local/share/nexo/chrome-extension"),
+                        files: ChromeFiles::Current,
+                        running: Vec::new(),
+                        not_answering: Vec::new(),
+                        in_use: None,
+                        just_set_up: true,
+                    }));
+                }
                 Some(AgentCommand::ShowTree) => {
                     let _ = events.send(AgentEvent::SessionTree { entries: tree.clone() });
                 }

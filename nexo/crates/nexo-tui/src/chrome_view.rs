@@ -93,6 +93,14 @@ impl ChromeView {
         }
     }
 
+    /// What the window's size follows: the shape of the checklist (which notes and steps show), not the polling.
+    pub fn size_key(&self) -> (bool, bool, bool, usize, bool, bool) {
+        match &self.info {
+            None => (false, false, false, 0, false, false),
+            Some(i) => (true, steps_shown(i), host_ok(i), i.running.len(), i.in_use.is_some(), self.told.is_some()),
+        }
+    }
+
     pub fn scroll_by(&mut self, delta: i32) {
         self.scroll = (self.scroll as i32 + delta).max(0) as usize;
     }
