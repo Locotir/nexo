@@ -98,21 +98,166 @@ impl Tool for Bin {
         // place and the ops after it still run: ops read files and are independent of each other, and a script
         // that stopped at its first slip cost the whole call (unlike `debug`'s `do`, where a step needs the last)
         let parts = units(line);
-        let [_, _, ..] = parts.as_slice() else {
-            return one(parts.first().map_or(line, String::as_str), ctx).await;
-        };
+        // shell syntax (a pipe, a redirect, `&&`, `cd`, `echo ---`, `$c`): said once for the call, the shell parts are
+        // not run, the real ops still are
+        let scan = scan_shell(&parts);
+        if !scan.found {
+            let [_, _, ..] = parts.as_slice() else {
+                return one(parts.first().map_or(line, String::as_str), ctx).await;
+            };
+        }
         let mut out: Vec<String> = Vec::new();
-        for part in &parts {
-            out.push(format!("> {part}"));
-            let o = one(part, ctx).await;
-            if o.is_error {
-                out.push(format!("error: {}", o.content));
+        let mut failed = false;
+        let mut ran = 0;
+        for seg in &scan.segs {
+            if let Some(why) = &seg.skip {
+                out.push(format!("> {}", seg.text));
+                out.push(format!("not run: {why}"));
+                continue;
+            }
+            let o = one(&seg.text, ctx).await;
+            ran += 1;
+            failed |= o.is_error;
+            if scan.segs.len() > 1 || !scan.found {
+                out.push(format!("> {}", seg.text));
+                out.push(if o.is_error { format!("error: {}", o.content) } else { o.content });
             } else {
                 out.push(o.content);
             }
         }
+        if let Some(note) = scan.note {
+            out.insert(0, note);
+        }
+        // one op that fails is the call's error; in a script each error stays in its place
+        if ran == 0 || (failed && scan.segs.len() == 1) {
+            return ToolOutput::error(out.join("\n"));
+        }
         ToolOutput::ok(out.join("\n"))
     }
+}
+
+/// One op of a call, or a shell part that is not run (with why).
+struct Seg {
+    text: String,
+    skip: Option<String>,
+}
+
+struct Scan {
+    segs: Vec<Seg>,
+    /// Whether any shell syntax was found.
+    found: bool,
+    /// The fact, once per call.
+    note: Option<String>,
+}
+
+/// The detection is nexo-dbg's (`shell_pieces`: the lowest crate `debug` and `bin` share, `nexo-cli` already
+/// depends on it): each unit is cut at `&&`/`||`, a pipeline and redirections come off, and a part that starts with a
+/// shell word, an assignment or holds `$var` is not run.
+fn scan_shell(units: &[String]) -> Scan {
+    let mut segs: Vec<Seg> = Vec::new();
+    let (mut items, mut vars): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let (mut sep, mut found) = (None::<String>, false);
+    let mut pipe_note: Option<String> = None;
+    let add = |v: &mut Vec<String>, s: String| {
+        if !v.contains(&s) {
+            v.push(s)
+        }
+    };
+    for u in units {
+        for p in nexo_dbg::shell_pieces(u, true) {
+            let mut first = p.first().to_string();
+            let mut words = p.text.split_whitespace().skip(1).collect::<Vec<_>>();
+            // `nexo bin decomp ...` is the same op
+            while matches!(first.as_str(), "nexo" | "bin") && !words.is_empty() {
+                first = words.remove(0).to_string();
+            }
+            if let Some(j) = p.joiner {
+                found = true;
+                add(&mut items, format!("`{j}`"));
+            }
+            for r in &p.redirects {
+                found = true;
+                add(&mut items, format!("`{}`", r.op));
+            }
+            if let Some(f) = &p.pipe {
+                found = true;
+                add(&mut items, "`|`".into());
+                pipe_note.get_or_insert_with(|| pipe_fact(&first, f));
+            }
+            let skip = if nexo_dbg::assignment(&first).is_some() {
+                add(&mut vars, format!("`{}`", nexo_dbg::assignment(&first).unwrap_or_default()));
+                Some("an assignment, nothing is expanded here".to_string())
+            } else if let Some(v) = nexo_dbg::variable_in(&p.text) {
+                add(&mut vars, format!("`{v}`"));
+                Some(format!("`{v}` is not expanded, write the path"))
+            } else if nexo_dbg::is_shell_word(&first) {
+                let separator = matches!(first.to_ascii_lowercase().as_str(), "echo" | "printf")
+                    && words
+                        .iter()
+                        .all(|w| w.trim_matches(|c| c == '"' || c == '\'').chars().all(|c| "-=#_~*".contains(c)));
+                if separator {
+                    sep.get_or_insert_with(|| p.text.clone());
+                } else {
+                    add(&mut items, format!("`{first}`"));
+                }
+                Some("a shell command".to_string())
+            } else {
+                None
+            };
+            if skip.is_some() {
+                found = true;
+            }
+            segs.push(Seg { text: p.text, skip });
+        }
+    }
+    if !found {
+        // no shell syntax: the units as they are (their own quoting, comments, `;` inside notes)
+        return Scan {
+            segs: units.iter().map(|u| Seg { text: u.clone(), skip: None }).collect(),
+            found: false,
+            note: None,
+        };
+    }
+    let mut note: Vec<String> = Vec::new();
+    if !items.is_empty() {
+        let list = match items.as_slice() {
+            [one] => format!("{one} is shell"),
+            [head @ .., last] => format!("{} and {last} are shell", head.join(", ")),
+            [] => String::new(),
+        };
+        note.push(format!("{list}; bin runs no shell, one op per `;`, no pipes, redirects or `&&`"));
+    }
+    if let Some(p) = pipe_note {
+        note.push(p);
+    }
+    if let Some(t) = sep {
+        note.push(format!("results already come one per op, so a separator (`{t}`) is not needed"));
+    }
+    if !vars.is_empty() {
+        note.push(format!("{} not expanded: write the path in each op", vars.join(", ")));
+    }
+    Scan { segs, found: true, note: Some(format!("note: {}", note.join("; "))) }
+}
+
+/// What does the job of `| head` and `| grep` here: the flags the op really has.
+fn pipe_fact(op: &str, filter: &str) -> String {
+    let flags = op_flags(op).unwrap_or_default();
+    let has = |f: &str| flags.split(", ").any(|x| x == f);
+    let word = filter.split_whitespace().next().unwrap_or("");
+    let mut use_: Vec<&str> = Vec::new();
+    if (matches!(word, "head" | "tail" | "wc" | "less" | "more") || !matches!(word, "grep" | "egrep")) && has("--lines")
+    {
+        use_.push("`--lines N`");
+    }
+    if (matches!(word, "grep" | "egrep" | "awk" | "sed") || use_.is_empty()) && has("--grep") {
+        use_.push("`--grep RE`");
+    }
+    let ask = if use_.is_empty() {
+        String::new()
+    } else {
+        format!("; use {} after the op instead of `| {word}`", use_.join(" or "))
+    };
+    format!("output is already bounded{ask}")
 }
 
 /// The ops of one call: cut at `;` and at line ends outside double quotes, as `debug` cuts a script. A part with a
@@ -203,8 +348,30 @@ pub(crate) fn bin_error(e: &clap::Error, words: &[String]) -> Option<String> {
                 None => first.to_string(),
             }
         })),
+        ErrorKind::MissingRequiredArgument | ErrorKind::WrongNumberOfValues | ErrorKind::TooFewValues => {
+            // clap's first line, then the op's own usage line instead of its whole block
+            let usage = op_usage(op).or_else(|| {
+                let u = text.lines().find_map(|l| l.strip_prefix("Usage: nexo bin "))?;
+                Some(u.to_string())
+            })?;
+            Some(format!("{}\nusage: {usage}", first.trim_end_matches(':')))
+        }
         _ => None,
     }
+}
+
+/// The usage line of one op, from the list the tool's description carries (`fn <file> <name|addr> [--to ADDR]`),
+/// with `<file>` as `./prog`.
+fn op_usage(op: &str) -> Option<String> {
+    if op.is_empty() {
+        return None;
+    }
+    OPS.lines().find_map(|line| {
+        let head = line.split("  ").next().unwrap_or(line);
+        head.split(", ")
+            .find(|piece| piece.split_whitespace().next() == Some(op) && piece.contains('<'))
+            .map(|piece| piece.replace("<file>", "./prog"))
+    })
 }
 
 fn bin_command() -> Option<clap::Command> {
@@ -220,11 +387,6 @@ fn op_flags(op: &str) -> Option<String> {
     flags.dedup();
     Some(if flags.is_empty() { "no flags".into() } else { flags.join(", ") })
 }
-
-const SHELL_WORDS: &[&str] = &[
-    "echo", "printf", "grep", "egrep", "cat", "head", "tail", "sed", "awk", "wc", "sort", "uniq", "cut", "tr", "ls",
-    "cd", "true", "false", "test", "sleep", "xargs", "tee", "which",
-];
 
 /// A word that starts an op line but is not an op: a shell word, or the name of another tool, gets a fact that
 /// names what does the job here; anything else is left to clap's own answer.
@@ -244,9 +406,10 @@ fn not_an_op(word: &str) -> Option<String> {
         "nm" | "readelf" | "ldd" | "xxd" | "hexdump" | "od" | "file" => Some(format!(
             "`{word}` is a shell tool, not a bin op; `info`, `overview`, `funcs` and `bytes` read a program here (`--help` lists the ops)"
         )),
-        _ if SHELL_WORDS.contains(&w.as_str()) => Some(format!(
+        "echo" | "printf" => Some(format!(
             "{word} is a shell command, not a bin op; results already come one per op, so a separator is not needed"
         )),
+        _ if nexo_dbg::is_shell_word(&w) => Some(format!("`{word}` is a shell command, not a bin op: bin runs no shell")),
         _ => None,
     }
 }
@@ -516,7 +679,8 @@ mod tests {
         let o = call(dir.path(), "info prog; echo ===; info prog").await;
         assert!(!o.content.contains("error: error:"), "{}", o.content);
         assert!(
-            o.content.contains("> echo ===\nerror: echo is a shell command, not a bin op; results already come one per op, so a separator is not needed"),
+            o.content.starts_with("note: results already come one per op, so a separator (`echo ===`) is not needed")
+                && o.content.contains("> echo ===\nnot run: a shell command"),
             "{}",
             o.content
         );
@@ -548,6 +712,99 @@ mod tests {
         assert!(!o.content.contains("tip:") && !o.content.contains("Usage"), "{}", o.content);
     }
 
+    const T1D: &str = "/tmp/claude-1000/-home-lctr/0813d0c7-a644-4a6f-8cd3-c8c257f6635e/scratchpad/re-t5";
+
+    /// t1d: `> funcs` printed clap's whole block (twice in one call).
+    #[tokio::test]
+    async fn a_missing_argument_gets_the_first_line_and_the_ops_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("paint")).unwrap();
+        let o = call(dir.path(), "decomp ./paint 0x1189; funcs; strings").await;
+        assert!(
+            o.content.contains(
+                "> funcs\nerror: the following required arguments were not provided\nusage: funcs ./prog [--grep RE]"
+            ),
+            "{}",
+            o.content
+        );
+        assert!(o.content.contains("> strings\nerror: the following required arguments were not provided\nusage: strings ./prog [--grep RE]"), "{}", o.content);
+        assert!(!o.content.contains("For more information") && !o.content.contains("<FILE>"), "{}", o.content);
+        let one = call(dir.path(), "fn ./paint").await;
+        assert!(
+            one.is_error && one.content.contains("usage: fn ./prog <name|addr> [--bytes] [--to ADDR]"),
+            "{}",
+            one.content
+        );
+    }
+
+    /// t1d: `decomp ./paint 0x1170 2>/dev/null | head -1` blamed a flag of decomp.
+    #[tokio::test]
+    async fn a_pipe_and_a_redirect_are_named_and_the_op_still_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("paint")).unwrap();
+        let o = call(dir.path(), "info ./paint; info ./paint 2>/dev/null | head -1").await;
+        assert!(!o.is_error, "{}", o.content);
+        assert_eq!(o.content.matches("note: ").count(), 1, "{}", o.content);
+        let note = o.content.lines().next().unwrap();
+        assert!(note.starts_with("note: `2>` and `|` are shell; bin runs no shell"), "{note}");
+        assert!(note.contains("output is already bounded"), "{note}");
+        assert!(o.content.contains("> info ./paint\n") && !o.content.contains("unexpected argument"), "{}", o.content);
+        // the op before the pipe ran
+        assert_eq!(o.content.matches("> info ./paint").count(), 2, "{}", o.content);
+        // the flags named are the ones the op has
+        let d = call(dir.path(), "decomp ./paint 0x1170 2>/dev/null | head -1").await;
+        let note = d.content.lines().next().unwrap();
+        assert!(note.contains("use `--lines N` after the op instead of `| head`"), "{note}");
+        let g = call(dir.path(), "funcs ./paint | grep main").await;
+        assert!(g.content.contains("use `--grep RE` after the op instead of `| grep`"), "{}", g.content);
+        // an operator inside a word is text
+        let r = call(dir.path(), "funcs ./paint --grep main|init").await;
+        assert!(!r.content.contains("note:") && !r.content.contains("not run"), "{}", r.content);
+    }
+
+    /// t3b: `cd <dir> && nexo bin decomp ...; echo ---; ...` and t3d: `c=<path>; bin funcs $c; ...`.
+    #[tokio::test]
+    async fn cd_and_variables_are_not_run_and_the_real_ops_are() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("names")).unwrap();
+        let o =
+            call(dir.path(), &format!("cd {T1D}/t3b && nexo bin info ./names; echo ---; nexo bin info ./names")).await;
+        assert!(!o.is_error, "{}", o.content);
+        assert_eq!(o.content.matches("note: ").count(), 1, "{}", o.content);
+        assert!(o.content.starts_with("note: `cd` and `&&` are shell; bin runs no shell"), "{}", o.content);
+        assert!(
+            o.content.contains("results already come one per op, so a separator (`echo ---`) is not needed"),
+            "{}",
+            o.content
+        );
+        assert!(
+            !o.content.contains("`echo`") && !o.content.contains("cd is a shell command, not a bin op;"),
+            "{}",
+            o.content
+        );
+        assert!(o.content.contains(&format!("> cd {T1D}/t3b\nnot run: a shell command")), "{}", o.content);
+        assert_eq!(o.content.matches("> nexo bin info ./names\n").count(), 2, "{}", o.content);
+        assert!(!o.content.contains("unrecognized subcommand"), "{}", o.content);
+
+        let v = call(dir.path(), &format!("c={T1D}/t3d/./names; bin info $c; echo ---; bin info $c")).await;
+        assert_eq!(v.content.matches("note: ").count(), 1, "{}", v.content);
+        assert!(
+            v.content.contains("`c`, `$c` not expanded: write the path in each op")
+                || v.content.contains("`c` and `$c`")
+                || v.content.contains("`$c`"),
+            "{}",
+            v.content
+        );
+        assert!(!v.content.contains("cannot read") && !v.content.contains("unrecognized subcommand"), "{}", v.content);
+        assert!(v.content.contains("> bin info $c\nnot run: `$c` is not expanded, write the path"), "{}", v.content);
+        // `cd` and `true` are shell, not separators
+        assert!(
+            not_an_op("cd").unwrap().contains("bin runs no shell") && !not_an_op("cd").unwrap().contains("separator")
+        );
+        assert!(not_an_op("true").unwrap().contains("bin runs no shell"));
+        assert!(not_an_op("echo").unwrap().contains("separator"));
+    }
+
     /// `nexo bin disasm ./calc main` and `nexo bin fn ./calc main --asm` say what the tool says.
     #[test]
     fn the_command_line_gets_the_same_facts_as_the_tool() {
@@ -566,8 +823,15 @@ mod tests {
         // a word nexo has no fact for: clap's first line only
         let g = err("zzzzqq ./calc").unwrap();
         assert!(g.starts_with("unrecognized subcommand 'zzzzqq'") && !g.contains("Usage"), "{g}");
-        // an error that is not about an op or a flag stays clap's
-        assert!(err("fn ./calc").is_none());
+        // a missing argument: clap's first line and the op's usage line, not its block
+        let m = err("fn ./calc").unwrap();
+        assert!(
+            m.starts_with("the following required arguments were not provided\nusage: fn ./prog <name|addr>"),
+            "{m}"
+        );
+        assert!(!m.contains("For more information"), "{m}");
+        // an error that is not about an op, a flag or an argument stays clap's
+        assert!(err("fn ./calc main --to").is_none());
     }
 
     #[test]

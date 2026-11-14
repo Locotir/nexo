@@ -24,6 +24,7 @@ mod regs;
 mod remote;
 mod rsp;
 mod server;
+mod shellsyn;
 mod stdin;
 mod stub;
 mod syscalls;
@@ -50,6 +51,9 @@ pub use platform::{
 };
 pub use regs::Regs;
 pub use server::{open, owner_of, request, serve, sessions, spawn, spawn_thread, state_dir, Kind, Reply, Start, IDLE};
+pub use shellsyn::{
+    assignment, debug_fact, debug_shell_items, is_shell_word, shell_pieces, variable_in, Piece, Redirect, SHELL_WORDS,
+};
 pub use stub::serve_gdb;
 
 use std::fmt;

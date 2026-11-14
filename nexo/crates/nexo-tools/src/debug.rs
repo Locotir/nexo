@@ -229,8 +229,18 @@ impl Tool for Debug {
         };
         // `a; b` (or one command per line) at the top is a script; `run ...; b` starts the session, then runs the
         // rest in it; a gdb script that ends with `run` is started first and then run in the session
-        let parts: Vec<String> =
-            nexo_dbg::script_units(Debug::line(&args).unwrap_or("")).iter().map(|p| cap_waits(p)).collect();
+        let units = nexo_dbg::script_units(Debug::line(&args).unwrap_or(""));
+        // the debugger runs no shell: a shell word or operator is named before anything runs, so nothing half-runs
+        let mut shell: Vec<String> = Vec::new();
+        for item in units.iter().flat_map(|u| nexo_dbg::debug_shell_items(u)) {
+            if !shell.contains(&item) {
+                shell.push(item);
+            }
+        }
+        if !shell.is_empty() {
+            return ToolOutput::error(nexo_dbg::debug_fact(&shell, &ctx.cwd.display().to_string()));
+        }
+        let parts: Vec<String> = units.iter().map(|p| cap_waits(p)).collect();
         if parts.len() < 2 || words.first().is_some_and(|w| w == "do") {
             return self.one(words, &args, ctx).await;
         }
@@ -416,6 +426,37 @@ mod tests {
         assert!(!h.is_error && h.content.contains("break:"), "{}", h.content);
         let b = call(&t, "break main").await;
         assert!(b.is_error && b.content.contains("no debug session for `break main`"), "{}", b.content);
+    }
+
+    #[tokio::test]
+    async fn shell_in_a_debug_call_is_named_before_anything_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Debug::in_dir(&dir.path().join("state"));
+        let cwd = std::path::PathBuf::from("/tmp/t1d");
+        let d = "/tmp/claude-1000/-home-lctr/0813d0c7-a644-4a6f-8cd3-c8c257f6635e/scratchpad/re-t5/t1d";
+        // the two calls of the t1d trial
+        for c in [
+            format!("cd {d} && printf '0 0 A\\n1048576 0 B\\n' > /tmp/crash.in && run ./paint < /tmp/crash.in; cont"),
+            format!(
+                "printf '0 0 A\\n1048576 0 B\\n' > /tmp/crash.in; cd {d}; run ./paint < /tmp/crash.in; cont; bt; regs"
+            ),
+        ] {
+            let o = t.run(json!({"command": c}), &ToolContext::new(cwd.clone())).await;
+            assert!(o.is_error, "{}", o.content);
+            assert!(
+                o.content.contains("`cd`")
+                    && o.content.contains("`printf`")
+                    && o.content.contains("`>`")
+                    && o.content.contains(" are shell;"),
+                "{}",
+                o.content
+            );
+            assert!(o.content.contains("working directory is /tmp/t1d;"), "{}", o.content);
+            assert!(o.content.contains("then `run ./prog < file`"), "{}", o.content);
+            assert!(!o.content.contains("no debug session"), "{}", o.content);
+        }
+        // no session was touched
+        assert!(nexo_dbg::sessions(&dir.path().join("state")).is_empty());
     }
 
     fn sleep_bin() -> String {
