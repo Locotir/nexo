@@ -394,6 +394,25 @@ struct RunWords {
 /// The input is read up to this much; a pipe holds about this much before the program reads it.
 const MAX_INPUT: u64 = 60 << 10;
 
+/// The first piece of shell syntax in `s` (command substitution, parameter expansion, a variable): the debugger
+/// has no shell, so text holding it would reach the program literally. `cost $5` and a lone `$` are plain text.
+fn shell_syntax(s: &str) -> Option<&'static str> {
+    if s.contains("$(") {
+        return Some("`$(`");
+    }
+    if s.contains('`') {
+        return Some("a backtick");
+    }
+    if s.contains("${") {
+        return Some("`${`");
+    }
+    let b = s.as_bytes();
+    if b.windows(2).any(|w| w[0] == b'$' && (w[1].is_ascii_alphabetic() || w[1] == b'_')) {
+        return Some("`$VAR`");
+    }
+    None
+}
+
 fn run_words(words: &[String]) -> Result<RunWords, Error> {
     let mut w = words;
     let to_main = w.first().is_some_and(|x| x == "--main");
@@ -410,6 +429,17 @@ fn run_words(words: &[String]) -> Result<RunWords, Error> {
             return Err(Error::Usage(format!("{} needs a file or a text after it", args[i])));
         };
         input = Some(if args[i] == "<<<" {
+            if args.len() > i + 2 {
+                return Err(Error::Usage(format!(
+                    "<<< takes one text: put all of it in quotes (<<< \"{} ...\"); the words after it would reach the program as arguments",
+                    src
+                )));
+            }
+            if let Some(syntax) = shell_syntax(&src) {
+                return Err(Error::Usage(format!(
+                    "the input after <<< is given to the program as typed, without a shell: {src:?} would arrive as those characters ({syntax} is shell syntax). Write the bytes with \\n and \\t escapes (e.g. <<< \"3 20 X\\n\"), or put them in a file and use < file"
+                )));
+            }
             format!("{}\n", src.replace("\\n", "\n").replace("\\t", "\t"))
         } else {
             let mut b = Vec::new();
@@ -681,6 +711,39 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rw(line: &[&str]) -> Result<RunWords, Error> {
+        run_words(&line.iter().map(|x| x.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn here_string_forms() {
+        let r = rw(&["./p", "<<<", "3 20 X\\n"]).unwrap();
+        assert_eq!(r.input.as_deref(), Some("3 20 X\n\n"));
+        assert!(r.args.is_empty());
+        let r = rw(&["./p", "a", "<<<", "x\\ty", "--"]).unwrap();
+        assert_eq!(r.input.as_deref(), Some("x\ty\n"));
+        assert_eq!(r.args, ["a"]);
+        // `$` that is not shell syntax goes through
+        for t in ["cost $5", "a $ b", "$", "50$", "$?"] {
+            assert!(rw(&["./p", "<<<", t]).unwrap().input.unwrap().starts_with(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn here_string_with_shell_syntax_is_refused_before_the_program_starts() {
+        for t in ["$(printf '3 20 X\\n')", "`date`", "${HOME}", "$HOME x", "a $_x"] {
+            let Err(Error::Usage(m)) = rw(&["./paint", "<<<", t]) else { panic!("{t} must be refused") };
+            assert!(m.starts_with("the input after <<< is given to the program as typed, without a shell:"), "{m}");
+            assert!(m.contains("or put them in a file and use < file"), "{m}");
+        }
+    }
+
+    #[test]
+    fn unquoted_multi_word_here_string_is_refused() {
+        let Err(Error::Usage(m)) = rw(&["./p", "<<<", "3", "20", "X"]) else { panic!("must be refused") };
+        assert!(m.contains("put all of it in quotes"), "{m}");
+    }
 
     #[test]
     fn catch_on_off_and_all_are_refused_like_add_and_del_without_the_flag() {
