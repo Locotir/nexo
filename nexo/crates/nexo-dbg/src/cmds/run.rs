@@ -74,6 +74,32 @@ impl Session {
         Ok(rows("kill", vec!["program killed".into()], json!({})))
     }
 
+    /// `run` typed inside a session that has a program: say what is live and what goes on or starts again.
+    pub(super) fn cmd_run_live(&mut self) -> Result<Output> {
+        let pid = self.t.pid();
+        let again = "`end` as its own call closes this session, then `run <path> [args]` starts a new one";
+        match self.state {
+            State::Exited => {
+                fail(format!("this session's program has ended ({}); {again}", self.exit.clone().unwrap_or_default()))
+            }
+            State::Running => fail(format!(
+                "the program is already running (pid {pid}); `wait N` for the next stop or `stop` to stop it; {again}"
+            )),
+            State::Stopped => {
+                let at = match self.t.regs(self.cur) {
+                    Ok(r) => {
+                        let name = self.mods.label(r.rip, false).unwrap_or_default();
+                        format!("stopped at {:#x} {name}", r.rip)
+                    }
+                    Err(_) => "stopped".to_string(),
+                };
+                fail(format!(
+                    "the program is already running (pid {pid}, {at}); `cont` goes on, `step`, `next`, `finish`, `until <addr>` move it; `kill` ends it; to start it again from the top: {again}"
+                ))
+            }
+        }
+    }
+
     pub(super) fn cmd_detach(&mut self) -> Result<Output> {
         if self.state == State::Stopped {
             self.uninsert_all();

@@ -216,6 +216,7 @@ impl Session {
             "detach" => self.cmd_detach(),
             "name" | "note" => self.cmd_keep(cmd == "name", &words[1..]),
             "do" => self.cmd_do(&words[1..]),
+            "run" => self.cmd_run_live(),
             other => match crate::gdbdialect::hint(other) {
                 Some(h) => usage(format!("{other}: {h}")),
                 None => usage(format!(

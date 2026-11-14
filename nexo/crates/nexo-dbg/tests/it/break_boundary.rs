@@ -64,3 +64,16 @@ fn disas_is_dis_and_a_stray_line_names_the_way_to_give_input() {
     let e = s.exec(&split_words("3 20 X")).unwrap_err().to_string();
     assert!(e.contains("run <path> <<<") && e.contains("stdin <text>"), "{e}");
 }
+
+#[test]
+fn run_inside_a_live_session_says_the_program_is_already_running() {
+    let Some((mut s, _d)) = start() else { return eprintln!("SKIPPED: no C compiler") };
+    let e = s.exec(&split_words("run ./t")).unwrap_err().to_string();
+    assert!(e.contains("the program is already running (pid "), "{e}");
+    assert!(e.contains("stopped at 0x") && e.contains("main"), "{e}");
+    assert!(e.contains("`cont`") && e.contains("`kill`") && e.contains("`end`"), "{e}");
+    assert!(!e.contains("unknown command"), "{e}");
+    s.exec(&split_words("kill")).unwrap();
+    let e = s.exec(&split_words("run")).unwrap_err().to_string();
+    assert!(e.contains("has ended (killed by the debugger)") && e.contains("`end`"), "{e}");
+}
