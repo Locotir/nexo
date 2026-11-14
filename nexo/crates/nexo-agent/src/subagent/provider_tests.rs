@@ -35,8 +35,8 @@ const FIXED_32K: u64 = 2_400;
 /// The browser's `open` action with its `profile` and `visible` added about 230, and `browsers`, `select_browser` and
 /// `switch_browser` 94 more; trimming the browser's short text took 208 off (the rules for the person's own browser come in
 /// the result of `select_browser`). `find{target}`, the mouse verbs with `modifiers?` and `network{to?}` add 107
-/// (measured 12 009).
-const SCHEMA_CEILING: usize = 12_009;
+/// (measured 12 009). Saying that `browsers` lists the person's logged-in browsers took 1 more (12 010).
+const SCHEMA_CEILING: usize = 12_010;
 /// The most characters `task` may take in a request with the nineteen kinds of [`OWN_KINDS`]: what it
 /// takes now, 5107 when it went out whole.
 const TASK_WITH_OWN_KINDS: usize = 1_845;
