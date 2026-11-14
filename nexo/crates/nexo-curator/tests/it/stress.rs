@@ -2,12 +2,11 @@
 //! outputs and edits, fed to the curator one request at a time as the host does. At each checkpoint it prints
 //! the time a request takes, the tokens the view sends, the stats and the memory, so that the cost per request
 //! can be read at the start and at the end of a very long session. Ignored by default (slow):
-//! `cargo test --release -p nexo-curator --test stress -- --ignored --nocapture`.
+//! `cargo test --release -p nexo-curator --test it stress -- --ignored --nocapture`.
 //! `STRESS_STEPS` sets the steps of the agent (default 20000), `STRESS_SPEC` the settings over the defaults
 //! (`pockets=1`), `STRESS_SEED` the seed.
 
-#[path = "support/scale_gen/mod.rs"]
-mod scale_gen;
+use crate::scale_gen;
 
 use std::time::Instant;
 

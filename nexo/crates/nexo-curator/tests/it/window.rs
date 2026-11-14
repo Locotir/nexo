@@ -214,7 +214,7 @@ fn a_topic_left_out_names_its_messages_for_recall() {
         cur.tools(&tools.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let mut msgs: Vec<Value> = Vec::new();
         let mut text = String::new();
-        for line in include_str!("fixtures/topics.jsonl").lines() {
+        for line in include_str!("../fixtures/topics.jsonl").lines() {
             let rec: Value = serde_json::from_str(line).unwrap();
             let req = &rec["req"];
             msgs.truncate(req["base"].as_u64().unwrap() as usize);
@@ -240,7 +240,7 @@ fn a_small_topic_stays_in_the_view() {
     cur.tools(&["Bash".to_string(), "Read".to_string(), "recall".to_string()]);
     let mut msgs: Vec<Value> = Vec::new();
     let mut seen = 0;
-    for line in include_str!("fixtures/topics.jsonl").lines() {
+    for line in include_str!("../fixtures/topics.jsonl").lines() {
         let rec: Value = serde_json::from_str(line).unwrap();
         let req = &rec["req"];
         msgs.truncate(req["base"].as_u64().unwrap() as usize);
@@ -261,7 +261,7 @@ fn a_request_naming_a_file_read_under_another_topic_gets_that_read_back() {
     let mut cur = Curator::new("nudge=0").unwrap();
     let mut msgs: Vec<Value> = Vec::new();
     let mut text = String::new();
-    for line in include_str!("fixtures/synthetic-g2-t40-s3.jsonl").lines() {
+    for line in include_str!("../fixtures/synthetic-g2-t40-s3.jsonl").lines() {
         let rec: Value = serde_json::from_str(line).unwrap();
         let req = &rec["req"];
         let Some(new) = req.get("new") else { continue };

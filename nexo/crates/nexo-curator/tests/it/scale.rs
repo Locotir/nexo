@@ -1,9 +1,8 @@
 //! Slope guard: the curator's time per request must not grow with the history. Ignored by default (slow, wants
-//! a quiet machine): `cargo test --release -p nexo-curator --test scale -- --ignored --nocapture`.
+//! a quiet machine): `cargo test --release -p nexo-curator --test it scale -- --ignored --nocapture`.
 //! `SCALE_RUNS` sets the number of runs per shape (median taken; default 5).
 
-#[path = "support/scale_gen/mod.rs"]
-mod scale_gen;
+use crate::scale_gen;
 
 use scale_gen::{median, run, Plan};
 
