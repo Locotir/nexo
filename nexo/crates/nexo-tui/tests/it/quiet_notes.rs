@@ -350,3 +350,24 @@ fn item3_goal_waiting_and_done_in_quiet() {
     }
     assert_eq!(notices(&q), ["goal set · waiting for your answer", "goal met"]);
 }
+
+#[test]
+fn a_live_group_head_does_not_repeat_the_running_calls_own_row() {
+    let mut q = app(Detail::Quiet);
+    q.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    call(&mut q, "c0", "read", "a.rs", ToolOutput::ok("ok"));
+    let wait = "jobs: waiting for shell job 1 · for i in 1 2 3; do echo step $i; done";
+    q.handle_agent(AgentEvent::ToolCall {
+        id: "c1".into(),
+        name: "jobs".into(),
+        args: serde_json::json!({ "command": wait }),
+        summary: wait.into(),
+    });
+    q.handle_agent(AgentEvent::ToolStart { id: "c1".into() });
+    q.handle_agent(AgentEvent::ToolProgress { id: "c1".into(), line: "step 2".into() });
+    let s = screen(&mut q, 120, 30);
+    assert_eq!(s.matches("waiting for shell job 1").count(), 1, "the call is said once:\n{s}");
+    assert_eq!(s.matches("step 2").count(), 1, "the tail is said once:\n{s}");
+    let head = s.lines().find(|l| l.contains('▸') || l.contains('▾')).expect("a group head");
+    assert!(!head.contains("jobs:"), "{head}");
+}

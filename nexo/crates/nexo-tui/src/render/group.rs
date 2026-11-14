@@ -253,6 +253,20 @@ pub fn header_for(
     theme: &Theme,
     detail: nexo_core::config::Detail,
 ) -> Line<'static> {
+    header_with(members, folded, spinner, w, theme, detail, true)
+}
+
+/// The same line; `show_call` says whether the running call is named on it. It is not when the call's
+/// own row is drawn right under the head: the head then keeps the sentence, the spinner and the time.
+pub fn header_with(
+    members: &[Block],
+    folded: bool,
+    spinner: usize,
+    w: usize,
+    theme: &Theme,
+    detail: nexo_core::config::Detail,
+    show_call: bool,
+) -> Line<'static> {
     let quiet = detail == nexo_core::config::Detail::Quiet;
     let (mut failed, mut denied, mut live) = (0usize, 0usize, false);
     for b in members {
@@ -318,7 +332,7 @@ pub fn header_for(
     let room = w.saturating_sub(fixed(&stamp)).max(4);
     let mut spans = vec![Span::styled(format!("{icon} "), istyle), Span::raw(truncate(&text, room))];
     // the call running now takes what the sentence leaves, and is the first thing to go
-    if live {
+    if live && show_call {
         if let Some(call) = live_call(members) {
             let avail = room.saturating_sub(width(&text) + 3);
             if width(&text) <= room && avail >= 8 {
@@ -578,6 +592,24 @@ mod tests {
             *status = ToolStatus::Done;
         }
         assert!(live_tail(&[a], 60, &theme).is_none());
+    }
+
+    #[test]
+    fn a_head_over_the_calls_own_row_keeps_only_sentence_spinner_and_time() {
+        let theme = Theme::dark();
+        let mut a = running("jobs: waiting for shell job 1 · for i in 1 2 3; do echo step $i; done", 3);
+        if let Block::Tool { progress, .. } = &mut a {
+            *progress = vec!["step 2".into()];
+        }
+        let m = [a];
+        let q = nexo_core::config::Detail::Quiet;
+        let own = text(&header_with(&m, true, 0, 100, &theme, q, false));
+        assert!(!own.contains("waiting for shell job") && !own.contains("step") && own.ends_with('▸'), "{own}");
+        assert!(own.contains("3.0s"), "{own}");
+        // the row is not drawn (folded away): the head still names the call
+        let hidden = text(&header_with(&m, true, 0, 100, &theme, q, true));
+        assert!(hidden.contains("waiting for shell job 1"), "{hidden}");
+        assert!(live_tail(&m, 60, &theme).is_some());
     }
 
     #[test]

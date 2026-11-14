@@ -191,21 +191,28 @@ impl App {
                 // a group's line is made from the calls it stands for
                 Block::Group { folded, len } => {
                     let end = (i + 1 + len).min(self.blocks.len());
-                    let head = crate::render::group::header_for(
+                    // the running call says itself in its own row when that row is drawn; the head
+                    // and its tail speak for it only when the row is left out
+                    let own_row = (i + 1..end).any(|j| {
+                        matches!(self.blocks[j], Block::Tool { .. }) && self.blocks[j].is_live() && !self.hidden(j)
+                    });
+                    let head = crate::render::group::header_with(
                         &self.blocks[i + 1..end],
                         *folded,
                         self.spinner,
                         (width - indent).max(8),
                         &self.theme,
                         self.opts.detail,
+                        !own_row,
                     );
                     let mut v = vec![head];
-                    // a live group says under its head what the call running now is doing
-                    v.extend(crate::render::group::live_tail(
-                        &self.blocks[i + 1..end],
-                        (width - indent).max(8),
-                        &self.theme,
-                    ));
+                    if !own_row {
+                        v.extend(crate::render::group::live_tail(
+                            &self.blocks[i + 1..end],
+                            (width - indent).max(8),
+                            &self.theme,
+                        ));
+                    }
                     v
                 }
                 b => {
