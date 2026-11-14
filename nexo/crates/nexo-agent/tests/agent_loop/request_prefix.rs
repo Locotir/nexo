@@ -160,3 +160,53 @@ async fn a_resumed_session_gets_its_instruction_files_as_they_are_now() {
 }
 
 // ---- each session remembers its provider and model
+
+/// Check a real tool round and a following user turn, not just two isolated prompts.
+/// Reported usage is simulated: a stable prefix does not guarantee a provider cache hit.
+#[tokio::test]
+async fn tool_round_and_next_turn_preserve_prefix_and_account_for_cache_usage() {
+    let d = test_tmpdir().unwrap();
+    let mut cfg = config(PermissionMode::Ask);
+    cfg.agent.check_at_start = false;
+    let client = Scripted::new(vec![
+        Reply::Events(call("read-1", "read", json!({"path": "src/main.rs"}))),
+        Reply::Events(text("found it")),
+        Reply::Events(text("done")),
+    ]);
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "inspect the file".into(), attachments: vec![] });
+    let first = r.turn().await;
+    assert_eq!(end_of(&first), TurnEnd::Done);
+    r.send(AgentCommand::Submit { text: "summarise it".into(), attachments: vec![] });
+    let second = r.turn().await;
+    assert_eq!(end_of(&second), TurnEnd::Done);
+    r.stop().await;
+
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 3);
+    for pair in reqs.windows(2) {
+        let (before, after) = (&pair[0], &pair[1]);
+        assert_eq!(before.system, after.system, "system instructions changed");
+        assert_eq!(before.tools, after.tools, "tool schemas or their order changed");
+        assert_eq!(
+            (before.model.as_str(), before.cache, &before.session_id),
+            (after.model.as_str(), after.cache, &after.session_id)
+        );
+        assert!(after.messages.len() > before.messages.len());
+        assert_eq!(&after.messages[..before.messages.len()], &before.messages[..], "previous messages changed");
+    }
+    assert!(reqs[2].messages.iter().any(|m| m.content.iter().any(|p| matches!(p, Part::ToolResult { .. }))));
+    let usage = second
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            AgentEvent::Usage { session, .. } => Some(*session),
+            _ => None,
+        })
+        .expect("session usage");
+    // First tool call: 10 uncached; the two scripted answers: 1000 uncached + 2000 cached each.
+    assert_eq!((usage.input, usage.cache_read, usage.cache_write), (2010, 4000, 0));
+    assert_eq!(usage.total_input(), 6010);
+    assert!((usage.cache_read as f64 / usage.total_input() as f64 - 4000.0 / 6010.0).abs() < 1e-12);
+}
