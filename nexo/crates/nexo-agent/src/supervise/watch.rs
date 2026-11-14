@@ -161,7 +161,7 @@ fn is_test(cmd: &str) -> bool {
 
 fn is_reading(s: &Step) -> bool {
     match s.name.as_str() {
-        "read" | "grep" | "glob" | "ls" | "recall" => true,
+        n if nexo_core::tool::catalog::READING.contains(&n) => true,
         "bash" => {
             let c = s.command().unwrap_or("");
             !bash_changes(c) && !is_test(c)

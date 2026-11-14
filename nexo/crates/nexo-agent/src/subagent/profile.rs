@@ -203,7 +203,7 @@ pub(super) fn adopt_foreign(p: &mut Profile) {
             }
         }
         if mapped.is_empty() {
-            mapped = ["read", "grep", "glob", "ls"].map(String::from).to_vec();
+            mapped = nexo_core::tool::catalog::SUBAGENT_FALLBACK.map(String::from).to_vec();
         }
         p.tools = Some(mapped);
     }

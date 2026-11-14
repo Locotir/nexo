@@ -32,7 +32,7 @@ const NOT_RUN: &str =
 
 /// Conservative allowlist: unknown, network-mutating and execution tools are not planning tools.
 pub(super) fn ultracode_planning_tool(name: &str) -> bool {
-    matches!(name, "ultracode_execute" | "read" | "glob" | "grep" | "ls" | "recall" | "web_search" | "web_fetch")
+    nexo_core::tool::catalog::ULTRACODE_PLANNING.contains(&name)
 }
 
 /// Runs the calls of one assistant message; (results in order, interrupted).

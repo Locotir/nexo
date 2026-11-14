@@ -36,7 +36,7 @@ pub struct Policy {
 }
 
 /// Tools that touch nothing outside the conversation: never asked about (a `deny` rule still holds).
-pub const ALWAYS_ALLOWED: &[&str] = &["todo", "note", "recall", "ask_user", "exit_plan"];
+pub use nexo_core::tool::catalog::ALWAYS_ALLOWED;
 
 /// Tools that read by running the project's own code (a language server or compiler runs its build
 /// scripts and macros): asked about like a command, never run where only reads may.

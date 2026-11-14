@@ -14,6 +14,8 @@ use tokio_util::sync::CancellationToken;
 use crate::message::ImageSource;
 use crate::provider::ToolSpec;
 
+pub mod catalog;
+
 /// What a tool does to the world; the permission policy decides by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

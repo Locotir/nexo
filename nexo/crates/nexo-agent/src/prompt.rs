@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use nexo_core::compat;
 use nexo_core::config::AgentConfig;
 use nexo_core::paths;
+use nexo_core::tool::catalog::{self, SMALL_LEAVES_OUT, TINY_LEAVES_OUT};
 use nexo_core::tool::ToolSet;
 
 #[cfg(test)]
@@ -29,13 +30,6 @@ pub fn is_compact(window: Option<u64>) -> bool {
 
 /// A model whose window is at most this many tokens is not offered the tools in [`TINY_LEAVES_OUT`] either.
 pub const TINY_WINDOW: u64 = 16_384;
-
-/// The tools a window of [`COMPACT_WINDOW`] tokens or less is not offered: each costs a description in every
-/// request and starts work (a second context, a list to keep, notes) that there is no room for.
-const SMALL_LEAVES_OUT: [&str; 8] = ["task", "workflow", "todo", "note", "debug", "bin", "diagnostics", "browser"];
-
-/// The tools a window of [`TINY_WINDOW`] tokens or less is not offered besides those: skills and the web.
-const TINY_LEAVES_OUT: [&str; 3] = ["skill", "web_fetch", "web_search"];
 
 /// Whether the tool `name` is left out for a model with context window `window` (`None`: unknown, nothing is).
 pub fn left_out(window: Option<u64>, name: &str) -> bool {
@@ -220,7 +214,7 @@ fn tool_guidance(tools: &ToolSet) -> String {
 /// "You can do:" the abilities of the harness that save time, one line each, for the tools present only.
 fn abilities(tools: &ToolSet) -> String {
     let has = |n: &str| tools.get(n).is_some();
-    let looks = ["read", "grep", "glob", "ls", "bash", "web_search", "web_fetch"].iter().any(|n| has(n));
+    let looks = catalog::LOOKING.iter().any(|n| has(n));
     let mut lines = Vec::new();
     if looks {
         lines.push("- Think in independent strands: independent calls go in ONE message and run at the same time (reads, searches, web, read-only and check commands). Steps that follow each other also go in ONE message when you do not need to see one result to write the next call (write a script and run it; edit, then run the check): they run one at a time in the order given, and when one fails the ones after it are not run. Never run in parallel what touches the same state.");
