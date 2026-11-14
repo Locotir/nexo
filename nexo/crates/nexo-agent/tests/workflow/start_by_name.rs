@@ -71,28 +71,43 @@ async fn a_file_swapped_between_the_question_and_the_answer_is_refused_and_nothi
 }
 
 #[tokio::test]
-async fn read_only_and_plan_mode_treat_a_start_by_name_as_the_tool_does() {
-    for mode in [PermissionMode::ReadOnly, PermissionMode::Plan] {
-        let text = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"look\"\nprompt = \"LOOK\"\n[[phase.step]]\nid = \"change\"\nagent = \"general\"\nprompt = \"CHANGE\"\n";
-        let d = project_with("saved", text);
-        let client =
-            Mock::new(vec![("LOOK", says("looked")), ("CHANGE", Say::CallThen("edit", "the mode said no".into()))]);
-        let tools = ToolSet::new().with(Arc::new(Read)).with(Arc::new(Named("edit")));
-        let mut r = start(&client, d.path(), mode, tools);
-        r.next().await;
-        r.send(AgentCommand::FlowStart { name: "saved".into(), args: String::new() });
-        let req = r.ask().await;
-        assert_eq!(req.tool, "workflow", "{mode:?}: asked as the tool is");
-        r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
-        r.until(|e| matches!(e, AgentEvent::FlowRun { info } if info.state != FlowState::Running)).await;
-        assert_eq!((client.count("LOOK"), client.count("CHANGE")), (1, 1), "{mode:?}");
-        let log = client.st.log.lock().unwrap().clone();
-        let result = log.iter().find(|(_, t)| t.starts_with("RESULT")).expect("a result came back");
-        assert!(result.1.contains("Permission denied") && result.1.contains(mode.as_str()), "{mode:?}: {}", result.1);
-        r.send(AgentCommand::Shutdown);
-        r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
-        r.task.await.unwrap().unwrap();
-    }
+async fn read_only_treats_a_start_by_name_as_the_tool_does() {
+    let mode = PermissionMode::ReadOnly;
+    let text = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"look\"\nprompt = \"LOOK\"\n[[phase.step]]\nid = \"change\"\nagent = \"general\"\nprompt = \"CHANGE\"\n";
+    let d = project_with("saved", text);
+    let client =
+        Mock::new(vec![("LOOK", says("looked")), ("CHANGE", Say::CallThen("edit", "the mode said no".into()))]);
+    let tools = ToolSet::new().with(Arc::new(Read)).with(Arc::new(Named("edit")));
+    let mut r = start(&client, d.path(), mode, tools);
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: String::new() });
+    let req = r.ask().await;
+    assert_eq!(req.tool, "workflow", "{mode:?}: asked as the tool is");
+    r.send(AgentCommand::Permission { id: req.id, decision: PermissionDecision::Allow });
+    r.until(|e| matches!(e, AgentEvent::FlowRun { info } if info.state != FlowState::Running)).await;
+    assert_eq!((client.count("LOOK"), client.count("CHANGE")), (1, 1), "{mode:?}");
+    let log = client.st.log.lock().unwrap().clone();
+    let result = log.iter().find(|(_, t)| t.starts_with("RESULT")).expect("a result came back");
+    assert!(result.1.contains("Permission denied") && result.1.contains(mode.as_str()), "{mode:?}: {}", result.1);
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn plan_mode_refuses_a_start_by_name_without_asking_or_starting() {
+    let d = project_with("saved", BYNAME);
+    let client = Mock::new(vec![("GATE", Say::Gated("opened".into()))]);
+    let mut r = start(&client, d.path(), PermissionMode::Plan, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.send(AgentCommand::FlowStart { name: "saved".into(), args: String::new() });
+    let evs = r.until(|e| notice_has(e, "was not started")).await;
+    assert!(evs.iter().any(|e| notice_has(e, "plan mode")), "{evs:?}");
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. } | AgentEvent::FlowRun { .. })));
+    assert!(client.tasks().is_empty());
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
 }
 
 #[tokio::test]

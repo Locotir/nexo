@@ -145,34 +145,53 @@ async fn a_tool_a_sub_agent_is_refused_goes_back_to_it_and_does_not_by_itself_fa
 }
 
 #[tokio::test]
-async fn read_only_and_plan_mode_ask_about_a_workflow_as_ever_and_the_mode_refuses_what_a_sub_agent_changes() {
-    for mode in [PermissionMode::ReadOnly, PermissionMode::Plan] {
-        let text = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"look\"\nprompt = \"LOOK\"\n[[phase.step]]\nid = \"change\"\nagent = \"general\"\nprompt = \"CHANGE\"\n";
-        let d = project_with("saved", text);
-        let client = Mock::with_main(
-            vec![("LOOK", says("looked")), ("CHANGE", Say::CallThen("edit", "the mode said no".into()))],
-            vec![call("w1", "workflow", json!({"name": "saved"})), text_events("done", 1, 1)],
-        );
-        let tools = ToolSet::new().with(Arc::new(Read)).with(Arc::new(Named("edit")));
-        let mut r = start(&client, d.path(), mode, tools);
-        r.next().await;
-        r.submit("run it");
-        // asked, not denied by the mode (a workflow is judged call by call inside)
-        let req = r.ask().await;
-        assert_eq!(req.tool, "workflow", "{mode:?}");
-        r.send(AgentCommand::Permission { id: "w1".into(), decision: PermissionDecision::Allow });
-        let evs = r.turn().await;
-        assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })), "{mode:?}: asked twice");
-        // the read ran; the sub-agent that tried to change something was refused by the mode
-        assert_eq!(client.count("LOOK"), 1, "{mode:?}");
-        assert_eq!(client.count("CHANGE"), 1, "{mode:?}");
-        let log = client.st.log.lock().unwrap().clone();
-        let result = log.iter().find(|(_, t)| t.starts_with("RESULT")).expect("a result came back");
-        assert!(result.1.contains("Permission denied") && result.1.contains(mode.as_str()), "{mode:?}: {}", result.1);
-        r.send(AgentCommand::Shutdown);
-        r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
-        r.task.await.unwrap().unwrap();
-    }
+async fn read_only_asks_about_a_workflow_and_refuses_what_a_sub_agent_changes() {
+    let mode = PermissionMode::ReadOnly;
+    let text = "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"look\"\nprompt = \"LOOK\"\n[[phase.step]]\nid = \"change\"\nagent = \"general\"\nprompt = \"CHANGE\"\n";
+    let d = project_with("saved", text);
+    let client = Mock::with_main(
+        vec![("LOOK", says("looked")), ("CHANGE", Say::CallThen("edit", "the mode said no".into()))],
+        vec![call("w1", "workflow", json!({"name": "saved"})), text_events("done", 1, 1)],
+    );
+    let tools = ToolSet::new().with(Arc::new(Read)).with(Arc::new(Named("edit")));
+    let mut r = start(&client, d.path(), mode, tools);
+    r.next().await;
+    r.submit("run it");
+    // asked, not denied by the mode (a workflow is judged call by call inside)
+    let req = r.ask().await;
+    assert_eq!(req.tool, "workflow", "{mode:?}");
+    r.send(AgentCommand::Permission { id: "w1".into(), decision: PermissionDecision::Allow });
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. })), "{mode:?}: asked twice");
+    // the read ran; the sub-agent that tried to change something was refused by the mode
+    assert_eq!(client.count("LOOK"), 1, "{mode:?}");
+    assert_eq!(client.count("CHANGE"), 1, "{mode:?}");
+    let log = client.st.log.lock().unwrap().clone();
+    let result = log.iter().find(|(_, t)| t.starts_with("RESULT")).expect("a result came back");
+    assert!(result.1.contains("Permission denied") && result.1.contains(mode.as_str()), "{mode:?}: {}", result.1);
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn plan_mode_refuses_the_workflow_tool_without_asking_or_starting() {
+    let d = project_with("saved", "[[phase]]\ntitle = \"A\"\n[[phase.step]]\nid = \"look\"\nprompt = \"LOOK\"\n");
+    let client = Mock::with_main(
+        vec![("LOOK", says("looked"))],
+        vec![call("w1", "workflow", json!({"name": "saved"})), text_events("done", 1, 1)],
+    );
+    let mut r = start(&client, d.path(), PermissionMode::Plan, ToolSet::new().with(Arc::new(Read)));
+    r.next().await;
+    r.submit("run it");
+    let evs = r.turn().await;
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. } | AgentEvent::FlowRun { .. })));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. }
+        if id == "w1" && output.is_error && output.content.contains("plan mode"))), "{evs:?}");
+    assert!(client.tasks().is_empty());
+    r.send(AgentCommand::Shutdown);
+    r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
+    r.task.await.unwrap().unwrap();
 }
 
 #[tokio::test]
