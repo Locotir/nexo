@@ -426,12 +426,15 @@ impl Mailbox {
             match c.len() {
                 1 => {
                     if c[0].me {
-                        Err("Not sent: that is this session".to_string())
+                        Err(format!(
+                            "Not sent: \"{to}\" is this session, the message would go to itself. {}",
+                            reachable(&peers)
+                        ))
                     } else {
                         Ok(c[0].clone())
                     }
                 }
-                0 => Err(format!("Not sent: no live session \"{to}\"")),
+                0 => Err(format!("Not sent: no live session \"{to}\". {}", reachable(&peers))),
                 _ => {
                     let list: Vec<String> = c.iter().map(|p| describe(p)).collect();
                     Err(format!(
@@ -919,6 +922,27 @@ fn claim(dir: &Path, path: &Path) -> bool {
 pub fn describe(p: &PeerInfo) -> String {
     let short: String = p.id.chars().take(6).collect();
     format!("{} [{short}] {}", p.name, p.cwd)
+}
+
+/// The other live sessions a message can reach, as a short line for an error to end with.
+fn reachable(peers: &[PeerInfo]) -> String {
+    let others: Vec<&PeerInfo> = peers.iter().filter(|p| !p.me).collect();
+    if others.is_empty() {
+        return "No other session is live.".into();
+    }
+    let names: Vec<String> = others
+        .iter()
+        .take(8)
+        .map(|p| {
+            if others.iter().filter(|q| q.name.eq_ignore_ascii_case(&p.name)).count() > 1 {
+                format!("{} [{}]", p.name, p.id.chars().take(6).collect::<String>())
+            } else {
+                p.name.clone()
+            }
+        })
+        .collect();
+    let more = if others.len() > 8 { format!(" and {} more", others.len() - 8) } else { String::new() };
+    format!("Live sessions: {}{more}.", names.join(", "))
 }
 
 /// The ledgers: every `sent.jsonl` under `root` read from `offsets` on (bytes, per session id), with the new offsets.

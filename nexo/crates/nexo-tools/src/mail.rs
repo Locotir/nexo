@@ -74,13 +74,14 @@ impl Tool for SendMessage {
         format!("message to {to}: {short}{dots}")
     }
 
-    async fn run(&self, args: Value, _ctx: &ToolContext) -> ToolOutput {
+    async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
         let (Some(to), Some(text)) = (args.get("to").and_then(Value::as_str), args.get("text").and_then(Value::as_str))
         else {
             return ToolOutput::error("`to` and `text` are required");
         };
         let summary = args.get("summary").and_then(Value::as_str);
         let mailbox = self.mailbox.clone();
+        let to_name = to;
         let (to, text, summary) = (to.to_string(), text.to_string(), summary.map(String::from));
         let r =
             tokio::task::spawn_blocking(move || mailbox.send(&to, &text, summary.as_deref(), FromKind::Agent)).await;
@@ -89,8 +90,62 @@ impl Tool for SendMessage {
                 let name = self.mailbox.peers().into_iter().find(|p| p.id == m.to).map_or(m.to.clone(), |p| p.name);
                 ToolOutput::ok(format!("Sent {} to {name} (delivered when it is idle)", m.id))
             }
-            Ok(Err(e)) => ToolOutput::error(e),
+            Ok(Err(e)) => {
+                let fact = if e.starts_with("Not sent: no live session") { job_fact(to_name, &ctx.jobs) } else { None };
+                ToolOutput::error(match fact {
+                    Some(f) => format!("{e}\n{f}"),
+                    None => e,
+                })
+            }
             Err(e) => ToolOutput::error(format!("Not sent: {e}")),
+        }
+    }
+}
+
+/// What `to` is when it is not a session but a job of this one: its number, the sub-agent's name or its description.
+/// A sub-agent takes no message from the model (only the person writes to it), so the way to it is its output.
+fn job_fact(to: &str, jobs: &nexo_core::jobs::Jobs) -> Option<String> {
+    use nexo_core::jobs::JobKind;
+    let list = jobs.list();
+    let word = to.trim().trim_start_matches('#').trim();
+    let mut ids: Vec<u32> = match word.parse::<u32>() {
+        Ok(n) => list.iter().filter(|j| j.id == n).map(|j| j.id).collect(),
+        Err(_) => list
+            .iter()
+            .filter(|j| j.kind == JobKind::Agent && j.label.eq_ignore_ascii_case(word))
+            .map(|j| j.id)
+            .collect(),
+    };
+    if ids.is_empty() && word.parse::<u32>().is_err() {
+        // a sub-agent's name: its run id ends with the job number
+        for s in jobs.subs().list() {
+            if s.profile.eq_ignore_ascii_case(word) {
+                ids.extend(s.id.rsplit('#').next().and_then(|n| n.parse::<u32>().ok()));
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+    }
+    let jobs_of: Vec<_> = ids.iter().filter_map(|id| list.iter().find(|j| j.id == *id)).collect();
+    match jobs_of.as_slice() {
+        [] => None,
+        [j] => {
+            let what = match j.kind {
+                JobKind::Agent => format!("sub-agent \"{}\"", j.label),
+                JobKind::Shell => format!("command `{}`", j.label),
+            };
+            let how = match j.kind {
+                JobKind::Agent => format!("it takes no message from you; its output comes with `jobs output {}`", j.id),
+                JobKind::Shell => format!("its output comes with `jobs output {}`", j.id),
+            };
+            Some(format!("\"{word}\" is your background job {} ({what}, {}): {how}.", j.id, j.status.plain()))
+        }
+        many => {
+            let nums: Vec<String> = many.iter().take(5).map(|j| j.id.to_string()).collect();
+            Some(format!(
+                "\"{word}\" fits your background jobs {}: a sub-agent takes no message from you; its output comes with `jobs output <number>`.",
+                nums.join(", ")
+            ))
         }
     }
 }
@@ -179,12 +234,69 @@ mod tests {
         let big = send.run(json!({"to": "web", "text": "x".repeat(9100)}), &ctx()).await;
         assert!(big.is_error && big.content == "Not sent: too big (9100 > 8192 bytes)", "{}", big.content);
         let none = send.run(json!({"to": "ghost", "text": "hi"}), &ctx()).await;
-        assert!(none.is_error && none.content == "Not sent: no live session \"ghost\"");
+        assert!(
+            none.is_error && none.content == "Not sent: no live session \"ghost\". Live sessions: web.",
+            "{}",
+            none.content
+        );
         assert!(send.run(json!({"to": "web"}), &ctx()).await.is_error);
         assert_eq!(
             send.summary(&json!({"to": "web", "text": "run the tests\nplease"})),
             "message to web: run the tests"
         );
+    }
+
+    #[tokio::test]
+    async fn a_message_to_itself_says_so_and_names_who_else_is_live() {
+        let (_d, a, _b) = pair();
+        let ts = tools(a);
+        let out = ts.get("send_message").unwrap().run(json!({"to": "api", "text": "hi"}), &ctx()).await;
+        assert!(
+            out.is_error
+                && out.content
+                    == "Not sent: \"api\" is this session, the message would go to itself. Live sessions: web.",
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_number_or_sub_agent_is_named_with_the_way_to_read_it() {
+        use nexo_core::jobs::JobKind;
+        let (_d, a, _b) = pair();
+        let ts = tools(a);
+        let send = ts.get("send_message").unwrap();
+        let c = ctx();
+        let _shell = c.jobs.start(JobKind::Shell, "npm test");
+        let agent = c.jobs.start(JobKind::Agent, "review the parser");
+        let _sub = c.jobs.subs().begin(&format!("call#{}", agent.id()), "explore", "review the parser", true);
+        let say = |to: &str| json!({"to": to, "text": "hi"});
+
+        let out = send.run(say("2"), &c).await;
+        assert!(out.is_error, "{}", out.content);
+        let lines: Vec<&str> = out.content.lines().collect();
+        assert_eq!(lines.len(), 2, "{}", out.content);
+        assert_eq!(lines[0], "Not sent: no live session \"2\". Live sessions: web.");
+        assert_eq!(
+            lines[1],
+            "\"2\" is your background job 2 (sub-agent \"review the parser\", running): it takes no message from you; \
+             its output comes with `jobs output 2`."
+        );
+
+        let shell = send.run(say("#1"), &c).await;
+        assert!(
+            shell.content.ends_with(
+                "\"1\" is your background job 1 (command `npm test`, running): its output comes with `jobs output 1`."
+            ),
+            "{}",
+            shell.content
+        );
+        let by_name = send.run(say("Explore"), &c).await;
+        assert!(by_name.content.contains("background job 2 (sub-agent"), "{}", by_name.content);
+        let by_text = send.run(say("review the parser"), &c).await;
+        assert!(by_text.content.contains("`jobs output 2`"), "{}", by_text.content);
+        let none = send.run(say("99"), &c).await;
+        assert_eq!(none.content.lines().count(), 1, "{}", none.content);
     }
 
     #[tokio::test]

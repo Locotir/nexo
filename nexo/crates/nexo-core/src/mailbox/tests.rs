@@ -175,9 +175,29 @@ fn a_full_inbox_and_an_unknown_session_are_errors_the_model_can_read() {
         api.send("web", &format!("m{i}"), None, FromKind::Person).unwrap();
     }
     assert_eq!(api.send("web", "one more", None, FromKind::Person).unwrap_err(), "Not sent: inbox of \"web\" is full");
-    assert_eq!(api.send("nobody", "hi", None, FromKind::Agent).unwrap_err(), "Not sent: no live session \"nobody\"");
-    assert!(api.send("api", "hi", None, FromKind::Agent).unwrap_err().contains("this session"));
+    assert_eq!(
+        api.send("nobody", "hi", None, FromKind::Agent).unwrap_err(),
+        "Not sent: no live session \"nobody\". Live sessions: web."
+    );
+    assert_eq!(
+        api.send("api", "hi", None, FromKind::Agent).unwrap_err(),
+        "Not sent: \"api\" is this session, the message would go to itself. Live sessions: web."
+    );
     assert!(api.drain_events().iter().any(|e| matches!(e, AgentEvent::MailFailed { to, .. } if to == "nobody")));
+}
+
+#[test]
+fn an_unknown_name_says_who_is_live_or_that_nobody_is() {
+    let rig = Rig::new();
+    let api = rig.session("aaaa1111", "api", false, Inbound::Auto);
+    assert_eq!(
+        api.send("web", "hi", None, FromKind::Agent).unwrap_err(),
+        "Not sent: no live session \"web\". No other session is live."
+    );
+    let _w1 = rig.session("bbbb2222", "web", false, Inbound::Auto);
+    let _w2 = rig.session("cccc3333", "web", false, Inbound::Auto);
+    let e = api.send("10", "hi", None, FromKind::Agent).unwrap_err();
+    assert_eq!(e, "Not sent: no live session \"10\". Live sessions: web [bbbb22], web [cccc33].");
 }
 
 #[test]
