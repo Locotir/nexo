@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nexo_bin::{decode_live, parse_addr, parse_pattern, typed_rows, ElemType, LiveIns, Output, Place};
+use nexo_bin::{decode_live, parse_addr, parse_pattern, LiveIns, Output, Place};
 use serde_json::json;
 
 use crate::engine::{rows, signal_name, Bp, Rec, Run, Session, State, StopInfo, Temp, TempKind, Why, Wp, HISTORY};
@@ -81,10 +81,10 @@ impl Args {
 }
 
 /// Commands that only look (they never change the program or the debugger beyond what they show).
-pub const READ_ONLY: [&str; 28] = [
+pub const READ_ONLY: [&str; 30] = [
     "status", "regs", "mem", "x", "print", "p", "args", "locals", "bt", "threads", "breaks", "maps", "modules", "find",
     "history", "out", "log", "dis", "disasm", "info", "watches", "sessions", "core", "help", "catches", "thread",
-    "name", "note",
+    "name", "note", "ptype", "whatis",
 ];
 
 impl Session {
@@ -187,6 +187,7 @@ impl Session {
             "mem" | "x" => self.cmd_mem(&a),
             "write" => self.cmd_write(&a),
             "print" | "p" => self.cmd_print(&a),
+            "ptype" | "whatis" => self.cmd_ptype(&a),
             "args" => self.cmd_args(&a),
             "locals" => self.cmd_locals(),
             "bt" => self.cmd_bt(&a),

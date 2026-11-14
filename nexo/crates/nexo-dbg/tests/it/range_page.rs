@@ -70,7 +70,7 @@ fn the_same_range_text_gives_the_same_rows_in_bin_and_debug() {
         assert_eq!((a, b), (lo, if i == 0 { hi } else { lo + 16 }), "{form}");
         // debug takes a span in `mem`; the other forms are the same range through `range_of`
         assert_eq!(s.range_of(form).unwrap(), (a, b), "{form}");
-        let file = nexo_bin::bytes(&img, a, b - a, nexo_bin::ElemType::U8).unwrap();
+        let file = nexo_bin::bytes(&img, a, b - a, "u8").unwrap();
         let live = run(&mut s, &format!("mem {a:#x}..{b:#x}"));
         assert_eq!(live.text_all(), file.text_all(), "{form}");
     }

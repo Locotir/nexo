@@ -22,6 +22,8 @@ pub struct Dwarf {
     pub protos: BTreeMap<u64, String>,
     /// `0:i32:id 8:node*:next` by struct (or typedef) name.
     pub structs: BTreeMap<String, String>,
+    /// Byte size of each struct in `structs` (`DW_AT_byte_size`; the PDB's size), where the file says it.
+    pub struct_sizes: BTreeMap<String, u64>,
     /// Stack local names by function start address: `local_c` -> `count`.
     pub vars: BTreeMap<u64, BTreeMap<String, String>>,
     /// C types of stack slots (locals and spilled arguments) by function address: `local_20` -> `struct item *`.
@@ -131,6 +133,52 @@ impl<'a> Ctx<'_, 'a> {
         }
     }
 
+    /// `DW_AT_byte_size` of a struct or union.
+    fn size_of(&self, e: &Die<'a>) -> Option<u64> {
+        match e.attr_value(gimli::DW_AT_byte_size)? {
+            AttributeValue::Udata(n) => Some(n),
+            AttributeValue::Data1(n) => Some(u64::from(n)),
+            AttributeValue::Data2(n) => Some(u64::from(n)),
+            AttributeValue::Data4(n) => Some(u64::from(n)),
+            AttributeValue::Data8(n) => Some(n),
+            AttributeValue::Sdata(n) if n >= 0 => Some(n as u64),
+            _ => None,
+        }
+    }
+
+    /// The type of a struct member: like [`Ctx::ctype`], but an array keeps its length (`char[16]`, `i32[4][4]`),
+    /// since a member is laid out in the struct and does not decay to a pointer the way a parameter does.
+    fn member_ctype(&self, off: Option<UnitOffset>) -> String {
+        let Some(e) = off.and_then(|o| self.entry(o)) else { return self.ctype(off, 0) };
+        if e.tag() != gimli::DW_TAG_array_type {
+            return self.ctype(off, 0);
+        }
+        let elem = self.ctype(self.unit_ref(&e, gimli::DW_AT_type), 1);
+        let mut dims = String::new();
+        let Ok(mut tree) = self.unit.entries_tree(Some(e.offset())) else { return self.ctype(off, 0) };
+        let Ok(root) = tree.root() else { return self.ctype(off, 0) };
+        let mut kids = root.children();
+        while let Ok(Some(k)) = kids.next() {
+            let k = k.entry();
+            if k.tag() != gimli::DW_TAG_subrange_type {
+                continue;
+            }
+            let n = match (k.attr_value(gimli::DW_AT_count), k.attr_value(gimli::DW_AT_upper_bound)) {
+                (Some(c), _) => attr_u64(&c),
+                (None, Some(u)) => attr_u64(&u).map(|u| u + 1),
+                _ => None,
+            };
+            match n {
+                Some(n) => dims.push_str(&format!("[{n}]")),
+                None => dims.push_str("[]"),
+            }
+        }
+        if dims.is_empty() {
+            return self.ctype(off, 0);
+        }
+        format!("{elem}{dims}")
+    }
+
     fn base(&self, e: &Die<'a>) -> String {
         let size = match e.attr_value(gimli::DW_AT_byte_size) {
             Some(AttributeValue::Udata(n)) => n,
@@ -161,6 +209,18 @@ fn ptr_to(t: &str) -> String {
         format!("{t}*")
     } else {
         format!("{t} *")
+    }
+}
+
+fn attr_u64(v: &AttributeValue<R<'_>>) -> Option<u64> {
+    match v {
+        AttributeValue::Udata(n) => Some(*n),
+        AttributeValue::Data1(n) => Some(u64::from(*n)),
+        AttributeValue::Data2(n) => Some(u64::from(*n)),
+        AttributeValue::Data4(n) => Some(u64::from(*n)),
+        AttributeValue::Data8(n) => Some(*n),
+        AttributeValue::Sdata(n) if *n >= 0 => Some(*n as u64),
+        _ => None,
     }
 }
 
@@ -195,6 +255,7 @@ struct Agg {
     name: Option<String>,
     off: UnitOffset,
     depth: isize,
+    size: Option<u64>,
     fields: Vec<String>,
 }
 
@@ -204,7 +265,7 @@ fn read_unit(dwarf: &gimli::Dwarf<R<'_>>, unit: &gimli::Unit<R<'_>>, out: &mut D
     let mut func: Option<Func> = None;
     let mut agg: Option<Agg> = None;
     // struct offset -> member text, and typedef name -> target offset, for aliases
-    let mut by_off: HashMap<usize, String> = HashMap::new();
+    let mut by_off: HashMap<usize, (String, Option<u64>)> = HashMap::new();
     let mut typedefs: Vec<(String, Option<UnitOffset>)> = Vec::new();
     while let Some(e) = cur.next_dfs()? {
         let depth = e.depth();
@@ -244,7 +305,13 @@ fn read_unit(dwarf: &gimli::Dwarf<R<'_>>, unit: &gimli::Unit<R<'_>>, out: &mut D
             && agg.is_none()
             && e.attr_value(gimli::DW_AT_declaration).is_none()
         {
-            agg = Some(Agg { name: cx.string(&e, gimli::DW_AT_name), off: e.offset(), depth, fields: Vec::new() });
+            agg = Some(Agg {
+                name: cx.string(&e, gimli::DW_AT_name),
+                off: e.offset(),
+                depth,
+                size: cx.size_of(&e),
+                fields: Vec::new(),
+            });
         } else if let Some(a) = agg.as_mut() {
             if tag == gimli::DW_TAG_member && depth == a.depth + 1 && e.attr_value(gimli::DW_AT_bit_size).is_none() {
                 let off = match e.attr_value(gimli::DW_AT_data_member_location) {
@@ -257,7 +324,7 @@ fn read_unit(dwarf: &gimli::Dwarf<R<'_>>, unit: &gimli::Unit<R<'_>>, out: &mut D
                     _ => None,
                 };
                 if let (Some(off), Some(name)) = (off, cx.string(&e, gimli::DW_AT_name)) {
-                    let ty = field_type(&cx.ctype(cx.type_of(&e), 0));
+                    let ty = field_type(&cx.member_ctype(cx.type_of(&e)));
                     if !ty.is_empty() && !ty.contains(':') {
                         a.fields.push(format!("{off:#x}:{ty}:{name}"));
                     }
@@ -277,8 +344,11 @@ fn read_unit(dwarf: &gimli::Dwarf<R<'_>>, unit: &gimli::Unit<R<'_>>, out: &mut D
         let mut t = target;
         for _ in 0..4 {
             let Some(o) = t else { break };
-            if let Some(f) = by_off.get(&o.0) {
+            if let Some((f, size)) = by_off.get(&o.0) {
                 out.structs.entry(name.clone()).or_insert_with(|| f.clone());
+                if let Some(n) = size {
+                    out.struct_sizes.entry(name.clone()).or_insert(*n);
+                }
                 break;
             }
             t = cx.entry(o).and_then(|d| match d.tag() {
@@ -378,16 +448,19 @@ fn finish_func(f: Option<Func>, out: &mut Dwarf) {
     }
 }
 
-fn finish_agg(a: Option<Agg>, out: &mut Dwarf, by_off: &mut HashMap<usize, String>) {
+fn finish_agg(a: Option<Agg>, out: &mut Dwarf, by_off: &mut HashMap<usize, (String, Option<u64>)>) {
     let Some(a) = a else { return };
     if a.fields.is_empty() {
         return;
     }
     let text = a.fields.join(" ");
     if let Some(n) = a.name {
+        if let Some(size) = a.size {
+            out.struct_sizes.entry(n.clone()).or_insert(size);
+        }
         out.structs.entry(n).or_insert_with(|| text.clone());
     }
-    by_off.insert(a.off.0, text);
+    by_off.insert(a.off.0, (text, a.size));
 }
 
 #[cfg(test)]

@@ -8,45 +8,50 @@ pub(super) const READ_LIMIT: u64 = 1 << 20;
 impl Session {
     pub(super) fn cmd_mem(&mut self, a: &Args) -> Result<Output> {
         let (Some(at), len) = (a.pos.first(), a.pos.get(1)) else {
-            return usage("mem <address|expr|A..B> [length] [--as u8|u16|u32|u64|i32|f32|f64|ptr|str]");
+            return usage(
+                "mem <address|expr|A..B> [length] [--as u8|u16|u32|u64|i32|f32|f64|ptr|str|char[16]|item[4]|struct]",
+            );
         };
         self.need_stopped()?;
+        // the type first: an unknown one answers before the program's memory is touched
+        let ty = a.flag("as").unwrap_or("u8");
+        nexo_bin::resolve_type(self.mods.main_image(), ty)?;
         let (addr, len) = match self.span_of(at)? {
-            Some((lo, hi)) => (lo, hi - lo),
+            Some((lo, hi)) => (lo, Some(hi - lo)),
             None => (
                 self.addr_of(at)?,
                 match len {
-                    Some(l) => self.addr_of(l)?,
-                    None => 64,
+                    Some(l) => Some(self.addr_of(l)?),
+                    None => None,
                 },
             ),
         };
-        let ty = match a.flag("as") {
-            Some(t) => ElemType::parse(t)?,
-            None => ElemType::U8,
-        };
+        self.read_typed("mem", addr, ty, len)
+    }
+
+    /// `len` bytes at `addr` (a struct or `T[N]` is as long as its type, anything else 64 bytes) as the type `ty`.
+    pub(super) fn read_typed(&mut self, op: &'static str, addr: u64, ty: &str, len: Option<u64>) -> Result<Output> {
+        let view = nexo_bin::resolve_type(self.mods.main_image(), ty)?;
+        let len = len.or_else(|| view.fixed_size()).unwrap_or(64);
         if len > READ_LIMIT {
-            return usage(format!("mem reads at most {} KiB at a time; {len} bytes were asked", READ_LIMIT >> 10));
+            return usage(format!("{op} reads at most {} KiB at a time; {len} bytes were asked", READ_LIMIT >> 10));
         }
         let bytes = self.read_vec(addr, len as usize);
         if bytes.is_empty() {
             return fail(format!("{addr:#x} cannot be read"));
         }
-        if ty == ElemType::Str {
-            return Ok(rows("mem", str_rows(&bytes, addr, len), json!({"addr": addr, "len": bytes.len()})));
-        }
         let mods = std::cell::RefCell::new(&mut self.mods);
-        let mut r = typed_rows(&bytes, addr, ty, &|x| mods.borrow_mut().label(x, true));
+        let mut r = view.rows(&bytes, addr, &|x| mods.borrow_mut().label(x, true));
         if (bytes.len() as u64) < len {
             r.push(nexo_bin::Row {
-                key: u64::MAX,
+                key: addr + bytes.len() as u64,
                 text: format!("... only {} of {len} bytes are readable", bytes.len()),
                 json: None,
             });
         }
         Ok(Output {
-            op: "mem",
-            meta: json!({"addr": addr, "len": bytes.len()}),
+            op,
+            meta: json!({"addr": addr, "len": bytes.len(), "as": view.name()}),
             rows: r,
             tail: 0,
             command: String::new(),
@@ -157,36 +162,4 @@ impl Session {
         }
         Ok(rows("find", l, json!({})))
     }
-}
-
-/// `mem <addr> <len> --as str`: the bytes as one string, 64 to a row, with where the C string ends.
-fn str_rows(bytes: &[u8], addr: u64, len: u64) -> Vec<String> {
-    let nul = bytes.iter().position(|&c| c == 0);
-    let mut l = vec![match nul {
-        Some(n) => format!("C string at {addr:#x}: {n} bytes, NUL at +{n:#x}"),
-        None => format!("no NUL in the {} bytes read: the C string at {addr:#x} goes on past them", bytes.len()),
-    }];
-    // trailing zero bytes are one note, not a row of \0
-    let end = bytes.iter().rposition(|&c| c != 0).map_or(0, |i| i + 1);
-    for (i, chunk) in bytes[..end].chunks(64).enumerate() {
-        let t: String = chunk
-            .iter()
-            .map(|&c| match c {
-                0 => "\\0".to_string(),
-                b'"' => "\\\"".to_string(),
-                b'\\' => "\\\\".to_string(),
-                b'\n' => "\\n".to_string(),
-                0x20..=0x7e => (c as char).to_string(),
-                _ => format!("\\x{c:02x}"),
-            })
-            .collect();
-        l.push(format!("{:#x}: \"{t}\"", addr + i as u64 * 64));
-    }
-    if end < bytes.len() {
-        l.push(format!("+{end:#x}..+{:#x}: zero", bytes.len()));
-    }
-    if (bytes.len() as u64) < len {
-        l.push(format!("... only {} of {len} bytes are readable", bytes.len()));
-    }
-    l
 }

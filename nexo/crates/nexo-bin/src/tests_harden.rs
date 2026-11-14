@@ -301,7 +301,7 @@ fn battery(file: Vec<u8>) -> std::result::Result<(), String> {
         step!("tree-up", tree_window(&img, t, true, 3, true, None, DEFAULT_LINES));
         step!("slice", slice_window(&img, t, Some("rax"), None, None, None, DEFAULT_LINES));
         let addr = parse_addr(t).unwrap_or(0);
-        step!("bytes", crate::bytes(&img, addr, 64, ElemType::parse("u8").unwrap()));
+        step!("bytes", crate::bytes(&img, addr, 64, "u8"));
         step!("emu", emulate(&img, &EmuSpec { steps: 2000, secs: 2, ..EmuSpec::new(t) }));
     }
     step!("path", path_window(&img, &first, &last, true, 3, None, DEFAULT_LINES));

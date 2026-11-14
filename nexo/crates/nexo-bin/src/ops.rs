@@ -231,63 +231,10 @@ pub fn func_window(img: &Image, target: &str, with_bytes: bool, from: Option<u64
     )
 }
 
-/// How `bytes` reads memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ElemType {
-    U8,
-    U16,
-    U32,
-    U64,
-    I32,
-    F32,
-    F64,
-    Ptr,
-    Str,
-}
-
-impl ElemType {
-    pub const NAMES: [&'static str; 9] = ["u8", "u16", "u32", "u64", "i32", "f32", "f64", "ptr", "str"];
-
-    pub fn parse(s: &str) -> Result<ElemType> {
-        Ok(match s {
-            "u8" => ElemType::U8,
-            "u16" => ElemType::U16,
-            "u32" => ElemType::U32,
-            "u64" => ElemType::U64,
-            "i32" => ElemType::I32,
-            "f32" => ElemType::F32,
-            "f64" => ElemType::F64,
-            "ptr" => ElemType::Ptr,
-            "str" => ElemType::Str,
-            other => return Err(Error::Bad(format!("--as takes one of {}; got {other:?}", Self::NAMES.join(", ")))),
-        })
-    }
-
-    pub fn name(self) -> &'static str {
-        Self::NAMES[self as usize]
-    }
-
-    fn width(self) -> usize {
-        match self {
-            ElemType::U8 | ElemType::Str => 1,
-            ElemType::U16 => 2,
-            ElemType::U32 | ElemType::I32 | ElemType::F32 => 4,
-            ElemType::U64 | ElemType::F64 | ElemType::Ptr => 8,
-        }
-    }
-
-    fn per_row(self) -> usize {
-        match self {
-            ElemType::U8 => 16,
-            ElemType::U16 | ElemType::U32 | ElemType::I32 | ElemType::F32 => 8,
-            ElemType::U64 | ElemType::F64 => 4,
-            ElemType::Ptr | ElemType::Str => 1,
-        }
-    }
-}
-
-/// `len` bytes at `addr` as a typed table.
-pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
+/// `len` bytes at `addr` read as the type `ty` (see [`crate::typeview`]): the packed table for a scalar, one row per
+/// field for a struct.
+pub fn bytes(img: &Image, addr: u64, len: u64, ty: &str) -> Result<Output> {
+    let view = crate::typeview::resolve(img, ty)?;
     if len == 0 {
         return Err(Error::Bad("the length is 0; ask for at least 1 byte".into()));
     }
@@ -302,11 +249,7 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
         }
         None => Error::Bad(format!("{addr:#x} is not inside any section")),
     })?;
-    let mut rows = if ty == ElemType::Ptr && img.ptr_size() == 4 {
-        ptr32_rows(data, addr, &|v| describe(img, v, false))
-    } else {
-        typed_rows(data, addr, ty, &|v| describe(img, v, false))
-    };
+    let mut rows = view.rows(data, addr, &|v| describe(img, v, false));
     if (data.len() as u64) < len {
         let a = addr + data.len() as u64;
         rows.push(Row {
@@ -315,169 +258,15 @@ pub fn bytes(img: &Image, addr: u64, len: u64, ty: ElemType) -> Result<Output> {
             json: None,
         });
     }
-    let meta = json!({"addr": addr, "len": data.len(), "as": ty.name()});
+    let as_ = view.name();
+    let meta = json!({"addr": addr, "len": data.len(), "as": as_});
     Ok(Output {
         op: "bytes",
         meta,
         rows,
         tail: 0,
-        command: command(img, "bytes", &format!("{addr:#x} {len} --as {}", ty.name())),
+        command: command(img, "bytes", &format!("{addr:#x} {len} --as {}", shell_word(&as_))),
     })
-}
-
-/// `--as ptr` for an x86-32 file: one 4-byte pointer a row, with what it points at.
-fn ptr32_rows(data: &[u8], addr: u64, name: &dyn Fn(u64) -> Option<String>) -> Vec<Row> {
-    let words = data.as_chunks::<4>().0;
-    let mut rows: Vec<Row> = words
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let a = addr + (i * 4) as u64;
-            let v = u64::from(u32::from_le_bytes(*b));
-            let what = name(v);
-            let mut text = format!("{a:#010x}  {v:#010x}");
-            if let Some(w) = &what {
-                text.push_str(&format!("  {w}"));
-            }
-            Row { key: a, text, json: Some(json!({"addr": a, "values": [v], "target": what})) }
-        })
-        .collect();
-    let rest = data.len() % 4;
-    if rest > 0 {
-        let a = addr + (data.len() - rest) as u64;
-        rows.push(Row {
-            key: a,
-            text: format!("{a:#010x}  ({rest} trailing bytes not shown: not a whole ptr)"),
-            json: None,
-        });
-    }
-    rows
-}
-
-/// The typed table for bytes that start at `addr`, wherever they were read from (the file, or the
-/// memory of a process). `name` says what a pointer value points at.
-pub fn typed_rows(data: &[u8], addr: u64, ty: ElemType, name: &dyn Fn(u64) -> Option<String>) -> Vec<Row> {
-    let mut rows: Vec<Row> = Vec::new();
-    let (w, per) = (ty.width(), ty.per_row());
-    if ty == ElemType::Str {
-        let mut pos = 0usize;
-        while pos < data.len() {
-            // two or more NULs in a row are padding, not empty strings: one line says how many
-            let nuls = data[pos..].iter().take_while(|&&b| b == 0).count();
-            if nuls > 1 {
-                let a = addr + pos as u64;
-                rows.push(Row {
-                    key: a,
-                    text: format!("{a:#010x}  ... {nuls} NUL bytes skipped"),
-                    json: Some(json!({"addr": a, "nul_bytes": nuls})),
-                });
-                pos += nuls;
-                continue;
-            }
-            let end = data[pos..].iter().position(|&b| b == 0).map_or(data.len(), |n| pos + n);
-            // escape here, once: `shorten` would escape the backslash of a `\x0a` a second time
-            let text: String = data[pos..end]
-                .iter()
-                .map(|&b| match b {
-                    b'"' => "\\\"".to_string(),
-                    b'\\' => "\\\\".to_string(),
-                    0x20..=0x7e => (b as char).to_string(),
-                    _ => format!("\\x{b:02x}"),
-                })
-                .collect();
-            let shown = if text.chars().count() > 200 {
-                format!("{}...", text.chars().take(200).collect::<String>())
-            } else {
-                text.clone()
-            };
-            let a = addr + pos as u64;
-            rows.push(Row {
-                key: a,
-                text: format!("{a:#010x}  \"{shown}\""),
-                json: Some(json!({"addr": a, "text": text})),
-            });
-            pos = end + 1;
-        }
-    } else {
-        let n = data.len() / w;
-        let mut i = 0;
-        while i < n {
-            let k = per.min(n - i);
-            let a = addr + (i * w) as u64;
-            let mut cells: Vec<String> = Vec::new();
-            let mut vals: Vec<Value> = Vec::new();
-            for j in 0..k {
-                let b = &data[(i + j) * w..(i + j + 1) * w];
-                match ty {
-                    ElemType::U8 => {
-                        cells.push(format!("{:02x}", b[0]));
-                        vals.push(json!(b[0]));
-                    }
-                    ElemType::U16 => {
-                        let v = u16::from_le_bytes([b[0], b[1]]);
-                        cells.push(format!("{v:#06x}"));
-                        vals.push(json!(v));
-                    }
-                    ElemType::U32 => {
-                        let v = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                        cells.push(format!("{v:#010x}"));
-                        vals.push(json!(v));
-                    }
-                    ElemType::I32 => {
-                        let v = i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                        cells.push(format!("{v:>11}"));
-                        vals.push(json!(v));
-                    }
-                    ElemType::F32 => {
-                        let v = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                        cells.push(format!("{v:>12}"));
-                        vals.push(json!(v));
-                    }
-                    ElemType::U64 | ElemType::F64 | ElemType::Ptr => {
-                        let raw = [b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]];
-                        if ty == ElemType::F64 {
-                            let v = f64::from_le_bytes(raw);
-                            cells.push(format!("{v:>20}"));
-                            vals.push(json!(v));
-                        } else {
-                            let v = u64::from_le_bytes(raw);
-                            cells.push(format!("{v:#018x}"));
-                            vals.push(json!(v));
-                        }
-                    }
-                    ElemType::Str => {}
-                }
-            }
-            let mut text = format!("{a:#010x}  {}", cells.join(" "));
-            let mut j = json!({"addr": a, "values": vals});
-            if ty == ElemType::U8 {
-                let ascii: String =
-                    data[i..i + k].iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
-                text.push_str(&format!("{}  |{ascii}|", " ".repeat(3 * (per - k))));
-                j["ascii"] = json!(ascii);
-            }
-            if ty == ElemType::Ptr {
-                let v = vals[0].as_u64().unwrap_or(0);
-                let what = name(v);
-                if let Some(wh) = &what {
-                    text.push_str(&format!("  {wh}"));
-                }
-                j["target"] = json!(what);
-            }
-            rows.push(Row { key: a, text, json: Some(j) });
-            i += k;
-        }
-        let rest = data.len() - n * w;
-        if rest > 0 {
-            let a = addr + (n * w) as u64;
-            rows.push(Row {
-                key: a,
-                text: format!("{a:#010x}  ({rest} trailing bytes not shown: not a whole {})", ty.name()),
-                json: None,
-            });
-        }
-    }
-    rows
 }
 
 /// How `strings` orders its list.

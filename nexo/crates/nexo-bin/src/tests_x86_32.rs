@@ -137,7 +137,7 @@ fn a_hand_built_elf32_reads_as_x86_32_with_its_functions_calls_and_string_refere
     assert!(fb.contains("main"), "{fb}");
     let fi = whole(&find_imm(&img, i128::from(BASE + RODATA_OFF)).unwrap());
     assert!(fi.contains("main"), "{fi}");
-    let b = whole(&bytes(&img, u64::from(BASE + TEXT_OFF + 6 + 4), 4, ElemType::Ptr).unwrap());
+    let b = whole(&bytes(&img, u64::from(BASE + TEXT_OFF + 6 + 4), 4, "ptr").unwrap());
     assert!(b.contains(&format!("{:#010x}", BASE + RODATA_OFF)) && b.contains(TEXT), "{b}");
     let hits = crate::mainfind::find_main(&img);
     assert!(hits.iter().any(|h| h.addr == u64::from(BASE + TEXT_OFF + 6)), "{hits:?}");
@@ -223,7 +223,7 @@ fn check_sample(img: &Image, tag: &str) {
     assert!(s.contains("pointer in data"), "{tag}\n{s}");
     let banner = img.symbols.iter().find(|s| s.name == "banner").map(|s| s.addr);
     let banner = banner.unwrap_or_else(|| panic!("{tag}: the symbol banner"));
-    let b = whole(&bytes(img, banner, 4, ElemType::Ptr).unwrap());
+    let b = whole(&bytes(img, banner, 4, "ptr").unwrap());
     assert!(b.contains("pointer in data"), "{tag}: a 4-byte pointer\n{b}");
     let ov = whole(&overview(img).unwrap());
     assert!(ov.contains(img.format_name()) && ov.contains("main"), "{tag}\n{ov}");

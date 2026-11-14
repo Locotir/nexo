@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use nexo_bin::{ElemType, Error, FnQuery, FuncSort, Image, Lines, Output, PageAsk, StrSort};
+use nexo_bin::{Error, FnQuery, FuncSort, Image, Lines, Output, PageAsk, StrSort};
 
 use sigs::make_sigs;
 use wasm::wasm_in;
@@ -278,11 +278,14 @@ pub fn execute_in(a: &BinArgs, data_dir: &Path) -> Result<String, Error> {
         BinOp::Sigs { .. } => unreachable!("handled before the file is opened"),
         BinOp::Names { .. } => nexo_bin::names_list_window(&img, from, lines),
         BinOp::Bytes { addr, len, ty, .. } => {
-            let (at, n) = match len {
-                Some(n) => (nexo_bin::any_addr_in(&img, addr)?, *n),
-                None => nexo_bin::range_in(&img, addr).map(|(lo, hi)| (lo, hi - lo))?,
+            let view = nexo_bin::resolve_type(&img, ty)?;
+            let (at, n) = match (len, view.fixed_size()) {
+                (Some(n), _) => (nexo_bin::any_addr_in(&img, addr)?, *n),
+                // a struct or `T[N]` is as long as its type: one place is enough
+                (None, Some(size)) if !nexo_bin::is_span(addr) => (nexo_bin::any_addr_in(&img, addr)?, size),
+                (None, _) => nexo_bin::range_in(&img, addr).map(|(lo, hi)| (lo, hi - lo))?,
             };
-            nexo_bin::bytes(&img, at, n, ElemType::parse(ty)?)?
+            nexo_bin::bytes(&img, at, n, ty)?
         }
         BinOp::Strings { sort, .. } => {
             nexo_bin::strings_window(&img, op_grep.as_deref(), StrSort::parse(sort)?, from, lines)?

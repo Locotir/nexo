@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use nexo_bin::{ElemType, FuncSort, StrSort};
+use nexo_bin::{FuncSort, StrSort};
 
 use super::{parse_addr, Common};
 
@@ -326,8 +326,8 @@ pub enum BinOp {
         /// How many bytes (at most 262144).
         #[arg(value_parser = parse_addr)]
         len: Option<u64>,
-        /// u8, u16, u32, u64, i32, f32, f64, ptr (shows what it points to) or str.
-        #[arg(long = "as", default_value = "u8", value_parser = ElemType::NAMES)]
+        /// A C type: u8..u64, i8..i64, f32, f64, char, ptr (shows what it points to), str, an array like u32[4], a struct named with `struct` or one the file's DWARF or PDB has (a struct or T[N] needs no LEN).
+        #[arg(long = "as", default_value = "u8")]
         ty: String,
         #[command(flatten)]
         common: Common,

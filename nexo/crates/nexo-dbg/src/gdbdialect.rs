@@ -557,26 +557,31 @@ pub fn per_line(fmt: char, size: usize) -> usize {
 /// gdb commands this debugger has no twin for, with what to type instead.
 pub fn hint(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
-        "ptype" | "whatis" => {
-            "no type information here: `print <expr>` shows a value, `mem <addr> <len> --as u32|u64|ptr|str` reads a layout, `print p->field` works when the program has DWARF"
-        }
         "list" | "l" => "`dis [addr] [N]` shows the code; a stop shows file:line when the program has DWARF lines",
         "call" => "no calls into the program: `hook <name> ret <v>` changes a result, `print` works out values",
         "return" | "jump" => "`setreg rip <addr>` moves the program counter (asks); `finish` runs to the caller",
         "rwatch" | "awatch" => "`watch <addr> [len] r|w|x` stops on a read, a write or a fetch",
-        "frame" | "f" | "up" | "down" => "`bt` lists the frames; `finish` runs to the caller; `print`/`x` read the current frame",
+        "frame" | "f" | "up" | "down" => {
+            "`bt` lists the frames; `finish` runs to the caller; `print`/`x` read the current frame"
+        }
         "handle" => "`catch add <SIG>` or `catch del <SIG>` choose the signals that stop the program",
         "source" => "scripts go in the call itself, one command per line, or `a; b; c`",
         "shell" | "!" => "the debug tool does not run shell commands: use the shell tool",
-        "target" | "tui" | "layout" | "focus" | "refresh" | "winheight" => "this debugger has no screen modes or targets: `run`, `attach <pid>` and `connect` start or join a program",
+        "target" | "tui" | "layout" | "focus" | "refresh" | "winheight" => {
+            "this debugger has no screen modes or targets: `run`, `attach <pid>` and `connect` start or join a program"
+        }
         "file" | "exec-file" | "symbol-file" | "directory" | "cd" | "pwd" | "tty" => {
             "the program is chosen by `run <path> [args]`"
         }
         "start" | "starti" => "`run --main <path> [args]` starts and stops at main",
-        "checkpoint" | "restart" | "reverse-continue" | "record" => "this debugger cannot go back in time: `cont` forward, `history` lists past stops",
+        "checkpoint" | "restart" | "reverse-continue" | "record" => {
+            "this debugger cannot go back in time: `cont` forward, `history` lists past stops"
+        }
         "quit" => "`end` as its own call closes the session",
         "kill" => "`kill` ends the program, `end` closes the session",
-        "define" | "document" | "python" | "py" | "guile" => "no scripting language here: put the commands in the call, `a; b; c`",
+        "define" | "document" | "python" | "py" | "guile" => {
+            "no scripting language here: put the commands in the call, `a; b; c`"
+        }
         _ => return None,
     })
 }

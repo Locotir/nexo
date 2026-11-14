@@ -188,6 +188,7 @@ fn read_inner(file: std::fs::File, base: u64, out: &mut Pdb) -> pdb::Result<()> 
             }
             if let (Some(fl), name) = (c.fields, c.name.to_string().into_owned()) {
                 if let Some(text) = tcx.fields(fl) {
+                    out.types.struct_sizes.entry(name.clone()).or_insert(c.size);
                     out.types.structs.entry(name).or_insert(text);
                 }
             }

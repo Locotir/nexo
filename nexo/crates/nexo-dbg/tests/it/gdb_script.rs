@@ -203,9 +203,9 @@ fn gdb_words_answer_in_one_call_each() {
     assert!(run(&mut s, "info proc mappings").contains("stdview"));
     assert!(run(&mut s, "info sharedlibrary").contains("libc") || run(&mut s, "info sharedlibrary").contains("lib"));
     assert!(run(&mut s, "bt").contains("#0"));
-    // an unknown gdb command names its nearest equivalent
+    // `ptype` is the type view: a name nothing knows says what was looked at
     let t = refused(&mut s, "ptype Keeper");
-    assert!(t.contains("ptype") && t.len() > 20, "{t}");
+    assert!(t.contains("no type `Keeper`"), "{t}");
     // delete and the rest of the run
     run(&mut s, "delete 1");
     let end = run(&mut s, "cont --wait 30");

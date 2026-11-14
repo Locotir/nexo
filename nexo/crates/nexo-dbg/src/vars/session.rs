@@ -86,6 +86,18 @@ impl Session {
         })
     }
 
+    /// The type of a source expression (`ptype node->next`) as the program's variable info names it; `None` when the
+    /// program has no variable info or the expression is not one of its variables.
+    pub(crate) fn var_type_name(&mut self, src: &str) -> Option<String> {
+        self.with_vars(|vars, regs| match vars.path(src, regs)? {
+            Ok((v, amp)) => Some(format!("{}{}", vars.name(v.ty), if amp { " *" } else { "" })),
+            Err(_) => None,
+        })
+        .ok()
+        .flatten()
+        .flatten()
+    }
+
     /// One line of the locals for a stop report, short; `None` without variable info.
     pub(crate) fn locals_line(&mut self) -> Option<String> {
         self.with_vars(|vars, regs| {

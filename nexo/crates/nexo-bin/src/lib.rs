@@ -41,6 +41,7 @@ mod sigs;
 mod slice;
 mod slice_fwd;
 mod strings;
+mod typeview;
 mod wasm;
 mod wasm_dis;
 mod wasm_ops;
@@ -102,7 +103,7 @@ pub use names::{
 };
 pub use ops::{
     bytes, find_bytes, find_bytes_in, find_imm, find_imm_in, func, func_window, info, parse_pattern, strings,
-    strings_window, typed_rows, ElemType, StrSort,
+    strings_window, StrSort,
 };
 pub use overview::{overview, overview_window};
 pub use page::{Lines, Output, Page, PageAsk, Row, DEFAULT_LINES, MIN_LINES};
@@ -114,6 +115,7 @@ pub use sigs::{
 };
 pub use slice::slice_window;
 pub use slice_fwd::slice_forward;
+pub use typeview::{resolve as resolve_type, Layout, Member, Ty, TypeView};
 pub use wasm_ops::{is_wasm, wasm_answer, wasm_answer_bytes, WasmAsk, WASM_OPS};
 pub use xops::{
     calls, calls_window, func_list, func_list_window, name_clear, name_set, names_list, names_list_window, note_clear,

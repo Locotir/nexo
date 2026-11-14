@@ -5,7 +5,7 @@ use super::*;
 impl Session {
     pub(super) fn cmd_print(&mut self, a: &Args) -> Result<Output> {
         if a.pos.is_empty() {
-            return usage("print <expression> [--as str|string|vector[:u8|u32|u64|ptr]]");
+            return usage("print <expression> [--as str|string|vector[:u8|u32|u64|ptr]|<type>]");
         }
         self.need_stopped()?;
         let src = a.pos.join(" ");
@@ -19,7 +19,11 @@ impl Session {
         let v = val.v;
         // `--as string` and `--as vector` read the object at that address as libstdc++ lays it out
         if let Some(kind) = view.filter(|k| *k != "str") {
-            return self.std_view(kind, v);
+            if kind.starts_with("string") || kind.starts_with("std::") || kind.starts_with("vector") {
+                return self.std_view(kind, v);
+            }
+            // any other `--as` is a type (see `mem`): the value is the address of it
+            return self.read_typed("print", v, kind, None);
         }
         let mut s = format!("{src} = {v:#x} ({})", v as i64);
         if let Some(l) = self.mods.label(v, true) {
@@ -32,6 +36,32 @@ impl Session {
             s.push_str(&format!(" {t}"));
         }
         Ok(rows("print", vec![s], json!({"value": v})))
+    }
+
+    /// `ptype <type|variable>`: the type, its size and fields, or the type of a variable of the stopped program.
+    pub(super) fn cmd_ptype(&mut self, a: &Args) -> Result<Output> {
+        if a.pos.is_empty() {
+            return usage(
+                "ptype <type|variable>   (u32, char[16], item[4], struct node, a DWARF or PDB type, or a variable)",
+            );
+        }
+        let src = a.pos.join(" ");
+        let said = match nexo_bin::resolve_type(self.mods.main_image(), &src) {
+            Ok(v) => return Ok(lines("ptype", v.describe(self.mods.main_image()), v.name())),
+            Err(e) => e.to_string(),
+        };
+        // not a type: maybe a variable of the stopped program, whose type is then described
+        if let Some(t) = self.var_type_name(&src) {
+            return Ok(match nexo_bin::resolve_type(self.mods.main_image(), &t) {
+                Ok(v) => {
+                    let mut r = vec![nexo_bin::Row { key: 0, text: format!("{src}: {t}"), json: None }];
+                    r.extend(v.describe(self.mods.main_image()));
+                    lines("ptype", r, v.name())
+                }
+                Err(_) => rows("ptype", vec![format!("{src}: {t}")], json!({"type": t})),
+            });
+        }
+        fail(said)
     }
 
     pub(super) fn cmd_args(&mut self, _a: &Args) -> Result<Output> {
@@ -145,4 +175,10 @@ impl Session {
         self.cur = tid;
         Ok(rows("thread", vec![format!("current thread {tid}")], json!({})))
     }
+}
+
+/// Described rows as an answer, numbered in order.
+fn lines(op: &'static str, r: Vec<nexo_bin::Row>, ty: String) -> Output {
+    let r = r.into_iter().enumerate().map(|(i, x)| nexo_bin::Row { key: i as u64, ..x }).collect();
+    Output { op, meta: json!({"type": ty}), rows: r, tail: 0, command: String::new() }
 }

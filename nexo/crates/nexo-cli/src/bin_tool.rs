@@ -25,7 +25,7 @@ decomp <file> <name|addr>...  pseudo-C
 xref <file> <name|addr> [--to ADDR|FN], xref <file> --str TEXT  who calls, reads, writes or points at it
 calls <file> <name>, tree <file> <name> [--up], path <file> <from> <to>  callers, callees, call chains
 cfg <file> <name|addr>  control-flow graph of one function: blocks, edges, loops, dominators (x86-64)
-strings <file> [--grep RE], find <file> <hex|--imm N>, bytes <file> <addr> <len> [--as u32|ptr|str], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
+strings <file> [--grep RE], find <file> <hex|--imm N>, bytes <file> <addr> <len> [--as u32|char[16]|ptr|str|item[4]|a named or DWARF struct], slice, crypto, diff <old> <new>, names, managed (JVM, .NET), emu (one function in an emulator)
 --lines N|all, --from K, --grep RE, --json after any op; `<op> --help` for its flags
 a; b  several ops in one call, each answer under its own `> op` line; an error stops the rest
 Never runs the file. name, note, proto, struct, var, sigs and crypto --save keep names, types and signatures for this binary in nexo's data folder. patch --out and sigs --out write a file: the person is asked";

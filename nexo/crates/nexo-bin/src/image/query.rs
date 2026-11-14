@@ -105,6 +105,9 @@ impl Image {
                 for (k, v) in &p.types.structs {
                     d.structs.entry(k.clone()).or_insert_with(|| v.clone());
                 }
+                for (k, v) in &p.types.struct_sizes {
+                    d.struct_sizes.entry(k.clone()).or_insert(*v);
+                }
             }
             d
         })

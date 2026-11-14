@@ -154,21 +154,21 @@ fn fn_asks_fail_with_a_reason() {
 fn bytes_as_u32_shows_the_table() {
     for f in [fixtures::elf64(false), fixtures::pe64(false)] {
         let img = open(&f);
-        let o = bytes(&img, f.table, 16, ElemType::U32).unwrap();
+        let o = bytes(&img, f.table, 16, "u32").unwrap();
         let t = text(&o);
         assert_eq!(t, format!("{:#010x}  0x0000000a 0x00000014 0x0000001e 0x12345678", f.table));
         assert_eq!(o.page(None, 50).value["items"][0]["values"], serde_json::json!([10, 20, 30, 0x1234_5678u32]));
     }
     let img = open(&fixtures::elf64(false));
     let f = fixtures::elf64(false);
-    let t = text(&bytes(&img, f.table, 16, ElemType::I32).unwrap());
+    let t = text(&bytes(&img, f.table, 16, "i32").unwrap());
     assert!(t.contains("20") && t.contains("305419896"), "{t}");
-    let t = text(&bytes(&img, f.table, 20, ElemType::U8).unwrap());
+    let t = text(&bytes(&img, f.table, 20, "u8").unwrap());
     assert_eq!(t.lines().count(), 2);
     assert!(t.lines().next().unwrap().ends_with('|'), "{t}");
-    let t = text(&bytes(&img, f.string, 15, ElemType::Str).unwrap());
+    let t = text(&bytes(&img, f.string, 15, "str").unwrap());
     assert_eq!(t, format!("{:#010x}  \"{STRING}\"", f.string));
-    let t = text(&bytes(&img, f.table, 5, ElemType::U32).unwrap());
+    let t = text(&bytes(&img, f.table, 5, "u32").unwrap());
     assert!(t.contains("1 trailing bytes not shown"), "{t}");
     // a pointer shows what it points to
     let mut data = f.bytes.clone();
@@ -176,7 +176,7 @@ fn bytes_as_u32_shows_the_table() {
     data[off..off + 8].copy_from_slice(&f.b.to_le_bytes());
     data[off + 8..off + 16].copy_from_slice(&f.string.to_le_bytes());
     let img2 = Image::from_bytes(data, PathBuf::from("/fx/prog")).unwrap();
-    let t = text(&bytes(&img2, f.table, 16, ElemType::Ptr).unwrap());
+    let t = text(&bytes(&img2, f.table, 16, "ptr").unwrap());
     let lines: Vec<&str> = t.lines().collect();
     assert_eq!(lines.len(), 2);
     assert!(lines[0].ends_with("helper"), "{t}");
@@ -187,12 +187,13 @@ fn bytes_as_u32_shows_the_table() {
 fn bytes_refuses_what_it_cannot_read() {
     let f = fixtures::elf64(false);
     let img = open(&f);
-    assert!(bytes(&img, 0x10, 4, ElemType::U8).unwrap_err().to_string().contains("not inside any section"));
-    assert!(bytes(&img, f.table, 0, ElemType::U8).is_err());
-    assert!(bytes(&img, f.table, u64::MAX, ElemType::U8).unwrap_err().to_string().contains("too many"));
-    assert!(ElemType::parse("u128").is_err());
+    assert!(bytes(&img, 0x10, 4, "u8").unwrap_err().to_string().contains("not inside any section"));
+    assert!(bytes(&img, f.table, 0, "u8").is_err());
+    assert!(bytes(&img, f.table, u64::MAX, "u8").unwrap_err().to_string().contains("too many"));
+    let e = bytes(&img, f.table, 16, "u128").unwrap_err().to_string();
+    assert!(e.starts_with("no type `u128`: not a base type, not named with `struct`"), "{e}");
     // the data section ends 31 bytes in: asking for more says where the bytes stop
-    let t = text(&bytes(&img, f.table, 64, ElemType::U8).unwrap());
+    let t = text(&bytes(&img, f.table, 64, "u8").unwrap());
     assert!(t.contains("the file holds no more bytes after"), "{t}");
 }
 
@@ -438,7 +439,7 @@ fn ask_everything(img: &Image) {
     let _ = find_bytes(img, "00 00").map(|o| o.page(None, 50));
     let _ = find_imm(img, 1337).map(|o| o.page(None, 50));
     for s in img.sections.iter().take(8) {
-        for ty in [ElemType::U8, ElemType::Ptr, ElemType::Str, ElemType::F64] {
+        for ty in ["u8", "ptr", "str", "f64"] {
             let _ = bytes(img, s.addr, 64, ty);
         }
         let _ = img.addr_to_offset(s.addr.wrapping_add(s.size));
@@ -652,7 +653,7 @@ fn bytes_as_str_escapes_once() {
     elf.bytes[off] = 0x0a; // a control byte
     elf.bytes[off + 1] = b'\\';
     let img = Image::from_bytes(elf.bytes, "/x".into()).unwrap();
-    let t = text(&bytes(&img, a, 8, ElemType::Str).unwrap());
+    let t = text(&bytes(&img, a, 8, "str").unwrap());
     assert!(t.contains(r#""\x0a\\"#), "{t}");
 }
 
@@ -664,7 +665,7 @@ fn bytes_as_str_collapses_a_run_of_nuls_into_one_line() {
     // "ab", four NULs after its own, "cd", one empty string, "ef"
     elf.bytes[off..off + 14].copy_from_slice(b"ab\0\0\0\0\0cd\0\0ef\0");
     let img = Image::from_bytes(elf.bytes, "/x".into()).unwrap();
-    let o = bytes(&img, a, 14, ElemType::Str).unwrap();
+    let o = bytes(&img, a, 14, "str").unwrap();
     let want = [
         format!("{a:#010x}  \"ab\""),
         format!("{:#010x}  ... 4 NUL bytes skipped", a + 3),
