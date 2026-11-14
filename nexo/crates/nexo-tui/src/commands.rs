@@ -503,8 +503,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     (
         "context and tools",
         &[
-            "context", "sent", "cost", "tools", "hooks", "mcp", "skills", "plugins", "jobs", "panel", "todo", "diff",
-            "init", "review", "commit", "pr", "status",
+            "context", "sent", "cost", "tools", "hooks", "mcp", "chrome", "skills", "plugins", "jobs", "panel", "todo",
+            "diff", "init", "review", "commit", "pr", "status",
         ],
     ),
     ("settings", &["settings", "sandbox", "add-dir", "theme"]),
@@ -828,7 +828,7 @@ mod tests {
             assert!(lookup(old).is_some(), "/{old} no longer resolves");
             assert!(GROUPS.iter().all(|(_, m)| !m.contains(&old)), "/{old} is in a menu group");
         }
-        assert_eq!(COMMANDS.len(), 46, "the menu has grown or shrunk: update this on purpose");
+        assert_eq!(COMMANDS.len(), 47, "the menu has grown or shrunk: update this on purpose");
         for old in ["provider", "keys", "config", "yolo"] {
             assert!(!shown.contains(&old.to_string()), "/{old} still has its own line");
         }
@@ -864,6 +864,14 @@ mod tests {
             names.starts_with(&["compact", "clear"]) && ["cost", "context", "copy"].iter().all(|n| names.contains(n)),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn chrome_opens_the_browser_window_and_is_listed() {
+        assert_eq!(parse("/chrome"), Some(Command::Chrome));
+        assert_eq!(parse("/browser"), Some(Command::Chrome));
+        let s = lookup("chrome").expect("a listed command");
+        assert!(!s.description.is_empty(), "the menu and /help show its line");
     }
 
     #[test]
