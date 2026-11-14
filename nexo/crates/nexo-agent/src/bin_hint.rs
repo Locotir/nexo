@@ -75,10 +75,32 @@ fn say(op: &str, offer: Offer) -> String {
 /// The op of `nexo bin` that gives what `prog` was asked for, with the file.
 fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>) -> String {
     let f = hint_cmd::quoted(file);
+    // short options of a cluster (`-Ws`): it stops at an option that takes a value, whose rest (`-x.data`) is not
+    // a set of options
+    let takes = if prog == "readelf" { "xpR" } else { "jbmME" };
     let has = |short: char, long: &str| {
         args.iter().any(|a| {
-            (a.starts_with('-') && !a.starts_with("--") && a.contains(short))
-                || (!long.is_empty() && a.starts_with(long))
+            let cluster = a.strip_prefix('-').filter(|r| !r.starts_with('-')).is_some_and(|r| {
+                let upto = r.find(|c| takes.contains(c)).map_or(r.len(), |i| i + 1);
+                r[..upto].contains(short)
+            });
+            cluster || (!long.is_empty() && a.starts_with(long))
+        })
+    };
+    // the value of a short option that takes one: `-j SEC`, `-jSEC`, `-Wx SEC`
+    let short_val = |opt: char| {
+        args.iter().enumerate().find_map(|(i, a)| {
+            let r = a.strip_prefix('-').filter(|r| !r.starts_with('-'))?;
+            let at = r.find(|c| takes.contains(c))?;
+            if !r[at..].starts_with(opt) {
+                return None;
+            }
+            let rest = &r[at + 1..];
+            if rest.is_empty() {
+                args.get(i + 1).cloned()
+            } else {
+                Some(rest.trim_start_matches('=').to_string())
+            }
         })
     };
     let valued = |long: &str| {
@@ -114,14 +136,29 @@ fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>) -> String
                 format!("overview {f}")
             } else if has('t', "--syms") || has('T', "--dynamic-syms") {
                 format!("funcs {f}")
+            } else if has('s', "--full-contents") {
+                // a hex dump of the section named with `-j`; with none, the section list
+                let sec = short_val('j').or_else(|| valued("--section")).filter(|s| plain(s));
+                match sec {
+                    Some(sec) => bytes_of_section(&f, &sec),
+                    None => format!("info {f}"),
+                }
             } else {
                 format!("info {f}")
             }
         }
         "readelf" => {
-            if has('s', "--syms") || has('s', "--symbols") || has('s', "--dyn-syms") {
+            let hex = short_val('x').or_else(|| valued("--hex-dump"));
+            if let Some(sec) = hex {
+                // a number is a section index: the section list gives the names
+                if plain(&sec) && !sec.chars().all(|c| c.is_ascii_digit()) {
+                    bytes_of_section(&f, &sec)
+                } else {
+                    format!("info {f}")
+                }
+            } else if has('s', "--syms") || has('s', "--symbols") || has('s', "--dyn-syms") {
                 format!("funcs {f}")
-            } else if has('p', "--string-dump") || has('x', "--hex-dump") {
+            } else if has('p', "--string-dump") {
                 format!("strings {f}")
             } else {
                 format!("info {f}")
@@ -160,6 +197,20 @@ fn op_for(prog: &str, args: &[String], file: &str, next: Option<&Seg>) -> String
         "xxd" | "hexdump" | "od" => format!("info {f}"),
         // gdb with no debug tool offered
         _ => format!("overview {f}"),
+    }
+}
+
+/// `bytes <file> <section>`; a section that holds pointers by its standard meaning is read `--as ptr`, the rest
+/// as plain bytes (a `.data` could hold anything).
+fn bytes_of_section(file: &str, sec: &str) -> String {
+    let ptrs = sec == ".data.rel.ro"
+        || sec.starts_with(".data.rel.ro.")
+        || matches!(sec, ".init_array" | ".fini_array" | ".got" | ".got.plt");
+    let sec = hint_cmd::quoted(sec);
+    if ptrs {
+        format!("bytes {file} {sec} --as ptr")
+    } else {
+        format!("bytes {file} {sec}")
     }
 }
 
@@ -396,6 +447,27 @@ mod tests {
         assert_eq!(op("readelf -Ws p"), "funcs p");
         assert_eq!(op("readelf -S p"), "info p");
         assert_eq!(op("readelf -p .rodata p"), "strings p");
+        assert_eq!(op("objdump -s -j .rodata p"), "bytes p .rodata");
+        assert_eq!(op("objdump -s -j .data p"), "bytes p .data");
+        assert_eq!(op("objdump -sj .data p"), "bytes p .data");
+        assert_eq!(op("objdump -s -j.data p"), "bytes p .data");
+        assert_eq!(op("objdump --full-contents --section=.rodata p"), "bytes p .rodata");
+        assert_eq!(op("objdump -s --section .rodata p"), "bytes p .rodata");
+        assert_eq!(op("objdump -s p"), "info p");
+        assert_eq!(op("objdump -d -j .text p"), "overview p");
+        assert_eq!(op("objdump -s -j .got p"), "bytes p .got --as ptr");
+        assert_eq!(op("objdump -s -j '$x' p"), "info p");
+        assert_eq!(op("readelf -x .data p"), "bytes p .data");
+        assert_eq!(op("readelf -x.data p"), "bytes p .data");
+        assert_eq!(op("readelf -Wx .rodata p"), "bytes p .rodata");
+        assert_eq!(op("readelf --hex-dump=.rodata p"), "bytes p .rodata");
+        assert_eq!(op("readelf -x .data.rel.ro p"), "bytes p .data.rel.ro --as ptr");
+        assert_eq!(op("readelf -x .init_array p"), "bytes p .init_array --as ptr");
+        assert_eq!(op("readelf -x .fini_array p"), "bytes p .fini_array --as ptr");
+        assert_eq!(op("readelf -x .got.plt p"), "bytes p .got.plt --as ptr");
+        assert_eq!(op("readelf -x .symtab p"), "bytes p .symtab");
+        assert_eq!(op("readelf -x 16 p"), "info p");
+        assert_eq!(op("readelf -p.rodata p"), "strings p");
         assert_eq!(op("nm -C p"), "funcs p");
         assert_eq!(op("strings -n 8 p"), "strings p");
         assert_eq!(op("strings p | grep -i http"), "strings p --grep \"(?i)http\"");

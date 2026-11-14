@@ -190,6 +190,17 @@ fn resolve_name<'a>(img: &'a Image, t: &str) -> Result<&'a crate::funcs::Func> {
             if let Some(s) = img.sections.iter().find(|s| s.name == t) {
                 return func_at_addr(img, s.addr);
             }
+            // a name that starts with `.` is a section name: say which sections the file has
+            if t.starts_with('.') && t.len() > 1 {
+                let have: Vec<&str> =
+                    img.sections.iter().filter(|s| s.alloc && !s.name.is_empty()).map(|s| s.name.as_str()).collect();
+                if !have.is_empty() {
+                    return Err(Error::Bad(format!(
+                        "no section {t:?} in this file; its loaded sections: {}",
+                        have.join(" ")
+                    )));
+                }
+            }
             let hint = if t.len() >= 3 && t.chars().all(|c| c.is_ascii_hexdigit()) {
                 format!("; for an address write 0x{t}")
             } else if img.imports.iter().any(|i| i.name == t) {
