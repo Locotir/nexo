@@ -232,3 +232,26 @@ fn a_streaming_reply_that_grows_while_scrolled_up_counts_as_one_new_message() {
     assert_eq!(a.unseen(), 2);
     assert!(rows.iter().any(|r| r.contains("↓ 2 new")), "{rows:?}");
 }
+
+#[test]
+fn thinking_counts_from_the_request_and_says_nothing_when_the_provider_sent_no_text() {
+    use std::time::Duration;
+    let (mut a, _rx) = bare();
+    let t0 = Instant::now();
+    a.fx.clock = Some(t0);
+    a.handle_agent(AgentEvent::TurnStart { turn: 1 });
+    a.handle_agent(AgentEvent::AssistantStart);
+    // a provider that streams its summary at the end: the events come together, 8 s after the request
+    a.fx.clock = Some(t0 + Duration::from_secs(8));
+    a.handle_agent(AgentEvent::ReasoningDelta { text: "**Plan**".into() });
+    a.fx.clock = Some(t0 + Duration::from_millis(8002));
+    a.handle_agent(AgentEvent::TextDelta { text: "ok".into() });
+    assert!(matches!(&a.blocks[0], Block::Reasoning { elapsed_ms: Some(8002), .. }), "{:?}", a.blocks[0]);
+    assert_eq!(head(&mut a, 0).trim(), "▸ thinking · 1 line · 8.0s");
+    // encrypted reasoning: only a paragraph break comes, and there is no line at all
+    a.handle_agent(AgentEvent::AssistantStart);
+    a.handle_agent(AgentEvent::ReasoningDelta { text: "\n".into() });
+    a.handle_agent(AgentEvent::TextDelta { text: "again".into() });
+    let i = a.blocks.iter().rposition(|b| matches!(b, Block::Reasoning { .. })).unwrap();
+    assert!(a.lines(i, 80).is_empty());
+}

@@ -102,6 +102,8 @@ pub struct App {
     /// What the agent said it is doing before the reply's first word (`AgentEvent::Preparing`).
     pub prep: Option<String>,
     pub turn_started: Option<Instant>,
+    /// When the request of the reply now streaming was sent: what a reasoning block's time counts from.
+    pub(crate) reply_started: Option<Instant>,
     /// When the interface opened (the banner's mark lights up for a moment).
     pub opened: Instant,
     /// The gauge's fill as drawn, easing towards the real share (0..1).
@@ -370,6 +372,7 @@ impl App {
             busy: false,
             prep: None,
             turn_started: None,
+            reply_started: None,
             opened: Instant::now(),
             gauge_shown: 0.0,
             cost_shown: 0.0,

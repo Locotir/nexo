@@ -54,11 +54,12 @@ impl App {
     }
 
     pub(super) fn close_reasoning(&mut self) {
+        let now = self.now();
         for i in (0..self.blocks.len()).rev() {
             if let Block::Reasoning { streaming, started, elapsed_ms, .. } = &mut self.blocks[i] {
                 if *streaming {
                     *streaming = false;
-                    *elapsed_ms = started.map(|s| s.elapsed().as_millis() as u64);
+                    *elapsed_ms = started.map(|s| now.saturating_duration_since(s).as_millis() as u64);
                     self.cache[i] = None;
                 }
                 break;

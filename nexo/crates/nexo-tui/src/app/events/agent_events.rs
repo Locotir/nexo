@@ -67,7 +67,10 @@ impl App {
             }
             // a reply that starts while one is still open: the open one was dropped and the request sent again
             // (a stream cut inside its reasoning), so what it streamed is closed and not joined to the new one
-            AgentEvent::AssistantStart => self.close_streaming(),
+            AgentEvent::AssistantStart => {
+                self.close_streaming();
+                self.reply_started = Some(self.now());
+            }
             AgentEvent::TextDelta { text } => {
                 self.prep = None;
                 self.streamed_chars += text.len();
@@ -101,7 +104,9 @@ impl App {
                         self.push(Block::Reasoning {
                             text,
                             streaming: true,
-                            started: Some(self.now()),
+                            // the time the model spent is from the request to the first answer or call, not
+                            // between reasoning events (some providers send those together, at the end)
+                            started: self.reply_started.or(Some(self.now())),
                             elapsed_ms: None,
                             folded: true,
                         });

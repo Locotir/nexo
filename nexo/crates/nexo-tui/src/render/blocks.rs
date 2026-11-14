@@ -340,7 +340,9 @@ impl Block {
             }
             Block::Added { parts, folded } => super::added::lines(parts, *folded, w, theme),
             Block::Reasoning { text, streaming, started, elapsed_ms, folded } => {
-                if !o.show_reasoning {
+                // a closed block with no text says nothing true (a provider that keeps its reasoning encrypted
+                // sends only a paragraph break): no line
+                if !o.show_reasoning || (!*streaming && text.trim().is_empty()) {
                     return (Vec::new(), meta);
                 }
                 let n = text.lines().count();
