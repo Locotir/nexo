@@ -41,26 +41,4 @@ impl Session {
         }
         rows("history", l, json!({}))
     }
-
-    pub(super) fn cmd_stdin(&mut self, a: &Args) -> Result<Output> {
-        if a.has("close") {
-            self.t.stdin(None)?;
-            return Ok(rows("stdin", vec!["standard input closed".into()], json!({})));
-        }
-        if a.pos.is_empty() {
-            return usage(
-                "stdin <text> (a newline is added; --raw sends exactly the text, \\n \\t escapes work) | stdin --close",
-            );
-        }
-        // --exact: the bytes of a file, no escapes read
-        let mut text = a.pos.join(" ");
-        if !a.has("exact") {
-            text = text.replace("\\n", "\n").replace("\\t", "\t");
-        }
-        if !a.has("raw") {
-            text.push('\n');
-        }
-        let n = self.t.stdin(Some(text.as_bytes()))?;
-        Ok(rows("stdin", vec![format!("sent {n} bytes")], json!({})))
-    }
 }

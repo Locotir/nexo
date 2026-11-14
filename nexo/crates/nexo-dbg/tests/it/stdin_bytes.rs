@@ -73,3 +73,15 @@ fn a_bad_hex_escape_is_refused_before_the_program_starts() {
     let Err(e) = call(state.path(), &["run", "./nothing", "<<<", "a\\xzz"]) else { panic!("must be refused") };
     assert!(e.to_string().contains("two hex digits"), "{e}");
 }
+
+#[test]
+fn stdin_inside_a_do_script_sends_the_same_bytes() {
+    let work = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let Some(exe) = build(work.path()) else { return };
+    call(state.path(), &["run", exe.to_str().unwrap()]).unwrap();
+    call(state.path(), &["do", "stdin --raw A\\x00\\xff\\n"]).unwrap();
+    call(state.path(), &["cont", "--wait", "20"]).unwrap();
+    let out = call(state.path(), &["out", "--all"]).unwrap();
+    assert!(out.contains("got 4: 41 00 ff 0a"), "{out}");
+}
