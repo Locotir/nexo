@@ -52,6 +52,68 @@ async fn a_message_sent_to_a_running_sub_agent_reaches_only_that_sub_agent() {
 }
 
 #[tokio::test]
+async fn the_main_agent_s_message_to_its_running_sub_agent_joins_it_before_its_next_step_as_the_parent_s() {
+    let d = test_tmpdir().unwrap();
+    let home = test_tmpdir().unwrap();
+    let mail = nexo_core::mailbox::Mailbox::open(
+        &home.path().join("mail"),
+        "aaaa1111",
+        "api",
+        "/w/api",
+        false,
+        nexo_core::mail::Inbound::Auto,
+    )
+    .unwrap();
+    let note = json!({"to": "1", "text": "PARENT-NOTE-5 also check b.rs"});
+    let client = Scripted::new(
+        vec![
+            Reply::Events(call("t1", "task", bg("explore", "slow look"))),
+            late(d.path(), "now", call("m1", "send_message", note)),
+            Reply::Events(text("told it")),
+            Reply::Events(text("noted the report")),
+        ],
+        vec![Reply::Events(call("w1", "wait", json!({}))), Reply::Events(text("late report"))],
+    );
+    let mut r = start_mail(client.clone(), config(PermissionMode::Auto), d.path(), Some(mail.clone())).await;
+    r.submit("go");
+    // the sub-agent is inside its first step when the main agent writes to it
+    until_tool(&client, 1).await;
+    release(d.path(), "now");
+    r.turn().await;
+    let told = serde_json::to_string(&client.main_requests()[2]).unwrap();
+    let sent = "Sent to sub-agent job 1 \\\"slow look\\\" (it reads it before its next step)";
+    assert!(told.contains(sent), "{told}");
+    // the person's screen shows it as a message sent to `job 1`
+    let shown = mail.drain_events();
+    assert!(
+        shown.iter().any(|e| matches!(e, AgentEvent::MailSent { to_name, summary, .. }
+            if to_name == "job 1" && summary == "PARENT-NOTE-5 also check b.rs")),
+        "{shown:?}"
+    );
+    release(d.path(), "go");
+    let evs = r.turn().await;
+    assert!(
+        evs.iter().any(
+            |e| matches!(e, AgentEvent::Sub { item: SubItem::Parent { text }, .. } if text.starts_with("PARENT-NOTE-5"))
+        ),
+        "{evs:?}"
+    );
+    // its next request holds the message after the tool result, marked as the parent's
+    let reqs = requests_of(&client, "slow look");
+    assert_eq!(reqs.len(), 2);
+    assert!(!serde_json::to_string(&reqs[0]).unwrap().contains("PARENT-NOTE-5"));
+    let last = reqs[1].messages.last().unwrap();
+    assert_eq!(last.role, nexo_core::message::Role::User);
+    assert!(
+        texts(last).contains(
+            "[nexo: a message from the agent that started you, not from the person]\nPARENT-NOTE-5 also check b.rs"
+        ),
+        "{last:?}"
+    );
+    r.stop().await;
+}
+
+#[tokio::test]
 async fn a_message_to_an_ended_or_unknown_sub_agent_says_it_was_not_delivered_and_queues_nothing() {
     let d = test_tmpdir().unwrap();
     let client = Scripted::new(

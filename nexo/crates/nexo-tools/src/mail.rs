@@ -1,6 +1,8 @@
 //! `send_message` and `list_sessions`: talk to the other nexo sessions running on this machine. A message
 //! lands in the other session's mailbox and reaches its model at its next idle point, as a note that says
-//! it came from a session, not from the person. Not part of `local()`: they exist only where a mailbox does.
+//! it came from a session, not from the person. `send_message` also reaches this session's own running
+//! sub-agents by job number, in process, before their next step. Not part of `local()`: they exist only
+//! where a mailbox does.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -37,7 +39,8 @@ impl Tool for SendMessage {
         ToolSpec {
             name: "send_message".into(),
             description: format!(
-                "Write to another nexo session running on this machine (see `list_sessions`). The text reaches its model \
+                "Write to another nexo session running on this machine (see `list_sessions`), or to one of this session's \
+                 own running sub-agents by its job number. The text reaches a session's model \
                  when that session is idle, marked as coming from a session and not from the person; it cannot approve \
                  permissions or change settings there. Use it to hand over a finding or ask for one, not to chat: at most \
                  {MAIL_MAX_BYTES} bytes, a few messages a minute, so batch what you have. Do not paste secrets."
@@ -47,7 +50,7 @@ impl Tool for SendMessage {
                 "properties": {
                     "to": {
                         "type": "string",
-                        "description": "The session: its name, its id or the start of it, or `name [ref]` when two share a name."
+                        "description": "The session: its name, its id or the start of it, or `name [ref]` when two share a name; or a sub-agent's job number."
                     },
                     "text": { "type": "string", "description": "The message." },
                     "summary": {
@@ -82,29 +85,74 @@ impl Tool for SendMessage {
         let summary = args.get("summary").and_then(Value::as_str);
         let mailbox = self.mailbox.clone();
         let to_name = to;
-        let (to, text, summary) = (to.to_string(), text.to_string(), summary.map(String::from));
+        let (to, owned, summary_owned) = (to.to_string(), text.to_string(), summary.map(String::from));
         let r =
-            tokio::task::spawn_blocking(move || mailbox.send(&to, &text, summary.as_deref(), FromKind::Agent)).await;
+            tokio::task::spawn_blocking(move || mailbox.send(&to, &owned, summary_owned.as_deref(), FromKind::Agent))
+                .await;
         match r {
             Ok(Ok(m)) => {
                 let name = self.mailbox.peers().into_iter().find(|p| p.id == m.to).map_or(m.to.clone(), |p| p.name);
                 ToolOutput::ok(format!("Sent {} to {name} (delivered when it is idle)", m.id))
             }
-            Ok(Err(e)) => {
-                let fact = if e.starts_with("Not sent: no live session") { job_fact(to_name, &ctx.jobs) } else { None };
-                ToolOutput::error(match fact {
+            Ok(Err(e)) if e.starts_with("Not sent: no live session") => {
+                let (word, named) = jobs_named(to_name, &ctx.jobs);
+                if let [j] = named.as_slice() {
+                    if let Some(out) = self.to_sub_agent(j, text, summary, &ctx.jobs) {
+                        return out;
+                    }
+                }
+                ToolOutput::error(match job_fact(&word, &named) {
                     Some(f) => format!("{e}\n{f}"),
                     None => e,
                 })
             }
+            Ok(Err(e)) => ToolOutput::error(e),
             Err(e) => ToolOutput::error(format!("Not sent: {e}")),
         }
     }
 }
 
-/// What `to` is when it is not a session but a job of this one: its number, the sub-agent's name or its description.
-/// A sub-agent takes no message from the model (only the person writes to it), so the way to it is its output.
-fn job_fact(to: &str, jobs: &nexo_core::jobs::Jobs) -> Option<String> {
+impl SendMessage {
+    /// `text` into the inbox of sub-agent job `j`, read before its next step and marked as the parent's. None
+    /// when `j` is no sub-agent run (a command, a workflow's own job): the caller says what it is instead.
+    fn to_sub_agent(
+        &self,
+        j: &nexo_core::jobs::JobInfo,
+        text: &str,
+        summary: Option<&str>,
+        jobs: &nexo_core::jobs::Jobs,
+    ) -> Option<ToolOutput> {
+        if j.kind != nexo_core::jobs::JobKind::Agent {
+            return None;
+        }
+        let who = format!("sub-agent job {} \"{}\"", j.id, j.label);
+        let ended = || {
+            ToolOutput::error(format!(
+                "Not sent: {who} has already ended, so it reads no more messages; its output comes with `jobs output {}`.",
+                j.id
+            ))
+        };
+        if !j.status.running() {
+            return Some(ended());
+        }
+        let subs = jobs.subs();
+        let n = j.id.to_string();
+        // a sub-agent's run id ends with its job number
+        let run = subs.list().into_iter().find(|s| s.id.rsplit('#').next() == Some(n.as_str()))?;
+        Some(match subs.submit_from_parent(&run.id, text) {
+            Ok(()) => {
+                self.mailbox.sent_to_job(j.id, text, summary);
+                ToolOutput::ok(format!("Sent to {who} (it reads it before its next step)"))
+            }
+            Err(why) if why == "that sub-agent has already ended" => ended(),
+            Err(why) => ToolOutput::error(format!("Not sent to {who}: {why}.")),
+        })
+    }
+}
+
+/// The jobs of this session `to` names: its number (`3`, `#3`), a sub-agent's description or its name. The
+/// word comes back as it was matched.
+fn jobs_named(to: &str, jobs: &nexo_core::jobs::Jobs) -> (String, Vec<nexo_core::jobs::JobInfo>) {
     use nexo_core::jobs::JobKind;
     let list = jobs.list();
     let word = to.trim().trim_start_matches('#').trim();
@@ -126,24 +174,32 @@ fn job_fact(to: &str, jobs: &nexo_core::jobs::Jobs) -> Option<String> {
         ids.sort_unstable();
         ids.dedup();
     }
-    let jobs_of: Vec<_> = ids.iter().filter_map(|id| list.iter().find(|j| j.id == *id)).collect();
-    match jobs_of.as_slice() {
+    let named = ids.iter().filter_map(|id| list.iter().find(|j| j.id == *id)).cloned().collect();
+    (word.to_string(), named)
+}
+
+/// What `word` is when it names jobs of this session that a message does not reach: a command, a workflow's
+/// own job, or more than one job. The way to any of them is its output.
+fn job_fact(word: &str, named: &[nexo_core::jobs::JobInfo]) -> Option<String> {
+    use nexo_core::jobs::JobKind;
+    match named {
         [] => None,
         [j] => {
-            let what = match j.kind {
-                JobKind::Agent => format!("sub-agent \"{}\"", j.label),
-                JobKind::Shell => format!("command `{}`", j.label),
+            let (what, how) = match j.kind {
+                JobKind::Agent => (format!("sub-agent \"{}\"", j.label), "it takes no message; "),
+                JobKind::Shell => (format!("command `{}`", j.label), ""),
             };
-            let how = match j.kind {
-                JobKind::Agent => format!("it takes no message from you; its output comes with `jobs output {}`", j.id),
-                JobKind::Shell => format!("its output comes with `jobs output {}`", j.id),
-            };
-            Some(format!("\"{word}\" is your background job {} ({what}, {}): {how}.", j.id, j.status.plain()))
+            Some(format!(
+                "\"{word}\" is your background job {} ({what}, {}): {how}its output comes with `jobs output {}`.",
+                j.id,
+                j.status.plain(),
+                j.id
+            ))
         }
         many => {
             let nums: Vec<String> = many.iter().take(5).map(|j| j.id.to_string()).collect();
             Some(format!(
-                "\"{word}\" fits your background jobs {}: a sub-agent takes no message from you; its output comes with `jobs output <number>`.",
+                "\"{word}\" fits your background jobs {}: name one by its number; its output comes with `jobs output <number>`.",
                 nums.join(", ")
             ))
         }
@@ -261,42 +317,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_job_number_or_sub_agent_is_named_with_the_way_to_read_it() {
+    async fn a_running_sub_agent_gets_the_message_by_job_number_name_or_description() {
+        use nexo_core::agent::AgentEvent;
         use nexo_core::jobs::JobKind;
+        use nexo_core::subs::SubItem;
         let (_d, a, _b) = pair();
-        let ts = tools(a);
+        let ts = tools(a.clone());
         let send = ts.get("send_message").unwrap();
         let c = ctx();
         let _shell = c.jobs.start(JobKind::Shell, "npm test");
         let agent = c.jobs.start(JobKind::Agent, "review the parser");
-        let _sub = c.jobs.subs().begin(&format!("call#{}", agent.id()), "explore", "review the parser", true);
+        let sub = c.jobs.subs().begin(&format!("call#{}", agent.id()), "explore", "review the parser", true);
+        let say = |to: &str, text: &str| json!({"to": to, "text": text});
+
+        let out = send.run(say("2", "also check lexer.rs\nline two"), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "Sent to sub-agent job 2 \"review the parser\" (it reads it before its next step)");
+        assert_eq!(sub.take_inbox(), vec![SubItem::Parent { text: "also check lexer.rs\nline two".into() }]);
+        let shown: Vec<(String, String)> = a
+            .drain_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::MailSent { to_name, summary, .. } => Some((to_name, summary)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shown, [("job 2".to_string(), "also check lexer.rs".to_string())]);
+
+        for to in ["#2", "Explore", "review the parser"] {
+            assert!(send.run(say(to, "hi"), &c).await.content.starts_with("Sent to sub-agent job 2"), "{to}");
+        }
+        assert_eq!(sub.take_inbox().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn an_ended_sub_agent_a_command_and_an_unknown_job_say_what_they_are() {
+        use nexo_core::jobs::JobKind;
+        use nexo_core::subs::SubState;
+        let (_d, a, _b) = pair();
+        let ts = tools(a.clone());
+        let send = ts.get("send_message").unwrap();
+        let c = ctx();
+        let _shell = c.jobs.start(JobKind::Shell, "npm test");
+        let agent = c.jobs.start(JobKind::Agent, "review the parser");
+        let sub = c.jobs.subs().begin(&format!("call#{}", agent.id()), "explore", "review the parser", true);
         let say = |to: &str| json!({"to": to, "text": "hi"});
 
+        // the run ended but its job is not marked finished yet: the same fact
+        sub.end(SubState::Ok);
+        let ended = "Not sent: sub-agent job 2 \"review the parser\" has already ended, so it reads no more messages; \
+                     its output comes with `jobs output 2`.";
         let out = send.run(say("2"), &c).await;
-        assert!(out.is_error, "{}", out.content);
-        let lines: Vec<&str> = out.content.lines().collect();
-        assert_eq!(lines.len(), 2, "{}", out.content);
-        assert_eq!(lines[0], "Not sent: no live session \"2\". Live sessions: web.");
-        assert_eq!(
-            lines[1],
-            "\"2\" is your background job 2 (sub-agent \"review the parser\", running): it takes no message from you; \
-             its output comes with `jobs output 2`."
-        );
+        assert!(out.is_error);
+        assert_eq!(out.content, ended);
+        agent.finish(true, "reported");
+        assert_eq!(send.run(say("2"), &c).await.content, ended);
 
         let shell = send.run(say("#1"), &c).await;
-        assert!(
-            shell.content.ends_with(
+        assert!(shell.is_error);
+        let lines: Vec<&str> = shell.content.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "Not sent: no live session \"#1\". Live sessions: web.",
                 "\"1\" is your background job 1 (command `npm test`, running): its output comes with `jobs output 1`."
-            ),
-            "{}",
-            shell.content
+            ]
         );
-        let by_name = send.run(say("Explore"), &c).await;
-        assert!(by_name.content.contains("background job 2 (sub-agent"), "{}", by_name.content);
-        let by_text = send.run(say("review the parser"), &c).await;
-        assert!(by_text.content.contains("`jobs output 2`"), "{}", by_text.content);
         let none = send.run(say("99"), &c).await;
-        assert_eq!(none.content.lines().count(), 1, "{}", none.content);
+        assert_eq!(none.content, "Not sent: no live session \"99\". Live sessions: web.");
+        assert!(!a.drain_events().iter().any(|e| matches!(e, nexo_core::agent::AgentEvent::MailSent { .. })));
     }
 
     #[tokio::test]

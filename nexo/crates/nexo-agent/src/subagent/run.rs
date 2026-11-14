@@ -12,13 +12,18 @@ pub(super) enum Failure {
     Model(ProviderError),
 }
 
-/// A message a person sent a sub-agent joins its conversation as a user message: after the tool results it
-/// answers, else as a message of its own.
+/// A message the person or the parent sent a sub-agent joins its conversation as a user message: after the
+/// tool results it answers, else as a message of its own.
 pub(super) fn join_person(messages: &mut Vec<Message>, text: String) {
     match messages.last_mut() {
         Some(m) if m.role == Role::User => m.content.push(Part::text(text)),
         _ => messages.push(Message::user(text)),
     }
+}
+
+/// A message from the agent that started the sub-agent, as its model reads it: whose it is, then the text.
+fn from_parent(text: &str) -> String {
+    format!("[nexo: a message from the agent that started you, not from the person]\n{text}")
 }
 
 pub(super) fn stopped(messages: &[Message]) -> String {
@@ -170,9 +175,14 @@ impl Run {
         for round in 0..=rounds {
             // what a person wrote to this sub-agent joins it here, between its rounds
             if let Some(s) = &self.sub {
-                for t in s.take_inbox() {
-                    s.item(SubItem::Person { text: t.clone() });
-                    join_person(&mut messages, t);
+                for item in s.take_inbox() {
+                    let text = match &item {
+                        SubItem::Parent { text } => from_parent(text),
+                        SubItem::Person { text } => text.clone(),
+                        _ => continue,
+                    };
+                    s.item(item);
+                    join_person(&mut messages, text);
                 }
             }
             // the rounds are over: one more request, told to report what it has

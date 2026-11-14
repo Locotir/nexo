@@ -272,18 +272,35 @@ struct Running {
 }
 
 async fn start(client: Arc<Scripted>, cfg: Config, cwd: &Path) -> Running {
+    start_mail(client, cfg, cwd, None).await
+}
+
+/// [`start`], with this session's mailbox and its tools (`send_message` among them) when `mail` is given.
+async fn start_mail(
+    client: Arc<Scripted>,
+    cfg: Config,
+    cwd: &Path,
+    mail: Option<Arc<nexo_core::mailbox::Mailbox>>,
+) -> Running {
     data_dir();
     let (handle, ends) = channels();
+    let mut tools = tools(&client.probe);
+    if let Some(m) = &mail {
+        let mt = nexo_tools::mail::tools(m.clone());
+        for spec in mt.specs() {
+            tools.add(mt.get(&spec.name).unwrap().clone());
+        }
+    }
     let setup = AgentSetup {
         config: cfg,
         cwd: cwd.to_path_buf(),
         provider: "mock".into(),
         model: "m1".into(),
-        tools: tools(&client.probe),
+        tools,
         client,
         resume: None,
         gate: None,
-        mail: None,
+        mail,
         mcp: None,
         model_pinned: false,
     };

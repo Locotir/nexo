@@ -2,7 +2,8 @@
 //!
 //! One entry per run (the run's own id, never a provider's call id). An entry keeps the newest
 //! [`KEEP_ITEMS`] items and [`KEEP_BYTES`] bytes of text, says how many older ones went, and has an
-//! inbox: a message a person sends joins the sub-agent's conversation between its rounds. Every change
+//! inbox: a message the person or the agent that started it sends joins the sub-agent's conversation between
+//! its rounds. Every change
 //! is also sent on a bounded channel; a receiver that is slow or gone loses events, never blocks the
 //! sub-agent, and the registry stays whole. Locks here are never held across an `.await`.
 
@@ -46,12 +47,16 @@ pub enum SubItem {
     Result { id: String, ok: bool, bytes: usize },
     /// A message a person sent it.
     Person { text: String },
+    /// A message the agent that started it sent it (`send_message` to its job).
+    Parent { text: String },
 }
 
 impl SubItem {
     fn size(&self) -> usize {
         match self {
-            SubItem::Task { text } | SubItem::Text { text } | SubItem::Person { text } => text.len(),
+            SubItem::Task { text } | SubItem::Text { text } | SubItem::Person { text } | SubItem::Parent { text } => {
+                text.len()
+            }
             SubItem::Call { id, name, summary } => id.len() + name.len() + summary.len(),
             SubItem::Result { id, .. } => id.len(),
         }
@@ -63,6 +68,7 @@ impl SubItem {
             SubItem::Task { text } => SubItem::Task { text: cut(&text, KEEP_BYTES) },
             SubItem::Text { text } => SubItem::Text { text: cut(&text, KEEP_BYTES) },
             SubItem::Person { text } => SubItem::Person { text: cut(&text, KEEP_BYTES) },
+            SubItem::Parent { text } => SubItem::Parent { text: cut(&text, KEEP_BYTES) },
             SubItem::Call { id, name, summary } => SubItem::Call { id, name, summary: cut(&summary, KEEP_BYTES / 4) },
             r @ SubItem::Result { .. } => r,
         }
@@ -152,7 +158,8 @@ struct Data {
     items: VecDeque<SubItem>,
     bytes: usize,
     dropped: usize,
-    inbox: VecDeque<String>,
+    /// `Person` and `Parent` items, oldest first.
+    inbox: VecDeque<SubItem>,
 }
 
 struct Entry {
@@ -294,6 +301,16 @@ impl Subs {
     /// cannot (the id is unknown, the run ended, the inbox is full) nothing is kept, an event says so,
     /// and the reason comes back.
     pub fn submit(&self, id: &str, text: &str) -> Result<(), String> {
+        self.put(id, text, false)
+    }
+
+    /// A message for run `id` from the agent that started it, kept like [`Subs::submit`]'s. A refusal is
+    /// only the reason that comes back: it is the model's tool result, not news for the person's screen.
+    pub fn submit_from_parent(&self, id: &str, text: &str) -> Result<(), String> {
+        self.put(id, text, true)
+    }
+
+    fn put(&self, id: &str, text: &str, parent: bool) -> Result<(), String> {
         let why = match self.entry(id) {
             None => Some("there is no sub-agent with that id".to_string()),
             Some(_) if text.trim().is_empty() => Some("the message is empty".to_string()),
@@ -304,7 +321,8 @@ impl Subs {
                 } else if d.inbox.len() >= INBOX_MAX {
                     Some("that sub-agent has too many messages waiting".to_string())
                 } else {
-                    d.inbox.push_back(cut(text, KEEP_BYTES));
+                    let text = cut(text, KEEP_BYTES);
+                    d.inbox.push_back(if parent { SubItem::Parent { text } } else { SubItem::Person { text } });
                     None
                 }
             }
@@ -312,7 +330,9 @@ impl Subs {
         match why {
             None => Ok(()),
             Some(why) => {
-                let _ = self.0.changes.send(SubChange::NotDelivered { id: id.to_string(), why: why.clone() });
+                if !parent {
+                    let _ = self.0.changes.send(SubChange::NotDelivered { id: id.to_string(), why: why.clone() });
+                }
                 Err(why)
             }
         }
@@ -445,8 +465,8 @@ impl SubRun {
         d.cost_usd += cost_usd;
     }
 
-    /// The messages people sent that are waiting, taken out of the inbox (oldest first).
-    pub fn take_inbox(&self) -> Vec<String> {
+    /// The messages waiting (`Person` and `Parent` items), taken out of the inbox (oldest first).
+    pub fn take_inbox(&self) -> Vec<SubItem> {
         self.entry.data.lock().unwrap().inbox.drain(..).collect()
     }
 
@@ -455,8 +475,9 @@ impl SubRun {
         !self.entry.data.lock().unwrap().inbox.is_empty()
     }
 
-    /// The run ended as `state`. Messages still in the inbox were never read: each is reported as not
-    /// delivered. Ending twice changes nothing.
+    /// The run ended as `state`. The person's messages still in the inbox were never read: each is
+    /// reported as not delivered (the parent's go unreported, like its other sends). Ending twice changes
+    /// nothing.
     pub fn end(&self, state: SubState) {
         let e = &self.entry;
         let mut d = e.data.lock().unwrap();
@@ -466,7 +487,7 @@ impl SubRun {
         d.state = state;
         d.ended_ms = Some(now_ms());
         self.send(SubChange::State(e.info(&d)));
-        for _ in d.inbox.drain(..) {
+        for _ in d.inbox.drain(..).filter(|m| matches!(m, SubItem::Person { .. })) {
             let why = "that sub-agent ended before it read the message".to_string();
             self.send(SubChange::NotDelivered { id: e.id.clone(), why });
         }
@@ -591,8 +612,8 @@ mod tests {
         let a = subs.begin("a", "explore", "t", true);
         let b = subs.begin("b", "explore", "t", true);
         assert!(subs.submit("a", "hello").is_ok());
-        assert_eq!(b.take_inbox(), Vec::<String>::new());
-        assert_eq!(a.take_inbox(), vec!["hello".to_string()]);
+        assert_eq!(b.take_inbox(), Vec::<SubItem>::new());
+        assert_eq!(a.take_inbox(), vec![SubItem::Person { text: "hello".into() }]);
         a.end(SubState::Ok);
         assert!(subs.submit("a", "late").is_err());
         assert!(subs.submit("zzz", "who").is_err());
@@ -605,6 +626,23 @@ mod tests {
             })
             .collect();
         assert_eq!(nd, vec!["a".to_string(), "zzz".to_string()]);
+    }
+
+    #[test]
+    fn the_parent_s_message_waits_marked_as_its_and_a_refusal_is_only_its_reason() {
+        let subs = Subs::new();
+        let mut rx = subs.changes();
+        let a = subs.begin("c#3", "general", "t", true);
+        subs.submit_from_parent("c#3", "also check b.rs").unwrap();
+        subs.submit("c#3", "and a.rs").unwrap();
+        assert_eq!(
+            a.take_inbox(),
+            vec![SubItem::Parent { text: "also check b.rs".into() }, SubItem::Person { text: "and a.rs".into() }]
+        );
+        subs.submit_from_parent("c#3", "unread").unwrap();
+        a.end(SubState::Ok);
+        assert_eq!(subs.submit_from_parent("c#3", "late").unwrap_err(), "that sub-agent has already ended");
+        assert!(!kinds(&mut rx).iter().any(|c| matches!(c, SubChange::NotDelivered { .. })));
     }
 
     #[test]

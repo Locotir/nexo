@@ -471,6 +471,20 @@ impl Mailbox {
         s.events.push(ev);
     }
 
+    /// The model gave `text` to this session's own running sub-agent, background job `job`: it is shown
+    /// as a sent message to `job N`. Nothing is written: the message went in process, not through a mailbox.
+    pub fn sent_to_job(&self, job: u32, text: &str, summary: Option<&str>) {
+        let to = format!("job {job}");
+        let ev = AgentEvent::MailSent {
+            id: crate::mail::new_id(now_ms()),
+            to: to.clone(),
+            to_name: to,
+            summary: crate::mail::summary_of(text, summary),
+            bytes: text.len(),
+        };
+        Mailbox::push_event(&mut self.lock(), ev);
+    }
+
     /// The events queued since the last call (sends and arrivals).
     pub fn drain_events(&self) -> Vec<AgentEvent> {
         std::mem::take(&mut self.lock().events)

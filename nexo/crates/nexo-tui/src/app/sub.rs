@@ -410,6 +410,13 @@ impl App {
                 self.push(Block::User { text, at: None });
                 self.scroll_to_end();
             }
+            // what the agent that started it sent (`send_message` to its job): a message it read, not the person's
+            SubItem::Parent { text } => {
+                self.close_streaming();
+                let stage = nexo_core::mail::Stage::Read;
+                self.push(Block::Mail { id: String::new(), outgoing: false, peer: "main agent".into(), text, stage });
+                self.scroll_to_end();
+            }
             SubItem::Text { text } => {
                 if let Some(Block::Assistant { text: t, streaming: true, .. }) = self.blocks.last_mut() {
                     *t = text;
