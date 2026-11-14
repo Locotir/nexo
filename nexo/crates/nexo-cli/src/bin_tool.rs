@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 use clap::error::ErrorKind;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use nexo_core::tool::Check;
 use nexo_core::{Compact, Tool, ToolContext, ToolKind, ToolOutput, ToolSpec};
 use serde_json::{json, Value};
@@ -94,25 +94,22 @@ impl Tool for Bin {
         let Some(line) = args.get("command").and_then(Value::as_str) else {
             return ToolOutput::error("bin needs `command`, for example `overview ./prog`; `--help` lists the ops");
         };
-        // `a; b` (or one op per line) is a script, as in `debug`: each answer under its own line, and an error
-        // stops the rest (`debug`'s `do` does the same)
+        // `a; b` (or one op per line) is a script: each answer under its own line. An error is reported in its
+        // place and the ops after it still run: ops read files and are independent of each other, and a script
+        // that stopped at its first slip cost the whole call (unlike `debug`'s `do`, where a step needs the last)
         let parts = units(line);
         let [_, _, ..] = parts.as_slice() else {
             return one(parts.first().map_or(line, String::as_str), ctx).await;
         };
         let mut out: Vec<String> = Vec::new();
-        for (n, part) in parts.iter().enumerate() {
+        for part in &parts {
             out.push(format!("> {part}"));
             let o = one(part, ctx).await;
             if o.is_error {
                 out.push(format!("error: {}", o.content));
-                let left = parts[n + 1..].join("; ");
-                if !left.is_empty() {
-                    out.push(format!("... script stopped at the error; not run: {left}"));
-                }
-                break;
+            } else {
+                out.push(o.content);
             }
-            out.push(o.content);
         }
         ToolOutput::ok(out.join("\n"))
     }
@@ -155,14 +152,30 @@ fn parse(unit: &str) -> Result<Parsed, String> {
     let mut argv: Vec<String> = vec!["nexo".into(), "bin".into()];
     match words.first().map(String::as_str) {
         None | Some("help") => argv.push("--help".into()),
-        Some(_) => argv.extend(words.iter().cloned()),
+        Some(w) => {
+            if let Some(fact) = not_an_op(w) {
+                return Err(fact);
+            }
+            argv.extend(words.iter().cloned())
+        }
     }
     let parsed = match crate::cli::Args::try_parse_from(argv) {
         Ok(p) => p,
         Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {
             return Ok(Parsed::Help(e.to_string()))
         }
-        Err(e) => return Err(e.to_string()),
+        Err(e) => {
+            let text = e.to_string();
+            let mut text = text.strip_prefix("error: ").unwrap_or(&text).to_string();
+            if e.kind() == ErrorKind::UnknownArgument {
+                if let Some(op) = words.first() {
+                    if let Some(flags) = op_flags(op) {
+                        text.push_str(&format!("\n`{op}` takes: {flags}"));
+                    }
+                }
+            }
+            return Err(text);
+        }
     };
     let Some(crate::cli::Cmd::Bin(b)) = parsed.cmd else {
         return Err("bin: not a bin op".into());
@@ -171,6 +184,50 @@ fn parse(unit: &str) -> Result<Parsed, String> {
         return Err("bin: give an op, for example `overview ./prog`; `--help` lists them".into());
     }
     Ok(Parsed::Op(b))
+}
+
+fn bin_command() -> Option<clap::Command> {
+    crate::cli::Args::command().find_subcommand("bin").cloned()
+}
+
+/// The flags one op takes, as `--a, --b`, for the answer to a flag it does not have.
+fn op_flags(op: &str) -> Option<String> {
+    let bin = bin_command()?;
+    let sub = bin.find_subcommand(op)?;
+    let mut flags: Vec<String> =
+        sub.get_arguments().filter_map(|a| a.get_long().map(|l| format!("--{l}"))).filter(|f| f != "--help").collect();
+    flags.dedup();
+    Some(if flags.is_empty() { "no flags".into() } else { flags.join(", ") })
+}
+
+const SHELL_WORDS: &[&str] = &[
+    "echo", "printf", "grep", "egrep", "cat", "head", "tail", "sed", "awk", "wc", "sort", "uniq", "cut", "tr", "ls",
+    "cd", "true", "false", "test", "sleep", "xargs", "tee", "which",
+];
+
+/// A word that starts an op line but is not an op: a shell word, or the name of another tool, gets a fact that
+/// names what does the job here; anything else is left to clap's own answer.
+fn not_an_op(word: &str) -> Option<String> {
+    if word.starts_with('-') {
+        return None;
+    }
+    let bin = bin_command()?;
+    if bin.find_subcommand(word).is_some() {
+        return None;
+    }
+    let w = word.to_ascii_lowercase();
+    match w.as_str() {
+        "disasm" | "disassemble" | "disassembly" | "dis" | "objdump" | "listing" => Some(format!(
+            "`{word}` is not a bin op. `fn ./prog <name or addr>` shows the disassembly of a function (`--to ADDR` for a range, `--bytes` for the bytes); `decomp` gives pseudo-C; `asm` assembles."
+        )),
+        "nm" | "readelf" | "ldd" | "xxd" | "hexdump" | "od" | "file" => Some(format!(
+            "`{word}` is a shell tool, not a bin op; `info`, `overview`, `funcs` and `bytes` read a program here (`--help` lists the ops)"
+        )),
+        _ if SHELL_WORDS.contains(&w.as_str()) => Some(format!(
+            "{word} is a shell command, not a bin op; results already come one per op, so a separator is not needed"
+        )),
+        _ => None,
+    }
 }
 
 /// One op: the file is relative to the session's folder, as in the shell, and the rules that cover `read` and
@@ -412,21 +469,58 @@ mod tests {
         assert_eq!(call(dir.path(), "info prog;").await.content, alone);
     }
 
-    /// As `debug`'s `do`: the error is reported in its place, the ops after it are named and not run, and the call
-    /// itself is not an error.
+    /// An error is reported in its place with its own command, and the ops after it still run.
     #[tokio::test]
-    async fn an_error_in_a_script_is_reported_and_the_rest_is_not_run() {
+    async fn an_error_in_a_script_is_reported_and_the_rest_still_runs() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
         let o = call(dir.path(), "info nothere; info prog; info prog").await;
         assert!(!o.is_error, "{}", o.content);
         assert!(o.content.starts_with("> info nothere\nerror: bin: "), "{}", o.content);
-        assert!(o.content.contains("... script stopped at the error; not run: info prog; info prog"), "{}", o.content);
-        assert!(!o.content.contains("> info prog"), "{}", o.content);
-        // an error in the last op has nothing left to name; a bad word is an error of its own part
+        assert!(!o.content.contains("script stopped"), "{}", o.content);
+        assert_eq!(o.content.matches("> info prog").count(), 2, "{}", o.content);
         let last = call(dir.path(), "info prog; frobnicate x").await;
-        assert!(last.content.contains("> info prog") && last.content.contains("error: "), "{}", last.content);
-        assert!(!last.content.contains("script stopped"), "{}", last.content);
+        assert!(
+            last.content.contains("> info prog") && last.content.contains("> frobnicate x\nerror: "),
+            "{}",
+            last.content
+        );
+    }
+
+    /// One `error:` prefix, a shell word gets a fact, a near-miss names the real op, and the rest of the script runs.
+    #[tokio::test]
+    async fn a_word_that_is_not_an_op_gets_a_fact_and_the_script_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
+        let o = call(dir.path(), "info prog; echo ===; info prog").await;
+        assert!(!o.content.contains("error: error:"), "{}", o.content);
+        assert!(
+            o.content.contains("> echo ===\nerror: echo is a shell command, not a bin op; results already come one per op, so a separator is not needed"),
+            "{}",
+            o.content
+        );
+        assert!(!o.content.contains("similar subcommand"), "{}", o.content);
+        assert_eq!(o.content.matches("> info prog").count(), 2, "{}", o.content);
+        for w in ["disasm prog main", "objdump prog", "disassemble prog main"] {
+            let d = call(dir.path(), &format!("info prog; {w}")).await;
+            assert!(d.content.contains("`fn ./prog <name or addr>` shows the disassembly"), "{}", d.content);
+        }
+        let one = call(dir.path(), "frobnicate x").await;
+        assert!(one.is_error && !one.content.starts_with("error:"), "{}", one.content);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_flag_says_which_flags_the_op_takes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(this_binary(), dir.path().join("prog")).unwrap();
+        let o = call(dir.path(), "fn prog main --asm").await;
+        assert!(o.is_error, "{}", o.content);
+        assert!(
+            o.content.contains("`fn` takes: ") && o.content.contains("--bytes") && o.content.contains("--to"),
+            "{}",
+            o.content
+        );
+        assert!(!o.content.starts_with("error:"), "{}", o.content);
     }
 
     #[test]
