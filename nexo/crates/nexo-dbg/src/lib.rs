@@ -24,6 +24,7 @@ mod regs;
 mod remote;
 mod rsp;
 mod server;
+mod stdin;
 mod stub;
 mod syscalls;
 #[cfg(test)]

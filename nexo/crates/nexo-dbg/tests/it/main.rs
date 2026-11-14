@@ -19,3 +19,4 @@ mod prologue_locals;
 mod range_page;
 mod rsp;
 mod source_level;
+mod stdin_bytes;

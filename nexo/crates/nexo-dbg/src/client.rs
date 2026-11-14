@@ -387,7 +387,7 @@ struct RunWords {
     exe: String,
     args: Vec<String>,
     /// What goes to the program's input before it runs; the input is closed after it.
-    input: Option<String>,
+    input: Option<Vec<u8>>,
     to_main: bool,
 }
 
@@ -437,10 +437,12 @@ fn run_words(words: &[String]) -> Result<RunWords, Error> {
             }
             if let Some(syntax) = shell_syntax(&src) {
                 return Err(Error::Usage(format!(
-                    "the input after <<< is given to the program as typed, without a shell: {src:?} would arrive as those characters ({syntax} is shell syntax). Write the bytes with \\n and \\t escapes (e.g. <<< \"3 20 X\\n\"), or put them in a file and use < file"
+                    "the input after <<< is given to the program as typed, without a shell: {src:?} would arrive as those characters ({syntax} is shell syntax). Write the bytes with escapes: \\n \\t \\0 \\\\ \\\" and \\xNN for any byte (e.g. <<< \"3 20 X\\n\" or <<< \"A\\x00\\xff\\n\"), or put them in a file and use < file"
                 )));
             }
-            format!("{}\n", src.replace("\\n", "\n").replace("\\t", "\t"))
+            let mut v = crate::stdin::decode(&src).map_err(|e| Error::Usage(format!("the input after <<<: {e}")))?;
+            v.push(b'\n');
+            v
         } else {
             let mut b = Vec::new();
             let f = std::fs::File::open(&src).map_err(|e| Error::Fail(format!("cannot read {src}: {e}")))?;
@@ -451,9 +453,7 @@ fn run_words(words: &[String]) -> Result<RunWords, Error> {
                     MAX_INPUT >> 10
                 )));
             }
-            String::from_utf8(b).map_err(|_| {
-                Error::Fail(format!("{src} is not text: send its bytes with `write`, or feed text with `stdin`"))
-            })?
+            b
         });
         args.drain(i..i + 2);
     }
@@ -634,7 +634,7 @@ pub fn execute(o: &Call, dir: &Path, host: &Host, prefix: &str) -> Result<String
             let mut r = crate::request(dir, &id, &["__first".to_string()])?;
             let mut extra = Vec::new();
             if let Some(bytes) = input {
-                let mut w = vec!["stdin".to_string(), "--exact".into(), "--raw".into(), bytes];
+                let mut w = vec!["stdin".to_string(), "--hex".into(), "--raw".into(), crate::stdin::to_hex(&bytes)];
                 let sent = crate::request(dir, &id, &w)?;
                 extra.extend(sent.out.rows.into_iter().map(|r| format!("{} and closed the input", r.text)));
                 w.truncate(1);
@@ -719,14 +719,14 @@ mod tests {
     #[test]
     fn here_string_forms() {
         let r = rw(&["./p", "<<<", "3 20 X\\n"]).unwrap();
-        assert_eq!(r.input.as_deref(), Some("3 20 X\n\n"));
+        assert_eq!(r.input.as_deref(), Some(&b"3 20 X\n\n"[..]));
         assert!(r.args.is_empty());
         let r = rw(&["./p", "a", "<<<", "x\\ty", "--"]).unwrap();
-        assert_eq!(r.input.as_deref(), Some("x\ty\n"));
+        assert_eq!(r.input.as_deref(), Some(&b"x\ty\n"[..]));
         assert_eq!(r.args, ["a"]);
         // `$` that is not shell syntax goes through
         for t in ["cost $5", "a $ b", "$", "50$", "$?"] {
-            assert!(rw(&["./p", "<<<", t]).unwrap().input.unwrap().starts_with(t), "{t}");
+            assert!(rw(&["./p", "<<<", t]).unwrap().input.unwrap().starts_with(t.as_bytes()), "{t}");
         }
     }
 

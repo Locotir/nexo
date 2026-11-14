@@ -433,6 +433,7 @@ fn handle(sess: &mut Session, stream: TcpStream, token: &str, pending: &mut Opti
                 *pending = None;
                 sess.exec(&words)
             }
+            "stdin" if sess.recording.is_none() => crate::stdin::exec(sess, &words),
             _ => sess.exec(&words),
         };
         match res {
