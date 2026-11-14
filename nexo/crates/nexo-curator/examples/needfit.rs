@@ -3,7 +3,10 @@
 //! for it, and at the end the replies each unit came to be used by.
 //!
 //! `needfit DIR [--runs BANK.jsonl] [--base model.json] [--out model.json] [--horizons 1,4,16,64,256,0]
-//! [--epochs N] [--l2 X] [--bins N] [--old] [--caps 0.25,0.5]`
+//! [--epochs N] [--l2 X] [--bins N] [--old] [--caps 0.25,0.5] [--keepturn H]`
+//!
+//! With `--keepturn H` it fits the keep head (used ever) and the turn head (used within `H` steps) instead,
+//! on the first `K_OLD` features (what `Featurizer::vector` gives them), and `--out` writes those two.
 //!
 //! Sessions split as `judge.sh` does (sum of the bytes of the file name, 3 ways: 0 is test, the rest dev).
 //! Each head is an additive logistic model over binned features (the shape `learn::Head` reads), fitted
@@ -355,6 +358,70 @@ fn regret(groups: &[Vec<usize>], rows: &[&Row], p: &[f64], cap: f64) -> Regret {
     out
 }
 
+/// A head of `K_OLD` features: the zeroed features past them fall in their first bin, whose weight goes
+/// into the bias.
+fn old_head(head: &Head) -> Value {
+    let b = head.b + (K_OLD..NF).map(|f| head.w[f][head.bin(f, 0.0)]).sum::<f64>();
+    json!({"edges": head.edges[..K_OLD], "w": head.w[..K_OLD], "b": b})
+}
+
+/// Fits the keep head (used ever) and the turn head (used within `th` steps) on the dev rows, prints how they
+/// do on dev and test next to the shipped ones, and writes them into the model at `out`. The turn head is
+/// stored with the share of its positives taken out of the bias (`learn::Model::turn_prob` puts it back).
+#[allow(clippy::too_many_arguments)]
+fn keep_and_turn(
+    dev: &[&Row],
+    tst: &[&Row],
+    th: f64,
+    epochs: usize,
+    l2: f64,
+    bins: usize,
+    base: &str,
+    out: Option<&str>,
+    label: &dyn Fn(&Row, f64) -> u8,
+) {
+    let mut fitted = Vec::new();
+    for (name, h) in [("keep", 0.0), ("turn", th)] {
+        let y_dev: Vec<u8> = dev.iter().map(|r| label(r, h)).collect();
+        let head = fit(dev, &y_dev, edges_of(dev, bins), epochs, l2);
+        for (set, rs) in [("dev", dev), ("test", tst)] {
+            let ys: Vec<u8> = rs.iter().map(|r| label(r, h)).collect();
+            let ev = evaluate(&rs.iter().map(|r| head.prob(&r.x)).collect::<Vec<f64>>(), &ys);
+            let old: Vec<f64> = rs.iter().map(|r| if h <= 0.0 { r.p_keep as f64 } else { r.p_turn as f64 }).collect();
+            let eo = evaluate(&old, &ys);
+            println!(
+                "{name} h={h} {set}: n {} pos {:.2}% | new ll {:.4} auc {:.3} ece {:.3} | shipped ll {:.4} auc {:.3} ece {:.3}",
+                ev.n,
+                100.0 * ev.pos as f64 / ev.n.max(1) as f64,
+                ev.logloss,
+                ev.auc,
+                ev.ece,
+                eo.logloss,
+                eo.auc,
+                eo.ece
+            );
+        }
+        let share = y_dev.iter().filter(|&&v| v == 1).count() as f64 / y_dev.len().max(1) as f64;
+        fitted.push((name, old_head(&head), share));
+    }
+    let Some(out) = out else { return };
+    let mut model: Value = serde_json::from_str(&std::fs::read_to_string(base).expect("base model")).expect("json");
+    let (keep, (turn, turn_share)) = (fitted[0].1.clone(), (fitted[1].1.clone(), fitted[1].2));
+    let mut turn = turn;
+    turn["b"] = json!(turn["b"].as_f64().unwrap_or(0.0) - (turn_share / (1.0 - turn_share)).ln());
+    model["keep"] = keep;
+    model["turn"] = turn;
+    let obj = model.as_object_mut().expect("model object");
+    // no code reads them
+    obj.remove("soon");
+    obj.remove("early");
+    model["trained_on"] = json!({"rows": dev.len(), "positives": (fitted[0].2 * dev.len() as f64).round(),
+        "turn_share": turn_share, "turn_horizon": th, "epochs": epochs, "l2": l2, "bins": bins,
+        "link_share": model["trained_on"]["link_share"].clone()});
+    std::fs::write(out, serde_json::to_string(&model).expect("json")).expect("write");
+    eprintln!("wrote {out}");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut dir = None;
@@ -368,6 +435,7 @@ fn main() {
     let mut caps: Vec<f64> = vec![0.5];
     let mut only_old: Vec<usize> = Vec::new();
     let mut drop: Vec<String> = Vec::new();
+    let mut keepturn: Option<f64> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -384,6 +452,10 @@ fn main() {
             // the first K_OLD features only (what the shipped heads see), to tell the data from the features
             "--old" => only_old = (0..K_OLD).collect(),
             "--drop" => drop = it.next().map(|s| s.split(',').map(str::to_string).collect()).unwrap_or_default(),
+            "--keepturn" => {
+                keepturn = it.next().and_then(|v| v.parse().ok());
+                only_old = (0..K_OLD).collect();
+            }
             _ => dir = Some(a.clone()),
         }
     }
@@ -438,6 +510,10 @@ fn main() {
     }
     let mut heads: Vec<Value> = Vec::new();
     let label = |r: &Row, h: f64| -> u8 { u8::from(if h <= 0.0 { r.next != u32::MAX } else { r.next as f64 <= h }) };
+    if let Some(th) = keepturn {
+        keep_and_turn(&dev, &tst, th, epochs, l2, bins, &base, out.as_deref(), &label);
+        return;
+    }
     println!(
         "{:>5} {:>4} {:>8} {:>7} {:>7} {:>6} {:>6} | {:>7} {:>6} {:>6} | {:>7} {:>6}",
         "h", "set", "n", "pos%", "ll", "auc", "ece", "ll_old", "auc_k", "auc_t", "ll_pri", "ratio"

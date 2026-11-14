@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::evidence::{self, Runs};
 use crate::json::est_media;
 use crate::msg::{blocks, flat, get_str, key_of, text_of};
-use crate::textops::{self, Re};
+use crate::textops;
 
 /// An interned string.
 pub type Sym = u32;
@@ -56,8 +56,16 @@ pub fn set_of(mut v: Vec<Sym>) -> Set {
 /// A token: a number in hex with its prefix (`0x401140`, an AT&T immediate `$0x3039`), an identifier (with
 /// the dots, slashes and dashes that join a path or a name), a number with dots (a version), or a number
 /// of four digits or more, hex digits included (`401140`, `40114b`, as a disassembly writes addresses).
-static WORD: LazyLock<Re> = LazyLock::new(|| {
-    Re::new(r"\$?0[xX][0-9a-fA-F]+|[A-Za-z_$][\w$]*(?:[./-][\w$]+)*|\d+(?:\.\d+)+|\d[0-9a-fA-F]{3,}", 0)
+/// An identifier starts with a letter of any script (`ОбработкаЗаказа`, `Größe_max`), `_` or `$`, then
+/// letters, their marks, digits, `_` and `$`. A script written without spaces (`textops::unspaced`) is no part of one:
+/// a name written next to it (`修改config.py中的函数`, `config.py를`) is the name alone.
+static WORD: LazyLock<regex::Regex> = LazyLock::new(|| {
+    let u = textops::unspaced_class();
+    let (first, rest) = (format!(r"[\p{{L}}_$--[{u}]]"), format!(r"[\p{{L}}\p{{M}}\p{{N}}_$--[{u}]]"));
+    regex::Regex::new(&format!(
+        r"\$?0[xX][0-9a-fA-F]+|{first}{rest}*(?:[./-]{rest}+)*|\p{{Nd}}+(?:\.\p{{Nd}}+)+|\p{{Nd}}[0-9a-fA-F]{{3,}}"
+    ))
+    .expect("static pattern")
 });
 
 /// A number with thousands separators, its decimals included.
@@ -154,8 +162,8 @@ pub fn words(text: &str, int: &mut Interner) -> Set {
             }
         }
     }
-    for (a, b) in WORD.find_all(text) {
-        let w = &text[a..b];
+    for m in WORD.find_iter(text) {
+        let w = m.as_str();
         let first = textops::first(w).unwrap_or(' ');
         // a number in hex, as each tool writes it (`0x401140`, `$0x3039`, `0x0000000000401140`, `00401140`,
         // `41C64E6D`): its digits without the prefix and the zeros in front, in lower case, so that every
@@ -528,6 +536,36 @@ mod tests {
         assert_eq!(words_of("the table holds 4,821,350 rows"), ["4821350"]);
         assert_eq!(words_of("total 1,234.56 and 12,345"), ["1234.56", "12345", "234.56"]);
         assert_eq!(words_of("the method purge\\_expired runs"), ["purge_expired"]);
+    }
+
+    fn sorted_words(text: &str) -> Vec<String> {
+        let mut v = words_of(text);
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_name_is_a_word_in_any_script_and_a_script_without_spaces_is_none() {
+        // Cyrillic, Greek and accented Latin names start a word as an ASCII one does
+        assert_eq!(
+            sorted_words("Очередь очищает ОчиститьКольцевойБуфер: голова = МАГИЯ_7f41"),
+            ["МАГИЯ_7f41", "ОчиститьКольцевойБуфер"]
+        );
+        assert_eq!(
+            sorted_words("set Größe_max and λόγος_2 in Модули/ОбработкаОчереди.bsl"),
+            ["Größe_max", "λόγος_2", "Модули/ОбработкаОчереди.bsl"]
+        );
+        // plain words of any script are no names
+        assert!(words_of("Очередь очищается быстро, größer und schöner").is_empty());
+        // a name written next to Chinese, Japanese or Korean is the name alone
+        assert_eq!(
+            sorted_words("队列由zq_flush_ring_buf清空，它把head设为ZQ_MAGIC_7f41后排空整个队列。"),
+            ["ZQ_MAGIC_7f41", "zq_flush_ring_buf"]
+        );
+        assert_eq!(
+            sorted_words("config_loader.pyを修正し、load_settings함수를 고쳤습니다"),
+            ["config_loader.py", "load_settings"]
+        );
     }
 
     #[test]

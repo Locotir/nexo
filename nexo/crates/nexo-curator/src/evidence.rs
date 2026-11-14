@@ -247,7 +247,7 @@ pub fn line_refs(text: &str, ext_ok: &dyn Fn(&str) -> bool) -> Vec<(String, usiz
 }
 
 static CODE_NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"`([a-z][a-z0-9]{7,})`|\b([a-z][a-z0-9]{7,})\(").unwrap());
+    LazyLock::new(|| Regex::new(r"`(\p{Ll}[\p{Ll}0-9]{7,})`|\b(\p{Ll}[\p{Ll}0-9]{7,})\(").unwrap());
 
 /// Lower-case names written like code (`name(`, or in backticks), as long as a name is not a word of prose.
 pub fn code_names(text: &str) -> Vec<&str> {

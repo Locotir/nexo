@@ -247,6 +247,19 @@ fn what_every_request_says_points_at_no_step() {
 }
 
 #[test]
+fn topics_of_any_script() {
+    let mut int = Interner::default();
+    let mut of = |text: &str| -> Vec<String> {
+        let mut v: Vec<String> = topics(text, &mut int).into_iter().map(|w| int.get(w).to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(of("Исправь функцию Оплата в модуле Б"), ["Б", "исправь", "модуле", "оплата", "функцию"]);
+    // a script without spaces gives its pairs of characters, and a name beside it is a word of its own
+    assert_eq!(of("修改登录模块的config"), ["config", "修改", "块的", "录模", "改登", "模块", "登录"]);
+}
+
+#[test]
 fn topics_keep_long_words_and_labels() {
     let mut int = Interner::default();
     let got: Vec<String> = {

@@ -58,14 +58,19 @@ impl Step {
 /// The topic words of a text: its words of three letters or more, in lower case, digits apart, and its
 /// single capital letters, which label things ("function B", "table C", "assembly-A.txt"). Unlike the
 /// distinctive words, which show what a reply copied, these show what a text is about ("helm",
-/// "invoice", "boost"); how rare each is in the session (`asks`) tells which point anywhere.
+/// "invoice", "boost"); how rare each is in the session (`asks`) tells which point anywhere. A script
+/// written without spaces gives the pairs of characters of each run (`textops::bigrams`) instead.
 pub(super) fn topics(text: &str, int: &mut Interner) -> FxHashSet<Sym> {
     let mut out = FxHashSet::default();
-    for w in text.split(|c: char| !c.is_alphanumeric()) {
-        if w.len() == 1 && w.chars().all(|c| c.is_ascii_uppercase()) {
-            out.insert(int.intern(w));
-        } else if w.chars().count() >= 3 && !w.chars().all(|c| c.is_ascii_digit()) {
-            out.insert(int.intern(&w.to_lowercase()));
+    for run in text.split(|c: char| !c.is_alphanumeric()).filter(|r| !r.is_empty()) {
+        for (w, unspaced) in textops::script_pieces(run) {
+            if unspaced {
+                out.extend(textops::bigrams(w).into_iter().map(|b| int.intern(b)));
+            } else if w.chars().count() == 1 && w.chars().all(char::is_uppercase) {
+                out.insert(int.intern(w));
+            } else if w.chars().count() >= 3 && !w.chars().all(|c| c.is_ascii_digit()) {
+                out.insert(int.intern(&w.to_lowercase()));
+            }
         }
     }
     out

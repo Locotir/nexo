@@ -8,6 +8,8 @@ use std::hash::Hasher;
 
 use rustc_hash::FxHasher;
 
+use crate::textops;
+
 /// Characters of a line that are read; the rest of a longer one is a paste, not a fact.
 pub const LINE_CHARS: usize = 400;
 
@@ -38,7 +40,16 @@ pub fn keys(line: &str, out: &mut Vec<u64>) {
         None => line,
     };
     let mut prev = "";
-    for raw in line.split_whitespace() {
+    // a script written without spaces gives the pairs of characters of each run, and a name written next to it
+    // (`修改config.py中的函数`) is a word of its own
+    for (raw, unspaced) in line.split_whitespace().flat_map(textops::script_pieces) {
+        if unspaced {
+            let pairs = textops::bigrams(raw);
+            out.extend(pairs.iter().map(|p| key(p)));
+            // a number after it (`端口 8080`) goes with its last two characters, as a question would write them
+            prev = pairs.last().copied().unwrap_or("");
+            continue;
+        }
         let w = raw
             .trim_start_matches(|c: char| !(c.is_alphanumeric() || matches!(c, '/' | '~' | '.' | '_')))
             .trim_end_matches(|c: char| !(c.is_alphanumeric() || c == '_' || c == '/'));
@@ -49,7 +60,7 @@ pub fn keys(line: &str, out: &mut Vec<u64>) {
         if !prev.is_empty() && w.bytes().all(|b| b.is_ascii_digit()) {
             out.push(key(&format!("{prev} {w}")));
         }
-        prev = if w.bytes().all(|b| b.is_ascii_alphabetic()) && w.len() > 1 { w } else { "" };
+        prev = if w.chars().all(char::is_alphabetic) && w.chars().count() > 1 { w } else { "" };
         if dotted(w) {
             out.push(key(w));
             continue;
@@ -88,6 +99,17 @@ mod tests {
         let mut v = Vec::new();
         keys(line, &mut v);
         v.contains(&key(word))
+    }
+
+    #[test]
+    fn a_script_without_spaces_gives_pairs_and_the_names_beside_it() {
+        let l = "修改config.py中的函数，服务监听端口 8080";
+        for k in ["config.py", "config", "修改", "函数", "端口", "端口 8080", "8080"] {
+            assert!(has(l, k), "{k}");
+        }
+        assert!(!has(l, "修改config.py中的函数") && !has(l, "服务监听端口 8080"));
+        assert!(has("Исправь порт 8080 в Настройки.conf", "порт 8080"));
+        assert!(has("Исправь порт 8080 в Настройки.conf", "настройки.conf"));
     }
 
     #[test]

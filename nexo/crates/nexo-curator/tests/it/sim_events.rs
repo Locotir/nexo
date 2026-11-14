@@ -26,6 +26,19 @@ fn cut_then_cited_is_one_event() {
 }
 
 #[test]
+fn a_cut_name_cited_counts_in_every_language() {
+    // the session of `cut-and-cite.jsonl`, asked and answered in Russian (1C code), in Chinese (C with Chinese
+    // comments, a reply that writes the names with no space around them) and over an objdump listing
+    for file in ["lang-ru.jsonl", "lang-zh.jsonl", "lang-asm.jsonl"] {
+        let r = events(file, "protect=1;still=0");
+        let cited: Vec<_> = r.events.iter().filter(|e| e.kind == Kind::Cited).collect();
+        assert_eq!(cited.len(), 1, "{file}: {:?}", r.events);
+        assert_eq!(cited[0].words, r.forgotten, "{file}");
+        assert!(cited[0].words >= 2, "{file}: two names: {:?}", cited[0]);
+    }
+}
+
+#[test]
 fn denied_result_is_one_event() {
     let r = events("denied.jsonl", "protect=1;still=0;fresh=0");
     let denied: Vec<_> = r.events.iter().filter(|e| e.kind == Kind::Denied).collect();

@@ -5,6 +5,12 @@
 //! 0.093 to 0.122, g5 0.087 to 0.104), need heads refit with the strict hindsight labels on the 656-session
 //! corpus 0.9259 $ (+2.2 %, marathon4 0.061 to 0.081). Blind and denied are equal in all three arms; the
 //! no-heads arm forgets fewer words (g5 21 to 0, marathon-D 9 to 1) but costs more. The heads stay as shipped.
+//!
+//! The keep and turn heads only weigh the guess cut (`threshold`) once the need heads are there. On the test
+//! third of the corpus (204 sessions, Unicode words), view cost, forgotten words, replies with a forget:
+//! shipped 17.4874 $, 4373, 1661; refit on the dev sessions (`needfit --keepturn 16`, turn = used within 16
+//! steps) 17.4881 $, 4365, 1661; with 4 steps 17.4750 $, 4435, 1661; without them (`threshold=0`) 17.4834 $,
+//! 4369, 1670. None is cheaper without forgetting more, so they stay as shipped.
 
 use std::sync::{LazyLock, Mutex};
 
@@ -99,7 +105,7 @@ fn hump_split(tok: &str) -> Vec<&str> {
     let mut prev: Option<char> = None;
     for (i, c) in tok.char_indices() {
         if let Some(p) = prev {
-            if p.is_ascii_lowercase() && c.is_ascii_uppercase() {
+            if p.is_lowercase() && c.is_uppercase() {
                 out.push(&tok[start..i]);
                 start = i;
             }
@@ -110,18 +116,25 @@ fn hump_split(tok: &str) -> Vec<&str> {
     out
 }
 
-/// Topic words of a text (``learn.terms``).
+/// Topic words of a text (``learn.terms``). A script written without spaces gives the pairs of characters
+/// of each run (`textops::bigrams`): a run there is a whole clause, not a word.
 pub fn terms(text: &str, int: &mut Interner) -> Set {
     let mut out = Vec::new();
-    for tok in TOKEN.findall(text) {
-        let parts = if textops::str_islower(tok) { vec![tok] } else { hump_split(tok) };
-        for part in parts {
-            if textops::len(part) < 3 || textops::str_isdigit(part) {
+    for run in TOKEN.findall(text) {
+        for (tok, unspaced) in textops::script_pieces(run) {
+            if unspaced {
+                out.extend(textops::bigrams(tok).into_iter().map(|b| int.intern(b)));
                 continue;
             }
-            let low = textops::lower(part);
-            if !STOP.contains(low.as_ref()) {
-                out.push(int.intern(textops::head(&low, 5)));
+            let parts = if textops::str_islower(tok) { vec![tok] } else { hump_split(tok) };
+            for part in parts {
+                if textops::len(part) < 3 || textops::str_isdigit(part) {
+                    continue;
+                }
+                let low = textops::lower(part);
+                if !STOP.contains(low.as_ref()) {
+                    out.push(int.intern(textops::head(&low, 5)));
+                }
             }
         }
     }

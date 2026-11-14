@@ -453,6 +453,68 @@ pub fn escape(s: &str) -> String {
 // ---------------------------------------------------------------------------------------------------
 // str methods
 
+/// The scripts written without a space between words (Chinese, Japanese, Thai, Lao, Khmer, Myanmar) or
+/// whose particles join the word before (Korean: `config.py를`), as code point ranges. A run of them is
+/// no single word, and a name written next to them (`修改config.py中的函数`) is a word apart.
+const UNSPACED: [(u32, u32); 17] = [
+    (0x0e00, 0x0eff),   // Thai, Lao
+    (0x1000, 0x109f),   // Myanmar
+    (0x1100, 0x11ff),   // Hangul Jamo
+    (0x1780, 0x17ff),   // Khmer
+    (0x2e80, 0x2fdf),   // CJK radicals, Kangxi radicals
+    (0x3005, 0x3007),   // 々 〆 〇
+    (0x3021, 0x3029),   // Hangzhou numerals
+    (0x3031, 0x3035),   // kana repeat marks
+    (0x3040, 0x30ff),   // Hiragana, Katakana (with ー)
+    (0x3130, 0x318f),   // Hangul compatibility Jamo
+    (0x31f0, 0x31ff),   // Katakana extension
+    (0x3400, 0x4dbf),   // CJK extension A
+    (0x4e00, 0x9fff),   // CJK unified ideographs
+    (0xac00, 0xd7af),   // Hangul syllables
+    (0xf900, 0xfaff),   // CJK compatibility ideographs
+    (0xff66, 0xff9f),   // halfwidth Katakana
+    (0x20000, 0x3134f), // CJK extensions B to H
+];
+
+/// Whether `c` is of a script written without spaces between words (`UNSPACED`).
+pub fn unspaced(c: char) -> bool {
+    let u = c as u32;
+    u >= 0x0e00 && UNSPACED.iter().any(|&(a, b)| (a..=b).contains(&u))
+}
+
+/// The ranges of `UNSPACED` as the inside of a `regex` character class.
+pub fn unspaced_class() -> String {
+    UNSPACED.iter().map(|(a, b)| format!(r"\x{{{a:x}}}-\x{{{b:x}}}")).collect()
+}
+
+/// The pieces of a run of letters and digits, cut where it passes between an unspaced script and any
+/// other, each with whether it is unspaced.
+pub fn script_pieces(run: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut cur: Option<bool> = None;
+    for (i, c) in run.char_indices() {
+        let u = unspaced(c);
+        if cur.is_some_and(|k| k != u) {
+            out.push((&run[start..i], !u));
+            start = i;
+        }
+        cur = Some(u);
+    }
+    if let Some(k) = cur {
+        out.push((&run[start..], k));
+    }
+    out
+}
+
+/// The overlapping pairs of characters of a piece of an unspaced script: with no space to find its words by,
+/// the pairs are what two texts on the same thing share (`登录模块` gives `登录`, `录模`, `模块`). A piece of
+/// one character gives nothing.
+pub fn bigrams(piece: &str) -> Vec<&str> {
+    let idx: Vec<usize> = piece.char_indices().map(|(i, _)| i).chain(std::iter::once(piece.len())).collect();
+    (0..idx.len().saturating_sub(2)).map(|k| &piece[idx[k]..idx[k + 2]]).collect()
+}
+
 /// `str.isspace` for one character.
 pub fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
@@ -648,6 +710,18 @@ pub fn bisect_right<T: PartialOrd>(v: &[T], x: &T) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unspaced_script_is_cut_from_its_neighbours_and_read_in_pairs() {
+        assert_eq!(script_pieces("修改config中的函数"), [("修改", true), ("config", false), ("中的函数", true)]);
+        assert_eq!(script_pieces("Größe_max"), [("Größe_max", false)]);
+        assert_eq!(script_pieces("ログイン画面"), [("ログイン画面", true)]);
+        assert_eq!(bigrams("登录模块"), ["登录", "录模", "模块"]);
+        assert!(bigrams("函").is_empty() && bigrams("").is_empty());
+        assert!(
+            unspaced('ー') && unspaced('한') && unspaced('ก') && !unspaced('Ж') && !unspaced('a') && !unspaced('，')
+        );
+    }
 
     #[test]
     fn words_and_bounds() {
