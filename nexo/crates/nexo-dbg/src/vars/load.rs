@@ -78,11 +78,23 @@ impl Vars {
                             frame_base: frame_base.map(|x| x.0.slice().to_vec()),
                             enc,
                             vars: Vec::new(),
+                            nparams: 0,
+                            prototyped: matches!(
+                                e.attr_value(gimli::DW_AT_prototyped),
+                                Some(AttributeValue::Flag(true))
+                            ),
+                            variadic: false,
                         });
                         Ctx::Func(self.funcs.len() - 1)
                     }
                 }
                 gimli::DW_TAG_lexical_block => Ctx::Block(ranges(e)),
+                gimli::DW_TAG_unspecified_parameters => {
+                    if let Some((_, Ctx::Func(i))) = stack.last() {
+                        self.funcs[*i].variadic = true;
+                    }
+                    Ctx::Other
+                }
                 gimli::DW_TAG_inlined_subroutine => Ctx::Skip,
                 t @ (gimli::DW_TAG_formal_parameter | gimli::DW_TAG_variable) => {
                     let loc = match e.attr_value(gimli::DW_AT_location) {
@@ -99,6 +111,9 @@ impl Vars {
                         },
                         None => Loc::None,
                     };
+                    if let (gimli::DW_TAG_formal_parameter, Some((_, Ctx::Func(i)))) = (t, stack.last()) {
+                        self.funcs[*i].nparams += 1;
+                    }
                     let mut var = Var {
                         name: name(e),
                         param: t == gimli::DW_TAG_formal_parameter,

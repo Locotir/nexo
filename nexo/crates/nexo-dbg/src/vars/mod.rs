@@ -49,12 +49,25 @@ struct Var {
     scope: Option<Vec<(u64, u64)>>,
 }
 
+/// What `args` knows from DWARF about the function it stopped in.
+pub(crate) struct NamedArgs {
+    pub lines: Vec<String>,
+    pub count: usize,
+    pub variadic: bool,
+    pub unread: Vec<usize>,
+}
+
 struct Func {
     name: String,
     ranges: Vec<(u64, u64)>,
     frame_base: Option<Vec<u8>>,
     enc: gimli::Encoding,
     vars: Vec<Var>,
+    /// How many formal parameters DWARF lists (named or not), and whether it ends in `...`.
+    nparams: usize,
+    variadic: bool,
+    /// `DW_AT_prototyped`: the list is the whole signature even when empty (`void f(void)`).
+    prototyped: bool,
 }
 
 enum Ty {

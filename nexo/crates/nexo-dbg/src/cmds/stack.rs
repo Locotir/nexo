@@ -70,15 +70,31 @@ impl Session {
             Os::Linux => ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
             Os::Windows => ["rcx", "rdx", "r8", "r9", "", ""],
         };
-        // the named parameters when the program carries variable info, then the registers they came in
-        let mut l = self.named_args();
+        // the named parameters when the program carries variable info, then the registers they came in:
+        // with it, only the registers of parameters that could not be read and, past the named ones, those of
+        // a variadic function; without it, all of them
+        let info = self.named_args();
+        let (mut l, count, variadic, unread) = match info {
+            Some(i) => (i.lines, Some(i.count), i.variadic, i.unread),
+            None => (Vec::new(), None, false, Vec::new()),
+        };
         for (i, n) in regs.iter().enumerate().filter(|(_, n)| !n.is_empty()) {
+            let past = count.is_some_and(|c| i >= c);
+            if past && !variadic || count.is_some() && !past && !unread.contains(&i) {
+                continue;
+            }
             let v = r.get(n).unwrap_or(0);
             let mut s = format!("arg{} {n} = {v:#x} ({})", i + 1, v as i64);
             if let Some(lab) = self.mods.label(v, true) {
                 s.push_str(&format!(" -> {lab}"));
             }
+            if past {
+                s.push_str(" ... (variadic)");
+            }
             l.push(s);
+        }
+        if l.is_empty() {
+            l.push("no parameters".into());
         }
         Ok(rows("args", l, json!({})))
     }

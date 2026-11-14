@@ -131,23 +131,29 @@ impl Session {
         .flatten()
     }
 
-    /// The named parameters of the function at the stop, as `args` rows; empty without variable info.
-    pub(crate) fn named_args(&mut self) -> Vec<String> {
+    /// The parameters of the function at the stop as `args` rows, with how many DWARF lists, whether the
+    /// function is variadic, and which of them (by position) had no readable value; `None` without variable
+    /// info for this function.
+    pub(crate) fn named_args(&mut self) -> Option<NamedArgs> {
         self.with_vars(|vars, regs| {
             let pc = regs.rip.wrapping_sub(regs.bias);
-            let mut l = Vec::new();
-            for (v, enc, fb) in vars.in_scope(pc).into_iter().filter(|(v, _, _)| v.param) {
+            let f = vars.func_at(pc).filter(|f| f.nparams > 0 || f.variadic || f.prototyped)?;
+            let mut a = NamedArgs { lines: Vec::new(), count: f.nparams, variadic: f.variadic, unread: Vec::new() };
+            for (i, (v, enc, fb)) in vars.in_scope(pc).into_iter().filter(|(v, _, _)| v.param).enumerate() {
                 let ty = View(v.ty, 0);
                 let val = match vars.value(v, enc, fb, regs) {
                     Some(at) => vars.render(&Val { at, ty }, regs, 0),
-                    None => "<optimised out>".into(),
+                    None => {
+                        a.unread.push(i);
+                        "<optimised out>".into()
+                    }
                 };
-                l.push(format!("{} ({}) = {val}", v.name, vars.name(ty)));
+                a.lines.push(format!("{} ({}) = {val}", v.name, vars.name(ty)));
             }
-            l
+            Some(a)
         })
         .ok()
         .flatten()
-        .unwrap_or_default()
+        .flatten()
     }
 }
