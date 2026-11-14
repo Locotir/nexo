@@ -81,6 +81,7 @@ impl Session {
         };
         if matches!(why, Why::Exited(_) | Why::Killed(_)) {
             l.push(headline);
+            l.extend(self.unhit_lines());
             if let Some(o) = self.new_output_line() {
                 l.push(o);
             }

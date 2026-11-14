@@ -174,6 +174,39 @@ impl Session {
         self.t.maps().map(|m| m.iter().any(|m| m.exec && m.start <= addr && addr < m.end)).unwrap_or(false)
     }
 
+    /// When the program ends: each breakpoint it never reached, with where it really was put. The program's own
+    /// numbers are file addresses (what `nexo bin` prints) and are moved by the load shift of a PIE; the line says
+    /// both, so a number typed from a listing that was never shifted shows.
+    pub(super) fn unhit_lines(&mut self) -> Vec<String> {
+        let shift = self.mods.main_bias();
+        let todo: Vec<(u32, u64, bool, bool)> = self
+            .bps
+            .iter()
+            .filter(|b| !b.call && b.hits == 0)
+            .map(|b| (b.id, b.addr, b.enabled, b.cond.is_some()))
+            .collect();
+        let mut l = Vec::new();
+        for (id, addr, en, cond) in todo {
+            let label = self.mods.label(addr, false).unwrap_or_default();
+            let mut s = format!("breakpoint #{id} at {addr:#x} {label} was never hit (hits 0)");
+            if !en {
+                s.push_str("; it was disabled");
+            }
+            if cond {
+                s.push_str("; it has an `if` condition (hits count only the stops)");
+            }
+            match self.mods.in_main(addr) {
+                Some(f) if shift != 0 => s.push_str(&format!(
+                    "; in the program's image: file address {f:#x}, loaded at +{shift:#x} (a plain number you type is a file address and gets this shift added)"
+                )),
+                Some(_) => {}
+                None => s.push_str("; this address is outside the program's own image"),
+            }
+            l.push(s);
+        }
+        l
+    }
+
     pub(super) fn cmd_breaks(&mut self) -> Output {
         let mut l = Vec::new();
         #[allow(clippy::type_complexity)]

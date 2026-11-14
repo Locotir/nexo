@@ -77,3 +77,39 @@ fn run_inside_a_live_session_says_the_program_is_already_running() {
     let e = s.exec(&split_words("run")).unwrap_err().to_string();
     assert!(e.contains("has ended (killed by the debugger)") && e.contains("`end`"), "{e}");
 }
+
+#[test]
+fn a_breakpoint_never_reached_is_listed_when_the_program_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(cc) = ["cc", "gcc", "clang"]
+        .into_iter()
+        .find(|c| std::process::Command::new(c).arg("--version").output().is_ok_and(|o| o.status.success()))
+    else {
+        return eprintln!("SKIPPED: no C compiler");
+    };
+    let src = dir.path().join("u.c");
+    std::fs::write(
+        &src,
+        "#include <stdio.h>\n__attribute__((noinline)) int divide(int a, int b) { return a / b; }\nint main(int argc, char **argv) {\n    if (argc > 5) return divide(argc, 2);\n    printf(\"ok\\n\");\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let exe = dir.path().join("u");
+    assert!(std::process::Command::new(cc)
+        .args(["-O0", "-fpie", "-pie", "-o"])
+        .arg(&exe)
+        .arg(&src)
+        .status()
+        .unwrap()
+        .success());
+    let (mut s, _) = open(&Kind::Run { exe, args: vec![] }).expect("start");
+    let ok = s.exec(&split_words("break divide")).unwrap().text_all();
+    assert!(ok.contains("breakpoint #1"), "{ok}");
+    s.exec(&split_words("break main")).unwrap();
+    s.exec(&split_words("cont")).unwrap();
+    let out = s.exec(&split_words("cont")).unwrap().text_all();
+    assert!(out.contains("exited with code 0"), "{out}");
+    assert!(out.contains("breakpoint #1 at 0x"), "{out}");
+    assert!(out.contains("divide") && out.contains("was never hit (hits 0)"), "{out}");
+    assert!(out.contains("file address 0x") && out.contains("loaded at +0x"), "{out}");
+    assert!(!out.contains("breakpoint #2 at"), "main was hit: {out}");
+}

@@ -71,7 +71,9 @@ impl Session {
         self.t.kill()?;
         self.state = State::Exited;
         self.exit = Some("killed by the debugger".into());
-        Ok(rows("kill", vec!["program killed".into()], json!({})))
+        let mut l = vec!["program killed".to_string()];
+        l.extend(self.unhit_lines());
+        Ok(rows("kill", l, json!({})))
     }
 
     /// `run` typed inside a session that has a program: say what is live and what goes on or starts again.
