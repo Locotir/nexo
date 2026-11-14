@@ -36,6 +36,80 @@ impl Snapshot {
     pub fn find(&self, reference: &str) -> Option<&Element> {
         self.elements.iter().find(|e| e.reference == reference)
     }
+
+    /// Elements matching a free-text query such as `search box` or `submit button`, best first (document
+    /// order among equals), and how many matched in all. Words are matched against the name and the role,
+    /// with the usual names for roles (`box`, `field` and `input` are text fields, `dropdown` a select);
+    /// no element that matches no word is returned.
+    pub fn search(&self, query: &str, limit: usize) -> (Vec<&Element>, usize) {
+        let words: Vec<String> = words(query).into_iter().filter(|w| !STOPWORDS.contains(&w.as_str())).collect();
+        if words.is_empty() {
+            return (Vec::new(), 0);
+        }
+        let whole = words.join(" ");
+        let mut scored: Vec<(u32, &Element)> =
+            self.elements.iter().map(|e| (score(e, &words, &whole), e)).filter(|(s, _)| *s > 0).collect();
+        // Stable, so elements with the same score stay in document order.
+        scored.sort_by_key(|a| std::cmp::Reverse(a.0));
+        let total = scored.len();
+        (scored.into_iter().take(limit).map(|(_, e)| e).collect(), total)
+    }
+}
+
+const STOPWORDS: [&str; 9] = ["the", "a", "an", "for", "of", "to", "on", "in", "this"];
+
+/// Roles (or tags) that a word of a query stands for, besides the word itself.
+const ROLE_WORDS: [(&[&str], &[&str]); 9] = [
+    (
+        &["box", "field", "input", "textbox", "text", "entry"],
+        &[
+            "text",
+            "search",
+            "email",
+            "password",
+            "number",
+            "tel",
+            "url",
+            "textarea",
+            "textbox",
+            "searchbox",
+            "combobox",
+        ],
+    ),
+    (&["button", "btn"], &["button", "submit", "reset"]),
+    (&["link", "anchor"], &["a", "link"]),
+    (&["checkbox", "tick"], &["checkbox", "switch"]),
+    (&["radio", "option"], &["radio", "option"]),
+    (&["dropdown", "select", "picker", "list"], &["select", "combobox", "listbox"]),
+    (&["tab"], &["tab"]),
+    (&["menu"], &["menu", "menuitem", "menubar"]),
+    (&["image", "picture", "upload"], &["image", "file"]),
+];
+
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect()
+}
+
+fn score(e: &Element, query: &[String], whole: &str) -> u32 {
+    let name = words(&e.name);
+    let role = e.role.to_lowercase();
+    let mut total = 0;
+    for w in query {
+        if name.iter().any(|n| n == w) {
+            total += 3;
+        } else if name.iter().any(|n| n.starts_with(w.as_str()) || (w.len() > 2 && n.contains(w.as_str()))) {
+            total += 2;
+        }
+        if role == *w
+            || ROLE_WORDS.iter().any(|(said, roles)| said.contains(&w.as_str()) && roles.contains(&role.as_str()))
+        {
+            total += 2;
+        }
+    }
+    if total > 0 && name.join(" ") == whole {
+        total += 3;
+    }
+    total
 }
 
 /// The page-side walker: a function of `{filter, depth, refId}` returning the tree as JSON text. An element keeps

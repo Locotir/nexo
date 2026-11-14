@@ -423,6 +423,35 @@ async fn drives_the_page_and_keeps_to_its_own_tabs() {
         n.iter().any(|e| e.url == api && e.status == Some(200))
     })
     .await;
+    // network detail: what the extension passes on, never a body from the person's browser
+    let seq = b.network(Some("/api")).await.unwrap().iter().find(|e| e.url == api).unwrap().seq;
+    let d = b.network_detail(seq).await.unwrap();
+    assert_eq!((d.entry.status, d.body.as_deref()), (Some(200), None));
+    assert!(d.body_note.unwrap().contains("not read"));
+    assert!(b.network_detail(99_999).await.is_err());
+
+    // Mouse at a point: double and right clicks with modifiers, hover, wheel, a mouse-only drag.
+    b.eval("window.ev = []; for (const t of ['dblclick', 'contextmenu', 'mousemove', 'mouseup', 'wheel']) document.addEventListener(t, (e) => window.ev.push(t + ':' + e.clientX + ':' + e.clientY + ':' + e.ctrlKey)); 0").await.unwrap();
+    let ctrl = nexo_browser::Modifiers::parse("ctrl").unwrap();
+    b.double_click(5.0, 6.0, ctrl).await.unwrap();
+    b.right_click(7.0, 8.0, nexo_browser::Modifiers::default()).await.unwrap();
+    b.hover_xy(9.0, 10.0).await.unwrap();
+    b.scroll_xy(9.0, 10.0, 0.0, 40.0).await.unwrap();
+    // the double click selected a word; a press on it would start a drag of the text, so it is cleared first
+    b.eval("getSelection().removeAllRanges(); 0").await.unwrap();
+    assert!(!b.drag((1.0, 1.0), (30.0, 2.0), nexo_browser::Modifiers::default()).await.unwrap());
+    let ev = b.eval("window.ev.join(',')").await.unwrap();
+    for want in
+        ["dblclick:5:6:true", "contextmenu:7:8:false", "mousemove:9:10:false", "wheel:9:10:false", "mouseup:30:2:false"]
+    {
+        assert!(ev.contains(want), "{want} in {ev}");
+    }
+    // a drag that starts on selected text is called off, and the mouse still works after it
+    b.eval("getSelection().selectAllChildren(document.body); window.ev = []; 0").await.unwrap();
+    b.drag((20.0, 20.0), (60.0, 20.0), nexo_browser::Modifiers::default()).await.unwrap();
+    b.double_click(11.0, 12.0, nexo_browser::Modifiers::default()).await.unwrap();
+    let ev = b.eval("window.ev.join(',')").await.unwrap();
+    assert!(ev.contains("dblclick:11:12:false"), "{ev}");
 
     // A dialog would block the page for good with nobody to answer it: it is closed and noted.
     assert_eq!(b.eval("alert('look'); 7").await.unwrap(), "7");

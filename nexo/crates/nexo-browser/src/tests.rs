@@ -346,7 +346,7 @@ async fn upload_keys_and_raw_input() {
     assert!(matches!(browser.press("Hyper+A").await, Err(Error::Unusable { .. })));
 
     // A raw click lands on the canvas at the given viewport point.
-    browser.click_xy(50.0, 250.0).await.unwrap();
+    browser.click_xy(50.0, 250.0, Modifiers::default()).await.unwrap();
     assert_eq!(browser.eval("JSON.stringify(window.clicks)").await.unwrap(), r#""[[50,50]]""#);
 
     browser.close().await.unwrap();
@@ -503,4 +503,252 @@ async fn records_actions_and_draws_them_on_the_exported_gif() {
     browser.record_start(RecordOptions::default()).await.unwrap();
     assert!(browser.recording());
     browser.close().await.unwrap();
+}
+
+fn el(reference: &str, role: &str, name: &str) -> Element {
+    Element { reference: reference.into(), role: role.into(), name: name.into() }
+}
+
+fn refs(found: &(Vec<&Element>, usize)) -> Vec<String> {
+    found.0.iter().map(|e| e.reference.clone()).collect()
+}
+
+#[test]
+fn search_ranks_by_name_and_role_words() {
+    let snap = Snapshot {
+        elements: vec![
+            el("e1", "a", "Search tips"),
+            el("e2", "text", "Full name"),
+            el("e3", "search", "Search Google"),
+            el("e4", "button", "Search"),
+            el("e5", "submit", "Sign in"),
+            el("e6", "button", "Cancel"),
+            el("e7", "select", "Country"),
+        ],
+    };
+    // "box" is any text field: the search field named Search comes first, then the plain text field.
+    let found = snap.search("the search box", 20);
+    assert_eq!(refs(&found), ["e3", "e1", "e4", "e2"]);
+    assert_eq!(found.1, 4);
+    // Role words alone find the elements of that kind, in document order.
+    assert_eq!(refs(&snap.search("button", 20)), ["e4", "e5", "e6"]);
+    assert_eq!(refs(&snap.search("sign in button", 20))[0], "e5");
+    assert_eq!(refs(&snap.search("submit", 20)), ["e5"]);
+    assert_eq!(refs(&snap.search("dropdown country", 20)), ["e7"]);
+    assert_eq!(refs(&snap.search("link", 20)), ["e1"]);
+    // An exact name beats a longer name containing the words, even when the other has the matching role.
+    assert_eq!(refs(&snap.search("search", 2)), ["e4", "e3"]);
+    assert_eq!(snap.search("search", 2).1, 3);
+    // Nothing matches nonsense or a query of stop words only.
+    assert_eq!(snap.search("zebra", 20), (Vec::new(), 0));
+    assert_eq!(snap.search("the of", 20), (Vec::new(), 0));
+    assert_eq!(snap.search("", 20), (Vec::new(), 0));
+}
+
+#[tokio::test]
+async fn finds_elements_of_a_real_page() {
+    if skip_without_chrome() {
+        return;
+    }
+    let (_dir, url) = write_page(FORM);
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&url).await.unwrap();
+
+    let (hits, total) = browser.find("message box", 20).await.unwrap();
+    assert!(total >= 1 && hits[0].role == "textbox" && hits[0].name == "Message", "{hits:?}");
+    let (hits, _) = browser.find("send button", 20).await.unwrap();
+    assert_eq!(hits[0].name, "Send");
+    // The ref it returns acts like one from a snapshot.
+    browser.fill(&browser.find("email", 1).await.unwrap().0[0].reference, "a@b.c").await.unwrap();
+    assert_eq!(browser.eval_as::<String>("document.getElementById('email').value").await.unwrap(), "a@b.c");
+    assert!(browser.find("zebra", 20).await.unwrap().0.is_empty());
+
+    browser.close().await.unwrap();
+}
+
+const MOUSE: &str = r##"<!doctype html><html><body style="margin:0">
+<div id="box" style="position:absolute;left:0;top:0;width:300px;height:200px;background:#ddd"></div>
+<div id="list" style="position:absolute;left:400px;top:0;width:100px;height:100px;overflow:auto"><div style="height:1000px"></div></div>
+<script>
+window.ev = [];
+const b = document.getElementById('box');
+for (const t of ['dblclick', 'contextmenu', 'mousedown', 'mouseup', 'click', 'mousemove']) {
+  b.addEventListener(t, (e) => window.ev.push([t, e.clientX, e.clientY, e.button, e.buttons, e.ctrlKey, e.shiftKey].join(':')));
+}
+</script>
+</body></html>"##;
+
+async fn mouse_events(browser: &Browser) -> Vec<String> {
+    let out = browser.eval("window.ev.splice(0)").await.unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+
+#[tokio::test]
+async fn mouse_double_right_drag_hover_and_wheel() {
+    if skip_without_chrome() {
+        return;
+    }
+    let (_dir, url) = write_page(MOUSE);
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&url).await.unwrap();
+    let none = Modifiers::default();
+
+    browser.double_click(50.0, 60.0, none).await.unwrap();
+    let ev = mouse_events(&browser).await;
+    assert_eq!(ev.iter().filter(|e| e.starts_with("click:")).count(), 2, "{ev:?}");
+    assert!(ev.contains(&"dblclick:50:60:0:0:false:false".to_string()), "{ev:?}");
+
+    browser.right_click(70.0, 80.0, none).await.unwrap();
+    let ev = mouse_events(&browser).await;
+    assert!(ev.contains(&"mousedown:70:80:2:2:false:false".to_string()), "{ev:?}");
+    assert!(ev.iter().any(|e| e.starts_with("contextmenu:70:80")), "{ev:?}");
+    assert!(!ev.iter().any(|e| e.starts_with("click:")), "a right click is not a click: {ev:?}");
+
+    // Modifiers reach the page on the mouse event.
+    browser.click_xy(20.0, 30.0, Modifiers::parse("ctrl+shift").unwrap()).await.unwrap();
+    let ev = mouse_events(&browser).await;
+    assert!(ev.contains(&"click:20:30:0:0:true:true".to_string()), "{ev:?}");
+    browser.click_xy(20.0, 30.0, none).await.unwrap();
+    assert!(mouse_events(&browser).await.contains(&"click:20:30:0:0:false:false".to_string()));
+
+    // A drag presses at the start, moves with the button held and releases at the end.
+    assert!(!browser.drag((10.0, 20.0), (210.0, 120.0), none).await.unwrap(), "nothing draggable there");
+    let ev = mouse_events(&browser).await;
+    assert!(ev.contains(&"mousedown:10:20:0:1:false:false".to_string()), "{ev:?}");
+    assert!(ev.contains(&"mouseup:210:120:0:0:false:false".to_string()), "{ev:?}");
+    let held = ev.iter().filter(|e| e.starts_with("mousemove:") && e.contains(":0:1:")).count();
+    assert!(held >= 8, "{held} moves with the button held: {ev:?}");
+
+    browser.hover_xy(150.0, 100.0).await.unwrap();
+    assert!(mouse_events(&browser).await.contains(&"mousemove:150:100:0:0:false:false".to_string()));
+
+    // The wheel scrolls what is under the pointer, and only that.
+    browser.scroll_xy(450.0, 50.0, 0.0, 300.0).await.unwrap();
+    let top = eventually(async || {
+        let top: f64 = browser.eval("document.getElementById('list').scrollTop").await.unwrap().parse().unwrap();
+        (top > 0.0).then_some(top)
+    })
+    .await;
+    assert!(top > 0.0);
+    assert_eq!(browser.eval("window.scrollY").await.unwrap(), "0");
+
+    assert!(matches!(browser.click_xy(f64::NAN, 0.0, none).await, Err(Error::Unusable { .. })));
+    assert!(matches!(browser.drag((0.0, 0.0), (f64::INFINITY, 0.0), none).await, Err(Error::Unusable { .. })));
+    browser.close().await.unwrap();
+}
+
+/// A one-thread HTTP server: `/` is a page that posts to `/api`, which answers JSON and a header.
+fn serve() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let (ctype, body) = if head.starts_with("POST /api?q=ok&token=urlsecret") {
+                ("application/json", r#"{"hello":"world"}"#.to_string())
+            } else {
+                (
+                    "text/html",
+                    "<html><body><script>document.cookie = 'sid=cookiesecret'; fetch('/api?q=ok&token=urlsecret', {method: 'POST', headers: {'X-Test': 'yes', 'Authorization': 'Bearer headersecret', 'X-Session-Id': 'sessionsecret'}, body: 'x'})</script></body></html>"
+                        .to_string(),
+                )
+            };
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nX-Reply: here\r\nX-Api-Key: replysecret\r\nSet-Cookie: sid=setcookiesecret\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(reply.as_bytes());
+        }
+    });
+    format!("http://127.0.0.1:{port}/")
+}
+
+#[tokio::test]
+async fn network_detail_has_headers_timing_and_body() {
+    if skip_without_chrome() {
+        return;
+    }
+    let url = serve();
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&url).await.unwrap();
+
+    let api = format!("{url}api?q=ok&token=REDACTED");
+    let entry = eventually(async || {
+        let list = browser.network(Some("/api")).await.unwrap();
+        list.into_iter().find(|e| e.url == api && e.status.is_some() && e.duration_ms.is_some())
+    })
+    .await;
+    assert_eq!(entry.method, "POST");
+    let detail = browser.network_detail(entry.seq).await.unwrap();
+    let header = |list: &[(String, String)], name: &str| {
+        list.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())
+    };
+    assert_eq!(header(&detail.entry.request_headers, "x-test").as_deref(), Some("yes"));
+    assert_eq!(header(&detail.entry.response_headers, "x-reply").as_deref(), Some("here"));
+    // Credentials keep their names and lose their values, in headers and in the URL, in the list and the detail.
+    assert_eq!(header(&detail.entry.request_headers, "authorization").as_deref(), Some(REDACTED));
+    assert_eq!(header(&detail.entry.request_headers, "x-session-id").as_deref(), Some(REDACTED));
+    assert_eq!(header(&detail.entry.response_headers, "x-api-key").as_deref(), Some(REDACTED));
+    let everything = format!("{detail:?}{:?}", browser.network(None).await.unwrap());
+    for secret in ["headersecret", "sessionsecret", "replysecret", "setcookiesecret", "cookiesecret", "urlsecret"] {
+        assert!(!everything.contains(secret), "{secret} leaked: {everything}");
+    }
+    assert_eq!(detail.entry.status, Some(200));
+    assert_eq!(detail.entry.status_text, "OK");
+    assert!(detail.entry.mime.starts_with("application/json"), "{}", detail.entry.mime);
+    assert!(detail.entry.duration_ms.unwrap() >= 0.0);
+    assert_eq!(detail.body.as_deref(), Some(r#"{"hello":"world"}"#));
+    assert_eq!(detail.body_note, None);
+
+    // The page itself is request 1 and has an HTML body; an unknown number is not found.
+    assert!(browser.network_detail(entry.seq - 1).await.unwrap().body.unwrap().contains("fetch("));
+    assert!(matches!(browser.network_detail(99_999).await, Err(Error::NotFound(_))));
+    browser.close().await.unwrap();
+}
+
+const DND: &str = r##"<!doctype html><html><body style="margin:0">
+<div id="src" draggable="true" style="position:absolute;left:10px;top:10px;width:100px;height:50px;background:#9cf">drag me</div>
+<div id="zone" style="position:absolute;left:300px;top:10px;width:200px;height:100px;background:#fc9">drop here</div>
+<script>
+window.log = [];
+const src = document.getElementById('src'), zone = document.getElementById('zone');
+src.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', 'payload'); window.log.push('dragstart'); });
+zone.addEventListener('dragenter', (e) => { e.preventDefault(); window.log.push('dragenter'); });
+zone.addEventListener('dragover', (e) => { e.preventDefault(); });
+zone.addEventListener('drop', (e) => { e.preventDefault(); window.log.push('drop:' + e.dataTransfer.getData('text/plain')); });
+</script>
+</body></html>"##;
+
+#[tokio::test]
+async fn drag_carries_html5_drag_and_drop() {
+    if skip_without_chrome() {
+        return;
+    }
+    let (_dir, url) = write_page(DND);
+    let browser = Browser::launch(LaunchOptions::default()).await.unwrap();
+    browser.navigate(&url).await.unwrap();
+    let none = Modifiers::default();
+
+    assert!(browser.drag((50.0, 30.0), (400.0, 60.0), none).await.unwrap(), "a drag and drop was started");
+    let log = browser.eval("window.log.join(',')").await.unwrap();
+    assert!(log.contains("dragstart") && log.contains("dragenter") && log.contains("drop:payload"), "{log}");
+
+    // Away from anything draggable only the mouse events are sent, and the drag interception is off again.
+    browser.eval("window.log.length = 0").await.unwrap();
+    assert!(!browser.drag((600.0, 300.0), (650.0, 350.0), none).await.unwrap());
+    assert_eq!(browser.eval("window.log.length").await.unwrap(), "0");
+    assert!(browser.drag((50.0, 30.0), (400.0, 60.0), none).await.unwrap(), "and again after that");
+    browser.close().await.unwrap();
+}
+
+#[test]
+fn a_long_body_is_cut_with_a_note() {
+    let (body, note) = cap_body("x".repeat(BODY_CAP + 5));
+    assert_eq!(body.unwrap().chars().count(), BODY_CAP);
+    assert_eq!(note.unwrap(), format!("cut: {BODY_CAP} of {} characters", BODY_CAP + 5));
+    assert_eq!(cap_body("short".into()), (Some("short".into()), None));
 }

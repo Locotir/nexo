@@ -8,6 +8,7 @@ mod export;
 mod input;
 mod overlay;
 mod platform;
+mod pointer;
 mod profile;
 #[cfg(test)]
 mod profile_tests;
@@ -15,6 +16,7 @@ mod profile_tests;
 mod readpage_tests;
 mod record;
 mod recording;
+mod redact;
 mod relay;
 mod snapshot;
 mod tabs;
@@ -26,8 +28,10 @@ pub use error::{Error, Result};
 pub use events::{ConsoleEntry, NetEntry};
 pub use export::ExportOptions;
 pub use platform::{find_browser, installed_browsers, InstalledBrowser, OVERRIDE_VAR};
+pub use pointer::Modifiers;
 pub use profile::{has_display, preflight};
 pub use record::{ActionEvent, ActionKind, RecordInfo, RecordOptions, RecordSummary};
+pub use redact::REDACTED;
 pub use relay::{browsers, BrowserEntry, RelayBrowser};
 pub use snapshot::{Element, Filter, PageTree, ReadPageOptions, Snapshot, DEFAULT_DEPTH, DEFAULT_MAX_CHARS};
 pub use tabs::TabInfo;
@@ -36,11 +40,11 @@ use chromiumoxide::browser::{Browser as Chrome, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
+use chromiumoxide::cdp::browser_protocol::network::GetResponseBodyParams;
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, GetNavigationHistoryParams, NavigateToHistoryEntryParams,
 };
 use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
-use chromiumoxide::layout::Point;
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
@@ -431,6 +435,26 @@ impl Browser {
         self.buffers.network(filter)
     }
 
+    /// Everything known about one request of [`Browser::network`] (its `seq`): headers both ways, status, timing
+    /// and the response body, which is read from the browser now and cut at [`BODY_CAP`] characters.
+    pub async fn network_detail(&self, seq: u64) -> Result<NetDetail> {
+        self.flush_events().await;
+        let entry = self.buffers.request(seq).ok_or_else(|| Error::NotFound(format!("request {seq}")))?;
+        let page = lock(&self.tabs).pages.iter().find(|p| p.target_id().inner() == &entry.source).cloned();
+        let (body, body_note) = match page {
+            _ if entry.status.is_none() => (None, Some("no response yet".to_string())),
+            None => (None, Some("the tab of this request is closed".to_string())),
+            Some(page) => match page.execute(GetResponseBodyParams::new(entry.id.clone())).await {
+                Ok(r) if r.result.base64_encoded => {
+                    (None, Some(format!("binary ({}, about {} bytes)", entry.mime, r.result.body.len() / 4 * 3)))
+                }
+                Ok(r) => cap_body(r.result.body),
+                Err(e) => (None, Some(format!("not available: {e}"))),
+            },
+        };
+        Ok(NetDetail { entry, body, body_note })
+    }
+
     /// The open tabs in order, with the active one flagged. Tabs the page opened itself are included.
     pub async fn tabs(&self) -> Result<Vec<TabInfo>> {
         self.sync_tabs().await?;
@@ -528,10 +552,48 @@ impl Browser {
         Ok(())
     }
 
-    /// Clicks at viewport coordinates, for canvases and anything without a DOM element to target.
-    pub async fn click_xy(&self, x: f64, y: f64) -> Result<()> {
-        self.page().click(Point::new(x, y)).await?;
-        Ok(())
+    /// Clicks at viewport coordinates, for canvases and anything without a DOM element to target, with these
+    /// modifier keys held.
+    pub async fn click_xy(&self, x: f64, y: f64, mods: Modifiers) -> Result<()> {
+        pointer::send(&self.page(), &pointer::click((x, y), pointer::Button::Left, 1, mods)?).await
+    }
+
+    /// Double-clicks at viewport coordinates.
+    pub async fn double_click(&self, x: f64, y: f64, mods: Modifiers) -> Result<()> {
+        pointer::send(&self.page(), &pointer::click((x, y), pointer::Button::Left, 2, mods)?).await
+    }
+
+    /// Right-clicks at viewport coordinates, which opens the page's context menu if it has one.
+    pub async fn right_click(&self, x: f64, y: f64, mods: Modifiers) -> Result<()> {
+        pointer::send(&self.page(), &pointer::click((x, y), pointer::Button::Right, 1, mods)?).await
+    }
+
+    /// Presses the left button at `from`, moves to `to` in steps and releases it, as a person drags. Pages that
+    /// follow the pointer (sliders, canvases) react to the mouse events. When the press was on something the
+    /// browser lets be dragged (a `draggable` element, a link, selected text) the HTML5 drag and drop is carried
+    /// out too, with a drop at `to`, and the answer is `true`.
+    pub async fn drag(&self, from: (f64, f64), to: (f64, f64), mods: Modifiers) -> Result<bool> {
+        pointer::drag(&self.page(), from, to, mods).await
+    }
+
+    /// Moves the mouse to viewport coordinates so hover styles and menus react.
+    pub async fn hover_xy(&self, x: f64, y: f64) -> Result<()> {
+        pointer::send(&self.page(), &pointer::hover((x, y), Modifiers::default())?).await
+    }
+
+    /// Turns the mouse wheel at viewport coordinates by `dx`, `dy` CSS pixels (positive `dy` scrolls down), which
+    /// scrolls whatever is under the pointer.
+    pub async fn scroll_xy(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
+        pointer::send(&self.page(), &pointer::wheel((x, y), (dx, dy), Modifiers::default())?).await
+    }
+
+    /// Finds elements by what a person would call them (`search box`, `submit button`, `Sign in`): up to `limit`
+    /// matches of the page, best first, each with the ref that [`Browser::click`] and the like accept, and how
+    /// many matched in all. A cheap word match over names and roles, not a model.
+    pub async fn find(&self, query: &str, limit: usize) -> Result<(Vec<Element>, usize)> {
+        let snap = self.snapshot().await?;
+        let (hits, total) = snap.search(query, limit);
+        Ok((hits.into_iter().cloned().collect(), total))
     }
 
     /// Types text into whatever has the focus, as the keyboard would.
@@ -622,6 +684,30 @@ impl Browser {
     fn page(&self) -> Page {
         lock(&self.tabs).active()
     }
+}
+
+/// Most characters of a response body that `network_detail` returns.
+pub const BODY_CAP: usize = 8_000;
+
+/// One request in full: what `network_detail` returns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetDetail {
+    /// The request with its headers, response headers, status, timing and failure.
+    pub entry: NetEntry,
+    /// The response body as text, cut at [`BODY_CAP`] characters; `None` when there is none to show.
+    pub body: Option<String>,
+    /// Why the body is missing or cut: binary, too long, no longer kept by the browser.
+    pub body_note: Option<String>,
+}
+
+/// The body cut at [`BODY_CAP`] characters, with a note when it was cut.
+fn cap_body(text: String) -> (Option<String>, Option<String>) {
+    let total = text.chars().count();
+    if total <= BODY_CAP {
+        return (Some(text), None);
+    }
+    let cut: String = text.chars().take(BODY_CAP).collect();
+    (Some(cut), Some(format!("cut: {BODY_CAP} of {total} characters")))
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

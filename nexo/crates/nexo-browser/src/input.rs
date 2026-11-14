@@ -6,7 +6,7 @@ use chromiumoxide::keys::{get_key_definition, KeyDefinition};
 use chromiumoxide::page::Page;
 
 /// Modifier names (lowercase aliases), the key they press and their bit in the CDP `modifiers` mask.
-const MODIFIERS: [(&[&str], &str, i64); 4] = [
+pub(crate) const MODIFIERS: [(&[&str], &str, i64); 4] = [
     (&["alt", "option"], "Alt", 1),
     (&["ctrl", "control"], "Control", 2),
     (&["meta", "cmd", "command"], "Meta", 4),

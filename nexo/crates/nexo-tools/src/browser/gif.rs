@@ -80,7 +80,14 @@ pub(super) async fn note(b: &Browser, action: &Action<'_>) {
     }
     match action {
         Action::Click(target) => b.record_note_click("click", target).await,
-        Action::ClickXy(x, y) => b.record_note(ActionEvent::click(format!("click ({x:.0}, {y:.0})"), *x, *y)),
+        Action::ClickXy(x, y, _) => b.record_note(ActionEvent::click(format!("click ({x:.0}, {y:.0})"), *x, *y)),
+        Action::DoubleClick(x, y, _) => {
+            b.record_note(ActionEvent::click(format!("double click ({x:.0}, {y:.0})"), *x, *y))
+        }
+        Action::RightClick(x, y, _) => {
+            b.record_note(ActionEvent::click(format!("right click ({x:.0}, {y:.0})"), *x, *y))
+        }
+        Action::Drag([x1, y1, x2, y2], _) => b.record_note(ActionEvent::drag("drag", *x1, *y1, *x2, *y2)),
         other => {
             if let Some(label) = label_of(other) {
                 b.record_note(ActionEvent::other(one_line(&label, MAX_LABEL)));
@@ -110,6 +117,8 @@ fn label_of(action: &Action<'_>) -> Option<String> {
         Action::Upload(target, _) => format!("upload to {target}"),
         Action::Resize(w, h) => format!("resize {w}x{h}"),
         Action::TypeText(t) => format!("type {} characters", t.chars().count()),
+        Action::HoverXy(x, y) => format!("hover ({x:.0}, {y:.0})"),
+        Action::ScrollXy([x, y, _, dy]) => format!("scroll {dy:.0} at ({x:.0}, {y:.0})"),
         _ => return None,
     })
 }

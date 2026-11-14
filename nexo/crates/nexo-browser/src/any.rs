@@ -3,9 +3,9 @@
 //! doc of [`RelayBrowser`] lists what differs on purpose.
 
 use crate::{
-    browsers, ActionEvent, Browser, BrowserEntry, ConsoleEntry, Error, ExportOptions, FillReport, LaunchOptions,
-    NetEntry, PageText, PageTree, ReadPageOptions, RecordInfo, RecordOptions, RecordSummary, RelayBrowser, Result,
-    Snapshot, TabInfo, Wait,
+    browsers, ActionEvent, Browser, BrowserEntry, ConsoleEntry, Element, Error, ExportOptions, FillReport,
+    LaunchOptions, Modifiers, NetDetail, NetEntry, PageText, PageTree, ReadPageOptions, RecordInfo, RecordOptions,
+    RecordSummary, RelayBrowser, Result, Snapshot, TabInfo, Wait,
 };
 use nexo_relay::Dirs;
 use std::path::Path;
@@ -61,7 +61,14 @@ forward! {
     tab_close(index: usize) -> ();
     upload(target: &str, path: impl AsRef<Path>) -> ();
     resize(width: u32, height: u32) -> ();
-    click_xy(x: f64, y: f64) -> ();
+    click_xy(x: f64, y: f64, mods: Modifiers) -> ();
+    double_click(x: f64, y: f64, mods: Modifiers) -> ();
+    right_click(x: f64, y: f64, mods: Modifiers) -> ();
+    drag(from: (f64, f64), to: (f64, f64), mods: Modifiers) -> bool;
+    hover_xy(x: f64, y: f64) -> ();
+    scroll_xy(x: f64, y: f64, dx: f64, dy: f64) -> ();
+    find(query: &str, limit: usize) -> (Vec<Element>, usize);
+    network_detail(seq: u64) -> NetDetail;
     type_text(text: &str) -> ();
 }
 

@@ -1,9 +1,10 @@
 //! Page events kept for later reading: console messages and network requests.
 
-use crate::{Error, Result};
+use crate::{redact, Error, Result};
 use chromiumoxide::cdp::browser_protocol::log::{EnableParams as LogEnable, EventEntryAdded};
 use chromiumoxide::cdp::browser_protocol::network::{
-    EnableParams as NetworkEnable, EventRequestWillBeSent, EventResponseReceived,
+    EnableParams as NetworkEnable, EventLoadingFailed, EventLoadingFinished, EventRequestWillBeSent,
+    EventResponseReceived,
 };
 use chromiumoxide::cdp::js_protocol::runtime::{
     EnableParams as RuntimeEnable, EventConsoleApiCalled, EventExceptionThrown, RemoteObject,
@@ -13,6 +14,7 @@ use chromiumoxide::page::Page;
 use futures::StreamExt;
 use regex::Regex;
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 
@@ -31,16 +33,78 @@ pub struct ConsoleEntry {
     pub ts: f64,
 }
 
-/// One network request of the page. The status is `None` until a response arrives.
+/// One network request of the page. The status is `None` until a response arrives. Credentials never reach it:
+/// secret headers and URL parameters are recorded as [`crate::REDACTED`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NetEntry {
+    /// Number of the request since launch (1, 2, ...), the handle for `network_detail`.
+    pub seq: u64,
     pub method: String,
     pub url: String,
     pub status: Option<u16>,
     /// Milliseconds since the Unix epoch.
     pub ts: f64,
+    pub status_text: String,
+    pub mime: String,
+    pub request_headers: Vec<(String, String)>,
+    pub response_headers: Vec<(String, String)>,
+    /// Milliseconds until the first byte of the response, when the browser measured it.
+    pub first_byte_ms: Option<f64>,
+    /// Milliseconds from the request to the end of the response (or to its failure).
+    pub duration_ms: Option<f64>,
+    /// Why the request failed (blocked, refused, ...); `None` when it did not.
+    pub error: Option<String>,
     #[serde(skip)]
-    id: String,
+    pub(crate) id: String,
+    /// The tab it came from: the target id of a headless tab, the tab id of the person's own browser.
+    #[serde(skip)]
+    pub(crate) source: String,
+    /// The browser's monotonic clock at the request, in seconds; `None` when it was not sent.
+    #[serde(skip)]
+    started: Option<f64>,
+}
+
+impl NetEntry {
+    /// A new request with nothing answered yet; the URL is redacted here.
+    pub(crate) fn new(seq: u64, method: String, url: &str, ts: f64, source: String, id: String) -> NetEntry {
+        NetEntry {
+            seq,
+            method,
+            url: redact::url(url),
+            status: None,
+            ts,
+            status_text: String::new(),
+            mime: String::new(),
+            request_headers: Vec::new(),
+            response_headers: Vec::new(),
+            first_byte_ms: None,
+            duration_ms: None,
+            error: None,
+            id,
+            source,
+            started: None,
+        }
+    }
+
+    /// A finished `POST https://a.b/api` with headers and timing, for the tests of the tool that shows it.
+    #[doc(hidden)]
+    pub fn sample(seq: u64) -> NetEntry {
+        NetEntry {
+            status: Some(201),
+            status_text: "Created".into(),
+            mime: "application/json".into(),
+            request_headers: vec![("Accept".into(), "*/*".into())],
+            response_headers: vec![("Content-Type".into(), "application/json".into())],
+            first_byte_ms: Some(80.2),
+            duration_ms: Some(120.4),
+            ..NetEntry::new(seq, "POST".into(), "https://a.b/api", 0.0, "sample".into(), "sample".into())
+        }
+    }
+
+    /// Milliseconds since the request, at this monotonic time (seconds).
+    fn since(&self, now: Option<f64>) -> Option<f64> {
+        Some((now? - self.started?) * 1_000.0)
+    }
 }
 
 /// The console and network buffers, shared by the watchers of every tab.
@@ -48,6 +112,7 @@ pub struct NetEntry {
 pub(crate) struct Buffers {
     console: Arc<Mutex<Vec<ConsoleEntry>>>,
     net: Arc<Mutex<Vec<NetEntry>>>,
+    seq: Arc<AtomicU64>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -126,34 +191,60 @@ impl Buffers {
             })
             .await?,
         );
-        let net = Arc::clone(&self.net);
+        let (buffers, source) = (self.clone(), page.target_id().inner().clone());
         tasks.push(
             listen::<EventRequestWillBeSent, _>(page, move |e| {
                 let id = e.request_id.inner().clone();
-                if let Some(redirect) = &e.redirect_response {
-                    let mut net = lock(&net);
-                    if let Some(prev) = net.iter_mut().rev().find(|n| n.id == id && n.status.is_none()) {
-                        prev.status = u16::try_from(redirect.status).ok();
-                    }
+                let now = Some(*e.timestamp.inner());
+                if let Some(r) = &e.redirect_response {
+                    buffers.answered(
+                        &id,
+                        u16::try_from(r.status).ok(),
+                        &r.status_text,
+                        &r.mime_type,
+                        r.headers.inner(),
+                    );
+                    buffers.ended(&id, now, None);
                 }
-                let entry = NetEntry {
-                    method: e.request.method.clone(),
-                    url: e.request.url.clone(),
-                    status: None,
-                    ts: *e.wall_time.inner() * 1_000.0,
+                let mut entry = NetEntry::new(
+                    buffers.next_seq(),
+                    e.request.method.clone(),
+                    &e.request.url,
+                    *e.wall_time.inner() * 1_000.0,
+                    source.clone(),
                     id,
-                };
-                push(&net, entry);
+                );
+                entry.request_headers = redact::header_list(e.request.headers.inner());
+                entry.started = now;
+                push(&buffers.net, entry);
             })
             .await?,
         );
-        let net = Arc::clone(&self.net);
+        let buffers = self.clone();
         tasks.push(
             listen::<EventResponseReceived, _>(page, move |e| {
+                let r = &e.response;
                 let id = e.request_id.inner();
-                if let Some(hit) = lock(&net).iter_mut().rev().find(|n| &n.id == id && n.status.is_none()) {
-                    hit.status = u16::try_from(e.response.status).ok();
+                buffers.answered(id, u16::try_from(r.status).ok(), &r.status_text, &r.mime_type, r.headers.inner());
+                if let Some(t) = &r.timing {
+                    if let Some(hit) = lock(&buffers.net).iter_mut().rev().find(|n| &n.id == id) {
+                        hit.first_byte_ms = Some(t.receive_headers_end);
+                    }
                 }
+            })
+            .await?,
+        );
+        let buffers = self.clone();
+        tasks.push(
+            listen::<EventLoadingFinished, _>(page, move |e| {
+                buffers.ended(e.request_id.inner(), Some(*e.timestamp.inner()), None);
+            })
+            .await?,
+        );
+        let buffers = self.clone();
+        tasks.push(
+            listen::<EventLoadingFailed, _>(page, move |e| {
+                buffers.ended(e.request_id.inner(), Some(*e.timestamp.inner()), Some(e.error_text.clone()));
             })
             .await?,
         );
@@ -181,5 +272,34 @@ impl Buffers {
             .into_iter()
             .filter(|n| re.as_ref().is_none_or(|r| r.is_match(&n.url) || r.is_match(&n.method)))
             .collect())
+    }
+
+    /// The request with this number (see [`NetEntry::seq`]), if it is still among the last ones kept.
+    pub(crate) fn request(&self, seq: u64) -> Option<NetEntry> {
+        lock(&self.net).iter().find(|n| n.seq == seq).cloned()
+    }
+
+    pub(crate) fn next_seq(&self) -> u64 {
+        self.seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// The response of the latest unanswered request with this id; its headers are redacted here.
+    pub(crate) fn answered(&self, id: &str, status: Option<u16>, text: &str, mime: &str, headers: &serde_json::Value) {
+        if let Some(hit) = lock(&self.net).iter_mut().rev().find(|n| n.id == id && n.status.is_none()) {
+            hit.status = status;
+            hit.status_text = text.to_string();
+            hit.mime = mime.to_string();
+            hit.response_headers = redact::header_list(headers);
+        }
+    }
+
+    /// The end of the latest request with this id: its duration (from the monotonic `now`) and why it failed.
+    pub(crate) fn ended(&self, id: &str, now: Option<f64>, error: Option<String>) {
+        if let Some(hit) = lock(&self.net).iter_mut().rev().find(|n| n.id == id && n.duration_ms.is_none()) {
+            hit.duration_ms = hit.since(now);
+            if error.is_some() {
+                hit.error = error;
+            }
+        }
     }
 }

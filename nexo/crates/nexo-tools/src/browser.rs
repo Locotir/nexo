@@ -13,8 +13,8 @@ use base64::Engine;
 mod real;
 
 use nexo_browser::{
-    AnyBrowser as Browser, ConsoleEntry, FillReport, Filter, NetEntry, PageText, ReadPageOptions, Snapshot, TabInfo,
-    Wait, WAIT_CAP_MS,
+    AnyBrowser as Browser, ConsoleEntry, FillReport, Filter, Modifiers, NetDetail, NetEntry, PageText, ReadPageOptions,
+    Snapshot, TabInfo, Wait, WAIT_CAP_MS,
 };
 use nexo_core::config::{BrowserConfig, BrowserProfile};
 use nexo_core::message::ImageSource;
@@ -44,6 +44,11 @@ const MAX_LIST: usize = 8_000;
 /// Steps of one `batch`, and characters of the answer of each.
 const MAX_STEPS: usize = 30;
 const MAX_STEP_TEXT: usize = 1_500;
+/// Matches of `find` shown at most.
+const MAX_FOUND: usize = 20;
+/// Characters of one header value, and of a whole request, in `network` detail.
+const MAX_HEADER: usize = 300;
+const MAX_DETAIL: usize = 12_000;
 
 /// The `browser` tool. The browser is started on first use and kept in the tool, like `todo` keeps its list.
 #[derive(Default)]
@@ -97,14 +102,24 @@ enum Action<'a> {
     Reload,
     Eval(&'a str),
     Console(Option<&'a str>),
-    Network(Option<&'a str>),
+    /// A regex filter, or the number of one request to show in full.
+    Network(Option<&'a str>, Option<u64>),
+    /// Elements by what a person would call them.
+    Find(&'a str),
     Tabs,
     TabNew(&'a str),
     TabSwitch(usize),
     TabClose(usize),
     Upload(&'a str, &'a str),
     Resize(u32, u32),
-    ClickXy(f64, f64),
+    ClickXy(f64, f64, Modifiers),
+    DoubleClick(f64, f64, Modifiers),
+    RightClick(f64, f64, Modifiers),
+    /// From x1,y1 to x2,y2.
+    Drag([f64; 4], Modifiers),
+    HoverXy(f64, f64),
+    /// At x,y by dx,dy.
+    ScrollXy([f64; 4]),
     TypeText(&'a str),
     /// start_recording, stop_recording, export_gif, clear_recording.
     Gif(gif::GifCall<'a>),
@@ -143,7 +158,7 @@ impl ReadPageArgs<'_> {
 
 const ACTIONS: &str = "open, navigate, snapshot, read_page, read_text, click, fill, fill_batch, select, set_checkbox, press, hover, scroll, \
                        wait, screenshot, back, forward, reload, eval, console, network, tabs, tab_new, tab_switch, tab_close, \
-                       upload, resize, click_xy, type_text, start_recording, stop_recording, export_gif, clear_recording, batch, close, browsers, select_browser, switch_browser";
+                       upload, resize, find, click_xy, double_click, right_click, drag, hover_xy, scroll_xy, type_text, start_recording, stop_recording, export_gif, clear_recording, batch, close, browsers, select_browser, switch_browser";
 
 /// A required text argument; the error says which action needs it.
 fn need<'a>(args: &'a Value, key: &str, action: &str) -> Result<&'a str, String> {
@@ -159,12 +174,34 @@ fn value_arg<'a>(v: &'a Value, action: &str) -> Result<&'a str, String> {
     }
 }
 
+/// Exactly `N` finite numbers in one text: `1280x720`, `120,300` or `10,20 30,40`.
+fn numbers<const N: usize>(text: &str) -> Option<[f64; N]> {
+    let parts: Vec<&str> =
+        text.split(|c: char| c == ',' || c == 'x' || c == 'X' || c.is_whitespace()).filter(|p| !p.is_empty()).collect();
+    if parts.len() != N {
+        return None;
+    }
+    let mut out = [0.0; N];
+    for (slot, part) in out.iter_mut().zip(parts) {
+        *slot = part.parse().ok().filter(|n: &f64| n.is_finite())?;
+    }
+    Some(out)
+}
+
 /// Two numbers in one text: `1280x720` or `120,300`.
 fn pair(text: &str) -> Option<(f64, f64)> {
-    let mut parts =
-        text.split(|c: char| c == ',' || c == 'x' || c == 'X' || c.is_whitespace()).filter(|p| !p.is_empty());
-    let (a, b) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?);
-    parts.next().is_none().then_some((a, b))
+    numbers::<2>(text).map(|[a, b]| (a, b))
+}
+
+/// The point (`to`) of a mouse action, and the modifier keys held (`modifiers`).
+fn point_args(args: &Value, action: &str) -> Result<(f64, f64, Modifiers), String> {
+    let (x, y) = pair(need(args, "to", action)?)
+        .ok_or_else(|| format!("browser {action}: `to` must be X,Y in pixels, e.g. 120,300"))?;
+    Ok((x, y, modifiers_arg(args, action)?))
+}
+
+fn modifiers_arg(args: &Value, action: &str) -> Result<Modifiers, String> {
+    Modifiers::parse(str_arg(args, "modifiers").unwrap_or("")).map_err(|e| format!("browser {action}: {e}"))
 }
 
 /// What `open` asks for: `profile` (`persistent` or `ephemeral`) and `visible` (show the window).
@@ -273,7 +310,8 @@ fn parse(args: &Value) -> Result<Action<'_>, String> {
             js => Action::Eval(js),
         },
         "console" => Action::Console(str_arg(args, "selector")),
-        "network" => Action::Network(str_arg(args, "selector")),
+        "network" => Action::Network(str_arg(args, "selector"), int_arg(args, "to")),
+        "find" => Action::Find(need(args, "target", action)?),
         "tabs" => Action::Tabs,
         "tab_new" => Action::TabNew(need(args, "url", action)?),
         "tab_switch" => Action::TabSwitch(index_arg(args, action)?),
@@ -285,9 +323,19 @@ fn parse(args: &Value) -> Result<Action<'_>, String> {
             }
             _ => return Err("browser resize: `to` must be WIDTHxHEIGHT in pixels, e.g. 1280x720".into()),
         },
-        "click_xy" => match pair(need(args, "to", action)?) {
-            Some((x, y)) => Action::ClickXy(x, y),
-            _ => return Err("browser click_xy: `to` must be X,Y in pixels, e.g. 120,300".into()),
+        "click_xy" => point_args(args, action).map(|(x, y, m)| Action::ClickXy(x, y, m))?,
+        "double_click" => point_args(args, action).map(|(x, y, m)| Action::DoubleClick(x, y, m))?,
+        "right_click" => point_args(args, action).map(|(x, y, m)| Action::RightClick(x, y, m))?,
+        "hover_xy" => point_args(args, action).map(|(x, y, _)| Action::HoverXy(x, y))?,
+        "drag" => match numbers::<4>(need(args, "to", action)?) {
+            Some(p) => Action::Drag(p, modifiers_arg(args, action)?),
+            None => return Err("browser drag: `to` must be X1,Y1,X2,Y2 (from, to), e.g. 100,200,300,200".into()),
+        },
+        "scroll_xy" => match numbers::<4>(need(args, "to", action)?) {
+            Some(p) => Action::ScrollXy(p),
+            None => {
+                return Err("browser scroll_xy: `to` must be X,Y,DX,DY (where, and how far), e.g. 400,300,0,500".into())
+            }
         },
         "type_text" => Action::TypeText(value_arg(args, action)?),
         name if gif::NAMES.contains(&name) => match gif::parse(name, args) {
@@ -469,7 +517,11 @@ impl BrowserTool {
             Action::Reload => changed(b.reload().await.map(|_| "reloaded".to_string())),
             Action::Eval(js) => read("eval", b.eval(js).await.map(|r| cap_text(&r, MAX_EVAL))),
             Action::Console(filter) => read("console", b.console(filter).await.map(|l| show_console(&l))),
-            Action::Network(filter) => read("network", b.network(filter).await.map(|l| show_network(&l))),
+            Action::Network(_, Some(n)) => read("network", b.network_detail(n).await.map(|d| show_request(&d))),
+            Action::Network(filter, None) => read("network", b.network(filter).await.map(|l| show_network(&l))),
+            Action::Find(query) => {
+                read("find", b.find(query, MAX_FOUND).await.map(|(hits, n)| show_found(query, &hits, n)))
+            }
             Action::Tabs => read("tabs", b.tabs().await.map(|t| show_tabs(&t))),
             Action::TabNew(url) => {
                 let index = b.tab_new(url).await.map_err(|e| Step { text: e.to_string(), page: true })?;
@@ -486,7 +538,23 @@ impl BrowserTool {
                 changed(b.upload(t, resolve(cwd, path)).await.map(|_| format!("uploaded {path} to {t}")))
             }
             Action::Resize(w, h) => changed(b.resize(w, h).await.map(|_| format!("resized to {w}x{h}"))),
-            Action::ClickXy(x, y) => changed(b.click_xy(x, y).await.map(|_| format!("clicked at {x},{y}"))),
+            Action::ClickXy(x, y, m) => {
+                changed(b.click_xy(x, y, m).await.map(|_| format!("clicked at {x},{y}{}", held(m))))
+            }
+            Action::DoubleClick(x, y, m) => {
+                changed(b.double_click(x, y, m).await.map(|_| format!("double-clicked at {x},{y}{}", held(m))))
+            }
+            Action::RightClick(x, y, m) => {
+                changed(b.right_click(x, y, m).await.map(|_| format!("right-clicked at {x},{y}{}", held(m))))
+            }
+            Action::Drag([x1, y1, x2, y2], m) => changed(b.drag((x1, y1), (x2, y2), m).await.map(|dropped| {
+                let how = if dropped { ", dropped as a drag and drop" } else { "" };
+                format!("dragged from {x1},{y1} to {x2},{y2}{}{how}", held(m))
+            })),
+            Action::HoverXy(x, y) => changed(b.hover_xy(x, y).await.map(|_| format!("moved the mouse to {x},{y}"))),
+            Action::ScrollXy([x, y, dx, dy]) => {
+                changed(b.scroll_xy(x, y, dx, dy).await.map(|_| format!("scrolled by {dx},{dy} at {x},{y}")))
+            }
             Action::TypeText(t) => {
                 changed(b.type_text(t).await.map(|_| format!("typed {} characters", t.chars().count())))
             }
@@ -522,12 +590,73 @@ fn show_console(list: &[ConsoleEntry]) -> String {
     show_lines(list, |e| format!("{}  {}", e.level, one_line(&e.text, 300)))
 }
 
-/// `method status url`, the latest [`MAX_ENTRIES`]; `-` while no response has come.
+/// ` with ctrl+shift held`, or nothing without modifiers.
+fn held(m: Modifiers) -> String {
+    if m.is_none() {
+        String::new()
+    } else {
+        format!(" with {m} held")
+    }
+}
+
+/// `number method status url`, the latest [`MAX_ENTRIES`]; `-` while no response has come. The number is
+/// what `network` takes in `to` for the full request.
 fn show_network(list: &[NetEntry]) -> String {
     show_lines(list, |e| {
         let status = e.status.map_or_else(|| "-".to_string(), |s| s.to_string());
-        format!("{} {status} {}", e.method, one_line(&e.url, 300))
+        format!("{} {} {status} {}", e.seq, e.method, one_line(&e.url, 300))
     })
+}
+
+/// One request in full: status, timing, headers both ways and the start of the body.
+fn show_request(d: &NetDetail) -> String {
+    let e = &d.entry;
+    let status = e.status.map_or_else(|| "no response".to_string(), |s| format!("{s} {}", e.status_text));
+    let mut out = format!("{} {}\n{}", e.method, one_line(&e.url, 600), status.trim());
+    if !e.mime.is_empty() {
+        out.push_str(&format!("  {}", e.mime));
+    }
+    let ms = |v: f64| format!("{} ms", v.round());
+    match (e.first_byte_ms, e.duration_ms) {
+        (Some(first), Some(total)) => {
+            out.push_str(&format!("\ntime: {} total, first byte after {}", ms(total), ms(first)))
+        }
+        (None, Some(total)) => out.push_str(&format!("\ntime: {}", ms(total))),
+        (Some(first), None) => out.push_str(&format!("\ntime: first byte after {}, still loading", ms(first))),
+        (None, None) => {}
+    }
+    if let Some(err) = &e.error {
+        out.push_str(&format!("\nFAILED: {err}"));
+    }
+    for (title, list) in [("request headers", &e.request_headers), ("response headers", &e.response_headers)] {
+        if !list.is_empty() {
+            out.push_str(&format!("\n{title}:"));
+            for (k, v) in list {
+                out.push_str(&format!("\n  {k}: {}", one_line(v, MAX_HEADER)));
+            }
+        }
+    }
+    match (&d.body, &d.body_note) {
+        (Some(body), note) => {
+            let note = note.as_ref().map(|n| format!(" ({n})")).unwrap_or_default();
+            out.push_str(&format!("\nbody{note}:\n{body}"));
+        }
+        (None, Some(note)) => out.push_str(&format!("\nbody: {note}")),
+        (None, None) => out.push_str("\nbody: (none)"),
+    }
+    cap_text(&out, MAX_DETAIL)
+}
+
+/// The matches of `find` as snapshot lines, best first.
+fn show_found(query: &str, hits: &[nexo_browser::Element], total: usize) -> String {
+    if hits.is_empty() {
+        return format!("(nothing on the page matches {query:?}; try other words, snapshot, or read_text)");
+    }
+    let snap = Snapshot { elements: hits.to_vec() };
+    match total.saturating_sub(hits.len()) {
+        0 => snap.render(),
+        more => format!("{}\n… {more} weaker matches; use more specific words", snap.render()),
+    }
 }
 
 fn show_lines<T>(list: &[T], line: impl Fn(&T) -> String) -> String {
@@ -606,7 +735,7 @@ impl Tool for BrowserTool {
                     "url": {"type": "string", "description": "navigate, tab_new, open: URL, host or local file path."},
                     "profile": {"type": "string", "description": "open: persistent keeps logins (default ephemeral)."},
                     "visible": {"type": "boolean", "description": "open: show the window."},
-                    "target": {"type": "string", "description": "click, fill, select, set_checkbox, hover, upload: ref (e3), CSS selector or visible text/label."},
+                    "target": {"type": "string", "description": "click, fill, select, set_checkbox, hover, upload: ref (e3), CSS selector or visible text/label. find: words, e.g. \"search box\"."},
                     "value": {"type": "string", "description": "fill: text (\"\" clears). eval: JavaScript. type_text: text. upload: file path. export_gif: .gif path."},
                     "gif": {"type": "object", "description": "export_gif: clicks drags labels progress watermark (bool, default on), quality 1-30."},
                     "fields": {"type": "array", "description": "fill_batch: the fields.",
@@ -617,7 +746,8 @@ impl Tool for BrowserTool {
                     "option": {"type": "string", "description": "select: option text or value."},
                     "checked": {"type": "boolean", "description": "set_checkbox: tick or untick."},
                     "keys": {"type": "string", "description": "press: \"Enter\", \"Ctrl+A\", \"Tab Tab Enter\"."},
-                    "to": {"type": "string", "description": "scroll: up, down, top, bottom or a target. resize: 1280x720. click_xy: 120,300. tab_switch, tab_close: tab number."},
+                    "to": {"type": "string", "description": "scroll: up, down, top, bottom or a target. resize: 1280x720. click_xy, double_click, right_click, hover_xy: 120,300. drag: X1,Y1,X2,Y2. scroll_xy: X,Y,DX,DY. tab_switch, tab_close: tab number. network: request number for details."},
+                    "modifiers": {"type": "string", "description": "click_xy, double_click, right_click, drag: ctrl, shift, alt, meta joined by +."},
                     "selector": {"type": "string", "description": "read_text: only this part (CSS). wait: what to wait for. console, network: regex filter."},
                     "filter": {"type": "string", "enum": ["all", "interactive"], "description": "read_page: default all."},
                     "depth": {"type": "integer", "description": "read_page: levels (default 15)."},
@@ -639,7 +769,7 @@ impl Tool for BrowserTool {
             description: "Drive a real browser, one `action` per call; page changes return a snapshot of refs (`e3 button \"Submit\"`). \
                           A target is a ref, CSS selector or visible text. `fill_batch` fills a whole form.",
             params: &[
-                ("action", "open{url?,profile?,visible?} navigate{url} snapshot read_page{filter?,depth?,ref_id?,max_chars?} read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} back forward reload eval{value} console{selector?} network{selector?} tabs tab_new{url} tab_switch{to} tab_close{to} upload{target,value} resize{to} click_xy{to} type_text{value} start_recording stop_recording export_gif{value?,gif?} clear_recording batch{steps} close browsers select_browser{id} switch_browser"),
+                ("action", "open{url?,profile?,visible?} navigate{url} snapshot read_page{filter?,depth?,ref_id?,max_chars?} read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} back forward reload eval{value} console{selector?} network{selector?,to?} tabs tab_new{url} tab_switch{to} tab_close{to} upload{target,value} resize{to} find{target} click_xy|double_click|right_click|drag|hover_xy|scroll_xy{to,modifiers?} type_text{value} start_recording stop_recording export_gif{value?,gif?} clear_recording batch{steps} close browsers select_browser{id} switch_browser"),
                 ("target", "ref (e3), CSS selector or text"),
                 ("profile", "persistent keeps logins"),
                 ("keys", "e.g. Enter, Ctrl+A, Tab Tab"),
@@ -760,14 +890,35 @@ mod tests {
             (json!({"action": "eval", "value": "document.title"}), Action::Eval("document.title")),
             (json!({"action": "console"}), Action::Console(None)),
             (json!({"action": "console", "selector": "error"}), Action::Console(Some("error"))),
-            (json!({"action": "network", "selector": "api"}), Action::Network(Some("api"))),
+            (json!({"action": "network", "selector": "api"}), Action::Network(Some("api"), None)),
+            (json!({"action": "network", "to": "4"}), Action::Network(None, Some(4))),
+            (json!({"action": "find", "target": "search box"}), Action::Find("search box")),
+            (json!({"action": "double_click", "to": "3,4"}), Action::DoubleClick(3.0, 4.0, Modifiers::default())),
+            (
+                json!({"action": "right_click", "to": "3,4", "modifiers": "alt"}),
+                Action::RightClick(3.0, 4.0, Modifiers::parse("alt").unwrap()),
+            ),
+            (
+                json!({"action": "click_xy", "to": "1,2", "modifiers": "Ctrl+Shift"}),
+                Action::ClickXy(1.0, 2.0, Modifiers::parse("ctrl shift").unwrap()),
+            ),
+            (json!({"action": "hover_xy", "to": "5,6"}), Action::HoverXy(5.0, 6.0)),
+            (
+                json!({"action": "drag", "to": "10,20,30,-40", "modifiers": "shift"}),
+                Action::Drag([10.0, 20.0, 30.0, -40.0], Modifiers::parse("shift").unwrap()),
+            ),
+            (
+                json!({"action": "drag", "to": "10,20 30,40"}),
+                Action::Drag([10.0, 20.0, 30.0, 40.0], Modifiers::default()),
+            ),
+            (json!({"action": "scroll_xy", "to": "400,300,0,500"}), Action::ScrollXy([400.0, 300.0, 0.0, 500.0])),
             (json!({"action": "tabs"}), Action::Tabs),
             (json!({"action": "tab_new", "url": "https://a.b"}), Action::TabNew("https://a.b")),
             (json!({"action": "tab_switch", "to": 1}), Action::TabSwitch(1)),
             (json!({"action": "tab_close", "to": "2"}), Action::TabClose(2)),
             (json!({"action": "upload", "target": "e7", "value": "cv.pdf"}), Action::Upload("e7", "cv.pdf")),
             (json!({"action": "resize", "to": "390x844"}), Action::Resize(390, 844)),
-            (json!({"action": "click_xy", "to": "10, 20.5"}), Action::ClickXy(10.0, 20.5)),
+            (json!({"action": "click_xy", "to": "10, 20.5"}), Action::ClickXy(10.0, 20.5, Modifiers::default())),
             (json!({"action": "type_text", "value": "hi"}), Action::TypeText("hi")),
             (json!({"action": "press", "keys": "Ctrl+A"}), Action::Press("Ctrl+A")),
             (
@@ -815,6 +966,12 @@ mod tests {
         assert!(err(json!({"action": "tab_switch"})).contains("`to`"));
         assert!(err(json!({"action": "resize", "to": "10"})).contains("WIDTHxHEIGHT"));
         assert!(err(json!({"action": "click_xy", "to": "1,2,3"})).contains("X,Y"));
+        assert!(err(json!({"action": "click_xy", "to": "1,2", "modifiers": "hyper"})).contains("unknown modifier"));
+        assert!(err(json!({"action": "double_click", "to": "1"})).contains("X,Y"));
+        assert!(err(json!({"action": "drag", "to": "1,2,3"})).contains("X1,Y1,X2,Y2"));
+        assert!(err(json!({"action": "drag", "to": "1,2,3,NaN"})).contains("X1,Y1,X2,Y2"));
+        assert!(err(json!({"action": "scroll_xy", "to": "1,2"})).contains("X,Y,DX,DY"));
+        assert!(err(json!({"action": "find"})).contains("`target` is required"));
         assert!(err(json!({"action": "batch"})).contains("`steps`"));
         assert!(err(json!({"action": "batch", "steps": [{"action": "click"}]})).contains("(batch step 1)"));
         assert!(err(json!({"action": "batch", "steps": [{"action": "tabs"}, {"action": "close"}]}))
@@ -1196,6 +1353,35 @@ mod tests {
         assert_eq!((o.depth, o.max_chars, o.filter), (15, 50_000, Filter::All));
         let o = ReadPageArgs { interactive: true, depth: Some(2), ref_id: Some("e1"), max_chars: Some(10) }.options();
         assert_eq!((o.depth, o.max_chars, o.filter, o.ref_id.as_deref()), (2, 10, Filter::Interactive, Some("e1")));
+    }
+
+    #[test]
+    fn a_request_is_shown_with_its_headers_timing_and_body() {
+        let d = NetDetail { entry: NetEntry::sample(3), body: Some("{\"ok\":true}".into()), body_note: None };
+        let text = show_request(&d);
+        assert!(text.starts_with("POST https://a.b/api\n201 Created  application/json\n"), "{text}");
+        assert!(text.contains("time: 120 ms total, first byte after 80 ms"), "{text}");
+        assert!(text.contains("request headers:\n  Accept: */*"), "{text}");
+        assert!(text.contains("response headers:\n  Content-Type: application/json"), "{text}");
+        assert!(text.ends_with("body:\n{\"ok\":true}"), "{text}");
+        let cut = NetDetail { body_note: Some("cut: 8000 of 9000 characters".into()), ..d.clone() };
+        assert!(show_request(&cut).contains("body (cut: 8000 of 9000 characters):"));
+        let none = NetDetail { body: None, body_note: Some("binary (image/png, about 3 bytes)".into()), ..d };
+        assert!(show_request(&none).ends_with("body: binary (image/png, about 3 bytes)"));
+        assert_eq!(show_network(&[NetEntry::sample(3)]), "3 POST 201 https://a.b/api");
+        assert_eq!(held(Modifiers::parse("shift ctrl").unwrap()), " with ctrl+shift held");
+        assert_eq!(held(Modifiers::default()), "");
+    }
+
+    #[test]
+    fn find_answers_with_lines_or_a_hint() {
+        use nexo_browser::Element;
+        let el =
+            |r: &str, role: &str, name: &str| Element { reference: r.into(), role: role.into(), name: name.into() };
+        let hits = vec![el("e2", "searchbox", "Search"), el("e5", "button", "Search")];
+        assert_eq!(show_found("search box", &hits, 2), "e2 searchbox \"Search\"\ne5 button \"Search\"");
+        assert!(show_found("search box", &hits, 5).ends_with("… 3 weaker matches; use more specific words"));
+        assert!(show_found("nope", &[], 0).starts_with("(nothing on the page matches \"nope\""));
     }
 
     #[test]

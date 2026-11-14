@@ -9,6 +9,8 @@
 //! - [`RelayBrowser::resize`] sizes the whole window (a viewport override would show on the person's screen);
 //! - closing ends the session and detaches the debugger; the tabs stay open for the person to look at;
 //! - a dialog (`alert`, `confirm`, `prompt`) is closed at once (cancelled, except `alert`) and noted in the console.
+//! - [`RelayBrowser::drag`] sends the mouse events only (no HTML5 drag and drop), and [`RelayBrowser::network_detail`]
+//!   has no headers or body: the extension does not pass them on.
 
 mod connect;
 mod keys;
@@ -17,6 +19,7 @@ pub use connect::{browsers, BrowserEntry};
 
 use crate::events::Buffers;
 use crate::export::{self, ExportOptions};
+use crate::pointer::{self, Modifiers};
 use crate::record::Frame;
 use crate::{
     Error, FillReport, Filter, PageText, PageTree, ReadPageOptions, RecordOptions, RecordSummary, Result, Snapshot,
@@ -228,7 +231,7 @@ async fn handle(inner: &Arc<Inner>, ev: Event) {
             }
         }
         "Page.javascriptDialogOpening" => {
-            inner.buffers.ingest(&ev.method, &ev.params);
+            inner.buffers.ingest(tab, &ev.method, &ev.params);
             // A dialog blocks the page until somebody answers; nobody is watching, so it is closed the safe way:
             // an alert only has OK, anything else is cancelled.
             let accept = str_of(&ev.params, "type") == "alert";
@@ -261,7 +264,7 @@ async fn handle(inner: &Arc<Inner>, ev: Event) {
             st.detached.insert(tab, if why.is_empty() { "detached".to_string() } else { why.to_string() });
         }
         method => {
-            inner.buffers.ingest(method, &ev.params);
+            inner.buffers.ingest(tab, method, &ev.params);
         }
     }
 }
@@ -793,9 +796,75 @@ impl RelayBrowser {
         self.inner.req("window.resize", json!({"tab": self.tab()?, "width": width, "height": height})).await.map(drop)
     }
 
-    /// Clicks at viewport coordinates, for canvases and anything without an element to target.
-    pub async fn click_xy(&self, x: f64, y: f64) -> Result<()> {
-        self.click_at(self.tab()?, x, y).await
+    /// Sends mouse events in order to the active tab.
+    async fn pointer(&self, events: &[pointer::Mouse]) -> Result<()> {
+        let tab = self.tab()?;
+        for e in events {
+            self.inner.cdp(tab, "Input.dispatchMouseEvent", e.params()).await?;
+        }
+        Ok(())
+    }
+
+    /// Clicks at viewport coordinates, for canvases and anything without an element to target, with these
+    /// modifier keys held.
+    pub async fn click_xy(&self, x: f64, y: f64, mods: Modifiers) -> Result<()> {
+        self.pointer(&pointer::click((x, y), pointer::Button::Left, 1, mods)?).await
+    }
+
+    /// Double-clicks at viewport coordinates.
+    pub async fn double_click(&self, x: f64, y: f64, mods: Modifiers) -> Result<()> {
+        self.pointer(&pointer::click((x, y), pointer::Button::Left, 2, mods)?).await
+    }
+
+    /// Right-clicks at viewport coordinates.
+    pub async fn right_click(&self, x: f64, y: f64, mods: Modifiers) -> Result<()> {
+        self.pointer(&pointer::click((x, y), pointer::Button::Right, 1, mods)?).await
+    }
+
+    /// Drags with the mouse events only (sliders, canvases, sortable lists that follow the pointer); the answer is
+    /// always `false`: the extension does not pass on the browser's own drag-and-drop event, so an HTML5 drag and
+    /// drop is not carried out here. The browser's own drags are held back meanwhile, so one started by the press
+    /// cannot swallow the rest of the moves.
+    pub async fn drag(&self, from: (f64, f64), to: (f64, f64), mods: Modifiers) -> Result<bool> {
+        let mut events = pointer::drag_moves(from, to, mods)?;
+        events.push(pointer::drag_release(to, mods));
+        let tab = self.tab()?;
+        self.inner.cdp(tab, "Input.setInterceptDrags", json!({"enabled": true})).await?;
+        let done = self.pointer(&events).await;
+        // If the press started a drag of the browser's own (selected text, a link), it is called off, not left
+        // hanging in the person's browser; with none going on this is refused, which is fine.
+        let cancel =
+            json!({"type": "dragCancel", "x": to.0, "y": to.1, "data": {"items": [], "dragOperationsMask": 0}});
+        let _ = self.inner.cdp(tab, "Input.dispatchDragEvent", cancel).await;
+        let off = self.inner.cdp(tab, "Input.setInterceptDrags", json!({"enabled": false})).await;
+        done?;
+        off.map(|_| false)
+    }
+
+    /// Moves the mouse to viewport coordinates.
+    pub async fn hover_xy(&self, x: f64, y: f64) -> Result<()> {
+        self.pointer(&pointer::hover((x, y), Modifiers::default())?).await
+    }
+
+    /// Turns the mouse wheel at viewport coordinates by `dx`, `dy` CSS pixels.
+    pub async fn scroll_xy(&self, x: f64, y: f64, dx: f64, dy: f64) -> Result<()> {
+        self.pointer(&pointer::wheel((x, y), (dx, dy), Modifiers::default())?).await
+    }
+
+    /// Elements by what a person would call them, as [`crate::Browser::find`].
+    pub async fn find(&self, query: &str, limit: usize) -> Result<(Vec<crate::Element>, usize)> {
+        let snap = self.snapshot().await?;
+        let (hits, total) = snap.search(query, limit);
+        Ok((hits.into_iter().cloned().collect(), total))
+    }
+
+    /// One request of [`RelayBrowser::network`]: what the extension passes on (method, address, status, type,
+    /// failure). Its headers are never sent from the person's browser and its body is not read from it.
+    pub async fn network_detail(&self, seq: u64) -> Result<crate::NetDetail> {
+        self.flush().await;
+        let entry = self.inner.buffers.request(seq).ok_or_else(|| Error::NotFound(format!("request {seq}")))?;
+        let note = "not read from the person's own browser (headers neither)".to_string();
+        Ok(crate::NetDetail { entry, body: None, body_note: Some(note) })
     }
 
     /// Types text into whatever has the focus.
