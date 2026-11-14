@@ -5,9 +5,11 @@ use super::*;
 
 impl Session {
     /// The registers, frame and memory reader a location needs, or `None` when the program has no variables.
-    fn with_vars<T>(&mut self, f: impl FnOnce(&Vars, &mut Regs) -> T) -> Result<Option<T>> {
+    /// With `prologue`, a stop before the function's prologue ends is marked so its stack slots are not read.
+    fn with_vars<T>(&mut self, prologue: bool, f: impl FnOnce(&Vars, &mut Regs) -> T) -> Result<Option<T>> {
         self.need_stopped()?;
         let r = self.t.regs(self.cur)?;
+        let early = if prologue { self.early(r.rip) } else { None };
         let Session { t, mods, .. } = self;
         let cfa = {
             let mut rd8 = |a: u64| {
@@ -21,33 +23,59 @@ impl Session {
             let mut b = vec![0u8; n];
             (t.read(a, &mut b) == n).then_some(b)
         };
-        let mut regs = Regs { gp: r.gp, rip: r.rip, cfa, bias, rd: &mut rd };
+        let mut regs = Regs { gp: r.gp, rip: r.rip, cfa, bias, rd: &mut rd, early };
         Ok(Some(f(vars, &mut regs)))
+    }
+
+    /// `stopped at store+0x0, the prologue ends at store+0x10` when `rip` is in a function of the program before
+    /// its prologue ends (from the line table); without lines for it, only its first instruction is known to be.
+    fn early(&mut self, rip: u64) -> Option<String> {
+        let (vars, bias) = self.mods.main_vars()?;
+        let pc = rip.wrapping_sub(bias);
+        let (name, lo, hi) = vars.func_span(pc)?;
+        let name = name.to_string();
+        let end = self.mods.main_lines().and_then(|(l, _)| l.after_prologue(lo, hi));
+        let at = format!("stopped at {name}+{:#x}", pc.wrapping_sub(lo));
+        match end {
+            Some(e) if pc >= lo && pc < e => Some(format!("{at}, the prologue ends at {name}+{:#x}", e - lo)),
+            None if pc == lo => Some(format!("{at}, its first instruction; no line info says where the prologue ends")),
+            _ => None,
+        }
+    }
+
+    fn win(&self) -> bool {
+        matches!(self.t.os(), crate::platform::Os::Windows)
     }
 
     /// `locals`: the parameters and locals of the function the program stopped in, with types and values.
     pub(crate) fn cmd_locals(&mut self) -> Result<Output> {
-        let got = self.with_vars(|vars, regs| {
+        let win = self.win();
+        let got = self.with_vars(true, |vars, regs| {
             let pc = regs.rip.wrapping_sub(regs.bias);
             let f = vars.func_at(pc).map(|f| f.name.clone());
+            let vs = vars.in_scope(pc);
+            let early = regs.early.clone().filter(|_| vs.iter().any(|(v, _, _)| Vars::in_slot(v)));
+            let inreg = if early.is_some() { vars.params_in_regs(pc, win, regs, 0) } else { Vec::new() };
             let mut l = Vec::new();
-            for (v, enc, fb) in vars.in_scope(pc) {
+            for (v, enc, fb) in vs {
                 let ty = View(v.ty, 0);
-                let val = match vars.value(v, enc, fb, regs) {
-                    Some(at) => vars.render(&Val { at, ty }, regs, 0),
-                    None => "<optimised out>".into(),
-                };
+                let at = vars.value(v, enc, fb, regs);
+                let val = vars.shown(v, at, regs, 0, &inreg);
                 let kind = if v.param { "arg " } else { "" };
                 l.push(format!("{kind}{} ({}) = {val}", v.name, vars.name(ty)));
             }
-            (f, l)
+            (f, l, early)
         })?;
         match got {
             None => fail("the program has no variable info: build it with `-g` (cc -g, cargo's dev profile); `args` shows the argument registers"),
-            Some((None, _)) => fail("the stop is outside the program's own functions (a library): `finish` or `bt` to get back to it"),
-            Some((Some(f), l)) if l.is_empty() => Ok(rows("locals", vec![format!("{f} has no parameters or locals")], json!({}))),
-            Some((Some(f), l)) => {
-                let mut out = vec![format!("in {f}:")];
+            Some((None, ..)) => fail("the stop is outside the program's own functions (a library): `finish` or `bt` to get back to it"),
+            Some((Some(f), l, _)) if l.is_empty() => Ok(rows("locals", vec![format!("{f} has no parameters or locals")], json!({}))),
+            Some((Some(f), l, early)) => {
+                let head = match early {
+                    Some(at) => format!("in {f} ({at}: its stack slots are not written yet):"),
+                    None => format!("in {f}:"),
+                };
+                let mut out = vec![head];
                 out.extend(l);
                 Ok(rows("locals", out, json!({"function": f})))
             }
@@ -57,7 +85,7 @@ impl Session {
     /// `print` of a source expression; `None` hands it to the register expressions.
     pub(crate) fn print_var(&mut self, src: &str) -> Option<Result<Output>> {
         let got = self
-            .with_vars(|vars, regs| {
+            .with_vars(true, |vars, regs| {
                 let (v, amp) = match vars.path(src, regs)? {
                     Ok(x) => x,
                     Err(e) => return Some(Err(e)),
@@ -89,7 +117,8 @@ impl Session {
     /// The type of a source expression (`ptype node->next`) as the program's variable info names it; `None` when the
     /// program has no variable info or the expression is not one of its variables.
     pub(crate) fn var_type_name(&mut self, src: &str) -> Option<String> {
-        self.with_vars(|vars, regs| match vars.path(src, regs)? {
+        // a type does not depend on the values, so a stop before the prologue ends does not hide it
+        self.with_vars(false, |vars, regs| match vars.path(src, regs)? {
             Ok((v, amp)) => Some(format!("{}{}", vars.name(v.ty), if amp { " *" } else { "" })),
             Err(_) => None,
         })
@@ -98,27 +127,60 @@ impl Session {
         .flatten()
     }
 
-    /// One line of the locals for a stop report, short; `None` without variable info.
+    /// One line of the locals for a stop report, short; `None` without variable info. Before the prologue ends
+    /// the stack slots are not read: the parameters are shown from the argument registers.
     pub(crate) fn locals_line(&mut self) -> Option<String> {
-        self.with_vars(|vars, regs| {
+        let win = self.win();
+        self.with_vars(true, |vars, regs| {
             let pc = regs.rip.wrapping_sub(regs.bias);
             let vs = vars.in_scope(pc);
             if vs.is_empty() {
                 return None;
             }
-            let mut parts = Vec::new();
-            for (v, enc, fb) in vs {
-                let val = match vars.value(v, enc, fb, regs) {
-                    Some(at) => vars.render(&Val { at, ty: View(v.ty, 0) }, regs, 1),
-                    None => "<optimised out>".into(),
-                };
+            let short = |val: String| {
                 let mut val: String = val.chars().take(60).collect();
                 if val.len() >= 60 {
                     val.push_str("...");
                 }
-                parts.push(format!("{} = {val}", v.name));
-            }
-            let mut s = format!("locals: {}", parts.join(", "));
+                val
+            };
+            let mut s = match regs.early.clone().filter(|_| vs.iter().any(|(v, _, _)| Vars::in_slot(v))) {
+                Some(at) => {
+                    let mut s = format!("locals: not stored yet ({at})");
+                    let ps: Vec<String> = vars
+                        .params_in_regs(pc, win, regs, 1)
+                        .into_iter()
+                        .map(|(v, got)| match got {
+                            Ok((r, val)) => format!("{} ({r}) = {}", v.name, short(val)),
+                            Err(why) => format!("{} = not shown ({why})", v.name),
+                        })
+                        .collect();
+                    if !ps.is_empty() {
+                        s.push_str(&format!("; parameters in registers: {}", ps.join(", ")));
+                    }
+                    // what is not in a stack slot (a static, a register) is real already
+                    let rest: Vec<String> = vs
+                        .into_iter()
+                        .filter(|(v, _, _)| !v.param && !Vars::in_slot(v))
+                        .map(|(v, enc, fb)| {
+                            let at = vars.value(v, enc, fb, regs);
+                            format!("{} = {}", v.name, short(vars.shown(v, at, regs, 1, &[])))
+                        })
+                        .collect();
+                    if !rest.is_empty() {
+                        s.push_str(&format!("; {}", rest.join(", ")));
+                    }
+                    s
+                }
+                None => {
+                    let mut parts = Vec::new();
+                    for (v, enc, fb) in vs {
+                        let at = vars.value(v, enc, fb, regs);
+                        parts.push(format!("{} = {}", v.name, short(vars.shown(v, at, regs, 1, &[]))));
+                    }
+                    format!("locals: {}", parts.join(", "))
+                }
+            };
             if s.len() > 300 {
                 let cut = (0..=300).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
                 s.truncate(cut);
@@ -133,21 +195,26 @@ impl Session {
 
     /// The parameters of the function at the stop as `args` rows, with how many DWARF lists, whether the
     /// function is variadic, and which of them (by position) had no readable value; `None` without variable
-    /// info for this function.
+    /// info for this function. Before the prologue ends they come from the argument registers.
     pub(crate) fn named_args(&mut self) -> Option<NamedArgs> {
-        self.with_vars(|vars, regs| {
+        let win = self.win();
+        self.with_vars(true, |vars, regs| {
             let pc = regs.rip.wrapping_sub(regs.bias);
             let f = vars.func_at(pc).filter(|f| f.nparams > 0 || f.variadic || f.prototyped)?;
             let mut a = NamedArgs { lines: Vec::new(), count: f.nparams, variadic: f.variadic, unread: Vec::new() };
-            for (i, (v, enc, fb)) in vars.in_scope(pc).into_iter().filter(|(v, _, _)| v.param).enumerate() {
+            let ps: Vec<_> = vars.in_scope(pc).into_iter().filter(|(v, _, _)| v.param).collect();
+            let early = regs.early.clone().filter(|_| ps.iter().any(|(v, _, _)| Vars::in_slot(v)));
+            let inreg = if early.is_some() { vars.params_in_regs(pc, win, regs, 0) } else { Vec::new() };
+            if let Some(at) = early {
+                a.lines.push(format!("{at}: the parameters as the call passed them"));
+            }
+            for (i, (v, enc, fb)) in ps.into_iter().enumerate() {
                 let ty = View(v.ty, 0);
-                let val = match vars.value(v, enc, fb, regs) {
-                    Some(at) => vars.render(&Val { at, ty }, regs, 0),
-                    None => {
-                        a.unread.push(i);
-                        "<optimised out>".into()
-                    }
-                };
+                let at = vars.value(v, enc, fb, regs);
+                if at.is_none() && !(regs.early.is_some() && Vars::in_slot(v)) {
+                    a.unread.push(i);
+                }
+                let val = vars.shown(v, at, regs, 0, &inreg);
                 a.lines.push(format!("{} ({}) = {val}", v.name, vars.name(ty)));
             }
             Some(a)

@@ -22,8 +22,17 @@ impl Vars {
             Some(v) => v,
             None => {
                 let pc = regs.rip.wrapping_sub(regs.bias);
-                let known = self.in_scope(pc).iter().any(|(v, _, _)| v.name == head);
-                return known.then(|| Err(format!("{head} has no place here (optimised out, or not live yet)")));
+                let known = self.in_scope(pc).into_iter().find(|(v, _, _)| v.name == head);
+                return known.map(|(v, _, _)| {
+                    Err(match &regs.early {
+                        Some(at) if Self::in_slot(v) => {
+                            format!(
+                                "{head} is not stored yet ({at}); `args` shows the parameters as the call passed them"
+                            )
+                        }
+                        _ => format!("{head} has no place here (optimised out, or not live yet)"),
+                    })
+                });
             }
         };
         let mut notes = Vec::new();

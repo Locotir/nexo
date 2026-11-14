@@ -84,6 +84,7 @@ impl Vars {
                                 Some(AttributeValue::Flag(true))
                             ),
                             variadic: false,
+                            ret: type_of(e),
                         });
                         Ctx::Func(self.funcs.len() - 1)
                     }

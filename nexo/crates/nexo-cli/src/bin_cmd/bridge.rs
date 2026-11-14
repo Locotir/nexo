@@ -91,7 +91,26 @@ pub fn line(op: &BinOp, text: &str) -> Option<String> {
     } else {
         format!("\"{path}\"")
     };
-    Some(format!("{HEAD} `run {shown}; break *{addr:#x}; cont`"))
+    Some(format!("{HEAD} `run {shown}; break {}; cont`", break_at(&img, addr)))
+}
+
+/// What `break` takes for `addr`. In a program with line info, the name of the function that starts there (when
+/// the name gives back only that address): the debugger then stops past the prologue, where the parameters and
+/// locals hold their values, while `*addr` stops before the prologue has stored them. Else `*addr`, which stops
+/// where the name would.
+fn break_at(img: &Image, addr: u64) -> String {
+    if !img.sections.iter().any(|s| s.name == ".debug_line" && s.size > 0) {
+        return format!("*{addr:#x}");
+    }
+    let plain = |n: &str| {
+        let mut c = n.chars();
+        c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+            && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
+    };
+    match nexo_bin::nearest_symbol(img, addr) {
+        Some((n, 0)) if plain(&n) && matches!(nexo_bin::place_of(img, &n), Ok(Place::Code(a)) if a == addr) => n,
+        _ => format!("*{addr:#x}"),
+    }
 }
 
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
@@ -150,6 +169,24 @@ pub(crate) mod tests {
         assert!(line(&op_of(&["strings", &p]), "x").is_none());
         assert!(line(&op_of(&["fn", &p, "main", "--json"]), "x").is_none());
         assert!(line(&op_of(&["fn", &p, "nosuchfunction"]), "x").is_none());
+    }
+
+    #[test]
+    fn with_line_info_a_function_start_is_named_so_the_stop_is_past_the_prologue() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(exe) = build(dir.path(), "prog", &["-g", "-O0"]) else { return eprintln!("skipped: no cc") };
+        let p = exe.display().to_string();
+        let helper = match nexo_bin::place_of(&Image::open(&exe).unwrap(), "helper").unwrap() {
+            Place::Code(a) => a,
+            other => panic!("{other:?}"),
+        };
+        // by name or by its address, the start of a function is its name; inside it, the address
+        for t in ["helper".to_string(), format!("{helper:#x}")] {
+            let l = line(&op_of(&["fn", &p, &t]), "x").unwrap();
+            assert_eq!(l, format!("{HEAD} `run {p}; break helper; cont`"));
+        }
+        let l = line(&op_of(&["fn", &p, &format!("{:#x}", helper + 4)]), "x").unwrap();
+        assert!(l.ends_with(&format!("break *{:#x}; cont`", helper + 4)), "{l}");
     }
 
     #[test]

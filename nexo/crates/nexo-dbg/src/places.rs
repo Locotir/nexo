@@ -23,8 +23,11 @@ impl Session {
             Ok(nexo_bin::Place::Code(x)) => x,
             _ => return None,
         };
+        // the function's end from its variable info, else a prologue's usual reach
+        let lo = start.wrapping_sub(self.mods.main_bias());
+        let hi = self.mods.main_vars().and_then(|(v, _)| v.func_span(lo)).filter(|f| f.1 == lo).map(|f| f.2);
         let (lines, bias) = self.mods.main_lines()?;
-        lines.after_prologue(start.wrapping_sub(bias)).map(|a| Ok(a.wrapping_add(bias)))
+        lines.after_prologue(lo, hi.unwrap_or(lo.saturating_add(0x80))).map(|a| Ok(a.wrapping_add(bias)))
     }
 }
 

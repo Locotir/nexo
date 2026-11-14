@@ -12,6 +12,8 @@ struct Row {
     line: u32,
     /// Ends a sequence: the address is the first one past the code, not a line.
     end: bool,
+    /// The compiler marked this row as the first one past a function's prologue (`DW_LNS_set_prologue_end`).
+    prologue_end: bool,
 }
 
 /// Code that was inlined: where it sits, and the line of the call it was inlined at.
@@ -104,6 +106,7 @@ impl Lines {
                     file,
                     line: row.line().map_or(0, |l| l.get() as u32),
                     end: row.end_sequence(),
+                    prologue_end: row.prologue_end(),
                 });
             }
             let name_of = |id: u64, files: &mut Vec<String>| -> Option<u32> {
@@ -221,13 +224,15 @@ impl Lines {
         best.map(|r| (r.addr, r.line)).ok_or_else(|| format!("{file}:{line} and the 10 lines after it hold no code"))
     }
 
-    /// The address after a function's prologue: the next row of the line table after its first one, when that
-    /// is close by. `None` when the table says nothing about the function.
-    pub fn after_prologue(&self, lo: u64) -> Option<u64> {
-        let i = self.rows.partition_point(|r| r.addr < lo);
-        let first = self.rows.get(i).filter(|r| r.addr == lo && !r.end)?;
-        let next = self.rows[i..].iter().find(|r| r.addr > first.addr)?;
-        (!next.end && next.addr - lo < 0x80).then_some(next.addr)
+    /// Where the prologue of the function at `lo..hi` (file addresses) ends, so its parameters and locals hold
+    /// their values from there on: the first row the compiler marked `prologue_end`, else the row after the
+    /// first one (as gdb does). `None` when the table has no row at `lo` or no second row before `hi`.
+    pub fn after_prologue(&self, lo: u64, hi: u64) -> Option<u64> {
+        // past a sequence that ends where this function starts
+        let i = self.rows.partition_point(|r| r.addr < lo || r.addr == lo && r.end);
+        self.rows.get(i).filter(|r| r.addr == lo)?;
+        let body = || self.rows[i..].iter().take_while(|r| !r.end && r.addr < hi);
+        body().find(|r| r.prologue_end).or_else(|| body().find(|r| r.addr > lo)).map(|r| r.addr)
     }
 }
 
@@ -260,5 +265,39 @@ impl Where {
             Some((f, l)) => format!("{head}, inlined {}:{l}", short_path(f)),
             None => head,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(rows: &[(u64, u32, bool, bool)]) -> Lines {
+        let rows = rows.iter().map(|&(addr, line, end, prologue_end)| Row { addr, file: 0, line, end, prologue_end });
+        Lines { files: vec!["/src/p.c".into()], rows: rows.collect(), inlined: Vec::new() }
+    }
+
+    #[test]
+    fn the_prologue_ends_at_the_marked_row_else_at_the_second_row_and_never_in_the_next_function() {
+        // f at 0x10..0x30: rows at 0x10 and 0x14 (line 7), 0x1c (line 7, marked), 0x24 (line 8); g at 0x30 marked
+        let marked = table(&[
+            (0x10, 7, false, false),
+            (0x14, 7, false, false),
+            (0x1c, 7, false, true),
+            (0x24, 8, false, false),
+            (0x30, 9, false, true),
+        ]);
+        assert_eq!(marked.after_prologue(0x10, 0x30), Some(0x1c));
+        // gcc marks nothing: the row after the first
+        let plain = table(&[(0x10, 7, false, false), (0x20, 8, false, false), (0x30, 9, false, true)]);
+        assert_eq!(plain.after_prologue(0x10, 0x30), Some(0x20));
+        // one row only: the next function's marked row is not this function's prologue end
+        let one = table(&[(0x10, 7, false, false), (0x30, 9, false, true)]);
+        assert_eq!(one.after_prologue(0x10, 0x30), None);
+        // a function the table does not start, and one right after a sequence that ends at its start
+        assert_eq!(plain.after_prologue(0x12, 0x30), None);
+        let after_end =
+            table(&[(0x8, 6, false, false), (0x10, 0, true, false), (0x10, 7, false, false), (0x18, 8, false, false)]);
+        assert_eq!(after_end.after_prologue(0x10, 0x20), Some(0x18));
     }
 }

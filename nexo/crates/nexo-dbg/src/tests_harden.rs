@@ -43,7 +43,7 @@ fn use_image(bytes: Vec<u8>) {
     if let Some(l) = Lines::of(&img) {
         for a in [0u64, 0x1000, 0x1139, 0x1140, u64::MAX] {
             let _ = l.at(a);
-            let _ = l.after_prologue(a);
+            let _ = l.after_prologue(a, a.saturating_add(0x80));
         }
         let _ = l.line_addr("p.c", 1);
         let _ = l.line_addr("p.c", u32::MAX);

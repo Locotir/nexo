@@ -1,5 +1,6 @@
 //! Which variables are in scope at a stop, and where their values are.
 
+use super::entry;
 use super::render::le;
 use super::*;
 
@@ -31,6 +32,8 @@ impl Vars {
     pub(super) fn value(&self, var: &Var, enc: gimli::Encoding, fb: Option<&[u8]>, regs: &mut Regs) -> Option<At> {
         let pc = regs.rip.wrapping_sub(regs.bias);
         let expr: &[u8] = match &var.loc {
+            // before the prologue ends a stack slot holds what an earlier call left there
+            Loc::Expr(e) if regs.early.is_some() && entry::frame_based(e) => return None,
             Loc::Expr(e) => e,
             Loc::List(l) => &l.iter().find(|(lo, hi, _)| pc >= *lo && pc < *hi)?.2,
             Loc::None => return None,
