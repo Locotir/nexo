@@ -15,27 +15,35 @@ impl Site {
     fn start() -> Site {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
+        // One thread per connection: Chrome opens speculative sockets and sends nothing on them, and a server
+        // that reads them one after another stays stuck on the first idle one while the page request waits.
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut s) = stream else { continue };
-                let mut buf = [0u8; 2048];
-                let n = s.read(&mut buf).unwrap_or(0);
-                let head = String::from_utf8_lossy(&buf[..n]);
-                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
-                let (cookie, script) = if path == "/set" {
-                    (
-                        "Set-Cookie: nexo_sid=kept-123; Max-Age=3600; Path=/\r\n",
-                        "localStorage.setItem('nexo_ls', 'kept-456');",
-                    )
-                } else {
-                    ("", "")
-                };
-                let body = format!("<!doctype html><title>t</title><body>page<script>{script}</script></body>");
-                let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = s.write_all(reply.as_bytes());
+                std::thread::spawn(move || {
+                    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let mut buf = [0u8; 2048];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    let head = String::from_utf8_lossy(&buf[..n]);
+                    let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let (cookie, script) = if path == "/set" {
+                        (
+                            "Set-Cookie: nexo_sid=kept-123; Max-Age=3600; Path=/\r\n",
+                            "localStorage.setItem('nexo_ls', 'kept-456');",
+                        )
+                    } else {
+                        ("", "")
+                    };
+                    let body = format!("<!doctype html><title>t</title><body>page<script>{script}</script></body>");
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(reply.as_bytes());
+                });
             }
         });
         Site { origin }
