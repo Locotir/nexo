@@ -327,7 +327,22 @@ pub enum ConfigCmd {
 }
 
 pub async fn main() -> i32 {
-    let args = Args::parse();
+    let args = match Args::try_parse() {
+        Ok(a) => a,
+        Err(e) => {
+            // `nexo bin <op>` says what the model's `bin` tool says; any other error is clap's own
+            let argv: Vec<String> = std::env::args().skip(1).collect();
+            let hint =
+                argv.iter().position(|w| w == "bin").and_then(|i| crate::bin_tool::bin_error(&e, &argv[i + 1..]));
+            match hint {
+                Some(text) => {
+                    eprintln!("error: {text}");
+                    return e.exit_code();
+                }
+                None => e.exit(),
+            }
+        }
+    };
     if let Some(f) = &args.log {
         match std::fs::File::create(f) {
             Ok(file) => {

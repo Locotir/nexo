@@ -165,16 +165,10 @@ fn parse(unit: &str) -> Result<Parsed, String> {
             return Ok(Parsed::Help(e.to_string()))
         }
         Err(e) => {
-            let text = e.to_string();
-            let mut text = text.strip_prefix("error: ").unwrap_or(&text).to_string();
-            if e.kind() == ErrorKind::UnknownArgument {
-                if let Some(op) = words.first() {
-                    if let Some(flags) = op_flags(op) {
-                        text.push_str(&format!("\n`{op}` takes: {flags}"));
-                    }
-                }
-            }
-            return Err(text);
+            return Err(bin_error(&e, words).unwrap_or_else(|| {
+                let text = e.to_string();
+                text.strip_prefix("error: ").unwrap_or(&text).to_string()
+            }))
         }
     };
     let Some(crate::cli::Cmd::Bin(b)) = parsed.cmd else {
@@ -184,6 +178,33 @@ fn parse(unit: &str) -> Result<Parsed, String> {
         return Err("bin: give an op, for example `overview ./prog`; `--help` lists them".into());
     }
     Ok(Parsed::Op(b))
+}
+
+/// What an unknown flag or an unknown op says, for the model's `bin` tool and for `nexo bin` alike: clap's first
+/// line only (its usage block and `tip: ... '-- --asm'` mislead here), then nexo's own fact: the flags the op takes,
+/// or what does the job of an op that is not one. `words` are those after `bin`. `None`: any other error.
+pub(crate) fn bin_error(e: &clap::Error, words: &[String]) -> Option<String> {
+    let text = e.to_string();
+    let text = text.strip_prefix("error: ").unwrap_or(&text);
+    let first = text.lines().next().unwrap_or_default();
+    let op = words.first().map(String::as_str).unwrap_or_default();
+    match e.kind() {
+        ErrorKind::UnknownArgument => {
+            let mut out = first.to_string();
+            if let Some(flags) = op_flags(op) {
+                out.push_str(&format!("\n`{op}` takes: {flags}"));
+            }
+            Some(out)
+        }
+        ErrorKind::InvalidSubcommand => Some(not_an_op(op).unwrap_or_else(|| {
+            let tip = text.lines().find(|l| l.trim_start().starts_with("tip: a similar"));
+            match tip {
+                Some(t) => format!("{first}\n{}", t.trim()),
+                None => first.to_string(),
+            }
+        })),
+        _ => None,
+    }
 }
 
 fn bin_command() -> Option<clap::Command> {
@@ -521,6 +542,32 @@ mod tests {
             o.content
         );
         assert!(!o.content.starts_with("error:"), "{}", o.content);
+        // clap's usage block and its `-- --asm` tip are left out: the first line, then nexo's own
+        assert_eq!(o.content.lines().count(), 2, "{}", o.content);
+        assert!(o.content.starts_with("unexpected argument '--asm' found\n`fn` takes: "), "{}", o.content);
+        assert!(!o.content.contains("tip:") && !o.content.contains("Usage"), "{}", o.content);
+    }
+
+    /// `nexo bin disasm ./calc main` and `nexo bin fn ./calc main --asm` say what the tool says.
+    #[test]
+    fn the_command_line_gets_the_same_facts_as_the_tool() {
+        let words = |l: &str| l.split(' ').map(String::from).collect::<Vec<_>>();
+        let err = |l: &str| {
+            let argv = [vec!["nexo".to_string(), "bin".to_string()], words(l)].concat();
+            let e = crate::cli::Args::try_parse_from(argv).unwrap_err();
+            bin_error(&e, &words(l))
+        };
+        let d = err("disasm ./calc main").unwrap();
+        assert_eq!(d, not_an_op("disasm").unwrap());
+        assert!(d.contains("`fn ./prog <name or addr>` shows the disassembly"), "{d}");
+        let f = err("fn ./calc main --asm").unwrap();
+        assert!(f.starts_with("unexpected argument '--asm' found\n`fn` takes: "), "{f}");
+        assert!(!f.contains("tip:") && !f.contains("Usage"), "{f}");
+        // a word nexo has no fact for: clap's first line only
+        let g = err("zzzzqq ./calc").unwrap();
+        assert!(g.starts_with("unrecognized subcommand 'zzzzqq'") && !g.contains("Usage"), "{g}");
+        // an error that is not about an op or a flag stays clap's
+        assert!(err("fn ./calc").is_none());
     }
 
     #[test]
