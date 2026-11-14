@@ -103,6 +103,15 @@ impl Drop for Release {
 
 /// What the parent is told when an isolated sub-agent ends: its branch and what it changed, or that its
 /// worktree had no changes and is gone.
+/// The fact line for messages the main model sent that the sub-agent never read before it ended.
+fn unread_note(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "\n\n1 message you sent it arrived after its last step and was not read.".into(),
+        n => format!("\n\n{n} messages you sent it arrived after its last step and were not read."),
+    }
+}
+
 fn worktree_note(wt: &nexo_core::worktree::Worktree) -> String {
     match nexo_core::worktree::finish(wt) {
         nexo_core::worktree::Finished::Removed => {
@@ -567,13 +576,13 @@ impl SubAgent {
                 say(b.line());
             }
             let res = run.go(&prompt, briefing.as_ref(), &jctx, &say).await;
-            if let Some(s) = &run.sub {
+            let unread = run.sub.as_ref().map_or(0, |s| {
                 s.end(match &res {
                     Ok(_) => SubState::Ok,
                     Err(_) if jctx.cancel.is_cancelled() => SubState::Killed,
                     Err(_) => SubState::Failed,
-                });
-            }
+                })
+            });
             // its files are free before anyone is told it ended (the note starts a turn that may write them)
             drop(release);
             // an isolated one is finished here, also when it was stopped: no worktree is left behind
@@ -581,6 +590,7 @@ impl SubAgent {
                 Some(wt) => tokio::task::spawn_blocking(move || worktree_note(&wt)).await.unwrap_or_default(),
                 None => String::new(),
             };
+            let tail = format!("{tail}{}", unread_note(unread));
             if let Ok(report) = &res {
                 for f in stop_hooks(&hooks, &main_cwd, &session_id, &agent_name, report).await {
                     say(f);

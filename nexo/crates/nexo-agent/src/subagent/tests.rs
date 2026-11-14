@@ -185,3 +185,10 @@ fn the_kinds_of_the_person_never_take_more_than_their_ceiling() {
         )
     );
 }
+
+#[test]
+fn messages_the_sub_agent_never_read_are_one_fact_line_in_what_the_main_model_gets() {
+    assert_eq!(unread_note(0), "");
+    assert_eq!(unread_note(1), "\n\n1 message you sent it arrived after its last step and was not read.");
+    assert_eq!(unread_note(3), "\n\n3 messages you sent it arrived after its last step and were not read.");
+}

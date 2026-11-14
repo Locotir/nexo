@@ -476,25 +476,34 @@ impl SubRun {
     }
 
     /// The run ended as `state`. The person's messages still in the inbox were never read: each is
-    /// reported as not delivered (the parent's go unreported, like its other sends). Ending twice changes
+    /// reported as not delivered (the parent's go unreported on the screen, like its other sends); how many
+    /// of the parent's were left unread comes back, for the report its ending brings. Ending twice changes
     /// nothing.
-    pub fn end(&self, state: SubState) {
+    pub fn end(&self, state: SubState) -> usize {
         let e = &self.entry;
         let mut d = e.data.lock().unwrap();
         if !d.state.running() {
-            return;
+            return 0;
         }
         d.state = state;
         d.ended_ms = Some(now_ms());
         self.send(SubChange::State(e.info(&d)));
-        for _ in d.inbox.drain(..).filter(|m| matches!(m, SubItem::Person { .. })) {
-            let why = "that sub-agent ended before it read the message".to_string();
-            self.send(SubChange::NotDelivered { id: e.id.clone(), why });
+        let mut unread = 0;
+        for m in d.inbox.drain(..) {
+            match m {
+                SubItem::Person { .. } => {
+                    let why = "that sub-agent ended before it read the message".to_string();
+                    self.send(SubChange::NotDelivered { id: e.id.clone(), why });
+                }
+                SubItem::Parent { .. } => unread += 1,
+                _ => {}
+            }
         }
         drop(d);
         if self.live() {
             self.subs.prune(&e.id);
         }
+        unread
     }
 }
 
@@ -640,7 +649,10 @@ mod tests {
             vec![SubItem::Parent { text: "also check b.rs".into() }, SubItem::Person { text: "and a.rs".into() }]
         );
         subs.submit_from_parent("c#3", "unread").unwrap();
-        a.end(SubState::Ok);
+        subs.submit_from_parent("c#3", "unread too").unwrap();
+        // only the parent's own messages are counted, for the report the ending brings
+        assert_eq!(a.end(SubState::Ok), 2);
+        assert_eq!(a.end(SubState::Ok), 0, "ending twice counts nothing");
         assert_eq!(subs.submit_from_parent("c#3", "late").unwrap_err(), "that sub-agent has already ended");
         assert!(!kinds(&mut rx).iter().any(|c| matches!(c, SubChange::NotDelivered { .. })));
     }
