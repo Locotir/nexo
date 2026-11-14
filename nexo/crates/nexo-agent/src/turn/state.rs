@@ -103,6 +103,9 @@ pub(super) struct State {
     /// tokens per estimated token learned so far: code, logs and other scripts hold more tokens than
     /// 4 characters each, so the view is fitted to the window in the provider's own count.
     pub(super) est_sent: u64,
+    /// The fresh tokens the history held when an automatic compaction last failed (a summary cut short, say): the
+    /// next automatic one waits until the history has grown past that by the same margin.
+    pub(super) compact_failed_at: Option<u64>,
     pub(super) tok_ratio: Option<f64>,
     /// The last call the provider billed in this session: a call cut before its usage event is estimated from it.
     pub(super) last_call: Option<Usage>,

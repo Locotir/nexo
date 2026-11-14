@@ -193,3 +193,38 @@ async fn a_summary_cut_by_max_tokens_is_not_applied() {
     assert_eq!(client.requests().len(), 2, "one answer, one summary call");
     r.stop().await;
 }
+
+#[tokio::test]
+async fn a_cut_summary_is_not_asked_for_again_every_round() {
+    let d = test_tmpdir().unwrap();
+    let mut cut_summary = text("HALF A SUMM");
+    for e in &mut cut_summary {
+        if let StreamEvent::Finish(f) = e {
+            *f = FinishReason::Length;
+        }
+    }
+    let client = Scripted::new(vec![
+        Reply::Events({
+            let mut evs = big_call("c1", "write", "b.rs");
+            evs.insert(0, StreamEvent::TextDelta("x".repeat(20_000)));
+            evs
+        }),
+        Reply::Events(big_call("c2", "read", "a.rs")),
+        Reply::Events(cut_summary),
+        Reply::Events(big_call("c3", "read", "c.rs")),
+        Reply::Events(big_call("c4", "read", "d.rs")),
+        Reply::Events(text("done")),
+    ]);
+    let mut cfg = config(PermissionMode::Auto);
+    cfg.context.policy = "compact".into();
+    cfg.context.compact_at = 3000;
+    let mut r = start(client.clone(), cfg, None, d.path()).await;
+    r.next().await;
+    r.send(AgentCommand::Submit { text: "fix the bug in a.rs".into(), attachments: vec![] });
+    let evs = r.turn().await;
+    assert_eq!(end_of(&evs), TurnEnd::Done);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 6);
+    assert_eq!(reqs.iter().filter(|r| is_summary(r)).count(), 1, "one failed summary, no retry each round");
+    r.stop().await;
+}

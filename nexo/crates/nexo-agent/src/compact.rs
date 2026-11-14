@@ -68,7 +68,10 @@ impl Summariser {
         let (_, cfg, model) = self.target.get();
         let reply = self.window.map_or(self.max_tokens, |w| self.max_tokens.min(w / 2));
         let transcript = transcript(msgs, transcript_chars(self.window, reply));
-        let ask = format!("Transcript of the session so far:\n\n{transcript}\n\nWrite the summary.");
+        let ask = format!(
+            "Transcript of the session so far:\n\n{transcript}\n\nWrite the summary. Your reply may be up to {reply} \
+             tokens; a summary cut at that limit is thrown away."
+        );
         let mut req = ModelRequest::new(model.clone(), SUMMARY_SYSTEM, vec![Message::user(ask)]);
         req.max_tokens = reply;
         req.cache = false;

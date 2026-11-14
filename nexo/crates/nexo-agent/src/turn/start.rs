@@ -525,8 +525,12 @@ pub(super) async fn prepare(
             // did not: a request kept over the threshold by its tail, the system prompt or the tools is
             // not summarised again every round
             if let Some(keep) = compact::keep_recent(&st.history) {
-                if compact::fresh_tokens(&st.history[..keep]) >= at / COMPACT_MARGIN {
-                    compact_locked(st, keep, cancel).await;
+                let fresh = compact::fresh_tokens(&st.history[..keep]);
+                let step = at / COMPACT_MARGIN;
+                // after a failed attempt the history is as it was: try again only once it has grown by a step
+                let waiting = st.compact_failed_at.is_some_and(|f| fresh >= f && fresh < f + step);
+                if fresh >= step && !waiting {
+                    st.compact_failed_at = (!compact_locked(st, keep, cancel).await).then_some(fresh);
                 }
             }
         }

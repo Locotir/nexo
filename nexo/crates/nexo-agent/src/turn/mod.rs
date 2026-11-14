@@ -312,6 +312,7 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
         plan,
         last_prompt: None,
         est_sent: 0,
+        compact_failed_at: None,
         tok_ratio: None,
         last_call: None,
         mcp_gen: mcp.as_ref().map_or(0, |h| h.generation()),
