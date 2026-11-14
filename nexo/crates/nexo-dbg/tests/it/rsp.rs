@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 
 use nexo_dbg::{open, serve_gdb, split_words, Kind, Session, State};
 
-mod common;
+use crate::common;
 use common::target;
 
 fn have(tool: &str) -> bool {

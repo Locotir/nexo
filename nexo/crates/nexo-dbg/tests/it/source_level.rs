@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use nexo_dbg::{open, split_words, Kind, Session};
 
-const SRC: &str = include_str!("fixtures/shapes.c");
+const SRC: &str = include_str!("../fixtures/shapes.c");
 
 /// The program built into a fresh directory, or `None` without `cc`.
 fn build(dir: &Path) -> Option<PathBuf> {

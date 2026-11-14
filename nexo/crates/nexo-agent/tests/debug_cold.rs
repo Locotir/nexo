@@ -56,7 +56,7 @@ fn say(s: &str) -> Vec<StreamEvent> {
 }
 
 /// The program under test, found next to the test binary's target folder or built.
-#[path = "../../nexo-dbg/tests/common/mod.rs"]
+#[path = "../../nexo-dbg/tests/it/common/mod.rs"]
 mod common;
 use common::target;
 

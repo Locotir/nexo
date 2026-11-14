@@ -4,7 +4,7 @@
 
 use nexo_dbg::{open, split_words, Kind, Session, State};
 
-mod common;
+use crate::common;
 use common::target;
 
 /// Start the example in `mode`, or say why the test is skipped.

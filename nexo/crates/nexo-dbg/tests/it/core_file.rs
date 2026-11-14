@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use nexo_dbg::{open, split_words, Kind, Session, State};
 
-mod common;
+use crate::common;
 use common::target;
 
 fn run(s: &mut Session, cmd: &str) -> String {
