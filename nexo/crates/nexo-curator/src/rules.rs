@@ -401,8 +401,7 @@ static REPORT: LazyLock<Regex> = LazyLock::new(|| {
 static HEDGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:sometimes|often|randomly|a veces|a menudo)\b").expect("static pattern"));
 /// "No emojis in the output, ever": a ban closed by "ever".
-static NO_EVER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^no\b[^?]*\bever[.!]*$").expect("static pattern"));
+static NO_EVER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^no\b[^?]*\bever[.!]*$").expect("static pattern"));
 /// A line that says where a quoted text comes from ("README says: …", "…is what the article says").
 static SAYS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:says?|said|wrote|according|readme|article|dice|dijo|seg[uú]n)\b").expect("static pattern")
