@@ -51,9 +51,15 @@ fn a_breakpoint_inside_an_instruction_is_refused_and_one_on_a_start_is_not() {
     let ok = s.exec(&split_words(&format!("break *{b:#x}"))).unwrap().text_all();
     assert!(ok.contains("breakpoint #"), "{ok}");
     assert!(!ok.contains("not checked"), "{ok}");
-    let off = a + 1 - s.addr_of("main").unwrap();
+    // Where the first multi-byte instruction sits depends on the compiler (an `endbr64` makes it `main` itself).
+    let main = s.addr_of("main").unwrap();
+    let off = a + 1 - main;
     let by_name = s.exec(&split_words(&format!("break main+{off:#x}"))).unwrap_err();
-    assert!(by_name.to_string().contains("is inside the instruction at main+"), "{by_name}");
+    let start = match a - main {
+        0 => "main".to_string(),
+        d => format!("main+{d:#x}"),
+    };
+    assert!(by_name.to_string().contains(&format!("is inside the instruction at {start} (")), "{by_name}");
 }
 
 #[test]
