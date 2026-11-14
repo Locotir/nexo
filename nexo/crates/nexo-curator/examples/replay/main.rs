@@ -34,11 +34,13 @@
 //! - own replies: the share of the agent's own text replies (with or without tool calls) each view still shows,
 //!   summed over the requests, and the same for its latest ten; the other measures look at results, not at
 //!   what the model already said.
-//! - re-reads: the calls that ask again for what an earlier call returned (the same tool on the same target,
+//! - re-reads: the calls that ask again for what an earlier call returned (the same tool with the same input,
 //!   or a read of the same file, nothing written to it since), how many of them were made with the earlier
 //!   result out of the view, and how often a result the view left out before the agent acted on it (`blind`)
 //!   was asked for again, next to the rate for the other results. A repeat made with the earlier result in
-//!   view was not caused by the curator. `REPLAY_REREAD=1` names each one.
+//!   view was not caused by the curator. `REPLAY_REREAD=1` names each one; `REPLAY_REREAD=2` adds the tool,
+//!   whether the output came back byte for byte the same, the requests apart, a write in between, and how the
+//!   earlier result stood in the view (whole, rebuilt with a `[curator]` line, cut, gone; `+note` for a stale note).
 //! - repeated result lines: the tokens of result lines that an earlier result in the same request already
 //!   holds (lines of 8 characters or more), summed over the requests, for the view and the raw history.
 //! - efficiency: how much of the most a view can save it does save, priced with a prefix cache. 0 % is
@@ -584,7 +586,7 @@ fn main() {
     );
     let (unused, unused_again, other, other_again) = rereads.rates();
     println!(
-        "re-reads: {} calls asked again for an earlier result (same tool and target, or a read of the same file, unchanged), {} of them with it out of the view; reads {}, {} out; results left out before the agent acted on them: {unused_again} of {unused} asked for again ({:.1}%), other results: {other_again} of {other} ({:.1}%)",
+        "re-reads: {} calls asked again for an earlier result (same tool and input, or a read of the same file, unchanged), {} of them with it out of the view; reads {}, {} out; results left out before the agent acted on them: {unused_again} of {unused} asked for again ({:.1}%), other results: {other_again} of {other} ({:.1}%)",
         rereads.repeats,
         rereads.out_of_view,
         rereads.reads,
@@ -592,10 +594,30 @@ fn main() {
         share(unused_again as i64, unused as i64),
         share(other_again as i64, other as i64)
     );
-    // REPLAY_REREAD=1 names each call that asked again
-    if std::env::var("REPLAY_REREAD").is_ok_and(|v| v == "1") {
+    // REPLAY_REREAD=1 names each call that asked again; =2 adds the tool, whether input and output were the
+    // same, the requests apart, a write in between and how the earlier result stood in the view
+    let reread = std::env::var("REPLAY_REREAD").unwrap_or_default();
+    if reread == "1" {
         for l in &rereads.lines {
             println!("{l}");
+        }
+    }
+    if reread == "2" {
+        for d in &rereads.detail {
+            let same = match d.identical {
+                Some(true) => "same-out",
+                Some(false) => "diff-out",
+                None => "no-out",
+            };
+            println!(
+                "repeat\t{}\t{}\t{same}\tapart={}\t{}\tsaw={}\t{}",
+                d.tool,
+                if d.same_input { "same-in" } else { "diff-in" },
+                d.apart,
+                if d.wrote_between { "wrote" } else { "nowrite" },
+                d.saw,
+                rereads.lines.get(d.line).map_or("", String::as_str)
+            );
         }
     }
     println!(

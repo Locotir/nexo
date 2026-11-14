@@ -11,10 +11,31 @@ struct Got {
     left_unused: Option<usize>,
     /// asked for again later (the same key, or a read of the same file, nothing written to it since)
     again: bool,
+    /// the call's id, tool name and whole input, the result's text, the request it came back at and
+    /// the number of writes of any file seen before it
+    id: String,
+    name: String,
+    input: String,
+    text: String,
+    req: usize,
+    writes_before: usize,
 }
 
-/// Re-reads: the calls that ask again for what an earlier call already returned (the same tool on the same
-/// target as `call_key` makes it, or a read of the same file, with no write of that file in between), and
+/// One repeat in detail (`REPLAY_REREAD=2`): the tool, whether the call's input was the same byte for byte,
+/// whether its output came back the same, the requests between the two, whether any file was written in
+/// between, and how the earlier result stood in the view the repeat was made from.
+pub(super) struct Repeat {
+    pub(super) tool: String,
+    pub(super) same_input: bool,
+    pub(super) identical: Option<bool>,
+    pub(super) apart: usize,
+    pub(super) wrote_between: bool,
+    pub(super) saw: &'static str,
+    pub(super) line: usize,
+}
+
+/// Re-reads: the calls that ask again for what an earlier call already returned (the same tool with the same
+/// input byte for byte, or a read of the same file, with no write of that file in between), and
 /// whether the earlier result was in the view the call was made from. Next to it, the results a view left
 /// out before the agent acted on them (`blind`): how many of those the agent asked for again later, against
 /// the rate for every other result. A replay cannot show what the model would have done with another view,
@@ -37,6 +58,12 @@ pub(super) struct Rereads {
     pub(super) reads: usize,
     pub(super) reads_out: usize,
     pub(super) lines: Vec<String>,
+    pub(super) detail: Vec<Repeat>,
+    /// call id of a repeat -> (index in `detail`, index in `got` of the result it repeats)
+    open: HashMap<String, (usize, usize)>,
+    all_writes: usize,
+    /// call id -> (tool name, whole input)
+    calls: HashMap<String, (String, String)>,
 }
 
 impl Rereads {
@@ -50,9 +77,21 @@ impl Rereads {
                 if b["type"] == "tool_use" {
                     let id = b["id"].as_str().unwrap_or("").to_string();
                     let (key, kind, path) = call_key(b["name"].as_str().unwrap_or(""), &b["input"]);
-                    if let Some(gi) = self.earlier(&key, kind, path.as_deref()) {
+                    let input = b["input"].to_string();
+                    if let Some(gi) = self.earlier(&key, &input, kind, path.as_deref()) {
                         self.repeats += 1;
+                        let all_writes = self.all_writes;
                         let g = &mut self.got[gi];
+                        self.open.insert(id.clone(), (self.detail.len(), gi));
+                        self.detail.push(Repeat {
+                            tool: g.name.clone(),
+                            same_input: g.input == input,
+                            identical: None,
+                            apart: req.saturating_sub(g.req),
+                            wrote_between: all_writes > g.writes_before,
+                            saw: saw(view, &g.id, &g.text),
+                            line: self.lines.len(),
+                        });
                         g.again = true;
                         let out = 2 * g.segs.iter().filter(|s| shown.contains(*s)).count() < g.segs.len();
                         self.out_of_view += usize::from(out);
@@ -68,15 +107,22 @@ impl Rereads {
                         ));
                     }
                     if kind == "write" {
+                        self.all_writes += 1;
                         if let Some(p) = &path {
                             *self.writes.entry(file_name(p)).or_default() += 1;
                         }
                     }
+                    self.calls
+                        .insert(id.clone(), (b["name"].as_str().unwrap_or("").to_string(), b["input"].to_string()));
                     self.pending.insert(id, (key, kind, path));
                 } else if b["type"] == "tool_result" {
                     let id = b["tool_use_id"].as_str().unwrap_or("").to_string();
                     let Some((key, kind, path)) = self.pending.remove(&id) else { continue };
                     let one = json!({"role": "user", "content": [b]});
+                    let text = result_text(&b);
+                    if let Some((di, gi)) = self.open.remove(&id) {
+                        self.detail[di].identical = Some(self.got[gi].text == text);
+                    }
                     let gi = self.got.len();
                     if let Some(p) = &path {
                         self.stamp.insert(gi, self.writes.get(&file_name(p)).copied().unwrap_or(0));
@@ -89,6 +135,12 @@ impl Rereads {
                         tokens: tokens_of(&one),
                         left_unused: None,
                         again: false,
+                        id: id.clone(),
+                        name: self.calls.get(&id).map(|(n, _)| n.clone()).unwrap_or_default(),
+                        input: self.calls.get(&id).map(|(_, i)| i.clone()).unwrap_or_default(),
+                        text,
+                        req,
+                        writes_before: self.all_writes,
                     });
                     self.by_id.insert(id, gi);
                 }
@@ -97,10 +149,13 @@ impl Rereads {
         self.seen = history.len();
     }
 
-    /// The latest earlier result `key` (or a read of `path`) repeats, if nothing wrote its file since.
-    fn earlier(&self, key: &str, kind: &str, path: Option<&str>) -> Option<usize> {
+    /// The latest earlier result a call (`key`, its whole `input`) repeats, if nothing wrote its file since:
+    /// the same tool with the same input byte for byte (a grep of another pattern in the same folder, or a
+    /// script that shares only its first 160 characters, shares the key but asks something else), or a read
+    /// of `path`.
+    fn earlier(&self, key: &str, input: &str, kind: &str, path: Option<&str>) -> Option<usize> {
         let gi = self.got.iter().rposition(|g| {
-            g.key == key
+            (g.key == key && g.input == input)
                 || (kind == "read"
                     && g.kind == "read"
                     && g.path.as_deref().zip(path).is_some_and(|(a, b)| same_path(a, b)))
@@ -134,6 +189,50 @@ impl Rereads {
             Some(_) => (u + 1, ua + usize::from(g.again), o, oa),
             None => (u, ua, o + 1, oa + usize::from(g.again)),
         })
+    }
+}
+
+/// The text of a tool result block.
+fn result_text(b: &Value) -> String {
+    match &b["content"] {
+        Value::String(s) => s.clone(),
+        Value::Array(inner) => inner.iter().filter_map(|x| x["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// How the result of call `id` (whose text was `text`) stood in `view`: `whole` (the same text), `curator`
+/// (rebuilt with a `[curator` line), `cut` (shorter, no such line), `other` (changed otherwise), `gone` (no
+/// result of that id in the view). `+note` when the view says anywhere that something is stale or should be
+/// read again.
+fn saw(view: &[Value], id: &str, text: &str) -> &'static str {
+    let found = view.iter().flat_map(blocks_of).find(|b| b["type"] == "tool_result" && b["tool_use_id"] == id);
+    let note = view.iter().any(|m| {
+        let t = m.to_string();
+        t.contains("re-read before trusting") || t.contains("stale") || t.contains("changed since")
+    });
+    let how = match found {
+        None => "gone",
+        Some(b) => {
+            let t = result_text(&b);
+            if t == text {
+                "whole"
+            } else if t.contains("[curator") {
+                "curator"
+            } else if t.len() < text.len() {
+                "cut"
+            } else {
+                "other"
+            }
+        }
+    };
+    match (how, note) {
+        ("whole", true) => "whole+note",
+        ("curator", true) => "curator+note",
+        ("cut", true) => "cut+note",
+        ("gone", true) => "gone+note",
+        ("other", true) => "other+note",
+        _ => how,
     }
 }
 
@@ -174,6 +273,30 @@ mod tests {
         h.push(result("d", &body));
         rr.see(&h, &h[..1], 3);
         assert_eq!(rr.repeats, 1, "a read after an edit of the file is new: {:?}", rr.lines);
+    }
+
+    #[test]
+    fn a_search_for_another_pattern_in_the_same_folder_is_not_a_repeat_and_its_output_is_compared() {
+        let mut h = vec![json!({"role": "user", "content": "find the handlers"})];
+        h.push(call("a", "grep", json!({"pattern": "alder_handler", "path": "src"})));
+        h.push(result("a", "src/alder.rs:3: fn alder_handler()"));
+        let mut rr = Rereads::default();
+        rr.see(&h, &[], 1);
+        h.push(call("b", "grep", json!({"pattern": "birch_handler", "path": "src"})));
+        h.push(result("b", "src/birch.rs:9: fn birch_handler()"));
+        let view = h.clone();
+        rr.see(&h, &view, 2);
+        assert_eq!(rr.repeats, 0, "same folder, another pattern: {:?}", rr.lines);
+        h.push(call("c", "grep", json!({"pattern": "alder_handler", "path": "src"})));
+        h.push(result("c", "src/alder.rs:3: fn alder_handler()"));
+        let view = h[..h.len() - 2].to_vec();
+        rr.see(&h, &view, 3);
+        assert_eq!(rr.repeats, 1, "{:?}", rr.lines);
+        let d = &rr.detail[0];
+        assert_eq!(
+            (d.tool.as_str(), d.same_input, d.identical, d.apart, d.saw),
+            ("grep", true, Some(true), 2, "whole")
+        );
     }
 
     #[test]
