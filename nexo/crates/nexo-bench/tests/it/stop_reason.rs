@@ -1,7 +1,7 @@
 //! Every way a run can end leaves a named `stop` in its record: the real agent loop, a scripted model, no network.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use nexo_agent::ModelClient;
@@ -56,18 +56,8 @@ fn reply(text: &str, call: Option<(&str, Value)>) -> Vec<StreamEvent> {
     evs
 }
 
-#[path = "../../nexo-agent/tests/scratch/mod.rs"]
-mod scratch;
-
 fn bench(script: Vec<Step>, max_steps: u32, on: bool, out: &std::path::Path) -> Bench {
-    static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
-    HOME.get_or_init(|| {
-        let d = scratch::until_exit(test_tmpdir().unwrap());
-        for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
-            std::env::set_var(var, d.join(var));
-        }
-        d
-    });
+    crate::home();
     Bench {
         provider: ProviderConfig::new("anthropic", "http://127.0.0.1:9", None),
         model: "deepseek-chat".into(),

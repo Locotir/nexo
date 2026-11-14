@@ -2,7 +2,7 @@
 //! had spent so far; the next run starts. The real agent loop, a scripted model, no network.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -51,18 +51,8 @@ fn reply(text: &str, call: Option<(&str, Value)>) -> Vec<StreamEvent> {
     evs
 }
 
-#[path = "../../nexo-agent/tests/scratch/mod.rs"]
-mod scratch;
-
 fn bench(script: Vec<Step>, limit: Option<Duration>, out: &std::path::Path) -> Bench {
-    static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
-    HOME.get_or_init(|| {
-        let d = scratch::until_exit(test_tmpdir().unwrap());
-        for var in ["NEXO_CONFIG_DIR", "NEXO_DATA_DIR", "NEXO_CACHE_DIR"] {
-            std::env::set_var(var, d.join(var));
-        }
-        d
-    });
+    crate::home();
     Bench {
         provider: ProviderConfig::new("anthropic", "http://127.0.0.1:9", None),
         model: "deepseek-chat".into(),
