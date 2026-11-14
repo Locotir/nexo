@@ -169,7 +169,7 @@ pub(super) enum Verdict {
 /// The exact state under which an internal task was authorized. Equality is
 /// deliberately conservative: even a harmless rule or sandbox change invalidates it.
 #[derive(Clone, PartialEq)]
-struct TaskPolicySnapshot {
+pub(super) struct TaskPolicySnapshot {
     policy: Policy,
     sandbox: nexo_core::sandbox::SandboxSettings,
     cwd: PathBuf,
@@ -181,7 +181,7 @@ struct TaskPolicySnapshot {
 impl TaskPolicySnapshot {
     // Caller holds State. Lock order everywhere is State -> PlanCell -> Jobs;
     // never await or invoke hooks while holding either lock.
-    fn capture(st: &State) -> Self {
+    pub(super) fn capture(st: &State) -> Self {
         let mode = st.plan.lock().unwrap_or_else(|e| e.into_inner()).mode;
         Self {
             policy: st.perm.clone(),
@@ -309,10 +309,14 @@ pub(super) async fn permit_internal_task(
     id: &str,
     args: &Value,
     cancel: &CancellationToken,
+    expected: &TaskPolicySnapshot,
 ) -> Result<InternalTaskPermit, String> {
     let (before, decision) = {
         let st = state.lock().await;
         let snapshot = TaskPolicySnapshot::capture(&st);
+        if &snapshot != expected {
+            return Err("plan authorization changed before step".into());
+        }
         let tool = st.tools.get("task").ok_or("unknown tool `task`")?;
         let d = st.perm.decide_boxed("task", tool.kind(), args, &st.cwd, st.sandbox.mode.is_on());
         (snapshot, d)

@@ -31,6 +31,11 @@ pub(super) async fn push_results(state: &Shared, results: Vec<Part>) {
 const NOT_RUN: &str =
     "not run: the call before it in this message failed. Read its result, then send this call again if it is still wanted.";
 
+/// Conservative allowlist: unknown, network-mutating and execution tools are not planning tools.
+pub(super) fn ultracode_planning_tool(name: &str) -> bool {
+    matches!(name, "ultracode_execute" | "read" | "glob" | "grep" | "ls" | "recall" | "web_search" | "web_fetch")
+}
+
 /// Runs the calls of one assistant message; (results in order, interrupted).
 pub(super) async fn run_tools(
     state: &Shared,
@@ -38,14 +43,25 @@ pub(super) async fn run_tools(
     calls: Vec<(String, String, Value)>,
     cancel: &CancellationToken,
 ) -> (Vec<Part>, bool) {
-    let (tools, cwd, gate, session_id, jobs) = {
+    let (tools, cwd, gate, session_id, jobs, planning) = {
         let st = state.lock().await;
-        (st.tools.clone(), st.cwd.clone(), st.gate.clone(), st.session.id().to_string(), st.jobs.clone())
+        (
+            st.tools.clone(),
+            st.cwd.clone(),
+            st.gate.clone(),
+            st.session.id().to_string(),
+            st.jobs.clone(),
+            st.tools.get("ultracode_execute").is_some(),
+        )
     };
     // PreToolUse hooks first: one may block a call, decide its permission or replace its input
     let mut calls = calls;
     let mut pre: Vec<(Option<String>, Option<crate::hooks::Decision>)> = Vec::with_capacity(calls.len());
     for (_, name, args) in calls.iter_mut() {
+        if planning && !ultracode_planning_tool(name) {
+            pre.push((Some("tool unavailable during ultracode planning".into()), None));
+            continue;
+        }
         let o = fire(state, "pre_tool", Some(name), crate::hooks::tool_fields(name, args)).await;
         if let Some(u) = o.updated_input {
             *args = u;

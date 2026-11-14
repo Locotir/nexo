@@ -51,9 +51,9 @@ impl Plan {
 
     /// JSON string encoding preserves the exact content and prevents a prompt
     /// containing Markdown from impersonating another approval field.
-    pub fn approval_view(&self) -> String {
+    pub fn approval_view(&self, config: &Config, history: &[nexo_core::subs::SubInfo]) -> String {
         let mut out = String::from(
-            "Sequential launches. Ordinary permissions still apply. Provider connectivity, quota and total cost are unknown. Hooks execute and may add context; non-clean launches may also receive a briefing.\n",
+            "Sequential launches. Ordinary permissions still apply. Connectivity, quota and actual charges are unknown. Hooks execute and may add context; non-clean launches may also receive a briefing.\nHistorical costs below are recorded session-local sub-agent totals, not a forecast or spending cap. They aggregate multiple calls but may be incomplete when usage or prices were unavailable; actual charges may differ. History matches the agent profile only: provider, model and task may differ.\n",
         );
         for (i, s) in self.steps.iter().enumerate() {
             out.push_str(&format!(
@@ -65,7 +65,35 @@ impl Plan {
                 s.start_clean,
                 serde_json::to_string(&s.prompt).unwrap()
             ));
+            // The registry does not retain provider/model or whether all calls had
+            // pricing and usage. A zero cost therefore cannot establish a free run.
+            let sample = history
+                .iter()
+                .filter(|run| {
+                    run.profile == s.agent
+                        && !run.state.running()
+                        && run.ended_ms.is_some()
+                        && run.cost_usd.is_finite()
+                        && run.cost_usd > 0.0
+                })
+                .max_by_key(|run| run.ended_ms);
+            if let Some(run) = sample {
+                out.push_str(&format!(
+                    "    latest recorded historical cost: ${:.6} USD (ended unix ms {}; profile match only; may be incomplete)\n",
+                    run.cost_usd, run.ended_ms.unwrap()
+                ));
+            } else {
+                out.push_str("    historical cost: unknown (no usable completed run for this profile)\n");
+            }
+            out.push_str("    planned step cost: unknown\n");
+            let cfg = config.providers.get(&s.provider);
+            out.push_str(if cfg.is_some_and(|c| c.login.is_some()) {
+                "    billing: subscription login configured; actual charges unknown\n"
+            } else {
+                "    billing: API/key or local endpoint; billing type and actual charges unknown\n"
+            });
         }
+        out.push_str("\n    Planned total cost: unknown\n");
         out
     }
 }
@@ -124,8 +152,14 @@ impl nexo_core::Tool for ExecutePlan {
         if let Err(e) = plan.validate(&self.config, &agents) {
             return ToolOutput::error(e);
         }
-        let mode = self.permissions.lock().unwrap_or_else(|e| e.into_inner()).mode;
-        if ctx.cancel.is_cancelled() || mode.reads_only() {
+        let Some(state) = self.state.upgrade() else {
+            return ToolOutput::error("session ended");
+        };
+        let (mode, snapshot) = {
+            let st = state.lock().await;
+            (st.perm.mode, super::approval::TaskPolicySnapshot::capture(&st))
+        };
+        if ctx.cancel.is_cancelled() || mode == PermissionMode::ReadOnly {
             return ToolOutput::error("cancelled or read-only mode");
         }
         if mode != PermissionMode::Auto {
@@ -144,7 +178,7 @@ impl nexo_core::Tool for ExecutePlan {
                     QuestionOption { label: "Reject".into(), description: "Do not execute".into() },
                 ],
                 multi: false,
-                plan: Some(plan.approval_view()),
+                plan: Some(plan.approval_view(&self.config, &ctx.jobs.subs().list())),
             };
             let answer = tokio::select! {
                 a = asker.ask(q) => a,
@@ -154,8 +188,21 @@ impl nexo_core::Tool for ExecutePlan {
                 return ToolOutput::error("plan not approved");
             }
         }
-        let Some(state) = self.state.upgrade() else {
-            return ToolOutput::error("session ended");
+        let (mode, approved_snapshot) = {
+            let mut st = state.lock().await;
+            if ctx.cancel.is_cancelled() || snapshot != super::approval::TaskPolicySnapshot::capture(&st) {
+                return ToolOutput::error("plan authorization changed while awaiting approval");
+            }
+            let mode = if mode == PermissionMode::Plan {
+                if st.config.check_mode(PermissionMode::Ask).is_err() {
+                    return ToolOutput::error("cannot leave plan mode under current configuration");
+                }
+                super::host::set_mode(&mut st, PermissionMode::Ask);
+                PermissionMode::Ask
+            } else {
+                mode
+            };
+            (mode, super::approval::TaskPolicySnapshot::capture(&st))
         };
         let mut reports = Vec::new();
         for (i, step) in plan.steps.iter().enumerate() {
@@ -168,6 +215,7 @@ impl nexo_core::Tool for ExecutePlan {
                 &format!("{}-step-{}", ctx.call_id, i + 1),
                 &task_args,
                 &ctx.cancel,
+                &approved_snapshot,
             )
             .await
             {
@@ -314,11 +362,54 @@ mod tests {
                 start_clean: true,
             }],
         };
-        let view = plan.approval_view();
+        let view = plan.approval_view(&Config::default(), &[]);
         for line in view.lines().skip(2) {
             assert!(line.is_empty() || line.starts_with("    "), "{line}");
         }
         assert!(view.contains(r#"\n# heading"#));
+    }
+
+    #[test]
+    fn approval_uses_only_completed_usable_profile_history() {
+        use nexo_core::subs::{SubInfo, SubState};
+        let plan = Plan {
+            steps: vec![Step {
+                agent: "explore".into(),
+                prompt: "hi".into(),
+                provider: "p".into(),
+                model: "m".into(),
+                start_clean: true,
+            }],
+        };
+        let run = |profile: &str, state, cost_usd, ended_ms| SubInfo {
+            id: "id".into(),
+            profile: profile.into(),
+            title: "task".into(),
+            state,
+            started_ms: 1,
+            ended_ms,
+            tokens_in: 100,
+            tokens_out: 20,
+            cost_usd,
+        };
+        let history = vec![
+            run("explore", SubState::Ok, 1.25, Some(2)),
+            run("explore", SubState::Attached, 9.0, None),
+            run("other", SubState::Ok, 8.0, Some(4)),
+            run("explore", SubState::Ok, 0.0, Some(5)),
+            run("explore", SubState::Failed, f64::NAN, Some(6)),
+        ];
+        let view = plan.approval_view(&Config::default(), &history);
+        assert!(view.contains("historical cost: $1.250000 USD"), "{view}");
+        assert!(view.contains("profile match only"));
+        assert!(view.contains("multiple calls"));
+        assert!(view.contains("may be incomplete"));
+        assert!(view.contains("Planned total cost: unknown"));
+        assert!(!view.contains("$9.000000"));
+        let view = plan.approval_view(&Config::default(), &history[1..]);
+        assert!(view.contains("historical cost: unknown"));
+        assert!(!view.contains('$'));
+        assert!(!view.contains("10,000"));
     }
 
     #[test]
@@ -330,7 +421,7 @@ mod tests {
         config.providers.insert("p".into(), ProviderConfig::default());
         let agents = vec!["explore".to_string()];
         assert!(plan.validate(&config, &agents).is_ok());
-        assert!(plan.approval_view().contains(r#"prompt: "hello\nmodel: forged""#));
+        assert!(plan.approval_view(&config, &[]).contains(r#"prompt: "hello\nmodel: forged""#));
         plan.steps[0].provider = "other".into();
         assert!(plan.validate(&config, &agents).is_err());
         plan.steps.clear();

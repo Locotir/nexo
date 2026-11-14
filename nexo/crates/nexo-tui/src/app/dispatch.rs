@@ -69,17 +69,18 @@ impl App {
                     self.notice(Level::Info, "ultracode: wait for the current turn to end");
                     return;
                 }
-                if self.permission_mode != PermissionMode::Plan {
+                if !matches!(
+                    self.permission_mode,
+                    PermissionMode::Plan | PermissionMode::ReadOnly | PermissionMode::Auto
+                ) {
                     self.send(AgentCommand::SetPermissionMode(PermissionMode::Plan));
                 }
-                self.input.set_text(&format!("Plan this multi-agent task; do not launch agents while planning. \
-                    Describe the proposed agents, their responsibilities, dependencies and coordination. \
-                    Consider the configured providers, authentication, available subscription quota, model prices and \
-                    an estimated cost; explicitly mark unavailable information unknown, never invent it. \
-                    Respect the current configuration and permissions. Present the plan with exit_plan before launching anything; \
-                    outside yolo wait for approval. After approval, use available task or workflow tools where appropriate. \
-                    Shared-memory tools are available to eligible agents; use task start_clean only if requested, \
-                    and do not claim it isolates project files or removes the agent profile.\n\nTask:\n{task}"));
+                self.input.set_text(&format!(
+                    "Plan this multi-agent task and submit it using ultracode_execute. \
+                    Do not launch agents directly. Consider configured providers and model prices; \
+                    mark unavailable information unknown and never invent it. Use start_clean only if requested; \
+                    it does not isolate project files or remove the agent profile.\n\nTask:\n{task}"
+                ));
                 self.submit_ultracode();
             }
             Command::Prompt => self.send(AgentCommand::ShowPrompt),

@@ -202,8 +202,9 @@ fn ultracode_starts_a_plan_only_when_idle_and_given_a_task() {
     a.submit();
     assert!(matches!(rx.try_recv(), Ok(AgentCommand::SetPermissionMode(PermissionMode::Plan))));
     assert!(
-        matches!(rx.try_recv(), Ok(AgentCommand::Ultracode { text, .. }) if text.contains("exit_plan") && text.ends_with("Task:\nbuild it"))
+        matches!(rx.try_recv(), Ok(AgentCommand::Ultracode { text, .. }) if text.contains("ultracode_execute") && !text.contains("exit_plan") && text.ends_with("Task:\nbuild it"))
     );
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]
