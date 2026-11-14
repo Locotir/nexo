@@ -5,7 +5,7 @@ use nexo_core::message::{Message, Part};
 use nexo_core::ToolOutput;
 use serde_json::Value;
 
-/// Characters one answer carries at most; a longer message comes back in parts (`from`, `to`).
+/// Characters one answer carries at most; a longer message comes back in parts (`from`, `to`, and `skip` within one long line).
 pub const MAX_CHARS: usize = 60_000;
 
 /// The place in the conversation (from 0) that a name like `m00042`, `m42` or `42` gives.
@@ -81,6 +81,34 @@ pub fn answer(history: &[Message], args: &Value) -> ToolOutput {
     let line = |k: &str| args.get(k).and_then(Value::as_u64).map(|v| v as usize);
     let from = line("from").unwrap_or(1).clamp(1, total);
     let to = line("to").unwrap_or(total).clamp(from, total);
+    let skip = line("skip").unwrap_or(0);
+    let first = lines.get(from - 1).copied().unwrap_or("");
+    // a line longer than one answer holds (a minified file, a dump) comes back in parts of its own
+    // characters: `skip` says how many of the line's characters were already brought back
+    if skip > 0 || first.len() + 1 > MAX_CHARS {
+        let len = first.chars().count();
+        let skip = skip.min(len);
+        let mut end = skip;
+        let mut bytes = 0;
+        for c in first.chars().skip(skip) {
+            bytes += c.len_utf8();
+            if bytes > MAX_CHARS {
+                break;
+            }
+            end += 1;
+        }
+        let piece: String = first.chars().skip(skip).take(end - skip).collect();
+        let more = if end < len {
+            format!(" (the rest of this line: recall with from={from}, skip={end})")
+        } else if from < to {
+            format!(" (the next line: recall with from={})", from + 1)
+        } else {
+            String::new()
+        };
+        let head = format!("m{:05}{what}, line {from} of {total}, characters {skip}-{end} of {len}{more}:", i + 1);
+        let tail = if end >= len && from >= total { outputs_at(history, i).unwrap_or_default() } else { String::new() };
+        return ToolOutput::ok(format!("{head}\n{piece}{tail}"));
+    }
     let mut body = String::new();
     let mut last = from - 1;
     for l in lines.iter().take(to).skip(from - 1) {
@@ -144,5 +172,33 @@ mod tests {
         assert!(answer(&history(), &json!({"message": "m00009"})).is_error);
         assert!(answer(&history(), &json!({"message": "x"})).is_error);
         assert!(answer(&history(), &json!({})).is_error);
+    }
+
+    #[test]
+    fn one_huge_line_comes_back_in_parts_the_header_says_how_to_follow() {
+        let line = "é".repeat(200_000);
+        let h = vec![Message::user(line.clone()), Message::assistant("ok")];
+        let o = answer(&h, &json!({"message": "m00001"}));
+        assert!(!o.is_error);
+        let (head, body) = o.content.split_once(":\n").unwrap();
+        assert!(body.len() <= MAX_CHARS && body.chars().all(|c| c == 'é'), "{}", body.len());
+        let end = body.chars().count();
+        assert_eq!(
+            head,
+            format!(
+                "m00001, line 1 of 1, characters 0-{end} of 200000 (the rest of this line: recall with from=1, skip={end})"
+            )
+        );
+        // following the header until the end gives the whole line back
+        let mut got = body.to_string();
+        let mut skip = end;
+        while got.chars().count() < 200_000 {
+            let o = answer(&h, &json!({"message": "m00001", "from": 1, "skip": skip}));
+            let (head, body) = o.content.split_once(":\n").unwrap();
+            assert!(head.contains(&format!("characters {skip}-")), "{head}");
+            skip += body.chars().count();
+            got.push_str(body);
+        }
+        assert_eq!(got, line);
     }
 }

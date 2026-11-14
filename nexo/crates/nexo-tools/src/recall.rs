@@ -18,15 +18,16 @@ impl Tool for Recall {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "recall".into(),
-            description: "Bring back, exactly as it was, a message this context left out: give the name it was \
-                          left out under (`m00042`). Cheaper than running the command again. `from` and `to` (lines, from 1) take part of a long message."
+            description: "Bring back, exactly as it was, a message this context left out, by name \
+                          (`m00042`). Cheaper than running the command again. `from` and `to` (lines, from 1) take part of a long message."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "message": {"type": "string", "description": "The message's name, like `m00042`."},
-                    "from": {"type": "integer", "description": "First line to bring back (from 1)."},
-                    "to": {"type": "integer", "description": "Last line to bring back."}
+                    "message": {"type": "string", "description": "Name, like `m00042`."},
+                    "from": {"type": "integer", "description": "First line (from 1)."},
+                    "to": {"type": "integer", "description": "Last line."},
+                    "skip": {"type": "integer", "description": "Chars of the line seen."}
                 },
                 "required": ["message"]
             }),
@@ -35,7 +36,7 @@ impl Tool for Recall {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Bring back a message the context left out, by name (`m00042`); `from` and `to` pick lines.",
+            description: "Bring back a left-out message by name (`m00042`); `from`,`to`: lines.",
             params: &[],
         })
     }
