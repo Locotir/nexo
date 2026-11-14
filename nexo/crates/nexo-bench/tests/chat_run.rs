@@ -16,7 +16,8 @@ struct Seq(Mutex<VecDeque<String>>);
 
 #[async_trait]
 impl ModelClient for Seq {
-    async fn stream(&self, _: &ProviderConfig, _: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+    async fn stream(&self, _: &ProviderConfig, req: &ModelRequest, _: u32) -> Result<EventStream, ProviderError> {
+        assert!(req.tools.is_empty(), "chat must never offer tools: {:?}", req.tools);
         let text = self.0.lock().unwrap().pop_front().unwrap_or_else(|| "All done here.".into());
         let evs = vec![
             StreamEvent::TextDelta(text),

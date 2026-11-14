@@ -14,10 +14,10 @@
  ◈ model deepseek/deepseek-chat · 9.0k context · no prices known (/pricing in=…┃
    out=… cache=…) · from config                                                ┃
                                                                                ┃
- ◇ compacted 2 messages                                                        ┃
  /model                [name]              switch model, or set one up step by…
  /permissions  (mode)  [ask|accept-edits…  set the permission mode
  /memory               [user|add <text>…   edit the instructions the agent rea…
+ /shared-memory        [read [epoch]…      read or append coordination notes s…
 ─ ask ──────────────────────────────────────────────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run · PgUp/PgDn page · Esc close

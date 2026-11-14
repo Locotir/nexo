@@ -3,7 +3,7 @@
 │ ──────────────────────────────────── │
 │ ▣ nexo · 2 ───────────────────────── │
 │ ▌● working    ▣ project            ⠁ │
-│ /home/dev/project · default · n1     │
+│ subagents 1 active / 2 total · expl… │
 │ s source · Esc close  ↓ 4 more       │
 ╰──────────────────────────────────────╯
 ─ ask ──────────────────────────────────

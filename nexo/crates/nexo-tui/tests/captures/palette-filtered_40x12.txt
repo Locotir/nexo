@@ -1,11 +1,11 @@
- ◈ model deepseek/deepseek-chat · 9.0k │
-   context · no prices known (/pricing │
-   in=… out=… cache=…) · from config   │
-                                       │
- ◇ compacted 2 messages                │
+
+
+
+
  /model           switch model, or set…
  /permissions     set the permission m…
  /memory          edit the instruction…
+ /shared-memory   read or append coord…
 ─ ask ──────────────────────────────────
 › /mo
  ↑↓ choose · Tab complete · Enter run

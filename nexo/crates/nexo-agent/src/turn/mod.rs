@@ -131,9 +131,13 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     let audit = Audit::from_config(&config.audit);
     let limits = limits::resolve(&provider, &pcfg, &model, None);
     let target = Target::new(&provider, pcfg, &model);
+    // An explicitly empty tool set is a tool-free session, including agent-provided tools.
+    let tools_enabled = tools.names().next().is_some();
     // Register before taking the sub-agent tool snapshot; the ordinary permission policy applies.
-    tools.add(Arc::new(crate::share_tool::ReadSharedMemory));
-    tools.add(Arc::new(crate::share_tool::WriteSharedMemory));
+    if tools_enabled {
+        tools.add(Arc::new(crate::share_tool::ReadSharedMemory));
+        tools.add(Arc::new(crate::share_tool::WriteSharedMemory));
+    }
     // the sub-agents, when there are tools to give them; they reach the state once it exists
     let host: crate::subagent::HostCell = Arc::new(OnceLock::new());
     // what a workflow the person starts by name runs its sub-agents with
@@ -156,11 +160,13 @@ pub async fn run(ends: AgentEnds, setup: AgentSetup) -> anyhow::Result<()> {
     }
     // after the sub-agents: questions are the main agent's alone
     let plan: crate::ask::PlanCell = Arc::default();
-    if !headless {
-        tools.add(Arc::new(crate::ask::AskUser::new(asker.clone())));
+    if tools_enabled {
+        if !headless {
+            tools.add(Arc::new(crate::ask::AskUser::new(asker.clone())));
+        }
+        tools.add(Arc::new(crate::ask::ExitPlan::new((!headless).then(|| asker.clone()), plan.clone())));
+        tools.add(Arc::new(crate::goal_brief::GoalBrief));
     }
-    tools.add(Arc::new(crate::ask::ExitPlan::new((!headless).then(|| asker.clone()), plan.clone())));
-    tools.add(Arc::new(crate::goal_brief::GoalBrief));
     let (mut session, history, replay) = match &resume {
         Some(id) => {
             // taken before anything is spent: a session another nexo writes is not resumed here
