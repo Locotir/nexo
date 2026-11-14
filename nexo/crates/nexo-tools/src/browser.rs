@@ -726,7 +726,7 @@ impl Tool for BrowserTool {
                           CSS selector or visible text. Fill a whole form with ONE `fill_batch`. `read_page` reads the page as a tree, \
                           `read_text` its text, `screenshot` shows it, `batch` runs known steps in one call. \
                           Never use it to get past a CAPTCHA or bot check: stop and tell the person. `browsers` lists the person's own \
-                          browsers (`select_browser` uses one; the result says the rules)."
+                          logged-in browsers (`select_browser` uses one; the result says the rules)."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -766,8 +766,8 @@ impl Tool for BrowserTool {
 
     fn compact(&self) -> Option<Compact<'_>> {
         Some(Compact {
-            description: "Drive a real browser, one `action` per call; page changes return a snapshot of refs (`e3 button \"Submit\"`). \
-                          A target is a ref, CSS selector or visible text. `fill_batch` fills a whole form.",
+            description: "Drive a browser, one `action` per call; page changes return a snapshot of refs (`e3 button \"Submit\"`). \
+                          Headless by default; `browsers` lists the person's logged-in ones for `select_browser`.",
             params: &[
                 ("action", "open{url?,profile?,visible?} navigate{url} snapshot read_page{filter?,depth?,ref_id?,max_chars?} read_text{selector?} click{target} fill{target,value} fill_batch{fields} select{target,option} set_checkbox{target,checked} press{keys} hover{target} scroll{to} wait{selector?,ms?} screenshot{full?} back forward reload eval{value} console{selector?} network{selector?,to?} tabs tab_new{url} tab_switch{to} tab_close{to} upload{target,value} resize{to} find{target} click_xy|double_click|right_click|drag|hover_xy|scroll_xy{to,modifiers?} type_text{value} start_recording stop_recording export_gif{value?,gif?} clear_recording batch{steps} close browsers select_browser{id} switch_browser"),
                 ("target", "ref (e3), CSS selector or text"),
@@ -1248,6 +1248,13 @@ mod tests {
         let out = run(json!({"action": "clear_recording"})).await;
         assert!(!out.is_error && out.content.contains("discarded"), "{}", out.content);
         run(json!({"action": "close"})).await;
+    }
+
+    #[test]
+    fn the_compact_text_names_the_persons_own_browsers() {
+        let tool = BrowserTool::default();
+        let c = tool.compact().expect("compact");
+        assert!(c.description.contains("person's logged-in") && c.description.contains("`browsers`"));
     }
 
     #[test]
