@@ -186,8 +186,11 @@ async fn plan_mode_refuses_the_workflow_tool_without_asking_or_starting() {
     r.submit("run it");
     let evs = r.turn().await;
     assert!(!evs.iter().any(|e| matches!(e, AgentEvent::PermissionAsk { .. } | AgentEvent::FlowRun { .. })));
-    assert!(evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. }
-        if id == "w1" && output.is_error && output.content.contains("plan mode"))), "{evs:?}");
+    assert!(
+        evs.iter().any(|e| matches!(e, AgentEvent::ToolDone { id, output, .. }
+        if id == "w1" && output.is_error && output.content.contains("plan mode"))),
+        "{evs:?}"
+    );
     assert!(client.tasks().is_empty());
     r.send(AgentCommand::Shutdown);
     r.until(|e| matches!(e, AgentEvent::Shutdown)).await;
