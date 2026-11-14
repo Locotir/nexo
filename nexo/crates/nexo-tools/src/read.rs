@@ -37,18 +37,18 @@ impl Tool for Read {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".into(),
-            description: "Read text files: numbered lines (`   12│ text`), at most `limit` \
-                          from line `offset` (1-based), default the first 2000; a \
-                          line over 2000 characters is cut; a call is cut at 64000 characters. Several files at once: `paths` (each \
-                          under a `=== path ===` header; one that fails is reported in place). A PNG, JPEG, GIF, WebP, PPM, PGM \
-                          or BMP file is shown as an image (at most 5 MB and 2000 px); a Jupyter notebook as its cells and outputs. Directories and other \
-                          binary files are refused (use `ls` for a directory)."
+            description: "Read numbered text lines (`   12│ text`): `offset` is 1-based, `limit` defaults to 2000. \
+                          Lines are cut at 2000 characters, calls at 64000. `paths` reads files under `=== path ===` headers; failures appear in place. \
+                          PNG, JPEG, GIF, WebP, PPM, PGM, BMP show as images (max 5 MB, 2000 px); Jupyter notebooks show cells and outputs. \
+                          Directories and other binaries are refused (use `ls` for directories). \
+                          `symbol` reads a Rust item; ambiguity reports ranges. Cannot combine with `offset` or `limit`."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "At most 20, about 100000 characters in all; offset and limit apply to each."},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Max 20, about 100000 characters total; offset and limit apply to each."},
+                    "symbol": {"type": "string", "description": "Exact Rust item or method name; one file."},
                     "offset": {"type": "integer", "minimum": 1},
                     "limit": {"type": "integer", "minimum": 1}
                 }
@@ -61,6 +61,7 @@ impl Tool for Read {
             description: "Read text files as numbered lines; shows images. Not for directories: use `ls`.",
             params: &[
                 ("paths", "Several files, at most 20"),
+                ("symbol", "Exact Rust item or method name, one file"),
                 ("offset", "First line (1-based)"),
                 ("limit", "Lines, default 2000; a call returns at most 64000 characters"),
             ],
@@ -76,6 +77,9 @@ impl Tool for Read {
         if files.is_empty() {
             return "read (no path)".into();
         }
+        if let Some(symbol) = args.get("symbol").and_then(Value::as_str) {
+            return format!("read {} symbol {symbol}", paths_label(&files));
+        }
         let range = match (int_arg(args, "offset"), int_arg(args, "limit")) {
             (Some(o), Some(l)) => format!(" [{o}..{}]", o.saturating_add(l).saturating_sub(1)),
             (Some(o), None) => format!(" [{o}..]"),
@@ -87,6 +91,16 @@ impl Tool for Read {
 
     async fn run(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
         let files = call_paths(&args);
+        if let Some(symbol) = args.get("symbol") {
+            if !symbol.as_str().is_some_and(|s| !s.trim().is_empty()) {
+                return ToolOutput::error("read: `symbol` must be a non-empty string");
+            }
+            if files.len() != 1 || args.get("offset").is_some() || args.get("limit").is_some() {
+                return ToolOutput::error(
+                    "read: `symbol` requires one file and cannot be combined with `offset` or `limit`",
+                );
+            }
+        }
         match files.as_slice() {
             [] => ToolOutput::error("read: `path` or `paths` is required"),
             [one] => read_one(&args, ctx, one, None).await,
@@ -178,6 +192,11 @@ async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Option<usize>)
         Err(e) => return ToolOutput::error(format!("read: cannot read {shown}: {e}")),
     };
     ctx.seen.mark(&path);
+    if args.get("symbol").is_some() && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("rs")) {
+        return ToolOutput::error(
+            "read: `symbol` currently supports Rust (.rs) files only; use line ranges for other files",
+        );
+    }
     if let Some(pic) = picture::sniff(&bytes) {
         return show_picture(&shown, pic, &bytes, ctx.vision);
     }
@@ -193,6 +212,13 @@ async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Option<usize>)
     }
     if is_binary(&bytes) {
         return ToolOutput::error(format!("read: {shown} is a binary file ({} bytes)", bytes.len()));
+    }
+    if let Some(symbol) = args.get("symbol").and_then(Value::as_str) {
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(_) => return ToolOutput::error("read: Rust symbol lookup requires UTF-8"),
+        };
+        return read_symbol(&shown, text, symbol);
     }
     let text = String::from_utf8_lossy(&bytes);
     // a notebook is JSON whose outputs can hold megabytes of base64: show its cells as text instead
@@ -251,6 +277,99 @@ async fn read_one(args: &Value, ctx: &ToolContext, p: &str, room: Option<usize>)
         out.push_str(&format!("… {} more lines (of {total}); read with offset {} to continue\n", total - n, n + 1));
     }
     ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown, text: raw, start_line: offset })
+}
+
+/// Parse Rust rather than guessing brace boundaries in comments, strings or macros.
+fn read_symbol(shown: &str, text: &str, name: &str) -> ToolOutput {
+    use syn::spanned::Spanned;
+    use syn::visit::{self, Visit};
+    struct Find<'a> {
+        name: &'a str,
+        spans: Vec<(usize, usize)>,
+    }
+    impl<'ast> Visit<'ast> for Find<'_> {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            let ident = match item {
+                syn::Item::Fn(i) => Some(&i.sig.ident),
+                syn::Item::Struct(i) => Some(&i.ident),
+                syn::Item::Enum(i) => Some(&i.ident),
+                syn::Item::Trait(i) => Some(&i.ident),
+                syn::Item::Mod(i) => Some(&i.ident),
+                syn::Item::Type(i) => Some(&i.ident),
+                syn::Item::Const(i) => Some(&i.ident),
+                syn::Item::Static(i) => Some(&i.ident),
+                syn::Item::Union(i) => Some(&i.ident),
+                syn::Item::Macro(i) => i.ident.as_ref(),
+                _ => None,
+            };
+            if ident.is_some_and(|i| i == self.name) {
+                self.add(item.span());
+            }
+            visit::visit_item(self, item);
+        }
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            if item.sig.ident == self.name {
+                self.add(item.span());
+            }
+            visit::visit_impl_item_fn(self, item);
+        }
+        fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+            if item.sig.ident == self.name {
+                self.add(item.span());
+            }
+            visit::visit_trait_item_fn(self, item);
+        }
+    }
+    impl Find<'_> {
+        fn add(&mut self, span: proc_macro2::Span) {
+            self.spans.push((span.start().line, span.end().line));
+        }
+    }
+    let file = match syn::parse_file(text) {
+        Ok(file) => file,
+        Err(e) => return ToolOutput::error(format!("read: cannot parse {shown} as Rust: {e}; use line ranges")),
+    };
+    let mut find = Find { name, spans: Vec::new() };
+    find.visit_file(&file);
+    match find.spans.as_slice() {
+        [] => ToolOutput::error(format!("read: symbol {name:?} not found in {shown}")),
+        [(start, end)] => {
+            let (start, end) = (*start, *end);
+            let mut out = String::new();
+            let mut raw = String::new();
+            let mut last = start - 1;
+            let mut chars = 0;
+            for (i, line) in text.lines().enumerate().skip(start - 1).take(end - start + 1) {
+                let line = cut_line(line, LINE_CHARS);
+                let numbered = format!("{:>6}│ {line}\n", i + 1);
+                let len = numbered.chars().count();
+                if last >= start && chars + len > FILE_CAP {
+                    break;
+                }
+                out.push_str(&numbered);
+                raw.push_str(&line);
+                raw.push('\n');
+                chars += len;
+                last = i + 1;
+            }
+            if last < end {
+                out.push_str(&format!(
+                    "… symbol truncated at line {last} of {end}; read with offset {} and limit {} to continue\n",
+                    last + 1,
+                    end - last
+                ));
+            }
+            ToolOutput::ok(out).with_display(ToolDisplay::File { path: shown.into(), text: raw, start_line: start })
+        }
+        spans => {
+            let ranges = spans.iter().take(100).map(|(a, b)| format!("{a}-{b}")).collect::<Vec<_>>().join(", ");
+            ToolOutput::error(format!(
+                "read: symbol {name:?} is ambiguous in {shown} ({} matches): lines {ranges}{}; use offset and limit",
+                spans.len(),
+                if spans.len() > 100 { ", …" } else { "" }
+            ))
+        }
+    }
 }
 
 /// A picture as the image the model looks at, with one line of text; refused over the size cap,
@@ -401,6 +520,56 @@ mod tests {
         std::fs::write(d.path().join("x.ipynb"), "not json\n").unwrap();
         let out = Read.run(json!({"path": "x.ipynb"}), &ctx(d.path())).await;
         assert_eq!(out.content, "     1│ not json\n");
+    }
+
+    #[tokio::test]
+    async fn rust_symbol_lookup_returns_exact_span_and_reports_ambiguity() {
+        let d = tempfile::tempdir().unwrap();
+        let c = ctx(d.path());
+        std::fs::write(
+            d.path().join("a.rs"),
+            "// before\n#[inline]\nfn target() {\n    let s = \"}\";\n}\nfn other() {}\n",
+        )
+        .unwrap();
+        let out = Read.run(json!({"path":"a.rs", "symbol":"target"}), &c).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("fn target()") && out.content.contains("let s"), "{}", out.content);
+        assert!(!out.content.contains("fn other"), "{}", out.content);
+        assert!(matches!(out.display, ToolDisplay::File { start_line: 2, .. }));
+        let missing = Read.run(json!({"path":"a.rs", "symbol":"missing"}), &c).await;
+        assert!(missing.is_error && missing.content.contains("not found"));
+        std::fs::write(d.path().join("a.rs"), "impl A { fn same(&self) {} }\nimpl B { fn same(&self) {} }\n").unwrap();
+        let ambiguous = Read.run(json!({"path":"a.rs", "symbol":"same"}), &c).await;
+        assert!(
+            ambiguous.is_error && ambiguous.content.contains("ambiguous") && ambiguous.content.contains("1-1, 2-2"),
+            "{}",
+            ambiguous.content
+        );
+        for args in [
+            json!({"path":"a.rs", "symbol":"same", "offset":1}),
+            json!({"paths":["a.rs", "b.rs"], "symbol":"same"}),
+            json!({"path":"a.rs", "symbol":""}),
+        ] {
+            assert!(Read.run(args, &c).await.is_error);
+        }
+        std::fs::write(d.path().join("a.py"), "def same(): pass\n").unwrap();
+        assert!(Read.run(json!({"path":"a.py", "symbol":"same"}), &c).await.content.contains("Rust"));
+        std::fs::write(d.path().join("a.rs"), "fn broken(").unwrap();
+        assert!(Read.run(json!({"path":"a.rs", "symbol":"broken"}), &c).await.content.contains("cannot parse"));
+    }
+
+    #[tokio::test]
+    async fn long_symbol_is_capped_with_a_continuation() {
+        let d = tempfile::tempdir().unwrap();
+        let text = format!("fn long() {{\n{}\n}}\n", "    let x = 1;\n".repeat(6000));
+        std::fs::write(d.path().join("a.rs"), text).unwrap();
+        let out = Read.run(json!({"path":"a.rs", "symbol":"long"}), &ctx(d.path())).await;
+        assert!(
+            !out.is_error && out.content.contains("symbol truncated") && out.content.contains("offset"),
+            "{}",
+            out.content
+        );
+        assert!(out.content.chars().count() < FILE_CAP + 200);
     }
 
     #[tokio::test]
